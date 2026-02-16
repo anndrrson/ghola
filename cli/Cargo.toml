@@ -1,0 +1,21 @@
+[package]
+name = "said"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "said"
+path = "src/main.rs"
+
+[dependencies]
+said-core = { workspace = true }
+said-types = { workspace = true }
+said-mcp = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+dirs = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
