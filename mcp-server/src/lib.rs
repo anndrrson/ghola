@@ -1,3 +1,5 @@
+pub mod http;
+
 use std::sync::{Arc, Mutex};
 
 use rmcp::{
@@ -11,7 +13,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use said_core::Wallet;
-use said_types::{ConversationEntry, KnowledgeDoc, McpConfig, Memory, Preference, SystemPrompt};
+use said_types::{
+    Capability, ConversationEntry, KnowledgeDoc, McpConfig, Memory, Preference, SystemPrompt,
+};
 
 // ── Tool Parameter Types ──
 
@@ -63,14 +67,47 @@ pub struct GetConversationContextParams {
 pub struct SaidServer {
     wallet: Arc<Mutex<Wallet>>,
     tool_router: ToolRouter<Self>,
+    /// When Some, capability checks are enforced (HTTP mode).
+    /// When None, all tools are allowed (stdio / local trust mode).
+    allowed_capabilities: Option<Vec<Capability>>,
+}
+
+impl SaidServer {
+    /// Check that the current session has the required capability.
+    /// In stdio mode (allowed_capabilities = None), always succeeds.
+    fn check_capability(&self, cap: &Capability) -> Result<(), ErrorData> {
+        if let Some(ref caps) = self.allowed_capabilities {
+            if !caps.iter().any(|c| c.grants(cap)) {
+                return Err(ErrorData::internal_error(
+                    format!("insufficient capability: {:?}", cap),
+                    None,
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[tool_router]
 impl SaidServer {
+    /// Create a new server in stdio mode (no auth, all tools allowed).
     pub fn new(wallet: Wallet) -> Self {
         Self {
             wallet: Arc::new(Mutex::new(wallet)),
             tool_router: Self::tool_router(),
+            allowed_capabilities: None,
+        }
+    }
+
+    /// Create a new server with shared wallet and specific capabilities (HTTP auth mode).
+    pub fn new_with_auth(
+        wallet: Arc<Mutex<Wallet>>,
+        capabilities: Vec<Capability>,
+    ) -> Self {
+        Self {
+            wallet,
+            tool_router: Self::tool_router(),
+            allowed_capabilities: Some(capabilities),
         }
     }
 
@@ -82,6 +119,8 @@ impl SaidServer {
         &self,
         Parameters(params): Parameters<GetSystemPromptParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::ReadPrompts)?;
+
         let wallet = self.wallet.lock().unwrap();
         let prompts: Vec<SystemPrompt> = wallet.storage().load("prompts").unwrap_or_default();
 
@@ -107,6 +146,8 @@ impl SaidServer {
         &self,
         Parameters(params): Parameters<GetPreferencesParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::ReadPreferences)?;
+
         let wallet = self.wallet.lock().unwrap();
         let prefs: Vec<Preference> = wallet.storage().load("preferences").unwrap_or_default();
 
@@ -131,6 +172,8 @@ impl SaidServer {
         &self,
         Parameters(params): Parameters<SearchMemoriesParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::ReadMemories)?;
+
         let wallet = self.wallet.lock().unwrap();
         let memories: Vec<Memory> = wallet.storage().load("memories").unwrap_or_default();
 
@@ -160,6 +203,8 @@ impl SaidServer {
         &self,
         Parameters(params): Parameters<AddMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::WriteMemories)?;
+
         let wallet = self.wallet.lock().unwrap();
         let memory = Memory {
             id: uuid::Uuid::new_v4(),
@@ -188,6 +233,8 @@ impl SaidServer {
         &self,
         Parameters(params): Parameters<SearchKnowledgeParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::ReadKnowledge)?;
+
         let wallet = self.wallet.lock().unwrap();
         let docs: Vec<KnowledgeDoc> = wallet.storage().load("knowledge").unwrap_or_default();
 
@@ -218,6 +265,8 @@ impl SaidServer {
         &self,
         Parameters(params): Parameters<GetConversationContextParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::ReadConversations)?;
+
         let wallet = self.wallet.lock().unwrap();
         let entries: Vec<ConversationEntry> =
             wallet.storage().load("conversations").unwrap_or_default();
@@ -234,6 +283,8 @@ impl SaidServer {
         description = "List your other MCP server configurations"
     )]
     async fn list_mcp_configs(&self) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::ReadMcpConfigs)?;
+
         let wallet = self.wallet.lock().unwrap();
         let configs: Vec<McpConfig> = wallet.storage().load("mcp_configs").unwrap_or_default();
 
@@ -266,4 +317,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+/// Run the MCP server over HTTP with UCAN auth on the given port.
+pub async fn run_http(wallet: Wallet, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    http::run_http_server(wallet, port).await
 }

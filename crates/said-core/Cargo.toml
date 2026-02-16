@@ -20,6 +20,8 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 dirs = { workspace = true }
+base64 = { workspace = true }
+bs58 = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,9 +1,12 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
 use said_core::Wallet;
-use said_types::{KnowledgeDoc, McpConfig, Memory, Preference, SystemPrompt};
+use said_types::{
+    Capability, KnowledgeDoc, McpConfig, Memory, Preference, Provider, SystemPrompt,
+};
 
 #[derive(Parser)]
 #[command(name = "said", about = "Sovereign AI Identity — portable AI data wallet")]
@@ -38,8 +41,20 @@ enum Commands {
         #[command(subcommand)]
         what: ExportTarget,
     },
-    /// Start the MCP server (stdio transport)
-    Serve,
+    /// Manage provider access sessions
+    Provider {
+        #[command(subcommand)]
+        action: ProviderAction,
+    },
+    /// Start the MCP server
+    Serve {
+        /// Use HTTP transport instead of stdio
+        #[arg(long)]
+        http: bool,
+        /// Port for HTTP server (default: 3000)
+        #[arg(long, default_value = "3000")]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand)]
@@ -68,6 +83,76 @@ enum ExportTarget {
     Knowledge,
     /// Export MCP server configs as JSON
     McpConfigs,
+}
+
+#[derive(Subcommand)]
+enum ProviderAction {
+    /// Grant a provider access to your wallet
+    Grant {
+        /// Provider name: master, openai, anthropic, google, local
+        #[arg(long)]
+        provider: String,
+        /// Capabilities (comma-separated): read-prompts, read-preferences, read-memories,
+        /// write-memories, read-knowledge, read-conversations, read-mcp-configs, read-all, all
+        #[arg(long, value_delimiter = ',')]
+        capabilities: Vec<String>,
+        /// Expiry duration: e.g. 1h, 7d, 30d, 1y
+        #[arg(long, default_value = "30d")]
+        expires: String,
+        /// Human-readable label for this session
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Revoke a provider's access
+    Revoke {
+        /// Session ID (UUID) to revoke
+        #[arg(long)]
+        id: String,
+    },
+    /// List all provider sessions
+    List,
+}
+
+fn parse_provider(name: &str) -> Result<Provider, String> {
+    match name.to_lowercase().as_str() {
+        "master" => Ok(Provider::Master),
+        "openai" => Ok(Provider::OpenAI),
+        "anthropic" => Ok(Provider::Anthropic),
+        "google" => Ok(Provider::Google),
+        "local" => Ok(Provider::Local),
+        _ => Err(format!(
+            "unknown provider '{}': use master, openai, anthropic, google, or local",
+            name
+        )),
+    }
+}
+
+fn parse_capabilities(caps: &[String]) -> Result<Vec<Capability>, String> {
+    caps.iter()
+        .map(|s| {
+            Capability::from_cli_str(s.as_str())
+                .ok_or_else(|| format!("unknown capability '{}': use read-prompts, read-preferences, read-memories, write-memories, read-knowledge, read-conversations, read-mcp-configs, read-all, or all", s))
+        })
+        .collect()
+}
+
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    let s = s.trim();
+    if let Some(num) = s.strip_suffix('h') {
+        let n: u64 = num.parse().map_err(|_| format!("invalid duration: {}", s))?;
+        Ok(Duration::from_secs(n * 3600))
+    } else if let Some(num) = s.strip_suffix('d') {
+        let n: u64 = num.parse().map_err(|_| format!("invalid duration: {}", s))?;
+        Ok(Duration::from_secs(n * 86400))
+    } else if let Some(num) = s.strip_suffix('y') {
+        let n: u64 = num.parse().map_err(|_| format!("invalid duration: {}", s))?;
+        Ok(Duration::from_secs(n * 365 * 86400))
+    } else {
+        Err(format!(
+            "invalid duration '{}': use e.g. 1h, 7d, 30d, 1y",
+            s
+        ))
+    }
 }
 
 #[tokio::main]
@@ -131,6 +216,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             println!("Version:    {}", metadata.version);
             println!("Created:    {}", metadata.created_at);
             println!("Public Key: {}", &metadata.master_public_key[..16]);
+            println!("DID:        {}", wallet.master_did_key());
             println!();
 
             println!("Collections:");
@@ -142,6 +228,26 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     let items: Vec<serde_json::Value> =
                         wallet.storage().load(name).unwrap_or_default();
                     println!("  {}: {} items", name, items.len());
+                }
+            }
+
+            // Show active sessions
+            let sessions = wallet.list_sessions()?;
+            let active: Vec<_> = sessions.iter().filter(|s| !s.revoked).collect();
+            if !active.is_empty() {
+                println!();
+                println!("Active Sessions: {}", active.len());
+                for s in &active {
+                    let expired = s.expires_at < chrono::Utc::now();
+                    let status = if expired { "expired" } else { "active" };
+                    println!(
+                        "  {} | {:?} | {} | {} | {}",
+                        &s.id.to_string()[..8],
+                        s.provider,
+                        s.label,
+                        status,
+                        s.expires_at.format("%Y-%m-%d %H:%M UTC")
+                    );
                 }
             }
         }
@@ -217,8 +323,91 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", json);
         }
 
-        Commands::Serve => {
-            said_mcp::run().await?;
+        Commands::Provider { action } => {
+            let wallet = Wallet::load(&dir)?;
+
+            match action {
+                ProviderAction::Grant {
+                    provider,
+                    capabilities,
+                    expires,
+                    label,
+                } => {
+                    let provider = parse_provider(&provider)?;
+                    let capabilities = parse_capabilities(&capabilities)?;
+                    let expires_in = parse_duration(&expires)?;
+                    let label = label.unwrap_or_else(|| format!("{:?}", provider));
+
+                    let session =
+                        wallet.grant_provider(provider, &label, capabilities, expires_in)?;
+
+                    println!("Session granted!");
+                    println!();
+                    println!("  Session ID: {}", session.id);
+                    println!("  Provider:   {:?}", session.provider);
+                    println!("  Label:      {}", session.label);
+                    println!("  Expires:    {}", session.expires_at.format("%Y-%m-%d %H:%M UTC"));
+                    println!("  Capabilities:");
+                    for cap in &session.capabilities {
+                        println!("    - {:?}", cap);
+                    }
+                    println!();
+                    println!("Bearer token (use in Authorization header):");
+                    println!();
+                    println!("{}", session.token);
+                }
+
+                ProviderAction::Revoke { id } => {
+                    let uuid: uuid::Uuid = id
+                        .parse()
+                        .map_err(|e| format!("invalid session ID: {}", e))?;
+                    wallet.revoke_session(uuid)?;
+                    println!("Session {} revoked.", id);
+                }
+
+                ProviderAction::List => {
+                    let sessions = wallet.list_sessions()?;
+                    if sessions.is_empty() {
+                        println!("No provider sessions. Grant one with: said provider grant --provider <name> --capabilities <caps>");
+                        return Ok(());
+                    }
+
+                    println!(
+                        "{:<36} {:<12} {:<20} {:<10} {:<20}",
+                        "ID", "Provider", "Label", "Status", "Expires"
+                    );
+                    println!("{}", "-".repeat(98));
+
+                    for s in &sessions {
+                        let now = chrono::Utc::now();
+                        let status = if s.revoked {
+                            "revoked"
+                        } else if s.expires_at < now {
+                            "expired"
+                        } else {
+                            "active"
+                        };
+
+                        println!(
+                            "{:<36} {:<12} {:<20} {:<10} {:<20}",
+                            s.id,
+                            format!("{:?}", s.provider),
+                            s.label,
+                            status,
+                            s.expires_at.format("%Y-%m-%d %H:%M")
+                        );
+                    }
+                }
+            }
+        }
+
+        Commands::Serve { http, port } => {
+            if http {
+                let wallet = Wallet::load(&dir)?;
+                said_mcp::run_http(wallet, port).await?;
+            } else {
+                said_mcp::run().await?;
+            }
         }
     }
 

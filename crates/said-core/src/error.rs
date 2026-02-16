@@ -36,4 +36,19 @@ pub enum SaidError {
 
     #[error("not found: {0}")]
     NotFound(String),
+
+    #[error("ucan error: {0}")]
+    Ucan(String),
+
+    #[error("auth error: {0}")]
+    Auth(String),
+
+    #[error("session expired")]
+    SessionExpired,
+
+    #[error("session revoked")]
+    SessionRevoked,
+
+    #[error("insufficient capability: requires {0}")]
+    InsufficientCapability(String),
 }
