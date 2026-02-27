@@ -83,6 +83,10 @@ pub enum MessageType {
     // Phase 2B commands
     ExecuteFlow(FlowExecutePayload),
 
+    // Phase 2D — Notifications
+    ReadNotifications(ReadNotificationsPayload),
+    DismissNotification(DismissNotificationPayload),
+
     // Phase 2C
     ListConnectedDevices,
 
@@ -101,6 +105,9 @@ pub enum MessageType {
     // Phase 2B responses
     FlowProgress(FlowProgress),
     FlowResult(FlowResult),
+
+    // Phase 2D responses
+    NotificationsResult(NotificationsResult),
 
     // Phase 2C responses
     ConnectedDevicesResult(ConnectedDevicesResult),
@@ -444,4 +451,43 @@ pub struct ConnectedDevice {
     pub pubkey: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+}
+
+// -- Phase 2D payloads (Notifications) --
+
+/// Read recent notifications payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadNotificationsPayload {
+    /// Maximum number of notifications to return (default 20).
+    #[serde(default = "default_notification_limit")]
+    pub limit: u32,
+}
+
+fn default_notification_limit() -> u32 {
+    20
+}
+
+/// Dismiss a notification payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DismissNotificationPayload {
+    /// Notification key to dismiss.
+    pub key: String,
+}
+
+/// A single notification entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationEntry {
+    pub key: String,
+    pub package: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub timestamp: u64,
+}
+
+/// Result of reading notifications.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationsResult {
+    pub notifications: Vec<NotificationEntry>,
 }

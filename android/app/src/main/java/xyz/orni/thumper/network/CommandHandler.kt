@@ -71,6 +71,10 @@ class CommandHandler(private val service: ThumperAccessibilityService) {
                 // Phase 2B
                 "ExecuteFlow" -> handleExecuteFlow(message.getJSONObject("data"))
 
+                // Phase 2D — Notifications
+                "ReadNotifications" -> handleReadNotifications(message.optJSONObject("data"))
+                "DismissNotification" -> handleDismissNotification(message.getJSONObject("data"))
+
                 else -> makeError("unknown_command", "Unknown command type: $type")
             }
 
@@ -275,6 +279,48 @@ class CommandHandler(private val service: ThumperAccessibilityService) {
             put("type", "FlowResult")
             put("data", result)
         }
+    }
+
+    // ===== Phase 2D handlers (Notifications) =====
+
+    private fun handleReadNotifications(data: JSONObject?): JSONObject {
+        val limit = data?.optInt("limit", 20) ?: 20
+
+        val listener = xyz.orni.thumper.service.NotificationListener.instance
+            ?: return JSONObject().apply {
+                put("type", "NotificationsResult")
+                put("data", JSONObject().apply {
+                    put("notifications", org.json.JSONArray())
+                })
+            }
+
+        val notifications = listener.getRecentNotifications(limit)
+
+        return JSONObject().apply {
+            put("type", "NotificationsResult")
+            put("data", JSONObject().apply {
+                put("notifications", notifications)
+            })
+        }
+    }
+
+    private fun handleDismissNotification(data: JSONObject): JSONObject {
+        val key = data.getString("key")
+
+        val listener = xyz.orni.thumper.service.NotificationListener.instance
+            ?: return makeActionResultWithScreen(
+                xyz.orni.thumper.service.ActionResult(false, "notification listener not enabled"),
+                0
+            )
+
+        val success = listener.dismissNotification(key)
+        return makeActionResultWithScreen(
+            xyz.orni.thumper.service.ActionResult(
+                success,
+                if (success) "notification dismissed" else "failed to dismiss notification"
+            ),
+            0
+        )
     }
 
     // ===== Shared helpers =====

@@ -24,7 +24,7 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 
     let state = AppState::new(config);
 
-    // Spawn heartbeat + nonce cleanup task
+    // Spawn heartbeat + nonce cleanup + dead connection pruning task
     {
         let state = state.clone();
         tokio::spawn(async move {
@@ -32,6 +32,8 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
             loop {
                 interval.tick().await;
                 state.prune_nonces();
+                state.ping_all_and_prune_dead();
+                state.prune_stale_connections(90);
                 tracing::debug!(
                     devices = state.device_count(),
                     mcp_clients = state.mcp_client_count(),

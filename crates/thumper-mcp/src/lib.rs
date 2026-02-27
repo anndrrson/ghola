@@ -35,7 +35,10 @@ pub struct ThumperServer {
 pub struct DeviceStatusParams {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ReadScreenParams {}
+pub struct ReadScreenParams {
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TapParams {
@@ -51,6 +54,8 @@ pub struct TapParams {
     pub resource_id: Option<String>,
     /// Screen coordinates [x, y] as fallback.
     pub coordinates: Option<[i32; 2]>,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -65,16 +70,23 @@ pub struct TypeTextParams {
     pub field_desc_contains: Option<String>,
     /// Resource ID of the input field.
     pub field_resource_id: Option<String>,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LaunchAppParams {
     /// Android package name (e.g., "app.phantom").
     pub package: String,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct PressBackParams {}
+pub struct PressBackParams {
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SwipeParams {
@@ -84,6 +96,8 @@ pub struct SwipeParams {
     pub distance: Option<f64>,
     /// Swipe duration in milliseconds (default 300).
     pub duration_ms: Option<u64>,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -92,6 +106,8 @@ pub struct ScreenshotToolParams {
     pub scale: Option<f64>,
     /// JPEG quality (1-100). Default 50.
     pub quality: Option<u32>,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -110,6 +126,8 @@ pub struct LongPressParams {
     pub coordinates: Option<[i32; 2]>,
     /// Hold duration in milliseconds (default 500).
     pub duration_ms: Option<u64>,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -120,28 +138,43 @@ pub struct ScrollParams {
     pub container_text: Option<String>,
     /// Resource ID of the scrollable container (optional).
     pub container_resource_id: Option<String>,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GlobalActionParams {
     /// Action to perform: "home", "recents", "notifications", "quick_settings", "power_dialog".
     pub action: String,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ClipboardSetParams {
     /// Text to copy to the clipboard.
     pub text: String,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ClipboardGetParams {}
+pub struct ClipboardGetParams {
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct DeviceInfoParams {}
+pub struct DeviceInfoParams {
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ListAppsParams {}
+pub struct ListAppsParams {
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WaitForParams {
@@ -159,6 +192,8 @@ pub struct WaitForParams {
     pub timeout_ms: Option<u64>,
     /// Polling interval in milliseconds (default 500).
     pub poll_interval_ms: Option<u64>,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -167,10 +202,31 @@ pub struct ExecuteFlowParams {
     pub flow_name: String,
     /// Parameter values for the flow (key-value pairs).
     pub params: Option<std::collections::HashMap<String, String>>,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListFlowsParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListDevicesParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReadNotificationsParams {
+    /// Maximum number of notifications to return (default 20).
+    pub limit: Option<u32>,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DismissNotificationParams {
+    /// Notification key to dismiss (from device_read_notifications).
+    pub key: String,
+    /// Target device pubkey (optional — defaults to configured device).
+    pub device: Option<String>,
+}
 
 // -- Tool implementations --
 
@@ -186,7 +242,7 @@ impl ThumperServer {
         }
     }
 
-    // ===== Phase 1 tools (existing) =====
+    // ===== Phase 1 tools =====
 
     #[tool(
         name = "device_status",
@@ -215,10 +271,10 @@ impl ThumperServer {
     )]
     async fn device_read_screen(
         &self,
-        Parameters(_params): Parameters<ReadScreenParams>,
+        Parameters(params): Parameters<ReadScreenParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let envelope = Envelope::new(MessageType::ReadScreen)
-            .with_target(self.config.device_pubkey.clone());
+        let target = self.resolve_target(params.device.as_deref());
+        let envelope = Envelope::new(MessageType::ReadScreen).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
         self.handle_screen_response(response)
@@ -232,6 +288,7 @@ impl ThumperServer {
         &self,
         Parameters(params): Parameters<TapParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
         let selector = NodeSelector {
             text: params.text,
             text_contains: params.text_contains,
@@ -243,8 +300,7 @@ impl ThumperServer {
             coordinates: params.coordinates,
         };
 
-        let envelope = Envelope::new(MessageType::Tap(selector))
-            .with_target(self.config.device_pubkey.clone());
+        let envelope = Envelope::new(MessageType::Tap(selector)).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
         self.handle_action_response(response)
@@ -258,6 +314,7 @@ impl ThumperServer {
         &self,
         Parameters(params): Parameters<TypeTextParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
         let selector = NodeSelector {
             text: params.field_text,
             text_contains: None,
@@ -274,8 +331,7 @@ impl ThumperServer {
             text: params.text,
         };
 
-        let envelope = Envelope::new(MessageType::TypeText(payload))
-            .with_target(self.config.device_pubkey.clone());
+        let envelope = Envelope::new(MessageType::TypeText(payload)).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
         self.handle_action_response(response)
@@ -289,12 +345,12 @@ impl ThumperServer {
         &self,
         Parameters(params): Parameters<LaunchAppParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
         let payload = LaunchAppPayload {
             package: params.package,
         };
 
-        let envelope = Envelope::new(MessageType::LaunchApp(payload))
-            .with_target(self.config.device_pubkey.clone());
+        let envelope = Envelope::new(MessageType::LaunchApp(payload)).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
         self.handle_action_response(response)
@@ -306,10 +362,10 @@ impl ThumperServer {
     )]
     async fn device_press_back(
         &self,
-        Parameters(_params): Parameters<PressBackParams>,
+        Parameters(params): Parameters<PressBackParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let envelope = Envelope::new(MessageType::PressBack)
-            .with_target(self.config.device_pubkey.clone());
+        let target = self.resolve_target(params.device.as_deref());
+        let envelope = Envelope::new(MessageType::PressBack).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
         self.handle_action_response(response)
@@ -323,6 +379,7 @@ impl ThumperServer {
         &self,
         Parameters(params): Parameters<SwipeParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
         let distance = params.distance.unwrap_or(0.5).clamp(0.1, 0.9);
         let duration_ms = params.duration_ms.unwrap_or(300);
 
@@ -352,8 +409,7 @@ impl ThumperServer {
             duration_ms,
         };
 
-        let envelope = Envelope::new(MessageType::Swipe(payload))
-            .with_target(self.config.device_pubkey.clone());
+        let envelope = Envelope::new(MessageType::Swipe(payload)).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
         self.handle_action_response(response)
@@ -369,13 +425,14 @@ impl ThumperServer {
         &self,
         Parameters(params): Parameters<ScreenshotToolParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
         let screenshot_params = ScreenshotParams {
             scale: params.scale.unwrap_or(0.5).clamp(0.25, 1.0),
             quality: params.quality.unwrap_or(50).clamp(1, 100),
         };
 
-        let envelope = Envelope::new(MessageType::TakeScreenshot(screenshot_params))
-            .with_target(self.config.device_pubkey.clone());
+        let envelope =
+            Envelope::new(MessageType::TakeScreenshot(screenshot_params)).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
 
@@ -402,6 +459,7 @@ impl ThumperServer {
         &self,
         Parameters(params): Parameters<LongPressParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
         let selector = NodeSelector {
             text: params.text,
             text_contains: params.text_contains,
@@ -418,8 +476,7 @@ impl ThumperServer {
             duration_ms: params.duration_ms.unwrap_or(500),
         };
 
-        let envelope = Envelope::new(MessageType::LongPress(payload))
-            .with_target(self.config.device_pubkey.clone());
+        let envelope = Envelope::new(MessageType::LongPress(payload)).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
         self.handle_action_response(response)
@@ -433,6 +490,7 @@ impl ThumperServer {
         &self,
         Parameters(params): Parameters<ScrollParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
         let direction = match params.direction.to_lowercase().as_str() {
             "up" => ScrollDirection::Up,
             "down" => ScrollDirection::Down,
@@ -470,8 +528,7 @@ impl ThumperServer {
             direction,
         };
 
-        let envelope = Envelope::new(MessageType::Scroll(payload))
-            .with_target(self.config.device_pubkey.clone());
+        let envelope = Envelope::new(MessageType::Scroll(payload)).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
         self.handle_action_response(response)
@@ -485,6 +542,7 @@ impl ThumperServer {
         &self,
         Parameters(params): Parameters<GlobalActionParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
         let action = match params.action.to_lowercase().as_str() {
             "home" => GlobalAction::Home,
             "recents" => GlobalAction::Recents,
@@ -504,8 +562,7 @@ impl ThumperServer {
 
         let payload = GlobalActionPayload { action };
 
-        let envelope = Envelope::new(MessageType::GlobalAction(payload))
-            .with_target(self.config.device_pubkey.clone());
+        let envelope = Envelope::new(MessageType::GlobalAction(payload)).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
         self.handle_action_response(response)
@@ -519,10 +576,10 @@ impl ThumperServer {
         &self,
         Parameters(params): Parameters<ClipboardSetParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
         let payload = ClipboardSetPayload { text: params.text };
 
-        let envelope = Envelope::new(MessageType::SetClipboard(payload))
-            .with_target(self.config.device_pubkey.clone());
+        let envelope = Envelope::new(MessageType::SetClipboard(payload)).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
         self.handle_action_response(response)
@@ -534,10 +591,10 @@ impl ThumperServer {
     )]
     async fn device_clipboard_get(
         &self,
-        Parameters(_params): Parameters<ClipboardGetParams>,
+        Parameters(params): Parameters<ClipboardGetParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let envelope = Envelope::new(MessageType::GetClipboard)
-            .with_target(self.config.device_pubkey.clone());
+        let target = self.resolve_target(params.device.as_deref());
+        let envelope = Envelope::new(MessageType::GetClipboard).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
 
@@ -561,10 +618,10 @@ impl ThumperServer {
     )]
     async fn device_info(
         &self,
-        Parameters(_params): Parameters<DeviceInfoParams>,
+        Parameters(params): Parameters<DeviceInfoParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let envelope = Envelope::new(MessageType::GetDeviceInfo)
-            .with_target(self.config.device_pubkey.clone());
+        let target = self.resolve_target(params.device.as_deref());
+        let envelope = Envelope::new(MessageType::GetDeviceInfo).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
 
@@ -588,10 +645,10 @@ impl ThumperServer {
     )]
     async fn device_list_apps(
         &self,
-        Parameters(_params): Parameters<ListAppsParams>,
+        Parameters(params): Parameters<ListAppsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let envelope = Envelope::new(MessageType::ListInstalledApps)
-            .with_target(self.config.device_pubkey.clone());
+        let target = self.resolve_target(params.device.as_deref());
+        let envelope = Envelope::new(MessageType::ListInstalledApps).with_target(target);
 
         let response = self.send_and_wait(envelope).await?;
 
@@ -617,6 +674,7 @@ impl ThumperServer {
         &self,
         Parameters(params): Parameters<WaitForParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
         let selector = NodeSelector {
             text: params.text,
             text_contains: params.text_contains,
@@ -634,8 +692,7 @@ impl ThumperServer {
             poll_interval_ms: params.poll_interval_ms.unwrap_or(500),
         };
 
-        let envelope = Envelope::new(MessageType::WaitFor(payload))
-            .with_target(self.config.device_pubkey.clone());
+        let envelope = Envelope::new(MessageType::WaitFor(payload)).with_target(target);
 
         // Use a longer timeout for wait_for since the device-side timeout can be up to 30s
         let timeout = Duration::from_millis(
@@ -676,6 +733,7 @@ impl ThumperServer {
         &self,
         Parameters(params): Parameters<ExecuteFlowParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
         let flow = self
             .flow_registry
             .get(&params.flow_name)
@@ -706,8 +764,7 @@ impl ThumperServer {
             params: param_values,
         };
 
-        let envelope = Envelope::new(MessageType::ExecuteFlow(payload))
-            .with_target(self.config.device_pubkey.clone());
+        let envelope = Envelope::new(MessageType::ExecuteFlow(payload)).with_target(target);
 
         // Flow execution can take a while — use generous timeout
         let timeout = Duration::from_secs(120);
@@ -749,9 +806,97 @@ impl ThumperServer {
             serde_json::to_string_pretty(&flows).unwrap_or_default(),
         )]))
     }
+
+    // ===== Phase 2C tools =====
+
+    #[tool(
+        name = "device_list_devices",
+        description = "List all devices currently connected to the relay. Returns each device's pubkey and label (if available). Use the pubkey as the 'device' parameter on other tools to target a specific device."
+    )]
+    async fn device_list_devices(
+        &self,
+        Parameters(_params): Parameters<ListDevicesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let envelope = Envelope::new(MessageType::ListConnectedDevices);
+
+        let response = self.send_and_wait(envelope).await?;
+
+        match response.message {
+            MessageType::ConnectedDevicesResult(result) => {
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&result).unwrap_or_default(),
+                )]))
+            }
+            MessageType::Error(e) => Err(ErrorData::internal_error(
+                format!("relay error: {} - {}", e.code, e.message),
+                None,
+            )),
+            _ => Err(ErrorData::internal_error("unexpected response type", None)),
+        }
+    }
+
+    // ===== Phase 2D tools (Notifications) =====
+
+    #[tool(
+        name = "device_read_notifications",
+        description = "Read recent notifications from the device. Returns app package, title, text, and timestamp for each notification. Useful for checking if a transaction confirmation arrived, reading messages, or monitoring alerts."
+    )]
+    async fn device_read_notifications(
+        &self,
+        Parameters(params): Parameters<ReadNotificationsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
+        let payload = ReadNotificationsPayload {
+            limit: params.limit.unwrap_or(20),
+        };
+
+        let envelope =
+            Envelope::new(MessageType::ReadNotifications(payload)).with_target(target);
+
+        let response = self.send_and_wait(envelope).await?;
+
+        match response.message {
+            MessageType::NotificationsResult(result) => {
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&result).unwrap_or_default(),
+                )]))
+            }
+            MessageType::Error(e) => Err(ErrorData::internal_error(
+                format!("device error: {} - {}", e.code, e.message),
+                None,
+            )),
+            _ => Err(ErrorData::internal_error("unexpected response type", None)),
+        }
+    }
+
+    #[tool(
+        name = "device_dismiss_notification",
+        description = "Dismiss a notification by its key (obtained from device_read_notifications). Useful for clearing alerts after reading them."
+    )]
+    async fn device_dismiss_notification(
+        &self,
+        Parameters(params): Parameters<DismissNotificationParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let target = self.resolve_target(params.device.as_deref());
+        let payload = DismissNotificationPayload { key: params.key };
+
+        let envelope =
+            Envelope::new(MessageType::DismissNotification(payload)).with_target(target);
+
+        let response = self.send_and_wait(envelope).await?;
+        self.handle_action_response(response)
+    }
 }
 
 impl ThumperServer {
+    /// Resolve the target device pubkey: use the explicit param if given,
+    /// otherwise fall back to the configured default.
+    fn resolve_target(&self, device: Option<&str>) -> String {
+        device
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| self.config.device_pubkey.clone())
+    }
+
     async fn send_and_wait(&self, envelope: Envelope) -> Result<Envelope, ErrorData> {
         let conn = self.connection.lock().await;
         let conn = conn
@@ -806,6 +951,9 @@ impl ServerHandler for ThumperServer {
                  Use device_global_action for home/recents/notifications. \
                  Use device_wait_for to wait for UI changes after actions. \
                  Use device_execute_flow for scripted multi-step operations (zero AI cost). \
+                 Use device_read_notifications to check incoming notifications. \
+                 Use device_list_devices to see all connected devices. \
+                 All tools accept an optional 'device' parameter for multi-device targeting. \
                  Every action automatically returns the updated screen state."
                     .into(),
             ),

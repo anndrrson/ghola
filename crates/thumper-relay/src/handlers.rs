@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::IntoResponse;
@@ -34,6 +37,13 @@ pub async fn ws_upgrade(
 
 fn text_msg(s: String) -> Message {
     Message::Text(s.into())
+}
+
+fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Handle WebSocket connection lifecycle.
@@ -83,11 +93,12 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
 
     // Step 2: Register by role
     let device_pubkey_for_mcp: Option<String>;
+    let last_activity: Arc<AtomicU64>;
 
     match role {
         ConnectionRole::Device => {
             tracing::info!(pubkey = %auth_pubkey, "device connected");
-            state.add_device(&auth_pubkey, tx.clone());
+            last_activity = state.add_device(&auth_pubkey, tx.clone());
             device_pubkey_for_mcp = None;
         }
         ConnectionRole::McpClient => {
@@ -126,7 +137,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                 device_online = connected,
                 "mcp client connected"
             );
-            state.add_mcp_client(&auth_pubkey, tx.clone(), target.clone());
+            last_activity = state.add_mcp_client(&auth_pubkey, tx.clone(), target.clone());
             device_pubkey_for_mcp = Some(target);
         }
     }
@@ -149,9 +160,13 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
         let role_clone = role;
         let device_target = device_pubkey_for_mcp.clone();
         let tx_clone = tx.clone();
+        let last_activity = last_activity.clone();
 
         async move {
             while let Some(Ok(msg)) = ws_receiver.next().await {
+                // Update activity timestamp on any received message
+                last_activity.store(now_epoch_secs(), Ordering::Relaxed);
+
                 let text = match msg {
                     Message::Text(t) => t.to_string(),
                     Message::Close(_) => break,
@@ -159,6 +174,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                         let _ = tx_clone.send(Message::Pong(data));
                         continue;
                     }
+                    Message::Pong(_) => continue,
                     _ => continue,
                 };
 
@@ -217,6 +233,13 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                         }
                     }
                     ConnectionRole::Device => {
+                        // If the device sends a DeviceInfoResult, extract the label
+                        if let MessageType::DeviceInfoResult(ref info) = envelope.message {
+                            let label =
+                                format!("{} {} (Android {})", info.manufacturer, info.model, info.android_version);
+                            state.set_device_label(&auth_pubkey_clone, label);
+                        }
+
                         // Device → MCP client: forward response back
                         let data = serde_json::to_vec(&envelope).unwrap_or_default();
                         state.send_to_mcp_client_for_device(&auth_pubkey_clone, &data);
