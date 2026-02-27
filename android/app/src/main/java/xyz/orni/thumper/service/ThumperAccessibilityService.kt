@@ -10,6 +10,7 @@ import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import xyz.orni.thumper.network.DeviceKeyManager
 import xyz.orni.thumper.network.RelayConnection
 import xyz.orni.thumper.network.CommandHandler
 import java.io.ByteArrayOutputStream
@@ -72,7 +73,8 @@ class ThumperAccessibilityService : AccessibilityService() {
 
     fun connectToRelay(url: String) {
         relayConnection?.disconnect()
-        relayConnection = RelayConnection(url, commandHandler!!)
+        val keyManager = DeviceKeyManager(this)
+        relayConnection = RelayConnection(url, keyManager.getDevicePubkey(), commandHandler!!)
         relayConnection?.connect()
     }
 

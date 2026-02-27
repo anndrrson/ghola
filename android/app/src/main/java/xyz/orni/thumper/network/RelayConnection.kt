@@ -12,6 +12,7 @@ import java.util.concurrent.TimeUnit
  */
 class RelayConnection(
     private val relayUrl: String,
+    private val devicePubkey: String,
     private val commandHandler: CommandHandler
 ) {
 
@@ -82,10 +83,9 @@ class RelayConnection(
     }
 
     private fun sendAuth(webSocket: WebSocket) {
-        // TODO: Sign with actual Solana keypair from Seeker
         val auth = JSONObject().apply {
             put("message", JSONObject().apply {
-                put("pubkey", getDevicePubkey())
+                put("pubkey", devicePubkey)
                 put("timestamp", System.currentTimeMillis() / 1000)
                 put("nonce", UUID.randomUUID().toString())
                 put("role", "device")
@@ -136,13 +136,5 @@ class RelayConnection(
                 doConnect()
             }
         }.start()
-    }
-
-    /**
-     * Get the device's public key identifier.
-     * TODO: Read from Seeker's Solana keypair via SeedVault API.
-     */
-    private fun getDevicePubkey(): String {
-        return "device_pubkey_placeholder"
     }
 }
