@@ -246,7 +246,7 @@ impl ThumperServer {
 
     #[tool(
         name = "device_status",
-        description = "Check whether the device is connected and reachable via the relay"
+        description = "Check whether the device is connected and reachable via the relay. Returns the connection status, relay URL, and configured device pubkey. Call this first to verify connectivity before sending commands."
     )]
     async fn device_status(
         &self,
@@ -282,7 +282,7 @@ impl ThumperServer {
 
     #[tool(
         name = "device_tap",
-        description = "Tap a UI element on the device screen. Specify the element by text, description, resource ID, or screen coordinates. Automatically returns the updated screen state after the tap so you can see what changed."
+        description = "Tap a UI element on the device screen. Specify the element using one or more selectors:\n- text: exact visible text (e.g., \"Send\", \"OK\")\n- text_contains: partial text match (e.g., \"Confirm\" matches \"Confirm Transaction\")\n- desc: accessibility content description\n- resource_id: Android resource ID (e.g., \"com.app:id/btn_send\")\n- coordinates: [x, y] pixel position as fallback\nAutomatically returns the updated screen state after the tap. Use device_read_screen first to find the right selector."
     )]
     async fn device_tap(
         &self,
@@ -308,7 +308,7 @@ impl ThumperServer {
 
     #[tool(
         name = "device_type_text",
-        description = "Type text into an input field on the device screen. Specify the target field by its text, description, or resource ID. Automatically returns the updated screen state after typing."
+        description = "Type text into an input field on the device screen. Identify the target field using field_text, field_desc, field_desc_contains, or field_resource_id. The field must be editable (input field, search box, etc.). If multiple editable fields exist, be specific with your selector. Automatically returns the updated screen state after typing."
     )]
     async fn device_type_text(
         &self,
@@ -373,7 +373,7 @@ impl ThumperServer {
 
     #[tool(
         name = "device_swipe",
-        description = "Swipe on the device screen in a direction (up/down/left/right). Use 'up' to scroll down through content, 'down' to scroll up. Useful for scrolling lists, navigating between pages, or pulling to refresh. Automatically returns the updated screen state."
+        description = "Swipe on the device screen in a direction (up/down/left/right). Use 'up' to scroll down through content, 'down' to scroll up (finger drag direction). The 'distance' parameter (0.0-1.0, default 0.5) controls swipe length as a fraction of screen size. Common uses: scrolling lists, navigating between pages, pull-to-refresh ('down'), dismissing bottom sheets ('down'). For scrolling scrollable containers, prefer device_scroll which uses accessibility APIs and is more reliable."
     )]
     async fn device_swipe(
         &self,
@@ -419,7 +419,7 @@ impl ThumperServer {
 
     #[tool(
         name = "device_screenshot",
-        description = "Take a screenshot of the device screen and return it as a JPEG image. Use this when the accessibility tree doesn't provide enough visual context (icons, images, graphs, layouts). More expensive than read_screen but gives full visual information."
+        description = "Take a screenshot of the device screen and return it as a JPEG image. Use this when the accessibility tree (device_read_screen) doesn't provide enough context — e.g., for visual elements like icons, images, charts, maps, or complex layouts. The 'scale' parameter (0.25-1.0, default 0.5) and 'quality' (1-100, default 50) control file size. Lower values = faster transfer. Typical screenshot is 15-50KB. More expensive than read_screen but gives full visual context."
     )]
     async fn device_screenshot(
         &self,
@@ -453,7 +453,7 @@ impl ThumperServer {
 
     #[tool(
         name = "device_long_press",
-        description = "Long press a UI element to trigger context menus or drag operations. Specify the element by text, description, resource ID, or coordinates. Default hold duration is 500ms. Automatically returns the updated screen state."
+        description = "Long press a UI element to trigger context menus, drag operations, or selection mode. Specify the element using the same selectors as device_tap (text, desc, resource_id, coordinates). The 'duration_ms' parameter controls hold time (default 500ms, increase to 1000-2000ms for drag operations). Automatically returns the updated screen state."
     )]
     async fn device_long_press(
         &self,
@@ -668,7 +668,7 @@ impl ThumperServer {
 
     #[tool(
         name = "device_wait_for",
-        description = "Wait for a UI element matching the selector to appear on screen. Polls the accessibility tree at regular intervals until the element is found or timeout is reached. Returns the final screen state and whether the element was found. Use this after actions that trigger loading or transitions (e.g., after tapping 'Send', wait for 'Confirmed')."
+        description = "Wait for a UI element matching the selector to appear on screen. Polls the accessibility tree at regular intervals until the element is found or timeout is reached. Returns {found: bool, elapsed_ms, screen}. Use this after actions that trigger loading or async transitions — e.g., after tapping 'Send', wait for text_contains='Confirmed'. Parameters: timeout_ms (default 10000), poll_interval_ms (default 500). Selectors: same as device_tap (text, text_contains, desc, resource_id)."
     )]
     async fn device_wait_for(
         &self,
@@ -727,7 +727,7 @@ impl ThumperServer {
 
     #[tool(
         name = "device_execute_flow",
-        description = "Execute a pre-defined multi-step flow on the device. Flows are scripted sequences of actions (tap, type, wait, etc.) that run entirely on-device with zero AI cost per step. Use device_list_flows to see available flows and their required parameters. Example: device_execute_flow(flow_name='send_token', params={recipient: 'alice.sol', amount: '1'})"
+        description = "Execute a pre-defined multi-step flow on the device. Flows are scripted sequences of actions (tap, type, wait, etc.) that run entirely on-device with zero AI cost per step. Use device_list_flows to see available flows and their parameters.\n\nBuilt-in flows:\n- send_token: Send SPL tokens via Phantom (params: recipient, amount, token)\n- swap_token: Swap tokens via Phantom (params: from_token, to_token, amount)\n- check_balance: Read Phantom wallet balances (no params)\n\nReturns {success, steps_completed, total_steps, final_screen, error, failed_step}. On failure, failed_step indicates which step (0-based) failed."
     )]
     async fn device_execute_flow(
         &self,
@@ -795,7 +795,7 @@ impl ThumperServer {
 
     #[tool(
         name = "device_list_flows",
-        description = "List all available flow definitions with their names, descriptions, and required parameters. Flows are pre-scripted multi-step operations that execute on-device with zero AI cost per step."
+        description = "List all available flow definitions with their names, descriptions, parameters, and step counts. Includes built-in flows (send_token, swap_token, check_balance) and any user-defined flows from ~/.thumper/flows/*.yaml. Each flow entry shows required/optional parameters and their descriptions."
     )]
     async fn device_list_flows(
         &self,
@@ -839,7 +839,7 @@ impl ThumperServer {
 
     #[tool(
         name = "device_read_notifications",
-        description = "Read recent notifications from the device. Returns app package, title, text, and timestamp for each notification. Useful for checking if a transaction confirmation arrived, reading messages, or monitoring alerts."
+        description = "Read recent notifications from the device. Returns [{key, package, title, text, timestamp}] for each notification. The 'limit' parameter controls how many to return (default 20, max 50). Use the 'key' field with device_dismiss_notification to clear specific notifications. Common uses: checking transaction confirmations, reading incoming messages, monitoring app alerts."
     )]
     async fn device_read_notifications(
         &self,

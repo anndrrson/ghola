@@ -27,15 +27,15 @@ steps:
     action:
       type: Tap
       data:
-        desc_contains: "Send"
+        selector:
+          desc_contains: "Send"
     wait_for:
       selector:
         text_contains: "recipient"
       timeout_ms: 3000
-    on_failure:
-      retry:
-        max_attempts: 2
-        delay_ms: 1000
+    on_failure: !retry
+      max_attempts: 2
+      delay_ms: 1000
 
   - label: "Enter recipient address"
     action:
@@ -57,11 +57,11 @@ steps:
     action:
       type: Tap
       data:
-        text_contains: "{{recipient}}"
-    on_failure:
-      retry:
-        max_attempts: 2
-        delay_ms: 1000
+        selector:
+          text_contains: "{{recipient}}"
+    on_failure: !retry
+      max_attempts: 2
+      delay_ms: 1000
 
   - label: "Select token if not SOL"
     action:
@@ -73,7 +73,7 @@ steps:
       type: TypeText
       data:
         selector:
-          editable: true
+          desc_contains: "amount"
         value: "{{amount}}"
     on_failure: abort
 
@@ -81,7 +81,8 @@ steps:
     action:
       type: Tap
       data:
-        text_contains: "Send"
+        selector:
+          text_contains: "Send"
     wait_for:
       selector:
         text_contains: "Confirm"

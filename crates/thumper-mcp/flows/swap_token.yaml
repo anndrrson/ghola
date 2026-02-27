@@ -26,15 +26,15 @@ steps:
     action:
       type: Tap
       data:
-        desc_contains: "Swap"
+        selector:
+          desc_contains: "Swap"
     wait_for:
       selector:
         text_contains: "swap"
       timeout_ms: 3000
-    on_failure:
-      retry:
-        max_attempts: 2
-        delay_ms: 1000
+    on_failure: !retry
+      max_attempts: 2
+      delay_ms: 1000
 
   - label: "Read swap screen"
     action:
@@ -46,7 +46,7 @@ steps:
       type: TypeText
       data:
         selector:
-          editable: true
+          desc_contains: "amount"
         value: "{{amount}}"
     on_failure: abort
 
@@ -65,7 +65,8 @@ steps:
     action:
       type: Tap
       data:
-        text_contains: "Review"
+        selector:
+          text_contains: "Review"
     wait_for:
       selector:
         text_contains: "Confirm"

@@ -121,8 +121,8 @@ pub fn verify_auth(
     Ok(payload.message.pubkey.clone())
 }
 
-/// Minimal base58 decoding (Bitcoin/Solana alphabet).
-fn bs58_decode(input: &str) -> Result<Vec<u8>, ()> {
+/// Minimal base58 decoding (Bitcoin/Solana alphabet). Exported for testing.
+pub(crate) fn bs58_decode(input: &str) -> Result<Vec<u8>, ()> {
     const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
     let mut result: Vec<u8> = Vec::new();

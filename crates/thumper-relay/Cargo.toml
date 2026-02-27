@@ -28,3 +28,6 @@ base64 = { workspace = true }
 ed25519-dalek = { workspace = true }
 uuid = { workspace = true }
 dashmap = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

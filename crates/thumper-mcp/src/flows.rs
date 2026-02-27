@@ -111,3 +111,81 @@ fn built_in_flows() -> Vec<(&'static str, &'static str)> {
         ("check_balance", include_str!("../flows/check_balance.yaml")),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn built_in_flows_parse_successfully() {
+        for (name, yaml) in built_in_flows() {
+            let result = serde_yaml::from_str::<thumper_types::flow::FlowDefinition>(yaml);
+            assert!(
+                result.is_ok(),
+                "failed to parse built-in flow '{}': {:?}",
+                name,
+                result.err()
+            );
+            let flow = result.unwrap();
+            assert_eq!(flow.name, name);
+            assert!(!flow.steps.is_empty(), "flow '{}' has no steps", name);
+        }
+    }
+
+    #[test]
+    fn flow_registry_loads_all_built_in() {
+        let registry = FlowRegistry::load();
+        assert!(registry.get("send_token").is_some());
+        assert!(registry.get("swap_token").is_some());
+        assert!(registry.get("check_balance").is_some());
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn flow_registry_list_returns_all() {
+        let registry = FlowRegistry::load();
+        let list = registry.list();
+        assert!(list.len() >= 3);
+
+        let names: Vec<&str> = list.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"send_token"));
+        assert!(names.contains(&"swap_token"));
+        assert!(names.contains(&"check_balance"));
+    }
+
+    #[test]
+    fn send_token_flow_has_required_params() {
+        let registry = FlowRegistry::load();
+        let flow = registry.get("send_token").unwrap();
+        assert_eq!(flow.params.len(), 3); // recipient, amount, token
+
+        let recipient = flow.params.iter().find(|p| p.name == "recipient").unwrap();
+        assert!(recipient.required);
+        assert!(recipient.default.is_none());
+
+        let amount = flow.params.iter().find(|p| p.name == "amount").unwrap();
+        assert!(amount.required);
+
+        let token = flow.params.iter().find(|p| p.name == "token").unwrap();
+        assert!(!token.required);
+        assert_eq!(token.default.as_deref(), Some("SOL"));
+    }
+
+    #[test]
+    fn check_balance_flow_has_no_params() {
+        let registry = FlowRegistry::load();
+        let flow = registry.get("check_balance").unwrap();
+        assert!(flow.params.is_empty());
+        assert_eq!(flow.steps.len(), 3);
+    }
+
+    #[test]
+    fn flow_summary_includes_step_count() {
+        let registry = FlowRegistry::load();
+        let list = registry.list();
+        for summary in &list {
+            assert!(summary.step_count > 0);
+            assert!(!summary.description.is_empty());
+        }
+    }
+}

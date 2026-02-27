@@ -4,6 +4,9 @@ pub mod error;
 pub mod handlers;
 pub mod state;
 
+#[cfg(test)]
+mod tests;
+
 use axum::routing::get;
 use axum::Router;
 use tower_http::cors::CorsLayer;

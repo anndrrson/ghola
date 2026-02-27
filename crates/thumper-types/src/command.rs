@@ -435,6 +435,12 @@ pub struct FlowResult {
     pub final_screen: Option<ScreenState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Index of the step that failed (0-based), for error debugging.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_step: Option<u32>,
+    /// Base64-encoded JPEG screenshot captured at the point of failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_screenshot: Option<String>,
 }
 
 // -- Phase 2C payloads --
