@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Thumper</string>
+    <string name="accessibility_service_description">Thumper device agent — allows remote screen reading and UI interaction via the relay server.</string>
+</resources>

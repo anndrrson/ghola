@@ -1,0 +1,89 @@
+name: send_token
+description: "Send SPL tokens via Phantom wallet. Opens Phantom, navigates to send flow, enters recipient and amount, and confirms the transaction."
+params:
+  - name: recipient
+    description: "Recipient wallet address or .sol domain"
+    required: true
+  - name: amount
+    description: "Amount of tokens to send"
+    required: true
+  - name: token
+    description: "Token symbol (e.g., SOL, USDC). Defaults to SOL."
+    required: false
+    default: "SOL"
+steps:
+  - label: "Launch Phantom"
+    action:
+      type: LaunchApp
+      data:
+        package: "app.phantom"
+    wait_for:
+      selector:
+        text_contains: "Phantom"
+      timeout_ms: 5000
+    on_failure: abort
+
+  - label: "Tap Send button"
+    action:
+      type: Tap
+      data:
+        desc_contains: "Send"
+    wait_for:
+      selector:
+        text_contains: "recipient"
+      timeout_ms: 3000
+    on_failure:
+      retry:
+        max_attempts: 2
+        delay_ms: 1000
+
+  - label: "Enter recipient address"
+    action:
+      type: TypeText
+      data:
+        selector:
+          desc_contains: "recipient"
+        value: "{{recipient}}"
+    timeout_ms: 3000
+    on_failure: abort
+
+  - label: "Select recipient from results"
+    action:
+      type: Delay
+      data:
+        ms: 1500
+
+  - label: "Tap first result or Next"
+    action:
+      type: Tap
+      data:
+        text_contains: "{{recipient}}"
+    on_failure:
+      retry:
+        max_attempts: 2
+        delay_ms: 1000
+
+  - label: "Select token if not SOL"
+    action:
+      type: ReadScreen
+    timeout_ms: 2000
+
+  - label: "Enter amount"
+    action:
+      type: TypeText
+      data:
+        selector:
+          editable: true
+        value: "{{amount}}"
+    on_failure: abort
+
+  - label: "Confirm send"
+    action:
+      type: Tap
+      data:
+        text_contains: "Send"
+    wait_for:
+      selector:
+        text_contains: "Confirm"
+      timeout_ms: 5000
+    on_failure: abort

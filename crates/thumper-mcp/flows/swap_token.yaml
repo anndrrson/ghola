@@ -1,0 +1,73 @@
+name: swap_token
+description: "Swap tokens via Phantom wallet's built-in swap feature. Opens Phantom, navigates to swap, selects tokens, enters amount, and confirms."
+params:
+  - name: from_token
+    description: "Token to swap from (e.g., SOL)"
+    required: true
+  - name: to_token
+    description: "Token to swap to (e.g., USDC)"
+    required: true
+  - name: amount
+    description: "Amount of from_token to swap"
+    required: true
+steps:
+  - label: "Launch Phantom"
+    action:
+      type: LaunchApp
+      data:
+        package: "app.phantom"
+    wait_for:
+      selector:
+        text_contains: "Phantom"
+      timeout_ms: 5000
+    on_failure: abort
+
+  - label: "Tap Swap button"
+    action:
+      type: Tap
+      data:
+        desc_contains: "Swap"
+    wait_for:
+      selector:
+        text_contains: "swap"
+      timeout_ms: 3000
+    on_failure:
+      retry:
+        max_attempts: 2
+        delay_ms: 1000
+
+  - label: "Read swap screen"
+    action:
+      type: ReadScreen
+    timeout_ms: 2000
+
+  - label: "Enter swap amount"
+    action:
+      type: TypeText
+      data:
+        selector:
+          editable: true
+        value: "{{amount}}"
+    on_failure: abort
+
+  - label: "Wait for quote"
+    action:
+      type: Delay
+      data:
+        ms: 2000
+
+  - label: "Read quote details"
+    action:
+      type: ReadScreen
+    timeout_ms: 2000
+
+  - label: "Confirm swap"
+    action:
+      type: Tap
+      data:
+        text_contains: "Review"
+    wait_for:
+      selector:
+        text_contains: "Confirm"
+      timeout_ms: 5000
+    on_failure: abort
