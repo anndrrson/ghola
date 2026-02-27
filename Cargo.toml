@@ -3,6 +3,7 @@ members = [
     "crates/thumper-types",
     "crates/thumper-relay",
     "crates/thumper-mcp",
+    "crates/thumper-cli",
 ]
 resolver = "2"
 
@@ -32,3 +33,7 @@ tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 toml = "0.8"
 dirs = "6"
 serde_yaml = "0.9"
+clap = { version = "4", features = ["derive"] }
+qrcode = "0.14"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rand = "0.8"
