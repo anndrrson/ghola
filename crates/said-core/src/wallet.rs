@@ -6,7 +6,9 @@ use zeroize::Zeroize;
 
 use said_types::{KeyType, Provider, WalletMetadata, SAID_PURPOSE};
 
-use crate::encrypt::derive_key;
+use crate::encrypt::{
+    decrypt_seed_with_password, derive_key, encrypt_seed_with_password, is_seed_encrypted,
+};
 use crate::error::{Result, SaidError};
 use crate::storage::Storage;
 
@@ -23,12 +25,15 @@ pub struct Wallet {
     master_xprv: XPrv,
     wallet_dir: PathBuf,
     storage: Storage,
+    /// Whether the seed file is encrypted with a password.
+    seed_encrypted: bool,
 }
 
 impl Wallet {
     /// Initialize a new wallet, generating a fresh mnemonic.
+    /// If `password` is provided, the seed file is encrypted with Argon2id + AES-256-GCM.
     /// Returns the wallet and the mnemonic phrase (for backup).
-    pub fn init(wallet_dir: &PathBuf) -> Result<(Self, String)> {
+    pub fn init(wallet_dir: &PathBuf, password: Option<&str>) -> Result<(Self, String)> {
         if wallet_dir.join("wallet.json").exists() {
             return Err(SaidError::WalletExists(wallet_dir.display().to_string()));
         }
@@ -38,28 +43,45 @@ impl Wallet {
         let phrase = mnemonic.to_string();
         let seed = mnemonic.to_seed("");
 
-        let wallet = Self::from_seed(seed, wallet_dir.clone())?;
-        wallet.persist_wallet_files()?;
+        let encrypted = password.is_some();
+        let mut wallet = Self::from_seed(seed, wallet_dir.clone())?;
+        wallet.seed_encrypted = encrypted;
+        wallet.persist_wallet_files(password)?;
 
         Ok((wallet, phrase))
     }
 
     /// Load an existing wallet from disk.
-    pub fn load(wallet_dir: &PathBuf) -> Result<Self> {
+    /// If the seed is encrypted and no password is provided, returns `PasswordRequired`.
+    pub fn load(wallet_dir: &PathBuf, password: Option<&str>) -> Result<Self> {
         if !wallet_dir.join("seed").exists() {
             return Err(SaidError::WalletNotFound(wallet_dir.display().to_string()));
         }
 
         let seed_bytes = std::fs::read(wallet_dir.join("seed"))?;
-        let seed: [u8; 64] = seed_bytes
-            .try_into()
-            .map_err(|_| SaidError::Storage("invalid seed file (expected 64 bytes)".into()))?;
 
-        Self::from_seed(seed, wallet_dir.clone())
+        if is_seed_encrypted(&seed_bytes) {
+            let pw = password.ok_or(SaidError::PasswordRequired)?;
+            let mut decrypted = decrypt_seed_with_password(&seed_bytes, pw)?;
+            let seed: [u8; 64] = decrypted
+                .as_slice()
+                .try_into()
+                .map_err(|_| SaidError::Storage("invalid decrypted seed (expected 64 bytes)".into()))?;
+            decrypted.zeroize();
+            let mut wallet = Self::from_seed(seed, wallet_dir.clone())?;
+            wallet.seed_encrypted = true;
+            Ok(wallet)
+        } else {
+            let seed: [u8; 64] = seed_bytes
+                .try_into()
+                .map_err(|_| SaidError::Storage("invalid seed file (expected 64 bytes)".into()))?;
+            Self::from_seed(seed, wallet_dir.clone())
+        }
     }
 
     /// Recover a wallet from a mnemonic phrase.
-    pub fn recover(phrase: &str, wallet_dir: &PathBuf) -> Result<Self> {
+    /// If `password` is provided, the seed file is encrypted.
+    pub fn recover(phrase: &str, wallet_dir: &PathBuf, password: Option<&str>) -> Result<Self> {
         if wallet_dir.join("wallet.json").exists() {
             return Err(SaidError::WalletExists(wallet_dir.display().to_string()));
         }
@@ -69,8 +91,10 @@ impl Wallet {
             .map_err(|e: bip39::Error| SaidError::InvalidMnemonic(e.to_string()))?;
         let seed = mnemonic.to_seed("");
 
-        let wallet = Self::from_seed(seed, wallet_dir.clone())?;
-        wallet.persist_wallet_files()?;
+        let encrypted = password.is_some();
+        let mut wallet = Self::from_seed(seed, wallet_dir.clone())?;
+        wallet.seed_encrypted = encrypted;
+        wallet.persist_wallet_files(password)?;
 
         Ok(wallet)
     }
@@ -91,15 +115,21 @@ impl Wallet {
             master_xprv,
             wallet_dir,
             storage,
+            seed_encrypted: false,
         })
     }
 
-    fn persist_wallet_files(&self) -> Result<()> {
+    fn persist_wallet_files(&self, password: Option<&str>) -> Result<()> {
         std::fs::create_dir_all(&self.wallet_dir)?;
 
-        // Save seed (chmod 600)
+        // Save seed (optionally encrypted, chmod 600)
         let seed_path = self.wallet_dir.join("seed");
-        std::fs::write(&seed_path, &self.seed)?;
+        let seed_data = if let Some(pw) = password {
+            encrypt_seed_with_password(&self.seed, pw)?
+        } else {
+            self.seed.to_vec()
+        };
+        std::fs::write(&seed_path, &seed_data)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -113,6 +143,7 @@ impl Wallet {
             version: 1,
             created_at: chrono::Utc::now(),
             master_public_key: to_hex(&pub_key_bytes[..32]),
+            seed_encrypted: self.seed_encrypted,
         };
         let metadata_json = serde_json::to_string_pretty(&metadata)?;
         std::fs::write(self.wallet_dir.join("wallet.json"), metadata_json)?;
@@ -199,7 +230,7 @@ mod tests {
     fn init_creates_wallet() {
         let dir = TempDir::new().unwrap();
         let wallet_dir = dir.path().join(".said");
-        let (wallet, phrase) = Wallet::init(&wallet_dir).unwrap();
+        let (wallet, phrase) = Wallet::init(&wallet_dir, None).unwrap();
 
         assert!(wallet_dir.join("seed").exists());
         assert!(wallet_dir.join("wallet.json").exists());
@@ -218,8 +249,8 @@ mod tests {
     fn load_roundtrip() {
         let dir = TempDir::new().unwrap();
         let wallet_dir = dir.path().join(".said");
-        let (_wallet, _phrase) = Wallet::init(&wallet_dir).unwrap();
-        let loaded = Wallet::load(&wallet_dir);
+        let (_wallet, _phrase) = Wallet::init(&wallet_dir, None).unwrap();
+        let loaded = Wallet::load(&wallet_dir, None);
         assert!(loaded.is_ok());
     }
 
@@ -227,12 +258,12 @@ mod tests {
     fn recover_from_phrase() {
         let dir = TempDir::new().unwrap();
         let wallet_dir = dir.path().join(".said");
-        let (_wallet, phrase) = Wallet::init(&wallet_dir).unwrap();
+        let (_wallet, phrase) = Wallet::init(&wallet_dir, None).unwrap();
 
         // Recover to a different directory
         let dir2 = TempDir::new().unwrap();
         let wallet_dir2 = dir2.path().join(".said");
-        let recovered = Wallet::recover(&phrase, &wallet_dir2).unwrap();
+        let recovered = Wallet::recover(&phrase, &wallet_dir2, None).unwrap();
 
         assert!(wallet_dir2.join("seed").exists());
         assert!(wallet_dir2.join("wallet.json").exists());
@@ -247,16 +278,43 @@ mod tests {
     fn init_existing_fails() {
         let dir = TempDir::new().unwrap();
         let wallet_dir = dir.path().join(".said");
-        Wallet::init(&wallet_dir).unwrap();
-        let result = Wallet::init(&wallet_dir);
+        Wallet::init(&wallet_dir, None).unwrap();
+        let result = Wallet::init(&wallet_dir, None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn init_with_password() {
+        let dir = TempDir::new().unwrap();
+        let wallet_dir = dir.path().join(".said");
+        let (_wallet, _phrase) = Wallet::init(&wallet_dir, Some("testpass")).unwrap();
+
+        // Seed file should start with SAID magic
+        let seed_bytes = std::fs::read(wallet_dir.join("seed")).unwrap();
+        assert_eq!(&seed_bytes[..4], b"SAID");
+
+        // Load without password should fail with PasswordRequired
+        let result = Wallet::load(&wallet_dir, None);
+        assert!(matches!(result, Err(SaidError::PasswordRequired)));
+
+        // Load with correct password should succeed
+        let loaded = Wallet::load(&wallet_dir, Some("testpass"));
+        assert!(loaded.is_ok());
+
+        // Load with wrong password should fail
+        let result = Wallet::load(&wallet_dir, Some("wrongpass"));
+        assert!(result.is_err());
+
+        // Metadata should indicate encryption
+        let meta = Wallet::load_metadata(&wallet_dir).unwrap();
+        assert!(meta.seed_encrypted);
     }
 
     #[test]
     fn derive_provider_keys_are_distinct() {
         let dir = TempDir::new().unwrap();
         let wallet_dir = dir.path().join(".said");
-        let (wallet, _) = Wallet::init(&wallet_dir).unwrap();
+        let (wallet, _) = Wallet::init(&wallet_dir, None).unwrap();
 
         let openai_key = wallet.derive_provider_key(Provider::OpenAI, KeyType::Signing, 0);
         let anthropic_key =
@@ -271,7 +329,7 @@ mod tests {
     fn solana_keypair_derivation() {
         let dir = TempDir::new().unwrap();
         let wallet_dir = dir.path().join(".said");
-        let (wallet, phrase) = Wallet::init(&wallet_dir).unwrap();
+        let (wallet, phrase) = Wallet::init(&wallet_dir, None).unwrap();
 
         let kp1 = wallet.solana_keypair_bytes();
         assert_eq!(kp1.len(), 64);
@@ -281,7 +339,7 @@ mod tests {
         // Deterministic: same phrase produces same keys
         let dir2 = TempDir::new().unwrap();
         let wallet_dir2 = dir2.path().join(".said");
-        let recovered = Wallet::recover(&phrase, &wallet_dir2).unwrap();
+        let recovered = Wallet::recover(&phrase, &wallet_dir2, None).unwrap();
         assert_eq!(kp1, recovered.solana_keypair_bytes());
     }
 
@@ -289,11 +347,11 @@ mod tests {
     fn derive_keys_deterministic() {
         let dir = TempDir::new().unwrap();
         let wallet_dir = dir.path().join(".said");
-        let (_wallet, phrase) = Wallet::init(&wallet_dir).unwrap();
+        let (_wallet, phrase) = Wallet::init(&wallet_dir, None).unwrap();
 
         let dir2 = TempDir::new().unwrap();
         let wallet_dir2 = dir2.path().join(".said");
-        let recovered = Wallet::recover(&phrase, &wallet_dir2).unwrap();
+        let recovered = Wallet::recover(&phrase, &wallet_dir2, None).unwrap();
 
         let key1 = _wallet
             .derive_provider_key(Provider::OpenAI, KeyType::Encryption, 0)

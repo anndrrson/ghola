@@ -477,7 +477,7 @@ export default function ServicesPage() {
                   {a === "api_key"
                     ? "API Key"
                     : a === "ucan"
-                    ? "UCAN"
+                    ? "Delegated"
                     : a === "oauth2"
                     ? "OAuth2"
                     : "None"}
@@ -785,7 +785,7 @@ export default function ServicesPage() {
                             {ep.auth_type === "api_key"
                               ? "API Key"
                               : ep.auth_type === "ucan"
-                              ? "UCAN"
+                              ? "Delegated"
                               : ep.auth_type === "oauth2"
                               ? "OAuth2"
                               : "None"}

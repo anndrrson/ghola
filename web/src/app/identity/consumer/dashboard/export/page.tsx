@@ -57,8 +57,8 @@ export default function ConsumerExportPage() {
       <div>
         <h1 className="text-2xl font-bold text-[#eef1f8]">Export Identity</h1>
         <p className="mt-1 text-[#8b95a8]">
-          Back up your wallet, export your recovery phrase, or go fully
-          self-custody.
+          Back up your vault, export your recovery phrase, or run fully
+          local.
         </p>
       </div>
 
@@ -70,17 +70,17 @@ export default function ConsumerExportPage() {
           </div>
           <div>
             <h2 className="text-lg font-semibold text-[#eef1f8]">
-              Download Encrypted Wallet
+              Download Encrypted Backup
             </h2>
             <p className="text-sm text-[#8b95a8]">
-              Your wallet is encrypted with your password and stored securely.
+              Your vault is encrypted with your password and stored securely.
             </p>
           </div>
         </div>
 
         <p className="text-xs text-[#4a5568] mb-4">
-          This backup file contains your encrypted wallet. You will need your
-          account password to decrypt it. Store it somewhere safe as a backup.
+          This backup file contains your encrypted vault. You will need your
+          account password to decrypt it. Store it somewhere safe.
         </p>
 
         {downloadError && (
@@ -196,20 +196,20 @@ export default function ConsumerExportPage() {
           </div>
           <div>
             <h2 className="text-lg font-semibold text-[#eef1f8]">
-              Go Self-Custody
+              Go Local
             </h2>
             <p className="text-sm text-[#8b95a8]">
               Export your identity to use with the Ghola CLI for full
-              self-custody.
+              local control.
             </p>
           </div>
         </div>
 
         <div className="space-y-4">
           <p className="text-sm text-[#8b95a8]">
-            The Ghola CLI lets you run your own identity daemon, manage UCAN
-            tokens, and connect to AI services without relying on this web
-            dashboard. Your keys never leave your machine.
+            The Ghola CLI lets you run your own identity server and connect
+            to AI services without relying on this web dashboard. Your keys
+            never leave your machine.
           </p>
 
           <div className="rounded-lg border border-[#1e2a3a] bg-[#161822] p-4 space-y-3">
@@ -218,13 +218,13 @@ export default function ConsumerExportPage() {
             </p>
             <div className="space-y-2">
               <div className="rounded-lg bg-[#0f1117] px-4 py-2.5 font-mono text-sm text-[#8b95a8]">
-                cargo install said-cli
+                cargo install said
               </div>
               <div className="rounded-lg bg-[#0f1117] px-4 py-2.5 font-mono text-sm text-[#8b95a8]">
                 said recover
               </div>
               <p className="text-xs text-[#4a5568]">
-                Use your recovery phrase or import your encrypted wallet backup
+                Use your recovery phrase or import your encrypted backup
                 to initialize the CLI.
               </p>
               <div className="rounded-lg bg-[#0f1117] px-4 py-2.5 font-mono text-sm text-[#8b95a8]">

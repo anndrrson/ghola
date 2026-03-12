@@ -28,6 +28,8 @@ struct AuthState {
     /// The verified capabilities are stored here by the middleware
     /// and consumed by the service factory when creating a new session.
     current_capabilities: Arc<Mutex<Option<Vec<Capability>>>>,
+    /// The provider label from the authenticated session.
+    current_provider_label: Arc<Mutex<Option<String>>>,
 }
 
 /// Auth middleware: extracts and verifies the UCAN bearer token from the Authorization header.
@@ -53,7 +55,7 @@ async fn auth_middleware(
     })?;
 
     // Verify the token using the wallet (scope the lock so it's dropped before await)
-    let capabilities = {
+    let (capabilities, provider_label) = {
         let wallet = state.wallet.lock().unwrap();
 
         // Get master public key for verification
@@ -79,12 +81,15 @@ async fn auth_middleware(
             return Err((StatusCode::UNAUTHORIZED, "Session has been revoked").into_response());
         }
 
-        // Extract capabilities from the token
-        said_core::ucan::capabilities_from_payload(&payload)
+        // Extract capabilities and provider label from the session
+        let caps = said_core::ucan::capabilities_from_payload(&payload);
+        let label = session.label.clone();
+        (caps, label)
     };
 
-    // Store capabilities for the service factory
+    // Store capabilities and provider label for the service factory
     *state.current_capabilities.lock().unwrap() = Some(capabilities);
+    *state.current_provider_label.lock().unwrap() = Some(provider_label);
 
     Ok(next.run(req).await)
 }
@@ -99,6 +104,7 @@ pub async fn run_http_server(
     let auth_state = AuthState {
         wallet: wallet.clone(),
         current_capabilities: Arc::new(Mutex::new(None)),
+        current_provider_label: Arc::new(Mutex::new(None)),
     };
 
     let config = StreamableHttpServerConfig::default();
@@ -106,6 +112,7 @@ pub async fn run_http_server(
 
     // Factory creates a SaidServer with the capabilities from the last verified request
     let caps_for_factory = auth_state.current_capabilities.clone();
+    let label_for_factory = auth_state.current_provider_label.clone();
     let wallet_for_factory = wallet.clone();
     let mcp_service = StreamableHttpService::new(
         move || {
@@ -114,7 +121,12 @@ pub async fn run_http_server(
                 .unwrap()
                 .take()
                 .unwrap_or_default();
-            Ok(SaidServer::new_with_auth(wallet_for_factory.clone(), caps))
+            let label = label_for_factory.lock().unwrap().take();
+            Ok(SaidServer::new_with_auth(
+                wallet_for_factory.clone(),
+                caps,
+                label,
+            ))
         },
         Arc::new(LocalSessionManager::default()),
         config,

@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use zeroize::Zeroize;
+
 use crate::encrypt::{decrypt_blob, encrypt_blob};
 use crate::error::Result;
 
@@ -32,16 +34,18 @@ impl Storage {
             return Ok(Vec::new());
         }
         let blob = std::fs::read(&path)?;
-        let plaintext = decrypt_blob(&self.key, &blob)?;
+        let mut plaintext = decrypt_blob(&self.key, &blob)?;
         let items: Vec<T> = serde_json::from_slice(&plaintext)?;
+        plaintext.zeroize();
         Ok(items)
     }
 
     /// Save a typed collection to encrypted storage.
     pub fn save<T: Serialize>(&self, name: &str, items: &[T]) -> Result<()> {
         std::fs::create_dir_all(&self.data_dir)?;
-        let json = serde_json::to_vec(items)?;
+        let mut json = serde_json::to_vec(items)?;
         let blob = encrypt_blob(&self.key, &json)?;
+        json.zeroize();
         std::fs::write(self.data_dir.join(format!("{}.enc", name)), &blob)?;
         Ok(())
     }
@@ -79,7 +83,6 @@ impl Storage {
 
 impl Drop for Storage {
     fn drop(&mut self) {
-        use zeroize::Zeroize;
         self.key.zeroize();
     }
 }

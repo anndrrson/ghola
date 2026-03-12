@@ -3,6 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 // ── Data Schemas ──
 
@@ -74,6 +75,30 @@ pub struct McpConfig {
     pub env: std::collections::HashMap<String, String>,
 }
 
+/// A secret stored in the vault (API keys, tokens, credentials).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct Secret {
+    pub id: Uuid,
+    /// Unique name for this secret, e.g. "stripe", "openai", "github"
+    pub name: String,
+    /// The secret value (encrypted at rest by the wallet)
+    pub value: String,
+    /// Optional description
+    pub description: Option<String>,
+    /// Optional tags for organization
+    pub tags: Vec<String>,
+    /// Which providers are allowed to read this secret (empty = all)
+    pub allowed_providers: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.value.zeroize();
+    }
+}
+
 // ── Wallet Metadata ──
 
 /// Wallet metadata stored unencrypted alongside the encrypted data.
@@ -82,6 +107,9 @@ pub struct WalletMetadata {
     pub version: u32,
     pub created_at: DateTime<Utc>,
     pub master_public_key: String,
+    /// Whether the seed file is encrypted with a password.
+    #[serde(default)]
+    pub seed_encrypted: bool,
 }
 
 // ── HD Derivation Constants ──
@@ -122,6 +150,8 @@ pub enum Capability {
     ReadKnowledge,
     ReadConversations,
     ReadMcpConfigs,
+    ReadSecrets,
+    WriteSecrets,
     /// Shorthand for all capabilities.
     All,
 }
@@ -137,6 +167,8 @@ impl Capability {
             Self::ReadKnowledge => "said/read_knowledge",
             Self::ReadConversations => "said/read_conversations",
             Self::ReadMcpConfigs => "said/read_mcp_configs",
+            Self::ReadSecrets => "said/read_secrets",
+            Self::WriteSecrets => "said/write_secrets",
             Self::All => "said/*",
         }
     }
@@ -151,6 +183,8 @@ impl Capability {
             "said/read_knowledge" => Some(Self::ReadKnowledge),
             "said/read_conversations" => Some(Self::ReadConversations),
             "said/read_mcp_configs" => Some(Self::ReadMcpConfigs),
+            "said/read_secrets" => Some(Self::ReadSecrets),
+            "said/write_secrets" => Some(Self::WriteSecrets),
             "said/*" => Some(Self::All),
             _ => None,
         }
@@ -166,6 +200,8 @@ impl Capability {
             "read-knowledge" => Some(Self::ReadKnowledge),
             "read-conversations" => Some(Self::ReadConversations),
             "read-mcp-configs" => Some(Self::ReadMcpConfigs),
+            "read-secrets" => Some(Self::ReadSecrets),
+            "write-secrets" => Some(Self::WriteSecrets),
             "read-all" => Some(Self::All),
             "all" => Some(Self::All),
             _ => None,

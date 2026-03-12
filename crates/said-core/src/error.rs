@@ -54,4 +54,10 @@ pub enum SaidError {
 
     #[error("solana error: {0}")]
     Solana(String),
+
+    #[error("password required: seed file is encrypted")]
+    PasswordRequired,
+
+    #[error("wrong password")]
+    WrongPassword,
 }

@@ -58,13 +58,14 @@ export default function Home() {
         <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-24 sm:py-32">
           <div className="max-w-3xl">
             <h1 className="text-5xl md:text-7xl font-medium tracking-tight text-[#eef1f8] leading-[1.08]">
-              Your agents need identity.
+              One vault for
               <br />
-              Not yours.
+              all your agents.
             </h1>
             <p className="mt-8 text-lg md:text-xl text-[#8b95a8] leading-relaxed max-w-2xl">
-              One vault. Every AI provider. Portable memory, keys, and
-              preferences that follow your agents — not the other way around.
+              API keys, system prompts, memory, and preferences — stored once,
+              available to every agent in every environment. Stop copy-pasting
+              configs.
             </p>
             <div className="mt-10 flex flex-col sm:flex-row gap-4">
               <Link
@@ -120,13 +121,13 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-10">
           <div className="grid gap-6 sm:grid-cols-3">
             <p className="font-mono text-sm text-[#4a5568]">
-              Your Claude config ≠ your GPT config ≠ your Cursor config
+              New tool? Pass another API key. New sandbox? Pass it again.
             </p>
             <p className="font-mono text-sm text-[#4a5568]">
-              Every new AI tool = re-enter everything
+              Rotate a key? Update every agent, every environment, manually.
             </p>
             <p className="font-mono text-sm text-[#4a5568]">
-              Your agents forget you between sessions
+              Your agents forget you between sessions and providers.
             </p>
           </div>
         </div>
@@ -145,6 +146,11 @@ export default function Home() {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {[
               {
+                icon: Key,
+                title: "Credentials",
+                desc: "API keys and secrets in one place. Scoped per agent, rotation built in.",
+              },
+              {
                 icon: FileText,
                 title: "System Prompts",
                 desc: "Portable instructions that follow you across every provider.",
@@ -152,7 +158,7 @@ export default function Home() {
               {
                 icon: Brain,
                 title: "Memory",
-                desc: "Persistent context across providers. Your agents remember.",
+                desc: "Persistent context across sessions. Your agents remember.",
               },
               {
                 icon: Settings,
@@ -160,14 +166,9 @@ export default function Home() {
                 desc: "Style, tone, format — set once, applied everywhere.",
               },
               {
-                icon: Key,
-                title: "Credentials",
-                desc: "API keys, delegated access via UCAN chains.",
-              },
-              {
                 icon: Fingerprint,
-                title: "On-Chain Identity",
-                desc: "Solana DID registry. Verifiable, decentralized.",
+                title: "Verified Identity",
+                desc: "Tamper-proof identity that works across every provider.",
               },
               {
                 icon: Database,
@@ -228,11 +229,11 @@ export default function Home() {
                   </span>
                   <div>
                     <p className="font-medium text-[#eef1f8]">
-                      Your agent calls Ghola tools
+                      Agents pull what they need
                     </p>
                     <p className="text-sm text-[#8b95a8] mt-1">
-                      System prompts, memories, preferences — injected
-                      automatically.
+                      API keys, prompts, memory, preferences — fetched on
+                      demand, not hard-coded.
                     </p>
                   </div>
                 </li>
@@ -242,11 +243,11 @@ export default function Home() {
                   </span>
                   <div>
                     <p className="font-medium text-[#eef1f8]">
-                      Same you, everywhere
+                      Update once, everywhere
                     </p>
                     <p className="text-sm text-[#8b95a8] mt-1">
-                      Switch AI providers without losing context. Your identity
-                      is portable.
+                      Rotate a key or change a prompt — every agent in every
+                      environment picks it up instantly.
                     </p>
                   </div>
                 </li>
@@ -315,7 +316,7 @@ export default function Home() {
                 {[
                   "Unlimited local vault",
                   "1,000 cloud API calls/day",
-                  "Solana DID registration",
+                  "Verified identity",
                   "agents.txt generation",
                   "14 MCP tools",
                 ].map((f) => (
@@ -381,7 +382,7 @@ export default function Home() {
                   "Domain verification",
                   "Verified badge for AI agents",
                   "Trust signals in agents.txt",
-                  "On-chain attestation",
+                  "Tamper-proof attestation",
                   "Priority in discovery",
                 ].map((f) => (
                   <li key={f} className="flex items-center gap-2 text-sm text-[#8b95a8]">
@@ -414,7 +415,7 @@ export default function Home() {
             <span>Windsurf</span>
             <span>Any MCP Client</span>
             <span className="text-[#8b95a8]">
-              Built on <span className="font-medium">Solana</span>
+              Open protocol
             </span>
           </div>
         </div>
@@ -424,10 +425,10 @@ export default function Home() {
       <section className="py-24 sm:py-32">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 text-center">
           <h2 className="text-3xl font-medium text-[#eef1f8]">
-            Your agents deserve better.
+            Stop managing configs. Start building agents.
           </h2>
           <p className="mt-4 text-[#8b95a8]">
-            Get started in 60 seconds.
+            Set up in 60 seconds. Free forever for local use.
           </p>
           <Link
             href="/identity/register"

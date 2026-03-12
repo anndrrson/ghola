@@ -8,13 +8,13 @@ SAID is itself an MCP server. Claude Code and Claude Desktop can use it directly
 
 ```bash
 # Install the SAID CLI (includes the MCP server binary)
-cargo install said-cli
+cargo install said
 
 # Initialize your wallet (first time only)
 said init
 ```
 
-Add to your Claude Code MCP config (`~/.claude/mcp.json` or project-level):
+Add to your Claude Code MCP config (`~/.claude.json` or project-level `.mcp.json`):
 
 ```json
 {
@@ -164,13 +164,13 @@ Generate a scoped UCAN token:
 
 ```bash
 # Grant an AI provider read-only access to your memories and preferences
-said provider grant claude-code \
-  --capabilities ReadMemories,ReadPreferences,ReadPrompts \
-  --expiry 24h
+said provider grant --provider anthropic --label claude_code \
+  --capabilities read-memories,read-preferences,read-prompts \
+  --expires 24h
 
 # Grant full access for your personal setup
-said provider grant my-desktop \
-  --capabilities ReadPrompts,ReadPreferences,ReadMemories,WriteMemories,ReadKnowledge,ReadConversations,ReadMcpConfigs
+said provider grant --provider local --label my-desktop \
+  --capabilities read-prompts,read-preferences,read-memories,write-memories,read-knowledge,read-conversations,read-mcp-configs
 ```
 
 UCAN tokens support delegation chains. A provider with `WriteMemories` capability can delegate a sub-token to a specific conversation context, and SAID will verify the full chain.

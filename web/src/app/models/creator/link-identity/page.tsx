@@ -64,8 +64,8 @@ export default function LinkIdentityPage() {
         </div>
 
         <p className="mb-6 text-sm text-[#8b95a8]">
-          Connect your Ghola decentralized identity (DID) to your Orni creator
-          account. A verified badge will appear on all your model listings.
+          Connect your Ghola identity to your Orni creator account. A verified
+          badge will appear on all your model listings.
         </p>
 
         {success ? (
@@ -88,13 +88,13 @@ export default function LinkIdentityPage() {
           <>
             <div className="mb-6 rounded-lg bg-[#161822] p-4">
               <label className="mb-1 block text-xs font-medium text-[#4a5568]">
-                Your Ghola DID
+                Your Ghola ID
               </label>
               {did ? (
                 <p className="break-all font-mono text-sm text-[#eef1f8]">{did}</p>
               ) : (
                 <p className="text-sm text-[#4a5568] italic">
-                  No DID detected. Please log in to your Ghola account first.
+                  No identity detected. Please log in to your Ghola account first.
                 </p>
               )}
             </div>

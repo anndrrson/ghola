@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Duration;
@@ -7,7 +8,8 @@ use ed25519_dalek::Signer;
 
 use said_core::Wallet;
 use said_types::{
-    Capability, KeyType, KnowledgeDoc, McpConfig, Memory, Preference, Provider, SystemPrompt,
+    Capability, KeyType, KnowledgeDoc, McpConfig, Memory, Preference, Provider, Secret,
+    SystemPrompt,
 };
 
 #[derive(Parser)]
@@ -23,11 +25,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize a new SAID wallet
+    /// Initialize a new SAID vault
     Init {
         /// Number of words in the mnemonic (12 or 24)
         #[arg(long, default_value = "24")]
         words: usize,
+        /// Encrypt the seed file with a password (recommended)
+        #[arg(long)]
+        password: bool,
     },
     /// Recover a wallet from a mnemonic phrase
     Recover,
@@ -42,6 +47,11 @@ enum Commands {
     Export {
         #[command(subcommand)]
         what: ExportTarget,
+    },
+    /// Manage secrets (API keys, tokens, credentials)
+    Secret {
+        #[command(subcommand)]
+        action: SecretAction,
     },
     /// Manage provider access sessions
     Provider {
@@ -135,6 +145,38 @@ enum ExportTarget {
     Knowledge,
     /// Export MCP server configs as JSON
     McpConfigs,
+}
+
+#[derive(Subcommand)]
+enum SecretAction {
+    /// Add or update a secret
+    Set {
+        /// Secret name (e.g. "stripe", "openai")
+        name: String,
+        /// Secret value (will prompt interactively if omitted)
+        value: Option<String>,
+        /// Description
+        #[arg(long)]
+        description: Option<String>,
+        /// Tags (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        /// Restrict to specific providers (comma-separated: openai,anthropic)
+        #[arg(long, value_delimiter = ',')]
+        providers: Option<Vec<String>>,
+    },
+    /// Get a secret value
+    Get {
+        /// Secret name
+        name: String,
+    },
+    /// List all secrets (names only, no values)
+    List,
+    /// Remove a secret
+    Remove {
+        /// Secret name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -241,6 +283,18 @@ fn parse_capabilities(caps: &[String]) -> Result<Vec<Capability>, String> {
         .collect()
 }
 
+/// Load wallet, prompting for password if the seed is encrypted.
+fn load_wallet(dir: &std::path::PathBuf) -> Result<Wallet, Box<dyn std::error::Error>> {
+    match Wallet::load(dir, None) {
+        Ok(w) => Ok(w),
+        Err(said_core::SaidError::PasswordRequired) => {
+            let pw = rpassword::prompt_password("Vault password: ")?;
+            Ok(Wallet::load(dir, Some(&pw))?)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim();
     if let Some(num) = s.strip_suffix('h') {
@@ -276,18 +330,31 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| Wallet::default_wallet_dir().expect("could not determine home dir"));
 
     match cli.command {
-        Commands::Init { words } => {
+        Commands::Init { words, password: use_password } => {
             if words != 12 && words != 24 {
                 return Err("--words must be 12 or 24".into());
             }
-            let (_, phrase) = Wallet::init(&dir)?;
 
-            println!("Wallet initialized at: {}", dir.display());
+            // Determine password: --password flag, or prompt interactively
+            let password = if use_password {
+                let pw = rpassword::prompt_password("Set vault password: ")?;
+                let pw2 = rpassword::prompt_password("Confirm password: ")?;
+                if pw != pw2 {
+                    return Err("Passwords do not match.".into());
+                }
+                Some(pw)
+            } else {
+                None
+            };
+
+            let (_, phrase) = Wallet::init(&dir, password.as_deref())?;
+
+            println!("Vault initialized at: {}", dir.display());
+            if password.is_some() {
+                println!("Seed file encrypted with your password.");
+            }
             println!();
-            println!("IMPORTANT: Write down your recovery phrase and store it safely.");
-            println!("This is the ONLY way to recover your wallet if lost.");
-            println!();
-            println!("Recovery phrase ({} words):", words);
+            println!("Your recovery phrase (keep this somewhere safe — you'll need it to restore your vault on a new machine):");
             println!();
 
             let word_list: Vec<&str> = phrase.split_whitespace().collect();
@@ -307,13 +374,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             std::io::stdin().read_line(&mut phrase)?;
             let phrase = phrase.trim();
 
-            Wallet::recover(phrase, &dir)?;
-            println!("Wallet recovered at: {}", dir.display());
+            Wallet::recover(phrase, &dir, None)?;
+            println!("Vault recovered at: {}", dir.display());
         }
 
         Commands::Status => {
             let metadata = Wallet::load_metadata(&dir)?;
-            let wallet = Wallet::load(&dir)?;
+            let wallet = load_wallet(&dir)?;
 
             println!("SAID Wallet Status");
             println!("==================");
@@ -358,7 +425,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Import { what } => {
-            let wallet = Wallet::load(&dir)?;
+            let wallet = load_wallet(&dir)?;
 
             match what {
                 ImportTarget::Prompts { file } => {
@@ -395,7 +462,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Export { what } => {
-            let wallet = Wallet::load(&dir)?;
+            let wallet = load_wallet(&dir)?;
 
             let json = match what {
                 ExportTarget::Prompts => {
@@ -428,8 +495,131 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", json);
         }
 
+        Commands::Secret { action } => {
+            let wallet = load_wallet(&dir)?;
+
+            match action {
+                SecretAction::Set {
+                    name,
+                    value,
+                    description,
+                    tags,
+                    providers,
+                } => {
+                    let value = match value {
+                        Some(v) => v,
+                        None => {
+                            print!("Enter secret value: ");
+                            std::io::stdout().flush()?;
+                            let mut val = String::new();
+                            std::io::stdin().read_line(&mut val)?;
+                            val.trim().to_string()
+                        }
+                    };
+
+                    let mut secrets: Vec<Secret> =
+                        wallet.storage().load("secrets").unwrap_or_default();
+
+                    let now = chrono::Utc::now();
+                    if let Some(existing) = secrets.iter_mut().find(|s| s.name == name) {
+                        existing.value = value;
+                        existing.updated_at = now;
+                        if let Some(desc) = description {
+                            existing.description = Some(desc);
+                        }
+                        if let Some(t) = tags {
+                            existing.tags = t;
+                        }
+                        if let Some(p) = providers {
+                            existing.allowed_providers = p;
+                        }
+                    } else {
+                        secrets.push(Secret {
+                            id: uuid::Uuid::new_v4(),
+                            name: name.clone(),
+                            value,
+                            description,
+                            tags: tags.unwrap_or_default(),
+                            allowed_providers: providers.unwrap_or_default(),
+                            created_at: now,
+                            updated_at: now,
+                        });
+                    }
+
+                    wallet.storage().save("secrets", &secrets)?;
+                    println!("Secret '{}' saved.", name);
+                }
+
+                SecretAction::Get { name } => {
+                    let secrets: Vec<Secret> =
+                        wallet.storage().load("secrets").unwrap_or_default();
+
+                    if let Some(secret) = secrets.iter().find(|s| s.name == name) {
+                        println!("{}", secret.value);
+                    } else {
+                        println!("Secret '{}' not found.", name);
+                    }
+                }
+
+                SecretAction::List => {
+                    let secrets: Vec<Secret> =
+                        wallet.storage().load("secrets").unwrap_or_default();
+
+                    if secrets.is_empty() {
+                        println!("No secrets stored. Add one with: said secret set <name> <value>");
+                    } else {
+                        println!(
+                            "{:<20} {:<30} {:<20} {:<20} {:<20}",
+                            "Name", "Description", "Tags", "Providers", "Updated"
+                        );
+                        println!("{}", "-".repeat(110));
+
+                        for s in &secrets {
+                            let desc = s
+                                .description
+                                .as_deref()
+                                .unwrap_or("-");
+                            let tags = if s.tags.is_empty() {
+                                "-".to_string()
+                            } else {
+                                s.tags.join(", ")
+                            };
+                            let provs = if s.allowed_providers.is_empty() {
+                                "all".to_string()
+                            } else {
+                                s.allowed_providers.join(", ")
+                            };
+                            println!(
+                                "{:<20} {:<30} {:<20} {:<20} {:<20}",
+                                s.name,
+                                desc,
+                                tags,
+                                provs,
+                                s.updated_at.format("%Y-%m-%d %H:%M")
+                            );
+                        }
+                    }
+                }
+
+                SecretAction::Remove { name } => {
+                    let mut secrets: Vec<Secret> =
+                        wallet.storage().load("secrets").unwrap_or_default();
+
+                    let before = secrets.len();
+                    secrets.retain(|s| s.name != name);
+
+                    if secrets.len() < before {
+                        wallet.storage().save("secrets", &secrets)?;
+                        println!("Secret '{}' removed.", name);
+                    } else {
+                        println!("Secret '{}' not found.", name);
+                    }
+                }
+            }
+        }
+
         Commands::Provider { action } => {
-            let wallet = Wallet::load(&dir)?;
+            let wallet = load_wallet(&dir)?;
 
             match action {
                 ProviderAction::Grant {
@@ -508,7 +698,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::Serve { http, port } => {
             if http {
-                let wallet = Wallet::load(&dir)?;
+                let wallet = load_wallet(&dir)?;
                 said_mcp::run_http(wallet, port).await?;
             } else {
                 said_mcp::run().await?;
@@ -519,7 +709,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             topic,
             prompt_only,
         } => {
-            let wallet = Wallet::load(&dir)?;
+            let wallet = load_wallet(&dir)?;
 
             if prompt_only {
                 let prompts: Vec<SystemPrompt> =
@@ -547,7 +737,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             inject_system,
             command,
         } => {
-            let wallet = Wallet::load(&dir)?;
+            let wallet = load_wallet(&dir)?;
             let context = wallet.get_full_context()?;
 
             let mut cmd = ProcessCommand::new(&command[0]);
@@ -636,7 +826,7 @@ async fn handle_solana(
     action: SolanaAction,
     wallet_dir: &PathBuf,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let wallet = Wallet::load(wallet_dir)?;
+    let wallet = load_wallet(wallet_dir)?;
     let solana_kp = wallet.solana_keypair_bytes();
 
     match action {

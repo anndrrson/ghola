@@ -92,7 +92,7 @@ export default function ConsumerConnectionsPage() {
         </div>
         <div className="space-y-2">
           {[
-            { cmd: "cargo install said-cli", desc: "Install the CLI" },
+            { cmd: "cargo install said", desc: "Install the CLI" },
             { cmd: "said init", desc: "Create your vault at ~/.said/" },
             { cmd: "said serve", desc: "Start the MCP server" },
           ].map((step) => (

@@ -72,7 +72,7 @@ export default function ConsumerDashboardPage() {
           Welcome back{profile?.display_name ? `, ${profile.display_name}` : ""}
         </h1>
         <p className="mt-1 text-[#8b95a8]">
-          Manage your sovereign AI identity.
+          Manage your AI identity.
         </p>
       </div>
 
@@ -82,7 +82,7 @@ export default function ConsumerDashboardPage() {
           <div className="flex items-center gap-3 mb-2">
             <Fingerprint className="h-5 w-5 text-[#3da8ff]" />
             <span className="text-sm font-medium text-[#8b95a8]">
-              Your Decentralized Identifier
+              Your Identity
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -103,7 +103,7 @@ export default function ConsumerDashboardPage() {
           </div>
           {profile.on_chain_registered && (
             <p className="mt-2 text-xs text-green-400">
-              Registered on Solana
+              Identity verified
             </p>
           )}
         </div>
@@ -169,7 +169,7 @@ export default function ConsumerDashboardPage() {
             Export Identity
           </h3>
           <p className="mt-1 text-xs text-[#4a5568]">
-            Download your encrypted wallet or go fully self-custody.
+            Download your encrypted vault backup.
           </p>
         </Link>
       </div>

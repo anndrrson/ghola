@@ -44,6 +44,8 @@ rmcp = { version = "0.15", features = ["server", "transport-io", "transport-stre
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+rpassword = "7"
+argon2 = "0.5"
 
 # Error handling
 thiserror = "2"

@@ -15,7 +15,8 @@ use serde::Deserialize;
 
 use said_core::Wallet;
 use said_types::{
-    Capability, ConversationEntry, KnowledgeDoc, McpConfig, Memory, Preference, SystemPrompt,
+    Capability, ConversationEntry, KnowledgeDoc, McpConfig, Memory, Preference, Secret,
+    SystemPrompt,
 };
 
 // ── Tool Parameter Types ──
@@ -120,6 +121,32 @@ pub struct RequestServiceParams {
     pub authorization: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct GetSecretParams {
+    /// Name of the secret to retrieve (e.g. "stripe", "openai")
+    pub name: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SetSecretParams {
+    /// Name of the secret (e.g. "stripe", "openai")
+    pub name: String,
+    /// The secret value to store
+    pub value: String,
+    /// Optional description
+    pub description: Option<String>,
+    /// Optional tags for organization
+    pub tags: Option<Vec<String>>,
+    /// Restrict to specific providers (empty = all providers can access)
+    pub allowed_providers: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct RemoveSecretParams {
+    /// Name of the secret to remove
+    pub name: String,
+}
+
 // ── MCP Server ──
 
 #[derive(Clone)]
@@ -129,6 +156,9 @@ pub struct SaidServer {
     /// When Some, capability checks are enforced (HTTP mode).
     /// When None, all tools are allowed (stdio / local trust mode).
     allowed_capabilities: Option<Vec<Capability>>,
+    /// The provider label from the authenticated session (HTTP mode only).
+    /// Used to enforce per-secret `allowed_providers` restrictions.
+    provider_label: Option<String>,
 }
 
 impl SaidServer {
@@ -155,18 +185,21 @@ impl SaidServer {
             wallet: Arc::new(Mutex::new(wallet)),
             tool_router: Self::tool_router(),
             allowed_capabilities: None,
+            provider_label: None,
         }
     }
 
-    /// Create a new server with shared wallet and specific capabilities (HTTP auth mode).
+    /// Create a new server with shared wallet, specific capabilities, and provider label (HTTP auth mode).
     pub fn new_with_auth(
         wallet: Arc<Mutex<Wallet>>,
         capabilities: Vec<Capability>,
+        provider_label: Option<String>,
     ) -> Self {
         Self {
             wallet,
             tool_router: Self::tool_router(),
             allowed_capabilities: Some(capabilities),
+            provider_label,
         }
     }
 
@@ -573,6 +606,167 @@ impl SaidServer {
             body_output
         ))]))
     }
+
+    #[tool(
+        name = "said_get_secret",
+        description = "Get a secret (API key, token, credential) from your vault by name"
+    )]
+    async fn get_secret(
+        &self,
+        Parameters(params): Parameters<GetSecretParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::ReadSecrets)?;
+
+        let wallet = self.wallet.lock().unwrap();
+        let secrets: Vec<Secret> = wallet.storage().load("secrets").unwrap_or_default();
+
+        match secrets.iter().find(|s| s.name == params.name) {
+            Some(secret) => {
+                // Enforce per-secret provider restrictions
+                if !secret.allowed_providers.is_empty() {
+                    if let Some(ref label) = self.provider_label {
+                        if !secret.allowed_providers.iter().any(|p| p == label) {
+                            return Err(ErrorData::internal_error(
+                                format!(
+                                    "Secret '{}' is not available to provider '{}'",
+                                    params.name, label
+                                ),
+                                None,
+                            ));
+                        }
+                    }
+                    // If no provider_label (local stdio mode), allow access — user is at the terminal
+                }
+                Ok(CallToolResult::success(vec![Content::text(&secret.value)]))
+            }
+            None => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Secret '{}' not found. Available secrets: {}",
+                params.name,
+                secrets
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))])),
+        }
+    }
+
+    #[tool(
+        name = "said_set_secret",
+        description = "Store or update a secret (API key, token, credential) in your vault"
+    )]
+    async fn set_secret(
+        &self,
+        Parameters(params): Parameters<SetSecretParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::WriteSecrets)?;
+
+        let wallet = self.wallet.lock().unwrap();
+        let mut secrets: Vec<Secret> = wallet.storage().load("secrets").unwrap_or_default();
+
+        let now = chrono::Utc::now();
+        if let Some(existing) = secrets.iter_mut().find(|s| s.name == params.name) {
+            existing.value = params.value;
+            if let Some(desc) = params.description {
+                existing.description = Some(desc);
+            }
+            if let Some(tags) = params.tags {
+                existing.tags = tags;
+            }
+            if let Some(providers) = params.allowed_providers {
+                existing.allowed_providers = providers;
+            }
+            existing.updated_at = now;
+        } else {
+            secrets.push(Secret {
+                id: uuid::Uuid::new_v4(),
+                name: params.name.clone(),
+                value: params.value,
+                description: params.description,
+                tags: params.tags.unwrap_or_default(),
+                allowed_providers: params.allowed_providers.unwrap_or_default(),
+                created_at: now,
+                updated_at: now,
+            });
+        }
+
+        wallet
+            .storage()
+            .save("secrets", &secrets)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Secret '{}' saved.",
+            params.name
+        ))]))
+    }
+
+    #[tool(
+        name = "said_list_secrets",
+        description = "List all secret names in your vault (values are not shown)"
+    )]
+    async fn list_secrets(&self) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::ReadSecrets)?;
+
+        let wallet = self.wallet.lock().unwrap();
+        let secrets: Vec<Secret> = wallet.storage().load("secrets").unwrap_or_default();
+
+        if secrets.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No secrets stored. Add one with said_set_secret or `said secret set <name> <value>`",
+            )]));
+        }
+
+        let listing: Vec<serde_json::Value> = secrets
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "name": s.name,
+                    "description": s.description,
+                    "tags": s.tags,
+                    "allowed_providers": s.allowed_providers,
+                    "updated_at": s.updated_at.to_rfc3339(),
+                })
+            })
+            .collect();
+
+        let json = serde_json::to_string_pretty(&listing).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        name = "said_remove_secret",
+        description = "Remove a secret from your vault by name"
+    )]
+    async fn remove_secret(
+        &self,
+        Parameters(params): Parameters<RemoveSecretParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::WriteSecrets)?;
+
+        let wallet = self.wallet.lock().unwrap();
+        let mut secrets: Vec<Secret> = wallet.storage().load("secrets").unwrap_or_default();
+
+        let len_before = secrets.len();
+        secrets.retain(|s| s.name != params.name);
+
+        if secrets.len() == len_before {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Secret '{}' not found.",
+                params.name
+            ))]));
+        }
+
+        wallet
+            .storage()
+            .save("secrets", &secrets)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Secret '{}' removed.",
+            params.name
+        ))]))
+    }
 }
 
 #[tool_handler]
@@ -593,7 +787,7 @@ impl ServerHandler for SaidServer {
 /// Run the MCP server on stdio, loading the wallet from the default directory.
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let wallet_dir = Wallet::default_wallet_dir()?;
-    let wallet = Wallet::load(&wallet_dir)?;
+    let wallet = Wallet::load(&wallet_dir, None)?;
     let server = SaidServer::new(wallet);
 
     let service = server.serve(stdio()).await?;

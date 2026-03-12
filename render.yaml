@@ -1,0 +1,38 @@
+databases:
+  - name: ghola-db
+    plan: free
+    databaseName: ghola
+    user: ghola
+
+services:
+  - type: web
+    name: ghola-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ghola-db
+          property: connectionString
+      - key: BIND_ADDR
+        value: "0.0.0.0:8080"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: BASE_URL
+        value: "https://ghola-api.onrender.com"
+      - key: FRONTEND_URL
+        value: "https://ghola.xyz"
+      - key: ALLOWED_ORIGINS
+        value: "https://ghola.xyz,https://www.ghola.xyz"
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_CONSUMER_PRO
+        sync: false
+      - key: STRIPE_PRICE_BUSINESS
+        sync: false
+      - key: ADMIN_EMAILS
+        sync: false
+    healthCheckPath: /health

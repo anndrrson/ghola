@@ -21,12 +21,20 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("SAID daemon starting on port {}", port);
 
     // Load wallet
-    let wallet = said_core::Wallet::load(&wallet_dir)?;
+    // Support SAID_PASSWORD env var for headless operation
+    let password = std::env::var("SAID_PASSWORD").ok();
+    let wallet = said_core::Wallet::load(&wallet_dir, password.as_deref())?;
 
     // Auto-discover AI clients
-    let configured = discovery::auto_discover(port);
-    for client in &configured {
-        tracing::info!("Auto-configured: {}", client);
+    let results = discovery::auto_discover(port);
+    for r in &results {
+        if r.configured {
+            tracing::info!("Configured: {}", r.name);
+            eprintln!("  \u{2713} {} configured", r.name);
+        } else if let Some(reason) = r.reason {
+            tracing::info!("Skipped {}: {}", r.name, reason);
+            eprintln!("  \u{2717} {} {}", r.name, reason);
+        }
     }
 
     // Set up graceful shutdown

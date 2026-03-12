@@ -216,7 +216,7 @@ mod tests {
     fn test_wallet() -> (Wallet, TempDir) {
         let dir = TempDir::new().unwrap();
         let wallet_dir = dir.path().join(".said");
-        let (wallet, _) = Wallet::init(&wallet_dir).unwrap();
+        let (wallet, _) = Wallet::init(&wallet_dir, None).unwrap();
         (wallet, dir)
     }
 

@@ -64,7 +64,31 @@ pub async fn auth_middleware(
 
     let claims = validate_jwt(token, &state.config.jwt_secret)?;
 
-    // Track API usage for billing
+    // Enforce daily usage limits based on subscription tier
+    let user_id: uuid::Uuid = claims
+        .sub
+        .parse()
+        .map_err(|_| AppError::Internal("Invalid user ID in token".into()))?;
+
+    let (_tier, limits) = crate::routes::billing::get_effective_tier(&state.db, &user_id)
+        .await
+        .map_err(|e| AppError::Internal(format!("DB error: {e}")))?;
+
+    let current_usage = crate::routes::billing::get_daily_usage(&state, &user_id).await;
+
+    if current_usage >= limits.resolve_per_day {
+        return Err(AppError::TooManyRequests(
+            // Seconds until midnight UTC
+            {
+                let now = chrono::Utc::now();
+                let tomorrow = (now + chrono::Duration::days(1)).date_naive().and_hms_opt(0, 0, 0).unwrap();
+                let midnight = tomorrow.and_utc();
+                (midnight - now).num_seconds().max(1) as u64
+            },
+        ));
+    }
+
+    // Track API usage for billing (after limit check)
     state.usage_meter.increment(&claims.sub);
 
     req.extensions_mut().insert(claims);
