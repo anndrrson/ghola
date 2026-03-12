@@ -66,7 +66,7 @@ base64 = "0.22"
 bs58 = "0.5"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Internal
 said-types = { path = "crates/said-types" }
