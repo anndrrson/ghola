@@ -65,7 +65,7 @@ function Skeleton() {
       {[1, 2, 3].map((i) => (
         <div
           key={i}
-          className="h-28 rounded-lg bg-gray-800 border border-gray-700"
+          className="h-28 rounded-lg bg-[#161822] border border-[#1e2a3a]"
         />
       ))}
     </div>
@@ -276,13 +276,13 @@ export default function ServicesPage() {
   // ------------------------------- shared UI helpers -----------------------
 
   const inputClass =
-    "w-full rounded-md bg-gray-900 px-3 py-2 text-sm text-gray-100 placeholder-gray-600 border border-gray-700 focus:outline-none focus:ring-1 focus:ring-said-500 focus:border-said-500";
+    "w-full rounded-md bg-[#0f1117] px-3 py-2 text-sm text-[#eef1f8] placeholder-[#4a5568] border border-[#1e2a3a] focus:outline-none focus:ring-1 focus:ring-[#3da8ff] focus:border-[#3da8ff]";
   const selectClass =
-    "w-full rounded-md bg-gray-900 px-3 py-2 text-sm text-gray-100 border border-gray-700 focus:outline-none focus:ring-1 focus:ring-said-500 focus:border-said-500";
+    "w-full rounded-md bg-[#0f1117] px-3 py-2 text-sm text-[#eef1f8] border border-[#1e2a3a] focus:outline-none focus:ring-1 focus:ring-[#3da8ff] focus:border-[#3da8ff]";
   const btnPrimary =
-    "rounded-md bg-said-600 px-4 py-2 text-sm font-medium text-white hover:bg-said-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer";
+    "rounded-md bg-[#2b96f0] px-4 py-2 text-sm font-medium text-[#eef1f8] hover:bg-[#5bb8ff] transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer";
   const btnSecondary =
-    "rounded-md border border-gray-600 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-gray-800 transition-colors cursor-pointer";
+    "rounded-md border border-[#1e2a3a] px-4 py-2 text-sm font-medium text-[#8b95a8] hover:bg-[#161822] transition-colors cursor-pointer";
   const btnDanger =
     "rounded-md border border-red-700 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-900/30 transition-colors cursor-pointer";
 
@@ -292,7 +292,7 @@ export default function ServicesPage() {
     return (
       <div className="space-y-3">
         <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">
+          <label className="block text-sm font-medium text-[#8b95a8] mb-1">
             Name *
           </label>
           <input
@@ -305,7 +305,7 @@ export default function ServicesPage() {
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">
+          <label className="block text-sm font-medium text-[#8b95a8] mb-1">
             Description *
           </label>
           <textarea
@@ -320,7 +320,7 @@ export default function ServicesPage() {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">
+            <label className="block text-sm font-medium text-[#8b95a8] mb-1">
               Price
             </label>
             <input
@@ -336,7 +336,7 @@ export default function ServicesPage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">
+            <label className="block text-sm font-medium text-[#8b95a8] mb-1">
               Availability
             </label>
             <input
@@ -354,7 +354,7 @@ export default function ServicesPage() {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">
+            <label className="block text-sm font-medium text-[#8b95a8] mb-1">
               Booking URL
             </label>
             <input
@@ -371,7 +371,7 @@ export default function ServicesPage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">
+            <label className="block text-sm font-medium text-[#8b95a8] mb-1">
               API Endpoint
             </label>
             <input
@@ -412,7 +412,7 @@ export default function ServicesPage() {
       <div className="space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">
+            <label className="block text-sm font-medium text-[#8b95a8] mb-1">
               Name *
             </label>
             <input
@@ -425,7 +425,7 @@ export default function ServicesPage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">
+            <label className="block text-sm font-medium text-[#8b95a8] mb-1">
               URL *
             </label>
             <input
@@ -441,7 +441,7 @@ export default function ServicesPage() {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">
+            <label className="block text-sm font-medium text-[#8b95a8] mb-1">
               Method
             </label>
             <select
@@ -459,7 +459,7 @@ export default function ServicesPage() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">
+            <label className="block text-sm font-medium text-[#8b95a8] mb-1">
               Auth Type
             </label>
             <select
@@ -487,7 +487,7 @@ export default function ServicesPage() {
           </div>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">
+          <label className="block text-sm font-medium text-[#8b95a8] mb-1">
             Description
           </label>
           <textarea
@@ -546,7 +546,7 @@ export default function ServicesPage() {
     return (
       <div className="space-y-3">
         <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">
+          <label className="block text-sm font-medium text-[#8b95a8] mb-1">
             Policy Type
           </label>
           <select
@@ -564,7 +564,7 @@ export default function ServicesPage() {
           </select>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">
+          <label className="block text-sm font-medium text-[#8b95a8] mb-1">
             Content *
           </label>
           <textarea
@@ -624,7 +624,7 @@ export default function ServicesPage() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 pt-24 pb-16">
-      <h1 className="text-2xl font-bold text-white mb-6">
+      <h1 className="text-2xl font-bold text-[#eef1f8] mb-6">
         Services &amp; Endpoints
       </h1>
 
@@ -641,15 +641,15 @@ export default function ServicesPage() {
       )}
 
       {/* Tab bar */}
-      <div className="flex border-b border-gray-700 mb-6">
+      <div className="flex border-b border-[#1e2a3a] mb-6">
         {tabs.map((t) => (
           <button
             key={t.key}
             onClick={() => setActiveTab(t.key)}
             className={`px-4 py-2.5 text-sm font-medium transition-colors cursor-pointer ${
               activeTab === t.key
-                ? "text-said-400 border-b-2 border-said-500"
-                : "text-gray-400 hover:text-gray-200"
+                ? "text-[#3da8ff] border-b-2 border-[#3da8ff]"
+                : "text-[#8b95a8] hover:text-[#eef1f8]"
             }`}
           >
             {t.label}
@@ -665,8 +665,8 @@ export default function ServicesPage() {
           {activeTab === "services" && (
             <div className="space-y-4">
               {services.length === 0 && editingService === -1 && (
-                <div className="rounded-lg bg-gray-800/50 border border-gray-700 p-8 text-center">
-                  <p className="text-gray-400">
+                <div className="rounded-lg bg-[#0f1117] border border-[#1e2a3a] p-8 text-center">
+                  <p className="text-[#8b95a8]">
                     No services yet. Add your first service to help AI agents
                     discover what you offer.
                   </p>
@@ -677,24 +677,24 @@ export default function ServicesPage() {
                 editingService === idx ? (
                   <div
                     key={idx}
-                    className="rounded-lg bg-gray-800 border border-said-600 p-4"
+                    className="rounded-lg bg-[#161822] border border-[#2b96f0] p-4"
                   >
                     {renderServiceForm()}
                   </div>
                 ) : (
                   <div
                     key={idx}
-                    className="rounded-lg bg-gray-800 border border-gray-700 p-4"
+                    className="rounded-lg bg-[#161822] border border-[#1e2a3a] p-4"
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <h3 className="text-base font-semibold text-white truncate">
+                        <h3 className="text-base font-semibold text-[#eef1f8] truncate">
                           {svc.name}
                         </h3>
-                        <p className="mt-1 text-sm text-gray-400 line-clamp-2">
+                        <p className="mt-1 text-sm text-[#8b95a8] line-clamp-2">
                           {svc.description}
                         </p>
-                        <div className="mt-2 flex flex-wrap gap-3 text-xs text-gray-500">
+                        <div className="mt-2 flex flex-wrap gap-3 text-xs text-[#4a5568]">
                           {svc.price && <span>Price: {svc.price}</span>}
                           {svc.availability && (
                             <span>Availability: {svc.availability}</span>
@@ -723,7 +723,7 @@ export default function ServicesPage() {
               )}
 
               {editingService === -2 && (
-                <div className="rounded-lg bg-gray-800 border border-said-600 p-4">
+                <div className="rounded-lg bg-[#161822] border border-[#2b96f0] p-4">
                   {renderServiceForm()}
                 </div>
               )}
@@ -740,8 +740,8 @@ export default function ServicesPage() {
           {activeTab === "endpoints" && (
             <div className="space-y-4">
               {endpoints.length === 0 && editingEndpoint === -1 && (
-                <div className="rounded-lg bg-gray-800/50 border border-gray-700 p-8 text-center">
-                  <p className="text-gray-400">
+                <div className="rounded-lg bg-[#0f1117] border border-[#1e2a3a] p-8 text-center">
+                  <p className="text-[#8b95a8]">
                     No API endpoints yet. Add endpoints so AI agents can
                     interact with your services programmatically.
                   </p>
@@ -752,34 +752,34 @@ export default function ServicesPage() {
                 editingEndpoint === idx ? (
                   <div
                     key={idx}
-                    className="rounded-lg bg-gray-800 border border-said-600 p-4"
+                    className="rounded-lg bg-[#161822] border border-[#2b96f0] p-4"
                   >
                     {renderEndpointForm()}
                   </div>
                 ) : (
                   <div
                     key={idx}
-                    className="rounded-lg bg-gray-800 border border-gray-700 p-4"
+                    className="rounded-lg bg-[#161822] border border-[#1e2a3a] p-4"
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="inline-block rounded bg-gray-700 px-2 py-0.5 text-xs font-mono text-said-300">
+                          <span className="inline-block rounded bg-[#1c1f2e] px-2 py-0.5 text-xs font-mono text-[#5bb8ff]">
                             {ep.method}
                           </span>
-                          <h3 className="text-base font-semibold text-white truncate">
+                          <h3 className="text-base font-semibold text-[#eef1f8] truncate">
                             {ep.name}
                           </h3>
                         </div>
-                        <p className="mt-1 text-sm text-gray-500 font-mono truncate">
+                        <p className="mt-1 text-sm text-[#4a5568] font-mono truncate">
                           {ep.url}
                         </p>
                         {ep.description && (
-                          <p className="mt-1 text-sm text-gray-400 line-clamp-2">
+                          <p className="mt-1 text-sm text-[#8b95a8] line-clamp-2">
                             {ep.description}
                           </p>
                         )}
-                        <div className="mt-2 flex flex-wrap gap-3 text-xs text-gray-500">
+                        <div className="mt-2 flex flex-wrap gap-3 text-xs text-[#4a5568]">
                           <span>
                             Auth:{" "}
                             {ep.auth_type === "api_key"
@@ -818,7 +818,7 @@ export default function ServicesPage() {
               )}
 
               {editingEndpoint === -2 && (
-                <div className="rounded-lg bg-gray-800 border border-said-600 p-4">
+                <div className="rounded-lg bg-[#161822] border border-[#2b96f0] p-4">
                   {renderEndpointForm()}
                 </div>
               )}
@@ -835,8 +835,8 @@ export default function ServicesPage() {
           {activeTab === "policies" && (
             <div className="space-y-4">
               {policies.length === 0 && editingPolicy === -1 && (
-                <div className="rounded-lg bg-gray-800/50 border border-gray-700 p-8 text-center">
-                  <p className="text-gray-400">
+                <div className="rounded-lg bg-[#0f1117] border border-[#1e2a3a] p-8 text-center">
+                  <p className="text-[#8b95a8]">
                     No policies yet. Define cancellation, refund, privacy, or
                     custom policies for AI agents to reference.
                   </p>
@@ -847,25 +847,25 @@ export default function ServicesPage() {
                 editingPolicy === idx ? (
                   <div
                     key={idx}
-                    className="rounded-lg bg-gray-800 border border-said-600 p-4"
+                    className="rounded-lg bg-[#161822] border border-[#2b96f0] p-4"
                   >
                     {renderPolicyForm()}
                   </div>
                 ) : (
                   <div
                     key={idx}
-                    className="rounded-lg bg-gray-800 border border-gray-700 p-4"
+                    className="rounded-lg bg-[#161822] border border-[#1e2a3a] p-4"
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <h3 className="text-base font-semibold text-white">
+                        <h3 className="text-base font-semibold text-[#eef1f8]">
                           {pol.name.charAt(0).toUpperCase() + pol.name.slice(1)}
                         </h3>
-                        <p className="mt-1 text-sm text-gray-400 line-clamp-3 whitespace-pre-wrap">
+                        <p className="mt-1 text-sm text-[#8b95a8] line-clamp-3 whitespace-pre-wrap">
                           {pol.content}
                         </p>
                         {Object.keys(pol.machine_readable).length > 0 && (
-                          <p className="mt-2 text-xs text-gray-500">
+                          <p className="mt-2 text-xs text-[#4a5568]">
                             Has machine-readable data
                           </p>
                         )}
@@ -890,7 +890,7 @@ export default function ServicesPage() {
               )}
 
               {editingPolicy === -2 && (
-                <div className="rounded-lg bg-gray-800 border border-said-600 p-4">
+                <div className="rounded-lg bg-[#161822] border border-[#2b96f0] p-4">
                   {renderPolicyForm()}
                 </div>
               )}

@@ -74,13 +74,13 @@ function TagInput({
         {tags.map((tag) => (
           <span
             key={tag}
-            className="inline-flex items-center gap-1 rounded-md bg-said-500/10 px-2.5 py-1 text-xs font-medium text-said-400 border border-said-500/20"
+            className="inline-flex items-center gap-1 rounded-md bg-[#3da8ff]/10 px-2.5 py-1 text-xs font-medium text-[#3da8ff] border border-[#3da8ff]/20"
           >
             {tag}
             <button
               type="button"
               onClick={() => removeTag(tag)}
-              className="text-said-400/60 hover:text-said-400 cursor-pointer"
+              className="text-[#3da8ff]/60 hover:text-[#3da8ff] cursor-pointer"
             >
               <X className="h-3 w-3" />
             </button>
@@ -99,12 +99,12 @@ function TagInput({
             }
           }}
           placeholder={placeholder}
-          className="flex-1 rounded-lg border border-gray-700 bg-gray-900 px-4 py-2 text-sm text-white placeholder-gray-500 focus:border-said-500 focus:ring-1 focus:ring-said-500 outline-none transition-colors"
+          className="flex-1 rounded-lg border border-[#1e2a3a] bg-[#0f1117] px-4 py-2 text-sm text-[#eef1f8] placeholder-[#4a5568] focus:border-[#3da8ff] focus:ring-1 focus:ring-[#3da8ff] outline-none transition-colors"
         />
         <button
           type="button"
           onClick={addTag}
-          className="rounded-lg bg-gray-800 px-3 py-2 text-gray-400 hover:text-white transition-colors cursor-pointer"
+          className="rounded-lg bg-[#161822] px-3 py-2 text-[#8b95a8] hover:text-[#eef1f8] transition-colors cursor-pointer"
         >
           <Plus className="h-4 w-4" />
         </button>
@@ -205,22 +205,22 @@ export default function ConsumerProfilePage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-said-500 border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#3da8ff] border-t-transparent" />
       </div>
     );
   }
 
   const inputClass =
-    "w-full rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:border-said-500 focus:ring-1 focus:ring-said-500 outline-none transition-colors";
-  const labelClass = "block text-sm font-medium text-gray-300 mb-1.5";
+    "w-full rounded-lg border border-[#1e2a3a] bg-[#0f1117] px-4 py-2.5 text-sm text-[#eef1f8] placeholder-[#4a5568] focus:border-[#3da8ff] focus:ring-1 focus:ring-[#3da8ff] outline-none transition-colors";
+  const labelClass = "block text-sm font-medium text-[#8b95a8] mb-1.5";
   const sectionHeadingClass =
-    "text-xs font-semibold uppercase tracking-wider text-gray-500 mb-4";
+    "text-xs font-semibold uppercase tracking-wider text-[#4a5568] mb-4";
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">My Profile</h1>
-        <p className="mt-1 text-gray-400">
+        <h1 className="text-2xl font-bold text-[#eef1f8]">My Profile</h1>
+        <p className="mt-1 text-[#8b95a8]">
           Configure how AI agents see and interact with you.
         </p>
       </div>
@@ -239,7 +239,7 @@ export default function ConsumerProfilePage() {
 
       <form onSubmit={handleSubmit} className="space-y-8">
         {/* Identity section */}
-        <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6">
+        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
           <p className={sectionHeadingClass}>Identity</p>
           <div className="grid gap-5 sm:grid-cols-2">
             <div>
@@ -260,7 +260,7 @@ export default function ConsumerProfilePage() {
                 Handle
               </label>
               <div className="relative">
-                <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-sm text-gray-500">
+                <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-sm text-[#4a5568]">
                   @
                 </span>
                 <input
@@ -303,7 +303,7 @@ export default function ConsumerProfilePage() {
         </div>
 
         {/* Location section */}
-        <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6">
+        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
           <p className={sectionHeadingClass}>Location</p>
           <div className="grid gap-5 sm:grid-cols-2">
             <div className="sm:col-span-2">
@@ -366,9 +366,9 @@ export default function ConsumerProfilePage() {
         </div>
 
         {/* Agent Preferences section */}
-        <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6">
+        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
           <p className={sectionHeadingClass}>Agent Preferences</p>
-          <p className="text-xs text-gray-500 mb-5">
+          <p className="text-xs text-[#4a5568] mb-5">
             These preferences are shared with AI services you connect to, so they can personalize your experience.
           </p>
           <div className="space-y-5">
@@ -443,7 +443,7 @@ export default function ConsumerProfilePage() {
           <button
             type="submit"
             disabled={saving}
-            className="inline-flex items-center gap-2 rounded-lg bg-said-500 px-6 py-2.5 text-sm font-semibold text-white hover:bg-said-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            className="inline-flex items-center gap-2 rounded-lg bg-[#3da8ff] px-6 py-2.5 text-sm font-semibold text-[#eef1f8] hover:bg-[#5bb8ff] disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
           >
             {saving ? (
               <Loader2 className="h-4 w-4 animate-spin" />

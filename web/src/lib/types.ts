@@ -129,6 +129,10 @@ export interface BillingStatus {
     profiles: number;
     analytics: boolean;
   };
+  usage?: {
+    api_calls_today: number;
+    limit: number;
+  };
 }
 
 export interface AnalyticsTimeline {
@@ -172,6 +176,8 @@ export interface Model {
   total_queries: number;
   status: string;
   created_at: string;
+  creator_did?: string;
+  creator_verified?: boolean;
 }
 
 export interface ModelsResponse {
@@ -196,6 +202,30 @@ export interface ChatMessage {
 export interface Balance {
   balance: number;
   pending_earnings: number;
+}
+
+// ── Inference Node Types ──
+
+export interface InferenceNode {
+  id: string;
+  owner_did: string;
+  endpoint_url: string;
+  models_served: string[];
+  price_per_query_micro_usdc: number;
+  status: "pending" | "active" | "degraded" | "offline";
+  region?: string;
+  description?: string;
+  uptime_percent: number;
+  total_queries: number;
+  last_heartbeat_at?: string;
+  created_at: string;
+}
+
+export interface NodeHeartbeat {
+  status: string;
+  latency_ms?: number;
+  error_message?: string;
+  created_at: string;
 }
 
 export const MODEL_CATEGORIES = [

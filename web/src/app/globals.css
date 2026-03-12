@@ -1,25 +1,22 @@
 @import "tailwindcss";
 
 @theme inline {
-  --color-background: #030712;
-  --color-foreground: #f9fafb;
+  --color-background: #08090d;
+  --color-foreground: #eef1f8;
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --color-said-50: #eff6ff;
-  --color-said-100: #dbeafe;
-  --color-said-200: #bfdbfe;
-  --color-said-300: #93c5fd;
-  --color-said-400: #60a5fa;
-  --color-said-500: #3b82f6;
-  --color-said-600: #2563eb;
-  --color-said-700: #1d4ed8;
-  --color-said-800: #1e40af;
-  --color-said-900: #1e3a8a;
-  --color-coral-200: #F5BDB3;
-  --color-coral-300: #F09C8A;
-  --color-coral-400: #E8725C;
-  --color-coral-500: #D9604D;
-  --color-coral-600: #C95A45;
+  --color-ghola-50: #e6f3ff;
+  --color-ghola-100: #cce7ff;
+  --color-ghola-200: #99cfff;
+  --color-ghola-300: #6db7ff;
+  --color-ghola-400: #3da8ff;
+  --color-ghola-500: #3da8ff;
+  --color-ghola-600: #2b96f0;
+  --color-ghola-700: #1a7dd4;
+  --color-ghola-800: #1466b0;
+  --color-ghola-900: #0f4f8c;
+  --color-amber-400: #D4A04A;
+  --color-amber-500: #C49240;
 }
 
 body {
@@ -37,19 +34,19 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #374151;
+  background: #1e2a3a;
   border-radius: 3px;
 }
 
 /* Wallet adapter overrides */
 .wallet-adapter-button {
-  background: #D9604D !important;
+  background: #3da8ff !important;
   border-radius: 0.75rem !important;
   font-size: 0.875rem !important;
   height: 2.5rem !important;
 }
 
 .wallet-adapter-modal-wrapper {
-  background: #111827 !important;
+  background: #0f1117 !important;
   border-radius: 1rem !important;
 }

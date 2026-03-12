@@ -26,3 +26,9 @@ dirs = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
+bs58 = { workspace = true }
+sha2 = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }
+base64 = { workspace = true }
+borsh = "0.10"
+curve25519-dalek = { workspace = true }

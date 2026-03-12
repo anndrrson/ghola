@@ -17,9 +17,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Kinakuta — The Platform for the Agentic Web",
+  title: "Ghola — AI Agent Identity & Vault",
   description:
-    "Identity, AI models, and infrastructure for the agentic web",
+    "One vault. Every AI provider. Portable memory, keys, and preferences that follow your agents.",
 };
 
 export default function RootLayout({
@@ -30,7 +30,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} bg-gray-950 text-gray-50 font-sans antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} bg-[#08090d] text-[#eef1f8] font-sans antialiased`}
       >
         <AuthProvider>
           <AppWalletProvider>

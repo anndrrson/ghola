@@ -6,7 +6,8 @@ import { useState, useEffect } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { useWalletAuth } from "@/lib/wallet-provider";
 import { getBalance } from "@/lib/api";
-import { Bot, Menu, X } from "lucide-react";
+import { GholaLogo } from "@/components/GholaLogo";
+import { Menu, X } from "lucide-react";
 import dynamic from "next/dynamic";
 
 const WalletMultiButton = dynamic(
@@ -48,15 +49,15 @@ export function Navbar() {
   }
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 bg-gray-900/80 backdrop-blur-md border-b border-gray-800">
+    <nav className="fixed top-0 left-0 right-0 z-50 bg-[#08090d]/80 backdrop-blur-md border-b border-[#1e2a3a]">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex h-16 items-center justify-between">
           {/* Logo + Section Tabs */}
           <div className="flex items-center gap-8">
-            <Link href="/" className="flex items-center gap-2">
-              <Bot className="h-6 w-6 text-coral-400" />
-              <span className="text-xl font-bold tracking-tight text-white">
-                kinakuta
+            <Link href="/" className="flex items-center gap-2.5">
+              <GholaLogo size={28} className="text-[#eef1f8]" />
+              <span className="text-xl font-bold tracking-tight text-[#eef1f8]">
+                ghola
               </span>
             </Link>
             <div className="hidden sm:flex items-center gap-1">
@@ -64,8 +65,8 @@ export function Navbar() {
                 href="/identity/login"
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
                   section === "identity"
-                    ? "bg-said-500/10 text-said-400"
-                    : "text-gray-400 hover:text-white"
+                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                    : "text-[#8b95a8] hover:text-[#eef1f8]"
                 }`}
               >
                 Identity
@@ -74,8 +75,8 @@ export function Navbar() {
                 href="/models"
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
                   section === "models"
-                    ? "bg-coral-500/10 text-coral-400"
-                    : "text-gray-400 hover:text-white"
+                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                    : "text-[#8b95a8] hover:text-[#eef1f8]"
                 }`}
               >
                 Models
@@ -88,19 +89,19 @@ export function Navbar() {
             {section === "identity" && (
               <>
                 {loading ? (
-                  <div className="h-5 w-24 animate-pulse rounded bg-gray-800" />
+                  <div className="h-5 w-24 animate-pulse rounded bg-[#161822]" />
                 ) : authenticated ? (
                   <>
-                    <span className="text-sm text-gray-400">{user?.email}</span>
+                    <span className="text-sm text-[#8b95a8]">{user?.email}</span>
                     <Link
                       href="/identity/dashboard"
-                      className="rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:text-white transition-colors"
+                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
                     >
                       Dashboard
                     </Link>
                     <button
                       onClick={handleLogout}
-                      className="rounded-md px-3 py-2 text-sm font-medium text-gray-400 hover:text-white transition-colors cursor-pointer"
+                      className="rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] transition-colors cursor-pointer"
                     >
                       Log Out
                     </button>
@@ -109,13 +110,13 @@ export function Navbar() {
                   <>
                     <Link
                       href="/identity/login"
-                      className="rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:text-white transition-colors"
+                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
                     >
                       Log In
                     </Link>
                     <Link
                       href="/identity/register"
-                      className="rounded-md bg-said-500 px-4 py-2 text-sm font-medium text-white hover:bg-said-600 transition-colors"
+                      className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
                     >
                       Get Started
                     </Link>
@@ -125,10 +126,16 @@ export function Navbar() {
             )}
             {section === "models" && (
               <>
+                <Link
+                  href="/models/nodes"
+                  className="text-sm text-[#8b95a8] transition hover:text-[#eef1f8]"
+                >
+                  Nodes
+                </Link>
                 {walletAuth.authenticated && walletAuth.isCreator && (
                   <Link
                     href="/models/creator"
-                    className="text-sm text-gray-400 transition hover:text-white"
+                    className="text-sm text-[#8b95a8] transition hover:text-[#eef1f8]"
                   >
                     Creator
                   </Link>
@@ -136,7 +143,7 @@ export function Navbar() {
                 {walletAuth.authenticated && balance !== null && (
                   <Link
                     href="/models/account"
-                    className="rounded-lg bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-300 transition hover:bg-gray-700"
+                    className="rounded-lg bg-[#161822] px-3 py-1.5 text-sm font-medium text-[#8b95a8] transition hover:bg-[#1c1f2e]"
                   >
                     ${(balance / 1_000_000).toFixed(2)}
                   </Link>
@@ -150,13 +157,13 @@ export function Navbar() {
                   <>
                     <Link
                       href="/identity/dashboard"
-                      className="rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:text-white transition-colors"
+                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
                     >
                       Dashboard
                     </Link>
                     <button
                       onClick={handleLogout}
-                      className="rounded-md px-3 py-2 text-sm font-medium text-gray-400 hover:text-white transition-colors cursor-pointer"
+                      className="rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] transition-colors cursor-pointer"
                     >
                       Log Out
                     </button>
@@ -164,7 +171,7 @@ export function Navbar() {
                 ) : (
                   <Link
                     href="/identity/login"
-                    className="rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:text-white transition-colors"
+                    className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
                   >
                     Log In
                   </Link>
@@ -176,7 +183,7 @@ export function Navbar() {
 
           {/* Mobile hamburger */}
           <button
-            className="sm:hidden p-2 text-gray-400 hover:text-white cursor-pointer"
+            className="sm:hidden p-2 text-[#8b95a8] hover:text-[#eef1f8] cursor-pointer"
             onClick={() => setMobileOpen(!mobileOpen)}
             aria-label="Toggle menu"
           >
@@ -187,36 +194,36 @@ export function Navbar() {
 
       {/* Mobile menu */}
       {mobileOpen && (
-        <div className="sm:hidden border-t border-gray-800 bg-gray-900/95 backdrop-blur-md">
+        <div className="sm:hidden border-t border-[#1e2a3a] bg-[#08090d]/95 backdrop-blur-md">
           <div className="px-4 py-4 space-y-2">
             <Link
               href="/identity/login"
               onClick={() => setMobileOpen(false)}
-              className="block rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-800"
+              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
             >
               Identity
             </Link>
             <Link
               href="/models"
               onClick={() => setMobileOpen(false)}
-              className="block rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-800"
+              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
             >
               Models
             </Link>
-            <div className="border-t border-gray-800 pt-2 mt-2">
+            <div className="border-t border-[#1e2a3a] pt-2 mt-2">
               {authenticated ? (
                 <>
-                  <p className="px-3 py-2 text-sm text-gray-400">{user?.email}</p>
+                  <p className="px-3 py-2 text-sm text-[#4a5568]">{user?.email}</p>
                   <Link
                     href="/identity/dashboard"
                     onClick={() => setMobileOpen(false)}
-                    className="block rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-800"
+                    className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
                   >
                     Dashboard
                   </Link>
                   <button
                     onClick={handleLogout}
-                    className="block w-full text-left rounded-md px-3 py-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-gray-800 cursor-pointer"
+                    className="block w-full text-left rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] hover:bg-[#0f1117] cursor-pointer"
                   >
                     Log Out
                   </button>
@@ -226,14 +233,14 @@ export function Navbar() {
                   <Link
                     href="/identity/login"
                     onClick={() => setMobileOpen(false)}
-                    className="block rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-800"
+                    className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
                   >
                     Log In
                   </Link>
                   <Link
                     href="/identity/register"
                     onClick={() => setMobileOpen(false)}
-                    className="block rounded-md bg-said-500 px-3 py-2 text-sm font-medium text-white hover:bg-said-600"
+                    className="block rounded-md bg-[#3da8ff] px-3 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff]"
                   >
                     Get Started
                   </Link>

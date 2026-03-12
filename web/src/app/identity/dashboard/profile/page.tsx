@@ -137,12 +137,12 @@ export default function ProfilePage() {
   if (loading) {
     return (
       <div className="space-y-6">
-        <div className="h-8 w-48 animate-pulse rounded-lg bg-gray-800" />
+        <div className="h-8 w-48 animate-pulse rounded-lg bg-[#161822]" />
         {[1, 2, 3, 4, 5].map((i) => (
           <div key={i} className="space-y-3">
-            <div className="h-5 w-32 animate-pulse rounded bg-gray-800" />
-            <div className="h-10 animate-pulse rounded-lg bg-gray-800" />
-            <div className="h-10 animate-pulse rounded-lg bg-gray-800" />
+            <div className="h-5 w-32 animate-pulse rounded bg-[#161822]" />
+            <div className="h-10 animate-pulse rounded-lg bg-[#161822]" />
+            <div className="h-10 animate-pulse rounded-lg bg-[#161822]" />
           </div>
         ))}
       </div>
@@ -160,13 +160,13 @@ export default function ProfilePage() {
   }
 
   const inputClass =
-    "w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-gray-50 placeholder-gray-500 focus:border-said-500 focus:outline-none transition-colors";
-  const labelClass = "block text-sm font-medium text-gray-300 mb-1.5";
+    "w-full rounded-lg border border-[#1e2a3a] bg-[#0f1117] px-3 py-2 text-[#eef1f8] placeholder-[#4a5568] focus:border-[#3da8ff] focus:outline-none transition-colors";
+  const labelClass = "block text-sm font-medium text-[#8b95a8] mb-1.5";
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-white">Edit Profile</h1>
-      <p className="mt-1 mb-8 text-gray-400">
+      <h1 className="text-2xl font-bold text-[#eef1f8]">Edit Profile</h1>
+      <p className="mt-1 mb-8 text-[#8b95a8]">
         Update your business information that AI agents will use to understand
         your identity.
       </p>
@@ -188,7 +188,7 @@ export default function ProfilePage() {
           <span className="text-sm">{toast.message}</span>
           <button
             onClick={() => setToast(null)}
-            className="ml-auto text-gray-400 hover:text-white cursor-pointer"
+            className="ml-auto text-[#8b95a8] hover:text-[#eef1f8] cursor-pointer"
           >
             <X className="h-4 w-4" />
           </button>
@@ -198,7 +198,7 @@ export default function ProfilePage() {
       <form onSubmit={handleSave} className="space-y-10">
         {/* Basic Info */}
         <section>
-          <h2 className="mb-4 text-lg font-semibold text-white border-b border-gray-800 pb-2">
+          <h2 className="mb-4 text-lg font-semibold text-[#eef1f8] border-b border-[#1e2a3a] pb-2">
             Basic Info
           </h2>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -220,7 +220,7 @@ export default function ProfilePage() {
                 Handle
               </label>
               <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#4a5568]">
                   @
                 </span>
                 <input
@@ -269,7 +269,7 @@ export default function ProfilePage() {
 
         {/* Website & Logo */}
         <section>
-          <h2 className="mb-4 text-lg font-semibold text-white border-b border-gray-800 pb-2">
+          <h2 className="mb-4 text-lg font-semibold text-[#eef1f8] border-b border-[#1e2a3a] pb-2">
             Website & Logo
           </h2>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -304,7 +304,7 @@ export default function ProfilePage() {
 
         {/* Location */}
         <section>
-          <h2 className="mb-4 text-lg font-semibold text-white border-b border-gray-800 pb-2">
+          <h2 className="mb-4 text-lg font-semibold text-[#eef1f8] border-b border-[#1e2a3a] pb-2">
             Location
           </h2>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -374,7 +374,7 @@ export default function ProfilePage() {
 
         {/* Contact */}
         <section>
-          <h2 className="mb-4 text-lg font-semibold text-white border-b border-gray-800 pb-2">
+          <h2 className="mb-4 text-lg font-semibold text-[#eef1f8] border-b border-[#1e2a3a] pb-2">
             Contact
           </h2>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -422,7 +422,7 @@ export default function ProfilePage() {
 
         {/* Operating Hours */}
         <section>
-          <h2 className="mb-4 text-lg font-semibold text-white border-b border-gray-800 pb-2">
+          <h2 className="mb-4 text-lg font-semibold text-[#eef1f8] border-b border-[#1e2a3a] pb-2">
             Operating Hours
           </h2>
           <HoursEditor value={operatingHours} onChange={setOperatingHours} />
@@ -430,27 +430,27 @@ export default function ProfilePage() {
 
         {/* Payment Methods */}
         <section>
-          <h2 className="mb-4 text-lg font-semibold text-white border-b border-gray-800 pb-2">
+          <h2 className="mb-4 text-lg font-semibold text-[#eef1f8] border-b border-[#1e2a3a] pb-2">
             Payment Methods
           </h2>
           <div className="flex flex-wrap gap-2 mb-3">
             {paymentMethods.map((method) => (
               <span
                 key={method}
-                className="inline-flex items-center gap-1.5 rounded-full border border-gray-700 bg-gray-800 px-3 py-1 text-sm text-gray-300"
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#1e2a3a] bg-[#161822] px-3 py-1 text-sm text-[#8b95a8]"
               >
                 {method}
                 <button
                   type="button"
                   onClick={() => removePaymentMethod(method)}
-                  className="text-gray-500 hover:text-red-400 transition-colors cursor-pointer"
+                  className="text-[#4a5568] hover:text-red-400 transition-colors cursor-pointer"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
               </span>
             ))}
             {paymentMethods.length === 0 && (
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-[#4a5568]">
                 No payment methods added yet.
               </p>
             )}
@@ -472,7 +472,7 @@ export default function ProfilePage() {
             <button
               type="button"
               onClick={addPaymentMethod}
-              className="shrink-0 rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition-colors cursor-pointer"
+              className="shrink-0 rounded-lg border border-[#1e2a3a] bg-[#161822] px-4 py-2 text-sm font-medium text-[#8b95a8] hover:bg-[#1c1f2e] hover:text-[#eef1f8] transition-colors cursor-pointer"
             >
               Add
             </button>
@@ -480,11 +480,11 @@ export default function ProfilePage() {
         </section>
 
         {/* Save button */}
-        <div className="flex justify-end border-t border-gray-800 pt-6">
+        <div className="flex justify-end border-t border-[#1e2a3a] pt-6">
           <button
             type="submit"
             disabled={saving}
-            className="inline-flex items-center gap-2 rounded-lg bg-said-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-said-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            className="inline-flex items-center gap-2 rounded-lg bg-[#2b96f0] px-6 py-2.5 text-sm font-medium text-[#eef1f8] hover:bg-[#5bb8ff] transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
             {saving ? (
               <>

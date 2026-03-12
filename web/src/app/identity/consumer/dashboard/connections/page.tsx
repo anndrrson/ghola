@@ -2,236 +2,213 @@
 
 import { useState } from "react";
 import {
-  Bot,
+  Terminal,
   Sparkles,
-  Brain,
-  Cpu,
+  Code,
+  Wind,
   Plug,
-  Unplug,
-  X,
+  Copy,
+  Check,
   Info,
+  Monitor,
 } from "lucide-react";
 
-interface AiService {
-  id: string;
-  name: string;
-  description: string;
-  icon: typeof Bot;
-  connected: boolean;
-}
+const MCP_CONFIG = JSON.stringify(
+  {
+    mcpServers: {
+      ghola: {
+        command: "said",
+        args: ["serve"],
+      },
+    },
+  },
+  null,
+  2
+);
 
-const INITIAL_SERVICES: AiService[] = [
+const TOOLS = [
   {
     id: "claude",
-    name: "Claude",
-    description: "Anthropic's AI assistant. Connect via the SAID browser extension.",
+    name: "Claude Desktop / Claude Code",
     icon: Sparkles,
-    connected: false,
+    path: "~/Library/Application Support/Claude/claude_desktop_config.json",
+    pathWin: "%APPDATA%\\Claude\\claude_desktop_config.json",
+    pathLinux: "~/.config/Claude/claude_desktop_config.json",
+    config: MCP_CONFIG,
   },
   {
-    id: "chatgpt",
-    name: "ChatGPT",
-    description: "OpenAI's conversational AI. Connect via the SAID browser extension.",
-    icon: Bot,
-    connected: false,
+    id: "cursor",
+    name: "Cursor",
+    icon: Code,
+    path: ".cursor/mcp.json (in project root)",
+    config: MCP_CONFIG,
   },
   {
-    id: "gemini",
-    name: "Gemini",
-    description: "Google's AI model. UCAN-based connection coming soon.",
-    icon: Brain,
-    connected: false,
+    id: "windsurf",
+    name: "Windsurf",
+    icon: Wind,
+    path: "~/.codeium/windsurf/mcp_config.json",
+    config: MCP_CONFIG,
   },
   {
-    id: "local",
-    name: "Local AI",
-    description: "Self-hosted models (Ollama, LM Studio). Connect via the SAID CLI daemon.",
-    icon: Cpu,
-    connected: false,
+    id: "generic",
+    name: "Any MCP Client",
+    icon: Plug,
+    path: null,
+    config: null,
   },
 ];
 
 export default function ConsumerConnectionsPage() {
-  const [services, setServices] = useState<AiService[]>(INITIAL_SERVICES);
-  const [modalService, setModalService] = useState<AiService | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
 
-  function handleConnect(service: AiService) {
-    if (service.connected) {
-      // Disconnect
-      setServices((prev) =>
-        prev.map((s) =>
-          s.id === service.id ? { ...s, connected: false } : s
-        )
-      );
-    } else {
-      // Show connection instructions modal
-      setModalService(service);
-    }
-  }
+  const handleCopy = async (id: string, text: string) => {
+    await navigator.clipboard.writeText(text);
+    setCopied(id);
+    setTimeout(() => setCopied(null), 2000);
+  };
 
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-white">AI Connections</h1>
-        <p className="mt-1 text-gray-400">
-          Connect your SAID identity to AI services so they can access your
-          preferences.
+        <h1 className="text-2xl font-bold text-[#eef1f8]">
+          Connect Your AI Tools
+        </h1>
+        <p className="mt-1 text-[#8b95a8]">
+          Add Ghola to any MCP-compatible AI tool. Your identity, memory, and
+          preferences will be available automatically.
         </p>
       </div>
 
-      {/* Service grid */}
+      {/* Prerequisites */}
+      <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="rounded-lg bg-[#3da8ff]/10 p-2 text-[#3da8ff]">
+            <Terminal className="h-5 w-5" />
+          </div>
+          <h2 className="text-base font-semibold text-[#eef1f8]">
+            Prerequisites
+          </h2>
+        </div>
+        <div className="space-y-2">
+          {[
+            { cmd: "cargo install said-cli", desc: "Install the CLI" },
+            { cmd: "said init", desc: "Create your vault at ~/.said/" },
+            { cmd: "said serve", desc: "Start the MCP server" },
+          ].map((step) => (
+            <div
+              key={step.cmd}
+              className="flex items-center gap-3 rounded-lg bg-[#161822] px-4 py-2.5"
+            >
+              <code className="text-sm font-mono text-[#3da8ff]">
+                {step.cmd}
+              </code>
+              <span className="text-xs text-[#4a5568]">{step.desc}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Tool cards */}
       <div className="grid gap-4 sm:grid-cols-2">
-        {services.map((service) => {
-          const Icon = service.icon;
+        {TOOLS.map((tool) => {
+          const Icon = tool.icon;
           return (
             <div
-              key={service.id}
-              className={`rounded-xl border p-5 transition-colors ${
-                service.connected
-                  ? "border-said-500/40 bg-said-500/5"
-                  : "border-gray-800 bg-gray-900/60"
-              }`}
+              key={tool.id}
+              className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5"
             >
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex items-center gap-3">
-                  <div
-                    className={`rounded-lg p-2 ${
-                      service.connected
-                        ? "bg-said-500/10 text-said-400"
-                        : "bg-gray-800 text-gray-400"
-                    }`}
-                  >
-                    <Icon className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-semibold text-white">
-                      {service.name}
-                    </h3>
-                    <span
-                      className={`text-xs ${
-                        service.connected
-                          ? "text-green-400"
-                          : "text-gray-500"
-                      }`}
-                    >
-                      {service.connected ? "Connected" : "Not Connected"}
-                    </span>
-                  </div>
+              <div className="flex items-center gap-3 mb-3">
+                <div className="rounded-lg bg-[#161822] p-2 text-[#8b95a8]">
+                  <Icon className="h-5 w-5" />
                 </div>
+                <h3 className="text-sm font-semibold text-[#eef1f8]">
+                  {tool.name}
+                </h3>
               </div>
 
-              <p className="text-xs text-gray-500 mb-4">
-                {service.description}
-              </p>
+              {tool.path && (
+                <div className="mb-3">
+                  <p className="text-xs text-[#4a5568] mb-1">Config file:</p>
+                  <div className="flex items-center gap-2">
+                    <Monitor className="h-3 w-3 text-[#4a5568] shrink-0" />
+                    <code className="text-xs font-mono text-[#8b95a8] break-all">
+                      {tool.path}
+                    </code>
+                  </div>
+                  {tool.id === "claude" && (
+                    <div className="mt-1 space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-[#4a5568] w-10">Win</span>
+                        <code className="text-[10px] font-mono text-[#4a5568] break-all">
+                          {tool.pathWin}
+                        </code>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-[#4a5568] w-10">Linux</span>
+                        <code className="text-[10px] font-mono text-[#4a5568] break-all">
+                          {tool.pathLinux}
+                        </code>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
-              <button
-                onClick={() => handleConnect(service)}
-                className={`inline-flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors cursor-pointer ${
-                  service.connected
-                    ? "border border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white"
-                    : "bg-said-500 text-white hover:bg-said-600"
-                }`}
-              >
-                {service.connected ? (
-                  <>
-                    <Unplug className="h-4 w-4" />
-                    Disconnect
-                  </>
-                ) : (
-                  <>
-                    <Plug className="h-4 w-4" />
-                    Connect
-                  </>
-                )}
-              </button>
+              {tool.config ? (
+                <div className="relative rounded-lg border border-[#1e2a3a] bg-[#08090d] p-3">
+                  <pre className="text-xs font-mono text-[#5bb8ff] overflow-x-auto pr-8">
+                    {tool.config}
+                  </pre>
+                  <button
+                    onClick={() => handleCopy(tool.id, tool.config!)}
+                    className="absolute top-2 right-2 rounded-md bg-[#161822] border border-[#1e2a3a] p-1.5 text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] transition-colors cursor-pointer"
+                    title="Copy config"
+                  >
+                    {copied === tool.id ? (
+                      <Check className="h-3.5 w-3.5 text-green-400" />
+                    ) : (
+                      <Copy className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs text-[#8b95a8] leading-relaxed">
+                    Any tool that supports the Model Context Protocol can connect
+                    to Ghola. Point it to{" "}
+                    <code className="text-[#5bb8ff]">said serve</code> as a
+                    stdio transport.
+                  </p>
+                  <div className="rounded-lg border border-[#1e2a3a] bg-[#08090d] px-3 py-2">
+                    <code className="text-xs font-mono text-[#5bb8ff]">
+                      said serve
+                    </code>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
       </div>
 
-      {/* Info section */}
-      <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-5">
+      {/* Cloud proxy note */}
+      <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5">
         <div className="flex items-start gap-3">
-          <Info className="h-5 w-5 text-said-400 mt-0.5 shrink-0" />
+          <Info className="h-5 w-5 text-[#3da8ff] mt-0.5 shrink-0" />
           <div>
-            <h3 className="text-sm font-semibold text-white mb-1">
-              How connections work
+            <h3 className="text-sm font-semibold text-[#eef1f8] mb-1">
+              Cloud Proxy Mode
             </h3>
-            <p className="text-xs text-gray-400 leading-relaxed">
-              Connected services can access your public profile and preferences
-              to personalize your experience. Your private data, wallet keys,
-              and recovery phrase are never shared. Connections use UCAN
-              delegation tokens that you can revoke at any time.
+            <p className="text-xs text-[#8b95a8] leading-relaxed">
+              Don&apos;t want to run a local server? Install the Ghola browser
+              extension for cloud-proxied access to your vault. Your data is
+              end-to-end encrypted — the cloud never sees your plaintext
+              identity.
             </p>
           </div>
         </div>
       </div>
-
-      {/* Connection modal */}
-      {modalService && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div
-            className="absolute inset-0 bg-black/60"
-            onClick={() => setModalService(null)}
-          />
-          <div className="relative w-full max-w-md rounded-xl border border-gray-800 bg-gray-900 p-6 shadow-xl">
-            <button
-              onClick={() => setModalService(null)}
-              className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors cursor-pointer"
-            >
-              <X className="h-5 w-5" />
-            </button>
-
-            <div className="mb-4 flex items-center gap-3">
-              <div className="rounded-lg bg-said-500/10 p-2 text-said-400">
-                <modalService.icon className="h-5 w-5" />
-              </div>
-              <h2 className="text-lg font-semibold text-white">
-                Connect to {modalService.name}
-              </h2>
-            </div>
-
-            <div className="space-y-4">
-              <p className="text-sm text-gray-300">
-                To connect {modalService.name} to your SAID identity:
-              </p>
-              <ol className="space-y-3 text-sm text-gray-400">
-                <li className="flex gap-2">
-                  <span className="shrink-0 font-semibold text-said-400">1.</span>
-                  Install the SAID browser extension from the Chrome Web Store.
-                </li>
-                <li className="flex gap-2">
-                  <span className="shrink-0 font-semibold text-said-400">2.</span>
-                  Open {modalService.name} in your browser.
-                </li>
-                <li className="flex gap-2">
-                  <span className="shrink-0 font-semibold text-said-400">3.</span>
-                  Click the SAID extension icon and select &quot;Connect&quot;.
-                </li>
-                <li className="flex gap-2">
-                  <span className="shrink-0 font-semibold text-said-400">4.</span>
-                  Your UCAN token will be automatically generated and injected.
-                </li>
-              </ol>
-
-              <div className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-3">
-                <p className="text-xs text-gray-500">
-                  Full WASM-based token generation coming soon. For now, the
-                  browser extension connects to your local SAID daemon for
-                  signing.
-                </p>
-              </div>
-            </div>
-
-            <button
-              onClick={() => setModalService(null)}
-              className="mt-6 w-full rounded-lg bg-said-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-said-600 transition-colors cursor-pointer"
-            >
-              Got it
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

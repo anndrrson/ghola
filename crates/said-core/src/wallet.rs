@@ -140,6 +140,25 @@ impl Wallet {
         &self.storage
     }
 
+    /// Derive Solana keypair bytes [secret(32) | pubkey(32)] from SAID seed.
+    /// Path: m / 0x534149' / 5' / 0' / 0
+    pub fn solana_keypair_bytes(&self) -> [u8; 64] {
+        let xprv = self.derive_provider_key(Provider::Solana, KeyType::Signing, 0);
+        let signing_key = crate::ucan::xprv_to_signing_key(&xprv);
+        let verifying_key = signing_key.verifying_key();
+        let mut result = [0u8; 64];
+        result[..32].copy_from_slice(signing_key.as_bytes());
+        result[32..].copy_from_slice(verifying_key.as_bytes());
+        result
+    }
+
+    /// Get the derived Solana public key (32 bytes).
+    pub fn solana_pubkey_bytes(&self) -> [u8; 32] {
+        let xprv = self.derive_provider_key(Provider::Solana, KeyType::Signing, 0);
+        let signing_key = crate::ucan::xprv_to_signing_key(&xprv);
+        *signing_key.verifying_key().as_bytes()
+    }
+
     /// Get the wallet directory path.
     pub fn wallet_dir(&self) -> &PathBuf {
         &self.wallet_dir
@@ -246,6 +265,24 @@ mod tests {
         let openai_pub = openai_key.public();
         let anthropic_pub = anthropic_key.public();
         assert_ne!(openai_pub.as_ref(), anthropic_pub.as_ref());
+    }
+
+    #[test]
+    fn solana_keypair_derivation() {
+        let dir = TempDir::new().unwrap();
+        let wallet_dir = dir.path().join(".said");
+        let (wallet, phrase) = Wallet::init(&wallet_dir).unwrap();
+
+        let kp1 = wallet.solana_keypair_bytes();
+        assert_eq!(kp1.len(), 64);
+        // Pubkey matches last 32 bytes of keypair
+        assert_eq!(&kp1[32..], &wallet.solana_pubkey_bytes());
+
+        // Deterministic: same phrase produces same keys
+        let dir2 = TempDir::new().unwrap();
+        let wallet_dir2 = dir2.path().join(".said");
+        let recovered = Wallet::recover(&phrase, &wallet_dir2).unwrap();
+        assert_eq!(kp1, recovered.solana_keypair_bytes());
     }
 
     #[test]

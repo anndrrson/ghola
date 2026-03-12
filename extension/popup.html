@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SAID</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="popup">
+    <header>
+      <h1>SAID</h1>
+      <p class="subtitle">Sovereign AI Identity</p>
+    </header>
+
+    <section class="status-section">
+      <div class="status-row">
+        <span class="status-dot" id="status-dot"></span>
+        <span class="status-text" id="status-text">Checking...</span>
+      </div>
+      <div class="did-display" id="did-display"></div>
+    </section>
+
+    <div class="mode-tabs">
+      <button class="mode-tab active" id="tab-daemon" data-mode="daemon">Local Daemon</button>
+      <button class="mode-tab" id="tab-cloud" data-mode="cloud">Cloud</button>
+    </div>
+
+    <!-- Daemon config (existing) -->
+    <section class="config-section" id="config-daemon">
+      <div class="field">
+        <label for="daemon-url">Daemon URL</label>
+        <div class="input-row">
+          <input type="text" id="daemon-url" placeholder="http://127.0.0.1:3000">
+          <button id="save-url">Save</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="token">UCAN Token</label>
+        <div class="input-row">
+          <input type="password" id="token" placeholder="Paste your UCAN token">
+          <button id="save-token">Save</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Cloud config -->
+    <section class="config-section" id="config-cloud" style="display:none">
+      <div class="field">
+        <label for="cloud-token">Cloud JWT Token</label>
+        <div class="input-row">
+          <input type="password" id="cloud-token" placeholder="Paste your JWT token">
+          <button id="save-cloud-token">Save</button>
+        </div>
+      </div>
+
+      <div class="cloud-divider">
+        <span>or log in</span>
+      </div>
+
+      <div class="field">
+        <label for="cloud-email">Email</label>
+        <input type="text" id="cloud-email" placeholder="you@example.com">
+      </div>
+
+      <div class="field">
+        <label for="cloud-password">Password</label>
+        <input type="password" id="cloud-password" placeholder="Password">
+      </div>
+
+      <button class="cloud-login-btn" id="cloud-login-btn">Log In</button>
+      <div class="cloud-login-error" id="cloud-login-error"></div>
+
+      <div class="cloud-link">
+        <a href="https://said.id" target="_blank">Create account at said.id</a>
+      </div>
+    </section>
+
+    <section class="capabilities-section" id="capabilities-section" style="display:none">
+      <h2>Capabilities</h2>
+      <ul id="capabilities-list"></ul>
+    </section>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

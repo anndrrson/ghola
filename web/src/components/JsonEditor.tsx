@@ -43,7 +43,7 @@ export function JsonEditor({
 
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-300 mb-1">
+      <label className="block text-sm font-medium text-[#8b95a8] mb-1">
         {label}
       </label>
       <textarea
@@ -55,10 +55,10 @@ export function JsonEditor({
         onBlur={handleBlur}
         placeholder={placeholder || '{ "key": "value" }'}
         rows={4}
-        className={`w-full rounded-md bg-gray-900 px-3 py-2 text-sm text-gray-100 font-mono placeholder-gray-600 border focus:outline-none focus:ring-1 ${
+        className={`w-full rounded-md bg-[#0f1117] px-3 py-2 text-sm text-[#eef1f8] font-mono placeholder-[#4a5568] border focus:outline-none focus:ring-1 ${
           error
             ? "border-red-500 focus:ring-red-500"
-            : "border-gray-700 focus:ring-said-500 focus:border-said-500"
+            : "border-[#1e2a3a] focus:ring-[#3da8ff] focus:border-[#3da8ff]"
         }`}
       />
       {error && <p className="mt-1 text-xs text-red-400">{error}</p>}

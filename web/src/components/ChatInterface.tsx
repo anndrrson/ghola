@@ -98,7 +98,7 @@ export default function ChatInterface({
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && (
           <div className="flex h-full items-center justify-center">
-            <p className="text-gray-600 text-sm">
+            <p className="text-[#4a5568] text-sm">
               Send a message to start chatting
             </p>
           </div>
@@ -111,8 +111,8 @@ export default function ChatInterface({
             <div
               className={`max-w-[80%] rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
                 msg.role === "user"
-                  ? "bg-coral-600 text-white"
-                  : "bg-gray-800 text-gray-200"
+                  ? "bg-[#C49240] text-[#eef1f8]"
+                  : "bg-[#161822] text-[#eef1f8]"
               }`}
             >
               {msg.content}
@@ -128,8 +128,8 @@ export default function ChatInterface({
         ))}
         <div ref={messagesEndRef} />
       </div>
-      <div className="border-t border-gray-800 p-4">
-        <div className="flex items-center gap-2 text-xs text-gray-500 mb-2">
+      <div className="border-t border-[#1e2a3a] p-4">
+        <div className="flex items-center gap-2 text-xs text-[#4a5568] mb-2">
           <span>Cost: ${pricePerQuery.toFixed(2)}/message</span>
           {balance !== null && <span>| Balance: ${balance.toFixed(2)}</span>}
         </div>
@@ -141,12 +141,12 @@ export default function ChatInterface({
             onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
             placeholder="Type a message..."
             disabled={isStreaming}
-            className="flex-1 rounded-xl border border-gray-700 bg-gray-800 px-4 py-2.5 text-sm text-white placeholder-gray-500 outline-none transition focus:border-coral-500"
+            className="flex-1 rounded-xl border border-[#1e2a3a] bg-[#161822] px-4 py-2.5 text-sm text-[#eef1f8] placeholder-[#4a5568] outline-none transition focus:border-[#D4A04A]"
           />
           <button
             onClick={handleSend}
             disabled={isStreaming || !input.trim()}
-            className="flex h-10 w-10 items-center justify-center rounded-xl bg-coral-600 text-white transition hover:bg-coral-500 disabled:opacity-50 disabled:hover:bg-coral-600"
+            className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#C49240] text-[#eef1f8] transition hover:bg-[#D4A04A] disabled:opacity-50 disabled:hover:bg-[#C49240]"
           >
             {isStreaming ? (
               <Loader2 className="h-4 w-4 animate-spin" />

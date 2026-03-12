@@ -12,6 +12,8 @@ path = "src/main.rs"
 said-core = { workspace = true }
 said-types = { workspace = true }
 said-mcp = { workspace = true }
+said-daemon = { workspace = true }
+said-solana = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -19,3 +21,5 @@ tokio = { workspace = true }
 dirs = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+bs58 = { workspace = true }
+ed25519-dalek = { workspace = true }

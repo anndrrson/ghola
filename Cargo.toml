@@ -2,8 +2,15 @@
 members = [
     "crates/said-types",
     "crates/said-core",
+    "crates/said-solana",
+    "crates/said-cloud",
+    "crates/said-wasm",
     "mcp-server",
     "cli",
+    "daemon",
+]
+exclude = [
+    "programs/said-registry",
 ]
 resolver = "2"
 
@@ -22,6 +29,8 @@ sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
 rand = "0.8"
 zeroize = { version = "1.3", features = ["derive"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+curve25519-dalek = { version = "4", features = ["digest"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -54,7 +63,15 @@ dirs = "6"
 base64 = "0.22"
 bs58 = "0.5"
 
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
 # Internal
 said-types = { path = "crates/said-types" }
 said-core = { path = "crates/said-core" }
+said-solana = { path = "crates/said-solana" }
 said-mcp = { path = "mcp-server" }
+said-daemon = { path = "daemon" }
+
+[profile.release]
+overflow-checks = true

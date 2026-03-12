@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
-import { getProfile, verifyDomain } from "@/lib/api";
+import { getProfile, verifyDomain, checkDomainVerification } from "@/lib/api";
 import type { BusinessProfile, DomainVerification } from "@/lib/types";
 import {
   Shield,
@@ -87,8 +87,25 @@ export default function VerifyPage() {
     }
   };
 
-  const handleVerifyNow = () => {
-    setStep("pending");
+  const handleVerifyNow = async () => {
+    setVerifying(true);
+    setError(null);
+    try {
+      const result = await checkDomainVerification();
+      if (result.verified) {
+        const prof = await getProfile();
+        setProfile(prof);
+        setStep("status");
+      } else {
+        setStep("pending");
+        if (result.message) setError(result.message);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Verification check failed");
+      setStep("pending");
+    } finally {
+      setVerifying(false);
+    }
   };
 
   const handleCopy = async (text: string) => {
@@ -126,7 +143,7 @@ export default function VerifyPage() {
   if (authLoading || !authenticated) {
     return (
       <div className="flex h-screen items-center justify-center pt-16">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-said-500 border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#3da8ff] border-t-transparent" />
       </div>
     );
   }
@@ -135,12 +152,12 @@ export default function VerifyPage() {
     <div className="mx-auto max-w-3xl px-4 py-24 sm:px-6 lg:px-8">
       <div className="mb-8">
         <div className="flex items-center gap-2">
-          <Shield className="h-6 w-6 text-said-400" />
-          <h1 className="text-2xl font-bold text-white">
+          <Shield className="h-6 w-6 text-[#3da8ff]" />
+          <h1 className="text-2xl font-bold text-[#eef1f8]">
             Domain Verification
           </h1>
         </div>
-        <p className="mt-1 text-gray-400">
+        <p className="mt-1 text-[#8b95a8]">
           Verify ownership of your domain to increase trust with AI agents
         </p>
       </div>
@@ -153,12 +170,12 @@ export default function VerifyPage() {
       )}
 
       {loading ? (
-        <div className="h-64 animate-pulse rounded-xl bg-gray-800" />
+        <div className="h-64 animate-pulse rounded-xl bg-[#161822]" />
       ) : profile?.verified_domain && step === "status" ? (
         /* Already Verified */
         <div className="rounded-xl border border-green-600/20 bg-green-900/10 p-8 text-center">
           <ShieldCheck className="mx-auto h-16 w-16 text-green-400 mb-4" />
-          <h2 className="text-xl font-semibold text-white mb-2">
+          <h2 className="text-xl font-semibold text-[#eef1f8] mb-2">
             Domain Verified
           </h2>
           <div className="inline-flex items-center gap-2 rounded-full bg-green-600/15 border border-green-600/25 px-4 py-2 mb-4">
@@ -168,7 +185,7 @@ export default function VerifyPage() {
             </span>
           </div>
           {profile.verified_at && (
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-[#4a5568]">
               Verified on{" "}
               {new Date(profile.verified_at).toLocaleDateString("en-US", {
                 year: "numeric",
@@ -177,7 +194,7 @@ export default function VerifyPage() {
               })}
             </p>
           )}
-          <p className="mt-4 text-sm text-gray-400 max-w-md mx-auto">
+          <p className="mt-4 text-sm text-[#8b95a8] max-w-md mx-auto">
             AI agents will see a verified badge next to your business identity,
             increasing trust and discoverability.
           </p>
@@ -187,12 +204,12 @@ export default function VerifyPage() {
         <div className="space-y-6">
           {/* Domain being verified */}
           {domain && (
-            <div className="flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800 px-4 py-3">
-              <Globe className="h-4 w-4 text-gray-400" />
-              <span className="text-sm text-gray-400">
+            <div className="flex items-center gap-2 rounded-lg border border-[#1e2a3a] bg-[#161822] px-4 py-3">
+              <Globe className="h-4 w-4 text-[#8b95a8]" />
+              <span className="text-sm text-[#8b95a8]">
                 Verifying domain:
               </span>
-              <span className="text-sm font-medium text-white">{domain}</span>
+              <span className="text-sm font-medium text-[#eef1f8]">{domain}</span>
             </div>
           )}
 
@@ -204,21 +221,21 @@ export default function VerifyPage() {
                   <div
                     className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-medium ${
                       i <= stepIndex
-                        ? "bg-said-600 text-white"
-                        : "bg-gray-700 text-gray-500"
+                        ? "bg-[#2b96f0] text-[#eef1f8]"
+                        : "bg-[#1c1f2e] text-[#4a5568]"
                     }`}
                   >
                     {i + 1}
                   </div>
                   <span
                     className={`text-sm ${
-                      i <= stepIndex ? "text-gray-200" : "text-gray-600"
+                      i <= stepIndex ? "text-[#eef1f8]" : "text-[#4a5568]"
                     }`}
                   >
                     {s.label}
                   </span>
                   {i < steps.length - 1 && (
-                    <ChevronRight className="h-4 w-4 text-gray-600 mx-1" />
+                    <ChevronRight className="h-4 w-4 text-[#4a5568] mx-1" />
                   )}
                 </div>
               ))}
@@ -231,43 +248,43 @@ export default function VerifyPage() {
               <button
                 onClick={() => handleSelectMethod("dns")}
                 disabled={verifying}
-                className="group rounded-xl border border-gray-700 bg-gray-800 p-6 text-left hover:border-said-500/50 hover:bg-gray-800/80 transition-all cursor-pointer disabled:opacity-50"
+                className="group rounded-xl border border-[#1e2a3a] bg-[#161822] p-6 text-left hover:border-[#3da8ff]/50 hover:bg-[#161822]/80 transition-all cursor-pointer disabled:opacity-50"
               >
                 <div className="flex items-center gap-3 mb-3">
-                  <div className="rounded-lg bg-said-600/10 border border-said-600/20 p-2.5">
-                    <Globe className="h-5 w-5 text-said-400" />
+                  <div className="rounded-lg bg-[#2b96f0]/10 border border-[#2b96f0]/20 p-2.5">
+                    <Globe className="h-5 w-5 text-[#3da8ff]" />
                   </div>
-                  <h3 className="text-base font-semibold text-white">
+                  <h3 className="text-base font-semibold text-[#eef1f8]">
                     DNS TXT Record
                   </h3>
                 </div>
-                <p className="text-sm text-gray-400 leading-relaxed">
+                <p className="text-sm text-[#8b95a8] leading-relaxed">
                   Add a TXT record to your domain&apos;s DNS configuration.
                   Recommended for most users.
                 </p>
                 {verifying && method === "dns" && (
-                  <Loader2 className="mt-3 h-4 w-4 animate-spin text-said-400" />
+                  <Loader2 className="mt-3 h-4 w-4 animate-spin text-[#3da8ff]" />
                 )}
               </button>
               <button
                 onClick={() => handleSelectMethod("well-known")}
                 disabled={verifying}
-                className="group rounded-xl border border-gray-700 bg-gray-800 p-6 text-left hover:border-said-500/50 hover:bg-gray-800/80 transition-all cursor-pointer disabled:opacity-50"
+                className="group rounded-xl border border-[#1e2a3a] bg-[#161822] p-6 text-left hover:border-[#3da8ff]/50 hover:bg-[#161822]/80 transition-all cursor-pointer disabled:opacity-50"
               >
                 <div className="flex items-center gap-3 mb-3">
-                  <div className="rounded-lg bg-said-600/10 border border-said-600/20 p-2.5">
-                    <FileText className="h-5 w-5 text-said-400" />
+                  <div className="rounded-lg bg-[#2b96f0]/10 border border-[#2b96f0]/20 p-2.5">
+                    <FileText className="h-5 w-5 text-[#3da8ff]" />
                   </div>
-                  <h3 className="text-base font-semibold text-white">
+                  <h3 className="text-base font-semibold text-[#eef1f8]">
                     Well-Known File
                   </h3>
                 </div>
-                <p className="text-sm text-gray-400 leading-relaxed">
+                <p className="text-sm text-[#8b95a8] leading-relaxed">
                   Host a JSON file at a well-known path on your website.
                   Good if you can&apos;t modify DNS.
                 </p>
                 {verifying && method === "well-known" && (
-                  <Loader2 className="mt-3 h-4 w-4 animate-spin text-said-400" />
+                  <Loader2 className="mt-3 h-4 w-4 animate-spin text-[#3da8ff]" />
                 )}
               </button>
             </div>
@@ -275,24 +292,24 @@ export default function VerifyPage() {
 
           {/* Step 2: Instructions */}
           {step === "instructions" && verification && (
-            <div className="rounded-xl border border-gray-700 bg-gray-800 p-6">
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#161822] p-6">
               {method === "dns" ? (
                 <>
-                  <h2 className="text-lg font-semibold text-white mb-2">
+                  <h2 className="text-lg font-semibold text-[#eef1f8] mb-2">
                     Add a DNS TXT Record
                   </h2>
-                  <p className="text-sm text-gray-400 mb-4">
+                  <p className="text-sm text-[#8b95a8] mb-4">
                     Go to your DNS provider and add the following TXT record to{" "}
-                    <span className="font-medium text-white">{domain}</span>:
+                    <span className="font-medium text-[#eef1f8]">{domain}</span>:
                   </p>
-                  <div className="rounded-lg border border-gray-700 bg-gray-950 p-4">
+                  <div className="rounded-lg border border-[#1e2a3a] bg-[#08090d] p-4">
                     <div className="flex items-center justify-between gap-3">
-                      <code className="text-sm font-mono text-said-300 break-all">
+                      <code className="text-sm font-mono text-[#5bb8ff] break-all">
                         {dnsRecord}
                       </code>
                       <button
                         onClick={() => handleCopy(dnsRecord)}
-                        className="flex-shrink-0 rounded-md bg-gray-800 border border-gray-600 p-2 text-gray-400 hover:text-white hover:border-gray-500 transition-colors cursor-pointer"
+                        className="flex-shrink-0 rounded-md bg-[#161822] border border-[#1e2a3a] p-2 text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] transition-colors cursor-pointer"
                         title="Copy to clipboard"
                       >
                         {copied ? (
@@ -303,41 +320,41 @@ export default function VerifyPage() {
                       </button>
                     </div>
                   </div>
-                  <div className="mt-4 rounded-lg border border-gray-700/50 bg-gray-900/50 p-4">
-                    <h3 className="text-sm font-medium text-gray-300 mb-2">
+                  <div className="mt-4 rounded-lg border border-[#1e2a3a]/50 bg-[#0f1117] p-4">
+                    <h3 className="text-sm font-medium text-[#8b95a8] mb-2">
                       Instructions
                     </h3>
-                    <ol className="space-y-1.5 text-sm text-gray-400 list-decimal list-inside">
+                    <ol className="space-y-1.5 text-sm text-[#8b95a8] list-decimal list-inside">
                       <li>Log in to your DNS provider (e.g., Cloudflare, Namecheap, Route 53)</li>
-                      <li>Navigate to DNS settings for <span className="text-white">{domain}</span></li>
+                      <li>Navigate to DNS settings for <span className="text-[#eef1f8]">{domain}</span></li>
                       <li>Add a new TXT record with the value above</li>
-                      <li>Set the host/name to <code className="text-gray-300">@</code> (root domain)</li>
+                      <li>Set the host/name to <code className="text-[#8b95a8]">@</code> (root domain)</li>
                       <li>Save and wait for DNS propagation (may take up to 24 hours)</li>
                     </ol>
                   </div>
                 </>
               ) : (
                 <>
-                  <h2 className="text-lg font-semibold text-white mb-2">
+                  <h2 className="text-lg font-semibold text-[#eef1f8] mb-2">
                     Create a Well-Known Verification File
                   </h2>
-                  <p className="text-sm text-gray-400 mb-4">
+                  <p className="text-sm text-[#8b95a8] mb-4">
                     Create a file at{" "}
-                    <code className="text-gray-300">
+                    <code className="text-[#8b95a8]">
                       /.well-known/said-verify.json
                     </code>{" "}
                     on{" "}
-                    <span className="font-medium text-white">{domain}</span>{" "}
+                    <span className="font-medium text-[#eef1f8]">{domain}</span>{" "}
                     with this content:
                   </p>
-                  <div className="rounded-lg border border-gray-700 bg-gray-950 p-4">
+                  <div className="rounded-lg border border-[#1e2a3a] bg-[#08090d] p-4">
                     <div className="flex items-start justify-between gap-3">
-                      <pre className="text-sm font-mono text-said-300 overflow-x-auto">
+                      <pre className="text-sm font-mono text-[#5bb8ff] overflow-x-auto">
                         {wellKnownJson}
                       </pre>
                       <button
                         onClick={() => handleCopy(wellKnownJson)}
-                        className="flex-shrink-0 rounded-md bg-gray-800 border border-gray-600 p-2 text-gray-400 hover:text-white hover:border-gray-500 transition-colors cursor-pointer"
+                        className="flex-shrink-0 rounded-md bg-[#161822] border border-[#1e2a3a] p-2 text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] transition-colors cursor-pointer"
                         title="Copy to clipboard"
                       >
                         {copied ? (
@@ -348,15 +365,15 @@ export default function VerifyPage() {
                       </button>
                     </div>
                   </div>
-                  <div className="mt-4 rounded-lg border border-gray-700/50 bg-gray-900/50 p-4">
-                    <h3 className="text-sm font-medium text-gray-300 mb-2">
+                  <div className="mt-4 rounded-lg border border-[#1e2a3a]/50 bg-[#0f1117] p-4">
+                    <h3 className="text-sm font-medium text-[#8b95a8] mb-2">
                       Instructions
                     </h3>
-                    <ol className="space-y-1.5 text-sm text-gray-400 list-decimal list-inside">
-                      <li>Create a <code className="text-gray-300">.well-known</code> directory at your site root (if it does not exist)</li>
-                      <li>Create a file named <code className="text-gray-300">said-verify.json</code> inside it</li>
+                    <ol className="space-y-1.5 text-sm text-[#8b95a8] list-decimal list-inside">
+                      <li>Create a <code className="text-[#8b95a8]">.well-known</code> directory at your site root (if it does not exist)</li>
+                      <li>Create a file named <code className="text-[#8b95a8]">said-verify.json</code> inside it</li>
                       <li>Paste the JSON content above into the file</li>
-                      <li>Deploy your site so the file is publicly accessible at <code className="text-gray-300">https://{domain}/.well-known/said-verify.json</code></li>
+                      <li>Deploy your site so the file is publicly accessible at <code className="text-[#8b95a8]">https://{domain}/.well-known/said-verify.json</code></li>
                     </ol>
                   </div>
                 </>
@@ -365,9 +382,10 @@ export default function VerifyPage() {
               <div className="mt-6 flex gap-3">
                 <button
                   onClick={handleVerifyNow}
-                  className="rounded-lg bg-said-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-said-500 transition-colors cursor-pointer"
+                  disabled={verifying}
+                  className="rounded-lg bg-[#2b96f0] px-5 py-2.5 text-sm font-medium text-[#eef1f8] hover:bg-[#3da8ff] transition-colors cursor-pointer disabled:opacity-50"
                 >
-                  Verify Now
+                  {verifying ? "Checking..." : "Verify Now"}
                 </button>
                 <button
                   onClick={() => {
@@ -376,7 +394,7 @@ export default function VerifyPage() {
                     setVerification(null);
                     setCopied(false);
                   }}
-                  className="rounded-lg border border-gray-600 bg-gray-800 px-5 py-2.5 text-sm font-medium text-gray-300 hover:bg-gray-700 transition-colors cursor-pointer"
+                  className="rounded-lg border border-[#1e2a3a] bg-[#161822] px-5 py-2.5 text-sm font-medium text-[#8b95a8] hover:bg-[#1c1f2e] transition-colors cursor-pointer"
                 >
                   Back
                 </button>
@@ -386,32 +404,39 @@ export default function VerifyPage() {
 
           {/* Step 3: Pending */}
           {step === "pending" && (
-            <div className="rounded-xl border border-said-600/20 bg-said-900/10 p-8 text-center">
-              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-said-600/10 border border-said-600/20">
-                <Shield className="h-8 w-8 text-said-400" />
+            <div className="rounded-xl border border-[#2b96f0]/20 bg-[#0a1929]/10 p-8 text-center">
+              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-[#2b96f0]/10 border border-[#2b96f0]/20">
+                <Shield className="h-8 w-8 text-[#3da8ff]" />
               </div>
-              <h2 className="text-xl font-semibold text-white mb-2">
+              <h2 className="text-xl font-semibold text-[#eef1f8] mb-2">
                 Verification Pending
               </h2>
-              <p className="text-sm text-gray-400 max-w-md mx-auto mb-4">
+              <p className="text-sm text-[#8b95a8] max-w-md mx-auto mb-4">
                 We will periodically check your{" "}
                 {method === "dns" ? "DNS TXT record" : "well-known file"} for{" "}
-                <span className="font-medium text-white">{domain}</span>. This
+                <span className="font-medium text-[#eef1f8]">{domain}</span>. This
                 usually takes a few minutes but can take up to 24 hours for DNS
                 changes to propagate.
               </p>
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-[#4a5568]">
                 You will be notified once verification is complete. You can
                 safely leave this page.
               </p>
-              <div className="mt-6">
+              <div className="mt-6 flex gap-3 justify-center">
+                <button
+                  onClick={handleVerifyNow}
+                  disabled={verifying}
+                  className="rounded-lg bg-[#2b96f0] px-5 py-2.5 text-sm font-medium text-[#eef1f8] hover:bg-[#3da8ff] transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {verifying ? "Checking..." : "Check Again"}
+                </button>
                 <button
                   onClick={() => {
                     setStep("choose");
                     setMethod(null);
                     setVerification(null);
                   }}
-                  className="rounded-lg border border-gray-600 bg-gray-800 px-5 py-2.5 text-sm font-medium text-gray-300 hover:bg-gray-700 transition-colors cursor-pointer"
+                  className="rounded-lg border border-[#1e2a3a] bg-[#161822] px-5 py-2.5 text-sm font-medium text-[#8b95a8] hover:bg-[#1c1f2e] transition-colors cursor-pointer"
                 >
                   Start Over
                 </button>

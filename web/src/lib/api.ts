@@ -7,6 +7,8 @@ import type {
   AnalyticsTimeline,
   AgentStats,
   DiscoveryFunnel,
+  InferenceNode,
+  NodeHeartbeat,
   Model,
   ModelsResponse,
   CreatorStats,
@@ -18,15 +20,15 @@ const API_BASE =
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("said_token");
+  return localStorage.getItem("ghola_token");
 }
 
 export function setToken(token: string) {
-  localStorage.setItem("said_token", token);
+  localStorage.setItem("ghola_token", token);
 }
 
 export function clearToken() {
-  localStorage.removeItem("said_token");
+  localStorage.removeItem("ghola_token");
 }
 
 async function apiFetch<T>(
@@ -114,6 +116,17 @@ export async function verifyDomain(
   });
 }
 
+export async function checkDomainVerification(): Promise<{
+  verified: boolean;
+  domain?: string;
+  message?: string;
+}> {
+  return apiFetch<{ verified: boolean; domain?: string; message?: string }>(
+    "/business/check-domain-verification",
+    { method: "POST" }
+  );
+}
+
 // Generated Files
 
 export async function getAgentsTxt(): Promise<string> {
@@ -191,10 +204,10 @@ export async function getBillingStatus(): Promise<BillingStatus> {
   return apiFetch<BillingStatus>("/billing/status");
 }
 
-export async function createCheckout(tier: string): Promise<{ checkout_url: string }> {
+export async function createCheckout(product: string): Promise<{ checkout_url: string }> {
   return apiFetch<{ checkout_url: string }>("/billing/create-checkout", {
     method: "POST",
-    body: JSON.stringify({ tier }),
+    body: JSON.stringify({ product }),
   });
 }
 
@@ -226,6 +239,44 @@ export async function requestBadge(notes?: string): Promise<{ status: string; me
   });
 }
 
+// ── Inference Nodes API ──
+
+export async function registerNode(data: {
+  endpoint_url: string;
+  models_served: string[];
+  price_per_query_micro_usdc?: number;
+  region?: string;
+  description?: string;
+}) {
+  return apiFetch<InferenceNode>("/nodes/register", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getNodes(params?: { model?: string; region?: string }) {
+  const sp = new URLSearchParams();
+  if (params?.model) sp.set("model", params.model);
+  if (params?.region) sp.set("region", params.region);
+  const qs = sp.toString();
+  return apiFetch<{ nodes: InferenceNode[]; total: number }>(`/nodes${qs ? `?${qs}` : ""}`);
+}
+
+export async function getNode(id: string) {
+  return apiFetch<{ node: InferenceNode; heartbeats: NodeHeartbeat[] }>(`/nodes/${id}`);
+}
+
+export async function updateNode(id: string, data: Partial<InferenceNode>) {
+  return apiFetch<InferenceNode>(`/nodes/manage/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteNode(id: string) {
+  return apiFetch<void>(`/nodes/manage/${id}`, { method: "DELETE" });
+}
+
 // ══════════════════════════════════════════════════════════════
 // Orni Models API
 // ══════════════════════════════════════════════════════════════
@@ -235,15 +286,15 @@ const ORNI_API_BASE =
 
 function getOrniToken(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("orni_token");
+  return localStorage.getItem("ghola_orni_token");
 }
 
 function setOrniToken(token: string) {
-  localStorage.setItem("orni_token", token);
+  localStorage.setItem("ghola_orni_token", token);
 }
 
 export function clearOrniToken() {
-  localStorage.removeItem("orni_token");
+  localStorage.removeItem("ghola_orni_token");
 }
 
 async function orniFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -263,6 +314,15 @@ async function orniFetch<T>(path: string, options: RequestInit = {}): Promise<T>
   const text = await res.text();
   if (!text) return undefined as T;
   return JSON.parse(text);
+}
+
+// Orni Identity
+
+export async function linkDid(did: string, saidToken: string) {
+  return orniFetch<{ message: string }>("/identity/link", {
+    method: "POST",
+    body: JSON.stringify({ did, said_token: saidToken }),
+  });
 }
 
 // Orni Auth
@@ -455,4 +515,5 @@ export const orniApi = {
   addContent,
   startFineTune,
   clearOrniToken,
+  linkDid,
 };

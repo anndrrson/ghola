@@ -30,7 +30,7 @@ export default function CreatorDashboard() {
     return (
       <div className="mx-auto max-w-7xl px-4 py-16 text-center">
         <h1 className="mb-4 text-2xl font-bold">Creator Dashboard</h1>
-        <p className="text-gray-400">Connect your wallet to access your dashboard.</p>
+        <p className="text-[#8b95a8]">Connect your wallet to access your dashboard.</p>
       </div>
     );
   }
@@ -39,12 +39,12 @@ export default function CreatorDashboard() {
     return (
       <div className="mx-auto max-w-7xl px-4 py-16 text-center">
         <h1 className="mb-4 text-2xl font-bold">Become a Creator</h1>
-        <p className="mb-6 text-gray-400">
+        <p className="mb-6 text-[#8b95a8]">
           Creator accounts are currently invite-only. Check back soon!
         </p>
         <button
           onClick={() => router.push("/")}
-          className="rounded-xl bg-coral-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-coral-500"
+          className="rounded-xl bg-[#C49240] px-6 py-2.5 text-sm font-semibold text-[#eef1f8] hover:bg-[#D4A04A]"
         >
           Back to Home
         </button>
@@ -58,7 +58,7 @@ export default function CreatorDashboard() {
         <h1 className="text-3xl font-bold">Creator Dashboard</h1>
         <Link
           href="/models/creator/new"
-          className="inline-flex items-center gap-2 rounded-xl bg-coral-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-coral-600 transition-colors"
+          className="inline-flex items-center gap-2 rounded-xl bg-[#D4A04A] px-5 py-2.5 text-sm font-semibold text-[#eef1f8] hover:bg-[#C49240] transition-colors"
         >
           <Plus className="h-4 w-4" />
           Create Model
@@ -69,7 +69,7 @@ export default function CreatorDashboard() {
       {loading ? (
         <div className="mb-8 grid gap-4 md:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="h-28 animate-pulse rounded-xl bg-gray-900" />
+            <div key={i} className="h-28 animate-pulse rounded-xl bg-[#0f1117]" />
           ))}
         </div>
       ) : (
@@ -95,11 +95,11 @@ export default function CreatorDashboard() {
             ].map((s) => (
               <div
                 key={s.label}
-                className="rounded-xl border border-gray-800 bg-gray-900 p-5"
+                className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5"
               >
-                <s.icon className="mb-2 h-5 w-5 text-coral-400" />
+                <s.icon className="mb-2 h-5 w-5 text-[#D4A04A]" />
                 <p className="text-2xl font-bold">{s.value}</p>
-                <p className="text-xs text-gray-500">{s.label}</p>
+                <p className="text-xs text-[#4a5568]">{s.label}</p>
               </div>
             ))}
           </div>
@@ -111,7 +111,7 @@ export default function CreatorDashboard() {
       {loading ? (
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-20 animate-pulse rounded-xl bg-gray-900" />
+            <div key={i} className="h-20 animate-pulse rounded-xl bg-[#0f1117]" />
           ))}
         </div>
       ) : models.length > 0 ? (
@@ -119,15 +119,15 @@ export default function CreatorDashboard() {
           {models.map((m) => (
             <div
               key={m.id}
-              className="flex items-center justify-between rounded-xl border border-gray-800 bg-gray-900 p-4"
+              className="flex items-center justify-between rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-4"
             >
               <div className="flex items-center gap-4">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-coral-500/10">
-                  <Bot className="h-5 w-5 text-coral-400" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#D4A04A]/10">
+                  <Bot className="h-5 w-5 text-[#D4A04A]" />
                 </div>
                 <div>
                   <h3 className="font-semibold">{m.name}</h3>
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-[#4a5568]">
                     {m.total_queries.toLocaleString()} queries | $
                     {m.price_per_query.toFixed(2)}/query
                   </p>
@@ -140,14 +140,14 @@ export default function CreatorDashboard() {
                       ? "bg-green-500/10 text-green-400"
                       : m.status === "draft"
                         ? "bg-yellow-500/10 text-yellow-400"
-                        : "bg-gray-500/10 text-gray-400"
+                        : "bg-[#1c1f2e] text-[#8b95a8]"
                   }`}
                 >
                   {m.status}
                 </span>
                 <Link
                   href={`/models/${m.slug}`}
-                  className="rounded-lg bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700"
+                  className="rounded-lg bg-[#161822] px-3 py-1.5 text-xs text-[#8b95a8] hover:bg-[#1c1f2e]"
                 >
                   View
                 </Link>
@@ -156,11 +156,11 @@ export default function CreatorDashboard() {
           ))}
         </div>
       ) : (
-        <div className="rounded-xl border border-gray-800 bg-gray-900/50 py-12 text-center">
-          <p className="mb-4 text-gray-500">You haven&apos;t created any models yet.</p>
+        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] py-12 text-center">
+          <p className="mb-4 text-[#4a5568]">You haven&apos;t created any models yet.</p>
           <Link
             href="/models/creator/new"
-            className="inline-flex items-center gap-2 rounded-xl bg-coral-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-coral-500"
+            className="inline-flex items-center gap-2 rounded-xl bg-[#C49240] px-5 py-2.5 text-sm font-semibold text-[#eef1f8] hover:bg-[#D4A04A]"
           >
             <Plus className="h-4 w-4" />
             Create Your First Model

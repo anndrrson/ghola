@@ -51,4 +51,7 @@ pub enum SaidError {
 
     #[error("insufficient capability: requires {0}")]
     InsufficientCapability(String),
+
+    #[error("solana error: {0}")]
+    Solana(String),
 }

@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "SAID - Sovereign AI Identity",
+  "version": "0.1.0",
+  "description": "Your AI identity follows you everywhere. Portable context for ChatGPT, Claude, and more.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "http://127.0.0.1:3000/*",
+    "https://api.said.id/*",
+    "https://*.said.id/*",
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"],
+      "js": ["content-chatgpt.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["content-claude.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "icons": {}
+}

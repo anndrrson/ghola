@@ -42,7 +42,7 @@ function AuthHandler({
       const wallet = publicKey.toBase58();
       const { nonce } = await orniGetNonce(wallet);
       const message = new TextEncoder().encode(
-        `Sign in to Kinakuta Models\nNonce: ${nonce}`
+        `Sign in to Ghola Models\nNonce: ${nonce}`
       );
       const sig = await signMessage(message);
       const { is_creator } = await orniVerifySignature(
@@ -88,7 +88,7 @@ export const AppWalletProvider: FC<{ children: ReactNode }> = ({
     setAuthState(state);
     if (typeof window !== "undefined") {
       window.dispatchEvent(
-        new CustomEvent("kinakuta-wallet-auth", { detail: state })
+        new CustomEvent("ghola-wallet-auth", { detail: state })
       );
     }
   }, []);

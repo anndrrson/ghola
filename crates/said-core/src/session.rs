@@ -2,16 +2,43 @@
 
 use std::time::Duration;
 
+use base64::Engine;
+use ed25519_dalek::VerifyingKey;
 use uuid::Uuid;
 
 use said_types::{Capability, KeyType, Provider, ProviderSession};
 
 use crate::error::{Result, SaidError};
 use crate::ucan::{
-    capabilities_from_payload, create_ucan, verify_ucan, xprv_to_signing_key,
-    xprv_to_verifying_key,
+    capabilities_from_payload, create_ucan, delegate_ucan, verify_ucan_chain,
+    xprv_to_signing_key, xprv_to_verifying_key,
 };
+use crate::ucan::UcanPayload;
 use crate::wallet::Wallet;
+
+/// Walk the proof chain to find the root token string.
+/// If the payload has no proofs, the token itself is the root.
+/// Returns an owned String since intermediate tokens are embedded inside JWT payloads.
+fn find_root_token(token: &str, payload: &UcanPayload) -> String {
+    if payload.prf.is_empty() {
+        return token.to_string();
+    }
+    // Walk down prf[0] recursively
+    let parent = &payload.prf[0];
+    let parts: Vec<&str> = parent.splitn(3, '.').collect();
+    if parts.len() != 3 {
+        return parent.clone();
+    }
+    let payload_bytes = match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1]) {
+        Ok(b) => b,
+        Err(_) => return parent.clone(),
+    };
+    let parent_payload: UcanPayload = match serde_json::from_slice(&payload_bytes) {
+        Ok(p) => p,
+        Err(_) => return parent.clone(),
+    };
+    find_root_token(parent, &parent_payload)
+}
 
 impl Wallet {
     /// Grant a provider access by creating a UCAN token and persisting the session.
@@ -80,6 +107,11 @@ impl Wallet {
 
     /// Verify an incoming request token and check that it grants the required capability.
     ///
+    /// Supports both root tokens (issued directly by the master key) and
+    /// delegated tokens (with `prf` chain). For delegated tokens, the full
+    /// chain is verified back to the root issuer, and the root token is
+    /// matched against a known session.
+    ///
     /// Returns the matching session if valid.
     pub fn verify_request(
         &self,
@@ -90,18 +122,20 @@ impl Wallet {
         let master_xprv = self.derive_provider_key(Provider::Master, KeyType::Signing, 0);
         let master_pub = xprv_to_verifying_key(&master_xprv);
 
-        // Verify the UCAN (checks signature + expiry)
-        let payload = verify_ucan(token, &master_pub)?;
+        // Verify the UCAN chain (handles both root and delegated tokens)
+        let payload = verify_ucan_chain(token, &master_pub)?;
 
-        // Look up the session by token
+        // Look up the session — for delegated tokens, find the root session
+        // by walking the proof chain to the root token
         let sessions: Vec<ProviderSession> = self
             .storage()
             .load("sessions")
             .unwrap_or_default();
 
+        let root_token = find_root_token(token, &payload);
         let session = sessions
             .into_iter()
-            .find(|s| s.token == token)
+            .find(|s| s.token == token || s.token == root_token.as_str())
             .ok_or_else(|| SaidError::Auth("unknown session token".into()))?;
 
         // Check revocation
@@ -109,7 +143,7 @@ impl Wallet {
             return Err(SaidError::SessionRevoked);
         }
 
-        // Check capability
+        // Check capability from the verified (leaf) payload
         let token_caps = capabilities_from_payload(&payload);
         let has_cap = token_caps.iter().any(|c| c.grants(required_cap));
         if !has_cap {
@@ -119,6 +153,50 @@ impl Wallet {
         }
 
         Ok(session)
+    }
+
+    /// Delegate a provider session's token to an agent.
+    ///
+    /// Finds the parent session by ID, verifies it is active, derives the
+    /// provider signing key used for that session, and creates a delegated
+    /// UCAN for the agent's public key with the given capabilities.
+    pub fn delegate_to_agent(
+        &self,
+        parent_session_id: Uuid,
+        agent_pub: &VerifyingKey,
+        capabilities: Vec<Capability>,
+        expires_in: Duration,
+    ) -> Result<String> {
+        let sessions: Vec<ProviderSession> = self
+            .storage()
+            .load("sessions")
+            .unwrap_or_default();
+
+        let parent_session = sessions
+            .iter()
+            .find(|s| s.id == parent_session_id)
+            .ok_or_else(|| SaidError::NotFound(format!("session {}", parent_session_id)))?;
+
+        if parent_session.revoked {
+            return Err(SaidError::SessionRevoked);
+        }
+
+        let now = chrono::Utc::now();
+        if parent_session.expires_at <= now {
+            return Err(SaidError::SessionExpired);
+        }
+
+        // Derive the provider signing key (the audience of the parent token)
+        let provider_xprv = self.derive_provider_key(parent_session.provider, KeyType::Signing, 0);
+        let provider_signing = xprv_to_signing_key(&provider_xprv);
+
+        delegate_ucan(
+            &parent_session.token,
+            &provider_signing,
+            agent_pub,
+            &capabilities,
+            expires_in,
+        )
     }
 
     /// Get the master public key as a `did:key` string.

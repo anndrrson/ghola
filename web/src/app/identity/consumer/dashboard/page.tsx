@@ -57,7 +57,7 @@ export default function ConsumerDashboardPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-said-500 border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#3da8ff] border-t-transparent" />
       </div>
     );
   }
@@ -68,30 +68,30 @@ export default function ConsumerDashboardPage() {
     <div className="space-y-8">
       {/* Welcome header */}
       <div>
-        <h1 className="text-2xl font-bold text-white">
+        <h1 className="text-2xl font-bold text-[#eef1f8]">
           Welcome back{profile?.display_name ? `, ${profile.display_name}` : ""}
         </h1>
-        <p className="mt-1 text-gray-400">
+        <p className="mt-1 text-[#8b95a8]">
           Manage your sovereign AI identity.
         </p>
       </div>
 
       {/* DID display */}
       {profile?.did && (
-        <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-5">
+        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5">
           <div className="flex items-center gap-3 mb-2">
-            <Fingerprint className="h-5 w-5 text-said-400" />
-            <span className="text-sm font-medium text-gray-300">
+            <Fingerprint className="h-5 w-5 text-[#3da8ff]" />
+            <span className="text-sm font-medium text-[#8b95a8]">
               Your Decentralized Identifier
             </span>
           </div>
           <div className="flex items-center gap-3">
-            <code className="flex-1 rounded-lg bg-gray-800 px-4 py-2.5 text-sm text-gray-300 font-mono overflow-x-auto">
+            <code className="flex-1 rounded-lg bg-[#161822] px-4 py-2.5 text-sm text-[#8b95a8] font-mono overflow-x-auto">
               {profile.did}
             </code>
             <button
               onClick={copyDid}
-              className="shrink-0 rounded-lg bg-gray-800 p-2.5 text-gray-400 hover:text-white transition-colors cursor-pointer"
+              className="shrink-0 rounded-lg bg-[#161822] p-2.5 text-[#8b95a8] hover:text-[#eef1f8] transition-colors cursor-pointer"
               title="Copy DID"
             >
               {copied ? (
@@ -110,23 +110,23 @@ export default function ConsumerDashboardPage() {
       )}
 
       {/* Profile completeness */}
-      <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-5">
+      <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5">
         <div className="flex items-center justify-between mb-3">
-          <span className="text-sm font-medium text-gray-300">
+          <span className="text-sm font-medium text-[#8b95a8]">
             Profile Completeness
           </span>
-          <span className="text-sm font-semibold text-said-400">
+          <span className="text-sm font-semibold text-[#3da8ff]">
             {completeness}%
           </span>
         </div>
-        <div className="h-2 rounded-full bg-gray-800 overflow-hidden">
+        <div className="h-2 rounded-full bg-[#161822] overflow-hidden">
           <div
-            className="h-full rounded-full bg-said-500 transition-all duration-500"
+            className="h-full rounded-full bg-[#3da8ff] transition-all duration-500"
             style={{ width: `${completeness}%` }}
           />
         </div>
         {completeness < 100 && (
-          <p className="mt-2 text-xs text-gray-500">
+          <p className="mt-2 text-xs text-[#4a5568]">
             Complete your profile so AI agents can better personalize your experience.
           </p>
         )}
@@ -136,39 +136,39 @@ export default function ConsumerDashboardPage() {
       <div className="grid gap-4 sm:grid-cols-3">
         <Link
           href="/identity/consumer/dashboard/profile"
-          className="group rounded-xl border border-gray-800 bg-gray-900/60 p-5 hover:border-said-500/40 transition-colors"
+          className="group rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5 hover:border-[#3da8ff]/40 transition-colors"
         >
-          <UserCircle className="h-8 w-8 text-said-400 mb-3" />
-          <h3 className="text-sm font-semibold text-white group-hover:text-said-400 transition-colors">
+          <UserCircle className="h-8 w-8 text-[#3da8ff] mb-3" />
+          <h3 className="text-sm font-semibold text-[#eef1f8] group-hover:text-[#3da8ff] transition-colors">
             Edit Profile
           </h3>
-          <p className="mt-1 text-xs text-gray-500">
+          <p className="mt-1 text-xs text-[#4a5568]">
             Update your display name, preferences, and agent settings.
           </p>
         </Link>
 
         <Link
           href="/identity/consumer/dashboard/connections"
-          className="group rounded-xl border border-gray-800 bg-gray-900/60 p-5 hover:border-said-500/40 transition-colors"
+          className="group rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5 hover:border-[#3da8ff]/40 transition-colors"
         >
-          <Plug className="h-8 w-8 text-said-400 mb-3" />
-          <h3 className="text-sm font-semibold text-white group-hover:text-said-400 transition-colors">
+          <Plug className="h-8 w-8 text-[#3da8ff] mb-3" />
+          <h3 className="text-sm font-semibold text-[#eef1f8] group-hover:text-[#3da8ff] transition-colors">
             Manage AI Connections
           </h3>
-          <p className="mt-1 text-xs text-gray-500">
+          <p className="mt-1 text-xs text-[#4a5568]">
             Connect your identity to Claude, ChatGPT, and more.
           </p>
         </Link>
 
         <Link
           href="/identity/consumer/dashboard/export"
-          className="group rounded-xl border border-gray-800 bg-gray-900/60 p-5 hover:border-said-500/40 transition-colors"
+          className="group rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5 hover:border-[#3da8ff]/40 transition-colors"
         >
-          <Download className="h-8 w-8 text-said-400 mb-3" />
-          <h3 className="text-sm font-semibold text-white group-hover:text-said-400 transition-colors">
+          <Download className="h-8 w-8 text-[#3da8ff] mb-3" />
+          <h3 className="text-sm font-semibold text-[#eef1f8] group-hover:text-[#3da8ff] transition-colors">
             Export Identity
           </h3>
-          <p className="mt-1 text-xs text-gray-500">
+          <p className="mt-1 text-xs text-[#4a5568]">
             Download your encrypted wallet or go fully self-custody.
           </p>
         </Link>

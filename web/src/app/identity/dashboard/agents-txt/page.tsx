@@ -210,7 +210,7 @@ export default function AgentsTxtPage() {
   if (authLoading || !authenticated) {
     return (
       <div className="flex h-screen items-center justify-center pt-16">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-said-500 border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#3da8ff] border-t-transparent" />
       </div>
     );
   }
@@ -218,8 +218,8 @@ export default function AgentsTxtPage() {
   return (
     <div className="mx-auto max-w-4xl px-4 py-24 sm:px-6 lg:px-8">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white">File Generator</h1>
-        <p className="mt-1 text-gray-400">
+        <h1 className="text-2xl font-bold text-[#eef1f8]">File Generator</h1>
+        <p className="mt-1 text-[#8b95a8]">
           Generate and deploy your agents.txt and .well-known/said.json files
         </p>
       </div>
@@ -235,7 +235,7 @@ export default function AgentsTxtPage() {
       )}
 
       {/* Tabs */}
-      <div className="mb-6 flex gap-1 rounded-lg bg-gray-900 p-1">
+      <div className="mb-6 flex gap-1 rounded-lg bg-[#0f1117] p-1">
         <button
           onClick={() => {
             setTab("agents-txt");
@@ -243,8 +243,8 @@ export default function AgentsTxtPage() {
           }}
           className={`flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-colors cursor-pointer ${
             tab === "agents-txt"
-              ? "bg-gray-800 text-white"
-              : "text-gray-400 hover:text-gray-200"
+              ? "bg-[#161822] text-[#eef1f8]"
+              : "text-[#8b95a8] hover:text-[#eef1f8]"
           }`}
         >
           <FileText className="h-4 w-4" />
@@ -257,8 +257,8 @@ export default function AgentsTxtPage() {
           }}
           className={`flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-colors cursor-pointer ${
             tab === "said-json"
-              ? "bg-gray-800 text-white"
-              : "text-gray-400 hover:text-gray-200"
+              ? "bg-[#161822] text-[#eef1f8]"
+              : "text-[#8b95a8] hover:text-[#eef1f8]"
           }`}
         >
           <Code className="h-4 w-4" />
@@ -274,18 +274,18 @@ export default function AgentsTxtPage() {
 
       {loading ? (
         <div className="space-y-4">
-          <div className="h-64 animate-pulse rounded-lg bg-gray-800" />
-          <div className="h-10 animate-pulse rounded-lg bg-gray-800" />
+          <div className="h-64 animate-pulse rounded-lg bg-[#161822]" />
+          <div className="h-10 animate-pulse rounded-lg bg-[#161822]" />
         </div>
       ) : (
         <>
           {/* Code Preview */}
-          <div className="rounded-lg border border-gray-700 bg-gray-950">
-            <div className="flex items-center justify-between border-b border-gray-800 px-4 py-2">
-              <span className="text-xs font-mono text-gray-500">
+          <div className="rounded-lg border border-[#1e2a3a] bg-[#08090d]">
+            <div className="flex items-center justify-between border-b border-[#1e2a3a] px-4 py-2">
+              <span className="text-xs font-mono text-[#4a5568]">
                 {currentFilename}
               </span>
-              <span className="text-xs text-gray-600">
+              <span className="text-xs text-[#4a5568]">
                 {currentContent.split("\n").length} lines
               </span>
             </div>
@@ -293,10 +293,10 @@ export default function AgentsTxtPage() {
               <pre className="font-mono text-sm leading-relaxed">
                 {currentContent.split("\n").map((line, i) => (
                   <div key={i} className="flex">
-                    <span className="mr-4 inline-block w-8 text-right text-gray-600 select-none">
+                    <span className="mr-4 inline-block w-8 text-right text-[#4a5568] select-none">
                       {i + 1}
                     </span>
-                    <span className="text-gray-200 whitespace-pre-wrap break-all">
+                    <span className="text-[#eef1f8] whitespace-pre-wrap break-all">
                       {line}
                     </span>
                   </div>
@@ -309,7 +309,7 @@ export default function AgentsTxtPage() {
           <div className="mt-4 flex gap-3">
             <button
               onClick={handleCopy}
-              className="flex items-center gap-2 rounded-lg bg-said-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-said-500 transition-colors cursor-pointer"
+              className="flex items-center gap-2 rounded-lg bg-[#2b96f0] px-4 py-2.5 text-sm font-medium text-[#eef1f8] hover:bg-[#3da8ff] transition-colors cursor-pointer"
             >
               {copied ? (
                 <Check className="h-4 w-4" />
@@ -320,7 +320,7 @@ export default function AgentsTxtPage() {
             </button>
             <button
               onClick={handleDownload}
-              className="flex items-center gap-2 rounded-lg border border-gray-600 bg-gray-800 px-4 py-2.5 text-sm font-medium text-gray-200 hover:bg-gray-700 transition-colors cursor-pointer"
+              className="flex items-center gap-2 rounded-lg border border-[#1e2a3a] bg-[#161822] px-4 py-2.5 text-sm font-medium text-[#eef1f8] hover:bg-[#1c1f2e] transition-colors cursor-pointer"
             >
               <Download className="h-4 w-4" />
               Download {currentFilename}
@@ -329,10 +329,10 @@ export default function AgentsTxtPage() {
 
           {/* Deployment Instructions */}
           <div className="mt-10">
-            <h2 className="text-lg font-semibold text-white">
+            <h2 className="text-lg font-semibold text-[#eef1f8]">
               Deployment Instructions
             </h2>
-            <p className="mt-1 mb-4 text-sm text-gray-400">
+            <p className="mt-1 mb-4 text-sm text-[#8b95a8]">
               {currentPlacement}
             </p>
 
@@ -344,7 +344,7 @@ export default function AgentsTxtPage() {
                 return (
                   <div
                     key={section.id}
-                    className="rounded-lg border border-gray-700 bg-gray-800"
+                    className="rounded-lg border border-[#1e2a3a] bg-[#161822]"
                   >
                     <button
                       onClick={() =>
@@ -352,18 +352,18 @@ export default function AgentsTxtPage() {
                       }
                       className="flex w-full items-center justify-between px-4 py-3 text-left cursor-pointer"
                     >
-                      <span className="text-sm font-medium text-gray-200">
+                      <span className="text-sm font-medium text-[#eef1f8]">
                         {section.label}
                       </span>
                       {isOpen ? (
-                        <ChevronDown className="h-4 w-4 text-gray-500" />
+                        <ChevronDown className="h-4 w-4 text-[#4a5568]" />
                       ) : (
-                        <ChevronRight className="h-4 w-4 text-gray-500" />
+                        <ChevronRight className="h-4 w-4 text-[#4a5568]" />
                       )}
                     </button>
                     {isOpen && (
-                      <div className="border-t border-gray-700 px-4 py-3">
-                        <pre className="rounded-md bg-gray-950 p-3 font-mono text-xs text-gray-300 overflow-x-auto">
+                      <div className="border-t border-[#1e2a3a] px-4 py-3">
+                        <pre className="rounded-md bg-[#08090d] p-3 font-mono text-xs text-[#8b95a8] overflow-x-auto">
                           {section.content}
                         </pre>
                       </div>

@@ -6,7 +6,7 @@ import { getModel, getBalance } from "@/lib/api";
 import type { Model } from "@/lib/types";
 import { useWalletAuth } from "@/lib/wallet-provider";
 import ChatInterface from "@/components/ChatInterface";
-import { MessageSquare, Star, Clock, DollarSign } from "lucide-react";
+import { MessageSquare, Star, Clock, DollarSign, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 
 export default function ModelDetailPage() {
@@ -40,7 +40,7 @@ export default function ModelDetailPage() {
   if (loading) {
     return (
       <div className="mx-auto max-w-7xl px-4 py-8">
-        <div className="h-96 animate-pulse rounded-xl bg-gray-900" />
+        <div className="h-96 animate-pulse rounded-xl bg-[#0f1117]" />
       </div>
     );
   }
@@ -49,7 +49,7 @@ export default function ModelDetailPage() {
     return (
       <div className="mx-auto max-w-7xl px-4 py-16 text-center">
         <h1 className="mb-4 text-2xl font-bold">Model not found</h1>
-        <Link href="/models" className="text-coral-400 hover:text-coral-300">
+        <Link href="/models" className="text-[#D4A04A] hover:text-[#D4A04A]">
           Back to browse
         </Link>
       </div>
@@ -61,53 +61,59 @@ export default function ModelDetailPage() {
       <div className="grid gap-6 lg:grid-cols-[340px_1fr]">
         {/* Model Info */}
         <div className="space-y-4">
-          <div className="rounded-xl border border-gray-800 bg-gray-900 p-6">
+          <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
             <div className="mb-4 flex items-center gap-3">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-coral-500 to-said-500 text-lg font-bold text-white">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-[#D4A04A] to-[#3da8ff] text-lg font-bold text-[#eef1f8]">
                 {model.creator_name?.[0]?.toUpperCase() || "?"}
               </div>
               <div>
                 <h1 className="text-xl font-bold">{model.name}</h1>
-                <p className="text-sm text-gray-400">{model.creator_name}</p>
+                <p className="text-sm text-[#8b95a8]">{model.creator_name}</p>
+                {model.creator_verified && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[#3da8ff]/10 px-2 py-0.5 text-xs font-medium text-[#3da8ff]">
+                    <ShieldCheck className="h-3 w-3" />
+                    Verified Identity
+                  </span>
+                )}
               </div>
             </div>
-            <span className="mb-4 inline-block rounded-full bg-coral-500/10 px-3 py-1 text-xs font-medium text-coral-400">
+            <span className="mb-4 inline-block rounded-full bg-[#D4A04A]/10 px-3 py-1 text-xs font-medium text-[#D4A04A]">
               {model.category}
             </span>
-            <p className="mb-6 text-sm text-gray-400">{model.description}</p>
+            <p className="mb-6 text-sm text-[#8b95a8]">{model.description}</p>
             <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-lg bg-gray-800 p-3 text-center">
-                <DollarSign className="mx-auto mb-1 h-4 w-4 text-coral-400" />
+              <div className="rounded-lg bg-[#161822] p-3 text-center">
+                <DollarSign className="mx-auto mb-1 h-4 w-4 text-[#D4A04A]" />
                 <p className="text-lg font-bold">
                   ${model.price_per_query.toFixed(2)}
                 </p>
-                <p className="text-xs text-gray-500">per query</p>
+                <p className="text-xs text-[#4a5568]">per query</p>
               </div>
-              <div className="rounded-lg bg-gray-800 p-3 text-center">
-                <MessageSquare className="mx-auto mb-1 h-4 w-4 text-coral-400" />
+              <div className="rounded-lg bg-[#161822] p-3 text-center">
+                <MessageSquare className="mx-auto mb-1 h-4 w-4 text-[#D4A04A]" />
                 <p className="text-lg font-bold">
                   {model.total_queries.toLocaleString()}
                 </p>
-                <p className="text-xs text-gray-500">queries</p>
+                <p className="text-xs text-[#4a5568]">queries</p>
               </div>
-              <div className="rounded-lg bg-gray-800 p-3 text-center">
-                <Clock className="mx-auto mb-1 h-4 w-4 text-gray-400" />
+              <div className="rounded-lg bg-[#161822] p-3 text-center">
+                <Clock className="mx-auto mb-1 h-4 w-4 text-[#8b95a8]" />
                 <p className="text-sm font-medium">
                   {new Date(model.created_at).toLocaleDateString()}
                 </p>
-                <p className="text-xs text-gray-500">created</p>
+                <p className="text-xs text-[#4a5568]">created</p>
               </div>
             </div>
           </div>
           {authenticated && (
-            <div className="rounded-xl border border-gray-800 bg-gray-900 p-4 text-center">
-              <p className="text-sm text-gray-400">Your Balance</p>
-              <p className="text-2xl font-bold text-white">
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-4 text-center">
+              <p className="text-sm text-[#8b95a8]">Your Balance</p>
+              <p className="text-2xl font-bold text-[#eef1f8]">
                 ${balance !== null ? balance.toFixed(2) : "--"}
               </p>
               <Link
                 href="/models/account"
-                className="mt-2 inline-block text-xs text-coral-400 hover:text-coral-300"
+                className="mt-2 inline-block text-xs text-[#D4A04A] hover:text-[#D4A04A]"
               >
                 Add funds
               </Link>
@@ -116,7 +122,7 @@ export default function ModelDetailPage() {
         </div>
 
         {/* Chat */}
-        <div className="flex h-[calc(100vh-8rem)] flex-col rounded-xl border border-gray-800 bg-gray-900">
+        <div className="flex h-[calc(100vh-8rem)] flex-col rounded-xl border border-[#1e2a3a] bg-[#0f1117]">
           {authenticated ? (
             <ChatInterface
               slug={slug}
@@ -127,10 +133,10 @@ export default function ModelDetailPage() {
           ) : (
             <div className="flex h-full items-center justify-center">
               <div className="text-center">
-                <p className="mb-2 text-gray-400">
+                <p className="mb-2 text-[#8b95a8]">
                   Connect your wallet to start chatting
                 </p>
-                <p className="text-xs text-gray-600">
+                <p className="text-xs text-[#4a5568]">
                   Each message costs ${model.price_per_query.toFixed(2)}
                 </p>
               </div>

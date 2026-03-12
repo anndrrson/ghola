@@ -55,30 +55,30 @@ export default function ConsumerExportPage() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-white">Export Identity</h1>
-        <p className="mt-1 text-gray-400">
+        <h1 className="text-2xl font-bold text-[#eef1f8]">Export Identity</h1>
+        <p className="mt-1 text-[#8b95a8]">
           Back up your wallet, export your recovery phrase, or go fully
           self-custody.
         </p>
       </div>
 
       {/* Section 1: Download Encrypted Wallet */}
-      <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6">
+      <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
         <div className="flex items-center gap-3 mb-4">
-          <div className="rounded-lg bg-said-500/10 p-2 text-said-400">
+          <div className="rounded-lg bg-[#3da8ff]/10 p-2 text-[#3da8ff]">
             <Download className="h-5 w-5" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-white">
+            <h2 className="text-lg font-semibold text-[#eef1f8]">
               Download Encrypted Wallet
             </h2>
-            <p className="text-sm text-gray-400">
+            <p className="text-sm text-[#8b95a8]">
               Your wallet is encrypted with your password and stored securely.
             </p>
           </div>
         </div>
 
-        <p className="text-xs text-gray-500 mb-4">
+        <p className="text-xs text-[#4a5568] mb-4">
           This backup file contains your encrypted wallet. You will need your
           account password to decrypt it. Store it somewhere safe as a backup.
         </p>
@@ -92,7 +92,7 @@ export default function ConsumerExportPage() {
         <button
           onClick={handleDownloadWallet}
           disabled={downloading}
-          className="inline-flex items-center gap-2 rounded-lg bg-said-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-said-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+          className="inline-flex items-center gap-2 rounded-lg bg-[#3da8ff] px-5 py-2.5 text-sm font-semibold text-[#eef1f8] hover:bg-[#5bb8ff] disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
         >
           {downloading ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -104,16 +104,16 @@ export default function ConsumerExportPage() {
       </div>
 
       {/* Section 2: Export Mnemonic */}
-      <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6">
+      <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
         <div className="flex items-center gap-3 mb-4">
           <div className="rounded-lg bg-amber-500/10 p-2 text-amber-400">
             <Key className="h-5 w-5" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-white">
+            <h2 className="text-lg font-semibold text-[#eef1f8]">
               Export Recovery Phrase
             </h2>
-            <p className="text-sm text-gray-400">
+            <p className="text-sm text-[#8b95a8]">
               For advanced users who want direct access to their mnemonic.
             </p>
           </div>
@@ -136,7 +136,7 @@ export default function ConsumerExportPage() {
             <div>
               <label
                 htmlFor="mnemonic-password"
-                className="block text-sm font-medium text-gray-300 mb-1.5"
+                className="block text-sm font-medium text-[#8b95a8] mb-1.5"
               >
                 Enter your password to continue
               </label>
@@ -146,7 +146,7 @@ export default function ConsumerExportPage() {
                 value={mnemonicPassword}
                 onChange={(e) => setMnemonicPassword(e.target.value)}
                 placeholder="Account password"
-                className="w-full rounded-lg border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:border-said-500 focus:ring-1 focus:ring-said-500 outline-none transition-colors"
+                className="w-full rounded-lg border border-[#1e2a3a] bg-[#0f1117] px-4 py-2.5 text-sm text-[#eef1f8] placeholder-[#4a5568] focus:border-[#3da8ff] focus:ring-1 focus:ring-[#3da8ff] outline-none transition-colors"
               />
             </div>
             <button
@@ -159,20 +159,20 @@ export default function ConsumerExportPage() {
             </button>
           </div>
         ) : (
-          <div className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-4">
+          <div className="rounded-lg border border-[#1e2a3a] bg-[#161822] px-4 py-4">
             <div className="flex items-start gap-2 mb-3">
-              <Lock className="h-4 w-4 text-said-400 mt-0.5 shrink-0" />
-              <p className="text-sm text-gray-300 font-medium">
+              <Lock className="h-4 w-4 text-[#3da8ff] mt-0.5 shrink-0" />
+              <p className="text-sm text-[#8b95a8] font-medium">
                 Client-side mnemonic export
               </p>
             </div>
-            <p className="text-sm text-gray-400">
+            <p className="text-sm text-[#8b95a8]">
               Client-side mnemonic export requires the WASM wallet module. This
               feature will be enabled when you create your wallet via the
               browser. In the meantime, you can export your recovery phrase
-              using the SAID CLI:
+              using the Ghola CLI:
             </p>
-            <div className="mt-3 rounded-lg bg-gray-900 px-4 py-3 font-mono text-sm text-gray-300">
+            <div className="mt-3 rounded-lg bg-[#0f1117] px-4 py-3 font-mono text-sm text-[#8b95a8]">
               said export --mnemonic
             </div>
             <button
@@ -180,7 +180,7 @@ export default function ConsumerExportPage() {
                 setMnemonicRevealed(false);
                 setMnemonicPassword("");
               }}
-              className="mt-4 text-sm text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"
+              className="mt-4 text-sm text-[#4a5568] hover:text-[#8b95a8] transition-colors cursor-pointer"
             >
               Close
             </button>
@@ -189,48 +189,48 @@ export default function ConsumerExportPage() {
       </div>
 
       {/* Section 3: Go Self-Custody */}
-      <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6">
+      <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
         <div className="flex items-center gap-3 mb-4">
-          <div className="rounded-lg bg-said-500/10 p-2 text-said-400">
+          <div className="rounded-lg bg-[#3da8ff]/10 p-2 text-[#3da8ff]">
             <Terminal className="h-5 w-5" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-white">
+            <h2 className="text-lg font-semibold text-[#eef1f8]">
               Go Self-Custody
             </h2>
-            <p className="text-sm text-gray-400">
-              Export your identity to use with the SAID CLI for full
+            <p className="text-sm text-[#8b95a8]">
+              Export your identity to use with the Ghola CLI for full
               self-custody.
             </p>
           </div>
         </div>
 
         <div className="space-y-4">
-          <p className="text-sm text-gray-400">
-            The SAID CLI lets you run your own identity daemon, manage UCAN
+          <p className="text-sm text-[#8b95a8]">
+            The Ghola CLI lets you run your own identity daemon, manage UCAN
             tokens, and connect to AI services without relying on this web
             dashboard. Your keys never leave your machine.
           </p>
 
-          <div className="rounded-lg border border-gray-700 bg-gray-800 p-4 space-y-3">
-            <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+          <div className="rounded-lg border border-[#1e2a3a] bg-[#161822] p-4 space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-[#4a5568]">
               Getting started
             </p>
             <div className="space-y-2">
-              <div className="rounded-lg bg-gray-900 px-4 py-2.5 font-mono text-sm text-gray-300">
+              <div className="rounded-lg bg-[#0f1117] px-4 py-2.5 font-mono text-sm text-[#8b95a8]">
                 cargo install said-cli
               </div>
-              <div className="rounded-lg bg-gray-900 px-4 py-2.5 font-mono text-sm text-gray-300">
+              <div className="rounded-lg bg-[#0f1117] px-4 py-2.5 font-mono text-sm text-[#8b95a8]">
                 said recover
               </div>
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-[#4a5568]">
                 Use your recovery phrase or import your encrypted wallet backup
                 to initialize the CLI.
               </p>
-              <div className="rounded-lg bg-gray-900 px-4 py-2.5 font-mono text-sm text-gray-300">
+              <div className="rounded-lg bg-[#0f1117] px-4 py-2.5 font-mono text-sm text-[#8b95a8]">
                 said daemon start
               </div>
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-[#4a5568]">
                 Start the background daemon to serve your identity to AI
                 services via MCP.
               </p>
@@ -241,7 +241,7 @@ export default function ConsumerExportPage() {
             href="https://github.com/anndrrson/said"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 text-sm font-medium text-said-400 hover:text-said-300 transition-colors"
+            className="inline-flex items-center gap-2 text-sm font-medium text-[#3da8ff] hover:text-[#5bb8ff] transition-colors"
           >
             View documentation
             <ExternalLink className="h-3.5 w-3.5" />

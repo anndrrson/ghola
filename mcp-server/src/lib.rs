@@ -1,4 +1,5 @@
 pub mod http;
+mod solana_lookup;
 
 use std::sync::{Arc, Mutex};
 
@@ -59,6 +60,64 @@ pub struct SearchKnowledgeParams {
 pub struct GetConversationContextParams {
     /// Max recent entries to return (default 20).
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetRelevantContextParams {
+    /// A snippet of conversation text to find relevant context for
+    pub conversation_snippet: String,
+    /// Maximum number of results per category (default: 10)
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ObserveParams {
+    /// The observation/fact to record
+    pub content: String,
+    /// Role of the observer: "user" or "assistant"
+    pub role: String,
+    /// Which AI provider this observation came from
+    pub source_provider: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LookupIdentityParams {
+    /// DID (did:key:z6Mk...) or base58 master public key
+    pub query: String,
+    /// Solana RPC URL (default: https://api.devnet.solana.com)
+    pub rpc_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DiscoverBusinessParams {
+    /// Domain name to discover (e.g. "restaurant.com")
+    pub domain: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FetchAgentsTxtParams {
+    /// Domain name to fetch agents.txt from (e.g. "example.com")
+    pub domain: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetPublicProfileParams {
+    /// DID (did:key:...) to look up
+    pub did: String,
+    /// SAID Cloud API base URL (default: https://api.said.id/v1)
+    pub api_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RequestServiceParams {
+    /// The service API endpoint URL
+    pub url: String,
+    /// HTTP method (GET, POST, PUT, DELETE)
+    pub method: Option<String>,
+    /// Request body as JSON string (for POST/PUT)
+    pub body: Option<String>,
+    /// Authorization header value (e.g. "Bearer token" or UCAN token)
+    pub authorization: Option<String>,
 }
 
 // ── MCP Server ──
@@ -290,6 +349,229 @@ impl SaidServer {
 
         let json = serde_json::to_string_pretty(&configs).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        name = "said_get_relevant_context",
+        description = "Get context relevant to the current conversation. Takes a snippet of conversation text and returns the most relevant memories, preferences, and knowledge."
+    )]
+    async fn get_relevant_context(
+        &self,
+        Parameters(params): Parameters<GetRelevantContextParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::ReadMemories)?;
+
+        let wallet = self.wallet.lock().map_err(|e| {
+            ErrorData::internal_error(format!("Failed to lock wallet: {}", e), None)
+        })?;
+        let context = wallet
+            .get_relevant_context(&params.conversation_snippet, params.limit.unwrap_or(10))
+            .map_err(|e| ErrorData::internal_error(format!("{}", e), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(context)]))
+    }
+
+    #[tool(
+        name = "said_observe",
+        description = "Record an observation from a conversation. AI clients should call this to let SAID persist important facts discovered during conversations."
+    )]
+    async fn observe(
+        &self,
+        Parameters(params): Parameters<ObserveParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::WriteMemories)?;
+
+        let wallet = self.wallet.lock().map_err(|e| {
+            ErrorData::internal_error(format!("Failed to lock wallet: {}", e), None)
+        })?;
+        let memory = Memory {
+            id: uuid::Uuid::new_v4(),
+            content: params.content,
+            tags: vec![format!("role:{}", params.role)],
+            source_provider: params.source_provider,
+            created_at: chrono::Utc::now(),
+        };
+
+        let value = serde_json::to_value(&memory)
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
+        wallet
+            .storage()
+            .append_value("memories", value)
+            .map_err(|e| ErrorData::internal_error(format!("{}", e), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Observation recorded with id {}",
+            memory.id
+        ))]))
+    }
+
+    #[tool(
+        name = "said_lookup_identity",
+        description = "Look up a SAID identity on the Solana blockchain by DID or public key"
+    )]
+    async fn lookup_identity(
+        &self,
+        Parameters(params): Parameters<LookupIdentityParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let rpc_url = params
+            .rpc_url
+            .unwrap_or_else(|| "https://api.devnet.solana.com".to_string());
+
+        let master_pubkey = if params.query.starts_with("did:key:") {
+            let vk = said_core::pub_key_from_did_key(&params.query)
+                .map_err(|e| ErrorData::internal_error(format!("Invalid DID: {}", e), None))?;
+            *vk.as_bytes()
+        } else {
+            let bytes = bs58::decode(&params.query)
+                .into_vec()
+                .map_err(|e| ErrorData::internal_error(format!("Invalid base58: {}", e), None))?;
+            let arr: [u8; 32] = bytes.try_into().map_err(|_| {
+                ErrorData::internal_error("Expected 32-byte public key".to_string(), None)
+            })?;
+            arr
+        };
+
+        match solana_lookup::lookup_identity(&rpc_url, &master_pubkey).await {
+            Ok(record) => {
+                let json = serde_json::to_string_pretty(&record).unwrap_or_default();
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) if e.contains("not found") => {
+                Ok(CallToolResult::success(vec![Content::text(
+                    "Identity not registered on-chain.",
+                )]))
+            }
+            Err(e) => Err(ErrorData::internal_error(e, None)),
+        }
+    }
+
+    #[tool(
+        name = "said_discover_business",
+        description = "Discover a business's SAID identity by fetching agents.txt and .well-known/said.json from their domain"
+    )]
+    async fn discover_business(
+        &self,
+        Parameters(params): Parameters<DiscoverBusinessParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let discovery =
+            said_core::discovery::discover_domain(&client, &params.domain)
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("{}", e), None))?;
+
+        let json = serde_json::to_string_pretty(&discovery).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        name = "said_fetch_agents_txt",
+        description = "Fetch and parse agents.txt from a domain to discover its SAID identity, services, and auth endpoints"
+    )]
+    async fn fetch_agents_txt(
+        &self,
+        Parameters(params): Parameters<FetchAgentsTxtParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let agents_txt =
+            said_core::discovery::fetch_agents_txt(&client, &params.domain)
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("{}", e), None))?;
+
+        let json = serde_json::to_string_pretty(&agents_txt).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        name = "said_get_public_profile",
+        description = "Look up a public SAID profile by DID from the SAID Cloud API"
+    )]
+    async fn get_public_profile(
+        &self,
+        Parameters(params): Parameters<GetPublicProfileParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let api_url = params
+            .api_url
+            .unwrap_or_else(|| "https://api.said.id/v1".to_string());
+        let url = format!("{}/profile/{}", api_url, params.did);
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("HTTP error: {}", e), None))?;
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("Failed to read body: {}", e), None))?;
+
+        if !status.is_success() {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Profile lookup failed (HTTP {}): {}",
+                status, body
+            ))]));
+        }
+
+        // Try to pretty-print if it's valid JSON
+        let output = match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(val) => serde_json::to_string_pretty(&val).unwrap_or(body),
+            Err(_) => body,
+        };
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_request_service",
+        description = "Make an HTTP request to a SAID service endpoint discovered via agents.txt"
+    )]
+    async fn request_service(
+        &self,
+        Parameters(params): Parameters<RequestServiceParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let method_str = params.method.as_deref().unwrap_or("GET").to_uppercase();
+
+        let method: reqwest::Method = method_str
+            .parse()
+            .map_err(|_| ErrorData::internal_error(format!("Invalid HTTP method: {}", method_str), None))?;
+
+        let mut request = client.request(method, &params.url);
+
+        if let Some(auth) = &params.authorization {
+            request = request.header("Authorization", auth);
+        }
+
+        if let Some(body) = &params.body {
+            request = request
+                .header("Content-Type", "application/json")
+                .body(body.clone());
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("HTTP error: {}", e), None))?;
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("Failed to read body: {}", e), None))?;
+
+        // Try to pretty-print if it's valid JSON
+        let body_output = match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(val) => serde_json::to_string_pretty(&val).unwrap_or(body),
+            Err(_) => body,
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "HTTP {} {}\n\n{}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or(""),
+            body_output
+        ))]))
     }
 }
 

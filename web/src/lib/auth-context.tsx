@@ -47,7 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   useEffect(() => {
-    const token = localStorage.getItem("said_token");
+    const token = localStorage.getItem("ghola_token");
     if (token) {
       try {
         const payload = JSON.parse(atob(token.split(".")[1]));

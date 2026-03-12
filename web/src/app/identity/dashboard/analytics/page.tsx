@@ -35,16 +35,16 @@ interface StatCardProps {
 
 function StatCard({ label, value, icon, description }: StatCardProps) {
   return (
-    <div className="rounded-xl border border-gray-700 bg-gray-800 p-6">
+    <div className="rounded-xl border border-[#1e2a3a] bg-[#161822] p-6">
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-sm font-medium text-gray-400">{label}</p>
-          <p className="mt-2 text-3xl font-bold tracking-tight text-white">
+          <p className="text-sm font-medium text-[#8b95a8]">{label}</p>
+          <p className="mt-2 text-3xl font-bold tracking-tight text-[#eef1f8]">
             {value.toLocaleString()}
           </p>
-          <p className="mt-1 text-xs text-gray-500">{description}</p>
+          <p className="mt-1 text-xs text-[#4a5568]">{description}</p>
         </div>
-        <div className="rounded-lg bg-said-600/10 border border-said-600/20 p-2.5">
+        <div className="rounded-lg bg-[#2b96f0]/10 border border-[#2b96f0]/20 p-2.5">
           {icon}
         </div>
       </div>
@@ -56,10 +56,10 @@ function TimelineChart({ timeline }: { timeline: AnalyticsTimeline }) {
   const maxViews = Math.max(...timeline.days.map((d) => d.views), 1);
 
   return (
-    <div className="rounded-xl border border-gray-700 bg-gray-800 p-6">
+    <div className="rounded-xl border border-[#1e2a3a] bg-[#161822] p-6">
       <div className="flex items-center gap-2 mb-4">
-        <TrendingUp className="h-5 w-5 text-gray-400" />
-        <h2 className="text-lg font-semibold text-white">
+        <TrendingUp className="h-5 w-5 text-[#8b95a8]" />
+        <h2 className="text-lg font-semibold text-[#eef1f8]">
           Views — Last 30 Days
         </h2>
       </div>
@@ -73,7 +73,7 @@ function TimelineChart({ timeline }: { timeline: AnalyticsTimeline }) {
               style={{ height: "100%" }}
             >
               <div
-                className="absolute bottom-0 left-0 right-0 rounded-t bg-said-500/70 hover:bg-said-400 transition-colors cursor-default"
+                className="absolute bottom-0 left-0 right-0 rounded-t bg-[#3da8ff]/70 hover:bg-[#3da8ff] transition-colors cursor-default"
                 style={{ height: `${Math.max(heightPct, 2)}%` }}
                 title={`${day.date}: ${day.views} views, ${day.resolves} resolves, ${day.service_calls} service calls`}
               />
@@ -81,7 +81,7 @@ function TimelineChart({ timeline }: { timeline: AnalyticsTimeline }) {
           );
         })}
       </div>
-      <div className="flex justify-between mt-2 text-xs text-gray-600">
+      <div className="flex justify-between mt-2 text-xs text-[#4a5568]">
         <span>{timeline.days[0]?.date || ""}</span>
         <span>{timeline.days[timeline.days.length - 1]?.date || ""}</span>
       </div>
@@ -91,15 +91,15 @@ function TimelineChart({ timeline }: { timeline: AnalyticsTimeline }) {
 
 function AgentsTable({ stats }: { stats: AgentStats }) {
   return (
-    <div className="rounded-xl border border-gray-700 bg-gray-800 p-6">
+    <div className="rounded-xl border border-[#1e2a3a] bg-[#161822] p-6">
       <div className="flex items-center gap-2 mb-4">
-        <Bot className="h-5 w-5 text-gray-400" />
-        <h2 className="text-lg font-semibold text-white">Top Agents</h2>
+        <Bot className="h-5 w-5 text-[#8b95a8]" />
+        <h2 className="text-lg font-semibold text-[#eef1f8]">Top Agents</h2>
       </div>
       {stats.agents.length === 0 ? (
-        <div className="rounded-lg border border-gray-700/50 bg-gray-900/50 px-6 py-10 text-center">
-          <Bot className="mx-auto h-10 w-10 text-gray-700 mb-3" />
-          <p className="text-sm text-gray-300">
+        <div className="rounded-lg border border-[#1e2a3a]/50 bg-[#0f1117] px-6 py-10 text-center">
+          <Bot className="mx-auto h-10 w-10 text-[#4a5568] mb-3" />
+          <p className="text-sm text-[#8b95a8]">
             No agent interactions recorded yet.
           </p>
         </div>
@@ -107,22 +107,22 @@ function AgentsTable({ stats }: { stats: AgentStats }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-gray-700 text-left">
-                <th className="pb-3 font-medium text-gray-400">Agent</th>
-                <th className="pb-3 font-medium text-gray-400 text-right">Interactions</th>
-                <th className="pb-3 font-medium text-gray-400 text-right">Last Seen</th>
+              <tr className="border-b border-[#1e2a3a] text-left">
+                <th className="pb-3 font-medium text-[#8b95a8]">Agent</th>
+                <th className="pb-3 font-medium text-[#8b95a8] text-right">Interactions</th>
+                <th className="pb-3 font-medium text-[#8b95a8] text-right">Last Seen</th>
               </tr>
             </thead>
             <tbody>
               {stats.agents.map((agent) => (
-                <tr key={agent.identifier} className="border-b border-gray-700/50">
-                  <td className="py-3 text-white font-mono text-xs">
+                <tr key={agent.identifier} className="border-b border-[#1e2a3a]/50">
+                  <td className="py-3 text-[#eef1f8] font-mono text-xs">
                     {agent.identifier}
                   </td>
-                  <td className="py-3 text-gray-300 text-right">
+                  <td className="py-3 text-[#8b95a8] text-right">
                     {agent.interactions.toLocaleString()}
                   </td>
-                  <td className="py-3 text-gray-500 text-right">
+                  <td className="py-3 text-[#4a5568] text-right">
                     {new Date(agent.last_seen).toLocaleDateString()}
                   </td>
                 </tr>
@@ -145,10 +145,10 @@ function FunnelChart({ funnel }: { funnel: DiscoveryFunnel }) {
   const maxValue = Math.max(...steps.map((s) => s.value), 1);
 
   return (
-    <div className="rounded-xl border border-gray-700 bg-gray-800 p-6">
+    <div className="rounded-xl border border-[#1e2a3a] bg-[#161822] p-6">
       <div className="flex items-center gap-2 mb-4">
-        <BarChart3 className="h-5 w-5 text-gray-400" />
-        <h2 className="text-lg font-semibold text-white">Discovery Funnel</h2>
+        <BarChart3 className="h-5 w-5 text-[#8b95a8]" />
+        <h2 className="text-lg font-semibold text-[#eef1f8]">Discovery Funnel</h2>
       </div>
       <div className="space-y-3">
         {steps.map((step, i) => {
@@ -162,24 +162,24 @@ function FunnelChart({ funnel }: { funnel: DiscoveryFunnel }) {
           return (
             <div key={step.label}>
               <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-2 text-sm text-gray-300">
-                  {i > 0 && <ArrowRight className="h-3 w-3 text-gray-600" />}
+                <div className="flex items-center gap-2 text-sm text-[#8b95a8]">
+                  {i > 0 && <ArrowRight className="h-3 w-3 text-[#4a5568]" />}
                   {step.label}
                 </div>
                 <div className="flex items-center gap-2 text-sm">
-                  <span className="font-medium text-white">
+                  <span className="font-medium text-[#eef1f8]">
                     {step.value.toLocaleString()}
                   </span>
                   {conversionPct && (
-                    <span className="text-xs text-gray-500">
+                    <span className="text-xs text-[#4a5568]">
                       ({conversionPct}%)
                     </span>
                   )}
                 </div>
               </div>
-              <div className="h-6 rounded bg-gray-900/50 overflow-hidden">
+              <div className="h-6 rounded bg-[#0f1117] overflow-hidden">
                 <div
-                  className="h-full rounded bg-said-600/60 transition-all"
+                  className="h-full rounded bg-[#2b96f0]/60 transition-all"
                   style={{ width: `${Math.max(widthPct, 2)}%` }}
                 />
               </div>
@@ -231,7 +231,7 @@ export default function AnalyticsPage() {
   if (authLoading || !authenticated) {
     return (
       <div className="flex h-screen items-center justify-center pt-16">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-said-500 border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#3da8ff] border-t-transparent" />
       </div>
     );
   }
@@ -244,10 +244,10 @@ export default function AnalyticsPage() {
     <div className="space-y-8">
       <div>
         <div className="flex items-center gap-2">
-          <BarChart3 className="h-6 w-6 text-said-400" />
-          <h1 className="text-2xl font-bold text-white">Analytics</h1>
+          <BarChart3 className="h-6 w-6 text-[#3da8ff]" />
+          <h1 className="text-2xl font-bold text-[#eef1f8]">Analytics</h1>
         </div>
-        <p className="mt-1 text-gray-400">
+        <p className="mt-1 text-[#8b95a8]">
           Monitor how agents discover and interact with your business identity
         </p>
       </div>
@@ -264,7 +264,7 @@ export default function AnalyticsPage() {
             {[1, 2, 3, 4, 5, 6].map((i) => (
               <div
                 key={i}
-                className="h-36 animate-pulse rounded-xl bg-gray-800"
+                className="h-36 animate-pulse rounded-xl bg-[#161822]"
               />
             ))}
           </div>
@@ -276,37 +276,37 @@ export default function AnalyticsPage() {
             <StatCard
               label="Profile Views"
               value={analytics?.profile_views ?? 0}
-              icon={<Eye className="h-5 w-5 text-said-400" />}
+              icon={<Eye className="h-5 w-5 text-[#3da8ff]" />}
               description="Times your profile was viewed"
             />
             <StatCard
               label="Resolve Requests"
               value={analytics?.resolve_count ?? 0}
-              icon={<Globe className="h-5 w-5 text-said-400" />}
+              icon={<Globe className="h-5 w-5 text-[#3da8ff]" />}
               description="Agent identity resolutions"
             />
             <StatCard
               label="Total API Calls"
               value={analytics?.total_api_calls ?? 0}
-              icon={<Zap className="h-5 w-5 text-said-400" />}
+              icon={<Zap className="h-5 w-5 text-[#3da8ff]" />}
               description="Calls to your API endpoints"
             />
             <StatCard
               label="agents.txt Fetches"
               value={funnel?.agents_txt_fetched ?? 0}
-              icon={<FileText className="h-5 w-5 text-said-400" />}
+              icon={<FileText className="h-5 w-5 text-[#3da8ff]" />}
               description="Discovery file downloads"
             />
             <StatCard
               label="Unique Agents"
               value={uniqueAgents}
-              icon={<Bot className="h-5 w-5 text-said-400" />}
+              icon={<Bot className="h-5 w-5 text-[#3da8ff]" />}
               description="Distinct agents interacting"
             />
             <StatCard
               label="Service Calls"
               value={totalServiceCalls}
-              icon={<TrendingUp className="h-5 w-5 text-said-400" />}
+              icon={<TrendingUp className="h-5 w-5 text-[#3da8ff]" />}
               description="Last 30 days via timeline"
             />
           </div>

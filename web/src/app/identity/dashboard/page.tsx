@@ -39,15 +39,15 @@ export default function DashboardPage() {
     return (
       <div className="space-y-6">
         {/* Welcome skeleton */}
-        <div className="h-8 w-72 animate-pulse rounded-lg bg-gray-800" />
-        <div className="h-5 w-96 animate-pulse rounded-lg bg-gray-800" />
+        <div className="h-8 w-72 animate-pulse rounded-lg bg-[#161822]" />
+        <div className="h-5 w-96 animate-pulse rounded-lg bg-[#161822]" />
 
         {/* Stats skeleton */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 mt-8">
           {[1, 2, 3].map((i) => (
             <div
               key={i}
-              className="h-28 animate-pulse rounded-xl bg-gray-800"
+              className="h-28 animate-pulse rounded-xl bg-[#161822]"
             />
           ))}
         </div>
@@ -57,7 +57,7 @@ export default function DashboardPage() {
           {[1, 2, 3, 4].map((i) => (
             <div
               key={i}
-              className="h-24 animate-pulse rounded-xl bg-gray-800"
+              className="h-24 animate-pulse rounded-xl bg-[#161822]"
             />
           ))}
         </div>
@@ -130,11 +130,11 @@ export default function DashboardPage() {
 
       {/* Welcome */}
       <div>
-        <h1 className="text-2xl font-bold text-white">
+        <h1 className="text-2xl font-bold text-[#eef1f8]">
           Welcome back, {profile?.business_name ?? "there"}
         </h1>
-        <p className="mt-1 text-gray-400">
-          Here is an overview of your SAID identity.
+        <p className="mt-1 text-[#8b95a8]">
+          Here is an overview of your Ghola identity.
         </p>
       </div>
 
@@ -145,15 +145,15 @@ export default function DashboardPage() {
           return (
             <div
               key={stat.label}
-              className="rounded-xl border border-gray-800 bg-gray-800/50 p-5"
+              className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5"
             >
               <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-said-500/10">
-                  <Icon className="h-5 w-5 text-said-400" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#3da8ff]/10">
+                  <Icon className="h-5 w-5 text-[#3da8ff]" />
                 </div>
                 <div>
-                  <p className="text-sm text-gray-400">{stat.label}</p>
-                  <p className="text-2xl font-bold text-white">
+                  <p className="text-sm text-[#8b95a8]">{stat.label}</p>
+                  <p className="text-2xl font-bold text-[#eef1f8]">
                     {stat.value.toLocaleString()}
                   </p>
                 </div>
@@ -165,7 +165,7 @@ export default function DashboardPage() {
 
       {/* Quick actions */}
       <div>
-        <h2 className="mb-4 text-lg font-semibold text-white">
+        <h2 className="mb-4 text-lg font-semibold text-[#eef1f8]">
           Quick Actions
         </h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -175,14 +175,14 @@ export default function DashboardPage() {
               <Link
                 key={action.href}
                 href={action.href}
-                className="group flex items-start gap-4 rounded-xl border border-gray-800 bg-gray-800/50 p-5 transition-colors hover:border-said-500/30 hover:bg-gray-800"
+                className="group flex items-start gap-4 rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5 transition-colors hover:border-[#3da8ff]/30 hover:bg-[#161822]"
               >
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-said-500/10 transition-colors group-hover:bg-said-500/20">
-                  <Icon className="h-5 w-5 text-said-400" />
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#3da8ff]/10 transition-colors group-hover:bg-[#3da8ff]/20">
+                  <Icon className="h-5 w-5 text-[#3da8ff]" />
                 </div>
                 <div>
-                  <p className="font-medium text-white">{action.label}</p>
-                  <p className="mt-0.5 text-sm text-gray-400">
+                  <p className="font-medium text-[#eef1f8]">{action.label}</p>
+                  <p className="mt-0.5 text-sm text-[#8b95a8]">
                     {action.description}
                   </p>
                 </div>
