@@ -1,0 +1,17 @@
+{
+  "name": "@said-pay/sdk",
+  "version": "0.1.0",
+  "description": "SAID Pay SDK — Agent payment infrastructure for AI",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/test/*.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["said", "ai", "payments", "agent", "solana", "usdc"],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.4"
+  }
+}

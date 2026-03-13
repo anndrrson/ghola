@@ -60,4 +60,13 @@ pub enum SaidError {
 
     #[error("wrong password")]
     WrongPassword,
+
+    #[error("spending limit exceeded: {0}")]
+    SpendingLimitExceeded(String),
+
+    #[error("agent not found: {0}")]
+    AgentNotFound(String),
+
+    #[error("agent inactive: {0}")]
+    AgentInactive(String),
 }

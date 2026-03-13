@@ -8,8 +8,8 @@ use ed25519_dalek::Signer;
 
 use said_core::Wallet;
 use said_types::{
-    Capability, KeyType, KnowledgeDoc, McpConfig, Memory, Preference, Provider, Secret,
-    SystemPrompt,
+    Capability, KeyType, KnowledgeDoc, McpConfig, Memory, PayCurrency, Preference, Provider,
+    Secret, SpendingPolicy, SystemPrompt, TxDirection, TxStatus,
 };
 
 #[derive(Parser)]
@@ -100,6 +100,23 @@ enum Commands {
     Solana {
         #[command(subcommand)]
         action: SolanaAction,
+    },
+    /// Audit vault for credential hygiene issues
+    Audit {
+        /// Auto-apply safe fixes without prompting
+        #[arg(long)]
+        fix: bool,
+        /// Output report as JSON
+        #[arg(long)]
+        json: bool,
+        /// Minimum severity to show (low, medium, high, critical)
+        #[arg(long, default_value = "low")]
+        severity: String,
+    },
+    /// Agent payment infrastructure
+    Pay {
+        #[command(subcommand)]
+        action: PayAction,
     },
 }
 
@@ -259,6 +276,103 @@ enum SolanaAction {
     },
 }
 
+#[derive(Subcommand)]
+enum PayAction {
+    /// Show SOL and USDC balances
+    Balance {
+        /// Agent wallet label
+        #[arg(long)]
+        agent: Option<String>,
+        /// Solana RPC URL
+        #[arg(long, default_value = DEFAULT_RPC_URL)]
+        rpc_url: String,
+    },
+    /// Show Solana deposit address
+    Address {
+        /// Agent wallet label
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Send SOL or USDC
+    Transfer {
+        /// Recipient Solana address
+        to: String,
+        /// Amount to send (e.g. "0.5")
+        amount: String,
+        /// Currency: sol or usdc (default: sol)
+        #[arg(long, default_value = "sol")]
+        currency: String,
+        /// Agent wallet label to send from
+        #[arg(long)]
+        agent: Option<String>,
+        /// Optional memo
+        #[arg(long)]
+        memo: Option<String>,
+        /// Solana RPC URL
+        #[arg(long, default_value = DEFAULT_RPC_URL)]
+        rpc_url: String,
+    },
+    /// Manage agent wallets
+    Agents {
+        #[command(subcommand)]
+        action: AgentAction,
+    },
+    /// View payment transaction history
+    History {
+        /// Agent wallet label
+        #[arg(long)]
+        agent: Option<String>,
+        /// Max transactions to show
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentAction {
+    /// Create a new agent wallet
+    Create {
+        /// Human-readable label
+        label: String,
+        /// Daily USDC limit in dollars
+        #[arg(long)]
+        daily_usdc_limit: Option<f64>,
+        /// Per-transaction USDC limit in dollars
+        #[arg(long)]
+        per_tx_usdc_limit: Option<f64>,
+        /// Daily SOL limit
+        #[arg(long)]
+        daily_sol_limit: Option<f64>,
+        /// Per-transaction SOL limit
+        #[arg(long)]
+        per_tx_sol_limit: Option<f64>,
+    },
+    /// List all agent wallets
+    List,
+    /// Show spending limits and 24h usage
+    Limits {
+        /// Agent wallet label
+        agent: String,
+        /// Update daily USDC limit
+        #[arg(long)]
+        daily_usdc_limit: Option<f64>,
+        /// Update per-tx USDC limit
+        #[arg(long)]
+        per_tx_usdc_limit: Option<f64>,
+        /// Update daily SOL limit
+        #[arg(long)]
+        daily_sol_limit: Option<f64>,
+        /// Update per-tx SOL limit
+        #[arg(long)]
+        per_tx_sol_limit: Option<f64>,
+    },
+    /// Deactivate an agent wallet
+    Deactivate {
+        /// Agent wallet label
+        agent: String,
+    },
+}
+
 fn parse_provider(name: &str) -> Result<Provider, String> {
     match name.to_lowercase().as_str() {
         "master" => Ok(Provider::Master),
@@ -267,8 +381,9 @@ fn parse_provider(name: &str) -> Result<Provider, String> {
         "google" => Ok(Provider::Google),
         "local" => Ok(Provider::Local),
         "solana" => Ok(Provider::Solana),
+        "agent" => Ok(Provider::Agent),
         _ => Err(format!(
-            "unknown provider '{}': use master, openai, anthropic, google, local, or solana",
+            "unknown provider '{}': use master, openai, anthropic, google, local, solana, or agent",
             name
         )),
     }
@@ -817,6 +932,81 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Solana { action } => {
             handle_solana(action, &dir).await?;
         }
+
+        Commands::Pay { action } => {
+            handle_pay(action, &dir).await?;
+        }
+
+        Commands::Audit {
+            fix,
+            json,
+            severity,
+        } => {
+            let min_severity = said_core::audit::parse_severity(&severity)
+                .ok_or_else(|| {
+                    format!(
+                        "invalid severity '{}': use low, medium, high, or critical",
+                        severity
+                    )
+                })?;
+
+            let wallet = load_wallet(&dir)?;
+            let report = said_core::audit::build_report(&wallet);
+
+            if json {
+                println!("{}", said_core::audit::format_report_json(&report));
+            } else {
+                print!("{}", said_core::audit::format_report(&report, min_severity));
+
+                let auto_fixable: Vec<_> = report
+                    .findings
+                    .iter()
+                    .filter(|f| f.auto_fixable)
+                    .collect();
+
+                if !auto_fixable.is_empty() {
+                    if fix {
+                        // Auto-apply all safe fixes
+                        let applied =
+                            said_core::audit::apply_auto_fixes(&wallet, &report.findings);
+                        if applied.is_empty() {
+                            println!("No fixes were applicable.");
+                        } else {
+                            println!("Applied {} fix{}:", applied.len(), if applied.len() == 1 { "" } else { "es" });
+                            for a in &applied {
+                                println!("  - {}", a);
+                            }
+                        }
+                    } else {
+                        // Interactive prompt
+                        print!(
+                            "\nApply {} auto-fix{}? [y/N]: ",
+                            auto_fixable.len(),
+                            if auto_fixable.len() == 1 { "" } else { "es" },
+                        );
+                        std::io::stdout().flush()?;
+                        let mut answer = String::new();
+                        std::io::stdin().read_line(&mut answer)?;
+                        if answer.trim().eq_ignore_ascii_case("y") {
+                            let applied =
+                                said_core::audit::apply_auto_fixes(&wallet, &report.findings);
+                            if applied.is_empty() {
+                                println!("No fixes were applicable.");
+                            } else {
+                                println!(
+                                    "Applied {} fix{}:",
+                                    applied.len(),
+                                    if applied.len() == 1 { "" } else { "es" }
+                                );
+                                for a in &applied {
+                                    println!("  - {}", a);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
@@ -1034,6 +1224,363 @@ async fn handle_solana(
                 .await?;
             println!("  TX: {}", tx_sig);
             println!("Authority updated.");
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_pay(
+    action: PayAction,
+    wallet_dir: &PathBuf,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let wallet = load_wallet(wallet_dir)?;
+
+    match action {
+        PayAction::Balance { agent, rpc_url } => {
+            let is_devnet = rpc_url.contains("devnet");
+
+            let (address, label) = if let Some(ref agent_label) = agent {
+                let a = wallet.find_agent_wallet(agent_label)?;
+                (a.solana_address.clone(), a.label.clone())
+            } else {
+                let pubkey = wallet.solana_pubkey_bytes();
+                (bs58::encode(&pubkey).into_string(), "owner".to_string())
+            };
+
+            // Use a dummy keypair — we only need RPC reads
+            let dummy_kp = [0u8; 64];
+            let client = said_solana::SolanaClient::new(&rpc_url, &dummy_kp)?;
+
+            let sol_balance = client.get_balance_of(&address).await.unwrap_or(0);
+
+            let wallet_bytes = bs58::decode(&address).into_vec()?;
+            let mut wallet_arr = [0u8; 32];
+            wallet_arr.copy_from_slice(&wallet_bytes);
+
+            let usdc_mint = if is_devnet {
+                said_solana::spl::USDC_MINT_DEVNET
+            } else {
+                said_solana::spl::USDC_MINT_MAINNET
+            };
+            let usdc_balance = client
+                .get_token_balance(&wallet_arr, &usdc_mint)
+                .await
+                .unwrap_or(0);
+
+            println!("Wallet: {} ({})", label, address);
+            println!(
+                "SOL:  {:.9}",
+                sol_balance as f64 / 1_000_000_000.0
+            );
+            println!(
+                "USDC: {:.6}",
+                usdc_balance as f64 / 1_000_000.0
+            );
+        }
+
+        PayAction::Address { agent } => {
+            let (address, label) = if let Some(ref agent_label) = agent {
+                let a = wallet.find_agent_wallet(agent_label)?;
+                (a.solana_address.clone(), a.label.clone())
+            } else {
+                let pubkey = wallet.solana_pubkey_bytes();
+                (bs58::encode(&pubkey).into_string(), "owner".to_string())
+            };
+            println!("{}: {}", label, address);
+        }
+
+        PayAction::Transfer {
+            to,
+            amount,
+            currency,
+            agent,
+            memo,
+            rpc_url,
+        } => {
+            let is_devnet = rpc_url.contains("devnet");
+            let currency_enum = match currency.as_str() {
+                "usdc" => PayCurrency::Usdc,
+                _ => PayCurrency::Sol,
+            };
+
+            let amount_float: f64 = amount.parse()?;
+            let amount_units = match currency_enum {
+                PayCurrency::Sol => (amount_float * 1_000_000_000.0) as u64,
+                PayCurrency::Usdc => (amount_float * 1_000_000.0) as u64,
+            };
+
+            // Determine which wallet to send from
+            let (kp_bytes, agent_id, agent_label, sender) = if let Some(ref agent_label) = agent {
+                let a = wallet.find_agent_wallet(agent_label)?;
+                wallet.check_spending_limit(a.id, &currency_enum, amount_units)?;
+                let kp = wallet.agent_solana_keypair(a.index);
+                (kp, a.id, a.label.clone(), a.solana_address.clone())
+            } else {
+                let kp = wallet.solana_keypair_bytes();
+                let pubkey = wallet.solana_pubkey_bytes();
+                let addr = bs58::encode(&pubkey).into_string();
+                (kp, uuid::Uuid::nil(), "owner".to_string(), addr)
+            };
+
+            let client = said_solana::SolanaClient::new(&rpc_url, &kp_bytes)?;
+
+            let to_bytes = bs58::decode(&to).into_vec()?;
+            if to_bytes.len() != 32 {
+                return Err("recipient must be a 32-byte Solana address".into());
+            }
+            let mut to_arr = [0u8; 32];
+            to_arr.copy_from_slice(&to_bytes);
+
+            println!("Sending {} {} from '{}'...", amount, currency, agent_label);
+
+            let signature = match currency_enum {
+                PayCurrency::Sol => client.transfer_sol(&to_arr, amount_units).await?,
+                PayCurrency::Usdc => client.transfer_usdc(&to_arr, amount_units, is_devnet).await?,
+            };
+
+            // Log transaction
+            let tx = said_types::PaymentTransaction {
+                id: uuid::Uuid::new_v4(),
+                agent_id,
+                agent_label: agent_label.clone(),
+                direction: TxDirection::Send,
+                currency: currency_enum,
+                amount: amount_units,
+                recipient: to.clone(),
+                sender,
+                signature: signature.clone(),
+                memo,
+                status: TxStatus::Confirmed,
+                created_at: chrono::Utc::now(),
+            };
+            let _ = wallet.log_transaction(tx);
+
+            println!("TX:       {}", signature);
+            println!(
+                "Explorer: https://explorer.solana.com/tx/{}?cluster=devnet",
+                signature
+            );
+        }
+
+        PayAction::Agents { action } => match action {
+            AgentAction::Create {
+                label,
+                daily_usdc_limit,
+                per_tx_usdc_limit,
+                daily_sol_limit,
+                per_tx_sol_limit,
+            } => {
+                let policy = SpendingPolicy {
+                    daily_limit_lamports: daily_sol_limit
+                        .map(|v| (v * 1_000_000_000.0) as u64),
+                    daily_limit_usdc_micro: daily_usdc_limit
+                        .map(|v| (v * 1_000_000.0) as u64),
+                    per_tx_limit_lamports: per_tx_sol_limit
+                        .map(|v| (v * 1_000_000_000.0) as u64),
+                    per_tx_limit_usdc_micro: per_tx_usdc_limit
+                        .map(|v| (v * 1_000_000.0) as u64),
+                    allowed_recipients: vec![],
+                };
+
+                let agent = wallet.create_agent_wallet(&label, policy)?;
+                println!("Agent wallet created:");
+                println!("  Label:   {}", agent.label);
+                println!("  Address: {}", agent.solana_address);
+                println!("  ID:      {}", agent.id);
+
+                let p = &agent.spending_policy;
+                if let Some(d) = p.daily_limit_usdc_micro {
+                    println!("  Daily USDC Limit:  ${:.2}", d as f64 / 1_000_000.0);
+                }
+                if let Some(t) = p.per_tx_limit_usdc_micro {
+                    println!("  Per-TX USDC Limit: ${:.2}", t as f64 / 1_000_000.0);
+                }
+                if let Some(d) = p.daily_limit_lamports {
+                    println!("  Daily SOL Limit:   {:.9} SOL", d as f64 / 1e9);
+                }
+                if let Some(t) = p.per_tx_limit_lamports {
+                    println!("  Per-TX SOL Limit:  {:.9} SOL", t as f64 / 1e9);
+                }
+            }
+
+            AgentAction::List => {
+                let agents = wallet.list_agent_wallets()?;
+                if agents.is_empty() {
+                    println!("No agent wallets. Create one with: said pay agents create <label>");
+                    return Ok(());
+                }
+
+                println!(
+                    "{:<20} {:<48} {:<8} {:<20}",
+                    "Label", "Address", "Active", "Created"
+                );
+                println!("{}", "-".repeat(96));
+
+                for a in &agents {
+                    println!(
+                        "{:<20} {:<48} {:<8} {:<20}",
+                        a.label,
+                        a.solana_address,
+                        if a.active { "yes" } else { "no" },
+                        a.created_at.format("%Y-%m-%d %H:%M")
+                    );
+                }
+            }
+
+            AgentAction::Limits {
+                agent,
+                daily_usdc_limit,
+                per_tx_usdc_limit,
+                daily_sol_limit,
+                per_tx_sol_limit,
+            } => {
+                let a = wallet.find_agent_wallet(&agent)?;
+
+                // If any limit flags are set, update the policy
+                if daily_usdc_limit.is_some()
+                    || per_tx_usdc_limit.is_some()
+                    || daily_sol_limit.is_some()
+                    || per_tx_sol_limit.is_some()
+                {
+                    let mut policy = a.spending_policy.clone();
+                    if let Some(v) = daily_usdc_limit {
+                        policy.daily_limit_usdc_micro = Some((v * 1_000_000.0) as u64);
+                    }
+                    if let Some(v) = per_tx_usdc_limit {
+                        policy.per_tx_limit_usdc_micro = Some((v * 1_000_000.0) as u64);
+                    }
+                    if let Some(v) = daily_sol_limit {
+                        policy.daily_limit_lamports = Some((v * 1_000_000_000.0) as u64);
+                    }
+                    if let Some(v) = per_tx_sol_limit {
+                        policy.per_tx_limit_lamports = Some((v * 1_000_000_000.0) as u64);
+                    }
+                    wallet.update_agent_policy(a.id, policy)?;
+                    println!("Spending policy updated for '{}'.", agent);
+
+                    // Re-fetch
+                    let a = wallet.find_agent_wallet(&agent)?;
+                    print_agent_limits(&wallet, &a)?;
+                } else {
+                    print_agent_limits(&wallet, &a)?;
+                }
+            }
+
+            AgentAction::Deactivate { agent } => {
+                let a = wallet.find_agent_wallet(&agent)?;
+                wallet.deactivate_agent(a.id)?;
+                println!("Agent '{}' deactivated.", agent);
+            }
+        },
+
+        PayAction::History { agent, limit } => {
+            let agent_id = if let Some(ref agent_label) = agent {
+                let a = wallet.find_agent_wallet(agent_label)?;
+                Some(a.id)
+            } else {
+                None
+            };
+
+            let txs = wallet.transaction_history(agent_id, limit)?;
+            if txs.is_empty() {
+                println!("No transactions found.");
+                return Ok(());
+            }
+
+            println!(
+                "{:<12} {:<6} {:<8} {:<15} {:<48} {:<20}",
+                "Direction", "Curr", "Status", "Amount", "Recipient", "Date"
+            );
+            println!("{}", "-".repeat(109));
+
+            for tx in &txs {
+                let amount_str = match tx.currency {
+                    PayCurrency::Sol => format!("{:.9} SOL", tx.amount as f64 / 1e9),
+                    PayCurrency::Usdc => format!("{:.6} USDC", tx.amount as f64 / 1e6),
+                };
+                println!(
+                    "{:<12} {:<6} {:<8} {:<15} {:<48} {:<20}",
+                    format!("{:?}", tx.direction),
+                    format!("{:?}", tx.currency),
+                    format!("{:?}", tx.status),
+                    amount_str,
+                    &tx.recipient,
+                    tx.created_at.format("%Y-%m-%d %H:%M")
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn print_agent_limits(
+    wallet: &Wallet,
+    agent: &said_types::AgentWallet,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let txs = wallet.transaction_history(Some(agent.id), 1000)?;
+    let twenty_four_hours_ago = chrono::Utc::now() - chrono::Duration::hours(24);
+
+    let sol_spent: u64 = txs
+        .iter()
+        .filter(|tx| {
+            tx.direction == TxDirection::Send
+                && tx.currency == PayCurrency::Sol
+                && tx.created_at > twenty_four_hours_ago
+        })
+        .map(|tx| tx.amount)
+        .sum();
+
+    let usdc_spent: u64 = txs
+        .iter()
+        .filter(|tx| {
+            tx.direction == TxDirection::Send
+                && tx.currency == PayCurrency::Usdc
+                && tx.created_at > twenty_four_hours_ago
+        })
+        .map(|tx| tx.amount)
+        .sum();
+
+    let p = &agent.spending_policy;
+    println!("Agent: {} ({})", agent.label, agent.solana_address);
+    println!("Active: {}", agent.active);
+    println!();
+
+    println!("SOL Limits (24h):");
+    if let Some(daily) = p.daily_limit_lamports {
+        println!(
+            "  Daily:   {:.9} / {:.9} SOL",
+            sol_spent as f64 / 1e9,
+            daily as f64 / 1e9
+        );
+    } else {
+        println!("  Daily:   {:.9} SOL (unlimited)", sol_spent as f64 / 1e9);
+    }
+    if let Some(per_tx) = p.per_tx_limit_lamports {
+        println!("  Per-TX:  {:.9} SOL", per_tx as f64 / 1e9);
+    }
+
+    println!();
+    println!("USDC Limits (24h):");
+    if let Some(daily) = p.daily_limit_usdc_micro {
+        println!(
+            "  Daily:   {:.6} / {:.6} USDC",
+            usdc_spent as f64 / 1e6,
+            daily as f64 / 1e6
+        );
+    } else {
+        println!("  Daily:   {:.6} USDC (unlimited)", usdc_spent as f64 / 1e6);
+    }
+    if let Some(per_tx) = p.per_tx_limit_usdc_micro {
+        println!("  Per-TX:  {:.6} USDC", per_tx as f64 / 1e6);
+    }
+
+    if !p.allowed_recipients.is_empty() {
+        println!();
+        println!("Allowed Recipients:");
+        for r in &p.allowed_recipients {
+            println!("  - {}", r);
         }
     }
 

@@ -123,6 +123,7 @@ pub enum Provider {
     Google = 3,
     Local = 4,
     Solana = 5,
+    Agent = 6,
 }
 
 /// Key type within a provider's derivation subtree.
@@ -152,6 +153,9 @@ pub enum Capability {
     ReadMcpConfigs,
     ReadSecrets,
     WriteSecrets,
+    PayRead,
+    PayTransfer,
+    PayManage,
     /// Shorthand for all capabilities.
     All,
 }
@@ -169,6 +173,9 @@ impl Capability {
             Self::ReadMcpConfigs => "said/read_mcp_configs",
             Self::ReadSecrets => "said/read_secrets",
             Self::WriteSecrets => "said/write_secrets",
+            Self::PayRead => "said/pay_read",
+            Self::PayTransfer => "said/pay_transfer",
+            Self::PayManage => "said/pay_manage",
             Self::All => "said/*",
         }
     }
@@ -185,6 +192,9 @@ impl Capability {
             "said/read_mcp_configs" => Some(Self::ReadMcpConfigs),
             "said/read_secrets" => Some(Self::ReadSecrets),
             "said/write_secrets" => Some(Self::WriteSecrets),
+            "said/pay_read" => Some(Self::PayRead),
+            "said/pay_transfer" => Some(Self::PayTransfer),
+            "said/pay_manage" => Some(Self::PayManage),
             "said/*" => Some(Self::All),
             _ => None,
         }
@@ -202,6 +212,9 @@ impl Capability {
             "read-mcp-configs" => Some(Self::ReadMcpConfigs),
             "read-secrets" => Some(Self::ReadSecrets),
             "write-secrets" => Some(Self::WriteSecrets),
+            "pay-read" => Some(Self::PayRead),
+            "pay-transfer" => Some(Self::PayTransfer),
+            "pay-manage" => Some(Self::PayManage),
             "read-all" => Some(Self::All),
             "all" => Some(Self::All),
             _ => None,
@@ -428,4 +441,80 @@ pub struct InferenceNodeRegistration {
     pub price_per_query_micro_usdc: i64,
     pub region: Option<String>,
     pub description: Option<String>,
+}
+
+// ── Agent Payment Types ──
+
+/// An agent wallet derived from the SAID HD path.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AgentWallet {
+    pub id: Uuid,
+    pub label: String,
+    /// HD derivation index: m / 0x534149' / 6' / 0' / {index}
+    pub index: u32,
+    /// Base58-encoded Solana address
+    pub solana_address: String,
+    pub spending_policy: SpendingPolicy,
+    pub created_at: DateTime<Utc>,
+    pub active: bool,
+}
+
+/// Spending policy for an agent wallet.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SpendingPolicy {
+    /// Maximum daily spend in lamports (None = unlimited)
+    pub daily_limit_lamports: Option<u64>,
+    /// Maximum daily spend in USDC micro-units (6 decimals, None = unlimited)
+    pub daily_limit_usdc_micro: Option<u64>,
+    /// Maximum per-transaction spend in lamports (None = unlimited)
+    pub per_tx_limit_lamports: Option<u64>,
+    /// Maximum per-transaction spend in USDC micro-units (None = unlimited)
+    pub per_tx_limit_usdc_micro: Option<u64>,
+    /// Allowed recipient addresses in base58 (empty = any)
+    #[serde(default)]
+    pub allowed_recipients: Vec<String>,
+}
+
+/// A payment transaction record.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PaymentTransaction {
+    pub id: Uuid,
+    pub agent_id: Uuid,
+    pub agent_label: String,
+    pub direction: TxDirection,
+    pub currency: PayCurrency,
+    /// Amount in lamports (SOL) or micro-units (USDC, 6 decimals)
+    pub amount: u64,
+    pub recipient: String,
+    pub sender: String,
+    /// Solana transaction signature
+    pub signature: String,
+    pub memo: Option<String>,
+    pub status: TxStatus,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Direction of a payment transaction.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TxDirection {
+    Send,
+    Receive,
+}
+
+/// Currency of a payment transaction.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PayCurrency {
+    Sol,
+    Usdc,
+}
+
+/// Status of a payment transaction.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TxStatus {
+    Pending,
+    Confirmed,
+    Failed,
 }

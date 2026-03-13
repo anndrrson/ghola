@@ -4,6 +4,7 @@ use bip39::Mnemonic;
 use ed25519_bip32::{DerivationScheme, XPrv};
 use zeroize::Zeroize;
 
+use bs58;
 use said_types::{KeyType, Provider, WalletMetadata, SAID_PURPOSE};
 
 use crate::encrypt::{
@@ -212,6 +213,218 @@ impl Wallet {
             .map(|h| h.join(".said"))
             .ok_or_else(|| SaidError::Storage("could not determine home directory".into()))
     }
+    // ── Agent Payment Wallet Methods ──
+
+    /// Derive an agent's Solana keypair bytes [secret(32) | pubkey(32)].
+    /// Path: m / 0x534149' / 6' / 0' / {agent_index}
+    pub fn agent_solana_keypair(&self, agent_index: u32) -> [u8; 64] {
+        let xprv = self.derive_provider_key(Provider::Agent, KeyType::Signing, agent_index);
+        let signing_key = crate::ucan::xprv_to_signing_key(&xprv);
+        let verifying_key = signing_key.verifying_key();
+        let mut result = [0u8; 64];
+        result[..32].copy_from_slice(signing_key.as_bytes());
+        result[32..].copy_from_slice(verifying_key.as_bytes());
+        result
+    }
+
+    /// Get an agent's Solana address as a base58 string.
+    pub fn agent_solana_address(&self, agent_index: u32) -> String {
+        let kp = self.agent_solana_keypair(agent_index);
+        bs58::encode(&kp[32..]).into_string()
+    }
+
+    /// Create a new agent wallet with the given label and spending policy.
+    /// Assigns the next available HD derivation index and persists to encrypted storage.
+    pub fn create_agent_wallet(
+        &self,
+        label: &str,
+        policy: said_types::SpendingPolicy,
+    ) -> Result<said_types::AgentWallet> {
+        let mut wallets: Vec<said_types::AgentWallet> =
+            self.storage.load("agent_wallets").unwrap_or_default();
+
+        // Check for duplicate label
+        if wallets.iter().any(|w| w.label == label) {
+            return Err(SaidError::Storage(format!(
+                "agent wallet with label '{}' already exists",
+                label
+            )));
+        }
+
+        // Next index = max existing index + 1, or 0
+        let next_index = wallets.iter().map(|w| w.index).max().map_or(0, |m| m + 1);
+        let address = self.agent_solana_address(next_index);
+
+        let wallet = said_types::AgentWallet {
+            id: uuid::Uuid::new_v4(),
+            label: label.to_string(),
+            index: next_index,
+            solana_address: address,
+            spending_policy: policy,
+            created_at: chrono::Utc::now(),
+            active: true,
+        };
+
+        wallets.push(wallet.clone());
+        self.storage.save("agent_wallets", &wallets)?;
+
+        Ok(wallet)
+    }
+
+    /// List all agent wallets from encrypted storage.
+    pub fn list_agent_wallets(&self) -> Result<Vec<said_types::AgentWallet>> {
+        self.storage.load("agent_wallets")
+    }
+
+    /// Find an agent wallet by label.
+    pub fn find_agent_wallet(&self, label: &str) -> Result<said_types::AgentWallet> {
+        let wallets = self.list_agent_wallets()?;
+        wallets
+            .into_iter()
+            .find(|w| w.label == label)
+            .ok_or_else(|| SaidError::AgentNotFound(label.to_string()))
+    }
+
+    /// Update the spending policy for an agent wallet.
+    pub fn update_agent_policy(
+        &self,
+        agent_id: uuid::Uuid,
+        policy: said_types::SpendingPolicy,
+    ) -> Result<()> {
+        let mut wallets: Vec<said_types::AgentWallet> =
+            self.storage.load("agent_wallets").unwrap_or_default();
+
+        let agent = wallets
+            .iter_mut()
+            .find(|w| w.id == agent_id)
+            .ok_or_else(|| SaidError::AgentNotFound(agent_id.to_string()))?;
+
+        agent.spending_policy = policy;
+        self.storage.save("agent_wallets", &wallets)?;
+        Ok(())
+    }
+
+    /// Deactivate an agent wallet.
+    pub fn deactivate_agent(&self, agent_id: uuid::Uuid) -> Result<()> {
+        let mut wallets: Vec<said_types::AgentWallet> =
+            self.storage.load("agent_wallets").unwrap_or_default();
+
+        let agent = wallets
+            .iter_mut()
+            .find(|w| w.id == agent_id)
+            .ok_or_else(|| SaidError::AgentNotFound(agent_id.to_string()))?;
+
+        agent.active = false;
+        self.storage.save("agent_wallets", &wallets)?;
+        Ok(())
+    }
+
+    /// Log a payment transaction to encrypted storage.
+    pub fn log_transaction(&self, tx: said_types::PaymentTransaction) -> Result<()> {
+        let value = serde_json::to_value(&tx)
+            .map_err(|e| SaidError::Serialization(e.to_string()))?;
+        self.storage.append_value("pay_transactions", value)?;
+        Ok(())
+    }
+
+    /// Get payment transaction history, optionally filtered by agent.
+    pub fn transaction_history(
+        &self,
+        agent_id: Option<uuid::Uuid>,
+        limit: usize,
+    ) -> Result<Vec<said_types::PaymentTransaction>> {
+        let txs: Vec<said_types::PaymentTransaction> =
+            self.storage.load("pay_transactions").unwrap_or_default();
+
+        let filtered: Vec<said_types::PaymentTransaction> = txs
+            .into_iter()
+            .rev()
+            .filter(|tx| agent_id.map_or(true, |id| tx.agent_id == id))
+            .take(limit)
+            .collect();
+
+        Ok(filtered)
+    }
+
+    /// Check if a transfer would exceed the agent's spending limits.
+    /// Sums all sends in the last 24 hours and compares against the policy.
+    pub fn check_spending_limit(
+        &self,
+        agent_id: uuid::Uuid,
+        currency: &said_types::PayCurrency,
+        amount: u64,
+    ) -> Result<()> {
+        let wallets: Vec<said_types::AgentWallet> =
+            self.storage.load("agent_wallets").unwrap_or_default();
+
+        let agent = wallets
+            .iter()
+            .find(|w| w.id == agent_id)
+            .ok_or_else(|| SaidError::AgentNotFound(agent_id.to_string()))?;
+
+        if !agent.active {
+            return Err(SaidError::AgentInactive(agent.label.clone()));
+        }
+
+        let policy = &agent.spending_policy;
+
+        // Check per-transaction limit
+        match currency {
+            said_types::PayCurrency::Sol => {
+                if let Some(limit) = policy.per_tx_limit_lamports {
+                    if amount > limit {
+                        return Err(SaidError::SpendingLimitExceeded(format!(
+                            "per-tx SOL limit: {} lamports, requested: {}",
+                            limit, amount
+                        )));
+                    }
+                }
+            }
+            said_types::PayCurrency::Usdc => {
+                if let Some(limit) = policy.per_tx_limit_usdc_micro {
+                    if amount > limit {
+                        return Err(SaidError::SpendingLimitExceeded(format!(
+                            "per-tx USDC limit: {} micro, requested: {}",
+                            limit, amount
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Check daily limit
+        let daily_limit = match currency {
+            said_types::PayCurrency::Sol => policy.daily_limit_lamports,
+            said_types::PayCurrency::Usdc => policy.daily_limit_usdc_micro,
+        };
+
+        if let Some(limit) = daily_limit {
+            let txs: Vec<said_types::PaymentTransaction> =
+                self.storage.load("pay_transactions").unwrap_or_default();
+
+            let twenty_four_hours_ago = chrono::Utc::now() - chrono::Duration::hours(24);
+
+            let daily_spent: u64 = txs
+                .iter()
+                .filter(|tx| {
+                    tx.agent_id == agent_id
+                        && tx.direction == said_types::TxDirection::Send
+                        && tx.currency == *currency
+                        && tx.created_at > twenty_four_hours_ago
+                })
+                .map(|tx| tx.amount)
+                .sum();
+
+            if daily_spent + amount > limit {
+                return Err(SaidError::SpendingLimitExceeded(format!(
+                    "daily {:?} limit: {}, already spent: {}, requested: {}",
+                    currency, limit, daily_spent, amount
+                )));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Drop for Wallet {
@@ -360,5 +573,77 @@ mod tests {
             .derive_provider_key(Provider::OpenAI, KeyType::Encryption, 0)
             .public();
         assert_eq!(key1.as_ref(), key2.as_ref());
+    }
+
+    #[test]
+    fn agent_wallet_lifecycle() {
+        let dir = TempDir::new().unwrap();
+        let wallet_dir = dir.path().join(".said");
+        let (wallet, _) = Wallet::init(&wallet_dir, None).unwrap();
+
+        // Create agent wallet
+        let policy = said_types::SpendingPolicy {
+            daily_limit_usdc_micro: Some(50_000_000), // $50
+            per_tx_limit_usdc_micro: Some(10_000_000), // $10
+            ..Default::default()
+        };
+        let agent = wallet.create_agent_wallet("test-bot", policy).unwrap();
+        assert_eq!(agent.label, "test-bot");
+        assert!(agent.active);
+        assert!(!agent.solana_address.is_empty());
+
+        // List
+        let agents = wallet.list_agent_wallets().unwrap();
+        assert_eq!(agents.len(), 1);
+
+        // Find
+        let found = wallet.find_agent_wallet("test-bot").unwrap();
+        assert_eq!(found.id, agent.id);
+
+        // Deactivate
+        wallet.deactivate_agent(agent.id).unwrap();
+        let agents = wallet.list_agent_wallets().unwrap();
+        assert!(!agents[0].active);
+    }
+
+    #[test]
+    fn agent_spending_limits() {
+        let dir = TempDir::new().unwrap();
+        let wallet_dir = dir.path().join(".said");
+        let (wallet, _) = Wallet::init(&wallet_dir, None).unwrap();
+
+        let policy = said_types::SpendingPolicy {
+            per_tx_limit_lamports: Some(1_000_000),
+            daily_limit_lamports: Some(5_000_000),
+            ..Default::default()
+        };
+        let agent = wallet.create_agent_wallet("spender", policy).unwrap();
+
+        // Under per-tx limit: OK
+        wallet
+            .check_spending_limit(agent.id, &said_types::PayCurrency::Sol, 500_000)
+            .unwrap();
+
+        // Over per-tx limit: fail
+        let result =
+            wallet.check_spending_limit(agent.id, &said_types::PayCurrency::Sol, 2_000_000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn agent_deterministic_derivation() {
+        let dir = TempDir::new().unwrap();
+        let wallet_dir = dir.path().join(".said");
+        let (wallet, phrase) = Wallet::init(&wallet_dir, None).unwrap();
+
+        let addr1 = wallet.agent_solana_address(0);
+        let addr2 = wallet.agent_solana_address(1);
+        assert_ne!(addr1, addr2); // Different indices → different addresses
+
+        // Recover produces same addresses
+        let dir2 = TempDir::new().unwrap();
+        let wallet_dir2 = dir2.path().join(".said");
+        let recovered = Wallet::recover(&phrase, &wallet_dir2, None).unwrap();
+        assert_eq!(addr1, recovered.agent_solana_address(0));
     }
 }

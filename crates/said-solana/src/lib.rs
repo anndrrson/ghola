@@ -2,6 +2,7 @@ pub mod client;
 pub mod error;
 pub mod instructions;
 pub mod pda;
+pub mod spl;
 pub mod tx;
 
 pub use client::{IdentityRecord, SolanaClient};

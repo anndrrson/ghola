@@ -15,8 +15,8 @@ use serde::Deserialize;
 
 use said_core::Wallet;
 use said_types::{
-    Capability, ConversationEntry, KnowledgeDoc, McpConfig, Memory, Preference, Secret,
-    SystemPrompt,
+    AgentWallet, Capability, ConversationEntry, KnowledgeDoc, McpConfig, Memory, PayCurrency,
+    PaymentTransaction, Preference, Secret, SpendingPolicy, SystemPrompt, TxDirection, TxStatus,
 };
 
 // ── Tool Parameter Types ──
@@ -145,6 +145,66 @@ pub struct SetSecretParams {
 pub struct RemoveSecretParams {
     /// Name of the secret to remove
     pub name: String,
+}
+
+// ── Payment Tool Parameter Types ──
+
+#[derive(Deserialize, JsonSchema)]
+pub struct PayBalanceParams {
+    /// Agent wallet label. If omitted, shows the owner wallet balance.
+    pub agent: Option<String>,
+    /// Solana RPC URL (default: https://api.devnet.solana.com)
+    pub rpc_url: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct PayAddressParams {
+    /// Agent wallet label. If omitted, shows the owner wallet address.
+    pub agent: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct PayTransferParams {
+    /// Agent wallet label to send from
+    pub agent: String,
+    /// Recipient Solana address (base58)
+    pub to: String,
+    /// Amount to send (in SOL or USDC, human-readable e.g. "0.5")
+    pub amount: String,
+    /// Currency: "sol" or "usdc" (default: "sol")
+    pub currency: Option<String>,
+    /// Optional memo for the transaction
+    pub memo: Option<String>,
+    /// Solana RPC URL (default: https://api.devnet.solana.com)
+    pub rpc_url: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct PayCreateAgentParams {
+    /// Human-readable label for the agent wallet
+    pub label: String,
+    /// Daily USDC spending limit in dollars (e.g. "50")
+    pub daily_usdc_limit: Option<String>,
+    /// Per-transaction USDC limit in dollars (e.g. "10")
+    pub per_tx_usdc_limit: Option<String>,
+    /// Daily SOL spending limit (e.g. "1.0")
+    pub daily_sol_limit: Option<String>,
+    /// Per-transaction SOL limit (e.g. "0.5")
+    pub per_tx_sol_limit: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct PayHistoryParams {
+    /// Agent wallet label. If omitted, shows all transactions.
+    pub agent: Option<String>,
+    /// Max number of transactions to return (default: 20)
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct PayLimitsParams {
+    /// Agent wallet label
+    pub agent: String,
 }
 
 // ── MCP Server ──
@@ -766,6 +826,372 @@ impl SaidServer {
             "Secret '{}' removed.",
             params.name
         ))]))
+    }
+
+    // ── Payment Tools ──
+
+    #[tool(
+        name = "said_pay_balance",
+        description = "Get SOL and USDC balances for an agent wallet or the owner wallet"
+    )]
+    async fn pay_balance(
+        &self,
+        Parameters(params): Parameters<PayBalanceParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::PayRead)?;
+
+        let rpc_url = params
+            .rpc_url
+            .unwrap_or_else(|| "https://api.devnet.solana.com".to_string());
+        let is_devnet = rpc_url.contains("devnet");
+
+        let (address, label) = {
+            let wallet = self.wallet.lock().unwrap();
+            if let Some(agent_label) = &params.agent {
+                let agent = wallet
+                    .find_agent_wallet(agent_label)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                (agent.solana_address.clone(), agent.label.clone())
+            } else {
+                let pubkey = wallet.solana_pubkey_bytes();
+                (bs58::encode(&pubkey).into_string(), "owner".to_string())
+            }
+        };
+
+        let dummy_kp = [0u8; 64]; // We only need RPC reads, not signing
+        let client = said_solana::SolanaClient::new(&rpc_url, &dummy_kp)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let sol_balance = client
+            .get_balance_of(&address)
+            .await
+            .unwrap_or(0);
+
+        let wallet_bytes = bs58::decode(&address)
+            .into_vec()
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let mut wallet_arr = [0u8; 32];
+        wallet_arr.copy_from_slice(&wallet_bytes);
+
+        let usdc_mint = if is_devnet {
+            said_solana::spl::USDC_MINT_DEVNET
+        } else {
+            said_solana::spl::USDC_MINT_MAINNET
+        };
+        let usdc_balance = client
+            .get_token_balance(&wallet_arr, &usdc_mint)
+            .await
+            .unwrap_or(0);
+
+        let output = format!(
+            "Wallet: {} ({})\nSOL:  {:.9}\nUSDC: {:.6}",
+            label,
+            address,
+            sol_balance as f64 / 1_000_000_000.0,
+            usdc_balance as f64 / 1_000_000.0,
+        );
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_pay_address",
+        description = "Get the Solana deposit address for an agent wallet or the owner wallet"
+    )]
+    async fn pay_address(
+        &self,
+        Parameters(params): Parameters<PayAddressParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::PayRead)?;
+
+        let wallet = self.wallet.lock().unwrap();
+
+        let (address, label) = if let Some(agent_label) = &params.agent {
+            let agent = wallet
+                .find_agent_wallet(agent_label)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            (agent.solana_address.clone(), agent.label.clone())
+        } else {
+            let pubkey = wallet.solana_pubkey_bytes();
+            (bs58::encode(&pubkey).into_string(), "owner".to_string())
+        };
+
+        let output = format!("{} address: {}", label, address);
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_pay_transfer",
+        description = "Send SOL or USDC from an agent wallet, enforcing spending limits"
+    )]
+    async fn pay_transfer(
+        &self,
+        Parameters(params): Parameters<PayTransferParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::PayTransfer)?;
+
+        let rpc_url = params
+            .rpc_url
+            .unwrap_or_else(|| "https://api.devnet.solana.com".to_string());
+        let is_devnet = rpc_url.contains("devnet");
+
+        let currency_str = params.currency.as_deref().unwrap_or("sol");
+        let currency = match currency_str {
+            "usdc" => PayCurrency::Usdc,
+            _ => PayCurrency::Sol,
+        };
+
+        // Parse amount to smallest units
+        let amount_float: f64 = params.amount.parse().map_err(|_| {
+            ErrorData::internal_error(format!("invalid amount: {}", params.amount), None)
+        })?;
+        let amount = match currency {
+            PayCurrency::Sol => (amount_float * 1_000_000_000.0) as u64,
+            PayCurrency::Usdc => (amount_float * 1_000_000.0) as u64,
+        };
+
+        let (kp_bytes, agent_id, agent_label, sender) = {
+            let wallet = self.wallet.lock().unwrap();
+            let agent = wallet
+                .find_agent_wallet(&params.agent)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            // Check spending limits
+            wallet
+                .check_spending_limit(agent.id, &currency, amount)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            // Derive agent signing key
+            let kp = wallet.agent_solana_keypair(agent.index);
+            (kp, agent.id, agent.label.clone(), agent.solana_address.clone())
+        };
+
+        let client = said_solana::SolanaClient::new(&rpc_url, &kp_bytes)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let to_bytes = bs58::decode(&params.to)
+            .into_vec()
+            .map_err(|e| ErrorData::internal_error(format!("invalid recipient: {}", e), None))?;
+        let mut to_arr = [0u8; 32];
+        if to_bytes.len() != 32 {
+            return Err(ErrorData::internal_error(
+                "recipient must be a 32-byte Solana address".to_string(),
+                None,
+            ));
+        }
+        to_arr.copy_from_slice(&to_bytes);
+
+        let signature = match currency {
+            PayCurrency::Sol => client
+                .transfer_sol(&to_arr, amount)
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+            PayCurrency::Usdc => client
+                .transfer_usdc(&to_arr, amount, is_devnet)
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        };
+
+        // Log transaction
+        let tx = PaymentTransaction {
+            id: uuid::Uuid::new_v4(),
+            agent_id,
+            agent_label: agent_label.clone(),
+            direction: TxDirection::Send,
+            currency: currency.clone(),
+            amount,
+            recipient: params.to.clone(),
+            sender,
+            signature: signature.clone(),
+            memo: params.memo.clone(),
+            status: TxStatus::Confirmed,
+            created_at: chrono::Utc::now(),
+        };
+
+        let wallet = self.wallet.lock().unwrap();
+        let _ = wallet.log_transaction(tx);
+
+        let explorer = format!("https://explorer.solana.com/tx/{}?cluster=devnet", signature);
+        let output = format!(
+            "Sent {} {} from '{}' to {}\nTX: {}\nExplorer: {}",
+            params.amount, currency_str, agent_label, params.to, signature, explorer
+        );
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_pay_agents",
+        description = "List all agent wallets with their labels, addresses, and spending policies"
+    )]
+    async fn pay_agents(&self) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::PayRead)?;
+
+        let wallet = self.wallet.lock().unwrap();
+        let agents: Vec<AgentWallet> = wallet
+            .list_agent_wallets()
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        if agents.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No agent wallets. Create one with said_pay_create_agent.",
+            )]));
+        }
+
+        let json = serde_json::to_string_pretty(&agents).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        name = "said_pay_create_agent",
+        description = "Create a new agent wallet with a label and optional spending limits"
+    )]
+    async fn pay_create_agent(
+        &self,
+        Parameters(params): Parameters<PayCreateAgentParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::PayManage)?;
+
+        fn parse_sol(s: &str) -> Option<u64> {
+            s.parse::<f64>().ok().map(|v| (v * 1_000_000_000.0) as u64)
+        }
+        fn parse_usdc(s: &str) -> Option<u64> {
+            s.parse::<f64>().ok().map(|v| (v * 1_000_000.0) as u64)
+        }
+
+        let policy = SpendingPolicy {
+            daily_limit_lamports: params.daily_sol_limit.as_deref().and_then(parse_sol),
+            daily_limit_usdc_micro: params.daily_usdc_limit.as_deref().and_then(parse_usdc),
+            per_tx_limit_lamports: params.per_tx_sol_limit.as_deref().and_then(parse_sol),
+            per_tx_limit_usdc_micro: params.per_tx_usdc_limit.as_deref().and_then(parse_usdc),
+            allowed_recipients: vec![],
+        };
+
+        let wallet = self.wallet.lock().unwrap();
+        let agent = wallet
+            .create_agent_wallet(&params.label, policy)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let json = serde_json::to_string_pretty(&agent).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        name = "said_pay_history",
+        description = "View payment transaction history, optionally filtered by agent"
+    )]
+    async fn pay_history(
+        &self,
+        Parameters(params): Parameters<PayHistoryParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::PayRead)?;
+
+        let wallet = self.wallet.lock().unwrap();
+        let limit = params.limit.unwrap_or(20);
+
+        let agent_id = if let Some(agent_label) = &params.agent {
+            let agent = wallet
+                .find_agent_wallet(agent_label)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            Some(agent.id)
+        } else {
+            None
+        };
+
+        let txs = wallet
+            .transaction_history(agent_id, limit)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        if txs.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No transactions found.",
+            )]));
+        }
+
+        let json = serde_json::to_string_pretty(&txs).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        name = "said_pay_limits",
+        description = "View spending limits and 24h usage for an agent wallet"
+    )]
+    async fn pay_limits(
+        &self,
+        Parameters(params): Parameters<PayLimitsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::PayRead)?;
+
+        let wallet = self.wallet.lock().unwrap();
+        let agent = wallet
+            .find_agent_wallet(&params.agent)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        // Get 24h spending
+        let txs: Vec<PaymentTransaction> = wallet
+            .transaction_history(Some(agent.id), 1000)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let twenty_four_hours_ago = chrono::Utc::now() - chrono::Duration::hours(24);
+
+        let sol_spent: u64 = txs
+            .iter()
+            .filter(|tx| {
+                tx.direction == TxDirection::Send
+                    && tx.currency == PayCurrency::Sol
+                    && tx.created_at > twenty_four_hours_ago
+            })
+            .map(|tx| tx.amount)
+            .sum();
+
+        let usdc_spent: u64 = txs
+            .iter()
+            .filter(|tx| {
+                tx.direction == TxDirection::Send
+                    && tx.currency == PayCurrency::Usdc
+                    && tx.created_at > twenty_four_hours_ago
+            })
+            .map(|tx| tx.amount)
+            .sum();
+
+        let policy = &agent.spending_policy;
+        let mut output = format!("Agent: {} ({})\n", agent.label, agent.solana_address);
+        output.push_str(&format!("Active: {}\n\n", agent.active));
+
+        output.push_str("SOL Limits (24h):\n");
+        if let Some(daily) = policy.daily_limit_lamports {
+            output.push_str(&format!(
+                "  Daily:     {:.9} / {:.9} SOL\n",
+                sol_spent as f64 / 1e9,
+                daily as f64 / 1e9
+            ));
+        } else {
+            output.push_str(&format!("  Daily:     {:.9} SOL (unlimited)\n", sol_spent as f64 / 1e9));
+        }
+        if let Some(per_tx) = policy.per_tx_limit_lamports {
+            output.push_str(&format!("  Per-TX:    {:.9} SOL\n", per_tx as f64 / 1e9));
+        }
+
+        output.push_str("\nUSDC Limits (24h):\n");
+        if let Some(daily) = policy.daily_limit_usdc_micro {
+            output.push_str(&format!(
+                "  Daily:     {:.6} / {:.6} USDC\n",
+                usdc_spent as f64 / 1e6,
+                daily as f64 / 1e6
+            ));
+        } else {
+            output.push_str(&format!("  Daily:     {:.6} USDC (unlimited)\n", usdc_spent as f64 / 1e6));
+        }
+        if let Some(per_tx) = policy.per_tx_limit_usdc_micro {
+            output.push_str(&format!("  Per-TX:    {:.6} USDC\n", per_tx as f64 / 1e6));
+        }
+
+        if !policy.allowed_recipients.is_empty() {
+            output.push_str(&format!(
+                "\nAllowed Recipients: {}\n",
+                policy.allowed_recipients.join(", ")
+            ));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 }
 

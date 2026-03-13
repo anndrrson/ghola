@@ -112,6 +112,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v1/nodes/{id}/payment",
             post(routes::nodes::record_payment),
+        )
+        .route(
+            "/v1/pay/merchant/{did}",
+            get(routes::payments::get_merchant),
         );
 
     // Protected routes (require Bearer JWT)
@@ -176,6 +180,24 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v1/nodes/{id}/review",
             post(routes::nodes::submit_review),
+        )
+        .route(
+            "/v1/pay/agents",
+            get(routes::payments::list_agents).post(routes::payments::create_agent),
+        )
+        .route(
+            "/v1/pay/agents/{id}",
+            put(routes::payments::update_agent).delete(routes::payments::deactivate_agent),
+        )
+        .route("/v1/pay/history", get(routes::payments::history))
+        .route("/v1/pay/sync", post(routes::payments::sync_transactions))
+        .route(
+            "/v1/pay/spending/{id}",
+            get(routes::payments::spending_summary),
+        )
+        .route(
+            "/v1/pay/merchant",
+            post(routes::payments::upsert_merchant),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),

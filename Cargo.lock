@@ -2517,6 +2517,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "said-core",
+ "said-solana",
  "said-types",
  "schemars",
  "serde",

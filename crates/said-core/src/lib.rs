@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod context;
 pub mod discovery;
 pub mod encrypt;

@@ -260,4 +260,105 @@ impl SolanaClient {
             .map(|s| s.to_string())
             .ok_or(SolanaError::Client("missing signature".into()))
     }
+
+    /// Get the SOL balance of any address (not just the payer).
+    pub async fn get_balance_of(&self, address: &str) -> Result<u64> {
+        let result = self
+            .rpc_call(
+                "getBalance",
+                serde_json::json!([address, {"commitment": "confirmed"}]),
+            )
+            .await?;
+        result["value"]
+            .as_u64()
+            .ok_or(SolanaError::Client("missing balance".into()))
+    }
+
+    /// Get the SPL token balance for a wallet + mint pair.
+    /// Returns the balance in the token's smallest unit (e.g., micro-USDC).
+    pub async fn get_token_balance(
+        &self,
+        wallet: &[u8; 32],
+        mint: &[u8; 32],
+    ) -> Result<u64> {
+        let ata = crate::spl::find_ata(wallet, mint);
+        let ata_b58 = bs58::encode(&ata).into_string();
+
+        let result = self
+            .rpc_call(
+                "getTokenAccountBalance",
+                serde_json::json!([ata_b58, {"commitment": "confirmed"}]),
+            )
+            .await;
+
+        match result {
+            Ok(val) => {
+                let amount_str = val["value"]["amount"]
+                    .as_str()
+                    .ok_or(SolanaError::Client("missing token amount".into()))?;
+                amount_str
+                    .parse::<u64>()
+                    .map_err(|e| SolanaError::Client(format!("invalid amount: {}", e)))
+            }
+            Err(_) => Ok(0), // ATA doesn't exist = 0 balance
+        }
+    }
+
+    /// Transfer SOL from the payer to a recipient.
+    /// Returns the transaction signature.
+    pub async fn transfer_sol(&self, to: &[u8; 32], lamports: u64) -> Result<String> {
+        let ix = crate::spl::build_sol_transfer_ix(&self.payer_pubkey(), to, lamports);
+        self.send_single_ix(ix).await
+    }
+
+    /// Transfer USDC from the payer to a recipient.
+    /// Creates the recipient's ATA if it doesn't exist.
+    /// `amount` is in micro-USDC (6 decimals).
+    /// `devnet` controls which USDC mint to use.
+    pub async fn transfer_usdc(
+        &self,
+        to: &[u8; 32],
+        amount: u64,
+        devnet: bool,
+    ) -> Result<String> {
+        let mint = if devnet {
+            crate::spl::USDC_MINT_DEVNET
+        } else {
+            crate::spl::USDC_MINT_MAINNET
+        };
+
+        let payer = self.payer_pubkey();
+        let source_ata = crate::spl::find_ata(&payer, &mint);
+        let dest_ata = crate::spl::find_ata(to, &mint);
+
+        // Create dest ATA (idempotent) + TransferChecked
+        let create_ata_ix = crate::spl::build_create_ata_ix(&payer, to, &mint);
+        let transfer_ix = crate::spl::build_transfer_checked_ix(
+            &source_ata,
+            &mint,
+            &dest_ata,
+            &payer,
+            amount,
+            crate::spl::USDC_DECIMALS,
+        );
+
+        let blockhash = self.get_latest_blockhash().await?;
+        let msg = crate::tx::build_message(&[create_ata_ix, transfer_ix], &payer, &blockhash);
+        let tx_bytes = crate::tx::sign_and_serialize(&msg, &self.payer);
+        self.send_transaction(&tx_bytes).await
+    }
+
+    /// Build, sign, and send a transaction with multiple instructions using a custom signer.
+    /// Returns the transaction signature.
+    pub async fn send_signed_tx(
+        &self,
+        instructions: &[crate::instructions::RawInstruction],
+        signer: &SigningKey,
+    ) -> Result<String> {
+        let payer = signer.verifying_key().to_bytes();
+        let blockhash = self.get_latest_blockhash().await?;
+        let msg = crate::tx::build_message(instructions, &payer, &blockhash);
+        let tx_bytes = crate::tx::sign_and_serialize(&msg, signer);
+        self.send_transaction(&tx_bytes).await
+    }
 }

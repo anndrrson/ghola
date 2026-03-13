@@ -121,6 +121,49 @@ pub struct DbVerifiedBadge {
     pub expires_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+pub struct DbAgentWallet {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub label: String,
+    pub hd_index: i32,
+    pub solana_address: String,
+    pub spending_policy: serde_json::Value,
+    pub active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+pub struct DbPaymentTransaction {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub agent_wallet_id: Uuid,
+    pub agent_label: String,
+    pub direction: String,
+    pub currency: String,
+    pub amount: i64,
+    pub recipient: String,
+    pub sender: String,
+    pub signature: String,
+    pub memo: Option<String>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+pub struct DbMerchantConfig {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub did: String,
+    pub receive_address: String,
+    pub accepted_currencies: serde_json::Value,
+    pub webhook_url: Option<String>,
+    pub active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 impl From<DbBusinessProfile> for said_types::BusinessProfile {
     fn from(db: DbBusinessProfile) -> Self {
         said_types::BusinessProfile {

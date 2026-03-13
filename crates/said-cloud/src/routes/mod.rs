@@ -6,4 +6,5 @@ pub mod business;
 pub mod consumer;
 pub mod health;
 pub mod nodes;
+pub mod payments;
 pub mod resolve;
