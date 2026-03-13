@@ -164,6 +164,27 @@ pub struct DbMerchantConfig {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+pub struct DbChatAgent {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub encrypted_config: String,
+    pub display_order: i32,
+    pub last_message_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+pub struct DbChatSnapshot {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub agent_id: Uuid,
+    pub encrypted_messages: String,
+    pub message_count: i32,
+    pub snapshot_at: DateTime<Utc>,
+}
+
 impl From<DbBusinessProfile> for said_types::BusinessProfile {
     fn from(db: DbBusinessProfile) -> Self {
         said_types::BusinessProfile {

@@ -15,11 +15,12 @@ const WalletMultiButton = dynamic(
   { ssr: false }
 );
 
-type Section = "home" | "identity" | "models";
+type Section = "home" | "identity" | "models" | "chat";
 
 function getSection(pathname: string): Section {
   if (pathname.startsWith("/identity")) return "identity";
   if (pathname.startsWith("/models")) return "models";
+  if (pathname.startsWith("/chat")) return "chat";
   return "home";
 }
 
@@ -80,6 +81,16 @@ export function Navbar() {
                 }`}
               >
                 Models
+              </Link>
+              <Link
+                href="/chat"
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  section === "chat"
+                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                    : "text-[#8b95a8] hover:text-[#eef1f8]"
+                }`}
+              >
+                Chat
               </Link>
             </div>
           </div>
@@ -209,6 +220,13 @@ export function Navbar() {
               className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
             >
               Models
+            </Link>
+            <Link
+              href="/chat"
+              onClick={() => setMobileOpen(false)}
+              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+            >
+              Chat
             </Link>
             <div className="border-t border-[#1e2a3a] pt-2 mt-2">
               {authenticated ? (

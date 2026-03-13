@@ -13,6 +13,8 @@ import type {
   ModelsResponse,
   CreatorStats,
   Balance,
+  EncryptedAgentConfig,
+  EncryptedSnapshot,
 } from "./types";
 
 const API_BASE =
@@ -496,6 +498,134 @@ export async function addContent(
 
 export async function startFineTune(modelId: string) {
   return orniFetch(`/creator/models/${modelId}/fine-tune`, { method: "POST" });
+}
+
+// ── Chat API ──
+
+export async function getChatAgents(): Promise<EncryptedAgentConfig[]> {
+  return apiFetch<EncryptedAgentConfig[]>("/chat/agents");
+}
+
+export async function saveChatAgent(data: {
+  encrypted_config: string;
+  display_order?: number;
+}): Promise<EncryptedAgentConfig> {
+  return apiFetch<EncryptedAgentConfig>("/chat/agents", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateChatAgent(
+  id: string,
+  data: {
+    encrypted_config?: string;
+    display_order?: number;
+    last_message_at?: string;
+  }
+): Promise<EncryptedAgentConfig> {
+  return apiFetch<EncryptedAgentConfig>(`/chat/agents/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteChatAgent(id: string): Promise<void> {
+  await apiFetch(`/chat/agents/${id}`, { method: "DELETE" });
+}
+
+export async function getChatHistory(
+  agentId: string
+): Promise<EncryptedSnapshot | null> {
+  return apiFetch<EncryptedSnapshot | null>(`/chat/history/${agentId}`);
+}
+
+export async function saveChatHistory(
+  agentId: string,
+  data: { encrypted_messages: string; message_count: number }
+): Promise<EncryptedSnapshot> {
+  return apiFetch<EncryptedSnapshot>(`/chat/history/${agentId}`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function chatRelay(
+  provider: string,
+  model: string,
+  apiKey: string,
+  messages: { role: string; content: string }[],
+  system?: string
+): ReadableStream<string> {
+  const token = getToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  return new ReadableStream<string>({
+    async start(controller) {
+      try {
+        const res = await fetch(`${API_BASE}/chat/relay`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ provider, model, api_key: apiKey, messages, system, stream: true }),
+        });
+        if (!res.ok) {
+          const err = await res.text().catch(() => "Chat relay error");
+          controller.error(new Error(err));
+          return;
+        }
+        const reader = res.body?.getReader();
+        if (!reader) {
+          controller.close();
+          return;
+        }
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              const data = line.slice(6);
+              if (data === "[DONE]") {
+                controller.close();
+                return;
+              }
+              try {
+                const parsed = JSON.parse(data);
+                // Handle different provider response formats
+                // OpenAI/Mistral format
+                if (parsed.choices?.[0]?.delta?.content) {
+                  controller.enqueue(parsed.choices[0].delta.content);
+                }
+                // Anthropic format
+                else if (parsed.type === "content_block_delta" && parsed.delta?.text) {
+                  controller.enqueue(parsed.delta.text);
+                }
+                // Google format
+                else if (parsed.candidates?.[0]?.content?.parts?.[0]?.text) {
+                  controller.enqueue(parsed.candidates[0].content.parts[0].text);
+                }
+                // Simple format
+                else if (parsed.content) {
+                  controller.enqueue(parsed.content);
+                }
+              } catch {
+                // Not JSON, might be raw text
+                if (data.trim()) controller.enqueue(data);
+              }
+            }
+          }
+        }
+        controller.close();
+      } catch (e) {
+        controller.error(e);
+      }
+    },
+  });
 }
 
 // Namespace export for pages that use api.method()

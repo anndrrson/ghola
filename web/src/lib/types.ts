@@ -239,3 +239,52 @@ export const MODEL_CATEGORIES = [
   "Writing",
   "Other",
 ] as const;
+
+// ── Chat Types ──
+
+export interface ChatAgent {
+  id: string;
+  name: string;
+  avatar: string;          // emoji or hex color
+  provider: string;        // "openai" | "anthropic" | "google" | "mistral"
+  model: string;
+  systemPrompt: string;
+  apiKey: string;
+  createdAt: string;
+  lastMessageAt?: string;
+  lastMessagePreview?: string;
+}
+
+export interface ChatMessageLocal {
+  id: string;
+  agentId: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+  model?: string;
+}
+
+export interface ProviderConfig {
+  id: string;
+  name: string;
+  models: { id: string; name: string }[];
+}
+
+export interface EncryptedAgentConfig {
+  id: string;
+  user_id: string;
+  encrypted_config: string;
+  display_order: number;
+  last_message_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EncryptedSnapshot {
+  id: string;
+  user_id: string;
+  agent_id: string;
+  encrypted_messages: string;
+  message_count: number;
+  snapshot_at: string;
+}

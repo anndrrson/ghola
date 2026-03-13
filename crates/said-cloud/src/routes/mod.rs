@@ -3,6 +3,7 @@ pub mod auth;
 pub mod badges;
 pub mod billing;
 pub mod business;
+pub mod chat;
 pub mod consumer;
 pub mod health;
 pub mod nodes;

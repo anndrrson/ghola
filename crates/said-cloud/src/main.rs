@@ -199,6 +199,20 @@ async fn main() -> anyhow::Result<()> {
             "/v1/pay/merchant",
             post(routes::payments::upsert_merchant),
         )
+        // Chat routes
+        .route(
+            "/v1/chat/agents",
+            get(routes::chat::list_agents).post(routes::chat::create_agent),
+        )
+        .route(
+            "/v1/chat/agents/{id}",
+            put(routes::chat::update_agent).delete(routes::chat::delete_agent),
+        )
+        .route(
+            "/v1/chat/history/{agent_id}",
+            get(routes::chat::get_history).post(routes::chat::save_history),
+        )
+        .route("/v1/chat/relay", post(routes::chat::relay))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
