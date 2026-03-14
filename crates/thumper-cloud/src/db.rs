@@ -258,6 +258,9 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 ALTER TABLE usage_tracking ADD COLUMN IF NOT EXISTS api_call_count INT DEFAULT 0;
 ALTER TABLE usage_tracking ADD COLUMN IF NOT EXISTS api_token_count INT DEFAULT 0;
 
+-- Ensure tier column exists (may be missing if table was created without it)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS tier TEXT DEFAULT 'free';
+
 -- Enterprise tier support
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
 ALTER TABLE users ADD CONSTRAINT users_tier_check
