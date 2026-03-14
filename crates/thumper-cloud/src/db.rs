@@ -1,11 +1,38 @@
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use std::time::Duration;
 
 pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
-    PgPoolOptions::new()
-        .max_connections(20)
-        .connect(database_url)
-        .await
+    let max_retries = 5;
+    let mut delay = Duration::from_secs(1);
+
+    for attempt in 1..=max_retries {
+        match PgPoolOptions::new()
+            .max_connections(20)
+            .acquire_timeout(Duration::from_secs(10))
+            .idle_timeout(Duration::from_secs(300))
+            .connect(database_url)
+            .await
+        {
+            Ok(pool) => {
+                tracing::info!("database pool connected (attempt {attempt})");
+                return Ok(pool);
+            }
+            Err(e) if attempt < max_retries => {
+                tracing::warn!(
+                    attempt,
+                    max_retries,
+                    delay_secs = delay.as_secs(),
+                    "database connection failed, retrying: {e}"
+                );
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    unreachable!()
 }
 
 pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {

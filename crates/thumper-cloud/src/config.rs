@@ -37,9 +37,14 @@ impl CloudConfig {
 
         Self {
             bind_addr: env::var("THUMPER_CLOUD_BIND")
+                .or_else(|_| env::var("BIND_ADDR"))
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or_else(|| "0.0.0.0:3000".parse().unwrap()),
+                .unwrap_or_else(|| {
+                    // Render sets PORT env var; fall back to it
+                    let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+                    format!("0.0.0.0:{port}").parse().expect("invalid PORT")
+                }),
             database_url: env::var("DATABASE_URL")
                 .expect("DATABASE_URL must be set"),
             jwt_secret: env::var("JWT_SECRET")

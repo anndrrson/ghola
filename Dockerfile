@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/
 
 COPY --from=builder /app/target/release/thumper-cloud /usr/local/bin/thumper-cloud
 
-ENV BIND_ADDR=0.0.0.0:10000
+ENV THUMPER_CLOUD_BIND=0.0.0.0:10000
 EXPOSE 10000
 
 CMD ["thumper-cloud"]
