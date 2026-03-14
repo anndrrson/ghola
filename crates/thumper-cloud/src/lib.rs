@@ -6,6 +6,7 @@ pub mod routes;
 pub mod services;
 pub mod state;
 
+use axum::extract::State;
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
 use tower_http::cors::CorsLayer;
@@ -115,8 +116,15 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn health() -> &'static str {
-    "ok"
+async fn health(State(state): State<AppState>) -> String {
+    // Basic health + DB diagnostic
+    match sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users")
+        .fetch_one(&state.db)
+        .await
+    {
+        Ok(count) => format!("ok users={count}"),
+        Err(e) => format!("ok db_err={e}"),
+    }
 }
 
 async fn shutdown_signal() {
