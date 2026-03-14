@@ -109,6 +109,10 @@ fn built_in_flows() -> Vec<(&'static str, &'static str)> {
         ("send_token", include_str!("../flows/send_token.yaml")),
         ("swap_token", include_str!("../flows/swap_token.yaml")),
         ("check_balance", include_str!("../flows/check_balance.yaml")),
+        (
+            "open_dapp_store",
+            include_str!("../flows/open_dapp_store.yaml"),
+        ),
     ]
 }
 

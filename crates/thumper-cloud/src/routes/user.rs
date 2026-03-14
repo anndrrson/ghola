@@ -33,6 +33,9 @@ pub struct UsageResponse {
     pub email_count: i32,
     pub call_limit: i32,
     pub email_limit: i32,
+    pub api_call_count: i32,
+    pub api_call_limit: i32,
+    pub api_token_count: i32,
 }
 
 /// GET /api/user/profile
@@ -101,9 +104,10 @@ pub async fn get_usage(
 ) -> Result<Json<UsageResponse>, CloudError> {
     let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
 
-    let row = sqlx::query_as::<_, (i32, i32, i32)>(
+    let row = sqlx::query_as::<_, (i32, i32, i32, i32, i32)>(
         r#"
-        SELECT COALESCE(call_count, 0), COALESCE(call_minutes, 0), COALESCE(email_count, 0)
+        SELECT COALESCE(call_count, 0), COALESCE(call_minutes, 0), COALESCE(email_count, 0),
+               COALESCE(api_call_count, 0), COALESCE(api_token_count, 0)
         FROM usage_tracking WHERE user_id = $1 AND period_start = $2::date
         "#,
     )
@@ -111,12 +115,13 @@ pub async fn get_usage(
     .bind(&period_start)
     .fetch_optional(&state.db)
     .await?
-    .unwrap_or((0, 0, 0));
+    .unwrap_or((0, 0, 0, 0, 0));
 
-    let (call_limit, email_limit) = match claims.tier.as_str() {
-        "pro" => (30, 50),
-        "unlimited" => (999, 999),
-        _ => (5, 10),
+    let (call_limit, email_limit, api_call_limit) = match claims.tier.as_str() {
+        "pro" => (30, 50, 10_000),
+        "unlimited" => (999, 999, 100_000),
+        "enterprise" => (999, 999, i32::MAX),
+        _ => (5, 10, 100),
     };
 
     Ok(Json(UsageResponse {
@@ -125,5 +130,8 @@ pub async fn get_usage(
         email_count: row.2,
         call_limit,
         email_limit,
+        api_call_count: row.3,
+        api_call_limit,
+        api_token_count: row.4,
     }))
 }

@@ -2,6 +2,7 @@ pub mod auth;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod middleware;
 pub mod routes;
 pub mod services;
 pub mod state;
@@ -110,7 +111,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/telegram/link-code", post(routes::telegram::create_link_code))
         .route("/api/telegram/status", get(routes::telegram::get_status))
         .route("/api/telegram/unlink", delete(routes::telegram::unlink))
+        // API Keys (Developer Platform)
+        .route("/api/keys", post(routes::api_keys::create_key))
+        .route("/api/keys", get(routes::api_keys::list_keys))
+        .route("/api/keys/{id}", delete(routes::api_keys::revoke_key))
+        // OpenAI-compatible endpoints
+        .route("/v1/chat/completions", post(routes::openai_compat::chat_completions))
+        .route("/v1/models", get(routes::openai_compat::list_models))
         // Middleware
+        .layer(axum::middleware::from_fn_with_state(state.clone(), |
+            State(state): State<AppState>,
+            request: axum::extract::Request,
+            next: axum::middleware::Next,
+        | middleware::track_api_usage(state, request, next)))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state)

@@ -235,6 +235,8 @@ fn message_type_roundtrip_screen_state() {
             editable: false,
             checked: None,
             enabled: true,
+            scrollable: false,
+            long_clickable: false,
             depth: 3,
         }],
     };
@@ -388,8 +390,8 @@ fn node_selector_coordinates_roundtrip() {
 #[test]
 fn screenshot_params_defaults() {
     let params = ScreenshotParams::default();
-    assert!((params.scale - 0.5).abs() < f64::EPSILON);
-    assert_eq!(params.quality, 50);
+    assert!((params.scale - 0.75).abs() < f64::EPSILON);
+    assert_eq!(params.quality, 70);
 }
 
 #[test]

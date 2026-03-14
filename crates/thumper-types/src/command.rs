@@ -16,6 +16,10 @@ pub struct Envelope {
     /// Target device pubkey.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// When true, the device should execute the action and return immediately
+    /// without waiting for screen changes or reading the accessibility tree.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip_wait: bool,
 }
 
 impl Envelope {
@@ -29,6 +33,7 @@ impl Envelope {
             message,
             source: None,
             target: None,
+            skip_wait: false,
         }
     }
 
@@ -39,6 +44,11 @@ impl Envelope {
 
     pub fn with_source(mut self, source: String) -> Self {
         self.source = Some(source);
+        self
+    }
+
+    pub fn with_skip_wait(mut self, skip: bool) -> Self {
+        self.skip_wait = skip;
         self
     }
 
@@ -53,6 +63,7 @@ impl Envelope {
             message,
             source: self.target.clone(),
             target: self.source.clone(),
+            skip_wait: false,
         }
     }
 }
@@ -219,6 +230,12 @@ pub struct UiNode {
     pub checked: Option<bool>,
     /// Whether this node is enabled.
     pub enabled: bool,
+    /// Whether this node is scrollable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scrollable: bool,
+    /// Whether this node supports long click.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub long_clickable: bool,
     /// Depth in the UI tree (for structure context).
     pub depth: u32,
 }
@@ -255,11 +272,11 @@ pub struct ScreenshotParams {
 }
 
 fn default_screenshot_scale() -> f64 {
-    0.5
+    0.75
 }
 
 fn default_screenshot_quality() -> u32 {
-    50
+    70
 }
 
 impl Default for ScreenshotParams {

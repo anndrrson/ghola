@@ -1,0 +1,11 @@
+/Users/andersonobrien/Downloads/thumper/android/app/src/main/cpp/CMakeLists.txt
+/Users/andersonobrien/Downloads/thumper/android/app/src/main/cpp/llama.cpp/CMakeLists.txt
+/Users/andersonobrien/Downloads/thumper/android/app/src/main/cpp/llama.cpp/cmake/build-info.cmake
+/Users/andersonobrien/Downloads/thumper/android/app/src/main/cpp/llama.cpp/cmake/common.cmake
+/Users/andersonobrien/Downloads/thumper/android/app/src/main/cpp/llama.cpp/cmake/llama-config.cmake.in
+/Users/andersonobrien/Downloads/thumper/android/app/src/main/cpp/llama.cpp/ggml/CMakeLists.txt
+/Users/andersonobrien/Downloads/thumper/android/app/src/main/cpp/llama.cpp/ggml/cmake/common.cmake
+/Users/andersonobrien/Downloads/thumper/android/app/src/main/cpp/llama.cpp/ggml/cmake/ggml-config.cmake.in
+/Users/andersonobrien/Downloads/thumper/android/app/src/main/cpp/llama.cpp/ggml/src/CMakeLists.txt
+/Users/andersonobrien/Downloads/thumper/android/app/src/main/cpp/llama.cpp/ggml/src/ggml-cpu/CMakeLists.txt
+/Users/andersonobrien/Downloads/thumper/android/app/src/main/cpp/llama.cpp/src/CMakeLists.txt

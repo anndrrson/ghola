@@ -9,6 +9,10 @@ pub struct RelayConfig {
     pub auth_timeout_secs: u64,
     /// When true, skip Ed25519 signature verification (for local development).
     pub dev_mode: bool,
+    /// Path to TLS certificate file (PEM format).
+    pub tls_cert_path: Option<String>,
+    /// Path to TLS private key file (PEM format).
+    pub tls_key_path: Option<String>,
 }
 
 impl RelayConfig {
@@ -33,6 +37,8 @@ impl RelayConfig {
             dev_mode: env::var("THUMPER_DEV_MODE")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
+            tls_cert_path: env::var("THUMPER_TLS_CERT").ok(),
+            tls_key_path: env::var("THUMPER_TLS_KEY").ok(),
         }
     }
 }

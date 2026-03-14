@@ -1,0 +1,34 @@
+name: send_message
+description: Send a text message via the default Messages app
+category: communication
+params:
+  recipient: string
+  message: string
+steps:
+  - action: launch_app
+    package: "com.google.android.apps.messaging"
+  - action: delay
+    duration_ms: 1500
+  - action: tap
+    selector:
+      desc: "Start chat"
+  - action: delay
+    duration_ms: 500
+  - action: type_text
+    selector:
+      text_contains: "To"
+    text: "{{recipient}}"
+  - action: delay
+    duration_ms: 1000
+  - action: tap
+    selector:
+      text_contains: "{{recipient}}"
+  - action: delay
+    duration_ms: 500
+  - action: type_text
+    selector:
+      text_contains: "Text message"
+    text: "{{message}}"
+  - action: tap
+    selector:
+      desc: "Send"

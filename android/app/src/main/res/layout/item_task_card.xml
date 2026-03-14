@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="8dp"
+    app:cardCornerRadius="8dp"
+    app:cardElevation="1dp"
+    android:clickable="true"
+    android:focusable="true"
+    android:foreground="?attr/selectableItemBackground">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:padding="12dp">
+
+        <TextView
+            android:id="@+id/taskTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Task"
+            android:textSize="15sp"
+            android:textColor="#1A1A1A" />
+
+        <TextView
+            android:id="@+id/taskStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="pending"
+            android:textSize="12sp"
+            android:textColor="#666666"
+            android:background="@android:drawable/editbox_dropdown_light_frame"
+            android:paddingHorizontal="8dp"
+            android:paddingVertical="2dp" />
+
+    </LinearLayout>
+</com.google.android.material.card.MaterialCardView>

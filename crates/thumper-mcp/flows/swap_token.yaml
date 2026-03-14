@@ -1,5 +1,6 @@
 name: swap_token
 description: "Swap tokens via Phantom wallet's built-in swap feature. Opens Phantom, navigates to swap, selects tokens, enters amount, and confirms."
+category: crypto
 params:
   - name: from_token
     description: "Token to swap from (e.g., SOL)"

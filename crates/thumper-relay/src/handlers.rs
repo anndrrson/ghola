@@ -26,6 +26,53 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+/// Metrics endpoint — returns a JSON snapshot of relay metrics.
+pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let snapshot = state
+        .metrics()
+        .snapshot(state.device_count(), state.mcp_client_count());
+    Json(snapshot)
+}
+
+/// Extract a static string name from a MessageType variant for metrics tracking.
+fn message_type_name(msg: &MessageType) -> &'static str {
+    match msg {
+        MessageType::ReadScreen => "ReadScreen",
+        MessageType::Tap(_) => "Tap",
+        MessageType::TypeText(_) => "TypeText",
+        MessageType::LaunchApp(_) => "LaunchApp",
+        MessageType::PressBack => "PressBack",
+        MessageType::Swipe(_) => "Swipe",
+        MessageType::TakeScreenshot(_) => "TakeScreenshot",
+        MessageType::LongPress(_) => "LongPress",
+        MessageType::Scroll(_) => "Scroll",
+        MessageType::GlobalAction(_) => "GlobalAction",
+        MessageType::SetClipboard(_) => "SetClipboard",
+        MessageType::GetClipboard => "GetClipboard",
+        MessageType::GetDeviceInfo => "GetDeviceInfo",
+        MessageType::ListInstalledApps => "ListInstalledApps",
+        MessageType::WaitFor(_) => "WaitFor",
+        MessageType::ExecuteFlow(_) => "ExecuteFlow",
+        MessageType::ReadNotifications(_) => "ReadNotifications",
+        MessageType::DismissNotification(_) => "DismissNotification",
+        MessageType::ListConnectedDevices => "ListConnectedDevices",
+        MessageType::ScreenState(_) => "ScreenState",
+        MessageType::ActionResult(_) => "ActionResult",
+        MessageType::Error(_) => "Error",
+        MessageType::ScreenshotResult(_) => "ScreenshotResult",
+        MessageType::ClipboardResult(_) => "ClipboardResult",
+        MessageType::DeviceInfoResult(_) => "DeviceInfoResult",
+        MessageType::InstalledAppsResult(_) => "InstalledAppsResult",
+        MessageType::WaitForResult(_) => "WaitForResult",
+        MessageType::FlowProgress(_) => "FlowProgress",
+        MessageType::FlowResult(_) => "FlowResult",
+        MessageType::NotificationsResult(_) => "NotificationsResult",
+        MessageType::ConnectedDevicesResult(_) => "ConnectedDevicesResult",
+        MessageType::Ping => "Ping",
+        MessageType::Pong => "Pong",
+    }
+}
+
 /// WebSocket upgrade handler.
 pub async fn ws_upgrade(
     ws: WebSocketUpgrade,
@@ -216,8 +263,26 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                             continue;
                         }
 
+                        // Record command in metrics
+                        state.metrics().record_command(message_type_name(&envelope.message));
+
                         // MCP client → device: forward command to the target device
                         if let Some(ref target) = device_target {
+                            // Check per-device rate limit
+                            if !state.check_device_rate_limit(target) {
+                                let err_envelope = envelope.response(MessageType::Error(
+                                    thumper_types::ErrorPayload {
+                                        code: "device_rate_limited".into(),
+                                        message: "rate limit exceeded for target device".into(),
+                                    },
+                                ));
+                                state.metrics().record_error();
+                                let _ = tx_clone.send(text_msg(
+                                    serde_json::to_string(&err_envelope).unwrap_or_default(),
+                                ));
+                                continue;
+                            }
+
                             let data = serde_json::to_vec(&envelope).unwrap_or_default();
                             if !state.send_to_device(target, &data) {
                                 let err_envelope = envelope.response(MessageType::Error(
@@ -226,6 +291,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                                         message: "target device is not connected".into(),
                                     },
                                 ));
+                                state.metrics().record_error();
                                 let _ = tx_clone.send(text_msg(
                                     serde_json::to_string(&err_envelope).unwrap_or_default(),
                                 ));
@@ -238,6 +304,11 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                             let label =
                                 format!("{} {} (Android {})", info.manufacturer, info.model, info.android_version);
                             state.set_device_label(&auth_pubkey_clone, label);
+                        }
+
+                        // Record errors from device responses
+                        if let MessageType::Error(_) = &envelope.message {
+                            state.metrics().record_error();
                         }
 
                         // Device → MCP client: forward response back

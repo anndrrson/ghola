@@ -3,6 +3,7 @@ use axum::http::request::Parts;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::error::CloudError;
@@ -82,8 +83,81 @@ impl FromRequestParts<AppState> for AuthUser {
             .strip_prefix("Bearer ")
             .ok_or(CloudError::Auth("expected Bearer token".to_string()))?;
 
-        let claims = verify_jwt(token, &state.config.jwt_secret)?;
-        Ok(AuthUser(claims))
+        // Dual-path: API key or JWT
+        if token.starts_with("sk-ghola-") {
+            let claims = verify_api_key(token, state).await?;
+            Ok(AuthUser(claims))
+        } else {
+            let claims = verify_jwt(token, &state.config.jwt_secret)?;
+            Ok(AuthUser(claims))
+        }
+    }
+}
+
+/// Verify an API key by hashing it and looking up the hash in the database.
+async fn verify_api_key(key: &str, state: &AppState) -> Result<Claims, CloudError> {
+    let key_hash = hash_api_key(key);
+
+    let row = sqlx::query_as::<_, (Uuid, Uuid)>(
+        "SELECT id, user_id FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL",
+    )
+    .bind(&key_hash)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| CloudError::Internal(format!("api key lookup failed: {e}")))?
+    .ok_or(CloudError::Auth("invalid or revoked API key".to_string()))?;
+
+    let (api_key_id, user_id) = row;
+
+    // Load user claims
+    let user_row = sqlx::query_as::<_, (Option<String>, String)>(
+        "SELECT email, tier FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| CloudError::Internal(format!("user lookup failed: {e}")))?
+    .ok_or(CloudError::Auth("user not found".to_string()))?;
+
+    let now = Utc::now();
+    let claims = Claims {
+        sub: user_id,
+        email: user_row.0,
+        tier: user_row.1,
+        exp: (now + Duration::days(1)).timestamp(),
+        iat: now.timestamp(),
+    };
+
+    // Fire-and-forget: update last_used_at
+    let db = state.db.clone();
+    tokio::spawn(async move {
+        let _ = sqlx::query("UPDATE api_keys SET last_used_at = now() WHERE id = $1")
+            .bind(api_key_id)
+            .execute(&db)
+            .await;
+    });
+
+    Ok(claims)
+}
+
+/// SHA-256 hash an API key for storage/lookup.
+pub fn hash_api_key(key: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(key.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Generate a new API key: `sk-ghola-{32 hex chars}`.
+pub fn generate_api_key() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    format!("sk-ghola-{}", hex::encode(&bytes))
+}
+
+mod hex {
+    pub fn encode(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 }
 

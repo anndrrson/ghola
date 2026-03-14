@@ -3,6 +3,7 @@ package xyz.orni.thumper.network
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
 import xyz.orni.thumper.flow.FlowEngine
@@ -22,8 +23,9 @@ class CommandHandler(private val service: ThumperAccessibilityService) {
 
     companion object {
         private const val TAG = "ThumperCmd"
-        private const val POST_ACTION_DELAY_MS = 500L
-        private const val POST_LAUNCH_DELAY_MS = 1500L
+        private const val MAX_WAIT_ACTION_MS = 1000L
+        private const val MAX_WAIT_LAUNCH_MS = 3000L
+        private const val POLL_INTERVAL_MS = 100L
     }
 
     val executor = ActionExecutor(service)
@@ -46,22 +48,23 @@ class CommandHandler(private val service: ThumperAccessibilityService) {
             val id = envelope.getString("id")
             val message = envelope.getJSONObject("message")
             val type = message.getString("type")
+            val skipWait = envelope.optBoolean("skip_wait", false)
 
             val responseMessage = when (type) {
                 // Phase 1
                 "ReadScreen" -> handleReadScreen()
-                "Tap" -> handleTap(message.getJSONObject("data"))
-                "TypeText" -> handleTypeText(message.getJSONObject("data"))
-                "LaunchApp" -> handleLaunchApp(message.getJSONObject("data"))
-                "PressBack" -> handlePressBack()
-                "Swipe" -> handleSwipe(message.getJSONObject("data"))
+                "Tap" -> handleTap(message.getJSONObject("data"), skipWait)
+                "TypeText" -> handleTypeText(message.getJSONObject("data"), skipWait)
+                "LaunchApp" -> handleLaunchApp(message.getJSONObject("data"), skipWait)
+                "PressBack" -> handlePressBack(skipWait)
+                "Swipe" -> handleSwipe(message.getJSONObject("data"), skipWait)
                 "Ping" -> JSONObject().put("type", "Pong")
 
                 // Phase 2A
                 "TakeScreenshot" -> handleTakeScreenshot(message.optJSONObject("data"))
-                "LongPress" -> handleLongPress(message.getJSONObject("data"))
-                "Scroll" -> handleScroll(message.getJSONObject("data"))
-                "GlobalAction" -> handleGlobalAction(message.getJSONObject("data"))
+                "LongPress" -> handleLongPress(message.getJSONObject("data"), skipWait)
+                "Scroll" -> handleScroll(message.getJSONObject("data"), skipWait)
+                "GlobalAction" -> handleGlobalAction(message.getJSONObject("data"), skipWait)
                 "SetClipboard" -> handleSetClipboard(message.getJSONObject("data"))
                 "GetClipboard" -> handleGetClipboard()
                 "GetDeviceInfo" -> handleGetDeviceInfo()
@@ -105,7 +108,7 @@ class CommandHandler(private val service: ThumperAccessibilityService) {
         }
     }
 
-    private fun handleTap(data: JSONObject): JSONObject {
+    private fun handleTap(data: JSONObject, skipWait: Boolean): JSONObject {
         val selector = parseSelector(data)
 
         if (selector.text == null && selector.textContains == null &&
@@ -116,32 +119,32 @@ class CommandHandler(private val service: ThumperAccessibilityService) {
                 selector.coordinates.first,
                 selector.coordinates.second
             )
-            return makeActionResultWithScreen(result, POST_ACTION_DELAY_MS)
+            return if (skipWait) makeActionResultQuick(result) else makeActionResultWithScreen(result, MAX_WAIT_ACTION_MS)
         }
 
         val result = executor.tap(selector)
-        return makeActionResultWithScreen(result, POST_ACTION_DELAY_MS)
+        return if (skipWait) makeActionResultQuick(result) else makeActionResultWithScreen(result, MAX_WAIT_ACTION_MS)
     }
 
-    private fun handleTypeText(data: JSONObject): JSONObject {
+    private fun handleTypeText(data: JSONObject, skipWait: Boolean): JSONObject {
         val selector = parseSelector(data.getJSONObject("selector"))
         val text = data.getString("text")
         val result = executor.typeText(selector, text)
-        return makeActionResultWithScreen(result, POST_ACTION_DELAY_MS)
+        return if (skipWait) makeActionResultQuick(result) else makeActionResultWithScreen(result, MAX_WAIT_ACTION_MS)
     }
 
-    private fun handleLaunchApp(data: JSONObject): JSONObject {
+    private fun handleLaunchApp(data: JSONObject, skipWait: Boolean): JSONObject {
         val packageName = data.getString("package")
         val result = executor.launchApp(packageName)
-        return makeActionResultWithScreen(result, POST_LAUNCH_DELAY_MS)
+        return if (skipWait) makeActionResultQuick(result) else makeActionResultWithScreen(result, MAX_WAIT_LAUNCH_MS, expectedPackage = packageName)
     }
 
-    private fun handlePressBack(): JSONObject {
+    private fun handlePressBack(skipWait: Boolean): JSONObject {
         val result = executor.pressBack()
-        return makeActionResultWithScreen(result, POST_ACTION_DELAY_MS)
+        return if (skipWait) makeActionResultQuick(result) else makeActionResultWithScreen(result, MAX_WAIT_ACTION_MS)
     }
 
-    private fun handleSwipe(data: JSONObject): JSONObject {
+    private fun handleSwipe(data: JSONObject, skipWait: Boolean): JSONObject {
         val from = data.getJSONArray("from")
         val to = data.getJSONArray("to")
         val durationMs = data.optLong("duration_ms", 300)
@@ -153,7 +156,7 @@ class CommandHandler(private val service: ThumperAccessibilityService) {
         val toY = (to.getInt(1).toFloat() / 2400 * screenH).toInt().coerceIn(0, screenH)
 
         val result = executor.swipe(fromX, fromY, toX, toY, durationMs)
-        return makeActionResultWithScreen(result, POST_ACTION_DELAY_MS)
+        return if (skipWait) makeActionResultQuick(result) else makeActionResultWithScreen(result, MAX_WAIT_ACTION_MS)
     }
 
     // ===== Phase 2A handlers =====
@@ -176,25 +179,25 @@ class CommandHandler(private val service: ThumperAccessibilityService) {
         }
     }
 
-    private fun handleLongPress(data: JSONObject): JSONObject {
+    private fun handleLongPress(data: JSONObject, skipWait: Boolean): JSONObject {
         val selector = parseSelector(data.getJSONObject("selector"))
         val durationMs = data.optLong("duration_ms", 500)
         val result = executor.longPress(selector, durationMs)
-        return makeActionResultWithScreen(result, POST_ACTION_DELAY_MS)
+        return if (skipWait) makeActionResultQuick(result) else makeActionResultWithScreen(result, MAX_WAIT_ACTION_MS)
     }
 
-    private fun handleScroll(data: JSONObject): JSONObject {
+    private fun handleScroll(data: JSONObject, skipWait: Boolean): JSONObject {
         val direction = data.getString("direction")
         val selectorData = data.optJSONObject("selector")
         val selector = if (selectorData != null) parseSelector(selectorData) else null
         val result = executor.scroll(selector, direction)
-        return makeActionResultWithScreen(result, POST_ACTION_DELAY_MS)
+        return if (skipWait) makeActionResultQuick(result) else makeActionResultWithScreen(result, MAX_WAIT_ACTION_MS)
     }
 
-    private fun handleGlobalAction(data: JSONObject): JSONObject {
+    private fun handleGlobalAction(data: JSONObject, skipWait: Boolean): JSONObject {
         val action = data.getString("action")
         val result = executor.globalAction(action)
-        return makeActionResultWithScreen(result, POST_ACTION_DELAY_MS)
+        return if (skipWait) makeActionResultQuick(result) else makeActionResultWithScreen(result, MAX_WAIT_ACTION_MS)
     }
 
     private fun handleSetClipboard(data: JSONObject): JSONObject {
@@ -325,6 +328,20 @@ class CommandHandler(private val service: ThumperAccessibilityService) {
 
     // ===== Shared helpers =====
 
+    /**
+     * Return an ActionResult immediately without polling for screen changes
+     * or reading the accessibility tree. Used when skip_wait=true.
+     */
+    private fun makeActionResultQuick(result: xyz.orni.thumper.service.ActionResult): JSONObject {
+        return JSONObject().apply {
+            put("type", "ActionResult")
+            put("data", JSONObject().apply {
+                put("success", result.success)
+                if (result.message != null) put("message", result.message)
+            })
+        }
+    }
+
     private fun parseSelector(data: JSONObject): NodeSelector {
         return NodeSelector(
             text = data.optString("text", null),
@@ -343,14 +360,33 @@ class CommandHandler(private val service: ThumperAccessibilityService) {
 
     private fun makeActionResultWithScreen(
         result: xyz.orni.thumper.service.ActionResult,
-        delayMs: Long
+        maxWaitMs: Long,
+        expectedPackage: String? = null
     ): JSONObject {
-        if (delayMs > 0) Thread.sleep(delayMs)
+        if (maxWaitMs > 0) {
+            val before = captureScreenFingerprint()
+            val deadline = System.currentTimeMillis() + maxWaitMs
+            while (System.currentTimeMillis() < deadline) {
+                Thread.sleep(POLL_INTERVAL_MS)
+                val after = captureScreenFingerprint()
+                if (hasScreenChanged(before, after)) {
+                    if (expectedPackage != null && after.pkg != expectedPackage) {
+                        continue  // screen changed but not to the right app — keep waiting
+                    }
+                    break
+                }
+            }
+        }
 
         val screen = service.readScreen()
+        val actualSuccess = if (expectedPackage != null) {
+            screen.packageName == expectedPackage
+        } else {
+            result.success
+        }
 
         val resultObj = JSONObject().apply {
-            put("success", result.success)
+            put("success", actualSuccess)
             if (result.message != null) put("message", result.message)
             put("screen_after", screenToJson(screen))
         }
@@ -359,6 +395,42 @@ class CommandHandler(private val service: ThumperAccessibilityService) {
             put("type", "ActionResult")
             put("data", resultObj)
         }
+    }
+
+    private data class ScreenFingerprint(val pkg: String, val nodeCount: Int, val texts: Set<String>)
+
+    private fun captureScreenFingerprint(): ScreenFingerprint {
+        val root = service.rootInActiveWindow
+            ?: return ScreenFingerprint("unknown", 0, emptySet())
+        val pkg = root.packageName?.toString() ?: "unknown"
+        var nodeCount = 0
+        val texts = mutableSetOf<String>()
+        countNodesAndTexts(root, { nodeCount++ }, texts, 20)
+        root.recycle()
+        return ScreenFingerprint(pkg, nodeCount, texts)
+    }
+
+    private fun countNodesAndTexts(
+        node: AccessibilityNodeInfo,
+        counter: () -> Unit,
+        texts: MutableSet<String>,
+        maxTexts: Int
+    ) {
+        if (!node.isVisibleToUser) return
+        counter()
+        node.text?.toString()?.let { if (texts.size < maxTexts) texts.add(it) }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            countNodesAndTexts(child, counter, texts, maxTexts)
+            child.recycle()
+        }
+    }
+
+    private fun hasScreenChanged(before: ScreenFingerprint, after: ScreenFingerprint): Boolean {
+        if (before.pkg != after.pkg) return true
+        if (kotlin.math.abs(before.nodeCount - after.nodeCount) > 2) return true
+        if (before.texts != after.texts) return true
+        return false
     }
 
     private fun screenToJson(screen: xyz.orni.thumper.service.ScreenState): JSONObject {
@@ -376,6 +448,8 @@ class CommandHandler(private val service: ThumperAccessibilityService) {
                 put("editable", node.editable)
                 if (node.checked != null) put("checked", node.checked)
                 put("enabled", node.enabled)
+                if (node.scrollable) put("scrollable", true)
+                if (node.longClickable) put("long_clickable", true)
                 put("depth", node.depth)
             })
         }

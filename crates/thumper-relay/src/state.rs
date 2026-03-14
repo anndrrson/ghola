@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::auth::NonceCache;
 use crate::config::RelayConfig;
+use crate::metrics::RelayMetrics;
 
 /// Token bucket rate limiter per connection.
 pub struct RateLimiter {
@@ -54,8 +55,11 @@ struct AppStateInner {
     devices: DashMap<String, DeviceEntry>,
     /// mcp client pubkey → McpClientEntry
     mcp_clients: DashMap<String, McpClientEntry>,
+    /// Per-device rate limiters (keyed by device pubkey).
+    device_rate_limiters: DashMap<String, std::sync::Mutex<RateLimiter>>,
     config: RelayConfig,
     nonce_cache: NonceCache,
+    metrics: RelayMetrics,
 }
 
 pub struct DeviceEntry {
@@ -86,8 +90,10 @@ impl AppState {
             inner: Arc::new(AppStateInner {
                 devices: DashMap::new(),
                 mcp_clients: DashMap::new(),
+                device_rate_limiters: DashMap::new(),
                 config,
                 nonce_cache: NonceCache::new(nonce_ttl),
+                metrics: RelayMetrics::new(),
             }),
         }
     }
@@ -98,6 +104,25 @@ impl AppState {
 
     pub fn nonce_cache(&self) -> &NonceCache {
         &self.inner.nonce_cache
+    }
+
+    pub fn metrics(&self) -> &RelayMetrics {
+        &self.inner.metrics
+    }
+
+    /// Check rate limit for a specific device. Returns true if allowed.
+    pub fn check_device_rate_limit(&self, device_pubkey: &str) -> bool {
+        let entry = self
+            .inner
+            .device_rate_limiters
+            .entry(device_pubkey.to_string())
+            .or_insert_with(|| std::sync::Mutex::new(RateLimiter::new(10))); // 10 cmd/sec per device
+        let result = entry
+            .value()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .try_consume();
+        result
     }
 
     // -- Device connections --
@@ -307,5 +332,10 @@ impl AppState {
             self.inner.mcp_clients.remove(pubkey);
             tracing::warn!(pubkey = %pubkey, "removed stale mcp client (no activity)");
         }
+
+        // Clean up rate limiters for devices that are no longer connected
+        self.inner.device_rate_limiters.retain(|key, _| {
+            self.inner.devices.contains_key(key)
+        });
     }
 }

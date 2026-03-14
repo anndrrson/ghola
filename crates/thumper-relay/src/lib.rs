@@ -2,6 +2,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod metrics;
 pub mod state;
 
 #[cfg(test)]
@@ -19,6 +20,8 @@ use crate::state::AppState;
 pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = RelayConfig::from_env();
     let bind_addr = config.bind_addr;
+    let tls_cert_path = config.tls_cert_path.clone();
+    let tls_key_path = config.tls_key_path.clone();
 
     if config.dev_mode {
         tracing::warn!("DEV MODE enabled — signature verification is DISABLED");
@@ -48,17 +51,30 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 
     let app = Router::new()
         .route("/health", get(handlers::health))
+        .route("/metrics", get(handlers::metrics_handler))
         .route("/ws", get(handlers::ws_upgrade))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-    tracing::info!("thumper relay listening on {}", bind_addr);
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Use TLS if cert and key paths are provided
+    if let (Some(cert_path), Some(key_path)) = (&tls_cert_path, &tls_key_path) {
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                format!("failed to load TLS config: {}", e).into()
+            })?;
+        tracing::info!("thumper relay listening on {} (TLS)", bind_addr);
+        axum_server::bind_rustls(bind_addr, tls_config)
+            .serve(app.into_make_service())
+            .await?;
+    } else {
+        let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+        tracing::info!("thumper relay listening on {}", bind_addr);
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
+    }
 
     tracing::info!("thumper relay shut down");
     Ok(())

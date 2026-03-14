@@ -30,3 +30,4 @@ jsonwebtoken.workspace = true
 aes-gcm.workspace = true
 rand.workspace = true
 async-stream.workspace = true
+sha2.workspace = true

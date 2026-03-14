@@ -1,0 +1,299 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/white">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- AI Backend Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="AI Backend"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#212121"
+            android:layout_marginBottom="12dp" />
+
+        <RadioGroup
+            android:id="@+id/backendRadioGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginBottom="16dp">
+
+            <RadioButton
+                android:id="@+id/radioCloud"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Cloud (Claude API)"
+                android:textSize="14sp"
+                android:padding="4dp" />
+
+            <RadioButton
+                android:id="@+id/radioQwenCloud"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Cloud (Qwen Plus)"
+                android:textSize="14sp"
+                android:padding="4dp" />
+
+            <RadioButton
+                android:id="@+id/radioLocal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="On-Device (Qwen3-4B)"
+                android:textSize="14sp"
+                android:padding="4dp" />
+
+        </RadioGroup>
+
+        <!-- Cloud Configuration Section -->
+        <LinearLayout
+            android:id="@+id/cloudSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Cloud Configuration"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#424242"
+                android:layout_marginBottom="8dp" />
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Anthropic API Key"
+                app:endIconMode="password_toggle"
+                android:layout_marginBottom="16dp">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/apiKeyInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPassword" />
+
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Model"
+                android:textSize="14sp"
+                android:textColor="#757575"
+                android:layout_marginBottom="4dp" />
+
+            <Spinner
+                android:id="@+id/modelSpinner"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginBottom="16dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:padding="8dp" />
+
+        </LinearLayout>
+
+        <!-- Qwen Cloud Configuration Section -->
+        <LinearLayout
+            android:id="@+id/qwenCloudSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Qwen Cloud Configuration"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#424242"
+                android:layout_marginBottom="8dp" />
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="DashScope API Key"
+                app:endIconMode="password_toggle"
+                android:layout_marginBottom="16dp">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/qwenApiKeyInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPassword" />
+
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Model"
+                android:textSize="14sp"
+                android:textColor="#757575"
+                android:layout_marginBottom="4dp" />
+
+            <Spinner
+                android:id="@+id/qwenModelSpinner"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginBottom="16dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:padding="8dp" />
+
+        </LinearLayout>
+
+        <!-- Local Model Section -->
+        <LinearLayout
+            android:id="@+id/localSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="On-Device Model"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#424242"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:id="@+id/modelStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Model: Not downloaded"
+                android:textSize="14sp"
+                android:textColor="#757575"
+                android:layout_marginBottom="8dp" />
+
+            <ProgressBar
+                android:id="@+id/downloadProgress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:visibility="gone"
+                android:layout_marginBottom="4dp" />
+
+            <TextView
+                android:id="@+id/downloadPercent"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="12sp"
+                android:textColor="#9E9E9E"
+                android:gravity="center"
+                android:visibility="gone"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/downloadButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Download Model (~2.5 GB)"
+                android:layout_marginBottom="8dp"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+            <Button
+                android:id="@+id/deleteModelButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Delete Model"
+                android:textColor="#F44336"
+                android:visibility="gone"
+                android:layout_marginBottom="16dp"
+                style="@style/Widget.MaterialComponents.Button.TextButton" />
+
+        </LinearLayout>
+
+        <!-- Divider -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#E0E0E0"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Accessibility Service Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Accessibility Service"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#212121"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:id="@+id/a11yStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Status: Unknown"
+            android:textSize="14sp"
+            android:textColor="#757575"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/enableA11yButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Enable Accessibility Service"
+            android:layout_marginBottom="24dp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <!-- Divider -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#E0E0E0"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Relay Mode Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Relay Mode"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#212121"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Advanced: Connect to desktop relay"
+            android:textSize="13sp"
+            android:textColor="#9E9E9E"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/openRelayButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Open Relay Setup"
+            android:layout_marginBottom="32dp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <!-- Save Button -->
+        <Button
+            android:id="@+id/saveButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Save Settings"
+            android:backgroundTint="#1976D2" />
+
+    </LinearLayout>
+
+</ScrollView>

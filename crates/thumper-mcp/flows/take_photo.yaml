@@ -1,0 +1,14 @@
+name: take_photo
+description: Open camera and take a photo
+category: utility
+steps:
+  - action: launch_app
+    package: "com.android.camera"
+  - action: delay
+    duration_ms: 2000
+  - action: tap
+    selector:
+      desc: "Shutter"
+  - action: delay
+    duration_ms: 1000
+  - action: read_screen

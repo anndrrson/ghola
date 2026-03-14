@@ -28,6 +28,7 @@ base64 = { workspace = true }
 ed25519-dalek = { workspace = true }
 uuid = { workspace = true }
 dashmap = { workspace = true }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 
 [dev-dependencies]
 rand = { workspace = true }

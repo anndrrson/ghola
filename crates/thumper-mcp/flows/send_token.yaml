@@ -1,5 +1,6 @@
 name: send_token
 description: "Send SPL tokens via Phantom wallet. Opens Phantom, navigates to send flow, enters recipient and amount, and confirms the transaction."
+category: crypto
 params:
   - name: recipient
     description: "Recipient wallet address or .sol domain"

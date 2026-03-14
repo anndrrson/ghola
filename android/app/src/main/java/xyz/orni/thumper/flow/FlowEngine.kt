@@ -1,6 +1,7 @@
 package xyz.orni.thumper.flow
 
 import android.util.Log
+import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
 import xyz.orni.thumper.service.ActionExecutor
@@ -21,8 +22,9 @@ class FlowEngine(
         private const val TAG = "ThumperFlow"
         private const val DEFAULT_TIMEOUT_MS = 10000L
         private const val DEFAULT_POLL_INTERVAL_MS = 500L
-        private const val POST_ACTION_DELAY_MS = 500L
-        private const val POST_LAUNCH_DELAY_MS = 1500L
+        private const val MAX_WAIT_ACTION_MS = 1000L
+        private const val MAX_WAIT_LAUNCH_MS = 2000L
+        private const val POLL_INTERVAL_MS = 100L
     }
 
     /**
@@ -134,7 +136,6 @@ class FlowEngine(
             "LaunchApp" -> {
                 val pkg = interpolate(data!!.getString("package"), params)
                 val result = executor.launchApp(pkg)
-                Thread.sleep(POST_LAUNCH_DELAY_MS)
                 StepResult(result.success, result.message)
             }
 
@@ -149,7 +150,6 @@ class FlowEngine(
                 } else {
                     executor.tap(selector)
                 }
-                Thread.sleep(POST_ACTION_DELAY_MS)
                 StepResult(result.success, result.message)
             }
 
@@ -157,7 +157,6 @@ class FlowEngine(
                 val selector = parseSelectorWithInterpolation(data!!, params)
                 val durationMs = data.optLong("duration_ms", 500)
                 val result = executor.longPress(selector, durationMs)
-                Thread.sleep(POST_ACTION_DELAY_MS)
                 StepResult(result.success, result.message)
             }
 
@@ -166,7 +165,6 @@ class FlowEngine(
                 val selector = parseSelectorWithInterpolation(selectorData, params)
                 val text = interpolate(data.getString("value"), params)
                 val result = executor.typeText(selector, text)
-                Thread.sleep(POST_ACTION_DELAY_MS)
                 StepResult(result.success, result.message)
             }
 
@@ -180,7 +178,6 @@ class FlowEngine(
                 val toX = (to.getInt(0).toFloat() / 1080 * screenW).toInt().coerceIn(0, screenW)
                 val toY = (to.getInt(1).toFloat() / 2400 * screenH).toInt().coerceIn(0, screenH)
                 val result = executor.swipe(fromX, fromY, toX, toY, durationMs)
-                Thread.sleep(POST_ACTION_DELAY_MS)
                 StepResult(result.success, result.message)
             }
 
@@ -189,7 +186,6 @@ class FlowEngine(
                 val selectorData = data?.optJSONObject("selector")
                 val selector = if (selectorData != null) parseSelectorWithInterpolation(selectorData, params) else null
                 val result = executor.scroll(selector, direction)
-                Thread.sleep(POST_ACTION_DELAY_MS)
                 StepResult(result.success, result.message)
             }
 
@@ -202,7 +198,6 @@ class FlowEngine(
 
             "PressBack" -> {
                 val result = executor.pressBack()
-                Thread.sleep(POST_ACTION_DELAY_MS)
                 StepResult(result.success, result.message)
             }
 
@@ -215,6 +210,80 @@ class FlowEngine(
                 val ms = data!!.getLong("ms")
                 Thread.sleep(ms)
                 StepResult(true, "delayed ${ms}ms")
+            }
+
+            "If" -> {
+                val conditionData = data!!.getJSONObject("condition")
+                val condSelector = parseSelectorWithInterpolation(conditionData, params)
+                val root = service.rootInActiveWindow
+                val condMet = if (root != null) {
+                    val found = executor.findNodePublic(root, condSelector)
+                    val result = found != null
+                    found?.recycle()
+                    root.recycle()
+                    result
+                } else false
+
+                val stepsKey = if (condMet) "then_steps" else "else_steps"
+                val subSteps = data.optJSONArray(stepsKey) ?: JSONArray()
+                for (j in 0 until subSteps.length()) {
+                    val subStep = subSteps.getJSONObject(j)
+                    val subAction = subStep.getJSONObject("action")
+                    val subResult = executeAction(subAction, params)
+                    if (!subResult.success) return subResult
+                }
+                StepResult(true, "if-${if (condMet) "then" else "else"} branch completed")
+            }
+
+            "While" -> {
+                val conditionData = data!!.getJSONObject("condition")
+                val condSelector = parseSelectorWithInterpolation(conditionData, params)
+                val maxIterations = data.optInt("max_iterations", 10)
+                val subSteps = data.getJSONArray("steps")
+                var iterations = 0
+
+                while (iterations < maxIterations) {
+                    val root = service.rootInActiveWindow ?: break
+                    val found = executor.findNodePublic(root, condSelector)
+                    val condMet = found != null
+                    found?.recycle()
+                    root.recycle()
+                    if (!condMet) break
+
+                    for (j in 0 until subSteps.length()) {
+                        val subStep = subSteps.getJSONObject(j)
+                        val subAction = subStep.getJSONObject("action")
+                        val subResult = executeAction(subAction, params)
+                        if (!subResult.success) return subResult
+                    }
+                    iterations++
+                }
+                StepResult(true, "while loop completed after $iterations iterations")
+            }
+
+            "Assert" -> {
+                val selectorData = data!!.getJSONObject("selector")
+                val assertSelector = parseSelectorWithInterpolation(selectorData, params)
+                val message = interpolate(data.getString("message"), params)
+                val root = service.rootInActiveWindow
+                val found = if (root != null) {
+                    val node = executor.findNodePublic(root, assertSelector)
+                    val result = node != null
+                    node?.recycle()
+                    root.recycle()
+                    result
+                } else false
+
+                if (!found) {
+                    StepResult(false, "assertion failed: $message")
+                } else {
+                    StepResult(true, "assertion passed")
+                }
+            }
+
+            "CallFlow" -> {
+                val subFlowName = interpolate(data!!.getString("name"), params)
+                StepResult(false, "CallFlow($subFlowName) must be resolved by MCP server")
             }
 
             else -> StepResult(false, "unknown action type: $type")
@@ -312,6 +381,55 @@ class FlowEngine(
         }
     }
 
+    // ===== Dynamic screen change detection =====
+
+    private data class ScreenFingerprint(val pkg: String, val nodeCount: Int, val texts: Set<String>)
+
+    private fun captureScreenFingerprint(): ScreenFingerprint {
+        val root = service.rootInActiveWindow
+            ?: return ScreenFingerprint("unknown", 0, emptySet())
+        val pkg = root.packageName?.toString() ?: "unknown"
+        var nodeCount = 0
+        val texts = mutableSetOf<String>()
+        countNodesAndTexts(root, { nodeCount++ }, texts, 20)
+        root.recycle()
+        return ScreenFingerprint(pkg, nodeCount, texts)
+    }
+
+    private fun countNodesAndTexts(
+        node: AccessibilityNodeInfo,
+        counter: () -> Unit,
+        texts: MutableSet<String>,
+        maxTexts: Int
+    ) {
+        if (!node.isVisibleToUser) return
+        counter()
+        node.text?.toString()?.let { if (texts.size < maxTexts) texts.add(it) }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            countNodesAndTexts(child, counter, texts, maxTexts)
+            child.recycle()
+        }
+    }
+
+    private fun hasScreenChanged(before: ScreenFingerprint, after: ScreenFingerprint): Boolean {
+        if (before.pkg != after.pkg) return true
+        if (kotlin.math.abs(before.nodeCount - after.nodeCount) > 2) return true
+        if (before.texts != after.texts) return true
+        return false
+    }
+
+    private fun waitForScreenChange(maxWaitMs: Long) {
+        if (maxWaitMs <= 0) return
+        val before = captureScreenFingerprint()
+        val deadline = System.currentTimeMillis() + maxWaitMs
+        while (System.currentTimeMillis() < deadline) {
+            Thread.sleep(POLL_INTERVAL_MS)
+            val after = captureScreenFingerprint()
+            if (hasScreenChanged(before, after)) break
+        }
+    }
+
     private fun screenToJson(screen: xyz.orni.thumper.service.ScreenState): JSONObject {
         val nodesArray = JSONArray()
         for (node in screen.nodes) {
@@ -327,6 +445,8 @@ class FlowEngine(
                 put("editable", node.editable)
                 if (node.checked != null) put("checked", node.checked)
                 put("enabled", node.enabled)
+                if (node.scrollable) put("scrollable", true)
+                if (node.longClickable) put("long_clickable", true)
                 put("depth", node.depth)
             })
         }

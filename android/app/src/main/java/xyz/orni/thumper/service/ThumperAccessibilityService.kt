@@ -30,7 +30,10 @@ class ThumperAccessibilityService : AccessibilityService() {
     }
 
     private var relayConnection: RelayConnection? = null
-    private var commandHandler: CommandHandler? = null
+    var commandHandler: CommandHandler? = null
+        private set
+    private var currentPackage: String? = null
+    private var currentActivity: String? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -57,7 +60,16 @@ class ThumperAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // We read the tree on demand, not proactively
+        event ?: return
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            event.packageName?.toString()?.let { currentPackage = it }
+            event.className?.toString()?.let { cls ->
+                // Only store if it looks like an Activity class name (contains a dot)
+                if (cls.contains('.')) {
+                    currentActivity = cls.substringAfterLast('.')
+                }
+            }
+        }
     }
 
     override fun onInterrupt() {
@@ -86,19 +98,19 @@ class ThumperAccessibilityService : AccessibilityService() {
      */
     fun readScreen(): ScreenState {
         val root = rootInActiveWindow ?: return ScreenState(
-            packageName = "unknown",
-            activity = null,
+            packageName = currentPackage ?: "unknown",
+            activity = currentActivity,
             nodes = emptyList()
         )
 
-        val pkg = root.packageName?.toString() ?: "unknown"
+        val pkg = root.packageName?.toString() ?: currentPackage ?: "unknown"
         val nodes = mutableListOf<UiNodeData>()
         parseNode(root, nodes, 0)
         root.recycle()
 
         return ScreenState(
             packageName = pkg,
-            activity = null,
+            activity = currentActivity,
             nodes = nodes
         )
     }
@@ -203,7 +215,7 @@ class ThumperAccessibilityService : AccessibilityService() {
 
         val hasText = !node.text.isNullOrEmpty()
         val hasDesc = !node.contentDescription.isNullOrEmpty()
-        val isInteractive = node.isClickable || node.isEditable || node.isFocusable
+        val isInteractive = node.isClickable || node.isEditable || node.isFocusable || node.isScrollable || node.isLongClickable
         val hasId = node.viewIdResourceName != null
 
         if (hasText || hasDesc || isInteractive || hasId) {
@@ -220,6 +232,8 @@ class ThumperAccessibilityService : AccessibilityService() {
                     editable = node.isEditable,
                     checked = if (node.isCheckable) node.isChecked else null,
                     enabled = node.isEnabled,
+                    scrollable = node.isScrollable,
+                    longClickable = node.isLongClickable,
                     depth = depth
                 )
             )
@@ -251,6 +265,8 @@ data class UiNodeData(
     val editable: Boolean,
     val checked: Boolean?,
     val enabled: Boolean,
+    val scrollable: Boolean,
+    val longClickable: Boolean,
     val depth: Int
 ) {
     override fun equals(other: Any?): Boolean {

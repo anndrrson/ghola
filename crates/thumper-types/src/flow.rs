@@ -56,6 +56,35 @@ pub enum FlowAction {
     PressBack,
     ReadScreen,
     Delay { ms: u64 },
+    /// Conditional execution: run then_steps if selector matches, else else_steps.
+    If {
+        condition: NodeSelector,
+        then_steps: Vec<FlowStep>,
+        #[serde(default)]
+        else_steps: Vec<FlowStep>,
+    },
+    /// Loop while element is visible, up to max_iterations.
+    While {
+        condition: NodeSelector,
+        steps: Vec<FlowStep>,
+        #[serde(default = "default_max_iterations")]
+        max_iterations: u32,
+    },
+    /// Assert that an element exists, fail the flow with message if not.
+    Assert {
+        selector: NodeSelector,
+        message: String,
+    },
+    /// Call another flow by name with optional parameter overrides.
+    CallFlow {
+        name: String,
+        #[serde(default)]
+        params: std::collections::HashMap<String, String>,
+    },
+}
+
+fn default_max_iterations() -> u32 {
+    10
 }
 
 /// Condition to wait for after a flow step.

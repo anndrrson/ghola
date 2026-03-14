@@ -247,12 +247,28 @@ class ActionExecutor(private val service: ThumperAccessibilityService) {
 
     private fun findFirstScrollable(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         if (root.isScrollable) return root
+        // BFS: prefer shallowest (outermost) scrollable to handle nested scrollable containers
+        val queue = java.util.LinkedList<AccessibilityNodeInfo>()
         for (i in 0 until root.childCount) {
             val child = root.getChild(i) ?: continue
-            val result = findFirstScrollable(child)
-            if (result != null) return result
-            child.recycle()
+            queue.add(child)
         }
+        val toRecycle = mutableListOf<AccessibilityNodeInfo>()
+        while (queue.isNotEmpty()) {
+            val node = queue.poll() ?: continue
+            if (node.isScrollable) {
+                // Recycle non-result nodes
+                toRecycle.forEach { it.recycle() }
+                queue.forEach { it.recycle() }
+                return node
+            }
+            toRecycle.add(node)
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i) ?: continue
+                queue.add(child)
+            }
+        }
+        toRecycle.forEach { it.recycle() }
         return null
     }
 
@@ -342,13 +358,22 @@ class ActionExecutor(private val service: ThumperAccessibilityService) {
     }
 
     private fun findNode(root: AccessibilityNodeInfo, selector: NodeSelector): AccessibilityNodeInfo? {
-        // Resource ID (most specific)
+        // Resource ID (most specific) — try both full and short forms
         selector.resourceId?.let { id ->
             val nodes = root.findAccessibilityNodeInfosByViewId(id)
             if (nodes.isNotEmpty()) return nodes[0]
+            // Try with common package prefixes if short form
+            if (!id.contains(":id/")) {
+                val pkg = root.packageName?.toString()
+                if (pkg != null) {
+                    val fullId = "$pkg:id/$id"
+                    val fullNodes = root.findAccessibilityNodeInfosByViewId(fullId)
+                    if (fullNodes.isNotEmpty()) return fullNodes[0]
+                }
+            }
         }
 
-        // Exact text
+        // Exact text — try API first, then fall back to case-insensitive traversal
         selector.text?.let { text ->
             val nodes = root.findAccessibilityNodeInfosByText(text)
             for (node in nodes) {
@@ -359,28 +384,48 @@ class ActionExecutor(private val service: ThumperAccessibilityService) {
                 }
                 node.recycle()
             }
+            // Fallback: case-insensitive full traversal
+            val found = findByTraversal(root) {
+                it.text?.toString().equals(text, ignoreCase = true) &&
+                    (selector.clickable == null || it.isClickable == selector.clickable)
+            }
+            if (found != null) return found
         }
 
-        // Text contains
+        // Text contains — try API first, then case-insensitive traversal
         selector.textContains?.let { text ->
             val nodes = root.findAccessibilityNodeInfosByText(text)
             for (node in nodes) {
-                if (node.text?.toString()?.contains(text) == true) {
+                if (node.text?.toString()?.contains(text, ignoreCase = true) == true) {
                     if (selector.clickable == null || node.isClickable == selector.clickable) {
                         return node
                     }
                 }
                 node.recycle()
             }
+            // Fallback: case-insensitive full traversal
+            val found = findByTraversal(root) {
+                it.text?.toString()?.contains(text, ignoreCase = true) == true &&
+                    (selector.clickable == null || it.isClickable == selector.clickable)
+            }
+            if (found != null) return found
         }
 
-        // Content description
+        // Content description — case-insensitive
         selector.desc?.let { desc ->
-            return findByTraversal(root) { it.contentDescription?.toString() == desc }
+            return findByTraversal(root) { it.contentDescription?.toString().equals(desc, ignoreCase = true) }
         }
 
         selector.descContains?.let { desc ->
-            return findByTraversal(root) { it.contentDescription?.toString()?.contains(desc) == true }
+            return findByTraversal(root) { it.contentDescription?.toString()?.contains(desc, ignoreCase = true) == true }
+        }
+
+        // Class name selector
+        selector.className?.let { cls ->
+            return findByTraversal(root) {
+                val nodeCls = it.className?.toString() ?: ""
+                nodeCls == cls || nodeCls.endsWith(".$cls")
+            }
         }
 
         return null

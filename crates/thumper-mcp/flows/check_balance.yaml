@@ -1,5 +1,6 @@
 name: check_balance
 description: "Open Phantom wallet and read the current token balances from the home screen."
+category: crypto
 params: []
 steps:
   - label: "Launch Phantom"
