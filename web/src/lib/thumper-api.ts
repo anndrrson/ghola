@@ -225,6 +225,21 @@ export async function unlinkTelegram(): Promise<void> {
   await thumperFetch("/api/telegram/unlink", { method: "DELETE" });
 }
 
+// Twitter Sign-In (token comes from OAuth callback redirect)
+
+export function handleTwitterToken(token: string): ThumperAuthResponse {
+  setThumperToken(token);
+  const payload = JSON.parse(atob(token.split(".")[1]));
+  return {
+    token,
+    user: {
+      id: payload.sub || payload.user_id,
+      email: payload.email,
+      name: payload.name,
+    },
+  };
+}
+
 // Google Sign-In
 
 export async function thumperGoogleSignIn(
@@ -267,4 +282,32 @@ export async function getAccountsStatus(): Promise<
 
 export async function listTemplates(): Promise<ThumperTemplateResponse[]> {
   return thumperFetch<ThumperTemplateResponse[]>("/api/templates");
+}
+
+// API Keys (Developer Platform)
+
+export async function createApiKey(data: {
+  name?: string;
+  scopes?: string[];
+}): Promise<import("./thumper-types").ThumperApiKeyCreateResponse> {
+  return thumperFetch("/api/keys", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function listApiKeys(): Promise<
+  import("./thumper-types").ThumperApiKeyInfo[]
+> {
+  return thumperFetch("/api/keys");
+}
+
+export async function revokeApiKey(id: string): Promise<void> {
+  await thumperFetch(`/api/keys/${id}`, { method: "DELETE" });
+}
+
+export async function getApiUsage(): Promise<
+  import("./thumper-types").ThumperApiUsageResponse
+> {
+  return thumperFetch("/api/user/usage");
 }

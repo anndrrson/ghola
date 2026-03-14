@@ -685,7 +685,14 @@ function PlanTab() {
       name: "Unlimited",
       price: "$29.99",
       period: "/month",
-      features: ["Unlimited calls", "Unlimited emails", "BYOM support", "Priority support"],
+      features: ["Unlimited calls", "Unlimited emails", "BYOM support", "API access (100k/mo)", "Priority support"],
+    },
+    {
+      id: "enterprise",
+      name: "Enterprise",
+      price: "Custom",
+      period: "",
+      features: ["Unlimited everything", "Unlimited API calls", "Custom SLA", "Priority support", "Dedicated account manager"],
     },
   ];
 
@@ -726,7 +733,7 @@ function PlanTab() {
                 </li>
               ))}
             </ul>
-            {!isCurrent && plan.id !== "free" && (
+            {!isCurrent && plan.id !== "free" && plan.id !== "enterprise" && (
               <button
                 onClick={() => handleUpgrade(plan.id)}
                 disabled={upgrading === plan.id}
@@ -734,6 +741,14 @@ function PlanTab() {
               >
                 {upgrading === plan.id ? "Redirecting..." : `Upgrade to ${plan.name}`}
               </button>
+            )}
+            {!isCurrent && plan.id === "enterprise" && (
+              <a
+                href="mailto:hello@ghola.xyz"
+                className="block w-full rounded-lg border border-[#1e2a3a] py-2 text-center text-xs font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] transition-colors"
+              >
+                Contact sales
+              </a>
             )}
           </div>
         );

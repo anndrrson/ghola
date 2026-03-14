@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Phone, Mail, Calendar, Check, MessageCircle } from "lucide-react";
+import { ArrowRight, Phone, Mail, Calendar, Check, MessageCircle, Code } from "lucide-react";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 
 export default function Home() {
@@ -192,6 +192,39 @@ export default function Home() {
         </div>
       </section>
 
+      {/* ──────────── Developer API ──────────── */}
+      <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-2xl text-center">
+            <div className="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-[#3da8ff]/10 mb-6">
+              <Code className="h-7 w-7 text-[#3da8ff]" />
+            </div>
+            <h2 className="text-3xl font-medium text-[#eef1f8] mb-4">
+              Developer API
+            </h2>
+            <p className="text-[#8b95a8] mb-8 leading-relaxed">
+              Build on top of Ghola with an OpenAI-compatible API. Make phone calls, send emails, and
+              chat — all programmatically. Works with any OpenAI SDK.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-4 justify-center">
+              <Link
+                href="/developers"
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3da8ff] px-7 py-3.5 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
+              >
+                Explore the API
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+              <Link
+                href="/developers/docs"
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#1e2a3a] px-7 py-3.5 text-base font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] active:scale-[0.98] transition-all"
+              >
+                Read the docs
+              </Link>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* ──────────── Pricing ──────────── */}
       <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -201,7 +234,7 @@ export default function Home() {
           <p className="text-[#8b95a8] mb-12 text-center max-w-lg mx-auto">
             Start free. Upgrade when you need more.
           </p>
-          <div className="grid gap-6 sm:grid-cols-3 max-w-4xl mx-auto">
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4 max-w-5xl mx-auto">
             {/* Free */}
             <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
               <h3 className="text-lg font-medium text-[#eef1f8]">Free</h3>
@@ -244,6 +277,7 @@ export default function Home() {
                   "50 emails/month",
                   "Telegram bot",
                   "Bring your own model",
+                  "API access (10k calls/mo)",
                   "Priority responses",
                 ].map((f) => (
                   <li
@@ -275,6 +309,7 @@ export default function Home() {
                   "Unlimited emails",
                   "Telegram bot",
                   "Bring your own model",
+                  "API access (100k calls/mo)",
                   "Priority support",
                 ].map((f) => (
                   <li
@@ -292,6 +327,37 @@ export default function Home() {
               >
                 Get unlimited
               </Link>
+            </div>
+
+            {/* Enterprise */}
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
+              <h3 className="text-lg font-medium text-[#eef1f8]">Enterprise</h3>
+              <p className="mt-2 text-3xl font-medium text-[#eef1f8]">
+                Custom
+              </p>
+              <ul className="mt-6 space-y-3">
+                {[
+                  "Unlimited everything",
+                  "Unlimited API calls",
+                  "Custom SLA",
+                  "Priority support",
+                  "Dedicated account manager",
+                ].map((f) => (
+                  <li
+                    key={f}
+                    className="flex items-center gap-2 text-sm text-[#8b95a8]"
+                  >
+                    <Check className="h-4 w-4 text-[#3da8ff] shrink-0" />
+                    {f}
+                  </li>
+                ))}
+              </ul>
+              <a
+                href="mailto:hello@ghola.xyz"
+                className="mt-8 block w-full rounded-xl border border-[#1e2a3a] py-2.5 text-center text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] active:scale-[0.98] transition-all"
+              >
+                Contact sales
+              </a>
             </div>
           </div>
         </div>

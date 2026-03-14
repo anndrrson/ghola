@@ -11,9 +11,10 @@ import { getBalance } from "@/lib/api";
 import { GholaLogo } from "@/components/GholaLogo";
 import { Menu, X } from "lucide-react";
 
-type Section = "home" | "identity" | "models" | "chat" | "settings" | "vault";
+type Section = "home" | "identity" | "models" | "chat" | "settings" | "vault" | "developers";
 
 function getSection(pathname: string): Section {
+  if (pathname.startsWith("/developers")) return "developers";
   if (pathname.startsWith("/identity")) return "identity";
   if (pathname.startsWith("/models")) return "models";
   if (pathname.startsWith("/chat")) return "chat";
@@ -94,6 +95,18 @@ export function Navbar() {
                   }`}
                 >
                   Settings
+                </Link>
+              )}
+              {thumperAuth.authenticated && (
+                <Link
+                  href="/developers"
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    section === "developers"
+                      ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                      : "text-[#8b95a8] hover:text-[#eef1f8]"
+                  }`}
+                >
+                  Developers
                 </Link>
               )}
               <Link
@@ -290,6 +303,15 @@ export function Navbar() {
                 className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
               >
                 Settings
+              </Link>
+            )}
+            {thumperAuth.authenticated && (
+              <Link
+                href="/developers"
+                onClick={() => setMobileOpen(false)}
+                className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+              >
+                Developers
               </Link>
             )}
             <Link

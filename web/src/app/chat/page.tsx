@@ -1,11 +1,15 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { streamChat } from "@/lib/thumper-stream";
 import { SessionSidebar } from "@/components/chat/SessionSidebar";
 import { ChatMessages } from "@/components/chat/ChatMessages";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatHeader } from "@/components/chat/ChatHeader";
+import { useThumperAuth } from "@/lib/thumper-auth-context";
+import { useTurnkeyWallet } from "@/lib/turnkey-provider";
+import { handleTwitterToken } from "@/lib/thumper-api";
 import type { ThumperSession, ThumperChatMessage, ThumperInlineAction } from "@/lib/thumper-types";
 
 const SESSIONS_KEY = "ghola_sessions";
@@ -65,11 +69,30 @@ export default function ChatPage() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [mobileView, setMobileView] = useState<"list" | "chat">("list");
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const { setAuth } = useThumperAuth();
+  const { createWallet } = useTurnkeyWallet();
 
   useEffect(() => {
     const loaded = loadSessions();
     setSessions(loaded);
   }, []);
+
+  // Handle Twitter OAuth callback token
+  useEffect(() => {
+    const twitterToken = searchParams.get("twitter_token");
+    if (twitterToken) {
+      const res = handleTwitterToken(twitterToken);
+      setAuth(res.token, res.user);
+      // Try to create Turnkey wallet (non-fatal)
+      if (res.user.email) {
+        createWallet(res.user.email).catch(() => {});
+      }
+      // Clean the URL
+      router.replace("/chat");
+    }
+  }, [searchParams, setAuth, createWallet, router]);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) || null;
   const messages = activeSession?.messages || [];

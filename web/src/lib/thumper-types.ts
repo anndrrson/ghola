@@ -136,3 +136,39 @@ export interface ThumperSession {
   lastMessageAt: string;
   messages: ThumperChatMessage[];
 }
+
+export interface ThumperApiKeyCreate {
+  name?: string;
+  scopes?: string[];
+}
+
+export interface ThumperApiKeyCreateResponse {
+  id: string;
+  key: string;
+  key_prefix: string;
+  name: string;
+  scopes: string[];
+  created_at: string;
+}
+
+export interface ThumperApiKeyInfo {
+  id: string;
+  key_prefix: string;
+  name: string;
+  scopes: string[];
+  rate_limit_per_min: number | null;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface ThumperApiUsageResponse {
+  call_count: number;
+  call_minutes: number;
+  email_count: number;
+  call_limit: number;
+  email_limit: number;
+  api_call_count: number;
+  api_call_limit: number;
+  api_token_count: number;
+}
