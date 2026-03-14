@@ -117,14 +117,28 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 async fn health(State(state): State<AppState>) -> String {
-    // Basic health + DB diagnostic
-    match sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users")
+    // DB diagnostic: test the exact query pattern signup uses
+    let user_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users")
         .fetch_one(&state.db)
-        .await
-    {
-        Ok(count) => format!("ok users={count}"),
-        Err(e) => format!("ok db_err={e}"),
-    }
+        .await;
+
+    let col_check = sqlx::query_scalar::<_, String>(
+        "SELECT column_name::text FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'password_hash'"
+    )
+    .fetch_optional(&state.db)
+    .await;
+
+    let signup_test = sqlx::query_as::<_, (uuid::Uuid,)>(
+        "SELECT id FROM users WHERE email = $1"
+    )
+    .bind("__diag_nonexistent__")
+    .fetch_optional(&state.db)
+    .await;
+
+    format!(
+        "ok users={:?} pw_col={:?} select_test={:?}",
+        user_count, col_check, signup_test
+    )
 }
 
 async fn shutdown_signal() {
