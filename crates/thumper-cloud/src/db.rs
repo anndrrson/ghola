@@ -183,6 +183,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     content TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS session_id UUID;
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
 
 -- Twitter auth
