@@ -261,6 +261,12 @@ ALTER TABLE usage_tracking ADD COLUMN IF NOT EXISTS api_token_count INT DEFAULT 
 -- Ensure tier column exists (may be missing if table was created without it)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS tier TEXT DEFAULT 'free';
 
+-- Ensure OAuth provider columns exist (table may predate these)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_id ON users(apple_id) WHERE apple_id IS NOT NULL;
+
 -- Enterprise tier support
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
 ALTER TABLE users ADD CONSTRAINT users_tier_check
