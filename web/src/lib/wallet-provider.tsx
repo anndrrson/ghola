@@ -1,19 +1,17 @@
 "use client";
 
-import { FC, ReactNode, useMemo, useCallback, useEffect, useState, createContext, useContext } from "react";
 import {
-  ConnectionProvider,
-  WalletProvider,
-  useWallet,
-} from "@solana/wallet-adapter-react";
-import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
-import { WalletAdapterNetwork } from "@solana/wallet-adapter-base";
-import { PhantomWalletAdapter } from "@solana/wallet-adapter-wallets";
-import { clusterApiUrl } from "@solana/web3.js";
-import bs58 from "bs58";
+  FC,
+  ReactNode,
+  useCallback,
+  useEffect,
+  useState,
+  createContext,
+  useContext,
+  useRef,
+} from "react";
+import { TurnkeyWalletProvider, useTurnkeyWallet } from "./turnkey-provider";
 import { orniGetNonce, orniVerifySignature, clearOrniToken } from "./api";
-
-import "@solana/wallet-adapter-react-ui/styles.css";
 
 interface WalletAuthState {
   authenticated: boolean;
@@ -29,43 +27,73 @@ export function useWalletAuth() {
   return useContext(WalletAuthContext);
 }
 
-function AuthHandler({
+function TurnkeySIWSHandler({
   onAuthChange,
 }: {
   onAuthChange: (state: WalletAuthState) => void;
 }) {
-  const { publicKey, signMessage, connected, disconnect } = useWallet();
+  const { walletAddress, signMessage, loading } = useTurnkeyWallet();
+  const authenticatingRef = useRef(false);
+  const lastWalletRef = useRef<string | null>(null);
 
   const authenticate = useCallback(async () => {
-    if (!publicKey || !signMessage) return;
+    if (!walletAddress || authenticatingRef.current) return;
+    authenticatingRef.current = true;
     try {
-      const wallet = publicKey.toBase58();
-      const { nonce } = await orniGetNonce(wallet);
-      const message = new TextEncoder().encode(
-        `Sign in to Ghola Models\nNonce: ${nonce}`
-      );
-      const sig = await signMessage(message);
+      const { nonce, message } = await orniGetNonce(walletAddress);
+      // Use the message returned by the backend (fixes SIWS message mismatch bug)
+      const signature = await signMessage(message);
+      // Signature is already base64-encoded (fixes encoding mismatch bug)
       const { is_creator } = await orniVerifySignature(
-        wallet,
-        bs58.encode(sig),
+        walletAddress,
+        signature,
         nonce
       );
       onAuthChange({ authenticated: true, isCreator: is_creator });
     } catch {
       clearOrniToken();
-      disconnect();
       onAuthChange({ authenticated: false, isCreator: false });
+    } finally {
+      authenticatingRef.current = false;
     }
-  }, [publicKey, signMessage, disconnect, onAuthChange]);
+  }, [walletAddress, signMessage, onAuthChange]);
 
   useEffect(() => {
-    if (connected && publicKey) {
-      authenticate();
+    if (loading) return;
+
+    if (walletAddress) {
+      // Only re-authenticate if wallet changed or we haven't authed yet
+      if (lastWalletRef.current !== walletAddress) {
+        lastWalletRef.current = walletAddress;
+
+        // Check for cached token first to avoid redundant SIWS
+        const cachedToken =
+          typeof window !== "undefined"
+            ? localStorage.getItem("ghola_orni_token")
+            : null;
+        if (cachedToken) {
+          try {
+            const payload = JSON.parse(atob(cachedToken.split(".")[1]));
+            if (payload.exp && payload.exp * 1000 > Date.now()) {
+              onAuthChange({
+                authenticated: true,
+                isCreator: !!payload.is_creator,
+              });
+              return;
+            }
+          } catch {
+            // Invalid token — fall through to full SIWS
+          }
+        }
+
+        authenticate();
+      }
     } else {
+      lastWalletRef.current = null;
       clearOrniToken();
       onAuthChange({ authenticated: false, isCreator: false });
     }
-  }, [connected, publicKey, authenticate, onAuthChange]);
+  }, [walletAddress, loading, authenticate, onAuthChange]);
 
   return null;
 }
@@ -73,12 +101,6 @@ function AuthHandler({
 export const AppWalletProvider: FC<{ children: ReactNode }> = ({
   children,
 }) => {
-  const network = WalletAdapterNetwork.Devnet;
-  const endpoint = useMemo(
-    () => process.env.NEXT_PUBLIC_SOLANA_RPC || clusterApiUrl(network),
-    [network]
-  );
-  const wallets = useMemo(() => [new PhantomWalletAdapter()], []);
   const [authState, setAuthState] = useState<WalletAuthState>({
     authenticated: false,
     isCreator: false,
@@ -94,15 +116,11 @@ export const AppWalletProvider: FC<{ children: ReactNode }> = ({
   }, []);
 
   return (
-    <ConnectionProvider endpoint={endpoint}>
-      <WalletProvider wallets={wallets} autoConnect>
-        <WalletModalProvider>
-          <AuthHandler onAuthChange={handleAuthChange} />
-          <WalletAuthContext.Provider value={authState}>
-            {children}
-          </WalletAuthContext.Provider>
-        </WalletModalProvider>
-      </WalletProvider>
-    </ConnectionProvider>
+    <TurnkeyWalletProvider>
+      <TurnkeySIWSHandler onAuthChange={handleAuthChange} />
+      <WalletAuthContext.Provider value={authState}>
+        {children}
+      </WalletAuthContext.Provider>
+    </TurnkeyWalletProvider>
   );
 };

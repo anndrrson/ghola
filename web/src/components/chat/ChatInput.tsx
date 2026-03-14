@@ -23,7 +23,6 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
     if (!trimmed || disabled) return;
     onSend(trimmed);
     setText("");
-    // Reset textarea height
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -50,9 +49,12 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
         <textarea
           ref={textareaRef}
           value={text}
-          onChange={(e) => { setText(e.target.value); handleInput(); }}
+          onChange={(e) => {
+            setText(e.target.value);
+            handleInput();
+          }}
           onKeyDown={handleKeyDown}
-          placeholder="Message..."
+          placeholder="Message Ghola..."
           disabled={disabled}
           rows={1}
           className="flex-1 resize-none rounded-xl border border-[#1e2a3a] bg-[#161822] px-4 py-2.5 text-sm text-[#eef1f8] placeholder-[#4a5568] outline-none transition-colors focus:border-[#3da8ff] disabled:opacity-50"
@@ -70,6 +72,9 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
           )}
         </button>
       </div>
+      <p className="text-[10px] text-[#4a5568] mt-1.5 text-center">
+        Ghola can make calls, send emails, and manage your calendar
+      </p>
     </div>
   );
 }

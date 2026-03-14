@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { getModel, getBalance } from "@/lib/api";
 import type { Model } from "@/lib/types";
 import { useWalletAuth } from "@/lib/wallet-provider";
+import { useThumperAuth } from "@/lib/thumper-auth-context";
 import ChatInterface from "@/components/ChatInterface";
 import { MessageSquare, Star, Clock, DollarSign, ShieldCheck } from "lucide-react";
 import Link from "next/link";
@@ -13,6 +14,7 @@ export default function ModelDetailPage() {
   const params = useParams();
   const slug = params.slug as string;
   const { authenticated } = useWalletAuth();
+  const thumperAuth = useThumperAuth();
   const [model, setModel] = useState<Model | null>(null);
   const [balance, setBalance] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -133,12 +135,31 @@ export default function ModelDetailPage() {
           ) : (
             <div className="flex h-full items-center justify-center">
               <div className="text-center">
-                <p className="mb-2 text-[#8b95a8]">
-                  Connect your wallet to start chatting
-                </p>
-                <p className="text-xs text-[#4a5568]">
-                  Each message costs ${model.price_per_query.toFixed(2)}
-                </p>
+                {thumperAuth.authenticated ? (
+                  <>
+                    <p className="mb-2 text-[#8b95a8]">
+                      Setting up your wallet...
+                    </p>
+                    <p className="text-xs text-[#4a5568]">
+                      This should only take a moment
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="mb-2 text-[#8b95a8]">
+                      Sign in to start chatting
+                    </p>
+                    <p className="text-xs text-[#4a5568] mb-4">
+                      Each message costs ${model.price_per_query.toFixed(2)}
+                    </p>
+                    <Link
+                      href="/signup"
+                      className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
+                    >
+                      Get started free
+                    </Link>
+                  </>
+                )}
               </div>
             </div>
           )}

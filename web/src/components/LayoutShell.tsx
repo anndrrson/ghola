@@ -4,11 +4,13 @@ import { usePathname } from "next/navigation";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 
+const BARE_ROUTES = ["/chat", "/signup", "/signin"];
+
 export function LayoutShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isChatRoute = pathname.startsWith("/chat");
+  const isBareRoute = BARE_ROUTES.some((r) => pathname.startsWith(r));
 
-  if (isChatRoute) {
+  if (isBareRoute) {
     return <>{children}</>;
   }
 

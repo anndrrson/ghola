@@ -4,29 +4,33 @@ import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/lib/auth-context";
+import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useWalletAuth } from "@/lib/wallet-provider";
+import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { getBalance } from "@/lib/api";
 import { GholaLogo } from "@/components/GholaLogo";
 import { Menu, X } from "lucide-react";
-import dynamic from "next/dynamic";
 
-const WalletMultiButton = dynamic(
-  () => import("@solana/wallet-adapter-react-ui").then((m) => m.WalletMultiButton),
-  { ssr: false }
-);
-
-type Section = "home" | "identity" | "models" | "chat";
+type Section = "home" | "identity" | "models" | "chat" | "settings" | "vault";
 
 function getSection(pathname: string): Section {
   if (pathname.startsWith("/identity")) return "identity";
   if (pathname.startsWith("/models")) return "models";
   if (pathname.startsWith("/chat")) return "chat";
+  if (pathname.startsWith("/settings")) return "settings";
+  if (pathname.startsWith("/vault")) return "vault";
   return "home";
+}
+
+function truncateAddress(address: string): string {
+  return `${address.slice(0, 4)}...${address.slice(-4)}`;
 }
 
 export function Navbar() {
   const { authenticated, loading, user, logout } = useAuth();
+  const thumperAuth = useThumperAuth();
   const walletAuth = useWalletAuth();
+  const { walletAddress } = useTurnkeyWallet();
   const router = useRouter();
   const pathname = usePathname();
   const section = getSection(pathname);
@@ -49,6 +53,12 @@ export function Navbar() {
     router.push("/");
   }
 
+  function handleThumperLogout() {
+    thumperAuth.logout();
+    setMobileOpen(false);
+    router.push("/");
+  }
+
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 bg-[#08090d]/80 backdrop-blur-md border-b border-[#1e2a3a]">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -62,6 +72,40 @@ export function Navbar() {
               </span>
             </Link>
             <div className="hidden sm:flex items-center gap-1">
+              {thumperAuth.authenticated && (
+                <Link
+                  href="/chat"
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    section === "chat"
+                      ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                      : "text-[#8b95a8] hover:text-[#eef1f8]"
+                  }`}
+                >
+                  Chat
+                </Link>
+              )}
+              {thumperAuth.authenticated && (
+                <Link
+                  href="/settings"
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    section === "settings"
+                      ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                      : "text-[#8b95a8] hover:text-[#eef1f8]"
+                  }`}
+                >
+                  Settings
+                </Link>
+              )}
+              <Link
+                href="/vault"
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  section === "vault"
+                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                    : "text-[#8b95a8] hover:text-[#eef1f8]"
+                }`}
+              >
+                Vault
+              </Link>
               <Link
                 href="/identity/login"
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
@@ -82,21 +126,19 @@ export function Navbar() {
               >
                 Models
               </Link>
-              <Link
-                href="/chat"
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  section === "chat"
-                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
-                    : "text-[#8b95a8] hover:text-[#eef1f8]"
-                }`}
-              >
-                Chat
-              </Link>
             </div>
           </div>
 
           {/* Desktop auth area */}
           <div className="hidden sm:flex items-center gap-4">
+            {walletAddress && thumperAuth.authenticated && (
+              <Link
+                href="/models"
+                className="rounded-lg bg-[#161822] px-3 py-1.5 text-sm font-mono text-[#8b95a8] transition hover:bg-[#1c1f2e]"
+              >
+                {truncateAddress(walletAddress)}
+              </Link>
+            )}
             {section === "identity" && (
               <>
                 {loading ? (
@@ -159,35 +201,60 @@ export function Navbar() {
                     ${(balance / 1_000_000).toFixed(2)}
                   </Link>
                 )}
-                <WalletMultiButton />
+                {!walletAddress && !thumperAuth.authenticated && (
+                  <Link
+                    href="/signin"
+                    className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
+                  >
+                    Sign in
+                  </Link>
+                )}
               </>
             )}
-            {section === "home" && (
+            {(section === "home" || section === "vault") && (
               <>
-                {authenticated ? (
+                {thumperAuth.authenticated ? (
                   <>
                     <Link
-                      href="/identity/dashboard"
+                      href="/chat"
                       className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
                     >
-                      Dashboard
+                      Chat
                     </Link>
                     <button
-                      onClick={handleLogout}
+                      onClick={handleThumperLogout}
                       className="rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] transition-colors cursor-pointer"
                     >
                       Log Out
                     </button>
                   </>
                 ) : (
-                  <Link
-                    href="/identity/login"
-                    className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
-                  >
-                    Log In
-                  </Link>
+                  <>
+                    <Link
+                      href="/signin"
+                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
+                    >
+                      Sign In
+                    </Link>
+                    <Link
+                      href="/signup"
+                      className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
+                    >
+                      Get Started
+                    </Link>
+                  </>
                 )}
-                <WalletMultiButton />
+              </>
+            )}
+            {section === "settings" && thumperAuth.authenticated && (
+              <>
+                <span className="text-sm text-[#8b95a8]">{thumperAuth.user?.email}</span>
+                <Link
+                  href="/chat"
+                  className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
+                >
+                  Chat
+                </Link>
               </>
             )}
           </div>
@@ -207,6 +274,31 @@ export function Navbar() {
       {mobileOpen && (
         <div className="sm:hidden border-t border-[#1e2a3a] bg-[#08090d]/95 backdrop-blur-md">
           <div className="px-4 py-4 space-y-2">
+            {thumperAuth.authenticated && (
+              <Link
+                href="/chat"
+                onClick={() => setMobileOpen(false)}
+                className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+              >
+                Chat
+              </Link>
+            )}
+            {thumperAuth.authenticated && (
+              <Link
+                href="/settings"
+                onClick={() => setMobileOpen(false)}
+                className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+              >
+                Settings
+              </Link>
+            )}
+            <Link
+              href="/vault"
+              onClick={() => setMobileOpen(false)}
+              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+            >
+              Vault
+            </Link>
             <Link
               href="/identity/login"
               onClick={() => setMobileOpen(false)}
@@ -221,26 +313,12 @@ export function Navbar() {
             >
               Models
             </Link>
-            <Link
-              href="/chat"
-              onClick={() => setMobileOpen(false)}
-              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
-            >
-              Chat
-            </Link>
             <div className="border-t border-[#1e2a3a] pt-2 mt-2">
-              {authenticated ? (
+              {thumperAuth.authenticated ? (
                 <>
-                  <p className="px-3 py-2 text-sm text-[#4a5568]">{user?.email}</p>
-                  <Link
-                    href="/identity/dashboard"
-                    onClick={() => setMobileOpen(false)}
-                    className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
-                  >
-                    Dashboard
-                  </Link>
+                  <p className="px-3 py-2 text-sm text-[#4a5568]">{thumperAuth.user?.email}</p>
                   <button
-                    onClick={handleLogout}
+                    onClick={handleThumperLogout}
                     className="block w-full text-left rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] hover:bg-[#0f1117] cursor-pointer"
                   >
                     Log Out
@@ -249,14 +327,14 @@ export function Navbar() {
               ) : (
                 <>
                   <Link
-                    href="/identity/login"
+                    href="/signin"
                     onClick={() => setMobileOpen(false)}
                     className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
                   >
-                    Log In
+                    Sign In
                   </Link>
                   <Link
-                    href="/identity/register"
+                    href="/signup"
                     onClick={() => setMobileOpen(false)}
                     className="block rounded-md bg-[#3da8ff] px-3 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff]"
                   >
@@ -264,9 +342,11 @@ export function Navbar() {
                   </Link>
                 </>
               )}
-              <div className="mt-2">
-                <WalletMultiButton />
-              </div>
+              {walletAddress && (
+                <p className="mt-2 px-3 py-1 text-xs font-mono text-[#4a5568]">
+                  {truncateAddress(walletAddress)}
+                </p>
+              )}
             </div>
           </div>
         </div>

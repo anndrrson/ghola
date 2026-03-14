@@ -1,19 +1,15 @@
 "use client";
 
+import Link from "next/link";
 import { ArrowLeft, Settings } from "lucide-react";
-import { AgentAvatar } from "./AgentAvatar";
-import { getProviderColor, getProvider } from "@/lib/providers";
-import type { ChatAgent } from "@/lib/types";
+import { GholaLogo } from "@/components/GholaLogo";
 
 interface ChatHeaderProps {
-  agent: ChatAgent;
+  title: string;
   onBack: () => void;
-  onSettings: () => void;
 }
 
-export function ChatHeader({ agent, onBack, onSettings }: ChatHeaderProps) {
-  const provider = getProvider(agent.provider);
-
+export function ChatHeader({ title, onBack }: ChatHeaderProps) {
   return (
     <div className="flex items-center gap-3 px-4 py-3 border-b border-[#1e2a3a] bg-[#0a0b10]">
       <button
@@ -22,19 +18,24 @@ export function ChatHeader({ agent, onBack, onSettings }: ChatHeaderProps) {
       >
         <ArrowLeft className="h-5 w-5" />
       </button>
-      <AgentAvatar avatar={agent.avatar} name={agent.name} color={getProviderColor(agent.provider)} size="sm" />
+      <GholaLogo size={24} className="text-[#eef1f8] hidden lg:block" />
       <div className="flex-1 min-w-0">
-        <h2 className="text-sm font-semibold text-[#eef1f8] truncate">{agent.name}</h2>
-        <p className="text-xs text-[#8b95a8]">
-          {provider?.name || agent.provider} &middot; {agent.model}
-        </p>
+        <h2 className="text-sm font-semibold text-[#eef1f8] truncate">
+          {title || "New conversation"}
+        </h2>
       </div>
-      <button
-        onClick={onSettings}
-        className="p-2 text-[#8b95a8] hover:text-[#eef1f8] transition-colors cursor-pointer"
+      <Link
+        href="/models"
+        className="text-sm text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
+      >
+        Models
+      </Link>
+      <Link
+        href="/settings"
+        className="p-2 text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
       >
         <Settings className="h-4 w-4" />
-      </button>
+      </Link>
     </div>
   );
 }

@@ -2,15 +2,15 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useAuth } from "@/lib/auth-context";
+import { useThumperAuth } from "@/lib/thumper-auth-context";
 
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
-  const { authenticated, loading } = useAuth();
+  const { authenticated, loading } = useThumperAuth();
   const router = useRouter();
 
   useEffect(() => {
     if (!loading && !authenticated) {
-      router.push("/identity/login");
+      router.push("/signup");
     }
   }, [authenticated, loading, router]);
 
