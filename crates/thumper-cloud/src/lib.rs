@@ -9,7 +9,9 @@ pub mod state;
 
 use axum::extract::State;
 use axum::routing::{delete, get, patch, post};
+use axum::Json;
 use axum::Router;
+use serde_json::json;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -22,6 +24,17 @@ pub async fn run_cloud() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     let bind_addr = config.bind_addr;
 
     tracing::info!(%bind_addr, "starting thumper-cloud server");
+
+    tracing::info!(
+        google = config.google_client_id.is_some(),
+        apple = config.apple_client_id.is_some(),
+        stripe = config.stripe_secret_key.is_some(),
+        bland_ai = config.bland_api_key.is_some(),
+        claude = config.claude_api_key.is_some(),
+        gmail = config.gmail_client_id.is_some(),
+        telegram = config.telegram_bot_token.is_some(),
+        "provider config"
+    );
 
     let pool = db::create_pool(&config.database_url).await?;
     db::run_migrations(&pool).await?;
@@ -59,6 +72,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         // Health
         .route("/health", get(health))
+        .route("/health/providers", get(health_providers))
         // Auth
         .route("/api/auth/google", post(routes::auth::google_sign_in))
         .route("/api/auth/apple", post(routes::auth::apple_sign_in))
@@ -130,28 +144,37 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 async fn health(State(state): State<AppState>) -> String {
-    // DB diagnostic: test the exact query pattern signup uses
     let user_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users")
         .fetch_one(&state.db)
         .await;
 
-    let col_check = sqlx::query_scalar::<_, String>(
-        "SELECT column_name::text FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'password_hash'"
-    )
-    .fetch_optional(&state.db)
-    .await;
-
-    let signup_test = sqlx::query_as::<_, (uuid::Uuid,)>(
-        "SELECT id FROM users WHERE email = $1"
-    )
-    .bind("__diag_nonexistent__")
-    .fetch_optional(&state.db)
-    .await;
+    let providers = format!(
+        "google={} apple={} stripe={} bland={} claude={} gmail={} telegram={}",
+        state.config.google_client_id.is_some(),
+        state.config.apple_client_id.is_some(),
+        state.config.stripe_secret_key.is_some(),
+        state.config.bland_api_key.is_some(),
+        state.config.claude_api_key.is_some(),
+        state.config.gmail_client_id.is_some(),
+        state.config.telegram_bot_token.is_some(),
+    );
 
     format!(
-        "ok users={:?} pw_col={:?} select_test={:?}",
-        user_count, col_check, signup_test
+        "ok users={:?} providers=[{providers}]",
+        user_count
     )
+}
+
+async fn health_providers(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!({
+        "google": state.config.google_client_id.is_some(),
+        "apple": state.config.apple_client_id.is_some(),
+        "stripe": state.config.stripe_secret_key.is_some(),
+        "bland_ai": state.config.bland_api_key.is_some(),
+        "claude": state.config.claude_api_key.is_some(),
+        "gmail": state.config.gmail_client_id.is_some(),
+        "telegram": state.config.telegram_bot_token.is_some(),
+    }))
 }
 
 async fn shutdown_signal() {

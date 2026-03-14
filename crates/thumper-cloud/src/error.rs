@@ -36,7 +36,19 @@ pub enum CloudError {
 impl IntoResponse for CloudError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
-            CloudError::Auth(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
+            CloudError::Auth(msg) => {
+                let public_msg = if msg.starts_with("Google token verification failed") {
+                    "Google sign-in failed".to_string()
+                } else if msg.starts_with("invalid token:") {
+                    "session expired — please sign in again".to_string()
+                } else {
+                    msg.clone()
+                };
+                if public_msg != *msg {
+                    tracing::warn!("auth error (sanitized): {msg}");
+                }
+                (StatusCode::UNAUTHORIZED, public_msg)
+            }
             CloudError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             CloudError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             CloudError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),

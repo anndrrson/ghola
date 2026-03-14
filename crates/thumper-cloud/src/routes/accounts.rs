@@ -41,6 +41,7 @@ pub async fn authorize_gmail(
     let state_claims = crate::auth::Claims {
         sub: claims.sub,
         email: claims.email,
+        name: claims.name,
         tier: claims.tier,
         exp: (now + chrono::Duration::minutes(10)).timestamp(),
         iat: now.timestamp(),

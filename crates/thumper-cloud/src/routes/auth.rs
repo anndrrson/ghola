@@ -46,9 +46,16 @@ pub async fn google_sign_in(
     Json(req): Json<GoogleSignInRequest>,
 ) -> Result<Json<AuthResponse>, CloudError> {
     let google_client_id = state.config.google_client_id.as_deref()
-        .unwrap_or("not-configured");
+        .ok_or_else(|| {
+            tracing::error!("Google sign-in attempted but GOOGLE_CLIENT_ID not configured");
+            CloudError::ServiceUnavailable("Google sign-in is not configured".into())
+        })?;
 
-    let payload = verify_google_token(&req.id_token, google_client_id).await?;
+    let payload = verify_google_token(&req.id_token, google_client_id).await
+        .map_err(|e| {
+            tracing::warn!("Google token verification failed: {e}");
+            CloudError::Auth("Google sign-in failed — please try again or use email".into())
+        })?;
 
     // Upsert user
     let row = sqlx::query_as::<_, (Uuid, String, bool)>(
@@ -69,7 +76,7 @@ pub async fn google_sign_in(
     .await?;
 
     let (user_id, tier, is_new_user) = row;
-    let token = create_jwt(user_id, Some(&payload.email), &tier, &state.config.jwt_secret)?;
+    let token = create_jwt(user_id, Some(&payload.email), payload.name.as_deref(), &tier, &state.config.jwt_secret)?;
 
     Ok(Json(AuthResponse {
         token,
@@ -102,7 +109,7 @@ pub async fn apple_sign_in(
     .await?;
 
     let (user_id, tier, is_new_user) = row;
-    let token = create_jwt(user_id, req.email.as_deref(), &tier, &state.config.jwt_secret)?;
+    let token = create_jwt(user_id, req.email.as_deref(), req.full_name.as_deref(), &tier, &state.config.jwt_secret)?;
 
     Ok(Json(AuthResponse {
         token,
@@ -137,7 +144,7 @@ pub async fn twitter_sign_in(
     .await?;
 
     let (user_id, tier, is_new_user) = row;
-    let token = create_jwt(user_id, req.email.as_deref(), &tier, &state.config.jwt_secret)?;
+    let token = create_jwt(user_id, req.email.as_deref(), display.as_deref(), &tier, &state.config.jwt_secret)?;
 
     Ok(Json(AuthResponse {
         token,
@@ -204,7 +211,7 @@ pub async fn email_sign_up(
     .await?;
 
     let (user_id, tier) = row;
-    let token = create_jwt(user_id, Some(&req.email), &tier, &state.config.jwt_secret)?;
+    let token = create_jwt(user_id, Some(&req.email), req.display_name.as_deref(), &tier, &state.config.jwt_secret)?;
 
     Ok(Json(AuthResponse {
         token,
@@ -218,15 +225,15 @@ pub async fn email_sign_in(
     State(state): State<AppState>,
     Json(req): Json<EmailSignInRequest>,
 ) -> Result<Json<AuthResponse>, CloudError> {
-    let row = sqlx::query_as::<_, (Uuid, String, Option<String>)>(
-        "SELECT id, tier, password_hash FROM users WHERE email = $1",
+    let row = sqlx::query_as::<_, (Uuid, String, Option<String>, Option<String>)>(
+        "SELECT id, tier, password_hash, display_name FROM users WHERE email = $1",
     )
     .bind(&req.email)
     .fetch_optional(&state.db)
     .await?
     .ok_or(CloudError::Auth("invalid email or password".to_string()))?;
 
-    let (user_id, tier, stored_hash) = row;
+    let (user_id, tier, stored_hash, display_name) = row;
 
     let stored_hash = stored_hash
         .ok_or(CloudError::Auth("this account uses Apple/Google sign-in".to_string()))?;
@@ -235,7 +242,7 @@ pub async fn email_sign_in(
         return Err(CloudError::Auth("invalid email or password".to_string()));
     }
 
-    let token = create_jwt(user_id, Some(&req.email), &tier, &state.config.jwt_secret)?;
+    let token = create_jwt(user_id, Some(&req.email), display_name.as_deref(), &tier, &state.config.jwt_secret)?;
 
     Ok(Json(AuthResponse {
         token,
@@ -271,17 +278,17 @@ pub async fn refresh_token(
 ) -> Result<Json<AuthResponse>, CloudError> {
     let claims = crate::auth::verify_jwt(&req.token, &state.config.jwt_secret)?;
 
-    // Re-fetch user to get current tier
-    let row = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT tier, email FROM users WHERE id = $1",
+    // Re-fetch user to get current tier and display name
+    let row = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        "SELECT tier, email, display_name FROM users WHERE id = $1",
     )
     .bind(claims.sub)
     .fetch_optional(&state.db)
     .await?
     .ok_or(CloudError::NotFound("user not found".to_string()))?;
 
-    let (tier, email) = row;
-    let token = create_jwt(claims.sub, email.as_deref(), &tier, &state.config.jwt_secret)?;
+    let (tier, email, display_name) = row;
+    let token = create_jwt(claims.sub, email.as_deref(), display_name.as_deref(), &tier, &state.config.jwt_secret)?;
 
     Ok(Json(AuthResponse {
         token,
