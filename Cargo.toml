@@ -5,6 +5,7 @@ members = [
     "crates/thumper-mcp",
     "crates/thumper-cli",
     "crates/thumper-cloud",
+    "crates/ghola-home",
 ]
 resolver = "2"
 

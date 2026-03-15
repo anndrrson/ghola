@@ -20,6 +20,8 @@ targets:
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "Ghola needs microphone access for voice input."
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Ghola uses speech recognition for voice commands."
         INFOPLIST_KEY_CFBundleDisplayName: Ghola
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Ghola uses your local network to connect to Ghola Home servers and for Bonjour discovery."
+        INFOPLIST_KEY_NSBonjourServices: "_ghola._tcp."
         SUPPORTS_MACCATALYST: false
       configs:
         debug:

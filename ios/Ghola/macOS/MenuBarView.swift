@@ -2,69 +2,79 @@
 import SwiftUI
 
 struct MenuBarView: View {
-    @EnvironmentObject var auth: AuthManager
-    @State private var tasks: [TaskResponse] = []
+    @EnvironmentObject var serverManager: ServerManager
+    @EnvironmentObject var ollamaManager: OllamaManager
+    @EnvironmentObject var bonjourAdvertiser: BonjourAdvertiser
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if auth.isAuthenticated {
-                if let profile = auth.profile {
-                    Text("Hey, \(profile.displayName ?? "there")")
-                        .font(.headline)
-                        .padding(.horizontal)
-                }
-
-                Divider()
-
-                if tasks.isEmpty {
-                    Text("No active tasks")
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal)
-                } else {
-                    ForEach(tasks.prefix(5)) { task in
-                        HStack {
-                            Image(systemName: task.typeIcon)
-                                .foregroundStyle(.blue)
-                            Text(task.taskType.capitalized)
-                            Spacer()
-                            Text(task.status.replacingOccurrences(of: "_", with: " "))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal)
-                        .padding(.vertical, 2)
-                    }
-                }
-
-                Divider()
-
-                Button("Open Window") {
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                    if let window = NSApplication.shared.windows.first {
-                        window.makeKeyAndOrderFront(nil)
-                    }
-                }
-                .padding(.horizontal)
-
-                Button("New Chat") {
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                    // TODO: focus chat tab
-                }
-                .padding(.horizontal)
-            } else {
-                Text("Sign in to get started")
+            // Status
+            HStack {
+                Circle()
+                    .fill(serverManager.status == .running ? .green : serverManager.status == .error ? .red : .yellow)
+                    .frame(width: 8, height: 8)
+                Text("Ghola Home")
+                    .font(.headline)
+                Spacer()
+                Text(serverManager.status.rawValue)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal)
+            }
+            .padding(.horizontal)
 
-                Button("Open Ghola") {
-                    NSApplication.shared.activate(ignoringOtherApps: true)
+            Divider()
+
+            if serverManager.status == .running {
+                // PIN
+                HStack {
+                    Text("PIN:")
+                        .foregroundStyle(.secondary)
+                    Text(serverManager.pin)
+                        .font(.system(.body, design: .monospaced))
+                        .fontWeight(.bold)
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(serverManager.pin, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
                 }
                 .padding(.horizontal)
+
+                // Model
+                if let model = ollamaManager.installedModels.first {
+                    HStack {
+                        Image(systemName: "cpu")
+                            .foregroundStyle(.secondary)
+                        Text(model)
+                        Spacer()
+                    }
+                    .padding(.horizontal)
+                }
             }
 
             Divider()
 
+            Button("Open Window") {
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                if let window = NSApplication.shared.windows.first {
+                    window.makeKeyAndOrderFront(nil)
+                }
+            }
+            .padding(.horizontal)
+
+            Button("Restart Server") {
+                serverManager.restart()
+            }
+            .padding(.horizontal)
+            .disabled(serverManager.status == .starting)
+
+            Divider()
+
             Button("Quit") {
+                serverManager.stop()
                 NSApplication.shared.terminate(nil)
             }
             .padding(.horizontal)
@@ -72,11 +82,23 @@ struct MenuBarView: View {
         .padding(.vertical, 8)
         .frame(width: 280)
         .task {
-            guard auth.isAuthenticated else { return }
-            do {
-                tasks = try await CloudClient.shared.listTasks()
-                    .filter { ["pending", "in_progress", "awaiting_approval"].contains($0.status) }
-            } catch { /* ok */ }
+            await ollamaManager.checkStatus()
+            if serverManager.status == .running {
+                bonjourAdvertiser.start(
+                    serverName: Host.current().localizedName ?? "Ghola Home",
+                    models: ollamaManager.installedModels
+                )
+            }
+        }
+        .onChange(of: serverManager.status) { _, newStatus in
+            if newStatus == .running {
+                bonjourAdvertiser.start(
+                    serverName: Host.current().localizedName ?? "Ghola Home",
+                    models: ollamaManager.installedModels
+                )
+            } else {
+                bonjourAdvertiser.stop()
+            }
         }
     }
 }

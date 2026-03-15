@@ -20,6 +20,31 @@ struct SettingsView: View {
                     }
                 }
 
+                // MARK: - Local Server
+                #if os(iOS)
+                Section("Local AI Server") {
+                    if CloudClient.isLocalMode {
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                            Text("Connected")
+                            Spacer()
+                            Text(CloudClient.localServerName ?? "Local")
+                                .foregroundStyle(Theme.textSecondary)
+                        }
+                    }
+
+                    NavigationLink {
+                        LocalServerConnectView()
+                    } label: {
+                        Label(
+                            CloudClient.isLocalMode ? "Manage Connection" : "Connect to Local Server",
+                            systemImage: "desktopcomputer"
+                        )
+                    }
+                }
+                #endif
+
                 // MARK: - Account
                 Section("Account") {
                     if let profile = auth.profile {

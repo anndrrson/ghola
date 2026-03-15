@@ -3,6 +3,17 @@ import Foundation
 actor CloudClient {
     static let shared = CloudClient()
 
+    // MARK: - Local mode
+
+    static var isLocalMode: Bool {
+        get { UserDefaults.standard.bool(forKey: "local_mode") }
+        set { UserDefaults.standard.set(newValue, forKey: "local_mode") }
+    }
+
+    static var localServerName: String? {
+        get { KeychainHelper.loadString("local_server_name") }
+    }
+
     // TODO: Update to production URL
     private var baseURL = "https://api.ghola.xyz"
     private let session = URLSession.shared
@@ -140,11 +151,18 @@ actor CloudClient {
     // MARK: - Chat SSE URL
 
     func chatSSERequest(sessionId: UUID?, message: String) throws -> URLRequest {
-        guard let token = token else { throw CloudError.unauthorized }
+        let (url, authToken): (String, String) = if CloudClient.isLocalMode {
+            let localURL = KeychainHelper.loadString("local_base_url") ?? "http://localhost:3000"
+            let localToken = KeychainHelper.loadString("local_token") ?? ""
+            (localURL, localToken)
+        } else {
+            guard let t = token else { throw CloudError.unauthorized }
+            (baseURL, t)
+        }
 
-        var request = URLRequest(url: URL(string: "\(baseURL)/api/chat")!)
+        var request = URLRequest(url: URL(string: "\(url)/api/chat")!)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         var body: [String: Any] = ["message": message]
@@ -152,6 +170,44 @@ actor CloudClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         return request
+    }
+
+    // MARK: - Local pairing
+
+    func localPair(serverURL: String, pin: String, deviceName: String) async throws {
+        guard let url = URL(string: "\(serverURL)/api/local/pair") else {
+            throw CloudError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "pin": pin,
+            "device_name": deviceName,
+        ])
+
+        let (data, response) = try await session.data(for: request)
+        try validateResponse(response, data: data)
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let token = json["token"] as? String else {
+            throw CloudError.invalidResponse
+        }
+
+        let serverName = json["server_name"] as? String ?? "Local Server"
+
+        KeychainHelper.save(token, for: "local_token")
+        KeychainHelper.save(serverURL, for: "local_base_url")
+        KeychainHelper.save(serverName, for: "local_server_name")
+        CloudClient.isLocalMode = true
+    }
+
+    func disconnectLocal() {
+        KeychainHelper.delete("local_token")
+        KeychainHelper.delete("local_base_url")
+        KeychainHelper.delete("local_server_name")
+        CloudClient.isLocalMode = false
     }
 
     // MARK: - HTTP helpers
