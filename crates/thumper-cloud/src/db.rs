@@ -211,7 +211,9 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS session_id UUID;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON chat_messages(user_id);
 
 -- Twitter auth
 ALTER TABLE users ADD COLUMN IF NOT EXISTS twitter_id TEXT UNIQUE;
@@ -280,6 +282,9 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS said_identity_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+
+-- Make username nullable if it exists (legacy column from earlier schema)
+ALTER TABLE users ALTER COLUMN username DROP NOT NULL;
 
 -- Enterprise tier support
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
