@@ -26,7 +26,11 @@ pub struct CloudConfig {
 impl CloudConfig {
     pub fn from_env() -> Self {
         let encryption_hex = env::var("THUMPER_ENCRYPTION_KEY").unwrap_or_else(|_| {
-            tracing::warn!("THUMPER_ENCRYPTION_KEY not set, using random key (tokens won't survive restarts)");
+            tracing::warn!(
+                "THUMPER_ENCRYPTION_KEY not set — using random key. \
+                 BYOM API keys and Gmail tokens won't survive restarts. \
+                 Set this env var with `openssl rand -hex 32`."
+            );
             let mut key = [0u8; 32];
             use rand::RngCore;
             rand::thread_rng().fill_bytes(&mut key);
@@ -34,6 +38,14 @@ impl CloudConfig {
         });
 
         let encryption_key = parse_hex_key(&encryption_hex);
+
+        let claude_api_key = env::var("CLAUDE_API_KEY").ok();
+        if claude_api_key.is_none() {
+            tracing::warn!(
+                "CLAUDE_API_KEY not set — chat will only work for users who configure their own \
+                 API key via Settings > AI Model (BYOM)"
+            );
+        }
 
         Self {
             bind_addr: env::var("THUMPER_CLOUD_BIND")
@@ -51,7 +63,7 @@ impl CloudConfig {
                 .expect("JWT_SECRET must be set"),
             bland_api_key: env::var("BLAND_API_KEY").ok(),
             bland_webhook_url: env::var("BLAND_WEBHOOK_URL").ok(),
-            claude_api_key: env::var("CLAUDE_API_KEY").ok(),
+            claude_api_key,
             google_client_id: env::var("GOOGLE_CLIENT_ID").ok(),
             google_client_secret: env::var("GOOGLE_CLIENT_SECRET").ok(),
             apple_client_id: env::var("APPLE_CLIENT_ID").ok(),

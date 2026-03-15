@@ -127,7 +127,20 @@ pub async fn get_user_llm_config(
             .unwrap_or(LlmProvider::Anthropic);
 
         let api_key = if let Some(encrypted) = encrypted_key {
-            Some(decrypt_api_key(&encrypted, &state.config.encryption_key)?)
+            match decrypt_api_key(&encrypted, &state.config.encryption_key) {
+                Ok(key) => Some(key),
+                Err(e) => {
+                    // Decryption failed (e.g. THUMPER_ENCRYPTION_KEY changed on redeploy).
+                    // Fall back to server default key so chat still works if CLAUDE_API_KEY is set.
+                    tracing::warn!(
+                        "failed to decrypt BYOM key for user {user_id}: {e} — falling back to server default"
+                    );
+                    match provider {
+                        LlmProvider::Anthropic => state.config.claude_api_key.clone(),
+                        _ => None,
+                    }
+                }
+            }
         } else {
             // Fall back to server key for Anthropic
             match provider {

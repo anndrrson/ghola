@@ -36,6 +36,13 @@ pub async fn run_cloud() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         "provider config"
     );
 
+    if config.claude_api_key.is_none() {
+        tracing::warn!(
+            "⚠ No CLAUDE_API_KEY — default chat will fail. \
+             Only BYOM users (with their own key in Settings) can chat."
+        );
+    }
+
     let pool = db::create_pool(&config.database_url).await?;
     db::run_migrations(&pool).await?;
 

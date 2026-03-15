@@ -23,7 +23,18 @@ actor SSEClient {
 
                     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                        continuation.yield(.error("Server returned \(code)"))
+                        // Try to parse JSON error body for a better message
+                        var errorMsg = "Server returned \(code)"
+                        var bodyData = Data()
+                        for try await byte in bytes {
+                            bodyData.append(byte)
+                            if bodyData.count > 4096 { break }
+                        }
+                        if let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
+                           let serverError = json["error"] as? String {
+                            errorMsg = serverError
+                        }
+                        continuation.yield(.error(errorMsg))
                         continuation.finish()
                         return
                     }
