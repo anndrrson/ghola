@@ -36,7 +36,7 @@ impl LlmProvider {
 
     pub fn default_model(&self) -> &str {
         match self {
-            LlmProvider::Anthropic => "claude-sonnet-4-6-20250514",
+            LlmProvider::Anthropic => "claude-sonnet-4-20250514",
             LlmProvider::OpenAI => "gpt-4o",
             LlmProvider::Google => "gemini-2.0-flash",
             LlmProvider::Groq => "llama-3.3-70b-versatile",
@@ -60,9 +60,9 @@ impl LlmProvider {
     pub fn available_models(&self) -> Vec<&str> {
         match self {
             LlmProvider::Anthropic => vec![
-                "claude-sonnet-4-6-20250514",
-                "claude-opus-4-6-20250514",
-                "claude-haiku-4-5-20251001",
+                "claude-sonnet-4-20250514",
+                "claude-opus-4-20250514",
+                "claude-haiku-4-20250514",
             ],
             LlmProvider::OpenAI => vec![
                 "gpt-4o",
@@ -161,7 +161,7 @@ pub async fn get_user_llm_config(
     } else {
         Ok(UserLlmConfig {
             provider: LlmProvider::Anthropic,
-            model: "claude-sonnet-4-6-20250514".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
             api_key: state.config.claude_api_key.clone(),
             base_url: "https://api.anthropic.com".to_string(),
         })
