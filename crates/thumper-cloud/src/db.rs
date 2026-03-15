@@ -283,8 +283,9 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS said_identity_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 
--- Make username nullable if it exists (legacy column from earlier schema)
+-- Make legacy columns nullable if they exist (from earlier Orni/Supabase schema)
 ALTER TABLE users ALTER COLUMN username DROP NOT NULL;
+ALTER TABLE users ALTER COLUMN wallet_spending DROP NOT NULL;
 
 -- Enterprise tier support
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
