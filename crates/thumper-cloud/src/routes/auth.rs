@@ -57,37 +57,46 @@ pub async fn google_sign_in(
             CloudError::Auth("Google sign-in failed — please try again or use email".into())
         })?;
 
+    tracing::info!(google_id = %payload.sub, email = %payload.email, "google auth: checking existing user by google_id");
+
     // 1. Returning user? (already linked Google)
     let existing = sqlx::query_as::<_, (Uuid, String)>(
-        "SELECT id, tier FROM users WHERE google_id = $1",
+        "SELECT id, COALESCE(tier, 'free') FROM users WHERE google_id = $1",
     )
     .bind(&payload.sub)
     .fetch_optional(&state.db)
     .await?;
 
     if let Some((user_id, tier)) = existing {
-        sqlx::query(
+        tracing::info!(user_id = %user_id, "google auth: returning user, updating profile");
+        // Ignore email UNIQUE errors — just skip the email update if it conflicts
+        if let Err(e) = sqlx::query(
             "UPDATE users SET email = COALESCE($1, email), display_name = COALESCE($2, display_name), updated_at = now() WHERE google_id = $3"
         )
         .bind(&payload.email)
         .bind(&payload.name)
         .bind(&payload.sub)
         .execute(&state.db)
-        .await?;
+        .await {
+            tracing::warn!(google_id = %payload.sub, "google auth: skipping profile update (email conflict?): {e}");
+        }
 
         let token = create_jwt(user_id, Some(&payload.email), payload.name.as_deref(), &tier, &state.config.jwt_secret)?;
         return Ok(Json(AuthResponse { token, user_id, is_new_user: false }));
     }
 
+    tracing::info!("google auth: no google_id match, checking email");
+
     // 2. Email already in DB from another auth method? Link Google to that account.
     let email_user = sqlx::query_as::<_, (Uuid, String)>(
-        "SELECT id, tier FROM users WHERE email = $1",
+        "SELECT id, COALESCE(tier, 'free') FROM users WHERE email = $1",
     )
     .bind(&payload.email)
     .fetch_optional(&state.db)
     .await?;
 
     if let Some((user_id, tier)) = email_user {
+        tracing::info!(user_id = %user_id, "google auth: linking google_id to existing email account");
         sqlx::query(
             "UPDATE users SET google_id = $1, display_name = COALESCE($2, display_name), updated_at = now() WHERE id = $3"
         )
@@ -101,9 +110,11 @@ pub async fn google_sign_in(
         return Ok(Json(AuthResponse { token, user_id, is_new_user: false }));
     }
 
+    tracing::info!("google auth: creating new user");
+
     // 3. Brand new user
     let row = sqlx::query_as::<_, (Uuid, String)>(
-        "INSERT INTO users (google_id, email, display_name) VALUES ($1, $2, $3) RETURNING id, tier",
+        "INSERT INTO users (google_id, email, display_name) VALUES ($1, $2, $3) RETURNING id, COALESCE(tier, 'free')",
     )
     .bind(&payload.sub)
     .bind(&payload.email)
@@ -112,6 +123,7 @@ pub async fn google_sign_in(
     .await?;
 
     let (user_id, tier) = row;
+    tracing::info!(user_id = %user_id, "google auth: new user created");
     let token = create_jwt(user_id, Some(&payload.email), payload.name.as_deref(), &tier, &state.config.jwt_secret)?;
     Ok(Json(AuthResponse { token, user_id, is_new_user: true }))
 }
@@ -123,21 +135,24 @@ pub async fn apple_sign_in(
 ) -> Result<Json<AuthResponse>, CloudError> {
     // 1. Returning user? (already linked Apple)
     let existing = sqlx::query_as::<_, (Uuid, String)>(
-        "SELECT id, tier FROM users WHERE apple_id = $1",
+        "SELECT id, COALESCE(tier, 'free') FROM users WHERE apple_id = $1",
     )
     .bind(&req.user_id)
     .fetch_optional(&state.db)
     .await?;
 
     if let Some((user_id, tier)) = existing {
-        sqlx::query(
+        // Ignore email UNIQUE errors — just skip the email update if it conflicts
+        if let Err(e) = sqlx::query(
             "UPDATE users SET email = COALESCE($1, email), display_name = COALESCE($2, display_name), updated_at = now() WHERE apple_id = $3"
         )
         .bind(&req.email)
         .bind(&req.full_name)
         .bind(&req.user_id)
         .execute(&state.db)
-        .await?;
+        .await {
+            tracing::warn!(apple_id = %req.user_id, "apple auth: skipping profile update (email conflict?): {e}");
+        }
 
         let token = create_jwt(user_id, req.email.as_deref(), req.full_name.as_deref(), &tier, &state.config.jwt_secret)?;
         return Ok(Json(AuthResponse { token, user_id, is_new_user: false }));
@@ -146,7 +161,7 @@ pub async fn apple_sign_in(
     // 2. Email already in DB from another auth method? Link Apple to that account.
     if let Some(ref email) = req.email {
         let email_user = sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, tier FROM users WHERE email = $1",
+            "SELECT id, COALESCE(tier, 'free') FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_optional(&state.db)
@@ -169,7 +184,7 @@ pub async fn apple_sign_in(
 
     // 3. Brand new user
     let row = sqlx::query_as::<_, (Uuid, String)>(
-        "INSERT INTO users (apple_id, email, display_name) VALUES ($1, $2, $3) RETURNING id, tier",
+        "INSERT INTO users (apple_id, email, display_name) VALUES ($1, $2, $3) RETURNING id, COALESCE(tier, 'free')",
     )
     .bind(&req.user_id)
     .bind(&req.email)
@@ -192,21 +207,24 @@ pub async fn twitter_sign_in(
 
     // 1. Returning user? (already linked Twitter)
     let existing = sqlx::query_as::<_, (Uuid, String)>(
-        "SELECT id, tier FROM users WHERE twitter_id = $1",
+        "SELECT id, COALESCE(tier, 'free') FROM users WHERE twitter_id = $1",
     )
     .bind(&req.twitter_id)
     .fetch_optional(&state.db)
     .await?;
 
     if let Some((user_id, tier)) = existing {
-        sqlx::query(
+        // Ignore email UNIQUE errors — just skip the email update if it conflicts
+        if let Err(e) = sqlx::query(
             "UPDATE users SET email = COALESCE($1, email), display_name = COALESCE($2, display_name), updated_at = now() WHERE twitter_id = $3"
         )
         .bind(&req.email)
         .bind(&display)
         .bind(&req.twitter_id)
         .execute(&state.db)
-        .await?;
+        .await {
+            tracing::warn!(twitter_id = %req.twitter_id, "twitter auth: skipping profile update (email conflict?): {e}");
+        }
 
         let token = create_jwt(user_id, req.email.as_deref(), display.as_deref(), &tier, &state.config.jwt_secret)?;
         return Ok(Json(AuthResponse { token, user_id, is_new_user: false }));
@@ -215,7 +233,7 @@ pub async fn twitter_sign_in(
     // 2. Email already in DB from another auth method? Link Twitter to that account.
     if let Some(ref email) = req.email {
         let email_user = sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, tier FROM users WHERE email = $1",
+            "SELECT id, COALESCE(tier, 'free') FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_optional(&state.db)
@@ -238,7 +256,7 @@ pub async fn twitter_sign_in(
 
     // 3. Brand new user
     let row = sqlx::query_as::<_, (Uuid, String)>(
-        "INSERT INTO users (twitter_id, email, display_name) VALUES ($1, $2, $3) RETURNING id, tier",
+        "INSERT INTO users (twitter_id, email, display_name) VALUES ($1, $2, $3) RETURNING id, COALESCE(tier, 'free')",
     )
     .bind(&req.twitter_id)
     .bind(&req.email)
@@ -299,7 +317,7 @@ pub async fn email_sign_up(
         r#"
         INSERT INTO users (email, display_name, password_hash)
         VALUES ($1, $2, $3)
-        RETURNING id, tier
+        RETURNING id, COALESCE(tier, 'free')
         "#,
     )
     .bind(&req.email)
@@ -324,7 +342,7 @@ pub async fn email_sign_in(
     Json(req): Json<EmailSignInRequest>,
 ) -> Result<Json<AuthResponse>, CloudError> {
     let row = sqlx::query_as::<_, (Uuid, String, Option<String>, Option<String>)>(
-        "SELECT id, tier, password_hash, display_name FROM users WHERE email = $1",
+        "SELECT id, COALESCE(tier, 'free'), password_hash, display_name FROM users WHERE email = $1",
     )
     .bind(&req.email)
     .fetch_optional(&state.db)
@@ -378,7 +396,7 @@ pub async fn refresh_token(
 
     // Re-fetch user to get current tier and display name
     let row = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
-        "SELECT tier, email, display_name FROM users WHERE id = $1",
+        "SELECT COALESCE(tier, 'free'), email, display_name FROM users WHERE id = $1",
     )
     .bind(claims.sub)
     .fetch_optional(&state.db)
