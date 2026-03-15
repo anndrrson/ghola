@@ -264,8 +264,10 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS tier TEXT DEFAULT 'free';
 -- Ensure OAuth provider columns exist (table may predate these)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_id TEXT;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_id ON users(apple_id) WHERE apple_id IS NOT NULL;
+DROP INDEX IF EXISTS idx_users_google_id;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
+DROP INDEX IF EXISTS idx_users_apple_id;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_id ON users(apple_id);
 
 -- Ensure columns from CREATE TABLE exist (live DB may predate them)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
