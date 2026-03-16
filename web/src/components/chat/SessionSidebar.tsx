@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Plus, MessageSquare, Trash2 } from "lucide-react";
+import { Plus, MessageSquare, Trash2, Home, Settings, Cpu } from "lucide-react";
 import { GholaLogo } from "@/components/GholaLogo";
 import type { ThumperSession } from "@/lib/thumper-types";
 
@@ -76,6 +76,31 @@ export function SessionSidebar({
           <Plus className="h-3.5 w-3.5" />
           New
         </button>
+      </div>
+
+      {/* Navigation */}
+      <div className="px-2 py-2 border-b border-[#1e2a3a] flex gap-1">
+        <Link
+          href="/"
+          className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117] transition-colors flex-1"
+        >
+          <Home className="h-3.5 w-3.5" />
+          Home
+        </Link>
+        <Link
+          href="/settings"
+          className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117] transition-colors flex-1"
+        >
+          <Settings className="h-3.5 w-3.5" />
+          Settings
+        </Link>
+        <Link
+          href="/provide"
+          className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117] transition-colors flex-1"
+        >
+          <Cpu className="h-3.5 w-3.5" />
+          Provide
+        </Link>
       </div>
 
       {/* Session list */}
