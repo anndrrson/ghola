@@ -185,6 +185,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/keys", post(routes::api_keys::create_key))
         .route("/api/keys", get(routes::api_keys::list_keys))
         .route("/api/keys/{id}", delete(routes::api_keys::revoke_key))
+        // Provider key (one-click onboarding)
+        .route("/api/auth/provider-key", post(routes::api_keys::create_provider_key))
         // Wallet (crypto)
         .route("/api/wallet/provision", post(routes::wallet::provision_wallet))
         .route("/api/wallet/address", get(routes::wallet::get_address))

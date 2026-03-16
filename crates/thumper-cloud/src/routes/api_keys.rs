@@ -127,3 +127,64 @@ pub async fn revoke_key(
 
     Ok(Json(serde_json::json!({ "revoked": true })))
 }
+
+/// POST /api/auth/provider-key — Create a compute-scoped API key for GPU providers.
+/// Returns the raw key (shown once). Reuses existing "GPU Provider" key if not revoked.
+pub async fn create_provider_key(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+) -> Result<Json<CreateKeyResponse>, CloudError> {
+    // Check if user already has an active GPU Provider key
+    let existing = sqlx::query_as::<_, (Uuid, String, String, Vec<String>, DateTime<Utc>)>(
+        r#"
+        SELECT id, key_prefix, name, scopes, created_at
+        FROM api_keys
+        WHERE user_id = $1 AND name = 'GPU Provider' AND revoked_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(claims.sub)
+    .fetch_optional(&state.db)
+    .await?;
+
+    if let Some(row) = existing {
+        // Return existing key info (can't return raw key again, so create a new one)
+        // Actually, we can't recover the raw key. Revoke old and create fresh.
+        sqlx::query("UPDATE api_keys SET revoked_at = now() WHERE id = $1")
+            .bind(row.0)
+            .execute(&state.db)
+            .await?;
+    }
+
+    let name = "GPU Provider".to_string();
+    let scopes = vec!["compute".to_string()];
+
+    let key = generate_api_key();
+    let key_hash = hash_api_key(&key);
+    let key_prefix = format!("{}...{}", &key[..12], &key[key.len() - 4..]);
+
+    let row = sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
+        r#"
+        INSERT INTO api_keys (user_id, key_hash, key_prefix, name, scopes)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, created_at
+        "#,
+    )
+    .bind(claims.sub)
+    .bind(&key_hash)
+    .bind(&key_prefix)
+    .bind(&name)
+    .bind(&scopes)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(Json(CreateKeyResponse {
+        id: row.0,
+        key,
+        key_prefix,
+        name,
+        scopes,
+        created_at: row.1,
+    }))
+}

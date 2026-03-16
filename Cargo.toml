@@ -49,3 +49,4 @@ ed25519-bip32 = "0.4"
 bip39 = { version = "2", features = ["rand"] }
 bs58 = "0.5"
 curve25519-dalek = { version = "4", default-features = false }
+open = "5"

@@ -6,6 +6,8 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
+use axum::extract::Query;
+use axum::response::Html;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -61,6 +63,12 @@ enum Commands {
         #[arg(long)]
         relay_url: Option<String>,
     },
+    /// Log in via browser and save API key
+    Login {
+        /// Cloud URL to authenticate against
+        #[arg(long, default_value = "https://ghola.xyz")]
+        cloud_url: String,
+    },
     /// Serve GPU inference to the Ghola network
     GpuServe {
         /// Local inference server URL (default: http://localhost:11434 for Ollama)
@@ -112,6 +120,7 @@ async fn main() {
         } => cmd_config(relay_url, mcp_pubkey, device_pubkey, generate_key),
         Commands::Install => cmd_install(),
         Commands::Qr { relay_url } => cmd_qr(relay_url),
+        Commands::Login { cloud_url } => cmd_login(cloud_url).await,
         Commands::GpuServe {
             inference_url,
             relay_url,
@@ -419,6 +428,109 @@ fn cmd_qr(relay_url_override: Option<String>) {
     println!("  {}", relay_url);
 }
 
+/// Log in via browser OAuth and save the provider API key locally.
+async fn cmd_login(cloud_url: String) {
+    // Bind a local HTTP server on a random port
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind local callback server");
+    let port = listener.local_addr().unwrap().port();
+
+    println!("Opening browser for authentication...");
+    let auth_url = format!("{}/auth/cli?callback_port={}", cloud_url, port);
+
+    // Try to open browser
+    if let Err(e) = open::that(&auth_url) {
+        println!("Could not open browser automatically: {}", e);
+        println!("Please open this URL manually:\n  {}", auth_url);
+    }
+
+    // Set up single-use callback server
+    let (tx, mut rx) = tokio::sync::oneshot::channel::<String>();
+    let tx = std::sync::Arc::new(tokio::sync::Mutex::new(Some(tx)));
+
+    #[derive(serde::Deserialize)]
+    struct CallbackParams {
+        token: Option<String>,
+        error: Option<String>,
+    }
+
+    let tx_clone = tx.clone();
+    let app = axum::Router::new().route(
+        "/callback",
+        axum::routing::get(move |Query(params): Query<CallbackParams>| {
+            let tx = tx_clone.clone();
+            async move {
+                if let Some(token) = params.token {
+                    if let Some(sender) = tx.lock().await.take() {
+                        let _ = sender.send(token);
+                    }
+                    Html(
+                        "<html><body style=\"background:#08090d;color:#eef1f8;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\">\
+                        <div style=\"text-align:center\"><h1>Authenticated!</h1><p>You can close this tab and return to your terminal.</p></div>\
+                        </body></html>"
+                            .to_string(),
+                    )
+                } else {
+                    let msg = params.error.unwrap_or_else(|| "Unknown error".to_string());
+                    Html(format!(
+                        "<html><body style=\"background:#08090d;color:#eef1f8;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\">\
+                        <div style=\"text-align:center\"><h1>Authentication Failed</h1><p>{}</p></div>\
+                        </body></html>",
+                        msg
+                    ))
+                }
+            }
+        }),
+    );
+
+    println!("Waiting for authentication (listening on port {})...", port);
+
+    // Serve with a timeout
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+
+    // Wait for token with 5-minute timeout
+    let token = tokio::select! {
+        result = &mut rx => {
+            match result {
+                Ok(t) => t,
+                Err(_) => {
+                    eprintln!("Authentication was cancelled.");
+                    std::process::exit(1);
+                }
+            }
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {
+            eprintln!("Authentication timed out after 5 minutes.");
+            std::process::exit(1);
+        }
+    };
+
+    server.abort();
+
+    // Save token to config
+    let config_path = config_file_path();
+    let config_dir = config_path.parent().unwrap();
+    std::fs::create_dir_all(config_dir).ok();
+
+    let mut config = if config_path.exists() {
+        let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
+        toml::from_str::<toml::Table>(&contents).unwrap_or_default()
+    } else {
+        toml::Table::new()
+    };
+
+    config.insert("token".into(), toml::Value::String(token));
+
+    let toml_str = toml::to_string_pretty(&config).expect("failed to serialize config");
+    std::fs::write(&config_path, toml_str).expect("failed to write config");
+
+    println!("Logged in successfully! Token saved to {}", config_path.display());
+    println!("\nRun `thumper gpu-serve` to start providing GPU compute.");
+}
+
 /// Run the GPU inference provider, connecting to the relay and forwarding
 /// inference requests to a local model server (Ollama / OpenAI-compatible).
 async fn cmd_gpu_serve(
@@ -436,6 +548,7 @@ async fn cmd_gpu_serve(
     // 1. Auth token
     let auth_token = token
         .or_else(|| std::env::var("GHOLA_TOKEN").ok())
+        .or_else(|| load_config_value("token"))
         .unwrap_or_default();
 
     if auth_token.is_empty() {
@@ -467,9 +580,13 @@ async fn cmd_gpu_serve(
 
     // 4. Register with cloud (optional)
     let mcp_pubkey = load_config_value("mcp_pubkey").unwrap_or_else(|| "unknown".to_string());
-    let wallet = wallet_address.clone().unwrap_or_default();
+    let wallet = wallet_address
+        .or_else(|| load_config_value("wallet_address"))
+        .unwrap_or_default();
 
-    if let Some(ref cloud) = cloud_url {
+    let cloud_url = cloud_url.unwrap_or_else(|| "https://thumper-cloud.onrender.com".to_string());
+    {
+        let cloud = &cloud_url;
         println!("Registering with cloud at {}...", cloud);
         let client = reqwest::Client::new();
         let reg_body = serde_json::json!({
@@ -511,7 +628,7 @@ async fn cmd_gpu_serve(
     // 5. Resolve relay URL
     let relay = relay_url
         .or_else(|| load_config_value("relay_url"))
-        .unwrap_or_else(|| "ws://localhost:8080/ws".to_string());
+        .unwrap_or_else(|| "wss://thumper-relay.onrender.com/ws".to_string());
 
     // 6. Load or generate keypair
     let config_dir = dirs::home_dir()
