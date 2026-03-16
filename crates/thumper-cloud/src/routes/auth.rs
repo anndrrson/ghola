@@ -124,6 +124,7 @@ pub async fn google_sign_in(
 
     let (user_id, tier) = row;
     tracing::info!(user_id = %user_id, "google auth: new user created");
+    auto_provision_wallet(state.clone(), user_id);
     let token = create_jwt(user_id, Some(&payload.email), payload.name.as_deref(), &tier, &state.config.jwt_secret)?;
     Ok(Json(AuthResponse { token, user_id, is_new_user: true }))
 }
@@ -193,6 +194,7 @@ pub async fn apple_sign_in(
     .await?;
 
     let (user_id, tier) = row;
+    auto_provision_wallet(state.clone(), user_id);
     let token = create_jwt(user_id, req.email.as_deref(), req.full_name.as_deref(), &tier, &state.config.jwt_secret)?;
     Ok(Json(AuthResponse { token, user_id, is_new_user: true }))
 }
@@ -265,6 +267,7 @@ pub async fn twitter_sign_in(
     .await?;
 
     let (user_id, tier) = row;
+    auto_provision_wallet(state.clone(), user_id);
     let token = create_jwt(user_id, req.email.as_deref(), display.as_deref(), &tier, &state.config.jwt_secret)?;
     Ok(Json(AuthResponse { token, user_id, is_new_user: true }))
 }
@@ -298,8 +301,8 @@ pub async fn email_sign_up(
         return Err(CloudError::BadRequest("password must be at least 8 characters".to_string()));
     }
 
-    // Hash password with a simple but secure approach
-    let password_hash = hash_password(&req.password);
+    // Hash password with HMAC-SHA256 + per-user salt
+    let password_hash = hash_password_v2(&req.password);
 
     // Check if email already exists
     let existing: Option<(Uuid,)> = sqlx::query_as(
@@ -327,6 +330,7 @@ pub async fn email_sign_up(
     .await?;
 
     let (user_id, tier) = row;
+    auto_provision_wallet(state.clone(), user_id);
     let token = create_jwt(user_id, Some(&req.email), req.display_name.as_deref(), &tier, &state.config.jwt_secret)?;
 
     Ok(Json(AuthResponse {
@@ -358,6 +362,17 @@ pub async fn email_sign_in(
         return Err(CloudError::Auth("invalid email or password".to_string()));
     }
 
+    // Migrate legacy hashes to v2 on successful login
+    if needs_rehash(&stored_hash) {
+        let new_hash = hash_password_v2(&req.password);
+        let _ = sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+            .bind(&new_hash)
+            .bind(user_id)
+            .execute(&state.db)
+            .await;
+        tracing::info!(%user_id, "migrated password hash to v2");
+    }
+
     let token = create_jwt(user_id, Some(&req.email), display_name.as_deref(), &tier, &state.config.jwt_secret)?;
 
     Ok(Json(AuthResponse {
@@ -367,12 +382,60 @@ pub async fn email_sign_in(
     }))
 }
 
-/// Simple password hashing using HMAC-SHA256 with the JWT secret as key.
-/// For production, use argon2/bcrypt — this avoids adding a dep for now.
-fn hash_password(password: &str) -> String {
+/// Hash a password with HMAC-SHA256 using a per-user random salt.
+/// Format: "v2:{hex_salt}:{hex_hmac}"
+fn hash_password_v2(password: &str) -> String {
+    use rand::RngCore;
+
+    let mut salt = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut salt);
+    let salt_hex: String = salt.iter().map(|b| format!("{b:02x}")).collect();
+
+    let hmac = hmac_sha256_password(&salt, password.as_bytes());
+    let hmac_hex: String = hmac.iter().map(|b| format!("{b:02x}")).collect();
+
+    format!("v2:{salt_hex}:{hmac_hex}")
+}
+
+/// HMAC-SHA256 for password hashing (avoids adding hmac crate).
+fn hmac_sha256_password(key: &[u8], data: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+
+    let block_size = 64;
+    let mut k = vec![0u8; block_size];
+    if key.len() > block_size {
+        let hash = Sha256::digest(key);
+        k[..32].copy_from_slice(&hash);
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+
+    let mut ipad = vec![0x36u8; block_size];
+    let mut opad = vec![0x5cu8; block_size];
+    for i in 0..block_size {
+        ipad[i] ^= k[i];
+        opad[i] ^= k[i];
+    }
+
+    let mut inner = Sha256::new();
+    inner.update(&ipad);
+    inner.update(data);
+    let inner_hash = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(&opad);
+    outer.update(&inner_hash);
+    let result = outer.finalize();
+
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&result);
+    out
+}
+
+/// Legacy password hashing (DefaultHasher-based) — kept for migration only.
+fn hash_password_legacy(password: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    // Salt + SHA-style hash via multiple rounds of the std hasher
     let mut hasher = DefaultHasher::new();
     "openclaw-salt-v1".hash(&mut hasher);
     password.hash(&mut hasher);
@@ -384,7 +447,45 @@ fn hash_password(password: &str) -> String {
 }
 
 fn verify_password(password: &str, stored: &str) -> bool {
-    hash_password(password) == stored
+    if stored.starts_with("v2:") {
+        // New format: "v2:{salt_hex}:{hmac_hex}"
+        let parts: Vec<&str> = stored.splitn(3, ':').collect();
+        if parts.len() != 3 {
+            return false;
+        }
+        let salt: Vec<u8> = (0..parts[1].len())
+            .step_by(2)
+            .filter_map(|i| parts[1].get(i..i + 2).and_then(|s| u8::from_str_radix(s, 16).ok()))
+            .collect();
+        let expected_hmac: Vec<u8> = (0..parts[2].len())
+            .step_by(2)
+            .filter_map(|i| parts[2].get(i..i + 2).and_then(|s| u8::from_str_radix(s, 16).ok()))
+            .collect();
+        let computed = hmac_sha256_password(&salt, password.as_bytes());
+        computed.as_slice() == expected_hmac.as_slice()
+    } else {
+        // Legacy format — verify against old hash
+        hash_password_legacy(password) == stored
+    }
+}
+
+/// Check if a stored hash needs upgrading to v2.
+fn needs_rehash(stored: &str) -> bool {
+    !stored.starts_with("v2:")
+}
+
+/// Auto-provision a Solana wallet for new users (fire-and-forget).
+fn auto_provision_wallet(state: AppState, user_id: Uuid) {
+    tokio::spawn(async move {
+        match crate::services::wallet_service::generate_wallet(&state, user_id).await {
+            Ok(info) => {
+                tracing::info!(%user_id, address = %info.address, "auto-provisioned wallet on signup");
+            }
+            Err(e) => {
+                tracing::warn!(%user_id, "wallet auto-provision failed (user can retry): {e}");
+            }
+        }
+    });
 }
 
 /// POST /api/auth/refresh

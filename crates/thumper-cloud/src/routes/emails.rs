@@ -117,6 +117,9 @@ pub async fn send_email(
     AuthUser(claims): AuthUser,
     Path(email_id): Path<Uuid>,
 ) -> Result<Json<EmailResponse>, CloudError> {
+    // Check email usage limit
+    check_email_limit(&state, claims.sub, &claims.tier).await?;
+
     // Fetch the draft
     let draft = sqlx::query_as::<_, (String, Option<Vec<String>>, String, String)>(
         "SELECT to_address, cc_addresses, subject, body FROM email_actions WHERE id = $1 AND user_id = $2 AND status = 'draft'",
@@ -198,6 +201,9 @@ pub async fn send_email_direct(
     AuthUser(claims): AuthUser,
     Json(req): Json<SendEmailDirectRequest>,
 ) -> Result<Json<EmailResponse>, CloudError> {
+    // Check email usage limit
+    check_email_limit(&state, claims.sub, &claims.tier).await?;
+
     // Insert as draft first
     let draft_id: Uuid = sqlx::query_scalar(
         r#"
@@ -269,6 +275,32 @@ pub async fn send_email_direct(
         created_at: row.5,
         sent_at: row.6,
     }))
+}
+
+/// Check email usage against tier limits.
+async fn check_email_limit(state: &AppState, user_id: Uuid, tier: &str) -> Result<(), CloudError> {
+    let max_emails: i64 = match tier {
+        "pro" => 50,
+        "unlimited" | "enterprise" => i64::MAX,
+        _ => 10, // free
+    };
+
+    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(email_count, 0) FROM usage_tracking WHERE user_id = $1 AND period_start = $2::date",
+    )
+    .bind(user_id)
+    .bind(&period_start)
+    .fetch_optional(&state.db)
+    .await?
+    .unwrap_or(0);
+
+    if count >= max_emails {
+        return Err(CloudError::PaymentRequired(
+            "monthly email limit reached — upgrade your plan".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// GET /api/emails — List email actions

@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+use std::pin::Pin;
 
 use axum::extract::State;
 use axum::response::sse::{Event, Sse};
@@ -11,6 +12,7 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::CloudError;
 use crate::services::llm_router::{self, ChatMsg};
+use crate::services::wallet_service;
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -18,6 +20,8 @@ pub struct ChatRequest {
     pub session_id: Option<Uuid>,
     pub message: String,
 }
+
+type SseStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
 
 /// Convert internal LLM errors into user-friendly, actionable messages.
 fn friendly_llm_error(err: &CloudError) -> String {
@@ -38,14 +42,48 @@ fn friendly_llm_error(err: &CloudError) -> String {
     }
 }
 
+/// Check chat usage against tier limits.
+async fn check_chat_limit(state: &AppState, user_id: Uuid, tier: &str) -> Result<(), CloudError> {
+    let max_messages: i64 = match tier {
+        "pro" => 1000,
+        "unlimited" | "enterprise" => i64::MAX,
+        _ => 50, // free
+    };
+
+    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*) FROM chat_messages
+        WHERE user_id = $1 AND role = 'user'
+        AND created_at >= $2::date
+        "#,
+    )
+    .bind(user_id)
+    .bind(&period_start)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+
+    if count >= max_messages {
+        return Err(CloudError::PaymentRequired(
+            "monthly chat limit reached — upgrade your plan".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// POST /api/chat — Send a message, get SSE stream back.
+/// When the user has a wallet provisioned, includes crypto tools for Claude to use.
 pub async fn chat(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
     Json(req): Json<ChatRequest>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, CloudError> {
+) -> Result<Sse<SseStream>, CloudError> {
     let session_id = req.session_id.unwrap_or_else(Uuid::new_v4);
     let user_id = claims.sub;
+
+    // Check chat usage limit
+    check_chat_limit(&state, user_id, &claims.tier).await?;
 
     // Save user message
     sqlx::query(
@@ -57,6 +95,15 @@ pub async fn chat(
     .execute(&state.db)
     .await
     .map_err(|e| CloudError::Internal(format!("failed to save message: {e}")))?;
+
+    // Check if user has a wallet (enables crypto tools)
+    let has_wallet: bool = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM user_wallets WHERE user_id = $1)",
+    )
+    .bind(user_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(false);
 
     // Load recent conversation history (last 20 messages in session)
     let history = sqlx::query_as::<_, (String, String)>(
@@ -78,15 +125,90 @@ pub async fn chat(
         .map(|(role, content)| ChatMsg { role, content })
         .collect();
 
-    let system = "You are Ghola, a helpful AI personal assistant. Be concise, friendly, and action-oriented. When the user wants to make a call, send an email, or manage their calendar, help them do it.";
+    let system = if has_wallet {
+        "You are Ghola, a helpful AI personal assistant. Be concise, friendly, and action-oriented. \
+         When the user wants to make a call, send an email, or manage their calendar, help them do it. \
+         You have access to the user's Solana wallet. Use the wallet tools to check balances, \
+         get the wallet address, or send crypto when asked. Always confirm transfer details before sending."
+    } else {
+        "You are Ghola, a helpful AI personal assistant. Be concise, friendly, and action-oriented. \
+         When the user wants to make a call, send an email, or manage their calendar, help them do it."
+    };
 
-    // Get the streaming response — catch errors to emit as SSE events instead of HTTP errors
+    // If user has wallet, use tool-use path (non-streaming but with tool calls)
+    if has_wallet {
+        let tools = wallet_service::wallet_tool_definitions();
+        let state_clone = state.clone();
+        let db = state.db.clone();
+
+        let sse_stream: SseStream = Box::pin(async_stream::stream! {
+            // Send session_id as first event
+            yield Ok(Event::default()
+                .event("session")
+                .data(serde_json::json!({ "session_id": session_id }).to_string()));
+
+            match llm_router::generate_with_tools(&state_clone, user_id, &messages, Some(system), &tools).await {
+                Ok(result) => {
+                    // Emit tool call events
+                    for tc in &result.tool_calls {
+                        if tc.status == "executing" {
+                            yield Ok(Event::default()
+                                .event("tool_use")
+                                .data(serde_json::json!({
+                                    "tool": tc.tool_name,
+                                    "status": "executing"
+                                }).to_string()));
+                        } else {
+                            yield Ok(Event::default()
+                                .event("tool_result")
+                                .data(serde_json::json!({
+                                    "tool": tc.tool_name,
+                                    "status": tc.status,
+                                    "result": tc.result,
+                                }).to_string()));
+                        }
+                    }
+
+                    // Emit the final text as a single delta
+                    if !result.text.is_empty() {
+                        yield Ok(Event::default()
+                            .event("text_delta")
+                            .data(serde_json::json!({ "text": &result.text }).to_string()));
+
+                        // Save assistant response
+                        let _ = sqlx::query(
+                            "INSERT INTO chat_messages (user_id, session_id, role, content) VALUES ($1, $2, 'assistant', $3)",
+                        )
+                        .bind(user_id)
+                        .bind(session_id)
+                        .bind(&result.text)
+                        .execute(&db)
+                        .await;
+                    }
+                }
+                Err(e) => {
+                    let friendly = friendly_llm_error(&e);
+                    tracing::warn!("chat tool-use error for user {user_id}: {e}");
+                    yield Ok(Event::default()
+                        .event("error")
+                        .data(serde_json::json!({ "error": friendly }).to_string()));
+                }
+            }
+
+            // Send done event
+            yield Ok(Event::default()
+                .event("done")
+                .data(serde_json::json!({ "session_id": session_id }).to_string()));
+        });
+
+        return Ok(Sse::new(sse_stream));
+    }
+
+    // Standard streaming path (no wallet tools)
     let stream_result = llm_router::generate_stream(&state, user_id, &messages, Some(system)).await;
-
-    // Clone state/ids for the background save task
     let db = state.db.clone();
 
-    let sse_stream = async_stream::stream! {
+    let sse_stream: SseStream = Box::pin(async_stream::stream! {
         let mut full_response = String::new();
 
         // Send session_id as first event
@@ -143,7 +265,7 @@ pub async fn chat(
             .execute(&db)
             .await;
         }
-    };
+    });
 
     Ok(Sse::new(sse_stream))
 }

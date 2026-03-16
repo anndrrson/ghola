@@ -46,12 +46,57 @@ pub struct TaskListQuery {
     pub offset: Option<i64>,
 }
 
+/// Validate task parameters based on task type.
+fn validate_task_params(task_type: &str, params: &serde_json::Value) -> Result<(), CloudError> {
+    match task_type {
+        "call" | "customer_service" | "cancel_service" | "request_refund" | "complaint" | "cancel_subscription" => {
+            // Validate phone number
+            if let Some(phone) = params["phone_number"].as_str().or(params["phone"].as_str()) {
+                let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+                if digits.len() < 10 || digits.len() > 15 {
+                    return Err(CloudError::BadRequest(
+                        "invalid phone number — must be 10-15 digits".to_string(),
+                    ));
+                }
+            }
+        }
+        "email" | "follow_up" => {
+            // Validate email address
+            if let Some(email) = params["to_address"].as_str().or(params["email"].as_str()).or(params["to"].as_str()) {
+                if !email.contains('@') || !email.contains('.') || email.len() < 5 {
+                    return Err(CloudError::BadRequest(
+                        "invalid email address".to_string(),
+                    ));
+                }
+            }
+        }
+        "crypto_transfer" | "send_crypto" => {
+            // Validate Solana address (base58, 32 bytes)
+            if let Some(address) = params["to"].as_str().or(params["address"].as_str()) {
+                match bs58::decode(address).into_vec() {
+                    Ok(bytes) if bytes.len() == 32 => {}
+                    _ => {
+                        return Err(CloudError::BadRequest(
+                            "invalid Solana address — must be base58-encoded 32 bytes".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// POST /api/tasks
 pub async fn create_task(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
     Json(req): Json<CreateTaskRequest>,
 ) -> Result<Json<TaskResponse>, CloudError> {
+    // Validate task parameters
+    validate_task_params(&req.task_type, &req.params)?;
+
     let row = sqlx::query_as::<_, (Uuid, String, Option<String>, String, serde_json::Value, Option<serde_json::Value>, Option<String>, DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>)>(
         r#"
         INSERT INTO tasks (user_id, task_type, template_id, params)

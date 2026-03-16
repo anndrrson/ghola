@@ -8,11 +8,12 @@ pub mod services;
 pub mod state;
 
 use axum::extract::State;
+use axum::http::HeaderValue;
 use axum::routing::{delete, get, patch, post};
 use axum::Json;
 use axum::Router;
 use serde_json::json;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use crate::config::CloudConfig;
@@ -55,6 +56,18 @@ pub async fn run_cloud() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     {
         let state = state.clone();
         tokio::spawn(services::proactive::start_monitor_loop(state));
+    }
+
+    // Rate limiter cleanup (every 5 minutes)
+    {
+        let limiter = state.rate_limiter.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                limiter.cleanup().await;
+            }
+        });
     }
 
     // Start Telegram bot polling loop (if token configured)
@@ -136,6 +149,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/keys", post(routes::api_keys::create_key))
         .route("/api/keys", get(routes::api_keys::list_keys))
         .route("/api/keys/{id}", delete(routes::api_keys::revoke_key))
+        // Wallet (crypto)
+        .route("/api/wallet/provision", post(routes::wallet::provision_wallet))
+        .route("/api/wallet/address", get(routes::wallet::get_address))
+        .route("/api/wallet/balances", get(routes::wallet::get_balances))
+        .route("/api/wallet/transfer", post(routes::wallet::transfer))
+        .route("/api/wallet/history", get(routes::wallet::get_history))
         // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(routes::openai_compat::chat_completions))
         .route("/v1/models", get(routes::openai_compat::list_models))
@@ -146,8 +165,39 @@ pub fn build_router(state: AppState) -> Router {
             next: axum::middleware::Next,
         | middleware::track_api_usage(state, request, next)))
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
+        .layer(build_cors_layer(&state.config.base_url))
         .with_state(state)
+}
+
+fn build_cors_layer(base_url: &str) -> CorsLayer {
+    use axum::http::Method;
+
+    let mut origins: Vec<HeaderValue> = vec![
+        "https://ghola.xyz".parse().unwrap(),
+        "https://www.ghola.xyz".parse().unwrap(),
+        "http://localhost:3000".parse().unwrap(),
+        "http://localhost:3001".parse().unwrap(),
+        "http://127.0.0.1:3000".parse().unwrap(),
+    ];
+
+    // Add base_url if it's not already in the list
+    if let Ok(val) = base_url.parse::<HeaderValue>() {
+        if !origins.contains(&val) {
+            origins.push(val);
+        }
+    }
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(tower_http::cors::Any)
+        .allow_credentials(true)
 }
 
 async fn health(State(state): State<AppState>) -> String {

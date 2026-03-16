@@ -1,12 +1,60 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 
+use crate::error::CloudError;
 use crate::state::AppState;
 
-/// Middleware that tracks API usage for requests authenticated with API keys.
-/// Increments api_call_count in usage_tracking for the current billing period.
+/// In-memory rate limiter: tracks request counts per user per minute window.
+#[derive(Clone, Default)]
+pub struct RateLimiter {
+    /// Map of user_id -> (window_start_epoch_minute, request_count)
+    windows: Arc<Mutex<HashMap<uuid::Uuid, (i64, u32)>>>,
+}
+
+impl RateLimiter {
+    /// Check if a request is allowed for the given user and tier.
+    /// Returns Ok(()) if allowed, Err(CloudError::RateLimit) if exceeded.
+    pub async fn check(&self, user_id: uuid::Uuid, tier: &str) -> Result<(), CloudError> {
+        let max_per_min = match tier {
+            "pro" => 300,
+            "unlimited" | "enterprise" => 1000,
+            _ => 60, // free
+        };
+
+        let now_minute = chrono::Utc::now().timestamp() / 60;
+        let mut windows = self.windows.lock().await;
+
+        let entry = windows.entry(user_id).or_insert((now_minute, 0));
+        if entry.0 != now_minute {
+            // New window — reset
+            *entry = (now_minute, 1);
+            return Ok(());
+        }
+
+        entry.1 += 1;
+        if entry.1 > max_per_min {
+            return Err(CloudError::RateLimit);
+        }
+
+        Ok(())
+    }
+
+    /// Periodically clean up stale entries (call from a background task).
+    pub async fn cleanup(&self) {
+        let now_minute = chrono::Utc::now().timestamp() / 60;
+        let mut windows = self.windows.lock().await;
+        windows.retain(|_, (window, _)| *window >= now_minute - 1);
+    }
+}
+
+/// Middleware that tracks API usage for requests authenticated with API keys
+/// and enforces per-minute rate limits.
 pub async fn track_api_usage(
     state: AppState,
     request: Request,
@@ -51,6 +99,22 @@ pub async fn track_api_usage(
         None
     };
 
+    // Enforce rate limiting for API key users
+    if let Some(uid) = user_id {
+        // Look up tier
+        let tier: String = sqlx::query_scalar("SELECT COALESCE(tier, 'free') FROM users WHERE id = $1")
+            .bind(uid)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "free".to_string());
+
+        if let Err(e) = state.rate_limiter.check(uid, &tier).await {
+            return e.into_response();
+        }
+    }
+
     let response = next.run(request).await;
 
     // Fire-and-forget: increment API call count
@@ -75,3 +139,5 @@ pub async fn track_api_usage(
 
     response
 }
+
+use axum::response::IntoResponse;

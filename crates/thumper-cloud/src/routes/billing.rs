@@ -1,4 +1,5 @@
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
@@ -84,12 +85,140 @@ pub async fn create_checkout(
     Ok(Json(CheckoutResponse { checkout_url }))
 }
 
+/// Verify Stripe webhook signature (HMAC-SHA256).
+fn verify_stripe_signature(payload: &str, sig_header: &str, secret: &str) -> Result<(), CloudError> {
+    // Parse Stripe-Signature header: "t=timestamp,v1=signature"
+    let mut timestamp = None;
+    let mut signatures = Vec::new();
+    for part in sig_header.split(',') {
+        let part = part.trim();
+        if let Some(t) = part.strip_prefix("t=") {
+            timestamp = Some(t.to_string());
+        } else if let Some(v1) = part.strip_prefix("v1=") {
+            signatures.push(v1.to_string());
+        }
+    }
+
+    let timestamp = timestamp
+        .ok_or(CloudError::BadRequest("missing timestamp in Stripe signature".to_string()))?;
+
+    if signatures.is_empty() {
+        return Err(CloudError::BadRequest("missing v1 signature in Stripe header".to_string()));
+    }
+
+    // Reject if timestamp is older than 5 minutes (replay protection)
+    if let Ok(ts) = timestamp.parse::<i64>() {
+        let now = chrono::Utc::now().timestamp();
+        if (now - ts).abs() > 300 {
+            return Err(CloudError::BadRequest("Stripe webhook timestamp too old".to_string()));
+        }
+    }
+
+    // Compute expected signature: HMAC-SHA256(secret, "timestamp.payload")
+    let signed_payload = format!("{timestamp}.{payload}");
+    let expected = hmac_sha256(secret.as_bytes(), signed_payload.as_bytes());
+    let expected_hex: String = expected.iter().map(|b| format!("{b:02x}")).collect();
+
+    // Constant-time comparison against any v1 signature
+    let matched = signatures.iter().any(|sig| {
+        if sig.len() != expected_hex.len() {
+            return false;
+        }
+        // Constant-time compare
+        let mut diff = 0u8;
+        for (a, b) in sig.bytes().zip(expected_hex.bytes()) {
+            diff |= a ^ b;
+        }
+        diff == 0
+    });
+
+    if !matched {
+        return Err(CloudError::BadRequest("invalid Stripe webhook signature".to_string()));
+    }
+
+    Ok(())
+}
+
+/// HMAC-SHA256 (manual — avoids adding hmac crate).
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+
+    let block_size = 64;
+    let mut k = vec![0u8; block_size];
+    if key.len() > block_size {
+        let hash = Sha256::digest(key);
+        k[..32].copy_from_slice(&hash);
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+
+    let mut ipad = vec![0x36u8; block_size];
+    let mut opad = vec![0x5cu8; block_size];
+    for i in 0..block_size {
+        ipad[i] ^= k[i];
+        opad[i] ^= k[i];
+    }
+
+    let mut inner = Sha256::new();
+    inner.update(&ipad);
+    inner.update(data);
+    let inner_hash = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(&opad);
+    outer.update(&inner_hash);
+    let result = outer.finalize();
+
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&result);
+    out
+}
+
+/// Determine tier from the Stripe price ID in the checkout session.
+fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static str {
+    // Try to extract price ID from line_items or metadata
+    let price_id = event["data"]["object"]["line_items"]["data"][0]["price"]["id"]
+        .as_str()
+        .or_else(|| event["data"]["object"]["metadata"]["price_id"].as_str())
+        .unwrap_or("");
+
+    if let Some(ref unlimited_price) = state.config.stripe_price_unlimited {
+        if price_id == unlimited_price {
+            return "unlimited";
+        }
+    }
+    if let Some(ref pro_price) = state.config.stripe_price_pro {
+        if price_id == pro_price {
+            return "pro";
+        }
+    }
+
+    // Fallback: check amount if price ID not available
+    let amount = event["data"]["object"]["amount_total"].as_i64().unwrap_or(0);
+    if amount >= 2999 {
+        "unlimited"
+    } else {
+        "pro"
+    }
+}
+
 /// POST /api/billing/webhook — Stripe webhook
 pub async fn billing_webhook(
     State(state): State<AppState>,
+    headers: HeaderMap,
     body: String,
 ) -> Result<Json<serde_json::Value>, CloudError> {
-    // In production, verify Stripe webhook signature
+    // Verify Stripe webhook signature if secret is configured
+    if let Some(ref webhook_secret) = state.config.stripe_webhook_secret {
+        let sig_header = headers
+            .get("stripe-signature")
+            .and_then(|v| v.to_str().ok())
+            .ok_or(CloudError::BadRequest("missing Stripe-Signature header".to_string()))?;
+        verify_stripe_signature(&body, sig_header, webhook_secret)?;
+    } else {
+        tracing::warn!("STRIPE_WEBHOOK_SECRET not set — webhook signature not verified");
+    }
+
     let event: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| CloudError::BadRequest(format!("invalid JSON: {e}")))?;
 
@@ -105,8 +234,8 @@ pub async fn billing_webhook(
                 .unwrap_or("");
 
             if let Ok(user_id) = user_id_str.parse::<uuid::Uuid>() {
-                // Determine tier from the subscription
-                let tier = "pro"; // Default; inspect line items for actual tier
+                // Determine tier from the checkout session's price ID
+                let tier = tier_from_price_id(&event, &state);
 
                 sqlx::query(
                     "UPDATE users SET tier = $1, stripe_customer_id = $2, updated_at = now() WHERE id = $3",

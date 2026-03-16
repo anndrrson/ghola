@@ -31,6 +31,7 @@ pub async fn execute_task(
         "call" => execute_call_task(state, user_id, task_id, &params).await,
         "email" => execute_email_task(state, user_id, task_id, &params).await,
         "calendar" => execute_calendar_task(state, user_id, task_id, &params).await,
+        "crypto" => execute_crypto_task(state, user_id, task_id, &params).await,
         _ => {
             Err(CloudError::BadRequest(format!("unsupported task type: {task_type}")))
         }
@@ -205,15 +206,15 @@ async fn execute_email_task(
 
 async fn execute_calendar_task(
     state: &AppState,
-    _user_id: Uuid,
+    user_id: Uuid,
     task_id: Uuid,
     params: &serde_json::Value,
 ) -> Result<(), CloudError> {
-    // Placeholder — calendar service integration
     add_step(state, task_id, 1, "calendar_action", "in_progress").await?;
 
     let result = crate::services::calendar_service::handle_calendar_request(
         state,
+        user_id,
         params,
     )
     .await?;
@@ -227,6 +228,120 @@ async fn execute_calendar_task(
     .bind(task_id)
     .execute(&state.db)
     .await?;
+
+    Ok(())
+}
+
+async fn execute_crypto_task(
+    state: &AppState,
+    user_id: Uuid,
+    task_id: Uuid,
+    params: &serde_json::Value,
+) -> Result<(), CloudError> {
+    let action = params["action"]
+        .as_str()
+        .ok_or(CloudError::BadRequest("missing action".to_string()))?;
+
+    match action {
+        "transfer" => {
+            // Step 1: Validate
+            add_step(state, task_id, 1, "validate_transfer", "in_progress").await?;
+
+            let to = params["to"]
+                .as_str()
+                .ok_or(CloudError::BadRequest("missing 'to' address".to_string()))?;
+            let amount = params["amount"]
+                .as_u64()
+                .ok_or(CloudError::BadRequest("missing 'amount'".to_string()))?;
+            let currency = params["currency"]
+                .as_str()
+                .ok_or(CloudError::BadRequest("missing 'currency'".to_string()))?;
+
+            // Check wallet exists
+            let wallet_exists: Option<(Uuid,)> = sqlx::query_as(
+                "SELECT id FROM user_wallets WHERE user_id = $1",
+            )
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
+
+            if wallet_exists.is_none() {
+                return Err(CloudError::BadRequest("wallet not provisioned".to_string()));
+            }
+
+            complete_step(
+                state,
+                task_id,
+                1,
+                &serde_json::json!({ "validated": true, "to": to, "amount": amount, "currency": currency }),
+            )
+            .await?;
+
+            // Step 2: Execute transfer
+            add_step(state, task_id, 2, "execute_transfer", "in_progress").await?;
+
+            let req = crate::services::wallet_service::TransferRequest {
+                to: to.to_string(),
+                amount,
+                currency: currency.to_string(),
+            };
+            let tx_result = crate::services::wallet_service::transfer(state, user_id, &req).await?;
+
+            complete_step(
+                state,
+                task_id,
+                2,
+                &serde_json::json!({ "signature": tx_result.signature, "explorer_url": tx_result.explorer_url }),
+            )
+            .await?;
+
+            // Step 3: Confirm
+            add_step(state, task_id, 3, "confirm", "in_progress").await?;
+
+            let result = serde_json::json!({
+                "signature": tx_result.signature,
+                "explorer_url": tx_result.explorer_url,
+                "amount": amount,
+                "currency": currency,
+                "to": to,
+            });
+
+            complete_step(state, task_id, 3, &result).await?;
+
+            sqlx::query(
+                "UPDATE tasks SET status = 'completed', result = $1, updated_at = now(), completed_at = now() WHERE id = $2",
+            )
+            .bind(&result)
+            .bind(task_id)
+            .execute(&state.db)
+            .await?;
+        }
+        "balance" => {
+            add_step(state, task_id, 1, "check_balance", "in_progress").await?;
+
+            let balances = crate::services::wallet_service::get_balances(state, user_id).await?;
+            let result = serde_json::json!({
+                "sol": balances.sol,
+                "usdc": balances.usdc,
+                "address": balances.address,
+            });
+
+            complete_step(state, task_id, 1, &result).await?;
+
+            sqlx::query(
+                "UPDATE tasks SET status = 'completed', result = $1, updated_at = now(), completed_at = now() WHERE id = $2",
+            )
+            .bind(&result)
+            .bind(task_id)
+            .execute(&state.db)
+            .await?;
+        }
+        _ => {
+            return Err(CloudError::BadRequest(format!(
+                "unsupported crypto action: {action}"
+            )));
+        }
+    }
 
     Ok(())
 }
