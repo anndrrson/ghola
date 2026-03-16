@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useCallback, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { thumperSignIn, thumperGoogleSignIn } from "@/lib/thumper-api";
@@ -33,14 +33,20 @@ declare global {
   }
 }
 
-export default function SignInPage() {
+function SignInContent() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [googleAvailable, setGoogleAvailable] = useState(true);
   const { setAuth } = useThumperAuth();
   const { createWallet, walletAddress } = useTurnkeyWallet();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const redirectTo = searchParams.get("redirect") || "/chat";
+  const extraParams = searchParams.get("callback_port")
+    ? `?callback_port=${searchParams.get("callback_port")}`
+    : "";
 
   const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
 
@@ -63,14 +69,14 @@ export default function SignInPage() {
             // Non-fatal
           }
         }
-        router.push("/chat");
+        router.push(redirectTo + extraParams);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Google sign-in failed");
       } finally {
         setLoading(false);
       }
     },
-    [setAuth, createWallet, walletAddress, router]
+    [setAuth, createWallet, walletAddress, router, redirectTo, extraParams]
   );
 
   useEffect(() => {
@@ -93,6 +99,9 @@ export default function SignInPage() {
           shape: "rectangular",
         });
       }
+    };
+    script.onerror = () => {
+      setGoogleAvailable(false);
     };
     document.body.appendChild(script);
     return () => {
@@ -119,7 +128,7 @@ export default function SignInPage() {
           // Non-fatal
         }
       }
-      router.push("/chat");
+      router.push(redirectTo + extraParams);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign in failed");
     } finally {
@@ -145,9 +154,9 @@ export default function SignInPage() {
             Sign in to your AI assistant
           </p>
 
-          {(googleClientId || process.env.NEXT_PUBLIC_TWITTER_ENABLED) && (
+          {((googleClientId && googleAvailable) || process.env.NEXT_PUBLIC_TWITTER_ENABLED) && (
             <>
-              {googleClientId && (
+              {googleClientId && googleAvailable && (
                 <div id="google-signin-btn" className="flex justify-center" />
               )}
               <a
@@ -199,7 +208,14 @@ export default function SignInPage() {
             </div>
 
             {error && (
-              <p className="text-sm text-red-400">{error}</p>
+              <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-3">
+                <p className="text-sm text-red-400">{error}</p>
+                {error.toLowerCase().includes("google") && (
+                  <p className="text-xs text-[#8b95a8] mt-1">
+                    Try signing in with email instead.
+                  </p>
+                )}
+              </div>
             )}
 
             <button
@@ -214,11 +230,25 @@ export default function SignInPage() {
 
         <p className="mt-4 text-center text-sm text-[#8b95a8]">
           Need an account?{" "}
-          <Link href="/signup" className="text-[#3da8ff] hover:underline">
+          <Link href={`/signup?redirect=${encodeURIComponent(redirectTo)}${extraParams ? "&" + extraParams.slice(1) : ""}`} className="text-[#3da8ff] hover:underline">
             Sign up
           </Link>
         </p>
       </div>
     </div>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center bg-[#08090d]">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#3da8ff] border-t-transparent" />
+        </div>
+      }
+    >
+      <SignInContent />
+    </Suspense>
   );
 }

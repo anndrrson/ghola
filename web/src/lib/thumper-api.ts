@@ -49,7 +49,9 @@ async function thumperFetch<T>(
     const body = await res
       .json()
       .catch(() => ({ error: `API error ${res.status}` }));
-    throw new Error(body.error || `API error ${res.status}`);
+    const err = new Error(body.error || `API error ${res.status}`) as Error & { status: number };
+    err.status = res.status;
+    throw err;
   }
   const text = await res.text();
   if (!text) return undefined as T;
@@ -245,25 +247,40 @@ export function handleTwitterToken(token: string): ThumperAuthResponse {
 export async function thumperGoogleSignIn(
   idToken: string
 ): Promise<ThumperAuthResponse> {
-  const res = await thumperFetch<{
-    token: string;
-    user_id: string;
-    is_new_user: boolean;
-  }>("/api/auth/google", {
-    method: "POST",
-    body: JSON.stringify({ id_token: idToken }),
-  });
-  setThumperToken(res.token);
-  // Parse JWT for user info
-  const payload = JSON.parse(atob(res.token.split(".")[1]));
-  return {
-    token: res.token,
-    user: {
-      id: payload.sub || payload.user_id,
-      email: payload.email,
-      name: payload.name,
-    },
-  };
+  try {
+    const res = await thumperFetch<{
+      token: string;
+      user_id: string;
+      is_new_user: boolean;
+    }>("/api/auth/google", {
+      method: "POST",
+      body: JSON.stringify({ id_token: idToken }),
+    });
+    setThumperToken(res.token);
+    // Parse JWT for user info
+    const payload = JSON.parse(atob(res.token.split(".")[1]));
+    return {
+      token: res.token,
+      user: {
+        id: payload.sub || payload.user_id,
+        email: payload.email,
+        name: payload.name,
+      },
+    };
+  } catch (err) {
+    const status = (err as Error & { status?: number }).status;
+    if (status === 503) {
+      throw new Error(
+        "Google sign-in is temporarily unavailable. Please use email instead."
+      );
+    }
+    if (status === 401) {
+      throw new Error(
+        "Google sign-in failed. Please try again or use email."
+      );
+    }
+    throw err;
+  }
 }
 
 // Accounts (Gmail OAuth)
@@ -310,4 +327,47 @@ export async function getApiUsage(): Promise<
   import("./thumper-types").ThumperApiUsageResponse
 > {
   return thumperFetch("/api/user/usage");
+}
+
+// Compute (GPU Marketplace)
+
+export async function createProviderKey(): Promise<import("./thumper-types").ThumperApiKeyCreateResponse> {
+  return thumperFetch("/api/auth/provider-key", { method: "POST" });
+}
+
+export async function getComputeProviders(): Promise<{
+  providers: { id: string; display_name: string; status: string; models: string[] }[];
+}> {
+  return thumperFetch("/api/compute/providers");
+}
+
+export async function getComputeModels(): Promise<{
+  models: { model_id: string; provider_count: number; min_price_input: number; min_price_output: number }[];
+}> {
+  return thumperFetch("/api/compute/models");
+}
+
+export async function getMyProvider(): Promise<{
+  id: string;
+  display_name: string;
+  status: string;
+  models: string[];
+  total_requests: number;
+  total_earnings_micro: number;
+} | null> {
+  try {
+    return await thumperFetch("/api/compute/providers/me");
+  } catch (err) {
+    if ((err as Error & { status?: number }).status === 404) return null;
+    throw err;
+  }
+}
+
+export async function getComputeStats(days?: number): Promise<{
+  total_requests: number;
+  total_earnings_micro: number;
+  period_days: number;
+}> {
+  const params = days ? `?days=${days}` : "";
+  return thumperFetch(`/api/compute/stats${params}`);
 }
