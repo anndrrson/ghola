@@ -239,7 +239,13 @@ fn build_cors_layer(base_url: &str) -> CorsLayer {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        .allow_headers(tower_http::cors::Any)
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::ACCEPT,
+            axum::http::header::ORIGIN,
+            axum::http::header::HeaderName::from_static("x-requested-with"),
+        ])
         .allow_credentials(true)
 }
 
