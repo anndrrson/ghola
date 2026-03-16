@@ -27,6 +27,7 @@ pub struct MetricsSnapshot {
     pub uptime_secs: u64,
     pub devices_connected: usize,
     pub mcp_clients_connected: usize,
+    pub gpu_providers_connected: usize,
 }
 
 impl RelayMetrics {
@@ -63,7 +64,7 @@ impl RelayMetrics {
         self.inner.response_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn snapshot(&self, device_count: usize, mcp_client_count: usize) -> MetricsSnapshot {
+    pub fn snapshot(&self, device_count: usize, mcp_client_count: usize, gpu_provider_count: usize) -> MetricsSnapshot {
         let total = self.inner.commands_total.load(Ordering::Relaxed);
         let errors = self.inner.errors_total.load(Ordering::Relaxed);
         let resp_sum = self.inner.response_time_sum_ms.load(Ordering::Relaxed);
@@ -89,6 +90,7 @@ impl RelayMetrics {
             uptime_secs: self.inner.started_at.elapsed().as_secs(),
             devices_connected: device_count,
             mcp_clients_connected: mcp_client_count,
+            gpu_providers_connected: gpu_provider_count,
         }
     }
 }

@@ -123,6 +123,15 @@ pub enum MessageType {
     // Phase 2C responses
     ConnectedDevicesResult(ConnectedDevicesResult),
 
+    // GPU Compute messages
+    InferenceRequest(InferenceRequestPayload),
+    InferenceResponse(InferenceResponsePayload),
+    InferenceStreamChunk(InferenceStreamChunk),
+    InferenceStreamEnd(InferenceStreamEnd),
+    ProviderHeartbeat(ProviderHeartbeatPayload),
+    ProviderAdvertise(ProviderAdvertisePayload),
+    ProviderAdvertiseAck(ProviderAdvertiseAck),
+
     // Keepalive
     Ping,
     Pong,
@@ -513,4 +522,97 @@ pub struct NotificationEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationsResult {
     pub notifications: Vec<NotificationEntry>,
+}
+
+// -- GPU Compute payloads --
+
+/// A chat message in OpenAI-compatible format for inference requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InferenceChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// Request payload sent to a GPU provider for inference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InferenceRequestPayload {
+    pub job_id: String,
+    pub model_id: String,
+    pub messages: Vec<InferenceChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    #[serde(default)]
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+}
+
+fn default_max_tokens() -> u32 {
+    2048
+}
+
+/// Response payload from a GPU provider for non-streaming inference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InferenceResponsePayload {
+    pub job_id: String,
+    pub text: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub latency_ms: u64,
+}
+
+/// A streaming chunk from a GPU provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InferenceStreamChunk {
+    pub job_id: String,
+    pub text: String,
+    pub tokens_so_far: u32,
+}
+
+/// End-of-stream marker from a GPU provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InferenceStreamEnd {
+    pub job_id: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub latency_ms: u64,
+}
+
+/// Heartbeat sent periodically by a GPU provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderHeartbeatPayload {
+    pub active_jobs: u32,
+    pub models: Vec<String>,
+    pub vram_free_mb: Option<u32>,
+}
+
+/// Model info advertised by a GPU provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderModelInfo {
+    pub model_id: String,
+    pub context_length: u32,
+    /// Price per 1K input tokens in micro-USDC.
+    pub price_per_1k_input: u64,
+    /// Price per 1K output tokens in micro-USDC.
+    pub price_per_1k_output: u64,
+}
+
+/// Advertisement sent by a GPU provider after connecting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderAdvertisePayload {
+    pub name: String,
+    pub models: Vec<ProviderModelInfo>,
+    pub vram_mb: u32,
+    pub max_concurrent: u32,
+    pub wallet_address: String,
+}
+
+/// Acknowledgement sent back to a GPU provider after successful registration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderAdvertiseAck {
+    pub accepted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }

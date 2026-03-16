@@ -12,3 +12,5 @@ pub mod llm;
 pub mod chat;
 pub mod telegram;
 pub mod openai_compat;
+pub mod wallet;
+pub mod compute;

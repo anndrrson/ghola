@@ -1,8 +1,10 @@
+use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::response::sse::{Event, Sse};
 use axum::response::IntoResponse;
 use axum::Json;
 use futures::stream::StreamExt;
@@ -11,7 +13,8 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use thumper_types::{
-    AuthPayload, ConnectedDevice, ConnectedDevicesResult, ConnectionRole, Envelope, MessageType,
+    AuthPayload, ConnectedDevice, ConnectedDevicesResult, ConnectionRole, Envelope,
+    InferenceChatMessage, InferenceRequestPayload, MessageType, ProviderAdvertiseAck,
 };
 
 use crate::auth::verify_auth;
@@ -23,14 +26,17 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
         "status": "ok",
         "devices": state.device_count(),
         "mcp_clients": state.mcp_client_count(),
+        "gpu_providers": state.gpu_provider_count(),
     }))
 }
 
 /// Metrics endpoint — returns a JSON snapshot of relay metrics.
 pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let snapshot = state
-        .metrics()
-        .snapshot(state.device_count(), state.mcp_client_count());
+    let snapshot = state.metrics().snapshot(
+        state.device_count(),
+        state.mcp_client_count(),
+        state.gpu_provider_count(),
+    );
     Json(snapshot)
 }
 
@@ -68,6 +74,13 @@ fn message_type_name(msg: &MessageType) -> &'static str {
         MessageType::FlowResult(_) => "FlowResult",
         MessageType::NotificationsResult(_) => "NotificationsResult",
         MessageType::ConnectedDevicesResult(_) => "ConnectedDevicesResult",
+        MessageType::InferenceRequest(_) => "InferenceRequest",
+        MessageType::InferenceResponse(_) => "InferenceResponse",
+        MessageType::InferenceStreamChunk(_) => "InferenceStreamChunk",
+        MessageType::InferenceStreamEnd(_) => "InferenceStreamEnd",
+        MessageType::ProviderHeartbeat(_) => "ProviderHeartbeat",
+        MessageType::ProviderAdvertise(_) => "ProviderAdvertise",
+        MessageType::ProviderAdvertiseAck(_) => "ProviderAdvertiseAck",
         MessageType::Ping => "Ping",
         MessageType::Pong => "Pong",
     }
@@ -186,6 +199,66 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
             );
             last_activity = state.add_mcp_client(&auth_pubkey, tx.clone(), target.clone());
             device_pubkey_for_mcp = Some(target);
+        }
+        ConnectionRole::GpuProvider => {
+            // GPU provider must send ProviderAdvertise as second message
+            let advertise = match ws_receiver.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    match serde_json::from_str::<Envelope>(&text) {
+                        Ok(env) => match env.message {
+                            MessageType::ProviderAdvertise(adv) => adv,
+                            _ => {
+                                let _ = ws_sender
+                                    .send(text_msg(
+                                        json!({"error": "expected ProviderAdvertise message"})
+                                            .to_string(),
+                                    ))
+                                    .await;
+                                return;
+                            }
+                        },
+                        Err(_) => {
+                            let _ = ws_sender
+                                .send(text_msg(
+                                    json!({"error": "invalid envelope"}).to_string(),
+                                ))
+                                .await;
+                            return;
+                        }
+                    }
+                }
+                _ => return,
+            };
+
+            tracing::info!(
+                pubkey = %auth_pubkey,
+                name = %advertise.name,
+                models = advertise.models.len(),
+                max_concurrent = advertise.max_concurrent,
+                vram_mb = advertise.vram_mb,
+                "gpu provider connected"
+            );
+
+            last_activity = state.add_gpu_provider(
+                &auth_pubkey,
+                tx.clone(),
+                advertise.models,
+                advertise.max_concurrent,
+                advertise.wallet_address,
+            );
+
+            // Send ProviderAdvertiseAck
+            let ack = Envelope::new(MessageType::ProviderAdvertiseAck(ProviderAdvertiseAck {
+                accepted: true,
+                message: Some("registered".to_string()),
+            }));
+            let _ = ws_sender
+                .send(text_msg(
+                    serde_json::to_string(&ack).unwrap_or_default(),
+                ))
+                .await;
+
+            device_pubkey_for_mcp = None;
         }
     }
 
@@ -315,6 +388,42 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                         let data = serde_json::to_vec(&envelope).unwrap_or_default();
                         state.send_to_mcp_client_for_device(&auth_pubkey_clone, &data);
                     }
+                    ConnectionRole::GpuProvider => {
+                        match &envelope.message {
+                            MessageType::ProviderHeartbeat(hb) => {
+                                state.update_gpu_provider_heartbeat(
+                                    &auth_pubkey_clone,
+                                    hb.active_jobs,
+                                    hb.models.clone(),
+                                );
+                            }
+                            MessageType::InferenceResponse(resp) => {
+                                let job_id = resp.job_id.clone();
+                                state.resolve_pending_inference(&job_id, envelope);
+                                state.decrement_gpu_provider_jobs(&auth_pubkey_clone);
+                            }
+                            MessageType::InferenceStreamChunk(chunk) => {
+                                let job_id = chunk.job_id.clone();
+                                if !state.send_to_pending_inference_stream(&job_id, envelope) {
+                                    tracing::warn!(job_id = %job_id, "no pending stream for chunk");
+                                }
+                            }
+                            MessageType::InferenceStreamEnd(end) => {
+                                let job_id = end.job_id.clone();
+                                // Send the end marker through the stream, then clean up
+                                state.send_to_pending_inference_stream(&job_id, envelope);
+                                state.remove_pending_inference_stream(&job_id);
+                                state.decrement_gpu_provider_jobs(&auth_pubkey_clone);
+                            }
+                            _ => {
+                                tracing::debug!(
+                                    pubkey = %auth_pubkey_clone,
+                                    msg_type = message_type_name(&envelope.message),
+                                    "unexpected message from gpu provider"
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -335,5 +444,278 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
             state.remove_mcp_client(&auth_pubkey);
             tracing::info!(pubkey = %auth_pubkey, "mcp client disconnected");
         }
+        ConnectionRole::GpuProvider => {
+            state.remove_gpu_provider(&auth_pubkey);
+            tracing::info!(pubkey = %auth_pubkey, "gpu provider disconnected");
+        }
     }
+}
+
+// -- REST inference dispatch endpoints --
+
+/// Request body for inference dispatch endpoints.
+#[derive(serde::Deserialize)]
+pub struct InferenceDispatchRequest {
+    pub provider_pubkey: String,
+    pub job_id: String,
+    pub model_id: String,
+    pub messages: Vec<InferenceChatMessage>,
+    #[serde(default)]
+    pub system: Option<String>,
+    #[serde(default = "default_dispatch_max_tokens")]
+    pub max_tokens: u32,
+    #[serde(default)]
+    pub stream: bool,
+    #[serde(default)]
+    pub temperature: Option<f64>,
+}
+
+fn default_dispatch_max_tokens() -> u32 {
+    2048
+}
+
+/// POST /inference — Cloud calls this to dispatch non-streaming inference.
+pub async fn dispatch_inference(
+    State(state): State<AppState>,
+    Json(req): Json<InferenceDispatchRequest>,
+) -> impl IntoResponse {
+    // Check provider exists
+    if state.gpu_provider_count() == 0 {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "no gpu providers connected"})),
+        )
+            .into_response();
+    }
+
+    // Check provider concurrency
+    match state.gpu_provider_concurrency(&req.provider_pubkey) {
+        None => {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(json!({"error": "provider not found"})),
+            )
+                .into_response();
+        }
+        Some((active, max)) => {
+            if active >= max {
+                return (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({
+                        "error": "provider at capacity",
+                        "active_jobs": active,
+                        "max_concurrent": max,
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Create oneshot channel
+    let (tx, rx) = tokio::sync::oneshot::channel::<Envelope>();
+    state.register_pending_inference(&req.job_id, tx);
+
+    // Increment active jobs
+    state.increment_gpu_provider_jobs(&req.provider_pubkey);
+
+    // Build InferenceRequest envelope — strip source so provider doesn't see caller identity
+    let envelope = Envelope::new(MessageType::InferenceRequest(InferenceRequestPayload {
+        job_id: req.job_id.clone(),
+        model_id: req.model_id,
+        messages: req.messages,
+        system: req.system,
+        max_tokens: req.max_tokens,
+        stream: false,
+        temperature: req.temperature,
+    }));
+
+    let data = serde_json::to_vec(&envelope).unwrap_or_default();
+    if !state.send_to_gpu_provider(&req.provider_pubkey, &data) {
+        // Clean up on send failure
+        state.resolve_pending_inference(&req.job_id, Envelope::new(MessageType::Ping)); // drain the channel
+        state.decrement_gpu_provider_jobs(&req.provider_pubkey);
+        return (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(json!({"error": "failed to send to provider"})),
+        )
+            .into_response();
+    }
+
+    // Await response with 120s timeout
+    match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
+        Ok(Ok(response_envelope)) => {
+            match response_envelope.message {
+                MessageType::InferenceResponse(resp) => {
+                    Json(json!({
+                        "job_id": resp.job_id,
+                        "text": resp.text,
+                        "input_tokens": resp.input_tokens,
+                        "output_tokens": resp.output_tokens,
+                        "latency_ms": resp.latency_ms,
+                    }))
+                    .into_response()
+                }
+                MessageType::Error(err) => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": err.message, "code": err.code})),
+                )
+                    .into_response(),
+                _ => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "unexpected response type from provider"})),
+                )
+                    .into_response(),
+            }
+        }
+        Ok(Err(_)) => {
+            // Oneshot sender was dropped (provider disconnected)
+            state.decrement_gpu_provider_jobs(&req.provider_pubkey);
+            (
+                axum::http::StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "provider disconnected before responding"})),
+            )
+                .into_response()
+        }
+        Err(_) => {
+            // Timeout — clean up pending entry
+            // The oneshot may still be in the map if the provider never responded
+            state.decrement_gpu_provider_jobs(&req.provider_pubkey);
+            (
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+                Json(json!({"error": "inference request timed out (120s)"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST /inference-stream — Returns SSE stream for streaming inference.
+pub async fn dispatch_inference_stream(
+    State(state): State<AppState>,
+    Json(req): Json<InferenceDispatchRequest>,
+) -> impl IntoResponse {
+    // Check provider exists
+    if state.gpu_provider_count() == 0 {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "no gpu providers connected"})),
+        )
+            .into_response();
+    }
+
+    // Check provider concurrency
+    match state.gpu_provider_concurrency(&req.provider_pubkey) {
+        None => {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(json!({"error": "provider not found"})),
+            )
+                .into_response();
+        }
+        Some((active, max)) => {
+            if active >= max {
+                return (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({
+                        "error": "provider at capacity",
+                        "active_jobs": active,
+                        "max_concurrent": max,
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Create mpsc channel for streaming
+    let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<Envelope>();
+    state.register_pending_inference_stream(&req.job_id, stream_tx);
+
+    // Increment active jobs
+    state.increment_gpu_provider_jobs(&req.provider_pubkey);
+
+    // Build InferenceRequest envelope with stream=true
+    let envelope = Envelope::new(MessageType::InferenceRequest(InferenceRequestPayload {
+        job_id: req.job_id.clone(),
+        model_id: req.model_id,
+        messages: req.messages,
+        system: req.system,
+        max_tokens: req.max_tokens,
+        stream: true,
+        temperature: req.temperature,
+    }));
+
+    let data = serde_json::to_vec(&envelope).unwrap_or_default();
+    if !state.send_to_gpu_provider(&req.provider_pubkey, &data) {
+        state.remove_pending_inference_stream(&req.job_id);
+        state.decrement_gpu_provider_jobs(&req.provider_pubkey);
+        return (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(json!({"error": "failed to send to provider"})),
+        )
+            .into_response();
+    }
+
+    let job_id = req.job_id.clone();
+    let provider_pubkey = req.provider_pubkey.clone();
+    let state_clone = state.clone();
+
+    let stream = async_stream::stream! {
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(120), stream_rx.recv()).await {
+                Ok(Some(env)) => {
+                    match &env.message {
+                        MessageType::InferenceStreamChunk(chunk) => {
+                            let data = serde_json::to_string(&json!({
+                                "job_id": chunk.job_id,
+                                "text": chunk.text,
+                                "tokens_so_far": chunk.tokens_so_far,
+                            }))
+                            .unwrap_or_default();
+                            yield Ok::<_, Infallible>(Event::default().event("chunk").data(data));
+                        }
+                        MessageType::InferenceStreamEnd(end) => {
+                            let data = serde_json::to_string(&json!({
+                                "job_id": end.job_id,
+                                "input_tokens": end.input_tokens,
+                                "output_tokens": end.output_tokens,
+                                "latency_ms": end.latency_ms,
+                            }))
+                            .unwrap_or_default();
+                            yield Ok::<_, Infallible>(Event::default().event("done").data(data));
+                            break;
+                        }
+                        MessageType::Error(err) => {
+                            let data = serde_json::to_string(&json!({
+                                "error": err.message,
+                                "code": err.code,
+                            }))
+                            .unwrap_or_default();
+                            yield Ok::<_, Infallible>(Event::default().event("error").data(data));
+                            break;
+                        }
+                        _ => continue,
+                    }
+                }
+                Ok(None) => {
+                    // Channel closed — provider disconnected
+                    let data = json!({"error": "provider disconnected"}).to_string();
+                    yield Ok::<_, Infallible>(Event::default().event("error").data(data));
+                    state_clone.decrement_gpu_provider_jobs(&provider_pubkey);
+                    break;
+                }
+                Err(_) => {
+                    // Timeout
+                    let data = json!({"error": "stream timed out (120s)"}).to_string();
+                    yield Ok::<_, Infallible>(Event::default().event("error").data(data));
+                    state_clone.remove_pending_inference_stream(&job_id);
+                    state_clone.decrement_gpu_provider_jobs(&provider_pubkey);
+                    break;
+                }
+            }
+        }
+    };
+
+    Sse::new(stream).into_response()
 }

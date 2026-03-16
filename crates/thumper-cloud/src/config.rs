@@ -21,6 +21,18 @@ pub struct CloudConfig {
     pub base_url: String,
     pub encryption_key: [u8; 32],
     pub telegram_bot_token: Option<String>,
+    pub solana_rpc_url: String,
+    // Free cascade inference providers
+    pub groq_api_key: Option<String>,
+    pub cerebras_api_key: Option<String>,
+    pub google_gemini_api_key: Option<String>,
+    pub openrouter_api_key: Option<String>,
+    // GPU Compute Marketplace
+    pub relay_url: String,
+    pub platform_wallet_address: Option<String>,
+    pub min_provider_reputation: f64,
+    pub max_escrow_age_secs: u64,
+    pub provider_payout_interval_secs: u64,
 }
 
 impl CloudConfig {
@@ -77,6 +89,47 @@ impl CloudConfig {
                 .unwrap_or_else(|_| "http://localhost:3000".to_string()),
             encryption_key,
             telegram_bot_token: env::var("TELEGRAM_BOT_TOKEN").ok(),
+            solana_rpc_url: env::var("SOLANA_RPC_URL").ok()
+                .or_else(|| {
+                    env::var("HELIUS_API_KEY").ok().map(|key| {
+                        let network = env::var("SOLANA_NETWORK").unwrap_or_else(|_| "mainnet-beta".to_string());
+                        let host = if network == "devnet" { "devnet" } else { "mainnet" };
+                        format!("https://{host}.helius-rpc.com/?api-key={key}")
+                    })
+                })
+                .unwrap_or_else(|| "https://api.devnet.solana.com".to_string()),
+            groq_api_key: env::var("GROQ_API_KEY").ok(),
+            cerebras_api_key: env::var("CEREBRAS_API_KEY").ok(),
+            google_gemini_api_key: env::var("GOOGLE_GEMINI_API_KEY").ok(),
+            openrouter_api_key: env::var("OPENROUTER_API_KEY").ok(),
+            relay_url: env::var("RELAY_URL")
+                .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            platform_wallet_address: env::var("PLATFORM_WALLET_ADDRESS").ok(),
+            min_provider_reputation: env::var("MIN_PROVIDER_REPUTATION")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.3),
+            max_escrow_age_secs: env::var("MAX_ESCROW_AGE_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300),
+            provider_payout_interval_secs: env::var("PROVIDER_PAYOUT_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3600),
+        }
+    }
+}
+
+impl CloudConfig {
+    /// Look up a free-cascade provider API key by name.
+    pub fn free_provider_key(&self, name: &str) -> Option<String> {
+        match name {
+            "groq" => self.groq_api_key.clone(),
+            "cerebras" => self.cerebras_api_key.clone(),
+            "google" => self.google_gemini_api_key.clone(),
+            "openrouter" => self.openrouter_api_key.clone(),
+            _ => None,
         }
     }
 }

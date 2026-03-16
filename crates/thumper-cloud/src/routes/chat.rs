@@ -204,6 +204,10 @@ pub async fn chat(
         return Ok(Sse::new(sse_stream));
     }
 
+    // Check which provider will be used (for community GPU indicator)
+    let llm_config = llm_router::get_user_llm_config(&state, user_id).await.ok();
+    let is_community = llm_config.as_ref().map(|c| c.provider == llm_router::LlmProvider::Community).unwrap_or(false);
+
     // Standard streaming path (no wallet tools)
     let stream_result = llm_router::generate_stream(&state, user_id, &messages, Some(system)).await;
     let db = state.db.clone();
@@ -215,6 +219,13 @@ pub async fn chat(
         yield Ok(Event::default()
             .event("session")
             .data(serde_json::json!({ "session_id": session_id }).to_string()));
+
+        // Emit community GPU provider event
+        if is_community {
+            yield Ok(Event::default()
+                .event("provider")
+                .data(serde_json::json!({ "type": "community", "model": "community-gpu" }).to_string()));
+        }
 
         match stream_result {
             Ok(text_stream) => {

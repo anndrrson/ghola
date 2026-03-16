@@ -45,3 +45,7 @@ jsonwebtoken = "9"
 chrono = { version = "0.4", features = ["serde"] }
 aes-gcm = "0.10"
 sha2 = "0.10"
+ed25519-bip32 = "0.4"
+bip39 = { version = "2", features = ["rand"] }
+bs58 = "0.5"
+curve25519-dalek = { version = "4", default-features = false }

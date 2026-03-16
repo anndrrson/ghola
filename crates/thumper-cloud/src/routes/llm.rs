@@ -138,6 +138,14 @@ pub async fn list_providers() -> Json<Vec<ProviderInfo>> {
         LlmProvider::Groq,
         LlmProvider::Together,
         LlmProvider::Ollama,
+        LlmProvider::Mistral,
+        LlmProvider::Kimi,
+        LlmProvider::Qwen,
+        LlmProvider::Glm,
+        LlmProvider::DeepSeek,
+        LlmProvider::Cerebras,
+        LlmProvider::OpenRouter,
+        LlmProvider::Community,
     ];
 
     let list: Vec<ProviderInfo> = providers
@@ -154,8 +162,16 @@ pub async fn list_providers() -> Json<Vec<ProviderInfo>> {
                 LlmProvider::Groq => "Groq",
                 LlmProvider::Together => "Together AI",
                 LlmProvider::Ollama => "Ollama (Local)",
+                LlmProvider::Mistral => "Mistral AI",
+                LlmProvider::Kimi => "Kimi (Moonshot)",
+                LlmProvider::Qwen => "Qwen (Alibaba)",
+                LlmProvider::Glm => "GLM (Zhipu)",
+                LlmProvider::DeepSeek => "DeepSeek",
+                LlmProvider::Cerebras => "Cerebras",
+                LlmProvider::OpenRouter => "OpenRouter",
+                LlmProvider::Community => "Community GPU",
             };
-            let requires_api_key = p != LlmProvider::Ollama;
+            let requires_api_key = p != LlmProvider::Ollama && p != LlmProvider::Community;
             let models = p.available_models().into_iter().map(|s| s.to_string()).collect();
             ProviderInfo {
                 id,

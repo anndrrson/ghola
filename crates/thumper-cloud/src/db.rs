@@ -291,4 +291,104 @@ ALTER TABLE users ALTER COLUMN wallet_spending DROP NOT NULL;
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
 ALTER TABLE users ADD CONSTRAINT users_tier_check
     CHECK (tier IN ('free', 'pro', 'unlimited', 'enterprise'));
+
+-- Crypto wallet support
+CREATE TABLE IF NOT EXISTS user_wallets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+    solana_address TEXT NOT NULL,
+    mnemonic_encrypted BYTEA NOT NULL,
+    network TEXT DEFAULT 'devnet' CHECK (network IN ('devnet', 'mainnet-beta')),
+    spending_limit_daily_usdc BIGINT DEFAULT 500000,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS wallet_transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    wallet_id UUID NOT NULL REFERENCES user_wallets(id),
+    tx_type TEXT NOT NULL CHECK (tx_type IN ('transfer', 'deposit')),
+    currency TEXT NOT NULL CHECK (currency IN ('SOL', 'USDC')),
+    amount BIGINT NOT NULL,
+    to_address TEXT,
+    signature TEXT,
+    status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'failed')),
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_txns_user ON wallet_transactions(user_id);
+
+-- Extend task_type to include crypto
+ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_task_type_check;
+ALTER TABLE tasks ADD CONSTRAINT tasks_task_type_check
+    CHECK (task_type IN ('call', 'email', 'device_action', 'calendar', 'search', 'composite', 'crypto'));
+
+-- GPU Compute Marketplace
+CREATE TABLE IF NOT EXISTS compute_providers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    relay_pubkey TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    models JSONB NOT NULL DEFAULT '[]',
+    vram_mb INT DEFAULT 0,
+    max_concurrent INT DEFAULT 2,
+    current_load INT DEFAULT 0,
+    status TEXT DEFAULT 'offline' CHECK (status IN ('online', 'offline', 'suspended')),
+    total_requests BIGINT DEFAULT 0,
+    total_tokens_served BIGINT DEFAULT 0,
+    total_earned_usdc BIGINT DEFAULT 0,
+    success_rate DOUBLE PRECISION DEFAULT 1.0,
+    avg_latency_ms DOUBLE PRECISION DEFAULT 0.0,
+    reputation_score DOUBLE PRECISION DEFAULT 0.5,
+    last_heartbeat_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_compute_providers_user ON compute_providers(user_id);
+CREATE INDEX IF NOT EXISTS idx_compute_providers_status ON compute_providers(status);
+
+CREATE TABLE IF NOT EXISTS compute_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    provider_id UUID NOT NULL REFERENCES compute_providers(id),
+    escrow_id UUID,
+    model_id TEXT NOT NULL,
+    input_tokens INT DEFAULT 0,
+    output_tokens INT DEFAULT 0,
+    status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed', 'failed', 'timeout')),
+    latency_ms INT,
+    quality_score DOUBLE PRECISION,
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_compute_jobs_user ON compute_jobs(user_id);
+CREATE INDEX IF NOT EXISTS idx_compute_jobs_provider ON compute_jobs(provider_id);
+
+CREATE TABLE IF NOT EXISTS escrow_holds (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    provider_id UUID NOT NULL REFERENCES compute_providers(id),
+    amount_usdc BIGINT NOT NULL,
+    status TEXT DEFAULT 'held' CHECK (status IN ('held', 'released', 'refunded', 'expired')),
+    released_to_provider BIGINT DEFAULT 0,
+    platform_fee BIGINT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    resolved_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_escrow_holds_user ON escrow_holds(user_id);
+CREATE INDEX IF NOT EXISTS idx_escrow_holds_status ON escrow_holds(status);
+
+CREATE TABLE IF NOT EXISTS provider_stats (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider_id UUID NOT NULL REFERENCES compute_providers(id) ON DELETE CASCADE,
+    stat_date DATE NOT NULL,
+    requests_total INT DEFAULT 0,
+    requests_success INT DEFAULT 0,
+    requests_failed INT DEFAULT 0,
+    tokens_served BIGINT DEFAULT 0,
+    earned_usdc BIGINT DEFAULT 0,
+    avg_latency_ms DOUBLE PRECISION DEFAULT 0.0,
+    UNIQUE(provider_id, stat_date)
+);
+CREATE INDEX IF NOT EXISTS idx_provider_stats_provider ON provider_stats(provider_id);
 "#;

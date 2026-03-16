@@ -5,3 +5,5 @@ pub mod calendar_service;
 pub mod llm_router;
 pub mod proactive;
 pub mod telegram;
+pub mod wallet_service;
+pub mod compute_service;

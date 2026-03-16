@@ -21,12 +21,13 @@ pub struct AuthPayload {
     pub signature: String,
 }
 
-/// Whether this connection is a device or an MCP client.
+/// Whether this connection is a device, an MCP client, or a GPU provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionRole {
     Device,
     McpClient,
+    GpuProvider,
 }
 
 impl AuthMessage {
@@ -40,6 +41,7 @@ impl AuthMessage {
             match self.role {
                 ConnectionRole::Device => "device",
                 ConnectionRole::McpClient => "mcp_client",
+                ConnectionRole::GpuProvider => "gpu_provider",
             }
         )
         .into_bytes()

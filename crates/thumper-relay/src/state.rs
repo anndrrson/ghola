@@ -1,9 +1,11 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::Message;
 use dashmap::DashMap;
 use tokio::sync::mpsc;
+
+use thumper_types::{Envelope, ProviderModelInfo};
 
 use crate::auth::NonceCache;
 use crate::config::RelayConfig;
@@ -55,6 +57,12 @@ struct AppStateInner {
     devices: DashMap<String, DeviceEntry>,
     /// mcp client pubkey → McpClientEntry
     mcp_clients: DashMap<String, McpClientEntry>,
+    /// gpu provider pubkey → GpuProviderEntry
+    gpu_providers: DashMap<String, GpuProviderEntry>,
+    /// job_id → oneshot sender for non-streaming inference responses
+    pending_inference: DashMap<String, tokio::sync::oneshot::Sender<Envelope>>,
+    /// job_id → mpsc sender for streaming inference chunks
+    pending_inference_streams: DashMap<String, mpsc::UnboundedSender<Envelope>>,
     /// Per-device rate limiters (keyed by device pubkey).
     device_rate_limiters: DashMap<String, std::sync::Mutex<RateLimiter>>,
     config: RelayConfig,
@@ -76,6 +84,15 @@ pub struct McpClientEntry {
     pub last_activity: Arc<AtomicU64>,
 }
 
+pub struct GpuProviderEntry {
+    pub sender: mpsc::UnboundedSender<Message>,
+    pub models: Vec<ProviderModelInfo>,
+    pub max_concurrent: u32,
+    pub active_jobs: AtomicU32,
+    pub wallet_address: String,
+    pub last_activity: Arc<AtomicU64>,
+}
+
 fn now_epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -90,6 +107,9 @@ impl AppState {
             inner: Arc::new(AppStateInner {
                 devices: DashMap::new(),
                 mcp_clients: DashMap::new(),
+                gpu_providers: DashMap::new(),
+                pending_inference: DashMap::new(),
+                pending_inference_streams: DashMap::new(),
                 device_rate_limiters: DashMap::new(),
                 config,
                 nonce_cache: NonceCache::new(nonce_ttl),
@@ -234,6 +254,149 @@ impl AppState {
         self.inner.mcp_clients.len()
     }
 
+    // -- GPU provider connections --
+
+    pub fn add_gpu_provider(
+        &self,
+        pubkey: &str,
+        sender: mpsc::UnboundedSender<Message>,
+        models: Vec<ProviderModelInfo>,
+        max_concurrent: u32,
+        wallet_address: String,
+    ) -> Arc<AtomicU64> {
+        let last_activity = Arc::new(AtomicU64::new(now_epoch_secs()));
+        let activity_clone = last_activity.clone();
+        self.inner.gpu_providers.insert(
+            pubkey.to_string(),
+            GpuProviderEntry {
+                sender,
+                models,
+                max_concurrent,
+                active_jobs: AtomicU32::new(0),
+                wallet_address,
+                last_activity,
+            },
+        );
+        activity_clone
+    }
+
+    pub fn remove_gpu_provider(&self, pubkey: &str) {
+        self.inner.gpu_providers.remove(pubkey);
+    }
+
+    pub fn send_to_gpu_provider(&self, pubkey: &str, data: &[u8]) -> bool {
+        if let Some(entry) = self.inner.gpu_providers.get(pubkey) {
+            entry
+                .sender
+                .send(Message::Text(
+                    String::from_utf8_lossy(data).to_string().into(),
+                ))
+                .is_ok()
+        } else {
+            false
+        }
+    }
+
+    pub fn gpu_provider_count(&self) -> usize {
+        self.inner.gpu_providers.len()
+    }
+
+    /// Returns (provider_pubkey, ProviderModelInfo) for all providers serving the given model.
+    pub fn find_providers_for_model(&self, model_id: &str) -> Vec<(String, ProviderModelInfo)> {
+        let mut results = Vec::new();
+        for entry in self.inner.gpu_providers.iter() {
+            for model in &entry.value().models {
+                if model.model_id == model_id {
+                    results.push((entry.key().clone(), model.clone()));
+                }
+            }
+        }
+        results
+    }
+
+    /// Update heartbeat data for a GPU provider.
+    pub fn update_gpu_provider_heartbeat(
+        &self,
+        pubkey: &str,
+        active_jobs: u32,
+        models: Vec<String>,
+    ) {
+        if let Some(entry) = self.inner.gpu_providers.get(pubkey) {
+            entry.last_activity.store(now_epoch_secs(), Ordering::Relaxed);
+            entry.active_jobs.store(active_jobs, Ordering::Relaxed);
+            // `models` from heartbeat is a Vec<String> of model IDs — used for logging/monitoring.
+            // The full ProviderModelInfo list stays as advertised.
+            let _ = models; // acknowledged but model pricing doesn't change on heartbeat
+        }
+    }
+
+    /// Get provider's active_jobs and max_concurrent for concurrency checks.
+    pub fn gpu_provider_concurrency(&self, pubkey: &str) -> Option<(u32, u32)> {
+        self.inner.gpu_providers.get(pubkey).map(|entry| {
+            (
+                entry.active_jobs.load(Ordering::Relaxed),
+                entry.max_concurrent,
+            )
+        })
+    }
+
+    /// Increment active_jobs for a provider. Returns the new count.
+    pub fn increment_gpu_provider_jobs(&self, pubkey: &str) -> Option<u32> {
+        self.inner.gpu_providers.get(pubkey).map(|entry| {
+            entry.active_jobs.fetch_add(1, Ordering::Relaxed) + 1
+        })
+    }
+
+    /// Decrement active_jobs for a provider.
+    pub fn decrement_gpu_provider_jobs(&self, pubkey: &str) {
+        if let Some(entry) = self.inner.gpu_providers.get(pubkey) {
+            let prev = entry.active_jobs.load(Ordering::Relaxed);
+            if prev > 0 {
+                entry.active_jobs.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    // -- Pending inference maps --
+
+    pub fn register_pending_inference(
+        &self,
+        job_id: &str,
+        sender: tokio::sync::oneshot::Sender<Envelope>,
+    ) {
+        self.inner
+            .pending_inference
+            .insert(job_id.to_string(), sender);
+    }
+
+    pub fn resolve_pending_inference(&self, job_id: &str, envelope: Envelope) {
+        if let Some((_, sender)) = self.inner.pending_inference.remove(job_id) {
+            let _ = sender.send(envelope);
+        }
+    }
+
+    pub fn register_pending_inference_stream(
+        &self,
+        job_id: &str,
+        sender: mpsc::UnboundedSender<Envelope>,
+    ) {
+        self.inner
+            .pending_inference_streams
+            .insert(job_id.to_string(), sender);
+    }
+
+    pub fn send_to_pending_inference_stream(&self, job_id: &str, envelope: Envelope) -> bool {
+        if let Some(entry) = self.inner.pending_inference_streams.get(job_id) {
+            entry.value().send(envelope).is_ok()
+        } else {
+            false
+        }
+    }
+
+    pub fn remove_pending_inference_stream(&self, job_id: &str) {
+        self.inner.pending_inference_streams.remove(job_id);
+    }
+
     /// Prune expired nonces from the cache.
     pub fn prune_nonces(&self) {
         self.inner.nonce_cache.prune();
@@ -282,10 +445,30 @@ impl AppState {
             tracing::info!(pubkey = %pubkey, "removed dead mcp client connection");
         }
 
-        if !dead_devices.is_empty() || !dead_clients.is_empty() {
+        // Ping GPU providers and collect dead ones
+        let dead_gpu_providers: Vec<String> = self
+            .inner
+            .gpu_providers
+            .iter()
+            .filter_map(|entry| {
+                if entry.value().sender.send(ping.clone()).is_err() {
+                    Some(entry.key().clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for pubkey in &dead_gpu_providers {
+            self.inner.gpu_providers.remove(pubkey);
+            tracing::info!(pubkey = %pubkey, "removed dead gpu provider connection");
+        }
+
+        if !dead_devices.is_empty() || !dead_clients.is_empty() || !dead_gpu_providers.is_empty() {
             tracing::info!(
                 dead_devices = dead_devices.len(),
                 dead_clients = dead_clients.len(),
+                dead_gpu_providers = dead_gpu_providers.len(),
                 "pruned dead connections"
             );
         }
@@ -331,6 +514,25 @@ impl AppState {
         for pubkey in &stale_clients {
             self.inner.mcp_clients.remove(pubkey);
             tracing::warn!(pubkey = %pubkey, "removed stale mcp client (no activity)");
+        }
+
+        let stale_gpu_providers: Vec<String> = self
+            .inner
+            .gpu_providers
+            .iter()
+            .filter_map(|entry| {
+                let last = entry.value().last_activity.load(Ordering::Relaxed);
+                if now.saturating_sub(last) > stale_timeout_secs {
+                    Some(entry.key().clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for pubkey in &stale_gpu_providers {
+            self.inner.gpu_providers.remove(pubkey);
+            tracing::warn!(pubkey = %pubkey, "removed stale gpu provider (no activity)");
         }
 
         // Clean up rate limiters for devices that are no longer connected

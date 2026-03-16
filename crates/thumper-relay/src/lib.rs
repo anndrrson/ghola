@@ -8,7 +8,7 @@ pub mod state;
 #[cfg(test)]
 mod tests;
 
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -43,6 +43,7 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
                 tracing::debug!(
                     devices = state.device_count(),
                     mcp_clients = state.mcp_client_count(),
+                    gpu_providers = state.gpu_provider_count(),
                     "heartbeat tick"
                 );
             }
@@ -53,6 +54,8 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         .route("/health", get(handlers::health))
         .route("/metrics", get(handlers::metrics_handler))
         .route("/ws", get(handlers::ws_upgrade))
+        .route("/inference", post(handlers::dispatch_inference))
+        .route("/inference-stream", post(handlers::dispatch_inference_stream))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state);

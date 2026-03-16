@@ -37,9 +37,28 @@ pub async fn run_cloud() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         "provider config"
     );
 
-    if config.claude_api_key.is_none() {
+    tracing::info!(
+        groq = config.groq_api_key.is_some(),
+        cerebras = config.cerebras_api_key.is_some(),
+        gemini = config.google_gemini_api_key.is_some(),
+        openrouter = config.openrouter_api_key.is_some(),
+        "free cascade config"
+    );
+
+    tracing::info!(
+        relay_url = %config.relay_url,
+        platform_wallet = config.platform_wallet_address.is_some(),
+        "compute marketplace config"
+    );
+
+    if config.claude_api_key.is_none()
+        && config.groq_api_key.is_none()
+        && config.cerebras_api_key.is_none()
+        && config.google_gemini_api_key.is_none()
+        && config.openrouter_api_key.is_none()
+    {
         tracing::warn!(
-            "⚠ No CLAUDE_API_KEY — default chat will fail. \
+            "⚠ No CLAUDE_API_KEY or free cascade keys — default chat will fail. \
              Only BYOM users (with their own key in Settings) can chat."
         );
     }
@@ -74,6 +93,23 @@ pub async fn run_cloud() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     if state.config.telegram_bot_token.is_some() {
         let tg_state = state.clone();
         tokio::spawn(services::telegram::start_telegram_bot(tg_state));
+    }
+
+    // GPU compute background tasks
+    services::compute_service::start_escrow_expiry_task(state.clone());
+    services::compute_service::start_reputation_decay_task(state.db.clone());
+    // Refresh compute provider cache every 30s
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                if let Err(e) = services::compute_service::refresh_provider_cache(&state).await {
+                    tracing::warn!("failed to refresh compute cache: {e}");
+                }
+            }
+        });
     }
 
     let app = build_router(state);
@@ -155,6 +191,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/wallet/balances", get(routes::wallet::get_balances))
         .route("/api/wallet/transfer", post(routes::wallet::transfer))
         .route("/api/wallet/history", get(routes::wallet::get_history))
+        // Compute (GPU marketplace)
+        .route("/api/compute/providers/register", post(routes::compute::register_provider))
+        .route("/api/compute/providers/me", get(routes::compute::get_my_provider).patch(routes::compute::update_my_provider))
+        .route("/api/compute/providers", get(routes::compute::list_providers))
+        .route("/api/compute/models", get(routes::compute::list_models))
+        .route("/api/compute/stats", get(routes::compute::get_stats))
+        .route("/api/compute/escrow", get(routes::compute::get_escrow))
         // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(routes::openai_compat::chat_completions))
         .route("/v1/models", get(routes::openai_compat::list_models))
@@ -206,7 +249,7 @@ async fn health(State(state): State<AppState>) -> String {
         .await;
 
     let providers = format!(
-        "google={} apple={} stripe={} bland={} claude={} gmail={} telegram={}",
+        "google={} apple={} stripe={} bland={} claude={} gmail={} telegram={} groq={} cerebras={} gemini={} openrouter={}",
         state.config.google_client_id.is_some(),
         state.config.apple_client_id.is_some(),
         state.config.stripe_secret_key.is_some(),
@@ -214,15 +257,41 @@ async fn health(State(state): State<AppState>) -> String {
         state.config.claude_api_key.is_some(),
         state.config.gmail_client_id.is_some(),
         state.config.telegram_bot_token.is_some(),
+        state.config.groq_api_key.is_some(),
+        state.config.cerebras_api_key.is_some(),
+        state.config.google_gemini_api_key.is_some(),
+        state.config.openrouter_api_key.is_some(),
     );
 
+    let cascade_stats = state.free_cascade.stats().await;
+    let cascade_info: Vec<String> = cascade_stats
+        .iter()
+        .map(|(name, (used, limit))| format!("{name}={used}/{limit}"))
+        .collect();
+
+    let community_count = state.compute_cache.lock().await.len();
+
     format!(
-        "ok users={:?} providers=[{providers}]",
-        user_count
+        "ok users={:?} providers=[{providers}] cascade=[{}] community={community_count}",
+        user_count,
+        cascade_info.join(" "),
     )
 }
 
 async fn health_providers(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let cascade_stats = state.free_cascade.stats().await;
+    let cascade_json: serde_json::Value = cascade_stats
+        .into_iter()
+        .map(|(name, (used, limit))| {
+            (name, json!({ "used": used, "limit": limit }))
+        })
+        .collect::<serde_json::Map<String, serde_json::Value>>()
+        .into();
+
+    let community_providers = state.compute_cache.lock().await;
+    let community_count = community_providers.len();
+    drop(community_providers);
+
     Json(json!({
         "google": state.config.google_client_id.is_some(),
         "apple": state.config.apple_client_id.is_some(),
@@ -231,6 +300,12 @@ async fn health_providers(State(state): State<AppState>) -> Json<serde_json::Val
         "claude": state.config.claude_api_key.is_some(),
         "gmail": state.config.gmail_client_id.is_some(),
         "telegram": state.config.telegram_bot_token.is_some(),
+        "groq": state.config.groq_api_key.is_some(),
+        "cerebras": state.config.cerebras_api_key.is_some(),
+        "gemini": state.config.google_gemini_api_key.is_some(),
+        "openrouter": state.config.openrouter_api_key.is_some(),
+        "free_cascade": cascade_json,
+        "community_providers": community_count,
     }))
 }
 
