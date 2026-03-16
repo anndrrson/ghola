@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Plus, MessageSquare, Trash2 } from "lucide-react";
 import { GholaLogo } from "@/components/GholaLogo";
 import type { ThumperSession } from "@/lib/thumper-types";
@@ -64,10 +65,10 @@ export function SessionSidebar({
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[#1e2a3a]">
-        <div className="flex items-center gap-2">
+        <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
           <GholaLogo size={22} className="text-[#eef1f8]" />
           <span className="text-base font-semibold text-[#eef1f8]">Ghola</span>
-        </div>
+        </Link>
         <button
           onClick={onNew}
           className="flex items-center gap-1.5 rounded-lg bg-[#3da8ff]/10 px-3 py-1.5 text-xs font-medium text-[#3da8ff] hover:bg-[#3da8ff]/20 transition-colors cursor-pointer"
