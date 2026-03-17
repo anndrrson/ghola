@@ -172,3 +172,42 @@ export interface ThumperApiUsageResponse {
   api_call_limit: number;
   api_token_count: number;
 }
+
+export interface ComputeProviderInfo {
+  id: string;
+  user_id: string;
+  relay_pubkey: string;
+  display_name: string;
+  models: { model_id: string; price_per_1k_input: number; price_per_1k_output: number }[];
+  vram_mb: number;
+  max_concurrent: number;
+  status: string;
+  total_requests: number;
+  total_tokens_served: number;
+  total_earned_usdc: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  reputation_score: number;
+  last_heartbeat_at: string | null;
+  created_at: string;
+}
+
+export interface ComputeDailyStats {
+  stat_date: string;
+  requests_total: number;
+  requests_success: number;
+  requests_failed: number;
+  tokens_served: number;
+  earned_usdc: number;
+  avg_latency_ms: number;
+}
+
+export interface ComputeRecentJob {
+  id: string;
+  model_id: string;
+  status: string;
+  input_tokens: number;
+  output_tokens: number;
+  latency_ms: number | null;
+  created_at: string;
+}

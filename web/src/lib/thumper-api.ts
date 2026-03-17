@@ -11,6 +11,9 @@ import type {
   ThumperBillingStatusResponse,
   ThumperTelegramLinkCode,
   ThumperTelegramStatus,
+  ComputeProviderInfo,
+  ComputeDailyStats,
+  ComputeRecentJob,
 } from "./thumper-types";
 
 const THUMPER_API_BASE =
@@ -335,9 +338,7 @@ export async function createProviderKey(): Promise<import("./thumper-types").Thu
   return thumperFetch("/api/auth/provider-key", { method: "POST" });
 }
 
-export async function getComputeProviders(): Promise<{
-  providers: { id: string; display_name: string; status: string; models: string[] }[];
-}> {
+export async function getComputeProviders(): Promise<ComputeProviderInfo[]> {
   return thumperFetch("/api/compute/providers");
 }
 
@@ -347,14 +348,7 @@ export async function getComputeModels(): Promise<{
   return thumperFetch("/api/compute/models");
 }
 
-export async function getMyProvider(): Promise<{
-  id: string;
-  display_name: string;
-  status: string;
-  models: string[];
-  total_requests: number;
-  total_earnings_micro: number;
-} | null> {
+export async function getMyProvider(): Promise<ComputeProviderInfo | null> {
   try {
     return await thumperFetch("/api/compute/providers/me");
   } catch (err) {
@@ -363,11 +357,12 @@ export async function getMyProvider(): Promise<{
   }
 }
 
-export async function getComputeStats(days?: number): Promise<{
-  total_requests: number;
-  total_earnings_micro: number;
-  period_days: number;
-}> {
+export async function getComputeStats(days?: number): Promise<ComputeDailyStats[]> {
   const params = days ? `?days=${days}` : "";
   return thumperFetch(`/api/compute/stats${params}`);
+}
+
+export async function getRecentJobs(limit?: number): Promise<ComputeRecentJob[]> {
+  const params = limit ? `?limit=${limit}` : "";
+  return thumperFetch(`/api/compute/jobs${params}`);
 }

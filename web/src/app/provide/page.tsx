@@ -3,7 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
-import { createProviderKey, getMyProvider } from "@/lib/thumper-api";
+import { createProviderKey, getMyProvider, getComputeStats, getRecentJobs } from "@/lib/thumper-api";
+import type { ComputeProviderInfo, ComputeDailyStats, ComputeRecentJob } from "@/lib/thumper-types";
 import {
   Download,
   Terminal,
@@ -21,6 +22,9 @@ import {
   Zap,
   ArrowRight,
   ArrowUpRight,
+  TrendingUp,
+  Activity,
+  BarChart3,
 } from "lucide-react";
 
 // ── Scroll reveal hook ───────────────────────────────────────────────
@@ -664,30 +668,45 @@ function LandingView() {
 
 // ── Dashboard View (authenticated) ──────────────────────────────────
 
-interface ProviderStatus {
-  id: string;
-  display_name: string;
-  status: string;
-  models: string[];
-  total_requests: number;
-  total_earnings_micro: number;
+function timeAgo(dateStr: string): string {
+  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }
 
 function DashboardView() {
-  const [apiKey, setApiKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [provider, setProvider] = useState<ProviderStatus | null>(null);
+  const [provider, setProvider] = useState<ComputeProviderInfo | null>(null);
+  const [dailyStats, setDailyStats] = useState<ComputeDailyStats[]>([]);
+  const [recentJobs, setRecentJobs] = useState<ComputeRecentJob[]>([]);
+  const [setupOpen, setSetupOpen] = useState(false);
 
+  // Initial data load
   useEffect(() => {
     async function init() {
       try {
-        const keyRes = await createProviderKey();
-        setApiKey(keyRes.key);
+        // Ensure provider key exists (idempotent)
+        await createProviderKey().catch(() => {});
+
+        const [prov, stats, jobs] = await Promise.all([
+          getMyProvider().catch(() => null),
+          getComputeStats(30).catch(() => []),
+          getRecentJobs(20).catch(() => []),
+        ]);
+        if (prov) setProvider(prov);
+        setDailyStats(stats);
+        setRecentJobs(jobs);
+
+        // Auto-expand setup if no provider or offline
+        if (!prov || prov.status !== "online") setSetupOpen(true);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to create provider key"
-        );
+        setError(err instanceof Error ? err.message : "Failed to load dashboard");
       } finally {
         setLoading(false);
       }
@@ -695,23 +714,34 @@ function DashboardView() {
     init();
   }, []);
 
-  // Poll provider status
+  // Poll provider status every 10s
   useEffect(() => {
     let cancelled = false;
-    async function poll() {
+    const interval = setInterval(async () => {
       try {
         const p = await getMyProvider();
         if (!cancelled && p) setProvider(p);
-      } catch {
-        // ignore
-      }
-    }
-    poll();
-    const interval = setInterval(poll, 10000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
+      } catch { /* ignore */ }
+    }, 10000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  // Refresh stats and recent jobs every 60s
+  useEffect(() => {
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const [stats, jobs] = await Promise.all([
+          getComputeStats(30).catch(() => [] as ComputeDailyStats[]),
+          getRecentJobs(20).catch(() => [] as ComputeRecentJob[]),
+        ]);
+        if (!cancelled) {
+          setDailyStats(stats);
+          setRecentJobs(jobs);
+        }
+      } catch { /* ignore */ }
+    }, 60000);
+    return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
   if (loading) {
@@ -732,23 +762,32 @@ function DashboardView() {
     );
   }
 
-  const installCommand = "curl -fsSL https://ghola.xyz/install.sh | sh";
-  const providerCommand = "ghola up";
+  const totalEarned = provider ? provider.total_earned_usdc / 1_000_000 : 0;
+  const todayStats = dailyStats.length > 0 ? dailyStats[0] : null;
+  const todayEarned = todayStats ? todayStats.earned_usdc / 1_000_000 : 0;
+  const todayRequests = todayStats ? todayStats.requests_total : 0;
+  const todayLatency = todayStats ? todayStats.avg_latency_ms : 0;
+
+  // Success rate from all stats
+  const totalSuccess = dailyStats.reduce((s, d) => s + d.requests_success, 0);
+  const totalReqs = dailyStats.reduce((s, d) => s + d.requests_total, 0);
+  const successRate = totalReqs > 0 ? (totalSuccess / totalReqs) * 100 : 100;
+
+  // Chart data
+  const chartData = [...dailyStats].reverse(); // oldest first for chart
+  const maxEarned = Math.max(...chartData.map(d => d.earned_usdc), 1);
+
+  // Parse models from provider (it's a JSON value from the backend)
+  const models: { model_id: string; price_per_1k_input: number; price_per_1k_output: number }[] =
+    provider?.models && Array.isArray(provider.models) ? provider.models : [];
 
   return (
     <div className="min-h-screen bg-[#08090d] pt-24 pb-16">
-      <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
-        <h1 className="text-3xl font-medium text-[#eef1f8] mb-2 tracking-tight">
-          GPU Provider Setup
-        </h1>
-        <p className="text-[#8b95a8] mb-8">
-          Follow these four steps to start earning with your GPU.
-        </p>
-
-        {/* Provider Status (if already registered) */}
+      <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
+        {/* Provider Status Bar */}
         {provider && (
-          <GlassCard className="p-6 mb-8">
-            <div className="flex items-center justify-between flex-wrap gap-4">
+          <GlassCard className="p-4 mb-6">
+            <div className="flex items-center justify-between flex-wrap gap-3">
               <div className="flex items-center gap-3">
                 <div
                   className={`w-3 h-3 rounded-full ${
@@ -757,128 +796,345 @@ function DashboardView() {
                       : "bg-[#4a5568]"
                   }`}
                 />
-                <span className="text-[#eef1f8] font-medium">
-                  {provider.display_name}
-                </span>
-                <span className="text-sm text-[#8b95a8] capitalize">
-                  {provider.status}
-                </span>
+                <span className="text-[#eef1f8] font-medium">{provider.display_name}</span>
+                <span className="text-sm text-[#8b95a8] capitalize">{provider.status}</span>
               </div>
-              <div className="flex items-center gap-6 text-sm">
-                <div className="text-[#8b95a8]">
-                  <span className="text-[#eef1f8] font-medium">
-                    {provider.total_requests}
-                  </span>{" "}
-                  requests
-                </div>
-                <div className="text-[#8b95a8]">
-                  <DollarSign className="w-4 h-4 inline" />
-                  <span className="text-[#eef1f8] font-medium">
-                    {(provider.total_earnings_micro / 1_000_000).toFixed(4)}
-                  </span>{" "}
-                  USDC
-                </div>
+              <div className="flex items-center gap-2 text-xs text-[#4a5568]">
+                {provider.last_heartbeat_at && (
+                  <span>Last active: {timeAgo(provider.last_heartbeat_at)}</span>
+                )}
+                {provider.reputation_score > 0 && (
+                  <span className="ml-2">Rep: {provider.reputation_score.toFixed(2)}</span>
+                )}
               </div>
             </div>
-            {provider.models.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {provider.models.map((m) => (
-                  <span
-                    key={m}
-                    className="rounded-lg bg-white/[0.04] border border-white/[0.06] px-2.5 py-1 text-xs text-[#8b95a8] font-mono"
-                  >
-                    {m}
-                  </span>
-                ))}
-              </div>
-            )}
           </GlassCard>
         )}
 
-        {/* Step 1: Install Ollama */}
-        <StepCard
-          step={1}
-          title="Install Ollama"
-          description="Ollama is a free, open-source tool that runs AI models locally on your machine."
-        >
-          <p className="text-sm text-[#8b95a8] mb-3">Linux / macOS:</p>
-          <CodeBlock code="curl -fsSL https://ollama.ai/install.sh | sh" />
-          <p className="text-xs text-[#4a5568] mt-3">
-            Or download manually from{" "}
-            <a
-              href="https://ollama.ai"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[#3da8ff] hover:text-[#5bb8ff] transition-colors"
-            >
-              ollama.ai
-              <ArrowUpRight className="w-3 h-3 inline ml-0.5" />
-            </a>
-          </p>
-        </StepCard>
-
-        {/* Step 2: Pull a model */}
-        <StepCard
-          step={2}
-          title="Pull a model"
-          description="Download at least one model. This will use your GPU's VRAM."
-        >
-          <CodeBlock code="ollama pull llama3.2" />
-          <p className="text-xs text-[#4a5568] mt-3">
-            You can pull multiple models &mdash; the CLI auto-discovers all of
-            them. Try <code className="text-[#8b95a8]">mistral</code>,{" "}
-            <code className="text-[#8b95a8]">gemma2</code>, or{" "}
-            <code className="text-[#8b95a8]">phi3</code>.
-          </p>
-        </StepCard>
-
-        {/* Step 3: Install Ghola CLI */}
-        <StepCard
-          step={3}
-          title="Install Ghola CLI"
-          description="The CLI connects your machine to the Ghola network."
-        >
-          <CodeBlock code={installCommand} />
-          <p className="text-xs text-[#4a5568] mt-3">
-            Downloads a pre-built binary, or falls back to building from source
-            with Rust.
-          </p>
-        </StepCard>
-
-        {/* Step 4: Start providing */}
-        <StepCard
-          step={4}
-          title="Start providing"
-          description="One command does everything: checks Ollama, pulls a model if needed, authenticates you, and connects to the network."
-          last
-        >
-          <CodeBlock code={providerCommand} highlight />
-          <div className="mt-4 rounded-xl bg-[#3da8ff]/[0.04] border border-[#3da8ff]/[0.08] p-3">
-            <p className="text-xs text-[#8b95a8]">
-              Already logged in from this browser &mdash;{" "}
-              <code className="text-[#3da8ff]">ghola up</code> will detect your
-              auth automatically.
-            </p>
-          </div>
-          <div className="mt-4 grid grid-cols-3 gap-3 text-center">
-            {[
-              { icon: Shield, label: "Auto-authenticates via browser" },
-              { icon: Clock, label: "Runs until you stop it. No lock-in" },
-              { icon: Layers, label: "All local models are auto-discovered" },
-            ].map((item) => (
-              <div
-                key={item.label}
-                className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-3"
-              >
-                <item.icon className="w-4 h-4 text-[#3da8ff] mx-auto mb-1.5" />
-                <p className="text-xs text-[#8b95a8]">{item.label}</p>
+        {/* Stat Cards */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <GlassCard className="p-5">
+            <div className="flex items-start justify-between mb-3">
+              <p className="text-sm text-[#8b95a8]">Total Earned</p>
+              <div className="w-8 h-8 rounded-lg bg-[#3da8ff]/[0.08] border border-[#3da8ff]/[0.1] flex items-center justify-center">
+                <DollarSign className="w-4 h-4 text-[#3da8ff]" />
               </div>
-            ))}
+            </div>
+            <p className="text-2xl font-medium text-[#eef1f8] tracking-tight">
+              {totalEarned.toFixed(4)}
+            </p>
+            <p className="text-xs text-[#4a5568] mt-1">USDC</p>
+          </GlassCard>
+
+          <GlassCard className="p-5">
+            <div className="flex items-start justify-between mb-3">
+              <p className="text-sm text-[#8b95a8]">Today</p>
+              <div className="w-8 h-8 rounded-lg bg-[#3da8ff]/[0.08] border border-[#3da8ff]/[0.1] flex items-center justify-center">
+                <TrendingUp className="w-4 h-4 text-[#3da8ff]" />
+              </div>
+            </div>
+            <p className="text-2xl font-medium text-[#eef1f8] tracking-tight">
+              {todayEarned.toFixed(4)}
+            </p>
+            <p className="text-xs text-[#4a5568] mt-1">USDC today</p>
+          </GlassCard>
+
+          <GlassCard className="p-5">
+            <div className="flex items-start justify-between mb-3">
+              <p className="text-sm text-[#8b95a8]">Requests Today</p>
+              <div className="w-8 h-8 rounded-lg bg-[#3da8ff]/[0.08] border border-[#3da8ff]/[0.1] flex items-center justify-center">
+                <Activity className="w-4 h-4 text-[#3da8ff]" />
+              </div>
+            </div>
+            <p className="text-2xl font-medium text-[#eef1f8] tracking-tight">
+              {todayRequests.toLocaleString()}
+            </p>
+            <p className="text-xs text-[#4a5568] mt-1">inference requests</p>
+          </GlassCard>
+
+          <GlassCard className="p-5">
+            <div className="flex items-start justify-between mb-3">
+              <p className="text-sm text-[#8b95a8]">Avg Latency</p>
+              <div className="w-8 h-8 rounded-lg bg-[#3da8ff]/[0.08] border border-[#3da8ff]/[0.1] flex items-center justify-center">
+                <Clock className="w-4 h-4 text-[#3da8ff]" />
+              </div>
+            </div>
+            <p className="text-2xl font-medium text-[#eef1f8] tracking-tight">
+              {todayLatency > 0 ? `${Math.round(todayLatency)}` : "--"}
+            </p>
+            <p className="text-xs text-[#4a5568] mt-1">ms</p>
+          </GlassCard>
+        </div>
+
+        {/* Earnings Chart + Model Breakdown */}
+        <div className="grid lg:grid-cols-3 gap-4 mb-6">
+          {/* Earnings Chart */}
+          <GlassCard className="p-6 lg:col-span-2" hover={false}>
+            <div className="flex items-center gap-2 mb-4">
+              <BarChart3 className="w-5 h-5 text-[#8b95a8]" />
+              <h2 className="text-base font-medium text-[#eef1f8]">
+                Earnings &mdash; Last 30 Days
+              </h2>
+            </div>
+            {chartData.length === 0 ? (
+              <div className="flex items-center justify-center h-40 text-sm text-[#4a5568]">
+                No data yet. Start serving inference to see earnings.
+              </div>
+            ) : (
+              <>
+                <div className="flex items-end gap-[3px] h-40">
+                  {chartData.map((day) => {
+                    const heightPct = (day.earned_usdc / maxEarned) * 100;
+                    return (
+                      <div
+                        key={day.stat_date}
+                        className="flex-1 min-w-0 group relative"
+                        style={{ height: "100%" }}
+                      >
+                        <div
+                          className="absolute bottom-0 left-0 right-0 rounded-t bg-[#3da8ff]/70 hover:bg-[#3da8ff] transition-colors cursor-default"
+                          style={{ height: `${Math.max(heightPct, 2)}%` }}
+                          title={`${day.stat_date}: $${(day.earned_usdc / 1_000_000).toFixed(4)} USDC, ${day.requests_total} requests`}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex justify-between mt-2 text-xs text-[#4a5568]">
+                  <span>{chartData[0]?.stat_date || ""}</span>
+                  <span>{chartData[chartData.length - 1]?.stat_date || ""}</span>
+                </div>
+              </>
+            )}
+          </GlassCard>
+
+          {/* Model Breakdown + Success Rate */}
+          <GlassCard className="p-6" hover={false}>
+            <h2 className="text-base font-medium text-[#eef1f8] mb-4">Models</h2>
+            {models.length === 0 ? (
+              <p className="text-sm text-[#4a5568]">No models registered.</p>
+            ) : (
+              <div className="space-y-3 mb-6">
+                {models.map((m) => (
+                  <div key={m.model_id} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-green-400" />
+                      <span className="text-sm font-mono text-[#eef1f8] truncate max-w-[140px]">
+                        {m.model_id}
+                      </span>
+                    </div>
+                    <span className="text-xs text-[#4a5568]">
+                      {m.price_per_1k_input}/{m.price_per_1k_output}
+                    </span>
+                  </div>
+                ))}
+                <p className="text-xs text-[#4a5568] mt-1">price per 1K tokens (in/out)</p>
+              </div>
+            )}
+
+            {/* Success Rate */}
+            <div className="border-t border-white/[0.06] pt-4">
+              <p className="text-sm text-[#8b95a8] mb-3">Success Rate</p>
+              <div className="flex items-center gap-3">
+                <div
+                  className="w-14 h-14 rounded-full flex-shrink-0"
+                  style={{
+                    background: `conic-gradient(#3da8ff ${successRate * 3.6}deg, rgba(255,255,255,0.04) 0deg)`,
+                  }}
+                >
+                  <div className="w-full h-full rounded-full bg-[#08090d] m-auto flex items-center justify-center" style={{ width: "calc(100% - 6px)", height: "calc(100% - 6px)", margin: "3px" }}>
+                    <span className="text-sm font-medium text-[#eef1f8]">
+                      {successRate.toFixed(0)}%
+                    </span>
+                  </div>
+                </div>
+                <div className="text-xs text-[#4a5568]">
+                  {totalSuccess} / {totalReqs} requests
+                </div>
+              </div>
+            </div>
+          </GlassCard>
+        </div>
+
+        {/* Recent Jobs */}
+        <GlassCard className="p-6 mb-6" hover={false}>
+          <div className="flex items-center gap-2 mb-4">
+            <Cpu className="w-5 h-5 text-[#8b95a8]" />
+            <h2 className="text-base font-medium text-[#eef1f8]">Recent Jobs</h2>
           </div>
-        </StepCard>
+          {recentJobs.length === 0 ? (
+            <div className="rounded-lg border border-white/[0.04] bg-white/[0.01] px-6 py-10 text-center">
+              <Cpu className="mx-auto h-10 w-10 text-[#4a5568] mb-3" />
+              <p className="text-sm text-[#8b95a8]">No jobs served yet.</p>
+              <p className="text-xs text-[#4a5568] mt-1">Jobs will appear here once your GPU serves inference requests.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-white/[0.06] text-left">
+                    <th className="pb-3 font-medium text-[#8b95a8]">Model</th>
+                    <th className="pb-3 font-medium text-[#8b95a8]">Status</th>
+                    <th className="pb-3 font-medium text-[#8b95a8] text-right">Tokens</th>
+                    <th className="pb-3 font-medium text-[#8b95a8] text-right">Latency</th>
+                    <th className="pb-3 font-medium text-[#8b95a8] text-right">Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentJobs.map((job) => (
+                    <tr key={job.id} className="border-b border-white/[0.03]">
+                      <td className="py-3 text-[#eef1f8] font-mono text-xs">
+                        {job.model_id}
+                      </td>
+                      <td className="py-3">
+                        <span
+                          className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${
+                            job.status === "completed"
+                              ? "bg-green-400/10 text-green-400"
+                              : job.status === "failed"
+                              ? "bg-red-400/10 text-red-400"
+                              : "bg-yellow-400/10 text-yellow-400"
+                          }`}
+                        >
+                          <div className={`w-1.5 h-1.5 rounded-full ${
+                            job.status === "completed" ? "bg-green-400" :
+                            job.status === "failed" ? "bg-red-400" : "bg-yellow-400"
+                          }`} />
+                          {job.status}
+                        </span>
+                      </td>
+                      <td className="py-3 text-[#8b95a8] text-right font-mono text-xs">
+                        {job.input_tokens != null && job.output_tokens != null
+                          ? `${job.input_tokens + job.output_tokens}`
+                          : "--"}
+                      </td>
+                      <td className="py-3 text-[#8b95a8] text-right text-xs">
+                        {job.latency_ms != null ? `${job.latency_ms}ms` : "--"}
+                      </td>
+                      <td className="py-3 text-[#4a5568] text-right text-xs">
+                        {timeAgo(job.created_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </GlassCard>
+
+        {/* Setup Steps — Collapsible Accordion */}
+        <GlassCard className="mb-6" hover={false}>
+          <button
+            onClick={() => setSetupOpen(!setupOpen)}
+            className="w-full flex items-center justify-between p-5 cursor-pointer"
+          >
+            <div className="flex items-center gap-2">
+              <Terminal className="w-5 h-5 text-[#3da8ff]" />
+              <span className="text-base font-medium text-[#eef1f8]">Setup Guide</span>
+              {provider?.status === "online" && (
+                <span className="text-xs text-green-400 bg-green-400/10 rounded-full px-2 py-0.5">
+                  Completed
+                </span>
+              )}
+            </div>
+            <ChevronDown
+              className={`w-5 h-5 text-[#4a5568] transition-transform duration-300 ${
+                setupOpen ? "rotate-180" : ""
+              }`}
+            />
+          </button>
+          <div
+            className="grid transition-all duration-300 ease-out"
+            style={{
+              gridTemplateRows: setupOpen ? "1fr" : "0fr",
+              opacity: setupOpen ? 1 : 0,
+            }}
+          >
+            <div className="overflow-hidden">
+              <div className="px-5 pb-5">
+                <StepCard
+                  step={1}
+                  title="Install Ollama"
+                  description="Ollama is a free, open-source tool that runs AI models locally on your machine."
+                >
+                  <p className="text-sm text-[#8b95a8] mb-3">Linux / macOS:</p>
+                  <CodeBlock code="curl -fsSL https://ollama.ai/install.sh | sh" />
+                  <p className="text-xs text-[#4a5568] mt-3">
+                    Or download manually from{" "}
+                    <a
+                      href="https://ollama.ai"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[#3da8ff] hover:text-[#5bb8ff] transition-colors"
+                    >
+                      ollama.ai
+                      <ArrowUpRight className="w-3 h-3 inline ml-0.5" />
+                    </a>
+                  </p>
+                </StepCard>
+
+                <StepCard
+                  step={2}
+                  title="Pull a model"
+                  description="Download at least one model. This will use your GPU's VRAM."
+                >
+                  <CodeBlock code="ollama pull llama3.2" />
+                  <p className="text-xs text-[#4a5568] mt-3">
+                    You can pull multiple models &mdash; the CLI auto-discovers all of
+                    them. Try <code className="text-[#8b95a8]">mistral</code>,{" "}
+                    <code className="text-[#8b95a8]">gemma2</code>, or{" "}
+                    <code className="text-[#8b95a8]">phi3</code>.
+                  </p>
+                </StepCard>
+
+                <StepCard
+                  step={3}
+                  title="Install Ghola CLI"
+                  description="The CLI connects your machine to the Ghola network."
+                >
+                  <CodeBlock code="curl -fsSL https://ghola.xyz/install.sh | sh" />
+                  <p className="text-xs text-[#4a5568] mt-3">
+                    Downloads a pre-built binary, or falls back to building from source with Rust.
+                  </p>
+                </StepCard>
+
+                <StepCard
+                  step={4}
+                  title="Start providing"
+                  description="One command does everything: checks Ollama, pulls a model if needed, authenticates you, and connects to the network."
+                  last
+                >
+                  <CodeBlock code="ghola up" highlight />
+                  <div className="mt-4 rounded-xl bg-[#3da8ff]/[0.04] border border-[#3da8ff]/[0.08] p-3">
+                    <p className="text-xs text-[#8b95a8]">
+                      Already logged in from this browser &mdash;{" "}
+                      <code className="text-[#3da8ff]">ghola up</code> will detect your
+                      auth automatically.
+                    </p>
+                  </div>
+                  <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+                    {[
+                      { icon: Shield, label: "Auto-authenticates via browser" },
+                      { icon: Clock, label: "Runs until you stop it. No lock-in" },
+                      { icon: Layers, label: "All local models are auto-discovered" },
+                    ].map((item) => (
+                      <div
+                        key={item.label}
+                        className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-3"
+                      >
+                        <item.icon className="w-4 h-4 text-[#3da8ff] mx-auto mb-1.5" />
+                        <p className="text-xs text-[#8b95a8]">{item.label}</p>
+                      </div>
+                    ))}
+                  </div>
+                </StepCard>
+              </div>
+            </div>
+          </div>
+        </GlassCard>
 
         {/* FAQ */}
-        <div className="mt-12">
+        <div>
           <h2 className="text-lg font-medium text-[#eef1f8] mb-4">FAQ</h2>
           <GlassCard className="px-6" hover={false}>
             <FAQItem
