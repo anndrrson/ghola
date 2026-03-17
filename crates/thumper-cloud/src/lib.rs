@@ -199,6 +199,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/compute/providers", get(routes::compute::list_providers))
         .route("/api/compute/models", get(routes::compute::list_models))
         .route("/api/compute/stats", get(routes::compute::get_stats))
+        .route("/api/compute/jobs", get(routes::compute::get_recent_jobs))
         .route("/api/compute/escrow", get(routes::compute::get_escrow))
         // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(routes::openai_compat::chat_completions))

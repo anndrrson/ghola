@@ -1621,13 +1621,23 @@ pub async fn generate_community(
             ).await;
 
             // Settle escrow
-            let _ = compute_service::settle_escrow(
+            let settle_result = compute_service::settle_escrow(
                 &state.db, escrow_id,
                 inference_result.input_tokens as i64,
                 inference_result.output_tokens as i64,
                 provider.price_per_1k_input,
                 provider.price_per_1k_output,
             ).await;
+
+            // Update daily stats
+            if let Ok(ref settlement) = settle_result {
+                let _ = compute_service::update_daily_stats(
+                    &state.db, provider.provider_id, true,
+                    inference_result.input_tokens as i64 + inference_result.output_tokens as i64,
+                    settlement.provider_amount,
+                    inference_result.latency_ms as f64,
+                ).await;
+            }
 
             // Update reputation
             let _ = compute_service::update_reputation(
@@ -1641,6 +1651,9 @@ pub async fn generate_community(
             let _ = compute_service::refund_escrow(&state.db, escrow_id).await;
             let _ = compute_service::fail_job(&state.db, job_id, &e.to_string()).await;
             let _ = compute_service::update_reputation(&state.db, provider.provider_id, false, None).await;
+            let _ = compute_service::update_daily_stats(
+                &state.db, provider.provider_id, false, 0, 0, 0.0,
+            ).await;
             Err(e)
         }
     }
@@ -1691,26 +1704,48 @@ pub async fn stream_community(
     // but that's not easily accessible from here. Use a rough estimate.
     let wrapped = async_stream::stream! {
         let mut char_count = 0u64;
+        let mut had_error = false;
         let mut pinned = std::pin::Pin::from(text_stream);
         while let Some(chunk) = futures::StreamExt::next(&mut pinned).await {
             match &chunk {
                 Ok(text) => char_count += text.len() as u64,
-                _ => {}
+                Err(_) => had_error = true,
             }
             yield chunk;
         }
 
-        // Estimate tokens from chars (rough: 4 chars per token)
-        let est_output_tokens = (char_count / 4).max(1) as i64;
-        let est_input_tokens = 500i64; // rough estimate
+        if had_error {
+            let _ = compute_service::fail_job(&db, job_id, "stream error").await;
+            let _ = compute_service::refund_escrow(&db, escrow_id).await;
+            let _ = compute_service::update_reputation(&db, provider_id, false, None).await;
+            let _ = compute_service::update_daily_stats(
+                &db, provider_id, false, 0, 0, 0.0,
+            ).await;
+        } else {
+            // Estimate tokens from chars (rough: 4 chars per token)
+            let est_output_tokens = (char_count / 4).max(1) as i64;
+            let est_input_tokens = 500i64; // rough estimate
 
-        let _ = compute_service::complete_job(
-            &db, job_id, est_input_tokens, est_output_tokens, 0i64, 0.8,
-        ).await;
-        let _ = compute_service::settle_escrow(
-            &db, escrow_id, est_input_tokens, est_output_tokens, price_input, price_output,
-        ).await;
-        let _ = compute_service::update_reputation(&db, provider_id, true, None).await;
+            let _ = compute_service::complete_job(
+                &db, job_id, est_input_tokens, est_output_tokens, 0i64, 0.8,
+            ).await;
+            let settle_result = compute_service::settle_escrow(
+                &db, escrow_id, est_input_tokens, est_output_tokens, price_input, price_output,
+            ).await;
+            if let Ok(ref settlement) = settle_result {
+                let _ = compute_service::update_daily_stats(
+                    &db, provider_id, true,
+                    est_input_tokens + est_output_tokens,
+                    settlement.provider_amount,
+                    0.0,
+                ).await;
+            } else {
+                let _ = compute_service::update_daily_stats(
+                    &db, provider_id, false, 0, 0, 0.0,
+                ).await;
+            }
+            let _ = compute_service::update_reputation(&db, provider_id, true, None).await;
+        }
     };
 
     Ok((Box::pin(wrapped), model_id))

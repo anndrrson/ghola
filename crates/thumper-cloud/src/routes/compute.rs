@@ -6,7 +6,7 @@ use crate::auth::AuthUser;
 use crate::error::CloudError;
 use crate::services::compute_service::{
     self, CommunityModel, DailyStats, EscrowInfo, ProviderInfo, ProviderRegistration,
-    ProviderUpdate,
+    ProviderUpdate, RecentJob,
 };
 use crate::state::AppState;
 
@@ -102,6 +102,31 @@ pub async fn get_stats(
 
     let stats = compute_service::get_provider_stats(&state.db, provider.id, query.days).await?;
     Ok(Json(stats))
+}
+
+/// GET /api/compute/jobs — Get recent jobs for the authenticated provider.
+
+#[derive(Deserialize)]
+pub struct JobsQuery {
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+}
+
+fn default_limit() -> i64 {
+    20
+}
+
+pub async fn get_recent_jobs(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Query(query): Query<JobsQuery>,
+) -> Result<Json<Vec<RecentJob>>, CloudError> {
+    let provider = compute_service::get_provider_by_user(&state.db, claims.sub)
+        .await?
+        .ok_or_else(|| CloudError::NotFound("no provider profile found".to_string()))?;
+
+    let jobs = compute_service::get_recent_jobs(&state.db, provider.id, query.limit.min(100)).await?;
+    Ok(Json(jobs))
 }
 
 /// GET /api/compute/escrow — Get active escrow entries for the authenticated

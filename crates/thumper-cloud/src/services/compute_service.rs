@@ -137,6 +137,17 @@ pub struct DailyStats {
     pub avg_latency_ms: f64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RecentJob {
+    pub id: Uuid,
+    pub model_id: String,
+    pub status: String,
+    pub input_tokens: i32,
+    pub output_tokens: i32,
+    pub latency_ms: Option<i32>,
+    pub created_at: chrono::DateTime<Utc>,
+}
+
 // =========================================================================
 // 1. register_provider
 // =========================================================================
@@ -743,6 +754,16 @@ pub async fn settle_escrow(
         ));
     }
 
+    // Update provider's total earned
+    sqlx::query(
+        "UPDATE compute_providers SET total_earned_usdc = total_earned_usdc + $1
+         WHERE id = (SELECT provider_id FROM escrow_holds WHERE id = $2)",
+    )
+    .bind(provider_amount)
+    .bind(escrow_id)
+    .execute(db)
+    .await?;
+
     tracing::info!(
         %escrow_id,
         actual_cost,
@@ -876,18 +897,22 @@ pub async fn complete_job(
     .execute(db)
     .await?;
 
-    // Update provider aggregate stats
+    // Update provider aggregate stats (running averages for success_rate + avg_latency_ms)
     sqlx::query(
         r#"
         UPDATE compute_providers
         SET total_requests = total_requests + 1,
             total_tokens_served = total_tokens_served + $1,
+            success_rate = (success_rate * total_requests + 1.0) / (total_requests + 1),
+            avg_latency_ms = (avg_latency_ms * total_requests + $3::double precision) / (total_requests + 1),
+            last_heartbeat_at = now(),
             updated_at = now()
         WHERE id = (SELECT provider_id FROM compute_jobs WHERE id = $2)
         "#,
     )
     .bind(input_tokens + output_tokens)
     .bind(job_id)
+    .bind(latency_ms as f64)
     .execute(db)
     .await?;
 
@@ -917,11 +942,13 @@ pub async fn fail_job(
     .execute(db)
     .await?;
 
-    // Increment total_requests even on failure (for success_rate calc)
+    // Increment total_requests even on failure (success_rate decreases, no latency update)
     sqlx::query(
         r#"
         UPDATE compute_providers
         SET total_requests = total_requests + 1,
+            success_rate = (success_rate * total_requests) / (total_requests + 1),
+            last_heartbeat_at = now(),
             updated_at = now()
         WHERE id = (SELECT provider_id FROM compute_jobs WHERE id = $1)
         "#,
@@ -1336,7 +1363,44 @@ pub async fn get_provider_stats(
 }
 
 // =========================================================================
-// 22. get_active_escrows
+// 22. get_recent_jobs
+// =========================================================================
+
+pub async fn get_recent_jobs(
+    db: &PgPool,
+    provider_id: Uuid,
+    limit: i64,
+) -> Result<Vec<RecentJob>, CloudError> {
+    let rows = sqlx::query_as::<_, (Uuid, String, String, i32, i32, Option<i32>, chrono::DateTime<Utc>)>(
+        r#"
+        SELECT id, model_id, status, input_tokens, output_tokens, latency_ms, created_at
+        FROM compute_jobs
+        WHERE provider_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(provider_id)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, model_id, status, input_tokens, output_tokens, latency_ms, created_at)| RecentJob {
+            id,
+            model_id,
+            status,
+            input_tokens,
+            output_tokens,
+            latency_ms,
+            created_at,
+        })
+        .collect())
+}
+
+// =========================================================================
+// 23. get_active_escrows
 // =========================================================================
 
 pub async fn get_active_escrows(

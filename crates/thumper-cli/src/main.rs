@@ -2,6 +2,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
@@ -12,8 +13,8 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
-    name = "thumper",
-    about = "Thumper — AI-powered remote control for Android devices",
+    name = "ghola",
+    about = "Ghola — your AI, your hardware",
     version
 )]
 struct Cli {
@@ -40,7 +41,7 @@ enum Commands {
         #[arg(short, long)]
         relay_url: Option<String>,
     },
-    /// Set up or view the config file (~/.thumper/config.toml)
+    /// Set up or view the config file (~/.ghola/config.toml)
     Config {
         /// Set relay URL
         #[arg(long)]
@@ -102,10 +103,21 @@ enum Commands {
         #[arg(long)]
         wallet_address: Option<String>,
     },
+    /// Install, check Ollama, auto-pull a model, authenticate, and start earning — all in one command
+    Up {
+        /// Local inference server URL
+        #[arg(long, default_value = "http://localhost:11434")]
+        inference_url: String,
+        /// Provider display name (defaults to hostname)
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[tokio::main]
 async fn main() {
+    migrate_config_dir();
+
     let cli = Cli::parse();
 
     match cli.command.unwrap_or(Commands::Serve) {
@@ -148,6 +160,44 @@ async fn main() {
             )
             .await;
         }
+        Commands::Up {
+            inference_url,
+            name,
+        } => {
+            init_tracing();
+            cmd_up(inference_url, name).await;
+        }
+    }
+}
+
+/// Migrate config from ~/.thumper/ to ~/.ghola/ if needed.
+fn migrate_config_dir() {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let old_dir = home.join(".thumper");
+    let new_dir = home.join(".ghola");
+
+    if old_dir.exists() && !new_dir.exists() {
+        std::fs::create_dir_all(&new_dir).ok();
+        // Copy config.toml
+        let old_config = old_dir.join("config.toml");
+        if old_config.exists() {
+            std::fs::copy(&old_config, new_dir.join("config.toml")).ok();
+        }
+        // Copy mcp_key
+        let old_key = old_dir.join("mcp_key");
+        if old_key.exists() {
+            std::fs::copy(&old_key, new_dir.join("mcp_key")).ok();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    new_dir.join("mcp_key"),
+                    std::fs::Permissions::from_mode(0o600),
+                )
+                .ok();
+            }
+        }
+        println!("Migrated config from ~/.thumper/ to ~/.ghola/");
     }
 }
 
@@ -240,7 +290,7 @@ async fn cmd_status(relay_url_override: Option<String>) {
             println!("MCP Key:     {}", mpk);
         }
     } else {
-        println!("\nConfig:      not found (run `thumper config` to create)");
+        println!("\nConfig:      not found (run `ghola config` to create)");
     }
 }
 
@@ -286,7 +336,7 @@ fn cmd_config(
         println!("Generated new MCP keypair:");
         println!("  Public key:  {}", keypair.pubkey);
         println!("  Secret key:  {}", keypair.secret);
-        println!("  (Secret key saved to ~/.thumper/mcp_key)");
+        println!("  (Secret key saved to ~/.ghola/mcp_key)");
 
         // Save secret key separately
         std::fs::create_dir_all(config_dir).ok();
@@ -336,7 +386,7 @@ fn cmd_config(
         } else {
             println!("No config file found at {}", config_path.display());
             println!("\nCreate one with:");
-            println!("  thumper config --relay-url ws://localhost:8080/ws --generate-key");
+            println!("  ghola config --relay-url ws://localhost:8080/ws --generate-key");
             println!("\nOr set environment variables:");
             println!("  THUMPER_RELAY_URL, THUMPER_MCP_PUBKEY, THUMPER_DEVICE_PUBKEY");
         }
@@ -345,16 +395,16 @@ fn cmd_config(
 
 /// Print the Claude Code MCP server config snippet.
 fn cmd_install() {
-    // Find the thumper binary path
-    let thumper_path = std::env::current_exe()
+    // Find the ghola binary path
+    let ghola_path = std::env::current_exe()
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "thumper".to_string());
+        .unwrap_or_else(|_| "ghola".to_string());
 
     // Use the serve subcommand explicitly
     let config = serde_json::json!({
         "mcpServers": {
-            "thumper": {
-                "command": thumper_path,
+            "ghola": {
+                "command": ghola_path,
                 "args": ["serve"],
                 "env": {}
             }
@@ -403,7 +453,7 @@ fn cmd_qr(relay_url_override: Option<String>) {
 
     let payload_str = serde_json::to_string(&payload).unwrap();
 
-    println!("Scan this QR code with the Thumper Android app:\n");
+    println!("Scan this QR code with the Ghola Android app:\n");
 
     // Generate QR code for terminal display
     match qrcode::QrCode::new(payload_str.as_bytes()) {
@@ -428,8 +478,8 @@ fn cmd_qr(relay_url_override: Option<String>) {
     println!("  {}", relay_url);
 }
 
-/// Log in via browser OAuth and save the provider API key locally.
-async fn cmd_login(cloud_url: String) {
+/// Perform browser-based OAuth login and return the token.
+async fn do_browser_login(cloud_url: String) -> String {
     // Bind a local HTTP server on a random port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -509,6 +559,12 @@ async fn cmd_login(cloud_url: String) {
     };
 
     server.abort();
+    token
+}
+
+/// Log in via browser OAuth and save the provider API key locally.
+async fn cmd_login(cloud_url: String) {
+    let token = do_browser_login(cloud_url).await;
 
     // Save token to config
     let config_path = config_file_path();
@@ -528,7 +584,117 @@ async fn cmd_login(cloud_url: String) {
     std::fs::write(&config_path, toml_str).expect("failed to write config");
 
     println!("Logged in successfully! Token saved to {}", config_path.display());
-    println!("\nRun `thumper gpu-serve` to start providing GPU compute.");
+    println!("\nRun `ghola up` to start providing GPU compute.");
+}
+
+/// `ghola up` — the 2-command onboarding experience.
+/// Checks Ollama, auto-pulls a model, authenticates if needed, and starts serving.
+async fn cmd_up(inference_url: String, name: Option<String>) {
+    println!("\n\x1b[1m━━━ Ghola Provider Setup ━━━━━━━━━━━━━━━━━━━\x1b[0m\n");
+
+    // 1. Check Ollama
+    print!("  Checking Ollama at {}... ", inference_url);
+    std::io::stdout().flush().ok();
+    let client = reqwest::Client::new();
+    let base = inference_url.trim_end_matches('/');
+    match client.get(format!("{}/api/tags", base)).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            println!("\x1b[32m✓ running\x1b[0m");
+        }
+        _ => {
+            println!("\x1b[31m✗ not reachable\x1b[0m");
+            println!();
+            println!("  Ollama is not running. Install and start it first:");
+            println!("    curl -fsSL https://ollama.ai/install.sh | sh");
+            println!("    ollama serve");
+            println!();
+            println!("  Then re-run: ghola up");
+            std::process::exit(1);
+        }
+    }
+
+    // 2. Check models
+    let discovered_models = discover_models(&inference_url).await;
+    if discovered_models.is_empty() {
+        println!("  No models found. Pulling llama3.2...\n");
+        let pull_status = std::process::Command::new("ollama")
+            .args(["pull", "llama3.2"])
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status();
+        match pull_status {
+            Ok(s) if s.success() => {
+                println!();
+            }
+            _ => {
+                eprintln!("\n  Failed to pull llama3.2. Pull a model manually:");
+                eprintln!("    ollama pull llama3.2");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        println!("  Models: {} found ({})", discovered_models.len(),
+            discovered_models.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
+    }
+
+    // 3. Check auth
+    let auth_token = std::env::var("GHOLA_TOKEN").ok()
+        .or_else(|| load_config_value("token"))
+        .unwrap_or_default();
+
+    let auth_token = if auth_token.is_empty() {
+        println!("  No auth token found. Logging in via browser...\n");
+        let token = do_browser_login("https://ghola.xyz".to_string()).await;
+
+        // Save token
+        let config_path = config_file_path();
+        let config_dir = config_path.parent().unwrap();
+        std::fs::create_dir_all(config_dir).ok();
+        let mut config = if config_path.exists() {
+            let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
+            toml::from_str::<toml::Table>(&contents).unwrap_or_default()
+        } else {
+            toml::Table::new()
+        };
+        config.insert("token".into(), toml::Value::String(token.clone()));
+        let toml_str = toml::to_string_pretty(&config).expect("failed to serialize config");
+        std::fs::write(&config_path, toml_str).expect("failed to write config");
+        println!("  \x1b[32m✓ Logged in\x1b[0m — token saved to {}", config_path.display());
+
+        token
+    } else {
+        println!("  \x1b[32m✓ Authenticated\x1b[0m");
+        auth_token
+    };
+
+    // 4. Resolve provider name
+    let provider_name = name.unwrap_or_else(|| {
+        std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "GPU Provider".to_string())
+    });
+
+    println!("  Name: {}", provider_name);
+    println!();
+
+    // 5. Delegate to gpu-serve with defaults
+    cmd_gpu_serve(
+        inference_url,
+        None,          // relay_url — use default
+        None,          // cloud_url — use default
+        provider_name,
+        10,            // price_input
+        30,            // price_output
+        2,             // max_concurrent
+        0,             // vram
+        Some(auth_token),
+        None,          // wallet_address
+    )
+    .await;
 }
 
 /// Run the GPU inference provider, connecting to the relay and forwarding
@@ -552,7 +718,7 @@ async fn cmd_gpu_serve(
         .unwrap_or_default();
 
     if auth_token.is_empty() {
-        eprintln!("Error: No auth token provided. Use --token or set GHOLA_TOKEN env var.");
+        eprintln!("Error: No auth token provided. Run `ghola up` or `ghola login` first.");
         std::process::exit(1);
     }
 
@@ -584,7 +750,7 @@ async fn cmd_gpu_serve(
         .or_else(|| load_config_value("wallet_address"))
         .unwrap_or_default();
 
-    let cloud_url = cloud_url.unwrap_or_else(|| "https://thumper-cloud.onrender.com".to_string());
+    let cloud_url = cloud_url.unwrap_or_else(|| "https://ghola.xyz".to_string());
     {
         let cloud = &cloud_url;
         println!("Registering with cloud at {}...", cloud);
@@ -633,7 +799,7 @@ async fn cmd_gpu_serve(
     // 6. Load or generate keypair
     let config_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".thumper");
+        .join(".ghola");
     let key_path = config_dir.join("mcp_key");
 
     let (signing_key, pubkey_b58) = if key_path.exists() {
@@ -675,7 +841,10 @@ async fn cmd_gpu_serve(
     };
 
     let active_jobs = Arc::new(AtomicU32::new(0));
+    let total_requests = Arc::new(AtomicU32::new(0));
+    let start_time = Instant::now();
     let model_names: Vec<String> = discovered_models.clone();
+    let model_count = model_names.len();
 
     // 7 & 8. Connect to relay with reconnection loop
     let mut backoff_secs: u64 = 1;
@@ -817,7 +986,8 @@ async fn cmd_gpu_serve(
             }
         }
 
-        println!("GPU provider is online. Waiting for inference requests...");
+        // Print live status block
+        print_status_block(model_count, total_requests.load(Ordering::Relaxed), &start_time);
 
         // Create channel for sending messages back to the WebSocket
         let (tx, mut rx) = mpsc::unbounded_channel::<tokio_tungstenite::tungstenite::Message>();
@@ -881,6 +1051,9 @@ async fn cmd_gpu_serve(
                                         let inf_url = inference_url.clone();
                                         let sender = tx.clone();
                                         let jobs = active_jobs.clone();
+                                        let total = total_requests.clone();
+                                        let mc = model_count;
+                                        let st = start_time;
                                         let env_clone = envelope.clone();
                                         let payload_clone = payload.clone();
                                         jobs.fetch_add(1, Ordering::Relaxed);
@@ -893,6 +1066,8 @@ async fn cmd_gpu_serve(
                                             )
                                             .await;
                                             jobs.fetch_sub(1, Ordering::Relaxed);
+                                            let reqs = total.fetch_add(1, Ordering::Relaxed) + 1;
+                                            print_status_update(mc, reqs, &st);
                                         });
                                     }
                                     thumper_types::MessageType::Ping => {
@@ -936,6 +1111,42 @@ async fn cmd_gpu_serve(
             backoff_secs = (backoff_secs * 2).min(60);
         }
     }
+}
+
+/// Print the initial status block after connecting.
+fn print_status_block(model_count: usize, total_reqs: u32, start_time: &Instant) {
+    let elapsed = start_time.elapsed();
+    let hours = elapsed.as_secs() / 3600;
+    let mins = (elapsed.as_secs() % 3600) / 60;
+    println!();
+    println!("\x1b[1m━━━ Ghola Provider ━━━━━━━━━━━━━━━━━━━━\x1b[0m");
+    println!("  \x1b[32mOnline\x1b[0m · {} model{} · {} request{}",
+        model_count,
+        if model_count == 1 { "" } else { "s" },
+        total_reqs,
+        if total_reqs == 1 { "" } else { "s" },
+    );
+    println!("  Earnings: $0.0000 USDC");
+    println!("  Uptime: {}h {}m", hours, mins);
+    println!("  Press Ctrl+C to stop");
+    println!("\x1b[1m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m");
+    println!();
+}
+
+/// Print a one-line status update after each completed request.
+fn print_status_update(model_count: usize, total_reqs: u32, start_time: &Instant) {
+    let elapsed = start_time.elapsed();
+    let hours = elapsed.as_secs() / 3600;
+    let mins = (elapsed.as_secs() % 3600) / 60;
+    println!(
+        "  \x1b[32m●\x1b[0m {} model{} · {} request{} · uptime {}h {}m",
+        model_count,
+        if model_count == 1 { "" } else { "s" },
+        total_reqs,
+        if total_reqs == 1 { "" } else { "s" },
+        hours,
+        mins,
+    );
 }
 
 /// Discover available models from a local inference server.
@@ -1210,7 +1421,7 @@ fn init_tracing() {
 fn config_file_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".thumper")
+        .join(".ghola")
         .join("config.toml")
 }
 
