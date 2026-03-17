@@ -11,7 +11,6 @@ import {
   DollarSign,
   Copy,
   Check,
-  ChevronRight,
   ChevronDown,
   Monitor,
   HardDrive,
@@ -20,9 +19,61 @@ import {
   Clock,
   Layers,
   Zap,
+  ArrowRight,
+  ArrowUpRight,
 } from "lucide-react";
 
-// ── Shared components ──────────────────────────────────────────────
+// ── Scroll reveal hook ───────────────────────────────────────────────
+
+function useReveal(threshold = 0.15) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { threshold }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [threshold]);
+
+  return { ref, visible };
+}
+
+function Reveal({
+  children,
+  delay = 0,
+  className = "",
+}: {
+  children: React.ReactNode;
+  delay?: number;
+  className?: string;
+}) {
+  const { ref, visible } = useReveal();
+  return (
+    <div
+      ref={ref}
+      className={className}
+      style={{
+        opacity: visible ? 1 : 0,
+        transform: visible ? "translateY(0)" : "translateY(28px)",
+        transition: `opacity 0.7s cubic-bezier(0.16,1,0.3,1) ${delay}s, transform 0.7s cubic-bezier(0.16,1,0.3,1) ${delay}s`,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ── Shared components ────────────────────────────────────────────────
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -36,13 +87,13 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="absolute top-3 right-3 p-1.5 rounded-md bg-[#161822] hover:bg-[#1c1f2e] transition-colors cursor-pointer"
+      className="absolute top-3 right-3 p-1.5 rounded-md bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.06] hover:border-white/[0.12] transition-all cursor-pointer"
       title="Copy to clipboard"
     >
       {copied ? (
         <Check className="w-4 h-4 text-green-400" />
       ) : (
-        <Copy className="w-4 h-4 text-[#8b95a8]" />
+        <Copy className="w-4 h-4 text-[#4a5568]" />
       )}
     </button>
   );
@@ -56,10 +107,12 @@ function CodeBlock({
   highlight?: boolean;
 }) {
   return (
-    <div className="relative">
+    <div className="relative group">
       <pre
-        className={`rounded-lg bg-[#08090d] border border-[#1e2a3a] p-4 pr-12 text-sm font-mono overflow-x-auto whitespace-pre ${
-          highlight ? "text-[#3da8ff] shadow-[0_0_20px_rgba(61,168,255,0.08)]" : "text-[#8b95a8]"
+        className={`rounded-xl bg-[#05060a] border p-4 pr-12 text-sm font-mono overflow-x-auto whitespace-pre transition-all duration-300 ${
+          highlight
+            ? "text-[#3da8ff] border-[#3da8ff]/20 shadow-[0_0_30px_rgba(61,168,255,0.08)] group-hover:shadow-[0_0_40px_rgba(61,168,255,0.12)]"
+            : "text-[#8b95a8] border-white/[0.06] group-hover:border-white/[0.1]"
         }`}
       >
         {code}
@@ -79,28 +132,62 @@ function FAQItem({
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="border-b border-[#1e2a3a] last:border-b-0">
+    <div className="border-b border-white/[0.06] last:border-b-0">
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between py-4 text-left cursor-pointer"
+        className="w-full flex items-center justify-between py-5 text-left cursor-pointer group"
       >
-        <span className="text-[#eef1f8] font-medium">{question}</span>
+        <span className="text-[#eef1f8] font-medium group-hover:text-white transition-colors">
+          {question}
+        </span>
         <ChevronDown
-          className={`w-5 h-5 text-[#8b95a8] transition-transform flex-shrink-0 ml-4 ${
+          className={`w-5 h-5 text-[#4a5568] transition-transform duration-300 flex-shrink-0 ml-4 ${
             open ? "rotate-180" : ""
           }`}
         />
       </button>
-      {open && (
-        <p className="text-sm text-[#8b95a8] pb-4 leading-relaxed">
-          {answer}
-        </p>
-      )}
+      <div
+        className="grid transition-all duration-300 ease-out"
+        style={{
+          gridTemplateRows: open ? "1fr" : "0fr",
+          opacity: open ? 1 : 0,
+        }}
+      >
+        <div className="overflow-hidden">
+          <p className="text-sm text-[#8b95a8] pb-5 leading-relaxed">
+            {answer}
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
 
-// ── Landing View (unauthenticated) ─────────────────────────────────
+// ── Glass card wrapper ───────────────────────────────────────────────
+
+function GlassCard({
+  children,
+  className = "",
+  hover = true,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  hover?: boolean;
+}) {
+  return (
+    <div
+      className={`rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm ${
+        hover
+          ? "hover:border-white/[0.12] hover:bg-white/[0.04] hover:shadow-[0_8px_32px_rgba(0,0,0,0.3)]"
+          : ""
+      } transition-all duration-300 ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ── Landing View (unauthenticated) ──────────────────────────────────
 
 function LandingView() {
   const heroRef = useRef<HTMLDivElement>(null);
@@ -109,8 +196,8 @@ function LandingView() {
     function handleMouseMove(e: MouseEvent) {
       if (!heroRef.current) return;
       const rect = heroRef.current.getBoundingClientRect();
-      const x = ((e.clientX - rect.left) / rect.width - 0.5) * 20;
-      const y = ((e.clientY - rect.top) / rect.height - 0.5) * 20;
+      const x = ((e.clientX - rect.left) / rect.width - 0.5) * 24;
+      const y = ((e.clientY - rect.top) / rect.height - 0.5) * 24;
       heroRef.current.style.setProperty("--parallax-x", `${x}px`);
       heroRef.current.style.setProperty("--parallax-y", `${y}px`);
     }
@@ -119,161 +206,344 @@ function LandingView() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#08090d] pt-24 pb-16">
-      <div className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8">
-        {/* Hero */}
-        <section
-          ref={heroRef}
-          className="relative text-center pb-20 overflow-hidden"
-          style={
-            {
-              "--parallax-x": "0px",
-              "--parallax-y": "0px",
-            } as React.CSSProperties
-          }
-        >
+    <div className="min-h-screen bg-[#08090d]">
+      {/* ──────────── Hero ──────────── */}
+      <section
+        ref={heroRef}
+        className="relative min-h-[calc(100vh-4rem)] flex items-center overflow-hidden pt-16"
+        style={
+          {
+            "--parallax-x": "0px",
+            "--parallax-y": "0px",
+          } as React.CSSProperties
+        }
+      >
+        {/* Animated gradient mesh */}
+        <div className="absolute inset-0 overflow-hidden">
           <div
-            className="pointer-events-none absolute inset-0"
+            className="absolute w-[700px] h-[700px] rounded-full opacity-[0.07]"
             style={{
-              backgroundImage:
-                "radial-gradient(circle, #1e2a3a 1px, transparent 1px)",
-              backgroundSize: "32px 32px",
-              transform: "translate(var(--parallax-x), var(--parallax-y))",
-              transition: "transform 0.15s ease-out",
+              background:
+                "radial-gradient(circle, #3da8ff 0%, transparent 70%)",
+              top: "5%",
+              left: "15%",
+              animation: "float-slow 20s ease-in-out infinite",
             }}
           />
-          <div className="relative">
-            <div className="inline-flex items-center gap-2 rounded-full bg-[#3da8ff]/10 px-4 py-1.5 text-sm text-[#3da8ff] mb-6">
-              <Zap className="w-4 h-4" />
-              Decentralized AI Inference
+          <div
+            className="absolute w-[500px] h-[500px] rounded-full opacity-[0.04]"
+            style={{
+              background:
+                "radial-gradient(circle, #5bb8ff 0%, transparent 70%)",
+              bottom: "10%",
+              right: "10%",
+              animation: "float-slow-reverse 25s ease-in-out infinite",
+            }}
+          />
+          <div
+            className="absolute w-[300px] h-[300px] rounded-full opacity-[0.03]"
+            style={{
+              background:
+                "radial-gradient(circle, #93cbff 0%, transparent 70%)",
+              top: "40%",
+              right: "30%",
+              animation: "float-slow 18s ease-in-out infinite 5s",
+            }}
+          />
+        </div>
+
+        {/* Noise texture overlay */}
+        <div
+          className="absolute inset-0 opacity-[0.015] pointer-events-none"
+          style={{
+            backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
+            backgroundSize: "128px 128px",
+          }}
+        />
+
+        {/* Parallax dot grid */}
+        <div
+          className="absolute inset-[-20px] pointer-events-none"
+          style={{
+            backgroundImage:
+              "radial-gradient(circle, rgba(61,168,255,0.12) 1px, transparent 1px)",
+            backgroundSize: "40px 40px",
+            transform: "translate(var(--parallax-x), var(--parallax-y))",
+            transition: "transform 0.15s ease-out",
+          }}
+        />
+
+        {/* Radial vignette */}
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            background:
+              "radial-gradient(ellipse at center, transparent 40%, #08090d 80%)",
+          }}
+        />
+
+        <div className="relative mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 py-24">
+          <div className="max-w-3xl mx-auto">
+            {/* Badge */}
+            <div
+              className="flex justify-center mb-8"
+              style={{
+                opacity: 0,
+                animation: "fade-in-up 0.7s cubic-bezier(0.16,1,0.3,1) 0.1s forwards",
+              }}
+            >
+              <div className="inline-flex items-center gap-2 rounded-full border border-[#3da8ff]/20 bg-[#3da8ff]/[0.06] px-4 py-1.5 text-sm text-[#3da8ff]">
+                <Zap className="w-3.5 h-3.5" />
+                Decentralized AI Inference
+              </div>
             </div>
-            <h1 className="text-4xl sm:text-5xl font-bold text-[#eef1f8] mb-5 tracking-tight">
-              Turn your idle GPU into income
+
+            {/* Title */}
+            <h1
+              className="text-5xl sm:text-6xl md:text-7xl font-medium tracking-tight text-[#eef1f8] text-center leading-[1.08]"
+              style={{
+                opacity: 0,
+                animation: "fade-in-up 0.7s cubic-bezier(0.16,1,0.3,1) 0.2s forwards",
+              }}
+            >
+              Turn your idle GPU
+              <br />
+              into{" "}
+              <span className="text-[#3da8ff]">income</span>
             </h1>
-            <p className="text-lg text-[#8b95a8] max-w-2xl mx-auto leading-relaxed">
-              Ghola users pay for AI chat. Your GPU serves the inference. You earn
-              USDC for every request. No middlemen, no cloud bills&mdash;just your
-              hardware working for you.
+
+            {/* Subtitle */}
+            <p
+              className="mt-6 text-lg md:text-xl text-[#8b95a8] text-center max-w-2xl mx-auto leading-relaxed"
+              style={{
+                opacity: 0,
+                animation: "fade-in-up 0.7s cubic-bezier(0.16,1,0.3,1) 0.35s forwards",
+              }}
+            >
+              Ghola users pay for AI chat. Your GPU serves the inference. You
+              earn USDC for every request. No middlemen, no cloud
+              bills&mdash;just your hardware working for you.
             </p>
-            <div className="mt-10 max-w-lg mx-auto">
-              <div className="relative rounded-xl bg-[#0f1117] border border-[#3da8ff]/20 p-6 shadow-[0_0_30px_rgba(61,168,255,0.06)]">
-                <p className="text-xs text-[#4a5568] uppercase tracking-wider mb-3 font-medium">2 commands. That&apos;s it.</p>
+
+            {/* Terminal box */}
+            <div
+              className="mt-12 max-w-lg mx-auto"
+              style={{
+                opacity: 0,
+                animation: "fade-in-up 0.7s cubic-bezier(0.16,1,0.3,1) 0.5s forwards",
+              }}
+            >
+              <div className="relative rounded-2xl bg-[#05060a]/80 border border-white/[0.06] p-6 shadow-[0_0_60px_rgba(61,168,255,0.06)] backdrop-blur-sm">
+                {/* Terminal header dots */}
+                <div className="flex items-center gap-1.5 mb-4">
+                  <div className="w-2.5 h-2.5 rounded-full bg-white/[0.08]" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-white/[0.08]" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-white/[0.08]" />
+                  <span className="ml-2 text-[10px] text-white/[0.15] font-mono uppercase tracking-widest">
+                    terminal
+                  </span>
+                </div>
                 <div className="space-y-2">
                   <div className="relative">
-                    <pre className="rounded-lg bg-[#08090d] border border-[#1e2a3a] p-3 text-sm font-mono text-[#3da8ff] overflow-x-auto">
-                      <span className="text-[#4a5568]">$ </span>curl -fsSL https://ghola.xyz/install.sh | sh
+                    <pre className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-3 text-sm font-mono text-[#3da8ff] overflow-x-auto">
+                      <span className="text-[#4a5568] select-none">$ </span>
+                      curl -fsSL https://ghola.xyz/install.sh | sh
                     </pre>
                     <CopyButton text="curl -fsSL https://ghola.xyz/install.sh | sh" />
                   </div>
                   <div className="relative">
-                    <pre className="rounded-lg bg-[#08090d] border border-[#1e2a3a] p-3 text-sm font-mono text-[#3da8ff] overflow-x-auto">
-                      <span className="text-[#4a5568]">$ </span>ghola up
+                    <pre className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-3 text-sm font-mono text-[#3da8ff] overflow-x-auto">
+                      <span className="text-[#4a5568] select-none">$ </span>
+                      ghola up
+                      <span
+                        className="inline-block w-2 h-4 bg-[#3da8ff] ml-1 align-middle"
+                        style={{ animation: "terminal-blink 1.2s step-end infinite" }}
+                      />
                     </pre>
                     <CopyButton text="ghola up" />
                   </div>
                 </div>
-                <p className="text-xs text-[#4a5568] mt-3 leading-relaxed">
-                  Installs the CLI, checks for Ollama, auto-pulls a model, signs you up, and starts earning.
+                <p className="text-xs text-[#4a5568] mt-4 leading-relaxed font-mono">
+                  <span className="text-[#4a5568] select-none">// </span>
+                  installs CLI, checks Ollama, auto-pulls model, starts earning
                 </p>
               </div>
             </div>
-            <div className="mt-8">
+
+            {/* CTAs */}
+            <div
+              className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4"
+              style={{
+                opacity: 0,
+                animation: "fade-in-up 0.7s cubic-bezier(0.16,1,0.3,1) 0.65s forwards",
+              }}
+            >
               <Link
                 href="/signin?redirect=/provide"
-                className="inline-flex items-center gap-2 rounded-lg bg-[#3da8ff] px-8 py-3 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
+                className="inline-flex items-center gap-2 rounded-xl bg-[#3da8ff] px-7 py-3.5 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all shadow-[0_0_24px_rgba(61,168,255,0.2)]"
               >
                 Start Earning
-                <ChevronRight className="w-5 h-5" />
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+              <Link
+                href="#how-it-works"
+                className="inline-flex items-center gap-2 rounded-xl border border-white/[0.1] px-7 py-3.5 text-base font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-white/[0.2] active:scale-[0.98] transition-all"
+              >
+                Learn more
               </Link>
             </div>
-          </div>
-        </section>
 
-        {/* How It Works */}
-        <section className="py-20 border-t border-[#1e2a3a]">
-          <h2 className="text-2xl font-bold text-[#eef1f8] text-center mb-10">
-            How it works
-          </h2>
+            {/* Comment-style footer */}
+            <p
+              className="mt-16 text-center text-xs font-mono text-white/[0.15]"
+              style={{
+                opacity: 0,
+                animation: "fade-in-up 0.7s cubic-bezier(0.16,1,0.3,1) 0.8s forwards",
+              }}
+            >
+              // powered by distributed GPUs worldwide
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* ──────────── How It Works ──────────── */}
+      <section id="how-it-works" className="py-24 sm:py-32 border-t border-white/[0.04]">
+        <div className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8">
+          <Reveal>
+            <h2 className="text-3xl font-medium text-[#eef1f8] text-center mb-4">
+              How it works
+            </h2>
+            <p className="text-[#4a5568] text-center mb-14 font-mono text-sm">
+              // four steps to your first payout
+            </p>
+          </Reveal>
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
             {[
               {
                 icon: Download,
                 title: "Install Ollama",
                 desc: "Free, open-source local AI server. One command install on Linux or macOS.",
+                num: "01",
               },
               {
                 icon: Layers,
                 title: "Pull a model",
                 desc: "Download a model like Llama 3.2. It runs entirely on your GPU.",
+                num: "02",
               },
               {
                 icon: Terminal,
                 title: "Run one command",
                 desc: "Start the Ghola provider CLI. It auto-connects to the network.",
+                num: "03",
               },
               {
                 icon: DollarSign,
                 title: "Get paid",
                 desc: "Earn USDC for every inference request your GPU serves.",
+                num: "04",
               },
-            ].map((item) => (
-              <div
-                key={item.title}
-                className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 hover:border-[#2a3a50] transition-colors"
-              >
-                <div className="w-10 h-10 rounded-lg bg-[#3da8ff]/10 flex items-center justify-center mb-4">
-                  <item.icon className="w-5 h-5 text-[#3da8ff]" />
-                </div>
-                <h3 className="text-base font-semibold text-[#eef1f8] mb-2">
-                  {item.title}
-                </h3>
-                <p className="text-sm text-[#8b95a8] leading-relaxed">
-                  {item.desc}
-                </p>
-              </div>
+            ].map((item, i) => (
+              <Reveal key={item.title} delay={0.1 + i * 0.1}>
+                <GlassCard className="p-6 h-full">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-[#3da8ff]/[0.08] border border-[#3da8ff]/[0.1] flex items-center justify-center">
+                      <item.icon className="w-5 h-5 text-[#3da8ff]" />
+                    </div>
+                    <span className="text-xs font-mono text-white/[0.1]">
+                      {item.num}
+                    </span>
+                  </div>
+                  <h3 className="text-base font-medium text-[#eef1f8] mb-2">
+                    {item.title}
+                  </h3>
+                  <p className="text-sm text-[#8b95a8] leading-relaxed">
+                    {item.desc}
+                  </p>
+                </GlassCard>
+              </Reveal>
             ))}
           </div>
-        </section>
+        </div>
+      </section>
 
-        {/* Earnings */}
-        <section className="py-20 border-t border-[#1e2a3a]">
-          <h2 className="text-2xl font-bold text-[#eef1f8] text-center mb-10">
-            Provider economics
-          </h2>
+      {/* ──────────── Provider Economics ──────────── */}
+      <section className="py-24 sm:py-32 border-t border-white/[0.04] relative">
+        {/* Subtle background glow for this section */}
+        <div
+          className="absolute inset-0 pointer-events-none opacity-[0.03]"
+          style={{
+            background:
+              "radial-gradient(ellipse at 50% 0%, #3da8ff 0%, transparent 60%)",
+          }}
+        />
+        <div className="relative mx-auto max-w-4xl px-4 sm:px-6 lg:px-8">
+          <Reveal>
+            <h2 className="text-3xl font-medium text-[#eef1f8] text-center mb-4">
+              Provider economics
+            </h2>
+            <p className="text-[#4a5568] text-center mb-14 font-mono text-sm">
+              // your GPU, your revenue
+            </p>
+          </Reveal>
           <div className="grid sm:grid-cols-3 gap-5">
-            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 text-center hover:border-[#2a3a50] transition-colors">
-              <p className="text-3xl font-bold text-[#eef1f8] mb-1">85%</p>
-              <p className="text-sm text-[#8b95a8]">
-                Revenue goes to you. Ghola takes a 15% platform fee.
-              </p>
-            </div>
-            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 text-center hover:border-[#2a3a50] transition-colors">
-              <p className="text-sm font-mono text-[#3da8ff] mb-1">
-                per 1K tokens
-              </p>
-              <p className="text-sm text-[#8b95a8]">
-                <span className="text-[#eef1f8]">Input:</span> 10 &micro;USDC
-                &nbsp;&middot;&nbsp;{" "}
-                <span className="text-[#eef1f8]">Output:</span> 30 &micro;USDC
-              </p>
-              <p className="text-xs text-[#4a5568] mt-2">
-                Early network rates &mdash; scale with demand
-              </p>
-            </div>
-            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 text-center hover:border-[#2a3a50] transition-colors">
-              <p className="text-3xl font-bold text-[#eef1f8] mb-1">$0</p>
-              <p className="text-sm text-[#8b95a8]">
-                No signup fees. No monthly cost. Earn from day one.
-              </p>
-            </div>
+            <Reveal delay={0.1}>
+              <GlassCard className="p-8 text-center h-full">
+                <p className="text-5xl font-medium text-[#eef1f8] mb-2 tracking-tight">
+                  85%
+                </p>
+                <p className="text-sm text-[#8b95a8] leading-relaxed">
+                  Revenue goes to you. Ghola takes a 15% platform fee.
+                </p>
+              </GlassCard>
+            </Reveal>
+            <Reveal delay={0.2}>
+              <GlassCard className="p-8 text-center h-full border-[#3da8ff]/10 shadow-[0_0_40px_rgba(61,168,255,0.04)]">
+                <p className="text-sm font-mono text-[#3da8ff] mb-3">
+                  per 1K tokens
+                </p>
+                <div className="flex items-center justify-center gap-4 text-sm">
+                  <div>
+                    <span className="text-[#eef1f8] font-medium">10</span>
+                    <span className="text-[#4a5568] ml-1">&micro;USDC in</span>
+                  </div>
+                  <span className="text-white/[0.1]">/</span>
+                  <div>
+                    <span className="text-[#eef1f8] font-medium">30</span>
+                    <span className="text-[#4a5568] ml-1">&micro;USDC out</span>
+                  </div>
+                </div>
+                <p className="text-xs text-[#4a5568] mt-3 font-mono">
+                  // early network rates
+                </p>
+              </GlassCard>
+            </Reveal>
+            <Reveal delay={0.3}>
+              <GlassCard className="p-8 text-center h-full">
+                <p className="text-5xl font-medium text-[#eef1f8] mb-2 tracking-tight">
+                  $0
+                </p>
+                <p className="text-sm text-[#8b95a8] leading-relaxed">
+                  No signup fees. No monthly cost. Earn from day one.
+                </p>
+              </GlassCard>
+            </Reveal>
           </div>
-        </section>
+        </div>
+      </section>
 
-        {/* Requirements */}
-        <section className="py-20 border-t border-[#1e2a3a]">
-          <h2 className="text-2xl font-bold text-[#eef1f8] text-center mb-10">
-            Requirements
-          </h2>
+      {/* ──────────── Requirements ──────────── */}
+      <section className="py-24 sm:py-32 border-t border-white/[0.04]">
+        <div className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8">
+          <Reveal>
+            <h2 className="text-3xl font-medium text-[#eef1f8] text-center mb-4">
+              Requirements
+            </h2>
+            <p className="text-[#4a5568] text-center mb-14 font-mono text-sm">
+              // what you need to get started
+            </p>
+          </Reveal>
           <div className="grid sm:grid-cols-2 gap-5 max-w-2xl mx-auto">
             {[
               {
@@ -296,32 +566,39 @@ function LandingView() {
                 label: "Internet",
                 value: "Stable connection \u2014 no specific bandwidth required",
               },
-            ].map((item) => (
-              <div
-                key={item.label}
-                className="flex items-start gap-4 rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5 hover:border-[#2a3a50] transition-colors"
-              >
-                <div className="w-9 h-9 rounded-lg bg-[#3da8ff]/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <item.icon className="w-4 h-4 text-[#3da8ff]" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-[#eef1f8]">
-                    {item.label}
-                  </p>
-                  <p className="text-sm text-[#8b95a8]">{item.value}</p>
-                </div>
-              </div>
+            ].map((item, i) => (
+              <Reveal key={item.label} delay={0.1 + i * 0.08}>
+                <GlassCard className="p-5 h-full">
+                  <div className="flex items-start gap-4">
+                    <div className="w-9 h-9 rounded-xl bg-[#3da8ff]/[0.08] border border-[#3da8ff]/[0.1] flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <item.icon className="w-4 h-4 text-[#3da8ff]" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-[#eef1f8]">
+                        {item.label}
+                      </p>
+                      <p className="text-sm text-[#8b95a8] mt-0.5">
+                        {item.value}
+                      </p>
+                    </div>
+                  </div>
+                </GlassCard>
+              </Reveal>
             ))}
           </div>
-        </section>
+        </div>
+      </section>
 
-        {/* FAQ */}
-        <section className="py-20 border-t border-[#1e2a3a]">
-          <div className="max-w-2xl mx-auto">
-            <h2 className="text-2xl font-bold text-[#eef1f8] text-center mb-10">
+      {/* ──────────── FAQ ──────────── */}
+      <section className="py-24 sm:py-32 border-t border-white/[0.04]">
+        <div className="mx-auto max-w-2xl px-4 sm:px-6 lg:px-8">
+          <Reveal>
+            <h2 className="text-3xl font-medium text-[#eef1f8] text-center mb-14">
               FAQ
             </h2>
-            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] px-6 hover:border-[#2a3a50] transition-colors">
+          </Reveal>
+          <Reveal delay={0.15}>
+            <GlassCard className="px-6 sm:px-8" hover={false}>
               <FAQItem
                 question="Is my data safe?"
                 answer="Yes. All inference runs locally on your machine. User prompts are encrypted in transit and never stored on your hardware. You process the request, return the result, and the data is gone."
@@ -338,37 +615,54 @@ function LandingView() {
                 question="What models are supported?"
                 answer="Any model that Ollama supports: Llama, Mistral, Gemma, Phi, Qwen, and many more. The CLI auto-discovers all models you have pulled locally."
               />
-            </div>
-          </div>
-        </section>
+            </GlassCard>
+          </Reveal>
+        </div>
+      </section>
 
-        {/* Bottom CTA */}
-        <section className="py-20 border-t border-[#1e2a3a]">
-          <div className="text-center">
+      {/* ──────────── Bottom CTA ──────────── */}
+      <section className="py-24 sm:py-32 relative">
+        {/* Background glow */}
+        <div
+          className="absolute inset-0 pointer-events-none opacity-[0.04]"
+          style={{
+            background:
+              "radial-gradient(ellipse at 50% 100%, #3da8ff 0%, transparent 50%)",
+          }}
+        />
+        <div className="relative mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 text-center">
+          <Reveal>
+            <h2 className="text-3xl sm:text-4xl font-medium text-[#eef1f8] mb-4">
+              Your GPU is waiting
+            </h2>
+            <p className="text-[#8b95a8] mb-10 max-w-md mx-auto">
+              Two commands. No signup fees. Start earning USDC today.
+            </p>
             <Link
               href="/signin?redirect=/provide"
-              className="inline-flex items-center gap-2 rounded-lg bg-[#3da8ff] px-8 py-3 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
+              className="inline-flex items-center gap-2 rounded-xl bg-[#3da8ff] px-8 py-4 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all shadow-[0_0_32px_rgba(61,168,255,0.2)]"
             >
               Start Earning
-              <ChevronRight className="w-5 h-5" />
+              <ArrowRight className="w-4 h-4" />
             </Link>
-            <p className="mt-4 text-sm text-[#8b95a8]">
+            <p className="mt-6 text-sm text-[#4a5568]">
               Already have an account?{" "}
               <Link
                 href="/signin?redirect=/provide"
-                className="text-[#3da8ff] hover:text-[#eef1f8] transition-colors"
+                className="text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
               >
                 Sign in
+                <ArrowUpRight className="w-3 h-3 inline ml-0.5" />
               </Link>
             </p>
-          </div>
-        </section>
-      </div>
+          </Reveal>
+        </div>
+      </section>
     </div>
   );
 }
 
-// ── Dashboard View (authenticated) ─────────────────────────────────
+// ── Dashboard View (authenticated) ──────────────────────────────────
 
 interface ProviderStatus {
   id: string;
@@ -431,7 +725,7 @@ function DashboardView() {
   if (error) {
     return (
       <div className="min-h-screen bg-[#08090d] pt-24 flex items-center justify-center">
-        <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-6 max-w-md">
+        <div className="rounded-2xl border border-red-500/20 bg-red-500/[0.05] backdrop-blur-sm p-6 max-w-md">
           <p className="text-red-400">{error}</p>
         </div>
       </div>
@@ -444,7 +738,7 @@ function DashboardView() {
   return (
     <div className="min-h-screen bg-[#08090d] pt-24 pb-16">
       <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
-        <h1 className="text-3xl font-bold text-[#eef1f8] mb-2">
+        <h1 className="text-3xl font-medium text-[#eef1f8] mb-2 tracking-tight">
           GPU Provider Setup
         </h1>
         <p className="text-[#8b95a8] mb-8">
@@ -453,7 +747,7 @@ function DashboardView() {
 
         {/* Provider Status (if already registered) */}
         {provider && (
-          <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 mb-8 hover:border-[#2a3a50] transition-colors">
+          <GlassCard className="p-6 mb-8">
             <div className="flex items-center justify-between flex-wrap gap-4">
               <div className="flex items-center gap-3">
                 <div
@@ -491,14 +785,14 @@ function DashboardView() {
                 {provider.models.map((m) => (
                   <span
                     key={m}
-                    className="rounded-md bg-[#161822] px-2 py-1 text-xs text-[#8b95a8] font-mono"
+                    className="rounded-lg bg-white/[0.04] border border-white/[0.06] px-2.5 py-1 text-xs text-[#8b95a8] font-mono"
                   >
                     {m}
                   </span>
                 ))}
               </div>
             )}
-          </div>
+          </GlassCard>
         )}
 
         {/* Step 1: Install Ollama */}
@@ -515,9 +809,10 @@ function DashboardView() {
               href="https://ollama.ai"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[#3da8ff] hover:underline"
+              className="text-[#3da8ff] hover:text-[#5bb8ff] transition-colors"
             >
               ollama.ai
+              <ArrowUpRight className="w-3 h-3 inline ml-0.5" />
             </a>
           </p>
         </StepCard>
@@ -558,37 +853,34 @@ function DashboardView() {
           last
         >
           <CodeBlock code={providerCommand} highlight />
-          <div className="mt-4 rounded-lg bg-[#3da8ff]/5 border border-[#3da8ff]/10 p-3">
+          <div className="mt-4 rounded-xl bg-[#3da8ff]/[0.04] border border-[#3da8ff]/[0.08] p-3">
             <p className="text-xs text-[#8b95a8]">
-              Already logged in from this browser &mdash; <code className="text-[#3da8ff]">ghola up</code> will detect your auth automatically.
+              Already logged in from this browser &mdash;{" "}
+              <code className="text-[#3da8ff]">ghola up</code> will detect your
+              auth automatically.
             </p>
           </div>
           <div className="mt-4 grid grid-cols-3 gap-3 text-center">
-            <div className="rounded-lg bg-[#161822] p-3">
-              <Shield className="w-4 h-4 text-[#3da8ff] mx-auto mb-1" />
-              <p className="text-xs text-[#8b95a8]">
-                Auto-authenticates via browser
-              </p>
-            </div>
-            <div className="rounded-lg bg-[#161822] p-3">
-              <Clock className="w-4 h-4 text-[#3da8ff] mx-auto mb-1" />
-              <p className="text-xs text-[#8b95a8]">
-                Runs until you stop it. No lock-in
-              </p>
-            </div>
-            <div className="rounded-lg bg-[#161822] p-3">
-              <Layers className="w-4 h-4 text-[#3da8ff] mx-auto mb-1" />
-              <p className="text-xs text-[#8b95a8]">
-                All local models are auto-discovered
-              </p>
-            </div>
+            {[
+              { icon: Shield, label: "Auto-authenticates via browser" },
+              { icon: Clock, label: "Runs until you stop it. No lock-in" },
+              { icon: Layers, label: "All local models are auto-discovered" },
+            ].map((item) => (
+              <div
+                key={item.label}
+                className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-3"
+              >
+                <item.icon className="w-4 h-4 text-[#3da8ff] mx-auto mb-1.5" />
+                <p className="text-xs text-[#8b95a8]">{item.label}</p>
+              </div>
+            ))}
           </div>
         </StepCard>
 
         {/* FAQ */}
         <div className="mt-12">
-          <h2 className="text-lg font-semibold text-[#eef1f8] mb-4">FAQ</h2>
-          <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] px-6">
+          <h2 className="text-lg font-medium text-[#eef1f8] mb-4">FAQ</h2>
+          <GlassCard className="px-6" hover={false}>
             <FAQItem
               question="Is my data safe?"
               answer="Yes. All inference runs locally on your machine. User prompts are encrypted in transit and never stored on your hardware."
@@ -605,7 +897,7 @@ function DashboardView() {
               question="What models are supported?"
               answer="Any model Ollama supports: Llama, Mistral, Gemma, Phi, Qwen, and more. The CLI auto-discovers everything you've pulled."
             />
-          </div>
+          </GlassCard>
         </div>
       </div>
     </div>
@@ -627,29 +919,28 @@ function StepCard({
 }) {
   return (
     <div className={`relative ${last ? "mb-0" : "mb-6"}`}>
-      {/* Step number + connector line */}
       <div className="flex items-start gap-4">
         <div className="flex flex-col items-center">
-          <div className="w-8 h-8 rounded-full bg-[#3da8ff]/10 text-[#3da8ff] font-bold text-sm flex items-center justify-center flex-shrink-0">
+          <div className="w-8 h-8 rounded-full bg-[#3da8ff]/[0.08] border border-[#3da8ff]/[0.1] text-[#3da8ff] font-medium text-sm flex items-center justify-center flex-shrink-0">
             {step}
           </div>
           {!last && (
-            <div className="w-px h-full bg-[#1e2a3a] mt-2 min-h-[2rem]" />
+            <div className="w-px h-full bg-white/[0.06] mt-2 min-h-[2rem]" />
           )}
         </div>
-        <div className="flex-1 rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 mb-2 hover:border-[#2a3a50] transition-colors">
-          <h3 className="text-base font-semibold text-[#eef1f8] mb-1">
+        <GlassCard className="flex-1 p-6 mb-2">
+          <h3 className="text-base font-medium text-[#eef1f8] mb-1">
             {title}
           </h3>
           <p className="text-sm text-[#8b95a8] mb-4">{description}</p>
           {children}
-        </div>
+        </GlassCard>
       </div>
     </div>
   );
 }
 
-// ── Page ────────────────────────────────────────────────────────────
+// ── Page ─────────────────────────────────────────────────────────────
 
 export default function ProvidePage() {
   const { authenticated, loading } = useThumperAuth();
