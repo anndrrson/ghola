@@ -1,29 +1,28 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
+import { createProviderKey, getMyProvider } from "@/lib/thumper-api";
 import {
-  createProviderKey,
-  getComputeProviders,
-  getComputeModels,
-  getMyProvider,
-} from "@/lib/thumper-api";
-import { Server, Cpu, DollarSign, Copy, Check, ChevronRight, Zap } from "lucide-react";
+  Download,
+  Terminal,
+  Cpu,
+  DollarSign,
+  Copy,
+  Check,
+  ChevronRight,
+  ChevronDown,
+  Monitor,
+  HardDrive,
+  Wifi,
+  Shield,
+  Clock,
+  Layers,
+  Zap,
+} from "lucide-react";
 
-interface ProviderStatus {
-  id: string;
-  display_name: string;
-  status: string;
-  models: string[];
-  total_requests: number;
-  total_earnings_micro: number;
-}
-
-interface NetworkStats {
-  providerCount: number;
-  modelCount: number;
-}
+// ── Shared components ──────────────────────────────────────────────
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -49,78 +48,335 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function LandingView({ stats }: { stats: NetworkStats }) {
+function CodeBlock({
+  code,
+  highlight,
+}: {
+  code: string;
+  highlight?: boolean;
+}) {
+  return (
+    <div className="relative">
+      <pre
+        className={`rounded-lg bg-[#08090d] border border-[#1e2a3a] p-4 pr-12 text-sm font-mono overflow-x-auto whitespace-pre ${
+          highlight ? "text-[#3da8ff] shadow-[0_0_20px_rgba(61,168,255,0.08)]" : "text-[#8b95a8]"
+        }`}
+      >
+        {code}
+      </pre>
+      <CopyButton text={code} />
+    </div>
+  );
+}
+
+function FAQItem({
+  question,
+  answer,
+}: {
+  question: string;
+  answer: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="border-b border-[#1e2a3a] last:border-b-0">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between py-4 text-left cursor-pointer"
+      >
+        <span className="text-[#eef1f8] font-medium">{question}</span>
+        <ChevronDown
+          className={`w-5 h-5 text-[#8b95a8] transition-transform flex-shrink-0 ml-4 ${
+            open ? "rotate-180" : ""
+          }`}
+        />
+      </button>
+      {open && (
+        <p className="text-sm text-[#8b95a8] pb-4 leading-relaxed">
+          {answer}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Landing View (unauthenticated) ─────────────────────────────────
+
+function LandingView() {
+  const heroRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleMouseMove(e: MouseEvent) {
+      if (!heroRef.current) return;
+      const rect = heroRef.current.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width - 0.5) * 20;
+      const y = ((e.clientY - rect.top) / rect.height - 0.5) * 20;
+      heroRef.current.style.setProperty("--parallax-x", `${x}px`);
+      heroRef.current.style.setProperty("--parallax-y", `${y}px`);
+    }
+    window.addEventListener("mousemove", handleMouseMove);
+    return () => window.removeEventListener("mousemove", handleMouseMove);
+  }, []);
+
   return (
     <div className="min-h-screen bg-[#08090d] pt-24 pb-16">
       <div className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8">
         {/* Hero */}
-        <div className="text-center mb-16">
-          <div className="inline-flex items-center gap-2 rounded-full bg-[#3da8ff]/10 px-4 py-1.5 text-sm text-[#3da8ff] mb-6">
-            <Zap className="w-4 h-4" />
-            GPU Compute Network
-          </div>
-          <h1 className="text-4xl sm:text-5xl font-bold text-[#eef1f8] mb-4 tracking-tight">
-            Earn with your GPU
-          </h1>
-          <p className="text-lg text-[#8b95a8] max-w-2xl mx-auto">
-            Join the Ghola compute network. Share your GPU power, earn USDC.
-            Anyone with Ollama running can start providing in under 2 minutes.
-          </p>
-        </div>
-
-        {/* Stats */}
-        <div className="grid grid-cols-2 gap-4 mb-16 max-w-md mx-auto">
-          <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 text-center">
-            <Server className="w-6 h-6 text-[#3da8ff] mx-auto mb-2" />
-            <p className="text-2xl font-bold text-[#eef1f8]">{stats.providerCount}</p>
-            <p className="text-sm text-[#8b95a8]">Providers Online</p>
-          </div>
-          <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 text-center">
-            <Cpu className="w-6 h-6 text-[#3da8ff] mx-auto mb-2" />
-            <p className="text-2xl font-bold text-[#eef1f8]">{stats.modelCount}</p>
-            <p className="text-sm text-[#8b95a8]">Models Available</p>
-          </div>
-        </div>
-
-        {/* 3-step visual */}
-        <div className="grid sm:grid-cols-3 gap-6 mb-16">
-          {[
-            { step: "1", title: "Sign Up", desc: "Create a free Ghola account in seconds" },
-            { step: "2", title: "Install", desc: "Install Ollama and the Ghola CLI" },
-            { step: "3", title: "Run", desc: "Paste one command and your GPU is live" },
-          ].map((item) => (
-            <div
-              key={item.step}
-              className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 text-center"
-            >
-              <div className="w-10 h-10 rounded-full bg-[#3da8ff]/10 text-[#3da8ff] font-bold text-lg flex items-center justify-center mx-auto mb-4">
-                {item.step}
-              </div>
-              <h3 className="text-lg font-semibold text-[#eef1f8] mb-2">{item.title}</h3>
-              <p className="text-sm text-[#8b95a8]">{item.desc}</p>
+        <section
+          ref={heroRef}
+          className="relative text-center pb-20 overflow-hidden"
+          style={
+            {
+              "--parallax-x": "0px",
+              "--parallax-y": "0px",
+            } as React.CSSProperties
+          }
+        >
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{
+              backgroundImage:
+                "radial-gradient(circle, #1e2a3a 1px, transparent 1px)",
+              backgroundSize: "32px 32px",
+              transform: "translate(var(--parallax-x), var(--parallax-y))",
+              transition: "transform 0.15s ease-out",
+            }}
+          />
+          <div className="relative">
+            <div className="inline-flex items-center gap-2 rounded-full bg-[#3da8ff]/10 px-4 py-1.5 text-sm text-[#3da8ff] mb-6">
+              <Zap className="w-4 h-4" />
+              Decentralized AI Inference
             </div>
-          ))}
-        </div>
+            <h1 className="text-4xl sm:text-5xl font-bold text-[#eef1f8] mb-5 tracking-tight">
+              Turn your idle GPU into income
+            </h1>
+            <p className="text-lg text-[#8b95a8] max-w-2xl mx-auto leading-relaxed">
+              Ghola users pay for AI chat. Your GPU serves the inference. You earn
+              USDC for every request. No middlemen, no cloud bills&mdash;just your
+              hardware working for you.
+            </p>
+            <div className="mt-10 max-w-lg mx-auto">
+              <div className="relative rounded-xl bg-[#0f1117] border border-[#3da8ff]/20 p-6 shadow-[0_0_30px_rgba(61,168,255,0.06)]">
+                <p className="text-xs text-[#4a5568] uppercase tracking-wider mb-3 font-medium">2 commands. That&apos;s it.</p>
+                <div className="space-y-2">
+                  <div className="relative">
+                    <pre className="rounded-lg bg-[#08090d] border border-[#1e2a3a] p-3 text-sm font-mono text-[#3da8ff] overflow-x-auto">
+                      <span className="text-[#4a5568]">$ </span>curl -fsSL https://ghola.xyz/install.sh | sh
+                    </pre>
+                    <CopyButton text="curl -fsSL https://ghola.xyz/install.sh | sh" />
+                  </div>
+                  <div className="relative">
+                    <pre className="rounded-lg bg-[#08090d] border border-[#1e2a3a] p-3 text-sm font-mono text-[#3da8ff] overflow-x-auto">
+                      <span className="text-[#4a5568]">$ </span>ghola up
+                    </pre>
+                    <CopyButton text="ghola up" />
+                  </div>
+                </div>
+                <p className="text-xs text-[#4a5568] mt-3 leading-relaxed">
+                  Installs the CLI, checks for Ollama, auto-pulls a model, signs you up, and starts earning.
+                </p>
+              </div>
+            </div>
+            <div className="mt-8">
+              <Link
+                href="/signin?redirect=/provide"
+                className="inline-flex items-center gap-2 rounded-lg bg-[#3da8ff] px-8 py-3 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
+              >
+                Start Earning
+                <ChevronRight className="w-5 h-5" />
+              </Link>
+            </div>
+          </div>
+        </section>
 
-        {/* CTA */}
-        <div className="text-center">
-          <Link
-            href="/signin?redirect=/provide"
-            className="inline-flex items-center gap-2 rounded-lg bg-[#3da8ff] px-8 py-3 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
-          >
-            Get Started
-            <ChevronRight className="w-5 h-5" />
-          </Link>
-          <p className="mt-4 text-sm text-[#8b95a8]">
-            Already have an account?{" "}
-            <Link href="/signin?redirect=/provide" className="text-[#3da8ff] hover:underline">
-              Sign in
+        {/* How It Works */}
+        <section className="py-20 border-t border-[#1e2a3a]">
+          <h2 className="text-2xl font-bold text-[#eef1f8] text-center mb-10">
+            How it works
+          </h2>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            {[
+              {
+                icon: Download,
+                title: "Install Ollama",
+                desc: "Free, open-source local AI server. One command install on Linux or macOS.",
+              },
+              {
+                icon: Layers,
+                title: "Pull a model",
+                desc: "Download a model like Llama 3.2. It runs entirely on your GPU.",
+              },
+              {
+                icon: Terminal,
+                title: "Run one command",
+                desc: "Start the Ghola provider CLI. It auto-connects to the network.",
+              },
+              {
+                icon: DollarSign,
+                title: "Get paid",
+                desc: "Earn USDC for every inference request your GPU serves.",
+              },
+            ].map((item) => (
+              <div
+                key={item.title}
+                className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 hover:border-[#2a3a50] transition-colors"
+              >
+                <div className="w-10 h-10 rounded-lg bg-[#3da8ff]/10 flex items-center justify-center mb-4">
+                  <item.icon className="w-5 h-5 text-[#3da8ff]" />
+                </div>
+                <h3 className="text-base font-semibold text-[#eef1f8] mb-2">
+                  {item.title}
+                </h3>
+                <p className="text-sm text-[#8b95a8] leading-relaxed">
+                  {item.desc}
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* Earnings */}
+        <section className="py-20 border-t border-[#1e2a3a]">
+          <h2 className="text-2xl font-bold text-[#eef1f8] text-center mb-10">
+            Provider economics
+          </h2>
+          <div className="grid sm:grid-cols-3 gap-5">
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 text-center hover:border-[#2a3a50] transition-colors">
+              <p className="text-3xl font-bold text-[#eef1f8] mb-1">85%</p>
+              <p className="text-sm text-[#8b95a8]">
+                Revenue goes to you. Ghola takes a 15% platform fee.
+              </p>
+            </div>
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 text-center hover:border-[#2a3a50] transition-colors">
+              <p className="text-sm font-mono text-[#3da8ff] mb-1">
+                per 1K tokens
+              </p>
+              <p className="text-sm text-[#8b95a8]">
+                <span className="text-[#eef1f8]">Input:</span> 10 &micro;USDC
+                &nbsp;&middot;&nbsp;{" "}
+                <span className="text-[#eef1f8]">Output:</span> 30 &micro;USDC
+              </p>
+              <p className="text-xs text-[#4a5568] mt-2">
+                Early network rates &mdash; scale with demand
+              </p>
+            </div>
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 text-center hover:border-[#2a3a50] transition-colors">
+              <p className="text-3xl font-bold text-[#eef1f8] mb-1">$0</p>
+              <p className="text-sm text-[#8b95a8]">
+                No signup fees. No monthly cost. Earn from day one.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* Requirements */}
+        <section className="py-20 border-t border-[#1e2a3a]">
+          <h2 className="text-2xl font-bold text-[#eef1f8] text-center mb-10">
+            Requirements
+          </h2>
+          <div className="grid sm:grid-cols-2 gap-5 max-w-2xl mx-auto">
+            {[
+              {
+                icon: Monitor,
+                label: "Operating System",
+                value: "Linux or macOS",
+              },
+              {
+                icon: HardDrive,
+                label: "GPU",
+                value: "NVIDIA with 8 GB+ VRAM, or Apple Silicon",
+              },
+              {
+                icon: Cpu,
+                label: "Software",
+                value: "Ollama (free) + Ghola CLI (free)",
+              },
+              {
+                icon: Wifi,
+                label: "Internet",
+                value: "Stable connection \u2014 no specific bandwidth required",
+              },
+            ].map((item) => (
+              <div
+                key={item.label}
+                className="flex items-start gap-4 rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5 hover:border-[#2a3a50] transition-colors"
+              >
+                <div className="w-9 h-9 rounded-lg bg-[#3da8ff]/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <item.icon className="w-4 h-4 text-[#3da8ff]" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-[#eef1f8]">
+                    {item.label}
+                  </p>
+                  <p className="text-sm text-[#8b95a8]">{item.value}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* FAQ */}
+        <section className="py-20 border-t border-[#1e2a3a]">
+          <div className="max-w-2xl mx-auto">
+            <h2 className="text-2xl font-bold text-[#eef1f8] text-center mb-10">
+              FAQ
+            </h2>
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] px-6 hover:border-[#2a3a50] transition-colors">
+              <FAQItem
+                question="Is my data safe?"
+                answer="Yes. All inference runs locally on your machine. User prompts are encrypted in transit and never stored on your hardware. You process the request, return the result, and the data is gone."
+              />
+              <FAQItem
+                question="How do I get paid?"
+                answer="Earnings accrue in USDC and are tracked in your provider dashboard. Withdraw anytime to your wallet address."
+              />
+              <FAQItem
+                question="Can I stop anytime?"
+                answer="Yes. Just stop the CLI process. There are no commitments, no lock-in periods, and no penalties for going offline."
+              />
+              <FAQItem
+                question="What models are supported?"
+                answer="Any model that Ollama supports: Llama, Mistral, Gemma, Phi, Qwen, and many more. The CLI auto-discovers all models you have pulled locally."
+              />
+            </div>
+          </div>
+        </section>
+
+        {/* Bottom CTA */}
+        <section className="py-20 border-t border-[#1e2a3a]">
+          <div className="text-center">
+            <Link
+              href="/signin?redirect=/provide"
+              className="inline-flex items-center gap-2 rounded-lg bg-[#3da8ff] px-8 py-3 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
+            >
+              Start Earning
+              <ChevronRight className="w-5 h-5" />
             </Link>
-          </p>
-        </div>
+            <p className="mt-4 text-sm text-[#8b95a8]">
+              Already have an account?{" "}
+              <Link
+                href="/signin?redirect=/provide"
+                className="text-[#3da8ff] hover:text-[#eef1f8] transition-colors"
+              >
+                Sign in
+              </Link>
+            </p>
+          </div>
+        </section>
       </div>
     </div>
   );
+}
+
+// ── Dashboard View (authenticated) ─────────────────────────────────
+
+interface ProviderStatus {
+  id: string;
+  display_name: string;
+  status: string;
+  models: string[];
+  total_requests: number;
+  total_earnings_micro: number;
 }
 
 function DashboardView() {
@@ -135,7 +391,9 @@ function DashboardView() {
         const keyRes = await createProviderKey();
         setApiKey(keyRes.key);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to create provider key");
+        setError(
+          err instanceof Error ? err.message : "Failed to create provider key"
+        );
       } finally {
         setLoading(false);
       }
@@ -165,7 +423,7 @@ function DashboardView() {
   if (loading) {
     return (
       <div className="min-h-screen bg-[#08090d] pt-24 flex items-center justify-center">
-        <div className="text-[#8b95a8]">Setting up your provider key...</div>
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#3da8ff] border-t-transparent" />
       </div>
     );
   }
@@ -180,50 +438,51 @@ function DashboardView() {
     );
   }
 
-  const installCommand = `# 1. Install Ollama (if you haven't)
-curl -fsSL https://ollama.ai/install.sh | sh
-ollama pull llama3.2
-
-# 2. Install Ghola CLI
-cargo install thumper-cli --git https://github.com/anndrrson/thumper
-
-# 3. Start providing
-thumper gpu-serve --token ${apiKey}`;
-
-  const quickCommand = `thumper gpu-serve --token ${apiKey}`;
+  const installCommand = "curl -fsSL https://ghola.xyz/install.sh | sh";
+  const providerCommand = "ghola up";
 
   return (
     <div className="min-h-screen bg-[#08090d] pt-24 pb-16">
       <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
-        <h1 className="text-3xl font-bold text-[#eef1f8] mb-2">GPU Provider Setup</h1>
+        <h1 className="text-3xl font-bold text-[#eef1f8] mb-2">
+          GPU Provider Setup
+        </h1>
         <p className="text-[#8b95a8] mb-8">
-          Follow the steps below to start earning with your GPU.
+          Follow these four steps to start earning with your GPU.
         </p>
 
-        {/* Status */}
+        {/* Provider Status (if already registered) */}
         {provider && (
-          <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 mb-6">
-            <div className="flex items-center justify-between">
+          <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 mb-8 hover:border-[#2a3a50] transition-colors">
+            <div className="flex items-center justify-between flex-wrap gap-4">
               <div className="flex items-center gap-3">
                 <div
                   className={`w-3 h-3 rounded-full ${
                     provider.status === "online"
-                      ? "bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.4)]"
+                      ? "bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.4)] animate-pulse"
                       : "bg-[#4a5568]"
                   }`}
                 />
-                <span className="text-[#eef1f8] font-medium">{provider.display_name}</span>
-                <span className="text-sm text-[#8b95a8] capitalize">{provider.status}</span>
+                <span className="text-[#eef1f8] font-medium">
+                  {provider.display_name}
+                </span>
+                <span className="text-sm text-[#8b95a8] capitalize">
+                  {provider.status}
+                </span>
               </div>
               <div className="flex items-center gap-6 text-sm">
                 <div className="text-[#8b95a8]">
-                  <span className="text-[#eef1f8] font-medium">{provider.total_requests}</span> requests
+                  <span className="text-[#eef1f8] font-medium">
+                    {provider.total_requests}
+                  </span>{" "}
+                  requests
                 </div>
                 <div className="text-[#8b95a8]">
                   <DollarSign className="w-4 h-4 inline" />
                   <span className="text-[#eef1f8] font-medium">
                     {(provider.total_earnings_micro / 1_000_000).toFixed(4)}
-                  </span>
+                  </span>{" "}
+                  USDC
                 </div>
               </div>
             </div>
@@ -242,42 +501,110 @@ thumper gpu-serve --token ${apiKey}`;
           </div>
         )}
 
-        {/* Full setup instructions */}
-        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 mb-6">
-          <h2 className="text-lg font-semibold text-[#eef1f8] mb-4">Setup Instructions</h2>
-          <div className="relative">
-            <pre className="rounded-lg bg-[#08090d] border border-[#1e2a3a] p-4 pr-12 text-sm text-[#8b95a8] font-mono overflow-x-auto whitespace-pre">
-              {installCommand}
-            </pre>
-            <CopyButton text={installCommand} />
-          </div>
-        </div>
-
-        {/* Quick command */}
-        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 mb-6">
-          <h2 className="text-lg font-semibold text-[#eef1f8] mb-2">Quick Start</h2>
-          <p className="text-sm text-[#8b95a8] mb-4">
-            Already have Ollama and the CLI? Just run:
+        {/* Step 1: Install Ollama */}
+        <StepCard
+          step={1}
+          title="Install Ollama"
+          description="Ollama is a free, open-source tool that runs AI models locally on your machine."
+        >
+          <p className="text-sm text-[#8b95a8] mb-3">Linux / macOS:</p>
+          <CodeBlock code="curl -fsSL https://ollama.ai/install.sh | sh" />
+          <p className="text-xs text-[#4a5568] mt-3">
+            Or download manually from{" "}
+            <a
+              href="https://ollama.ai"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[#3da8ff] hover:underline"
+            >
+              ollama.ai
+            </a>
           </p>
-          <div className="relative">
-            <pre className="rounded-lg bg-[#08090d] border border-[#1e2a3a] p-4 pr-12 text-sm text-[#3da8ff] font-mono overflow-x-auto whitespace-pre">
-              {quickCommand}
-            </pre>
-            <CopyButton text={quickCommand} />
-          </div>
-        </div>
+        </StepCard>
 
-        {/* API Key info */}
-        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
-          <h2 className="text-lg font-semibold text-[#eef1f8] mb-2">Your API Key</h2>
-          <p className="text-sm text-[#8b95a8] mb-4">
-            This key is scoped to compute operations only. Keep it safe — it won&apos;t be shown again.
+        {/* Step 2: Pull a model */}
+        <StepCard
+          step={2}
+          title="Pull a model"
+          description="Download at least one model. This will use your GPU's VRAM."
+        >
+          <CodeBlock code="ollama pull llama3.2" />
+          <p className="text-xs text-[#4a5568] mt-3">
+            You can pull multiple models &mdash; the CLI auto-discovers all of
+            them. Try <code className="text-[#8b95a8]">mistral</code>,{" "}
+            <code className="text-[#8b95a8]">gemma2</code>, or{" "}
+            <code className="text-[#8b95a8]">phi3</code>.
           </p>
-          <div className="relative">
-            <code className="block rounded-lg bg-[#08090d] border border-[#1e2a3a] p-4 pr-12 text-sm text-[#eef1f8] font-mono break-all">
-              {apiKey}
-            </code>
-            <CopyButton text={apiKey || ""} />
+        </StepCard>
+
+        {/* Step 3: Install Ghola CLI */}
+        <StepCard
+          step={3}
+          title="Install Ghola CLI"
+          description="The CLI connects your machine to the Ghola network."
+        >
+          <CodeBlock code={installCommand} />
+          <p className="text-xs text-[#4a5568] mt-3">
+            Downloads a pre-built binary, or falls back to building from source
+            with Rust.
+          </p>
+        </StepCard>
+
+        {/* Step 4: Start providing */}
+        <StepCard
+          step={4}
+          title="Start providing"
+          description="One command does everything: checks Ollama, pulls a model if needed, authenticates you, and connects to the network."
+          last
+        >
+          <CodeBlock code={providerCommand} highlight />
+          <div className="mt-4 rounded-lg bg-[#3da8ff]/5 border border-[#3da8ff]/10 p-3">
+            <p className="text-xs text-[#8b95a8]">
+              Already logged in from this browser &mdash; <code className="text-[#3da8ff]">ghola up</code> will detect your auth automatically.
+            </p>
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+            <div className="rounded-lg bg-[#161822] p-3">
+              <Shield className="w-4 h-4 text-[#3da8ff] mx-auto mb-1" />
+              <p className="text-xs text-[#8b95a8]">
+                Auto-authenticates via browser
+              </p>
+            </div>
+            <div className="rounded-lg bg-[#161822] p-3">
+              <Clock className="w-4 h-4 text-[#3da8ff] mx-auto mb-1" />
+              <p className="text-xs text-[#8b95a8]">
+                Runs until you stop it. No lock-in
+              </p>
+            </div>
+            <div className="rounded-lg bg-[#161822] p-3">
+              <Layers className="w-4 h-4 text-[#3da8ff] mx-auto mb-1" />
+              <p className="text-xs text-[#8b95a8]">
+                All local models are auto-discovered
+              </p>
+            </div>
+          </div>
+        </StepCard>
+
+        {/* FAQ */}
+        <div className="mt-12">
+          <h2 className="text-lg font-semibold text-[#eef1f8] mb-4">FAQ</h2>
+          <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] px-6">
+            <FAQItem
+              question="Is my data safe?"
+              answer="Yes. All inference runs locally on your machine. User prompts are encrypted in transit and never stored on your hardware."
+            />
+            <FAQItem
+              question="How do I get paid?"
+              answer="Earnings accrue in USDC and are tracked above. You keep 85% of all inference revenue. Withdraw anytime to your wallet."
+            />
+            <FAQItem
+              question="Can I stop anytime?"
+              answer="Yes. Just stop the CLI process. No commitments, no penalties."
+            />
+            <FAQItem
+              question="What models are supported?"
+              answer="Any model Ollama supports: Llama, Mistral, Gemma, Phi, Qwen, and more. The CLI auto-discovers everything you've pulled."
+            />
           </div>
         </div>
       </div>
@@ -285,27 +612,47 @@ thumper gpu-serve --token ${apiKey}`;
   );
 }
 
+function StepCard({
+  step,
+  title,
+  description,
+  children,
+  last,
+}: {
+  step: number;
+  title: string;
+  description: string;
+  children: React.ReactNode;
+  last?: boolean;
+}) {
+  return (
+    <div className={`relative ${last ? "mb-0" : "mb-6"}`}>
+      {/* Step number + connector line */}
+      <div className="flex items-start gap-4">
+        <div className="flex flex-col items-center">
+          <div className="w-8 h-8 rounded-full bg-[#3da8ff]/10 text-[#3da8ff] font-bold text-sm flex items-center justify-center flex-shrink-0">
+            {step}
+          </div>
+          {!last && (
+            <div className="w-px h-full bg-[#1e2a3a] mt-2 min-h-[2rem]" />
+          )}
+        </div>
+        <div className="flex-1 rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 mb-2 hover:border-[#2a3a50] transition-colors">
+          <h3 className="text-base font-semibold text-[#eef1f8] mb-1">
+            {title}
+          </h3>
+          <p className="text-sm text-[#8b95a8] mb-4">{description}</p>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Page ────────────────────────────────────────────────────────────
+
 export default function ProvidePage() {
   const { authenticated, loading } = useThumperAuth();
-  const [stats, setStats] = useState<NetworkStats>({ providerCount: 0, modelCount: 0 });
-
-  useEffect(() => {
-    async function fetchStats() {
-      try {
-        const [providers, models] = await Promise.all([
-          getComputeProviders().catch(() => ({ providers: [] })),
-          getComputeModels().catch(() => ({ models: [] })),
-        ]);
-        setStats({
-          providerCount: providers.providers?.length || 0,
-          modelCount: models.models?.length || 0,
-        });
-      } catch {
-        // ignore
-      }
-    }
-    fetchStats();
-  }, []);
 
   if (loading) {
     return (
@@ -315,9 +662,5 @@ export default function ProvidePage() {
     );
   }
 
-  if (authenticated) {
-    return <DashboardView />;
-  }
-
-  return <LandingView stats={stats} />;
+  return authenticated ? <DashboardView /> : <LandingView />;
 }
