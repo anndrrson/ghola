@@ -53,7 +53,7 @@ function CliAuthContent() {
           <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-6 max-w-md">
             <p className="text-red-400 mb-2">{error}</p>
             <p className="text-sm text-[#8b95a8]">
-              Close this tab and try running <code className="text-[#3da8ff]">thumper login</code> again.
+              Close this tab and try running <code className="text-[#3da8ff]">ghola login</code> again.
             </p>
           </div>
         ) : (

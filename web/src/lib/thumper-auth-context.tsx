@@ -8,7 +8,7 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import { clearThumperToken } from "./thumper-api";
+import { clearThumperToken, thumperLogout } from "./thumper-api";
 
 interface ThumperUser {
   id: string;
@@ -67,13 +67,71 @@ export function ThumperAuthProvider({ children }: { children: ReactNode }) {
     setState({ authenticated: false, loading: false, user: null });
   }, []);
 
+  // Auto-refresh JWT before expiry
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const token = localStorage.getItem("thumper_token");
+      if (!token) return;
+
+      try {
+        const payload = JSON.parse(atob(token.split(".")[1]));
+        const expMs = payload.exp * 1000;
+        const now = Date.now();
+
+        // Token already expired — force logout
+        if (expMs <= now) {
+          clearThumperToken();
+          setState({ authenticated: false, loading: false, user: null });
+          return;
+        }
+
+        // Within 5 minutes of expiry — refresh
+        const fiveMinutes = 5 * 60 * 1000;
+        if (expMs - now <= fiveMinutes) {
+          fetch("/api/auth/refresh", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+          })
+            .then((res) => {
+              if (!res.ok) throw new Error("Refresh failed");
+              return res.json();
+            })
+            .then((data: { token: string }) => {
+              localStorage.setItem("thumper_token", data.token);
+              const newPayload = JSON.parse(atob(data.token.split(".")[1]));
+              setState({
+                authenticated: true,
+                loading: false,
+                user: {
+                  id: newPayload.sub || newPayload.user_id,
+                  email: newPayload.email,
+                  name: newPayload.name,
+                },
+              });
+            })
+            .catch(() => {
+              // Refresh failed — force logout
+              clearThumperToken();
+              setState({ authenticated: false, loading: false, user: null });
+            });
+        }
+      } catch {
+        // Invalid token — force logout
+        clearThumperToken();
+        setState({ authenticated: false, loading: false, user: null });
+      }
+    }, 60_000);
+
+    return () => clearInterval(interval);
+  }, []);
+
   const setAuth = useCallback((token: string, user: ThumperUser) => {
     localStorage.setItem("thumper_token", token);
     setState({ authenticated: true, loading: false, user });
   }, []);
 
   const logout = useCallback(() => {
-    clearThumperToken();
+    thumperLogout();
     setState({ authenticated: false, loading: false, user: null });
   }, []);
 

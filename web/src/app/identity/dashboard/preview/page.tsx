@@ -149,7 +149,7 @@ export default function PreviewPage() {
             {/* Header strip */}
             <div className="bg-[#0a1929]/30 border-b border-[#1e2a3a]/50 px-6 py-3">
               <span className="text-xs font-mono text-[#3da8ff] uppercase tracking-wider">
-                Ghola Identity Resolution
+                ghola identity resolution
               </span>
             </div>
 

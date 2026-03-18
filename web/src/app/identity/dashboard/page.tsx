@@ -134,7 +134,7 @@ export default function DashboardPage() {
           Welcome back, {profile?.business_name ?? "there"}
         </h1>
         <p className="mt-1 text-[#8b95a8]">
-          Here is an overview of your Ghola identity.
+          Here is an overview of your ghola identity.
         </p>
       </div>
 

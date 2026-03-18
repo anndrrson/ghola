@@ -1,16 +1,25 @@
 "use client";
 
 import { useRef, useEffect } from "react";
+import DOMPurify from "dompurify";
 import { CallCard } from "./CallCard";
 import { EmailCard } from "./EmailCard";
 import type { ThumperChatMessage } from "@/lib/thumper-types";
 
+function sanitizeHtml(html: string): string {
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ["strong", "em", "code", "span"],
+    ALLOWED_ATTR: ["class"],
+  });
+}
+
 interface ChatMessagesProps {
   messages: ThumperChatMessage[];
   isStreaming: boolean;
+  providerInfo?: { type: string; model?: string; provider_name?: string } | null;
 }
 
-export function ChatMessages({ messages, isStreaming }: ChatMessagesProps) {
+export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -113,6 +122,15 @@ export function ChatMessages({ messages, isStreaming }: ChatMessagesProps) {
                   </div>
                 </div>
               )}
+              {providerInfo?.type === "community" && !isStreaming && idx === dayMessages.length - 1 && msg.role === "assistant" && msg.content && (
+                <div className="flex justify-start mb-3 ml-1">
+                  <div className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] text-[#4a5568] bg-white/[0.02] border border-white/[0.06]">
+                    <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                    Powered by community GPU
+                    {providerInfo.provider_name && <span className="text-[#8b95a8]">&middot; {providerInfo.provider_name}</span>}
+                  </div>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -147,7 +165,7 @@ function RenderMarkdown({ content }: { content: string }) {
 
         // Process inline markdown
         return (
-          <span key={i} dangerouslySetInnerHTML={{ __html: inlineMarkdown(part) }} />
+          <span key={i} dangerouslySetInnerHTML={{ __html: sanitizeHtml(inlineMarkdown(part)) }} />
         );
       })}
     </>

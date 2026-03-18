@@ -350,7 +350,7 @@ console.log(response.choices[0].message.content);`}
                 Tasks & Actions
               </h2>
               <p className="text-sm text-[#8b95a8] leading-relaxed">
-                Beyond chat, Ghola can perform real-world actions. Use the
+                Beyond chat, ghola can perform real-world actions. Use the
                 existing REST endpoints with your API key for full access.
               </p>
             </div>

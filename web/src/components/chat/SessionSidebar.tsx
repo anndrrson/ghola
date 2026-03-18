@@ -65,9 +65,9 @@ export function SessionSidebar({
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[#1e2a3a]">
-        <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
+        <Link href="/" className="flex items-center gap-1.5 hover:opacity-80 transition-opacity">
           <GholaLogo size={22} className="text-[#eef1f8]" />
-          <span className="text-base font-semibold text-[#eef1f8]">Ghola</span>
+          <span className="text-base font-semibold text-[#eef1f8]">ghola</span>
         </Link>
         <button
           onClick={onNew}

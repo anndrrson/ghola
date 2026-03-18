@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Turnkey } from "@turnkey/sdk-server";
+import { logger } from "@/lib/logger";
 
 const TURNKEY_API_BASE_URL = "https://api.turnkey.com";
 
@@ -9,6 +10,26 @@ export async function POST(req: NextRequest) {
     if (!message || !subOrgId || !walletAddress) {
       return NextResponse.json(
         { error: "message, subOrgId, and walletAddress are required" },
+        { status: 400 }
+      );
+    }
+
+    // Input validation
+    if (typeof message !== "string" || message.length > 1024) {
+      return NextResponse.json(
+        { error: "message must be a string with at most 1024 characters" },
+        { status: 400 }
+      );
+    }
+    if (typeof subOrgId !== "string" || subOrgId.length > 128) {
+      return NextResponse.json(
+        { error: "subOrgId must be a string with at most 128 characters" },
+        { status: 400 }
+      );
+    }
+    if (typeof walletAddress !== "string" || walletAddress.length > 128) {
+      return NextResponse.json(
+        { error: "walletAddress must be a string with at most 128 characters" },
         { status: 400 }
       );
     }
@@ -60,7 +81,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ signature: sigBase64 });
   } catch (err) {
-    console.error("Turnkey sign-message error:", err);
+    logger.error("Turnkey sign-message error:", err);
     return NextResponse.json(
       { error: "Failed to sign message" },
       { status: 500 }

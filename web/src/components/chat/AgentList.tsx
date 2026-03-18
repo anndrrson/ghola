@@ -28,7 +28,7 @@ export function AgentList({ agents, activeAgentId, onSelect, onNew, onEdit, onDe
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[#1e2a3a]">
         <div className="flex items-center gap-2">
-          <Link href="/" className="flex items-center gap-2">
+          <Link href="/" className="flex items-center gap-1.5">
             <GholaLogo size={22} className="text-[#eef1f8]" />
             <span className="text-lg font-bold text-[#eef1f8]">Chat</span>
           </Link>

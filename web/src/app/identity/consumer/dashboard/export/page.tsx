@@ -170,7 +170,7 @@ export default function ConsumerExportPage() {
               Client-side mnemonic export requires the WASM wallet module. This
               feature will be enabled when you create your wallet via the
               browser. In the meantime, you can export your recovery phrase
-              using the Ghola CLI:
+              using the ghola CLI:
             </p>
             <div className="mt-3 rounded-lg bg-[#0f1117] px-4 py-3 font-mono text-sm text-[#8b95a8]">
               said export --mnemonic
@@ -199,7 +199,7 @@ export default function ConsumerExportPage() {
               Go Local
             </h2>
             <p className="text-sm text-[#8b95a8]">
-              Export your identity to use with the Ghola CLI for full
+              Export your identity to use with the ghola CLI for full
               local control.
             </p>
           </div>
@@ -207,7 +207,7 @@ export default function ConsumerExportPage() {
 
         <div className="space-y-4">
           <p className="text-sm text-[#8b95a8]">
-            The Ghola CLI lets you run your own identity server and connect
+            The ghola CLI lets you run your own identity server and connect
             to AI services without relying on this web dashboard. Your keys
             never leave your machine.
           </p>

@@ -179,7 +179,7 @@ export default function ApiKeysPage() {
             <Key className="h-8 w-8 text-[#4a5568] mx-auto mb-3" />
             <p className="text-sm text-[#8b95a8]">No API keys yet</p>
             <p className="text-xs text-[#4a5568] mt-1">
-              Create a key to start using the Ghola API
+              Create a key to start using the ghola API
             </p>
           </div>
         ) : (

@@ -53,7 +53,7 @@ function detectAction(text: string): ThumperInlineAction | undefined {
     const to = emailMatch[1];
     // Try to extract subject
     const subjectMatch = text.match(/subject[:\s]+["']?([^"'\n]+)/i);
-    const subject = subjectMatch ? subjectMatch[1].trim() : "Message from Ghola";
+    const subject = subjectMatch ? subjectMatch[1].trim() : "Message from ghola";
     return {
       type: "email",
       status: "ready",
@@ -69,6 +69,7 @@ export default function ChatPage() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [mobileView, setMobileView] = useState<"list" | "chat">("list");
+  const [providerInfo, setProviderInfo] = useState<{ type: string; model?: string; provider_name?: string } | null>(null);
   const searchParams = useSearchParams();
   const router = useRouter();
   const { setAuth } = useThumperAuth();
@@ -79,18 +80,34 @@ export default function ChatPage() {
     setSessions(loaded);
   }, []);
 
-  // Handle Twitter OAuth callback token
+  // Handle Twitter OAuth callback — exchange code for token
   useEffect(() => {
-    const twitterToken = searchParams.get("twitter_token");
-    if (twitterToken) {
-      const res = handleTwitterToken(twitterToken);
-      setAuth(res.token, res.user);
-      // Try to create Turnkey wallet (non-fatal)
-      if (res.user.email) {
-        createWallet(res.user.email).catch(() => {});
-      }
-      // Clean the URL
-      router.replace("/chat");
+    const exchangeCode = searchParams.get("code");
+    if (exchangeCode) {
+      fetch("/api/auth/twitter/exchange", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: exchangeCode }),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error("Exchange failed");
+          return res.json();
+        })
+        .then((data: { token: string }) => {
+          const res = handleTwitterToken(data.token);
+          setAuth(res.token, res.user);
+          // Try to create Turnkey wallet (non-fatal)
+          if (res.user.email) {
+            createWallet(res.user.email).catch(() => {});
+          }
+        })
+        .catch(() => {
+          // Exchange failed — code may have expired
+        })
+        .finally(() => {
+          // Clean the URL
+          router.replace("/chat");
+        });
     }
   }, [searchParams, setAuth, createWallet, router]);
 
@@ -196,6 +213,7 @@ export default function ChatPage() {
     });
 
     setIsStreaming(true);
+    setProviderInfo(null);
     let fullContent = "";
     const currentSessionId = sessionId;
 
@@ -204,6 +222,7 @@ export default function ChatPage() {
         // Server assigned a session ID — we can track it if needed
         // For now we keep using our local UUID
       },
+      onProvider: (info) => setProviderInfo(info),
       onChunk: (chunk) => {
         fullContent += chunk;
         updateSession(currentSessionId, (s) => {
@@ -277,7 +296,7 @@ export default function ChatPage() {
               title={activeSession?.title || "New conversation"}
               onBack={() => setMobileView("list")}
             />
-            <ChatMessages messages={messages} isStreaming={isStreaming} />
+            <ChatMessages messages={messages} isStreaming={isStreaming} providerInfo={providerInfo} />
             <ChatInput onSend={handleSend} disabled={isStreaming} />
           </>
         ) : (

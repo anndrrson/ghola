@@ -258,7 +258,7 @@ function ModelTab() {
       <div>
         <h3 className="text-sm font-medium text-[#eef1f8] mb-1">Bring Your Own Model</h3>
         <p className="text-xs text-[#4a5568]">
-          Use your own API key to choose which AI model powers Ghola
+          Use your own API key to choose which AI model powers ghola
         </p>
       </div>
 
@@ -459,7 +459,7 @@ function AccountsTab() {
             <p className="text-xs text-[#4a5568]">
               {gmailAccount
                 ? `Connected ${gmailAccount.connected_at ? new Date(gmailAccount.connected_at).toLocaleDateString() : ""}`
-                : "Connect your Gmail to send emails through Ghola"}
+                : "Connect your Gmail to send emails through ghola"}
             </p>
           </div>
           {gmailAccount && (
@@ -481,7 +481,7 @@ function AccountsTab() {
           </button>
         ) : (
           <p className="text-xs text-[#8b95a8]">
-            Ghola can send emails on your behalf when you approve them in chat.
+            ghola can send emails on your behalf when you approve them in chat.
           </p>
         )}
       </div>
@@ -573,7 +573,7 @@ function TelegramTab() {
           </div>
         </div>
         <p className="text-xs text-[#4a5568]">
-          Message @GholaBot on Telegram to chat with your AI assistant. Your conversations sync with your Ghola account.
+          Message @GholaBot on Telegram to chat with your AI assistant. Your conversations sync with your ghola account.
         </p>
         <button
           onClick={handleUnlink}
@@ -592,7 +592,7 @@ function TelegramTab() {
       <div>
         <h3 className="text-sm font-medium text-[#eef1f8] mb-1">Connect Telegram</h3>
         <p className="text-xs text-[#4a5568]">
-          Chat with Ghola directly from Telegram — make calls, send emails, and get things done without opening a browser.
+          Chat with ghola directly from Telegram — make calls, send emails, and get things done without opening a browser.
         </p>
       </div>
 

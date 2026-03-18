@@ -32,6 +32,17 @@ export function clearThumperToken() {
   localStorage.removeItem("thumper_token");
 }
 
+export function thumperLogout() {
+  const token = getThumperToken();
+  if (token) {
+    fetch(`${THUMPER_API_BASE}/api/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(() => {});
+  }
+  clearThumperToken();
+}
+
 async function thumperFetch<T>(
   path: string,
   options: RequestInit = {}
@@ -365,4 +376,16 @@ export async function getComputeStats(days?: number): Promise<ComputeDailyStats[
 export async function getRecentJobs(limit?: number): Promise<ComputeRecentJob[]> {
   const params = limit ? `?limit=${limit}` : "";
   return thumperFetch(`/api/compute/jobs${params}`);
+}
+
+export async function withdrawProviderEarnings(amount_usdc?: number): Promise<import("./thumper-types").WithdrawalResponse> {
+  return thumperFetch("/api/compute/providers/me/withdraw", {
+    method: "POST",
+    body: JSON.stringify(amount_usdc != null ? { amount_usdc } : {}),
+  });
+}
+
+export async function getProviderPayouts(limit?: number): Promise<import("./thumper-types").PayoutsResponse> {
+  const params = limit ? `?limit=${limit}` : "";
+  return thumperFetch(`/api/compute/providers/me/payouts${params}`);
 }

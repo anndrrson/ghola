@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
-import { createProviderKey, getMyProvider, getComputeStats, getRecentJobs } from "@/lib/thumper-api";
-import type { ComputeProviderInfo, ComputeDailyStats, ComputeRecentJob } from "@/lib/thumper-types";
+import { createProviderKey, getMyProvider, getComputeStats, getRecentJobs, getComputeProviders, getComputeModels, withdrawProviderEarnings, getProviderPayouts } from "@/lib/thumper-api";
+import type { ComputeProviderInfo, ComputeDailyStats, ComputeRecentJob, PayoutsResponse } from "@/lib/thumper-types";
 import {
   Download,
   Terminal,
@@ -25,6 +25,8 @@ import {
   TrendingUp,
   Activity,
   BarChart3,
+  Wallet,
+  Globe,
 } from "lucide-react";
 
 // ── Scroll reveal hook ───────────────────────────────────────────────
@@ -324,7 +326,7 @@ function LandingView() {
                 animation: "fade-in-up 0.7s cubic-bezier(0.16,1,0.3,1) 0.35s forwards",
               }}
             >
-              Ghola users pay for AI chat. Your GPU serves the inference. You
+              ghola users pay for AI chat. Your GPU serves the inference. You
               earn USDC for every request. No middlemen, no cloud
               bills&mdash;just your hardware working for you.
             </p>
@@ -439,7 +441,7 @@ function LandingView() {
               {
                 icon: Terminal,
                 title: "Run one command",
-                desc: "Start the Ghola provider CLI. It auto-connects to the network.",
+                desc: "Start the ghola provider CLI. It auto-connects to the network.",
                 num: "03",
               },
               {
@@ -498,7 +500,7 @@ function LandingView() {
                   85%
                 </p>
                 <p className="text-sm text-[#8b95a8] leading-relaxed">
-                  Revenue goes to you. Ghola takes a 15% platform fee.
+                  Revenue goes to you. ghola takes a 15% platform fee.
                 </p>
               </GlassCard>
             </Reveal>
@@ -563,7 +565,7 @@ function LandingView() {
               {
                 icon: Cpu,
                 label: "Software",
-                value: "Ollama (free) + Ghola CLI (free)",
+                value: "Ollama (free) + ghola CLI (free)",
               },
               {
                 icon: Wifi,
@@ -686,6 +688,12 @@ function DashboardView() {
   const [dailyStats, setDailyStats] = useState<ComputeDailyStats[]>([]);
   const [recentJobs, setRecentJobs] = useState<ComputeRecentJob[]>([]);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [networkProviderCount, setNetworkProviderCount] = useState(0);
+  const [networkModelCount, setNetworkModelCount] = useState(0);
+  const [payoutsData, setPayoutsData] = useState<PayoutsResponse | null>(null);
+  const [withdrawing, setWithdrawing] = useState(false);
+  const [withdrawError, setWithdrawError] = useState("");
+  const [withdrawSuccess, setWithdrawSuccess] = useState<{ signature: string; explorer_url: string } | null>(null);
 
   // Initial data load
   useEffect(() => {
@@ -694,14 +702,20 @@ function DashboardView() {
         // Ensure provider key exists (idempotent)
         await createProviderKey().catch(() => {});
 
-        const [prov, stats, jobs] = await Promise.all([
+        const [prov, stats, jobs, providers, modelsResp, payouts] = await Promise.all([
           getMyProvider().catch(() => null),
           getComputeStats(30).catch(() => []),
           getRecentJobs(20).catch(() => []),
+          getComputeProviders().catch(() => []),
+          getComputeModels().catch(() => ({ models: [] })),
+          getProviderPayouts(10).catch(() => null),
         ]);
         if (prov) setProvider(prov);
         setDailyStats(stats);
         setRecentJobs(jobs);
+        setNetworkProviderCount(providers.length);
+        setNetworkModelCount(modelsResp.models?.length ?? 0);
+        if (payouts) setPayoutsData(payouts);
 
         // Auto-expand setup if no provider or offline
         if (!prov || prov.status !== "online") setSetupOpen(true);
@@ -763,6 +777,8 @@ function DashboardView() {
   }
 
   const totalEarned = provider ? provider.total_earned_usdc / 1_000_000 : 0;
+  const totalWithdrawn = provider ? (provider.total_withdrawn_usdc ?? 0) / 1_000_000 : 0;
+  const availableBalance = totalEarned - totalWithdrawn;
   const todayStats = dailyStats.length > 0 ? dailyStats[0] : null;
   const todayEarned = todayStats ? todayStats.earned_usdc / 1_000_000 : 0;
   const todayRequests = todayStats ? todayStats.requests_total : 0;
@@ -1022,6 +1038,174 @@ function DashboardView() {
           )}
         </GlassCard>
 
+        {/* Network Status */}
+        <GlassCard className="p-6 mb-6" hover={false}>
+          <div className="flex items-center gap-2 mb-4">
+            <Globe className="w-5 h-5 text-[#8b95a8]" />
+            <h2 className="text-base font-medium text-[#eef1f8]">Network Status</h2>
+          </div>
+          <div className="flex items-center gap-6 flex-wrap">
+            <div className="text-sm text-[#8b95a8]">
+              <span className="text-[#eef1f8] font-medium">{networkProviderCount}</span>{" "}
+              {networkProviderCount === 1 ? "provider" : "providers"} online
+            </div>
+            <span className="text-[#4a5568]">&middot;</span>
+            <div className="text-sm text-[#8b95a8]">
+              <span className="text-[#eef1f8] font-medium">{networkModelCount}</span>{" "}
+              {networkModelCount === 1 ? "model" : "models"} available
+            </div>
+          </div>
+          {provider?.status === "online" && (
+            <div className="mt-3 flex items-center gap-2 text-xs text-green-400">
+              <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+              You are contributing to the network
+            </div>
+          )}
+        </GlassCard>
+
+        {/* Payouts */}
+        <GlassCard className="p-6 mb-6" hover={false}>
+          <div className="flex items-center gap-2 mb-4">
+            <Wallet className="w-5 h-5 text-[#8b95a8]" />
+            <h2 className="text-base font-medium text-[#eef1f8]">Payouts</h2>
+          </div>
+          <div className="space-y-3">
+            <div className="flex items-baseline justify-between">
+              <span className="text-sm text-[#8b95a8]">Earned</span>
+              <span className="text-sm font-medium text-[#eef1f8] font-mono">
+                ${totalEarned.toFixed(4)} <span className="text-xs text-[#4a5568]">USDC</span>
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between">
+              <span className="text-sm text-[#8b95a8]">Withdrawn</span>
+              <span className="text-sm font-medium text-[#eef1f8] font-mono">
+                ${totalWithdrawn.toFixed(4)} <span className="text-xs text-[#4a5568]">USDC</span>
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between">
+              <span className="text-sm text-[#8b95a8]">Available</span>
+              <span className="text-lg font-medium text-[#3da8ff] font-mono">
+                ${availableBalance.toFixed(4)} <span className="text-xs text-[#4a5568]">USDC</span>
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-[#8b95a8]">Wallet</span>
+              {provider?.wallet_address ? (
+                <span className="text-sm text-[#eef1f8] font-mono">
+                  {provider.wallet_address.slice(0, 4)}...{provider.wallet_address.slice(-4)}
+                </span>
+              ) : (
+                <span className="text-sm text-[#4a5568]">No wallet address</span>
+              )}
+            </div>
+            <div className="pt-2 border-t border-white/[0.06]">
+              <button
+                disabled={availableBalance < 1.0 || !provider?.wallet_address || withdrawing}
+                onClick={async () => {
+                  setWithdrawing(true);
+                  setWithdrawError("");
+                  setWithdrawSuccess(null);
+                  try {
+                    const res = await withdrawProviderEarnings();
+                    setWithdrawSuccess({ signature: res.signature, explorer_url: res.explorer_url });
+                    // Refresh provider + payouts data
+                    const [prov, payouts] = await Promise.all([
+                      getMyProvider().catch(() => null),
+                      getProviderPayouts(10).catch(() => null),
+                    ]);
+                    if (prov) setProvider(prov);
+                    if (payouts) setPayoutsData(payouts);
+                  } catch (err) {
+                    setWithdrawError(err instanceof Error ? err.message : "Withdrawal failed");
+                  } finally {
+                    setWithdrawing(false);
+                  }
+                }}
+                className={`rounded-xl px-4 py-2 text-sm transition-colors ${
+                  availableBalance >= 1.0 && provider?.wallet_address && !withdrawing
+                    ? "bg-[#3da8ff]/10 border border-[#3da8ff]/30 text-[#3da8ff] hover:bg-[#3da8ff]/20 cursor-pointer"
+                    : "bg-white/[0.04] border border-white/[0.06] text-[#4a5568] cursor-not-allowed"
+                }`}
+              >
+                {withdrawing ? (
+                  <span className="flex items-center gap-2">
+                    <span className="h-3 w-3 animate-spin rounded-full border border-[#3da8ff] border-t-transparent" />
+                    Withdrawing...
+                  </span>
+                ) : (
+                  `Withdraw $${availableBalance.toFixed(2)}`
+                )}
+              </button>
+              {!provider?.wallet_address && (
+                <p className="text-xs text-[#4a5568] mt-2">
+                  Set a wallet address on your provider profile to withdraw.
+                </p>
+              )}
+              {availableBalance < 1.0 && provider?.wallet_address && (
+                <p className="text-xs text-[#4a5568] mt-2">
+                  Minimum withdrawal is $1.00 USDC.
+                </p>
+              )}
+              {withdrawSuccess && (
+                <div className="mt-3 p-3 rounded-lg bg-emerald-500/[0.08] border border-emerald-500/20">
+                  <p className="text-xs text-emerald-400 mb-1">Withdrawal confirmed</p>
+                  <a
+                    href={withdrawSuccess.explorer_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-[#3da8ff] font-mono hover:underline break-all"
+                  >
+                    {withdrawSuccess.signature.slice(0, 20)}...
+                  </a>
+                </div>
+              )}
+              {withdrawError && (
+                <p className="text-xs text-red-400 mt-2">{withdrawError}</p>
+              )}
+            </div>
+          </div>
+
+          {/* Payout History */}
+          {payoutsData && payoutsData.payouts.length > 0 && (
+            <div className="mt-4 pt-4 border-t border-white/[0.06]">
+              <h3 className="text-sm font-medium text-[#8b95a8] mb-3">History</h3>
+              <div className="space-y-2">
+                {payoutsData.payouts.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between text-xs">
+                    <span className="text-[#8b95a8]">
+                      {new Date(p.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                    </span>
+                    <span className="text-[#eef1f8] font-mono">
+                      ${(p.amount_usdc / 1_000_000).toFixed(2)}
+                    </span>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+                      p.status === "confirmed"
+                        ? "bg-emerald-500/10 text-emerald-400"
+                        : p.status === "failed"
+                        ? "bg-red-500/10 text-red-400"
+                        : "bg-yellow-500/10 text-yellow-400"
+                    }`}>
+                      {p.status}
+                    </span>
+                    {p.signature ? (
+                      <a
+                        href={`https://explorer.solana.com/tx/${p.signature}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[#3da8ff] hover:underline"
+                      >
+                        view
+                      </a>
+                    ) : (
+                      <span className="text-[#4a5568]">-</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </GlassCard>
+
         {/* Setup Steps — Collapsible Accordion */}
         <GlassCard className="mb-6" hover={false}>
           <button
@@ -1089,8 +1273,8 @@ function DashboardView() {
 
                 <StepCard
                   step={3}
-                  title="Install Ghola CLI"
-                  description="The CLI connects your machine to the Ghola network."
+                  title="Install ghola CLI"
+                  description="The CLI connects your machine to the ghola network."
                 >
                   <CodeBlock code="curl -fsSL https://ghola.xyz/install.sh | sh" />
                   <p className="text-xs text-[#4a5568] mt-3">

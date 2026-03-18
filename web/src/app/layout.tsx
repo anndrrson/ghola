@@ -5,6 +5,7 @@ import { AuthProvider } from "@/lib/auth-context";
 import { ThumperAuthProvider } from "@/lib/thumper-auth-context";
 import { AppWalletProvider } from "@/lib/wallet-provider";
 import { LayoutShell } from "@/components/LayoutShell";
+import { ServiceWorker } from "@/components/ServiceWorker";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -17,9 +18,18 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Ghola — Your AI Personal Assistant",
+  title: "ghola — your AI personal assistant",
   description:
-    "Your AI assistant that actually does things. Make calls, send emails, manage your calendar — all from chat.",
+    "Your AI assistant that actually does things. Make calls, send emails, manage your calendar, send crypto — all from chat.",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "ghola",
+  },
+  other: {
+    "mobile-web-app-capable": "yes",
+  },
 };
 
 export default function RootLayout({
@@ -29,9 +39,14 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
+      <head>
+        <meta name="theme-color" content="#08090d" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} bg-[#08090d] text-[#eef1f8] font-sans antialiased`}
       >
+        <ServiceWorker />
         <AuthProvider>
           <ThumperAuthProvider>
             <AppWalletProvider>

@@ -172,12 +172,12 @@ export default function VaultPage() {
             <div>
               <h2 className="text-3xl font-medium text-[#eef1f8] mb-4">How it works</h2>
               <p className="text-[#8b95a8] mb-8 leading-relaxed">
-                Ghola runs as an MCP server — a sidecar your AI tools connect to locally.
+                ghola runs as an MCP server — a sidecar your AI tools connect to locally.
                 Your data never leaves your machine unless you choose cloud sync.
               </p>
               <ol className="space-y-6">
                 {[
-                  { title: "Add Ghola to your MCP config", desc: "One JSON block in Claude, Cursor, or any MCP client." },
+                  { title: "Add ghola to your MCP config", desc: "One JSON block in Claude, Cursor, or any MCP client." },
                   { title: "Agents pull what they need", desc: "API keys, prompts, memory, preferences — fetched on demand, not hard-coded." },
                   { title: "Update once, everywhere", desc: "Rotate a key or change a prompt — every agent in every environment picks it up instantly." },
                 ].map((step, i) => (

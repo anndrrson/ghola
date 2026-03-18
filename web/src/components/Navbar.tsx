@@ -67,7 +67,7 @@ export function Navbar() {
         <div className="flex h-16 items-center justify-between">
           {/* Logo + Section Tabs */}
           <div className="flex items-center gap-8">
-            <Link href="/" className="flex items-center gap-2.5">
+            <Link href="/" className="flex items-center gap-1.5">
               <GholaLogo size={28} className="text-[#eef1f8]" />
               <span className="text-xl font-bold tracking-tight text-[#eef1f8]">
                 ghola

@@ -33,6 +33,65 @@ declare global {
   }
 }
 
+function getPasswordStrength(password: string): {
+  level: "weak" | "fair" | "good" | "strong";
+  score: number;
+} {
+  if (password.length < 12) return { level: "weak", score: 1 };
+  const hasUpper = /[A-Z]/.test(password);
+  const hasLower = /[a-z]/.test(password);
+  const hasNumber = /[0-9]/.test(password);
+  const hasSpecial = /[^A-Za-z0-9]/.test(password);
+  if (hasUpper && hasLower && hasNumber && hasSpecial)
+    return { level: "strong", score: 4 };
+  if (hasUpper && hasLower && hasNumber) return { level: "good", score: 3 };
+  return { level: "fair", score: 2 };
+}
+
+function PasswordStrengthIndicator({ password }: { password: string }) {
+  if (!password) return null;
+  const { level, score } = getPasswordStrength(password);
+  const colors: Record<string, string> = {
+    weak: "bg-red-500",
+    fair: "bg-orange-500",
+    good: "bg-yellow-500",
+    strong: "bg-green-500",
+  };
+  const labels: Record<string, string> = {
+    weak: "Weak",
+    fair: "Fair",
+    good: "Good",
+    strong: "Strong",
+  };
+  return (
+    <div className="mt-2">
+      <div className="flex gap-1">
+        {[1, 2, 3, 4].map((i) => (
+          <div
+            key={i}
+            className={`h-1 flex-1 rounded-full transition-colors ${
+              i <= score ? colors[level] : "bg-[#1e2a3a]"
+            }`}
+          />
+        ))}
+      </div>
+      <p
+        className={`text-xs mt-1 ${
+          level === "weak"
+            ? "text-red-400"
+            : level === "fair"
+              ? "text-orange-400"
+              : level === "good"
+                ? "text-yellow-400"
+                : "text-green-400"
+        }`}
+      >
+        {labels[level]}
+      </p>
+    </div>
+  );
+}
+
 function SignUpContent() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -140,7 +199,7 @@ function SignUpContent() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4 bg-[#08090d]">
       <div className="w-full max-w-sm">
-        <div className="flex items-center justify-center gap-2.5 mb-8">
+        <div className="flex items-center justify-center gap-1.5 mb-8">
           <GholaLogo size={32} className="text-[#eef1f8]" />
           <span className="text-2xl font-bold tracking-tight text-[#eef1f8]">
             ghola
@@ -216,10 +275,11 @@ function SignUpContent() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                minLength={8}
-                placeholder="At least 8 characters"
+                minLength={12}
+                placeholder="At least 12 characters"
                 className="w-full rounded-lg border border-[#1e2a3a] bg-[#161822] px-3 py-2.5 text-sm text-[#eef1f8] placeholder-[#4a5568] outline-none focus:border-[#3da8ff] transition-colors"
               />
+              <PasswordStrengthIndicator password={password} />
             </div>
 
             {error && (

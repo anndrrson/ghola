@@ -41,8 +41,8 @@ export default function RegisterPage() {
       setError("Please fill in all required fields.");
       return;
     }
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters.");
+    if (password.length < 12) {
+      setError("Password must be at least 12 characters.");
       return;
     }
     if (password !== confirmPassword) {
@@ -100,7 +100,7 @@ export default function RegisterPage() {
               <Shield className="h-6 w-6" />
             </div>
             <h1 className="text-2xl font-bold text-[#eef1f8]">
-              Create your Ghola
+              Create your ghola
             </h1>
             <p className="mt-2 text-sm text-[#8b95a8]">
               {accountType === "business"
@@ -185,7 +185,7 @@ export default function RegisterPage() {
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Min. 8 characters"
+                    placeholder="Min. 12 characters"
                     autoComplete="new-password"
                     className="w-full rounded-lg border border-[#1e2a3a] bg-[#161822] px-4 py-2.5 text-sm text-[#eef1f8] placeholder-[#4a5568] focus:border-[#3da8ff] focus:ring-1 focus:ring-[#3da8ff] outline-none transition-colors"
                   />

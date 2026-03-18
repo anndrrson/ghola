@@ -1,7 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
+import { logger } from "@/lib/logger";
 
 const THUMPER_API_BASE =
   process.env.NEXT_PUBLIC_THUMPER_API_URL || "http://localhost:3000";
+
+// Temporary in-memory store for OAuth token exchange codes
+const pendingCodes = new Map<string, { token: string; expires: number }>();
+
+function cleanupExpiredCodes() {
+  const now = Date.now();
+  for (const [code, entry] of pendingCodes) {
+    if (entry.expires <= now) {
+      pendingCodes.delete(code);
+    }
+  }
+}
+
+export { pendingCodes };
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
@@ -58,7 +73,7 @@ export async function GET(req: NextRequest) {
 
     if (!tokenRes.ok) {
       const err = await tokenRes.text();
-      console.error("Twitter token exchange failed:", err);
+      logger.error("Twitter token exchange failed:", err);
       return NextResponse.redirect(
         new URL("/signup?error=token_exchange_failed", req.nextUrl.origin)
       );
@@ -76,7 +91,7 @@ export async function GET(req: NextRequest) {
     );
 
     if (!userRes.ok) {
-      console.error("Twitter user fetch failed:", await userRes.text());
+      logger.error("Twitter user fetch failed:", await userRes.text());
       return NextResponse.redirect(
         new URL("/signup?error=user_fetch_failed", req.nextUrl.origin)
       );
@@ -98,7 +113,7 @@ export async function GET(req: NextRequest) {
     });
 
     if (!authRes.ok) {
-      console.error("Thumper twitter auth failed:", await authRes.text());
+      logger.error("Thumper twitter auth failed:", await authRes.text());
       return NextResponse.redirect(
         new URL("/signup?error=auth_failed", req.nextUrl.origin)
       );
@@ -106,9 +121,16 @@ export async function GET(req: NextRequest) {
 
     const authData = await authRes.json();
 
-    // Redirect to chat with token in URL fragment (client picks it up)
+    // Store token behind a short-lived exchange code (avoid token in URL)
+    cleanupExpiredCodes();
+    const exchangeCode = crypto.randomUUID();
+    pendingCodes.set(exchangeCode, {
+      token: authData.token,
+      expires: Date.now() + 30_000, // 30-second TTL
+    });
+
     const response = NextResponse.redirect(
-      new URL(`/chat?twitter_token=${authData.token}`, req.nextUrl.origin)
+      new URL(`/chat?code=${exchangeCode}`, req.nextUrl.origin)
     );
 
     // Clear OAuth cookies
@@ -117,7 +139,7 @@ export async function GET(req: NextRequest) {
 
     return response;
   } catch (err) {
-    console.error("Twitter OAuth error:", err);
+    logger.error("Twitter OAuth error:", err);
     return NextResponse.redirect(
       new URL("/signup?error=server_error", req.nextUrl.origin)
     );

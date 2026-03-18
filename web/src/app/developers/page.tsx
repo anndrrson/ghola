@@ -24,10 +24,10 @@ export default function DevelopersPage() {
         {/* Header */}
         <div className="text-center mb-12">
           <h1 className="text-4xl font-medium tracking-tight text-[#eef1f8]">
-            Build with <span className="text-[#3da8ff]">Ghola</span>
+            Build with <span className="text-[#3da8ff]">ghola</span>
           </h1>
           <p className="mt-4 text-lg text-[#8b95a8] max-w-2xl mx-auto">
-            Access Ghola&apos;s AI capabilities through an OpenAI-compatible API.
+            Access ghola&apos;s AI capabilities through an OpenAI-compatible API.
             Make phone calls, send emails, and chat — all programmatically.
           </p>
         </div>

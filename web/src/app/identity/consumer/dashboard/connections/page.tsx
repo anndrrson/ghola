@@ -75,7 +75,7 @@ export default function ConsumerConnectionsPage() {
           Connect Your AI Tools
         </h1>
         <p className="mt-1 text-[#8b95a8]">
-          Add Ghola to any MCP-compatible AI tool. Your identity, memory, and
+          Add ghola to any MCP-compatible AI tool. Your identity, memory, and
           preferences will be available automatically.
         </p>
       </div>
@@ -176,7 +176,7 @@ export default function ConsumerConnectionsPage() {
                 <div className="space-y-2">
                   <p className="text-xs text-[#8b95a8] leading-relaxed">
                     Any tool that supports the Model Context Protocol can connect
-                    to Ghola. Point it to{" "}
+                    to ghola. Point it to{" "}
                     <code className="text-[#5bb8ff]">said serve</code> as a
                     stdio transport.
                   </p>
@@ -201,7 +201,7 @@ export default function ConsumerConnectionsPage() {
               Cloud Proxy Mode
             </h3>
             <p className="text-xs text-[#8b95a8] leading-relaxed">
-              Don&apos;t want to run a local server? Install the Ghola browser
+              Don&apos;t want to run a local server? Install the ghola browser
               extension for cloud-proxied access to your vault. Your data is
               end-to-end encrypted — the cloud never sees your plaintext
               identity.

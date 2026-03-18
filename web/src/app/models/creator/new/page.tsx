@@ -192,7 +192,7 @@ export default function CreateModelPage() {
                   <Server className="w-4 h-4 text-[#D4A04A]" />
                   <p className="text-[#eef1f8] font-medium">Self-hosted node</p>
                 </div>
-                <p className="text-sm text-[#8b95a8] mt-1">Use your own OpenAI-compatible inference endpoint registered in Ghola.</p>
+                <p className="text-sm text-[#8b95a8] mt-1">Use your own OpenAI-compatible inference endpoint registered in ghola.</p>
               </div>
             </label>
           </div>

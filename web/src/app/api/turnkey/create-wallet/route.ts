@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Turnkey } from "@turnkey/sdk-server";
 import { ApiKeyStamper } from "@turnkey/api-key-stamper";
+import { logger } from "@/lib/logger";
 
 const TURNKEY_API_BASE_URL = "https://api.turnkey.com";
 
@@ -77,7 +78,7 @@ export async function POST(req: NextRequest) {
         },
       ],
       wallet: {
-        walletName: "Ghola Wallet",
+        walletName: "ghola Wallet",
         accounts: [
           {
             curve: "CURVE_ED25519",
@@ -102,7 +103,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ subOrgId, walletAddress, walletId });
   } catch (err) {
-    console.error("Turnkey create-wallet error:", err);
+    logger.error("Turnkey create-wallet error:", err);
     return NextResponse.json(
       { error: "Failed to create wallet" },
       { status: 500 }

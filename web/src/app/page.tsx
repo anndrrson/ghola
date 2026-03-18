@@ -93,17 +93,17 @@ export default function Home() {
       <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <h2 className="text-3xl font-medium text-[#eef1f8] mb-4 text-center">
-            What Ghola can do
+            What ghola can do
           </h2>
           <p className="text-[#8b95a8] mb-12 text-center max-w-lg mx-auto">
-            Just tell Ghola what you need. It handles the rest.
+            Just tell ghola what you need. It handles the rest.
           </p>
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4 max-w-5xl mx-auto">
             {[
               {
                 icon: Phone,
                 title: "Phone Calls",
-                desc: 'Say "Call Joe\'s Pizza and book a table for 4 at 7pm" — Ghola makes the call, gives you the transcript.',
+                desc: 'Say "Call Joe\'s Pizza and book a table for 4 at 7pm" — ghola makes the call, gives you the transcript.',
               },
               {
                 icon: Mail,
@@ -118,7 +118,7 @@ export default function Home() {
               {
                 icon: MessageCircle,
                 title: "Telegram",
-                desc: "Connect your Telegram and chat with Ghola from anywhere. Make calls and send emails without opening a browser.",
+                desc: "Connect your Telegram and chat with ghola from anywhere. Make calls and send emails without opening a browser.",
               },
             ].map((card) => {
               const Icon = card.icon;
@@ -152,8 +152,8 @@ export default function Home() {
           <div className="grid gap-8 sm:grid-cols-3 max-w-3xl mx-auto">
             {[
               { step: "1", title: "Sign up", desc: "Name, email, password. That's it." },
-              { step: "2", title: "Chat", desc: "Tell Ghola what you need in plain English." },
-              { step: "3", title: "Done", desc: "Ghola makes the call, sends the email, books the appointment." },
+              { step: "2", title: "Chat", desc: "Tell ghola what you need in plain English." },
+              { step: "3", title: "Done", desc: "ghola makes the call, sends the email, books the appointment." },
             ].map((s) => (
               <div key={s.step} className="text-center">
                 <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-[#3da8ff]/10 text-sm font-medium text-[#3da8ff] mb-3">
@@ -178,7 +178,7 @@ export default function Home() {
               Works on Telegram too
             </h2>
             <p className="text-[#8b95a8] mb-8 leading-relaxed">
-              Connect your Telegram account and message Ghola like you&apos;d message a friend.
+              Connect your Telegram account and message ghola like you&apos;d message a friend.
               Make phone calls, send emails, and manage tasks — all from the app you already use every day.
             </p>
             <Link
@@ -203,7 +203,7 @@ export default function Home() {
               Developer API
             </h2>
             <p className="text-[#8b95a8] mb-8 leading-relaxed">
-              Build on top of Ghola with an OpenAI-compatible API. Make phone calls, send emails, and
+              Build on top of ghola with an OpenAI-compatible API. Make phone calls, send emails, and
               chat — all programmatically. Works with any OpenAI SDK.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">

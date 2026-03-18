@@ -139,7 +139,7 @@ function SignInContent() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4 bg-[#08090d]">
       <div className="w-full max-w-sm">
-        <div className="flex items-center justify-center gap-2.5 mb-8">
+        <div className="flex items-center justify-center gap-1.5 mb-8">
           <GholaLogo size={32} className="text-[#eef1f8]" />
           <span className="text-2xl font-bold tracking-tight text-[#eef1f8]">
             ghola

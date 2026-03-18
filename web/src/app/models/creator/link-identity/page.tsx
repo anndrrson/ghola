@@ -32,7 +32,7 @@ export default function LinkIdentityPage() {
     if (!did) return;
     const saidToken = localStorage.getItem("ghola_token");
     if (!saidToken) {
-      setError("No Ghola token found. Please log in to your Ghola account first.");
+      setError("No ghola token found. Please log in to your ghola account first.");
       return;
     }
     setLoading(true);
@@ -60,11 +60,11 @@ export default function LinkIdentityPage() {
       <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-8">
         <div className="mb-6 flex items-center gap-3">
           <ShieldCheck className="h-8 w-8 text-[#3da8ff]" />
-          <h1 className="text-2xl font-bold text-[#eef1f8]">Link Ghola Identity</h1>
+          <h1 className="text-2xl font-bold text-[#eef1f8]">Link ghola Identity</h1>
         </div>
 
         <p className="mb-6 text-sm text-[#8b95a8]">
-          Connect your Ghola identity to your Orni creator account. A verified
+          Connect your ghola identity to your Orni creator account. A verified
           badge will appear on all your model listings.
         </p>
 
@@ -88,13 +88,13 @@ export default function LinkIdentityPage() {
           <>
             <div className="mb-6 rounded-lg bg-[#161822] p-4">
               <label className="mb-1 block text-xs font-medium text-[#4a5568]">
-                Your Ghola ID
+                Your ghola ID
               </label>
               {did ? (
                 <p className="break-all font-mono text-sm text-[#eef1f8]">{did}</p>
               ) : (
                 <p className="text-sm text-[#4a5568] italic">
-                  No identity detected. Please log in to your Ghola account first.
+                  No identity detected. Please log in to your ghola account first.
                 </p>
               )}
             </div>
