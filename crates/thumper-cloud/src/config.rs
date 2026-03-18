@@ -30,6 +30,7 @@ pub struct CloudConfig {
     // GPU Compute Marketplace
     pub relay_url: String,
     pub platform_wallet_address: Option<String>,
+    pub treasury_mnemonic: Option<String>,
     pub min_provider_reputation: f64,
     pub max_escrow_age_secs: u64,
     pub provider_payout_interval_secs: u64,
@@ -37,17 +38,10 @@ pub struct CloudConfig {
 
 impl CloudConfig {
     pub fn from_env() -> Self {
-        let encryption_hex = env::var("THUMPER_ENCRYPTION_KEY").unwrap_or_else(|_| {
-            tracing::warn!(
-                "THUMPER_ENCRYPTION_KEY not set — using random key. \
-                 BYOM API keys and Gmail tokens won't survive restarts. \
-                 Set this env var with `openssl rand -hex 32`."
-            );
-            let mut key = [0u8; 32];
-            use rand::RngCore;
-            rand::thread_rng().fill_bytes(&mut key);
-            hex_encode(&key)
-        });
+        let encryption_hex = env::var("THUMPER_ENCRYPTION_KEY").expect(
+            "THUMPER_ENCRYPTION_KEY must be set (generate with `openssl rand -hex 32`). \
+             Without it, BYOM API keys and Gmail tokens cannot be encrypted."
+        );
 
         let encryption_key = parse_hex_key(&encryption_hex);
 
@@ -105,6 +99,7 @@ impl CloudConfig {
             relay_url: env::var("RELAY_URL")
                 .unwrap_or_else(|_| "http://localhost:8080".to_string()),
             platform_wallet_address: env::var("PLATFORM_WALLET_ADDRESS").ok(),
+            treasury_mnemonic: env::var("TREASURY_MNEMONIC").ok(),
             min_provider_reputation: env::var("MIN_PROVIDER_REPUTATION")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -143,8 +138,4 @@ fn parse_hex_key(hex_str: &str) -> [u8; 32] {
     let len = bytes.len().min(32);
     key[..len].copy_from_slice(&bytes[..len]);
     key
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

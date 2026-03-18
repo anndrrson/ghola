@@ -209,15 +209,16 @@ pub async fn billing_webhook(
     body: String,
 ) -> Result<Json<serde_json::Value>, CloudError> {
     // Verify Stripe webhook signature if secret is configured
-    if let Some(ref webhook_secret) = state.config.stripe_webhook_secret {
-        let sig_header = headers
-            .get("stripe-signature")
-            .and_then(|v| v.to_str().ok())
-            .ok_or(CloudError::BadRequest("missing Stripe-Signature header".to_string()))?;
-        verify_stripe_signature(&body, sig_header, webhook_secret)?;
-    } else {
-        tracing::warn!("STRIPE_WEBHOOK_SECRET not set — webhook signature not verified");
-    }
+    let webhook_secret = state.config.stripe_webhook_secret.as_ref().ok_or_else(|| {
+        tracing::error!("STRIPE_WEBHOOK_SECRET not configured — rejecting webhook");
+        CloudError::Internal("webhook verification unavailable".into())
+    })?;
+
+    let sig_header = headers
+        .get("stripe-signature")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(CloudError::BadRequest("missing Stripe-Signature header".to_string()))?;
+    verify_stripe_signature(&body, sig_header, webhook_secret)?;
 
     let event: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| CloudError::BadRequest(format!("invalid JSON: {e}")))?;

@@ -382,8 +382,8 @@ pub async fn email_sign_in(
     }))
 }
 
-/// Hash a password with HMAC-SHA256 using a per-user random salt.
-/// Format: "v2:{hex_salt}:{hex_hmac}"
+/// Hash a password with PBKDF2-HMAC-SHA256 (600k iterations) using a per-user random salt.
+/// Format: "v3:{hex_salt}:{hex_derived_key}"
 fn hash_password_v2(password: &str) -> String {
     use rand::RngCore;
 
@@ -391,13 +391,13 @@ fn hash_password_v2(password: &str) -> String {
     rand::thread_rng().fill_bytes(&mut salt);
     let salt_hex: String = salt.iter().map(|b| format!("{b:02x}")).collect();
 
-    let hmac = hmac_sha256_password(&salt, password.as_bytes());
-    let hmac_hex: String = hmac.iter().map(|b| format!("{b:02x}")).collect();
+    let dk = pbkdf2_hmac_sha256(password.as_bytes(), &salt, 600_000);
+    let dk_hex: String = dk.iter().map(|b| format!("{b:02x}")).collect();
 
-    format!("v2:{salt_hex}:{hmac_hex}")
+    format!("v3:{salt_hex}:{dk_hex}")
 }
 
-/// HMAC-SHA256 for password hashing (avoids adding hmac crate).
+/// HMAC-SHA256 (RFC 2104) — used internally by PBKDF2 and for v2 migration.
 fn hmac_sha256_password(key: &[u8], data: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
 
@@ -432,6 +432,26 @@ fn hmac_sha256_password(key: &[u8], data: &[u8]) -> [u8; 32] {
     out
 }
 
+/// PBKDF2-HMAC-SHA256 (RFC 8018) — slow key derivation for password storage.
+fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
+    // PBKDF2 with a single block (dkLen = 32 = SHA256 output, so i=1)
+    let mut block_salt = Vec::with_capacity(salt.len() + 4);
+    block_salt.extend_from_slice(salt);
+    block_salt.extend_from_slice(&1u32.to_be_bytes()); // block index 1
+
+    let mut u = hmac_sha256_password(password, &block_salt);
+    let mut result = u;
+
+    for _ in 1..iterations {
+        u = hmac_sha256_password(password, &u);
+        for (r, x) in result.iter_mut().zip(u.iter()) {
+            *r ^= x;
+        }
+    }
+
+    result
+}
+
 /// Legacy password hashing (DefaultHasher-based) — kept for migration only.
 fn hash_password_legacy(password: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
@@ -447,20 +467,24 @@ fn hash_password_legacy(password: &str) -> String {
 }
 
 fn verify_password(password: &str, stored: &str) -> bool {
-    if stored.starts_with("v2:") {
-        // New format: "v2:{salt_hex}:{hmac_hex}"
+    if stored.starts_with("v3:") {
+        // PBKDF2 format: "v3:{salt_hex}:{dk_hex}"
         let parts: Vec<&str> = stored.splitn(3, ':').collect();
         if parts.len() != 3 {
             return false;
         }
-        let salt: Vec<u8> = (0..parts[1].len())
-            .step_by(2)
-            .filter_map(|i| parts[1].get(i..i + 2).and_then(|s| u8::from_str_radix(s, 16).ok()))
-            .collect();
-        let expected_hmac: Vec<u8> = (0..parts[2].len())
-            .step_by(2)
-            .filter_map(|i| parts[2].get(i..i + 2).and_then(|s| u8::from_str_radix(s, 16).ok()))
-            .collect();
+        let salt = parse_hex(parts[1]);
+        let expected_dk = parse_hex(parts[2]);
+        let computed = pbkdf2_hmac_sha256(password.as_bytes(), &salt, 600_000);
+        computed.as_slice() == expected_dk.as_slice()
+    } else if stored.starts_with("v2:") {
+        // Legacy HMAC format: "v2:{salt_hex}:{hmac_hex}"
+        let parts: Vec<&str> = stored.splitn(3, ':').collect();
+        if parts.len() != 3 {
+            return false;
+        }
+        let salt = parse_hex(parts[1]);
+        let expected_hmac = parse_hex(parts[2]);
         let computed = hmac_sha256_password(&salt, password.as_bytes());
         computed.as_slice() == expected_hmac.as_slice()
     } else {
@@ -469,9 +493,16 @@ fn verify_password(password: &str, stored: &str) -> bool {
     }
 }
 
-/// Check if a stored hash needs upgrading to v2.
+fn parse_hex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .filter_map(|i| s.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+        .collect()
+}
+
+/// Check if a stored hash needs upgrading to v3 (PBKDF2).
 fn needs_rehash(stored: &str) -> bool {
-    !stored.starts_with("v2:")
+    !stored.starts_with("v3:")
 }
 
 /// Auto-provision a Solana wallet for new users (fire-and-forget).

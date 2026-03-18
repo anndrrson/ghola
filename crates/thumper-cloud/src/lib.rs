@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod middleware;
+pub mod privacy;
 pub mod routes;
 pub mod services;
 pub mod state;
@@ -80,11 +81,13 @@ pub async fn run_cloud() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     // Rate limiter cleanup (every 5 minutes)
     {
         let limiter = state.rate_limiter.clone();
+        let ip_limiter = state.ip_rate_limiter.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
             loop {
                 interval.tick().await;
                 limiter.cleanup().await;
+                ip_limiter.cleanup().await;
             }
         });
     }
@@ -112,7 +115,8 @@ pub async fn run_cloud() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         });
     }
 
-    let app = build_router(state);
+    let app = build_router(state)
+        .into_make_service_with_connect_info::<std::net::SocketAddr>();
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     tracing::info!("thumper-cloud listening on {}", bind_addr);
@@ -201,6 +205,26 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/compute/stats", get(routes::compute::get_stats))
         .route("/api/compute/jobs", get(routes::compute::get_recent_jobs))
         .route("/api/compute/escrow", get(routes::compute::get_escrow))
+        .route("/api/compute/providers/me/withdraw", post(routes::compute::withdraw_earnings))
+        .route("/api/compute/providers/me/payouts", get(routes::compute::get_payouts))
+        // Agent Rental
+        .route("/api/agents", post(routes::agents::create_agent).get(routes::agents::list_agents))
+        .route("/api/agents/mine", get(routes::agents::list_my_agents))
+        .route("/api/agents/{slug_or_id}", get(routes::agents::get_agent)
+            .patch(routes::agents::update_agent).delete(routes::agents::delete_agent))
+        .route("/api/agents/{slug_or_id}/sessions", get(routes::agents::list_sessions))
+        .route("/api/agents/{slug_or_id}/rate", post(routes::agents::rate_agent))
+        // Swarm (elastic agent dispatch)
+        .route("/api/swarm/estimate", post(routes::swarm::estimate_swarm))
+        .route("/api/swarm", post(routes::swarm::create_swarm).get(routes::swarm::list_swarms))
+        .route("/api/swarm/{id}", get(routes::swarm::get_swarm))
+        .route("/api/swarm/{id}/units", get(routes::swarm::get_work_units))
+        .route("/api/swarm/{id}/results", get(routes::swarm::get_results))
+        .route("/api/swarm/{id}/stream", get(routes::swarm::stream_progress))
+        .route("/api/swarm/{id}/cancel", post(routes::swarm::cancel_swarm))
+        // x402 Discovery (unauthenticated)
+        .route("/x402/agents", get(routes::x402::list_agents))
+        .route("/x402/agents/{slug}", get(routes::x402::get_agent))
         // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(routes::openai_compat::chat_completions))
         .route("/v1/models", get(routes::openai_compat::list_models))

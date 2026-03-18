@@ -17,6 +17,37 @@ pub struct RateLimiter {
     windows: Arc<Mutex<HashMap<uuid::Uuid, (i64, u32)>>>,
 }
 
+/// IP-based rate limiter for unauthenticated requests (x402, discovery).
+#[derive(Clone, Default)]
+pub struct IpRateLimiter {
+    windows: Arc<Mutex<HashMap<std::net::IpAddr, (i64, u32)>>>,
+}
+
+impl IpRateLimiter {
+    const MAX_PER_MIN: u32 = 30;
+
+    pub async fn check(&self, ip: std::net::IpAddr) -> Result<(), CloudError> {
+        let now_minute = chrono::Utc::now().timestamp() / 60;
+        let mut windows = self.windows.lock().await;
+        let entry = windows.entry(ip).or_insert((now_minute, 0));
+        if entry.0 != now_minute {
+            *entry = (now_minute, 1);
+            return Ok(());
+        }
+        entry.1 += 1;
+        if entry.1 > Self::MAX_PER_MIN {
+            return Err(CloudError::RateLimit);
+        }
+        Ok(())
+    }
+
+    pub async fn cleanup(&self) {
+        let now_minute = chrono::Utc::now().timestamp() / 60;
+        let mut windows = self.windows.lock().await;
+        windows.retain(|_, (window, _)| *window >= now_minute - 1);
+    }
+}
+
 impl RateLimiter {
     /// Check if a request is allowed for the given user and tier.
     /// Returns Ok(()) if allowed, Err(CloudError::RateLimit) if exceeded.
@@ -115,6 +146,15 @@ pub async fn track_api_usage(
         }
     }
 
+    // Rate limit unauthenticated requests by IP (prevents x402 RPC DoS)
+    if user_id.is_none() {
+        if let Some(ip) = extract_client_ip(&request) {
+            if let Err(e) = state.ip_rate_limiter.check(ip).await {
+                return e.into_response();
+            }
+        }
+    }
+
     let response = next.run(request).await;
 
     // Fire-and-forget: increment API call count
@@ -141,3 +181,20 @@ pub async fn track_api_usage(
 }
 
 use axum::response::IntoResponse;
+
+fn extract_client_ip(request: &Request) -> Option<std::net::IpAddr> {
+    // Check x-forwarded-for first (behind reverse proxy)
+    request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse().ok())
+        // Fallback: ConnectInfo (direct connection)
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|ci| ci.0.ip())
+        })
+}

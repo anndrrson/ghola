@@ -346,6 +346,8 @@ CREATE TABLE IF NOT EXISTS compute_providers (
 CREATE INDEX IF NOT EXISTS idx_compute_providers_user ON compute_providers(user_id);
 CREATE INDEX IF NOT EXISTS idx_compute_providers_status ON compute_providers(status);
 
+-- Note: compute_jobs.user_id is stored for billing/dispute resolution but is
+-- NEVER exposed to providers via API. Provider-visible RecentJob omits user_id entirely.
 CREATE TABLE IF NOT EXISTS compute_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id),
@@ -391,4 +393,178 @@ CREATE TABLE IF NOT EXISTS provider_stats (
     UNIQUE(provider_id, stat_date)
 );
 CREATE INDEX IF NOT EXISTS idx_provider_stats_provider ON provider_stats(provider_id);
+
+-- Provider withdrawal support
+ALTER TABLE compute_providers ADD COLUMN IF NOT EXISTS wallet_address TEXT;
+ALTER TABLE compute_providers ADD COLUMN IF NOT EXISTS total_withdrawn_usdc BIGINT DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS provider_payouts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider_id UUID NOT NULL REFERENCES compute_providers(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id),
+    amount_usdc BIGINT NOT NULL,
+    to_address TEXT NOT NULL,
+    signature TEXT,
+    status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'failed')),
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_provider_payouts_provider ON provider_payouts(provider_id);
+
+-- Privacy: HD-derived intermediate wallets for provider payouts
+ALTER TABLE compute_providers ADD COLUMN IF NOT EXISTS payout_index INT;
+CREATE SEQUENCE IF NOT EXISTS payout_index_seq START 1;
+
+-- Agent Rental Marketplace
+CREATE TABLE IF NOT EXISTS rental_agents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider_id UUID NOT NULL REFERENCES compute_providers(id) ON DELETE CASCADE,
+    slug TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    avatar_url TEXT,
+    system_prompt TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    temperature DOUBLE PRECISION DEFAULT 0.7,
+    max_tokens INT DEFAULT 2048,
+    tools TEXT[] DEFAULT '{}',
+    tags TEXT[] DEFAULT '{}',
+    is_public BOOLEAN DEFAULT true,
+    is_active BOOLEAN DEFAULT true,
+    total_conversations BIGINT DEFAULT 0,
+    total_messages BIGINT DEFAULT 0,
+    avg_rating DOUBLE PRECISION DEFAULT 0.0,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_rental_agents_provider ON rental_agents(provider_id);
+CREATE INDEX IF NOT EXISTS idx_rental_agents_active ON rental_agents(is_active, is_public);
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_id UUID NOT NULL REFERENCES rental_agents(id) ON DELETE CASCADE,
+    message_count INT DEFAULT 0,
+    total_cost_usdc BIGINT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    last_message_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_user ON agent_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent ON agent_sessions(agent_id);
+
+CREATE TABLE IF NOT EXISTS agent_ratings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id UUID NOT NULL REFERENCES rental_agents(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id UUID NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    rating INT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    feedback TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(user_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_ratings_agent ON agent_ratings(agent_id);
+
+-- Link chat messages to agent sessions
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS agent_id UUID REFERENCES rental_agents(id);
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS agent_session_id UUID REFERENCES agent_sessions(id);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_agent_session ON chat_messages(agent_session_id);
+
+-- Track which agent a compute job was for
+ALTER TABLE compute_jobs ADD COLUMN IF NOT EXISTS agent_id UUID REFERENCES rental_agents(id);
+
+-- Swarm Jobs (elastic agent dispatch)
+CREATE TABLE IF NOT EXISTS swarm_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    -- Agent matching criteria
+    require_tags TEXT[] DEFAULT '{}',
+    require_tools TEXT[] DEFAULT '{}',
+    prefer_model TEXT,
+    min_reputation DOUBLE PRECISION DEFAULT 0.5,
+    -- Budget
+    max_budget_usdc BIGINT NOT NULL,
+    spent_usdc BIGINT DEFAULT 0,
+    -- Execution
+    max_parallel INT DEFAULT 10,
+    max_retries INT DEFAULT 1,
+    timeout_secs INT DEFAULT 300,
+    -- Status
+    status TEXT DEFAULT 'pending' CHECK (status IN (
+        'pending', 'matching', 'running', 'paused',
+        'completed', 'partial', 'failed', 'cancelled'
+    )),
+    -- Counts (denormalized for fast reads)
+    total_units INT DEFAULT 0,
+    completed_units INT DEFAULT 0,
+    failed_units INT DEFAULT 0,
+    running_units INT DEFAULT 0,
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT now(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_swarm_jobs_user ON swarm_jobs(user_id);
+CREATE INDEX IF NOT EXISTS idx_swarm_jobs_status ON swarm_jobs(status);
+
+CREATE TABLE IF NOT EXISTS swarm_work_units (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    swarm_id UUID NOT NULL REFERENCES swarm_jobs(id) ON DELETE CASCADE,
+    unit_index INT NOT NULL,
+    -- Input
+    prompt TEXT NOT NULL,
+    context JSONB DEFAULT '{}',
+    -- Assignment
+    agent_id UUID REFERENCES rental_agents(id),
+    provider_id UUID REFERENCES compute_providers(id),
+    escrow_id UUID REFERENCES escrow_holds(id),
+    job_id UUID REFERENCES compute_jobs(id),
+    -- Output
+    result TEXT,
+    result_metadata JSONB,
+    -- Status
+    status TEXT DEFAULT 'pending' CHECK (status IN (
+        'pending', 'assigned', 'running', 'completed', 'failed', 'cancelled', 'retrying'
+    )),
+    error_message TEXT,
+    retry_count INT DEFAULT 0,
+    -- Cost
+    cost_usdc BIGINT DEFAULT 0,
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT now(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_swarm_units_swarm ON swarm_work_units(swarm_id);
+CREATE INDEX IF NOT EXISTS idx_swarm_units_status ON swarm_work_units(swarm_id, status);
+CREATE INDEX IF NOT EXISTS idx_swarm_units_agent ON swarm_work_units(agent_id);
+
+-- x402 Payments (anonymous pay-per-request via Solana USDC)
+CREATE TABLE IF NOT EXISTS x402_payments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tx_signature TEXT NOT NULL UNIQUE,
+    payer_address TEXT NOT NULL,
+    amount_usdc BIGINT NOT NULL,
+    required_amount_usdc BIGINT NOT NULL,
+    agent_id UUID REFERENCES rental_agents(id),
+    provider_id UUID REFERENCES compute_providers(id),
+    provider_amount BIGINT DEFAULT 0,
+    platform_fee BIGINT DEFAULT 0,
+    settled BOOLEAN DEFAULT false,
+    model_id TEXT,
+    input_tokens INT,
+    output_tokens INT,
+    latency_ms INT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    settled_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_x402_payments_tx ON x402_payments(tx_signature);
+CREATE INDEX IF NOT EXISTS idx_x402_payments_payer ON x402_payments(payer_address);
+CREATE INDEX IF NOT EXISTS idx_x402_payments_agent ON x402_payments(agent_id);
+
+-- x402 payment status tracking (pending → settled | failed)
+ALTER TABLE x402_payments ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending'
+    CHECK (status IN ('pending', 'settled', 'failed'));
 "#;

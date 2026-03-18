@@ -104,6 +104,21 @@ pub async fn call_webhook(
     let bland_call_id = payload.call_id
         .ok_or(CloudError::BadRequest("missing call_id".to_string()))?;
 
+    // Verify this call_id exists in our DB (prevents forged webhook payloads
+    // from creating or mutating arbitrary records)
+    let known: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM calls WHERE bland_call_id = $1)",
+    )
+    .bind(&bland_call_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(false);
+
+    if !known {
+        tracing::warn!(%bland_call_id, "webhook for unknown call_id — ignoring");
+        return Ok(Json(serde_json::json!({ "status": "ignored" })));
+    }
+
     let transcript = payload.concatenated_transcript
         .or(payload.transcript)
         .unwrap_or_default();

@@ -1,9 +1,10 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use sqlx::PgPool;
+use dashmap::DashMap;
 
 use crate::config::CloudConfig;
-use crate::middleware::RateLimiter;
+use crate::middleware::{IpRateLimiter, RateLimiter};
 use crate::services::llm_router::FreeCascade;
 
 /// Cached info about an online community GPU provider.
@@ -20,13 +21,18 @@ pub struct CommunityProviderInfo {
 
 pub type ComputeProviderCache = Arc<Mutex<Vec<CommunityProviderInfo>>>;
 
+/// Broadcast channels for real-time swarm progress events (JSON strings).
+pub type SwarmChannels = Arc<DashMap<uuid::Uuid, tokio::sync::broadcast::Sender<String>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: CloudConfig,
     pub db: PgPool,
     pub rate_limiter: RateLimiter,
+    pub ip_rate_limiter: IpRateLimiter,
     pub free_cascade: FreeCascade,
     pub compute_cache: ComputeProviderCache,
+    pub swarm_channels: SwarmChannels,
 }
 
 impl AppState {
@@ -36,8 +42,10 @@ impl AppState {
             config,
             db,
             rate_limiter: RateLimiter::default(),
+            ip_rate_limiter: IpRateLimiter::default(),
             free_cascade,
             compute_cache: Arc::new(Mutex::new(Vec::new())),
+            swarm_channels: Arc::new(DashMap::new()),
         }
     }
 }
