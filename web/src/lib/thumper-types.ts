@@ -181,10 +181,12 @@ export interface ComputeProviderInfo {
   models: { model_id: string; price_per_1k_input: number; price_per_1k_output: number }[];
   vram_mb: number;
   max_concurrent: number;
+  wallet_address?: string;
   status: string;
   total_requests: number;
   total_tokens_served: number;
   total_earned_usdc: number;
+  total_withdrawn_usdc: number;
   success_rate: number;
   avg_latency_ms: number;
   reputation_score: number;
@@ -210,4 +212,35 @@ export interface ComputeRecentJob {
   output_tokens: number;
   latency_ms: number | null;
   created_at: string;
+}
+
+export interface PayoutSummary {
+  total_earned_usdc: number;
+  total_withdrawn_usdc: number;
+  available_usdc: number;
+  min_withdrawal_usdc: number;
+}
+
+export interface PayoutInfo {
+  id: string;
+  amount_usdc: number;
+  to_address: string;
+  signature: string | null;
+  status: string;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface PayoutsResponse {
+  summary: PayoutSummary;
+  payouts: PayoutInfo[];
+}
+
+export interface WithdrawalResponse {
+  payout_id: string;
+  amount_usdc: number;
+  to_address: string;
+  signature: string;
+  explorer_url: string;
 }

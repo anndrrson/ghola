@@ -3,6 +3,7 @@ const THUMPER_API_BASE =
 
 interface StreamChatOptions {
   onSession?: (sessionId: string) => void;
+  onProvider?: (info: { type: string; model?: string; provider_name?: string }) => void;
   onChunk: (text: string) => void;
   onDone: () => void;
   onError: (error: Error) => void;
@@ -76,6 +77,17 @@ export async function streamChat(
               }
             } catch {
               // not JSON session data
+            }
+            currentEvent = "";
+            continue;
+          }
+
+          if (currentEvent === "provider") {
+            try {
+              const parsed = JSON.parse(data);
+              options.onProvider?.(parsed);
+            } catch {
+              // not JSON provider data
             }
             currentEvent = "";
             continue;
