@@ -1,7 +1,7 @@
 //! Discovery module for agents.txt parsing, .well-known/said.json parsing,
 //! domain fetching, and domain verification.
 
-use said_types::{AgentsTxt, AgentsTxtAuth, AgentsTxtService, WellKnownSaid};
+use said_types::{AgentsTxt, AgentsTxtAuth, AgentsTxtService, AgentsTxtSkill, WellKnownSaid};
 use serde::Serialize;
 
 // ── Error Type ──
@@ -48,6 +48,7 @@ pub fn parse_agents_txt(content: &str) -> Result<AgentsTxt, DiscoveryError> {
     let mut said_json: Option<String> = None;
     let mut allow_agents: Vec<String> = Vec::new();
     let mut services: Vec<AgentsTxtService> = Vec::new();
+    let mut skills: Vec<AgentsTxtSkill> = Vec::new();
     let mut auth: Option<AgentsTxtAuth> = None;
 
     for line in content.lines() {
@@ -99,6 +100,20 @@ pub fn parse_agents_txt(content: &str) -> Result<AgentsTxt, DiscoveryError> {
                 }
                 // If the format doesn't match, skip silently.
             }
+            "skill" => {
+                // Format: "name url"
+                if let Some((name, url)) = value.split_once(char::is_whitespace) {
+                    let name = name.trim();
+                    let url = url.trim();
+                    if !name.is_empty() && !url.is_empty() {
+                        skills.push(AgentsTxtSkill {
+                            name: name.to_string(),
+                            url: url.to_string(),
+                        });
+                    }
+                }
+                // If the format doesn't match, skip silently.
+            }
             "auth" => {
                 // Format: "method url"
                 if let Some((method, url)) = value.split_once(char::is_whitespace) {
@@ -124,6 +139,7 @@ pub fn parse_agents_txt(content: &str) -> Result<AgentsTxt, DiscoveryError> {
         said_json,
         allow_agents,
         services,
+        skills,
         auth,
     })
 }
@@ -278,6 +294,10 @@ Allow-Agent: did:key:z6MkagentABC
 Service: reservations https://api.example.com/reserve
 Service: menu https://api.example.com/menu
 
+# Skills (agentskills.io)
+Skill: book-table https://api.example.com/skills/book-table.json
+Skill: check-hours https://api.example.com/skills/check-hours.json
+
 # Authentication
 Auth: ucan https://api.example.com/auth/ucan
 "#;
@@ -306,6 +326,18 @@ Auth: ucan https://api.example.com/auth/ucan
         assert_eq!(result.services[0].url, "https://api.example.com/reserve");
         assert_eq!(result.services[1].name, "menu");
         assert_eq!(result.services[1].url, "https://api.example.com/menu");
+
+        assert_eq!(result.skills.len(), 2);
+        assert_eq!(result.skills[0].name, "book-table");
+        assert_eq!(
+            result.skills[0].url,
+            "https://api.example.com/skills/book-table.json"
+        );
+        assert_eq!(result.skills[1].name, "check-hours");
+        assert_eq!(
+            result.skills[1].url,
+            "https://api.example.com/skills/check-hours.json"
+        );
 
         let auth = result.auth.unwrap();
         assert_eq!(auth.method, "ucan");
@@ -592,6 +624,32 @@ Profile: https://example.com
     }
 
     #[test]
+    fn test_parse_skills_accumulated() {
+        let content = r#"
+Skill: booking https://example.com/skills/booking.json
+Skill: search https://example.com/skills/search.json
+Skill: payment https://example.com/skills/payment.json
+"#;
+
+        let result = parse_agents_txt(content).unwrap();
+        assert_eq!(result.skills.len(), 3);
+        assert_eq!(result.skills[0].name, "booking");
+        assert_eq!(result.skills[2].name, "payment");
+    }
+
+    #[test]
+    fn test_parse_skill_missing_url_skipped() {
+        let content = r#"
+Skill: onlyname
+Skill: valid https://example.com/skills/valid.json
+"#;
+
+        let result = parse_agents_txt(content).unwrap();
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].name, "valid");
+    }
+
+    #[test]
     fn test_domain_discovery_struct() {
         let discovery = DomainDiscovery {
             domain: "example.com".to_string(),
@@ -601,6 +659,7 @@ Profile: https://example.com
                 said_json: None,
                 allow_agents: vec!["*".to_string()],
                 services: vec![],
+                skills: vec![],
                 auth: None,
             }),
             well_known: None,

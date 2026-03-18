@@ -557,7 +557,8 @@ export function chatRelay(
   model: string,
   apiKey: string,
   messages: { role: string; content: string }[],
-  system?: string
+  system?: string,
+  baseUrl?: string
 ): ReadableStream<string> {
   const token = getToken();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -566,10 +567,12 @@ export function chatRelay(
   return new ReadableStream<string>({
     async start(controller) {
       try {
+        const payload: Record<string, unknown> = { provider, model, api_key: apiKey, messages, system, stream: true };
+        if (baseUrl) payload.base_url = baseUrl;
         const res = await fetch(`${API_BASE}/chat/relay`, {
           method: "POST",
           headers,
-          body: JSON.stringify({ provider, model, api_key: apiKey, messages, system, stream: true }),
+          body: JSON.stringify(payload),
         });
         if (!res.ok) {
           const err = await res.text().catch(() => "Chat relay error");

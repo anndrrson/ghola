@@ -265,6 +265,17 @@ pub async fn agents_txt(
         }
     }
 
+    // Emit Skill directives for services that have agentskills.io manifests
+    let has_skills = bp.services.iter().any(|s| s.skill_url.is_some());
+    if has_skills {
+        lines.push(String::new());
+        for svc in &bp.services {
+            if let Some(ref skill_url) = svc.skill_url {
+                lines.push(format!("Skill: {} {}", svc.name, skill_url));
+            }
+        }
+    }
+
     let body = lines.join("\n");
 
     Ok((

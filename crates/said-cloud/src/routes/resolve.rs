@@ -227,6 +227,7 @@ fn parse_agents_txt(text: &str) -> said_types::AgentsTxt {
     let mut said_json = None;
     let mut allow_agents = Vec::new();
     let mut services = Vec::new();
+    let mut skills = Vec::new();
     let mut auth = None;
 
     for line in text.lines() {
@@ -251,6 +252,14 @@ fn parse_agents_txt(text: &str) -> said_types::AgentsTxt {
                     url: parts[1].to_string(),
                 });
             }
+        } else if let Some(rest) = line.strip_prefix("Skill:") {
+            let parts: Vec<&str> = rest.trim().splitn(2, ' ').collect();
+            if parts.len() == 2 {
+                skills.push(said_types::AgentsTxtSkill {
+                    name: parts[0].to_string(),
+                    url: parts[1].to_string(),
+                });
+            }
         } else if let Some(rest) = line.strip_prefix("Auth:") {
             let parts: Vec<&str> = rest.trim().splitn(2, ' ').collect();
             if parts.len() == 2 {
@@ -268,6 +277,7 @@ fn parse_agents_txt(text: &str) -> said_types::AgentsTxt {
         said_json,
         allow_agents,
         services,
+        skills,
         auth,
     }
 }

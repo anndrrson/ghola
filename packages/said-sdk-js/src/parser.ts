@@ -1,4 +1,4 @@
-import type { AgentsTxt, AgentsTxtAuth, AgentsTxtService, WellKnownSaid } from './types';
+import type { AgentsTxt, AgentsTxtAuth, AgentsTxtService, AgentsTxtSkill, WellKnownSaid } from './types';
 import { SAIDError } from './error';
 
 /**
@@ -21,6 +21,7 @@ export function parseAgentsTxt(content: string): AgentsTxt {
     said_json: null,
     allow_agents: [],
     services: [],
+    skills: [],
     auth: null,
   };
 
@@ -65,6 +66,13 @@ export function parseAgentsTxt(content: string): AgentsTxt {
         }
         break;
       }
+      case 'skill': {
+        const skill = parseSkillDirective(value);
+        if (skill) {
+          result.skills.push(skill);
+        }
+        break;
+      }
       case 'auth': {
         const auth = parseAuthDirective(value);
         if (auth) {
@@ -82,6 +90,18 @@ export function parseAgentsTxt(content: string): AgentsTxt {
 }
 
 function parseServiceDirective(value: string): AgentsTxtService | null {
+  // Format: "name url"
+  const parts = value.split(/\s+/);
+  if (parts.length < 2) {
+    return null;
+  }
+  return {
+    name: parts[0],
+    url: parts.slice(1).join(' '),
+  };
+}
+
+function parseSkillDirective(value: string): AgentsTxtSkill | null {
   // Format: "name url"
   const parts = value.split(/\s+/);
   if (parts.length < 2) {

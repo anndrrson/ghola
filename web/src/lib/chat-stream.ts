@@ -18,7 +18,8 @@ export async function streamChat(
     agent.model,
     agent.apiKey,
     apiMessages,
-    agent.systemPrompt || undefined
+    agent.systemPrompt || undefined,
+    agent.baseUrl || undefined
   );
 
   const reader = stream.getReader();

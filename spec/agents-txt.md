@@ -141,7 +141,28 @@ Service: reservations https://api.restaurant.com/v1/reservations
 Service: chat https://api.restaurant.com/v1/agent-chat
 ```
 
-### 4.6. Auth
+### 4.6. Skill
+
+```
+Skill: <name> <manifest-url>
+```
+
+Declares a machine-readable skill manifest for this domain, compatible with the [agentskills.io](https://agentskills.io) open format. Each skill manifest describes an autonomous capability that an AI agent can discover and execute: input/output schemas, required auth, expected behavior, and usage examples.
+
+- **Cardinality:** OPTIONAL. May appear zero or more times.
+- **Name conventions:** Skill names SHOULD be descriptive lowercase tokens using hyphens as separators (e.g., `book-table`, `check-availability`, `process-refund`). Names SHOULD correspond to service names where applicable.
+- **Constraints:** The manifest URL MUST use the `https` scheme in production. The manifest SHOULD be a valid agentskills.io JSON document.
+- **Relationship to Service:** A `Skill` directive complements a `Service` directive. Where `Service` declares a raw API endpoint, `Skill` provides the higher-level capability description that allows agents to autonomously plan and execute multi-step interactions.
+
+**Example:**
+
+```
+Skill: book-table https://api.restaurant.com/skills/book-table.json
+Skill: check-hours https://api.restaurant.com/skills/check-hours.json
+Skill: dietary-info https://api.restaurant.com/skills/dietary-info.json
+```
+
+### 4.7. Auth
 
 ```
 Auth: <method> <url>
@@ -155,6 +176,8 @@ Declares an authentication method and the endpoint where agents can initiate aut
   - `api_key` -- API key provisioning. The URL points to an endpoint where agents can request or register an API key.
   - `oauth2` -- OAuth 2.0 authorization. The URL points to the OAuth 2.0 authorization server metadata endpoint.
 - **Extensibility:** Implementations SHOULD ignore unrecognized method names and MAY log a warning.
+
+**Example:**
 
 **Example:**
 
@@ -197,6 +220,10 @@ Service: menu https://api.bellas.com/v1/menu
 Service: reservations https://api.bellas.com/v1/reservations
 Service: hours https://api.bellas.com/v1/hours
 Service: reviews https://api.bellas.com/v1/reviews
+
+# Skills (agentskills.io manifests)
+Skill: book-table https://api.bellas.com/v1/skills/book-table.json
+Skill: dietary-info https://api.bellas.com/v1/skills/dietary-info.json
 
 # Authentication
 Auth: ucan https://api.bellas.com/v1/auth/ucan
@@ -247,7 +274,7 @@ Implementations parsing `agents.txt` MUST adhere to the following rules:
 
 3. **Duplicate handling:**
    - **Singular directives** (`Identity`, `Profile`, `Said-Json`): If a singular directive appears more than once, the last occurrence wins. Parsers SHOULD emit a warning on duplicates.
-   - **Repeatable directives** (`Allow-Agent`, `Service`, `Auth`): Multiple occurrences are appended to a list. Order is preserved.
+   - **Repeatable directives** (`Allow-Agent`, `Service`, `Skill`, `Auth`): Multiple occurrences are appended to a list. Order is preserved.
 
 4. **Whitespace:** Leading and trailing whitespace on each line MUST be stripped before parsing. Whitespace between the colon and the value MUST be stripped.
 
@@ -319,6 +346,7 @@ profile-dir    = "Profile" ":" 1*WSP https-url
 said-json-dir  = "Said-Json" ":" 1*WSP path
 allow-dir      = "Allow-Agent" ":" 1*WSP ( agent-id / "*" )
 service-dir    = "Service" ":" 1*WSP name 1*WSP https-url
+skill-dir      = "Skill" ":" 1*WSP name 1*WSP https-url
 auth-dir       = "Auth" ":" 1*WSP method 1*WSP https-url
 
 did-key        = "did:key:" 1*BASE58
@@ -338,6 +366,7 @@ method         = "ucan" / "api_key" / "oauth2"
 | **Purpose** | Crawler access control | AI agent discovery and access |
 | **Identity** | User-Agent string | DID (cryptographic) |
 | **Services** | N/A | Named endpoints |
+| **Skills** | N/A | agentskills.io manifests |
 | **Auth** | N/A | UCAN, OAuth2, API key |
 | **Verification** | None | DID + on-chain registry |
 | **Location** | `/robots.txt` | `/agents.txt` |

@@ -14,6 +14,7 @@ export type {
   GeoHint,
   AgentsTxt,
   AgentsTxtService,
+  AgentsTxtSkill,
   AgentsTxtAuth,
   WellKnownSaid,
   ResolvedProfile,

@@ -31,6 +31,7 @@ class ServiceDefinition:
     booking_url: Optional[str] = None
     api_endpoint: Optional[str] = None
     parameters: dict = field(default_factory=dict)
+    skill_url: Optional[str] = None
 
 
 @dataclass
@@ -111,6 +112,12 @@ class AgentsTxtService:
 
 
 @dataclass
+class AgentsTxtSkill:
+    name: str = ""
+    url: str = ""
+
+
+@dataclass
 class AgentsTxtAuth:
     method: str = ""
     url: str = ""
@@ -123,6 +130,7 @@ class AgentsTxt:
     said_json: Optional[str] = None
     allow_agents: list[str] = field(default_factory=list)
     services: list[AgentsTxtService] = field(default_factory=list)
+    skills: list[AgentsTxtSkill] = field(default_factory=list)
     auth: Optional[AgentsTxtAuth] = None
 
 

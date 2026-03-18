@@ -52,6 +52,7 @@ export interface ServiceDefinition {
   booking_url?: string;
   api_endpoint?: string;
   parameters: Record<string, unknown>;
+  skill_url?: string;
 }
 
 export interface ApiEndpoint {
@@ -104,10 +105,16 @@ export interface AgentsTxt {
   said_json: string | null;
   allow_agents: string[];
   services: AgentsTxtService[];
+  skills: AgentsTxtSkill[];
   auth: AgentsTxtAuth | null;
 }
 
 export interface AgentsTxtService {
+  name: string;
+  url: string;
+}
+
+export interface AgentsTxtSkill {
   name: string;
   url: string;
 }

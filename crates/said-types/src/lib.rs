@@ -298,6 +298,9 @@ pub struct ServiceDefinition {
     pub api_endpoint: Option<String>,
     /// JSON Schema describing the API parameters for this service.
     pub parameters: serde_json::Value,
+    /// Optional URL to an agentskills.io-compatible skill manifest for this service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_url: Option<String>,
 }
 
 /// An API endpoint exposed by a business for agent interaction.
@@ -376,6 +379,9 @@ pub struct AgentsTxt {
     pub allow_agents: Vec<String>,
     /// Declared services (name -> URL).
     pub services: Vec<AgentsTxtService>,
+    /// Declared skills (agentskills.io manifests).
+    #[serde(default)]
+    pub skills: Vec<AgentsTxtSkill>,
     /// Auth endpoint and method.
     pub auth: Option<AgentsTxtAuth>,
 }
@@ -384,6 +390,15 @@ pub struct AgentsTxt {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AgentsTxtService {
     pub name: String,
+    pub url: String,
+}
+
+/// A skill entry in agents.txt (agentskills.io compatible).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AgentsTxtSkill {
+    /// Skill name (single token, e.g. "book-table", "check-availability").
+    pub name: String,
+    /// URL to an agentskills.io-compatible skill manifest.
     pub url: String,
 }
 

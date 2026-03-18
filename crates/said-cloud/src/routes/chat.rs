@@ -42,6 +42,7 @@ pub struct RelayRequest {
     pub messages: Vec<RelayMessage>,
     pub system: Option<String>,
     pub stream: Option<bool>,
+    pub base_url: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -250,6 +251,7 @@ pub async fn relay(
             .header("x-api-key", &req.api_key)
             .header("anthropic-version", "2023-06-01"),
         "google" => upstream_req, // key is in the URL
+        "ollama" => upstream_req, // no auth needed
         _ => upstream_req.header("Authorization", format!("Bearer {}", req.api_key)),
     };
 
@@ -345,6 +347,39 @@ fn build_provider_request(req: &RelayRequest) -> AppResult<(String, String)> {
         }
         "mistral" => {
             let url = "https://api.mistral.ai/v1/chat/completions".to_string();
+
+            let mut messages = req.messages.clone();
+            if let Some(system) = &req.system {
+                messages.insert(
+                    0,
+                    RelayMessage {
+                        role: "system".to_string(),
+                        content: system.clone(),
+                    },
+                );
+            }
+
+            let body = serde_json::json!({
+                "model": req.model,
+                "stream": req.stream.unwrap_or(true),
+                "messages": messages,
+            });
+            Ok((url, serde_json::to_string(&body).unwrap()))
+        }
+        "groq" | "together" | "ollama" | "deepseek" | "cerebras" | "openrouter" | "kimi" | "qwen" | "glm" => {
+            let base = req.base_url.as_deref().unwrap_or(match req.provider.as_str() {
+                "groq" => "https://api.groq.com/openai",
+                "together" => "https://api.together.xyz",
+                "ollama" => "http://localhost:11434",
+                "deepseek" => "https://api.deepseek.com",
+                "cerebras" => "https://api.cerebras.ai",
+                "openrouter" => "https://openrouter.ai/api",
+                "kimi" => "https://api.moonshot.cn",
+                "qwen" => "https://dashscope.aliyuncs.com/compatible-mode",
+                "glm" => "https://open.bigmodel.cn/api/paas",
+                _ => unreachable!(),
+            });
+            let url = format!("{base}/v1/chat/completions");
 
             let mut messages = req.messages.clone();
             if let Some(system) = &req.system {

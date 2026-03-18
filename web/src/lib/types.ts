@@ -48,6 +48,7 @@ export interface ServiceDefinition {
   booking_url?: string;
   api_endpoint?: string;
   parameters: Record<string, unknown>;
+  skill_url?: string;
 }
 
 export interface ApiEndpoint {
@@ -246,10 +247,11 @@ export interface ChatAgent {
   id: string;
   name: string;
   avatar: string;          // emoji or hex color
-  provider: string;        // "openai" | "anthropic" | "google" | "mistral"
+  provider: string;        // "openai" | "anthropic" | "google" | "mistral" | "groq" | "together" | "ollama" | etc.
   model: string;
   systemPrompt: string;
   apiKey: string;
+  baseUrl?: string;
   createdAt: string;
   lastMessageAt?: string;
   lastMessagePreview?: string;

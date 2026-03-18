@@ -10,6 +10,7 @@ from .types import (
     AgentsTxt,
     AgentsTxtAuth,
     AgentsTxtService,
+    AgentsTxtSkill,
     ServiceDefinition,
     WellKnownSaid,
 )
@@ -21,6 +22,14 @@ def _parse_service_directive(value: str) -> Optional[AgentsTxtService]:
     if len(parts) < 2:
         return None
     return AgentsTxtService(name=parts[0], url=parts[1])
+
+
+def _parse_skill_directive(value: str) -> Optional[AgentsTxtSkill]:
+    """Parse a Skill directive value: 'name url'."""
+    parts = value.split(None, 1)
+    if len(parts) < 2:
+        return None
+    return AgentsTxtSkill(name=parts[0], url=parts[1])
 
 
 def _parse_auth_directive(value: str) -> Optional[AgentsTxtAuth]:
@@ -74,6 +83,10 @@ def parse_agents_txt(content: str) -> AgentsTxt:
             service = _parse_service_directive(value)
             if service is not None:
                 result.services.append(service)
+        elif key == "skill":
+            skill = _parse_skill_directive(value)
+            if skill is not None:
+                result.skills.append(skill)
         elif key == "auth":
             auth = _parse_auth_directive(value)
             if auth is not None:
