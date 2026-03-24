@@ -11,9 +11,10 @@ import { getBalance } from "@/lib/api";
 import { GholaLogo } from "@/components/GholaLogo";
 import { Menu, X } from "lucide-react";
 
-type Section = "home" | "identity" | "models" | "chat" | "settings" | "vault" | "developers" | "provide";
+type Section = "home" | "identity" | "models" | "chat" | "settings" | "vault" | "developers" | "provide" | "marketplace";
 
 function getSection(pathname: string): Section {
+  if (pathname.startsWith("/marketplace")) return "marketplace";
   if (pathname.startsWith("/provide")) return "provide";
   if (pathname.startsWith("/developers")) return "developers";
   if (pathname.startsWith("/identity")) return "identity";
@@ -150,6 +151,16 @@ export function Navbar() {
               >
                 Provide
               </Link>
+              <Link
+                href="/marketplace"
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  section === "marketplace"
+                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                    : "text-[#8b95a8] hover:text-[#eef1f8]"
+                }`}
+              >
+                Marketplace
+              </Link>
             </div>
           </div>
 
@@ -254,6 +265,33 @@ export function Navbar() {
                     </Link>
                     <Link
                       href="/signup?redirect=/provide"
+                      className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
+                    >
+                      Get Started
+                    </Link>
+                  </>
+                )}
+              </>
+            )}
+            {(section === "marketplace") && (
+              <>
+                {thumperAuth.authenticated ? (
+                  <button
+                    onClick={handleThumperLogout}
+                    className="rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] transition-colors cursor-pointer"
+                  >
+                    Log Out
+                  </button>
+                ) : (
+                  <>
+                    <Link
+                      href="/signin?redirect=/marketplace"
+                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
+                    >
+                      Sign In
+                    </Link>
+                    <Link
+                      href="/signup?redirect=/marketplace"
                       className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
                     >
                       Get Started
@@ -379,6 +417,13 @@ export function Navbar() {
               className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
             >
               Provide
+            </Link>
+            <Link
+              href="/marketplace"
+              onClick={() => setMobileOpen(false)}
+              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+            >
+              Marketplace
             </Link>
             <div className="border-t border-[#1e2a3a] pt-2 mt-2">
               {thumperAuth.authenticated ? (

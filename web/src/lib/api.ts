@@ -15,6 +15,9 @@ import type {
   Balance,
   EncryptedAgentConfig,
   EncryptedSnapshot,
+  ServiceListingResponse,
+  ServiceDetail,
+  ReputationScore,
 } from "./types";
 
 const API_BASE =
@@ -631,6 +634,86 @@ export function chatRelay(
       }
     },
   });
+}
+
+// ── Service Registry ──
+
+export async function searchServices(
+  query: string,
+  filters?: {
+    category?: string;
+    maxPrice?: number;
+    minRating?: number;
+    minUptime?: number;
+    region?: string;
+  }
+): Promise<{ services: ServiceListingResponse[]; total: number }> {
+  const params = new URLSearchParams({ task: query });
+  if (filters?.category) params.set("category", filters.category);
+  if (filters?.maxPrice !== undefined)
+    params.set("max_price_micro_usdc", String(filters.maxPrice));
+  if (filters?.minRating !== undefined)
+    params.set("min_rating", String(filters.minRating));
+  if (filters?.minUptime !== undefined)
+    params.set("min_uptime", String(filters.minUptime));
+  if (filters?.region) params.set("region", filters.region);
+
+  const res = await fetch(`${API_BASE}/services/resolve?${params}`);
+  if (!res.ok) throw new Error("Failed to search services");
+  return res.json();
+}
+
+export async function listServices(
+  params?: {
+    category?: string;
+    q?: string;
+    sort?: string;
+    page?: number;
+    limit?: number;
+  }
+): Promise<{ services: ServiceListingResponse[]; total: number; page: number }> {
+  const p = new URLSearchParams();
+  if (params?.category) p.set("category", params.category);
+  if (params?.q) p.set("q", params.q);
+  if (params?.sort) p.set("sort", params.sort);
+  if (params?.page) p.set("page", String(params.page));
+  if (params?.limit) p.set("limit", String(params.limit));
+
+  const res = await fetch(`${API_BASE}/services?${p}`);
+  if (!res.ok) throw new Error("Failed to list services");
+  return res.json();
+}
+
+export async function getMyServices(): Promise<{
+  services: ServiceListingResponse[];
+  total_services: number;
+  total_revenue_micro_usdc: number;
+  total_requests: number;
+}> {
+  return apiFetch("/services/mine");
+}
+
+export async function getServiceDetail(
+  slugOrId: string
+): Promise<{ service: ServiceDetail; heartbeats: unknown[] }> {
+  const res = await fetch(`${API_BASE}/services/${encodeURIComponent(slugOrId)}`);
+  if (!res.ok) throw new Error("Service not found");
+  return res.json();
+}
+
+export async function registerService(
+  data: Record<string, unknown>
+): Promise<ServiceListingResponse> {
+  return apiFetch<ServiceListingResponse>("/services/register", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getReputation(did: string): Promise<ReputationScore> {
+  const res = await fetch(`${API_BASE}/reputation/${encodeURIComponent(did)}`);
+  if (!res.ok) throw new Error("Failed to get reputation");
+  return res.json();
 }
 
 // Namespace export for pages that use api.method()

@@ -144,3 +144,116 @@ export interface DomainDiscovery {
   agents_txt: AgentsTxt | null;
   well_known: WellKnownSaid | null;
 }
+
+// ── Headless Merchant Economy Types ──
+
+export interface ServiceSearchOptions {
+  category?: string;
+  maxPriceMicroUsdc?: number;
+  minUptime?: number;
+  minRating?: number;
+  minTrustScore?: number;
+  authType?: string;
+  region?: string;
+  limit?: number;
+}
+
+export interface ServiceSearchResult {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  base_url: string;
+  auth_type: string;
+  auth_details: Record<string, unknown>;
+  price_micro_usdc: number;
+  pricing_model: string;
+  uptime_percent: number;
+  avg_latency_ms: number;
+  avg_rating: number | null;
+  endpoints: unknown[];
+  relevance_score: number | null;
+}
+
+export interface ServiceListing {
+  id: string;
+  owner_did: string;
+  name: string;
+  slug: string;
+  description: string;
+  logo_url: string | null;
+  website: string | null;
+  category: string;
+  tags: string[];
+  base_url: string;
+  health_check_url: string | null;
+  openapi_url: string | null;
+  auth_type: string;
+  auth_details: Record<string, unknown>;
+  pricing_model: string;
+  price_micro_usdc: number;
+  pricing_tiers: unknown[] | null;
+  free_tier_requests: number | null;
+  sla_uptime_percent: number | null;
+  sla_latency_p50_ms: number | null;
+  sla_latency_p99_ms: number | null;
+  regions: string[];
+  endpoints: unknown[];
+  status: string;
+  uptime_percent: number;
+  avg_latency_ms: number;
+  total_requests: number;
+  total_revenue_micro_usdc: number;
+  avg_rating: number | null;
+  review_count: number;
+  receive_address: string | null;
+  platform_fee_bps: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VerifyAgentResult {
+  valid: boolean;
+  agent_did: string;
+  display_name: string | null;
+  profile_type: string | null;
+  on_chain_registered: boolean;
+  verified_badge: boolean;
+  capabilities: string[];
+  trust_score: number;
+  spending_summary: AgentSpendingSummary | null;
+  error: string | null;
+}
+
+export interface AgentSpendingSummary {
+  total_transactions: number;
+  total_spent_micro_usdc: number;
+  avg_transaction_micro_usdc: number;
+  first_transaction_at: string | null;
+}
+
+export interface ReputationScore {
+  entity_did: string;
+  entity_type: string;
+  overall_score: number;
+  confidence: number;
+  components: {
+    identity: number;
+    transaction: number;
+    quality: number;
+    reliability: number;
+    history: number;
+  };
+  summary: {
+    total_transactions: number;
+    completed_transactions: number;
+    disputed_transactions: number;
+    completion_rate: number;
+    dispute_rate: number;
+    total_volume_micro_usdc: number;
+    avg_review_rating: number | null;
+    review_count: number;
+    account_age_days: number;
+  };
+  computed_at: string;
+}

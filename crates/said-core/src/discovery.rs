@@ -141,6 +141,11 @@ pub fn parse_agents_txt(content: &str) -> Result<AgentsTxt, DiscoveryError> {
         services,
         skills,
         auth,
+        pricing: Vec::new(),
+        sla: None,
+        openapi: None,
+        payment: None,
+        version: None,
     })
 }
 
@@ -661,6 +666,11 @@ Skill: valid https://example.com/skills/valid.json
                 services: vec![],
                 skills: vec![],
                 auth: None,
+                pricing: Vec::new(),
+                sla: None,
+                openapi: None,
+                payment: None,
+                version: None,
             }),
             well_known: None,
         };

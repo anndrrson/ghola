@@ -207,6 +207,84 @@ pub struct PayLimitsParams {
     pub agent: String,
 }
 
+// ── Headless Merchant Economy Tool Parameter Types ──
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SearchServicesParams {
+    /// Search query describing what you need (e.g. "SEC filing search", "image generation")
+    pub query: String,
+    /// Filter by category (e.g. "data", "inference", "commerce", "finance")
+    pub category: Option<String>,
+    /// Maximum price per request in USDC (human-readable, e.g. "0.01")
+    pub max_price_usdc: Option<String>,
+    /// Minimum average rating (1.0 - 5.0)
+    pub min_rating: Option<f32>,
+    /// Filter by region (e.g. "us-east", "eu-west")
+    pub region: Option<String>,
+    /// Max results (default 5)
+    pub limit: Option<usize>,
+    /// SAID Cloud API base URL (default: https://ghola-api.onrender.com)
+    pub api_url: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct GetServiceParams {
+    /// Service slug or UUID
+    pub slug_or_id: String,
+    /// SAID Cloud API base URL
+    pub api_url: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct VerifyAgentToolParams {
+    /// The agent's DID (did:key:z6Mk...)
+    pub agent_did: String,
+    /// UCAN token to verify (optional — omit for identity-only check)
+    pub ucan_token: Option<String>,
+    /// Required capabilities to check (e.g. ["said/pay_transfer", "said/read_preferences"])
+    pub required_capabilities: Option<Vec<String>>,
+    /// Service API key for authentication
+    pub service_key: Option<String>,
+    /// SAID Cloud API base URL
+    pub api_url: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct TrustScoreParams {
+    /// DID to look up reputation for
+    pub did: String,
+    /// SAID Cloud API base URL
+    pub api_url: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct CallServiceParams {
+    /// Service slug to call
+    pub slug: String,
+    /// Endpoint path (e.g. "/v1/search" or full URL)
+    pub endpoint: Option<String>,
+    /// HTTP method (GET, POST, PUT, DELETE). Default: GET
+    pub method: Option<String>,
+    /// Request body as JSON string (for POST/PUT)
+    pub body: Option<String>,
+    /// Authorization header value
+    pub authorization: Option<String>,
+    /// SAID Cloud API base URL
+    pub api_url: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SubscribeServiceParams {
+    /// Service slug to subscribe to
+    pub service_slug: String,
+    /// Agent wallet label
+    pub agent_label: String,
+    /// Daily USDC spending budget (e.g. "10.00"). Omit for unlimited.
+    pub daily_budget_usdc: Option<String>,
+    /// SAID Cloud API base URL
+    pub api_url: Option<String>,
+}
+
 // ── MCP Server ──
 
 #[derive(Clone)]
@@ -1191,6 +1269,315 @@ impl SaidServer {
             ));
         }
 
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    // ── Headless Merchant Economy Tools ──
+
+    #[tool(
+        name = "said_search_services",
+        description = "Search the SAID service registry for headless merchants by task description, category, price, rating, or trust score"
+    )]
+    async fn search_services(
+        &self,
+        Parameters(params): Parameters<SearchServicesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let api_url = params
+            .api_url
+            .as_deref()
+            .unwrap_or("https://ghola-api.onrender.com");
+
+        let mut url = format!("{}/v1/services/resolve?task={}", api_url, params.query);
+        if let Some(ref cat) = params.category {
+            url.push_str(&format!("&category={}", cat));
+        }
+        if let Some(ref price) = params.max_price_usdc {
+            // Convert human-readable USDC to micro USDC
+            let micro: i64 = (price.parse::<f64>().unwrap_or(0.0) * 1_000_000.0) as i64;
+            url.push_str(&format!("&max_price_micro_usdc={}", micro));
+        }
+        if let Some(rating) = params.min_rating {
+            url.push_str(&format!("&min_rating={}", rating));
+        }
+        if let Some(ref region) = params.region {
+            url.push_str(&format!("&region={}", region));
+        }
+        if let Some(limit) = params.limit {
+            url.push_str(&format!("&limit={}", limit));
+        }
+
+        let resp = client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("HTTP error: {e}"), None))?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+        let output = serde_json::to_string_pretty(&body).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_get_service",
+        description = "Get detailed information about a specific service by slug or ID from the SAID registry"
+    )]
+    async fn get_service(
+        &self,
+        Parameters(params): Parameters<GetServiceParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let api_url = params
+            .api_url
+            .as_deref()
+            .unwrap_or("https://ghola-api.onrender.com");
+
+        let url = format!("{}/v1/services/{}", api_url, params.slug_or_id);
+
+        let resp = client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("HTTP error: {e}"), None))?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+        let output = serde_json::to_string_pretty(&body).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_verify_agent",
+        description = "Verify an agent's identity and capabilities via SAID. Returns trust score, profile info, and UCAN capability check."
+    )]
+    async fn verify_agent_tool(
+        &self,
+        Parameters(params): Parameters<VerifyAgentToolParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let api_url = params
+            .api_url
+            .as_deref()
+            .unwrap_or("https://ghola-api.onrender.com");
+
+        let url = format!("{}/v1/verify/agent", api_url);
+
+        let mut body = serde_json::json!({
+            "agent_did": params.agent_did,
+        });
+        if let Some(ref token) = params.ucan_token {
+            body["ucan_token"] = serde_json::json!(token);
+        }
+        if let Some(ref caps) = params.required_capabilities {
+            body["required_capabilities"] = serde_json::json!(caps);
+        }
+
+        let mut req = client.post(&url).json(&body);
+        if let Some(ref key) = params.service_key {
+            req = req.header("X-Service-Key", key.as_str());
+        }
+
+        let resp = req
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("HTTP error: {e}"), None))?;
+
+        let result: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+        let output = serde_json::to_string_pretty(&result).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_trust_score",
+        description = "Get the reputation/trust score for any DID (agent, business, or service provider)"
+    )]
+    async fn trust_score(
+        &self,
+        Parameters(params): Parameters<TrustScoreParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let api_url = params
+            .api_url
+            .as_deref()
+            .unwrap_or("https://ghola-api.onrender.com");
+
+        let url = format!("{}/v1/reputation/{}", api_url, params.did);
+
+        let resp = client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("HTTP error: {e}"), None))?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+        let output = serde_json::to_string_pretty(&body).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_call_service",
+        description = "Call a headless merchant's API endpoint. Resolves the service by slug, constructs the request, and returns the response."
+    )]
+    async fn call_service(
+        &self,
+        Parameters(params): Parameters<CallServiceParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let api_url = params
+            .api_url
+            .as_deref()
+            .unwrap_or("https://ghola-api.onrender.com");
+
+        // First, resolve the service to get its base_url and endpoints
+        let svc_url = format!("{}/v1/services/{}", api_url, params.slug);
+        let svc_resp = client
+            .get(&svc_url)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("Service lookup failed: {e}"), None))?;
+
+        let svc_data: serde_json::Value = svc_resp
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+        let service = svc_data.get("service").ok_or_else(|| {
+            ErrorData::internal_error("Service not found".to_string(), None)
+        })?;
+
+        let base_url = service
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                ErrorData::internal_error("Service has no base_url".to_string(), None)
+            })?;
+
+        // Build the full endpoint URL
+        let endpoint_path = params.endpoint.as_deref().unwrap_or("");
+        let full_url = if endpoint_path.starts_with("http") {
+            endpoint_path.to_string()
+        } else {
+            format!(
+                "{}/{}",
+                base_url.trim_end_matches('/'),
+                endpoint_path.trim_start_matches('/')
+            )
+        };
+
+        // Make the actual service call
+        let method = params.method.as_deref().unwrap_or("GET").to_uppercase();
+        let mut req = match method.as_str() {
+            "POST" => client.post(&full_url),
+            "PUT" => client.put(&full_url),
+            "DELETE" => client.delete(&full_url),
+            "PATCH" => client.patch(&full_url),
+            _ => client.get(&full_url),
+        };
+
+        if let Some(ref body) = params.body {
+            req = req.header("Content-Type", "application/json").body(body.clone());
+        }
+        if let Some(ref auth) = params.authorization {
+            req = req.header("Authorization", auth.as_str());
+        }
+
+        let resp = req
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("Service call failed: {e}"), None))?;
+
+        let status = resp.status().as_u16();
+        let body_text = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "<empty response>".to_string());
+
+        let mut output = format!("HTTP {} from {}\n\n{}", status, full_url, body_text);
+        if status >= 400 {
+            output = format!("ERROR: HTTP {} from {}\n\n{}", status, full_url, body_text);
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_subscribe_service",
+        description = "Subscribe an agent wallet to a headless merchant service with an optional daily budget"
+    )]
+    async fn subscribe_service(
+        &self,
+        Parameters(params): Parameters<SubscribeServiceParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let api_url = params
+            .api_url
+            .as_deref()
+            .unwrap_or("https://ghola-api.onrender.com");
+
+        // Look up the agent wallet (drop lock before async)
+        let (agent_id, body) = {
+            let wallet = self.wallet.lock().unwrap();
+            let agents: Vec<AgentWallet> =
+                wallet.storage().load("agent_wallets").unwrap_or_default();
+            let agent = agents
+                .iter()
+                .find(|a| a.label == params.agent_label)
+                .ok_or_else(|| {
+                    ErrorData::internal_error(
+                        format!("Agent wallet '{}' not found", params.agent_label),
+                        None,
+                    )
+                })?;
+
+            let daily_budget = params.daily_budget_usdc.as_ref().map(|d| {
+                (d.parse::<f64>().unwrap_or(0.0) * 1_000_000.0) as i64
+            });
+
+            let id = agent.id;
+            let body = serde_json::json!({
+                "agent_wallet_id": id,
+                "daily_budget_micro_usdc": daily_budget,
+            });
+            (id, body)
+        };
+
+        // We need a JWT for this — inform user if not available
+        let url = format!("{}/v1/services/{}/subscribe", api_url, params.service_slug);
+        let resp = client
+            .post(&url)
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("HTTP error: {e}"), None))?;
+
+        let result: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+        let output = serde_json::to_string_pretty(&result).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 }

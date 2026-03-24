@@ -185,6 +185,79 @@ pub struct DbChatSnapshot {
     pub snapshot_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+pub struct DbServiceListing {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub owner_did: String,
+    pub name: String,
+    pub slug: String,
+    pub description: String,
+    pub logo_url: Option<String>,
+    pub website: Option<String>,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub base_url: String,
+    pub health_check_url: Option<String>,
+    pub openapi_url: Option<String>,
+    pub auth_type: String,
+    pub auth_details: serde_json::Value,
+    pub pricing_model: String,
+    pub price_micro_usdc: i64,
+    pub pricing_tiers: Option<serde_json::Value>,
+    pub free_tier_requests: Option<i32>,
+    pub sla_uptime_percent: Option<f32>,
+    pub sla_latency_p50_ms: Option<i32>,
+    pub sla_latency_p99_ms: Option<i32>,
+    pub regions: Vec<String>,
+    pub endpoints: serde_json::Value,
+    pub status: String,
+    pub uptime_percent: f32,
+    pub avg_latency_ms: f32,
+    pub total_requests: i64,
+    pub total_revenue_micro_usdc: i64,
+    pub avg_rating: Option<f32>,
+    pub review_count: i32,
+    pub consecutive_failures: i32,
+    pub last_heartbeat_at: Option<DateTime<Utc>>,
+    pub last_checked_at: Option<DateTime<Utc>>,
+    pub receive_address: Option<String>,
+    pub platform_fee_bps: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+pub struct DbServiceReview {
+    pub id: Uuid,
+    pub service_id: Uuid,
+    pub reviewer_id: Uuid,
+    pub reviewer_did: Option<String>,
+    pub rating: i32,
+    pub comment: Option<String>,
+    pub quality_score: Option<i32>,
+    pub reliability_score: Option<i32>,
+    pub latency_score: Option<i32>,
+    pub value_score: Option<i32>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+pub struct DbServicePayment {
+    pub id: Uuid,
+    pub service_id: Uuid,
+    pub payer_id: Option<Uuid>,
+    pub payer_did: Option<String>,
+    pub agent_wallet_id: Option<Uuid>,
+    pub endpoint_name: Option<String>,
+    pub amount_micro_usdc: i64,
+    pub merchant_share_micro_usdc: i64,
+    pub platform_share_micro_usdc: i64,
+    pub status: String,
+    pub tx_signature: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 impl From<DbBusinessProfile> for said_types::BusinessProfile {
     fn from(db: DbBusinessProfile) -> Self {
         said_types::BusinessProfile {

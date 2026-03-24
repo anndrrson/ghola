@@ -3,7 +3,18 @@
 import Link from "next/link";
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Phone, Mail, Calendar, Check, MessageCircle, Code } from "lucide-react";
+import {
+  ArrowRight,
+  Shield,
+  Search,
+  CreditCard,
+  Globe,
+  Fingerprint,
+  Zap,
+  Code,
+  BarChart3,
+  Lock,
+} from "lucide-react";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 
 export default function Home() {
@@ -58,82 +69,91 @@ export default function Home() {
 
         <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-24 sm:py-32">
           <div className="max-w-3xl">
+            <div className="inline-flex items-center gap-2 rounded-full border border-[#1e2a3a] bg-[#0f1117] px-4 py-1.5 text-sm text-[#8b95a8] mb-8">
+              <span className="h-2 w-2 rounded-full bg-[#3da8ff] animate-pulse" />
+              Agent Identity Protocol
+            </div>
             <h1 className="text-5xl md:text-7xl font-medium tracking-tight text-[#eef1f8] leading-[1.08]">
-              Your AI assistant
+              Identity, trust,
               <br />
-              that actually
+              and commerce
               <br />
-              <span className="text-[#3da8ff]">does things.</span>
+              <span className="text-[#3da8ff]">for AI agents.</span>
             </h1>
             <p className="mt-8 text-lg md:text-xl text-[#8b95a8] leading-relaxed max-w-2xl">
-              Make phone calls, send emails, manage your calendar — all from a
-              simple chat. No app to download. Works in your browser{" "}
-              <span className="text-[#eef1f8]">and on Telegram</span>.
+              The infrastructure layer where AI agents verify identity,
+              discover services, build reputation, and transact — all through
+              a single protocol.
             </p>
             <div className="mt-10 flex flex-col sm:flex-row gap-4">
               <Link
-                href="/signup"
+                href="/marketplace"
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3da8ff] px-7 py-3.5 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
               >
-                Get started free
+                Browse Marketplace
                 <ArrowRight className="h-4 w-4" />
               </Link>
               <Link
-                href="/signin"
+                href="/provide"
                 className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#1e2a3a] px-7 py-3.5 text-base font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] active:scale-[0.98] transition-all"
               >
-                Sign in
+                Register a Service
               </Link>
             </div>
           </div>
         </div>
       </section>
 
-      {/* ──────────── Features ──────────── */}
+      {/* ──────────── Protocol Layers ──────────── */}
       <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <h2 className="text-3xl font-medium text-[#eef1f8] mb-4 text-center">
-            What ghola can do
+            Five layers. One protocol.
           </h2>
           <p className="text-[#8b95a8] mb-12 text-center max-w-lg mx-auto">
-            Just tell ghola what you need. It handles the rest.
+            Everything agents need to do business with strangers.
           </p>
-          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4 max-w-5xl mx-auto">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5 max-w-6xl mx-auto">
             {[
               {
-                icon: Phone,
-                title: "Phone Calls",
-                desc: 'Say "Call Joe\'s Pizza and book a table for 4 at 7pm" — ghola makes the call, gives you the transcript.',
+                icon: Fingerprint,
+                title: "Identity",
+                desc: "DID-based identity with on-chain registration and UCAN credentials.",
               },
               {
-                icon: Mail,
-                title: "Emails",
-                desc: "Draft, review, and send emails through your Gmail. AI writes it, you approve before it sends.",
+                icon: Search,
+                title: "Discovery",
+                desc: "Full-text search, agents.txt standard, service resolution by task.",
               },
               {
-                icon: Calendar,
-                title: "Calendar",
-                desc: "Schedule appointments, check availability, set reminders. Your calendar, managed by AI.",
+                icon: Shield,
+                title: "Verification",
+                desc: "Verify any agent's identity and capabilities in one API call.",
               },
               {
-                icon: MessageCircle,
-                title: "Telegram",
-                desc: "Connect your Telegram and chat with ghola from anywhere. Make calls and send emails without opening a browser.",
+                icon: BarChart3,
+                title: "Reputation",
+                desc: "Composite trust scores built from transactions, reviews, and uptime.",
+              },
+              {
+                icon: CreditCard,
+                title: "Commerce",
+                desc: "Per-request billing, daily budgets, hourly settlement in USDC.",
               },
             ].map((card) => {
               const Icon = card.icon;
               return (
                 <div
                   key={card.title}
-                  className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 hover:border-[#2a3a50] transition-colors"
+                  className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5 hover:border-[#2a3a50] transition-colors"
                 >
-                  <div className="h-10 w-10 rounded-lg bg-[#3da8ff]/10 flex items-center justify-center mb-4">
-                    <Icon className="h-5 w-5 text-[#3da8ff]" />
+                  <div className="h-9 w-9 rounded-lg bg-[#3da8ff]/10 flex items-center justify-center mb-3">
+                    <Icon className="h-4 w-4 text-[#3da8ff]" />
                   </div>
-                  <h3 className="text-[#eef1f8] font-medium mb-1.5">
+                  <h3 className="text-[#eef1f8] font-medium text-sm mb-1">
                     {card.title}
                   </h3>
-                  <p className="text-sm text-[#8b95a8] leading-relaxed">
+                  <p className="text-xs text-[#8b95a8] leading-relaxed">
                     {card.desc}
                   </p>
                 </div>
@@ -143,56 +163,95 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ──────────── How it works ──────────── */}
+      {/* ──────────── For Agents ──────────── */}
       <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <h2 className="text-3xl font-medium text-[#eef1f8] mb-12 text-center">
-            Dead simple
-          </h2>
-          <div className="grid gap-8 sm:grid-cols-3 max-w-3xl mx-auto">
-            {[
-              { step: "1", title: "Sign up", desc: "Name, email, password. That's it." },
-              { step: "2", title: "Chat", desc: "Tell ghola what you need in plain English." },
-              { step: "3", title: "Done", desc: "ghola makes the call, sends the email, books the appointment." },
-            ].map((s) => (
-              <div key={s.step} className="text-center">
-                <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-[#3da8ff]/10 text-sm font-medium text-[#3da8ff] mb-3">
-                  {s.step}
-                </span>
-                <h3 className="text-[#eef1f8] font-medium mb-1">{s.title}</h3>
-                <p className="text-sm text-[#8b95a8]">{s.desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ──────────── Telegram ──────────── */}
-      <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="mx-auto max-w-2xl text-center">
-            <div className="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-[#3da8ff]/10 mb-6">
-              <MessageCircle className="h-7 w-7 text-[#3da8ff]" />
+          <div className="grid lg:grid-cols-2 gap-16 items-center">
+            <div>
+              <span className="text-sm font-medium text-[#3da8ff] mb-4 block">
+                For AI Agents
+              </span>
+              <h2 className="text-3xl font-medium text-[#eef1f8] mb-4">
+                Find services. Prove identity. Pay per request.
+              </h2>
+              <p className="text-[#8b95a8] mb-8 leading-relaxed">
+                Your agent searches the registry, verifies the merchant,
+                calls the API, and pays — all in a single flow.
+                No accounts. No subscriptions. No checkout pages.
+              </p>
+              <Link
+                href="/developers"
+                className="inline-flex items-center gap-2 text-[#3da8ff] hover:text-[#5bb8ff] text-sm font-medium"
+              >
+                View developer docs <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
             </div>
-            <h2 className="text-3xl font-medium text-[#eef1f8] mb-4">
-              Works on Telegram too
-            </h2>
-            <p className="text-[#8b95a8] mb-8 leading-relaxed">
-              Connect your Telegram account and message ghola like you&apos;d message a friend.
-              Make phone calls, send emails, and manage tasks — all from the app you already use every day.
-            </p>
-            <Link
-              href="/signup"
-              className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3da8ff] px-7 py-3.5 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
-            >
-              Get started free
-              <ArrowRight className="h-4 w-4" />
-            </Link>
+            <div className="space-y-3">
+              {[
+                { icon: Search, label: "Resolve", desc: "Find services by task, price, quality, or trust score" },
+                { icon: Shield, label: "Verify", desc: "Confirm merchant identity with UCAN credentials" },
+                { icon: Globe, label: "Call", desc: "Hit the API endpoint with embedded auth" },
+                { icon: CreditCard, label: "Pay", desc: "Per-request USDC settlement, enforced budgets" },
+              ].map((step, i) => {
+                const Icon = step.icon;
+                return (
+                  <div key={step.label} className="flex gap-4 items-start rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-4">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#3da8ff]/10 text-xs font-medium text-[#3da8ff]">
+                      {i + 1}
+                    </span>
+                    <div>
+                      <h4 className="text-sm font-medium text-[#eef1f8]">{step.label}</h4>
+                      <p className="text-xs text-[#8b95a8]">{step.desc}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       </section>
 
-      {/* ──────────── Developer API ──────────── */}
+      {/* ──────────── For Merchants ──────────── */}
+      <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid lg:grid-cols-2 gap-16 items-center">
+            <div className="order-2 lg:order-1 grid grid-cols-2 gap-4">
+              {[
+                { value: "3%", label: "Platform fee" },
+                { value: "USDC", label: "Settlement currency" },
+                { value: "1 hr", label: "Settlement cycle" },
+                { value: "0", label: "Accounts to manage" },
+              ].map((stat) => (
+                <div key={stat.label} className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5 text-center">
+                  <p className="text-2xl font-medium text-[#3da8ff]">{stat.value}</p>
+                  <p className="text-xs text-[#8b95a8] mt-1">{stat.label}</p>
+                </div>
+              ))}
+            </div>
+            <div className="order-1 lg:order-2">
+              <span className="text-sm font-medium text-[#3da8ff] mb-4 block">
+                For Headless Merchants
+              </span>
+              <h2 className="text-3xl font-medium text-[#eef1f8] mb-4">
+                Register your API. Get discovered. Get paid.
+              </h2>
+              <p className="text-[#8b95a8] mb-8 leading-relaxed">
+                No storefront. No checkout flow. No sales team.
+                Just your API, a price per call, and an endpoint.
+                We handle metering, billing, and settlement.
+              </p>
+              <Link
+                href="/provide"
+                className="inline-flex items-center gap-2 text-[#3da8ff] hover:text-[#5bb8ff] text-sm font-medium"
+              >
+                Become a merchant <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ──────────── SDK + MCP ──────────── */}
       <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="mx-auto max-w-2xl text-center">
@@ -200,11 +259,11 @@ export default function Home() {
               <Code className="h-7 w-7 text-[#3da8ff]" />
             </div>
             <h2 className="text-3xl font-medium text-[#eef1f8] mb-4">
-              Developer API
+              Native to every agent framework
             </h2>
             <p className="text-[#8b95a8] mb-8 leading-relaxed">
-              Build on top of ghola with an OpenAI-compatible API. Make phone calls, send emails, and
-              chat — all programmatically. Works with any OpenAI SDK.
+              TypeScript SDK, Python SDK, 20 MCP tools, and integration guides
+              for LangChain, CrewAI, Claude MCP, and OpenAI function calling.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Link
@@ -215,149 +274,36 @@ export default function Home() {
                 <ArrowRight className="h-4 w-4" />
               </Link>
               <Link
-                href="/developers/docs"
+                href="/marketplace"
                 className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#1e2a3a] px-7 py-3.5 text-base font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] active:scale-[0.98] transition-all"
               >
-                Read the docs
+                Browse services
               </Link>
             </div>
           </div>
         </div>
       </section>
 
-      {/* ──────────── Pricing ──────────── */}
+      {/* ──────────── On-Chain ──────────── */}
       <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <h2 className="text-3xl font-medium text-[#eef1f8] mb-4 text-center">
-            Pricing
-          </h2>
-          <p className="text-[#8b95a8] mb-12 text-center max-w-lg mx-auto">
-            Start free. Upgrade when you need more.
-          </p>
-          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4 max-w-5xl mx-auto">
-            {/* Free */}
-            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
-              <h3 className="text-lg font-medium text-[#eef1f8]">Free</h3>
-              <p className="mt-2 text-3xl font-medium text-[#eef1f8]">
-                $0<span className="text-base text-[#4a5568]">/forever</span>
-              </p>
-              <ul className="mt-6 space-y-3">
-                {["5 calls/month", "10 emails/month", "AI chat", "Calendar management"].map(
-                  (f) => (
-                    <li
-                      key={f}
-                      className="flex items-center gap-2 text-sm text-[#8b95a8]"
-                    >
-                      <Check className="h-4 w-4 text-[#3da8ff] shrink-0" />
-                      {f}
-                    </li>
-                  )
-                )}
-              </ul>
-              <Link
-                href="/signup"
-                className="mt-8 block w-full rounded-xl border border-[#1e2a3a] py-2.5 text-center text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] active:scale-[0.98] transition-all"
-              >
-                Get started
-              </Link>
+          <div className="mx-auto max-w-2xl text-center">
+            <div className="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-[#3da8ff]/10 mb-6">
+              <Lock className="h-7 w-7 text-[#3da8ff]" />
             </div>
-
-            {/* Pro */}
-            <div className="rounded-xl border border-[#3da8ff] bg-[#0f1117] p-6 relative">
-              <span className="absolute -top-3 left-6 rounded-full bg-[#3da8ff] px-3 py-0.5 text-xs font-medium text-[#08090d]">
-                Most popular
-              </span>
-              <h3 className="text-lg font-medium text-[#eef1f8]">Pro</h3>
-              <p className="mt-2 text-3xl font-medium text-[#eef1f8]">
-                $9.99<span className="text-base text-[#4a5568]">/month</span>
-              </p>
-              <ul className="mt-6 space-y-3">
-                {[
-                  "30 calls/month",
-                  "50 emails/month",
-                  "Telegram bot",
-                  "Bring your own model",
-                  "API access (10k calls/mo)",
-                  "Priority responses",
-                ].map((f) => (
-                  <li
-                    key={f}
-                    className="flex items-center gap-2 text-sm text-[#8b95a8]"
-                  >
-                    <Check className="h-4 w-4 text-[#3da8ff] shrink-0" />
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              <Link
-                href="/signup"
-                className="mt-8 block w-full rounded-xl bg-[#3da8ff] py-2.5 text-center text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
-              >
-                Start free
-              </Link>
-            </div>
-
-            {/* Unlimited */}
-            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
-              <h3 className="text-lg font-medium text-[#eef1f8]">Unlimited</h3>
-              <p className="mt-2 text-3xl font-medium text-[#eef1f8]">
-                $29.99<span className="text-base text-[#4a5568]">/month</span>
-              </p>
-              <ul className="mt-6 space-y-3">
-                {[
-                  "Unlimited calls",
-                  "Unlimited emails",
-                  "Telegram bot",
-                  "Bring your own model",
-                  "API access (100k calls/mo)",
-                  "Priority support",
-                ].map((f) => (
-                  <li
-                    key={f}
-                    className="flex items-center gap-2 text-sm text-[#8b95a8]"
-                  >
-                    <Check className="h-4 w-4 text-[#3da8ff] shrink-0" />
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              <Link
-                href="/signup"
-                className="mt-8 block w-full rounded-xl bg-[#eef1f8] py-2.5 text-center text-sm font-medium text-[#08090d] hover:bg-[#d0d5e0] active:scale-[0.98] transition-all"
-              >
-                Get unlimited
-              </Link>
-            </div>
-
-            {/* Enterprise */}
-            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6">
-              <h3 className="text-lg font-medium text-[#eef1f8]">Enterprise</h3>
-              <p className="mt-2 text-3xl font-medium text-[#eef1f8]">
-                Custom
-              </p>
-              <ul className="mt-6 space-y-3">
-                {[
-                  "Unlimited everything",
-                  "Unlimited API calls",
-                  "Custom SLA",
-                  "Priority support",
-                  "Dedicated account manager",
-                ].map((f) => (
-                  <li
-                    key={f}
-                    className="flex items-center gap-2 text-sm text-[#8b95a8]"
-                  >
-                    <Check className="h-4 w-4 text-[#3da8ff] shrink-0" />
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              <a
-                href="mailto:hello@ghola.xyz"
-                className="mt-8 block w-full rounded-xl border border-[#1e2a3a] py-2.5 text-center text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] active:scale-[0.98] transition-all"
-              >
-                Contact sales
-              </a>
+            <h2 className="text-3xl font-medium text-[#eef1f8] mb-4">
+              Anchored on Solana
+            </h2>
+            <p className="text-[#8b95a8] mb-8 leading-relaxed">
+              Identity records, service registrations, and reputation attestations
+              live on-chain. Verifiable by anyone. Owned by you.
+            </p>
+            <div className="inline-flex items-center gap-3 rounded-xl border border-[#1e2a3a] bg-[#0f1117] px-5 py-3 text-sm">
+              <Zap className="h-4 w-4 text-[#3da8ff]" />
+              <span className="text-[#8b95a8]">Program:</span>
+              <code className="text-[#eef1f8] font-mono text-xs">
+                3EqrapHPP...7QyR
+              </code>
             </div>
           </div>
         </div>
@@ -367,18 +313,27 @@ export default function Home() {
       <section className="py-24 sm:py-32">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 text-center">
           <h2 className="text-3xl font-medium text-[#eef1f8]">
-            Your personal AI assistant awaits
+            The agent economy needs trust infrastructure.
           </h2>
-          <p className="mt-4 text-[#8b95a8]">
-            Sign up in 10 seconds. Start getting things done.
+          <p className="mt-4 text-[#8b95a8] max-w-xl mx-auto">
+            Build it with ghola — identity, discovery, verification, reputation, and
+            commerce in one protocol.
           </p>
-          <Link
-            href="/signup"
-            className="mt-8 inline-flex items-center justify-center gap-2 rounded-xl bg-[#3da8ff] px-8 py-4 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
-          >
-            Get started free
-            <ArrowRight className="h-4 w-4" />
-          </Link>
+          <div className="mt-8 flex flex-col sm:flex-row gap-4 justify-center">
+            <Link
+              href="/marketplace"
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3da8ff] px-8 py-4 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
+            >
+              Browse Marketplace
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+            <Link
+              href="/signup"
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#1e2a3a] px-8 py-4 text-base font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] active:scale-[0.98] transition-all"
+            >
+              Get started free
+            </Link>
+          </div>
         </div>
       </section>
     </div>

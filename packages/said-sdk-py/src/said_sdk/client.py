@@ -244,6 +244,79 @@ class SAIDClient:
         self._raise_for_status(resp)
         return _parse_public_profile(resp.json())
 
+    # -- Headless Merchant Economy Methods ------------------------------------
+
+    async def search_services(
+        self,
+        query: str,
+        *,
+        category: Optional[str] = None,
+        max_price_micro_usdc: Optional[int] = None,
+        min_uptime: Optional[float] = None,
+        min_rating: Optional[float] = None,
+        min_trust_score: Optional[float] = None,
+        auth_type: Optional[str] = None,
+        region: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        """Search the service registry for headless merchants."""
+        params: dict[str, Any] = {"task": query}
+        if category:
+            params["category"] = category
+        if max_price_micro_usdc is not None:
+            params["max_price_micro_usdc"] = max_price_micro_usdc
+        if min_uptime is not None:
+            params["min_uptime"] = min_uptime
+        if min_rating is not None:
+            params["min_rating"] = min_rating
+        if min_trust_score is not None:
+            params["min_trust_score"] = min_trust_score
+        if auth_type:
+            params["auth_type"] = auth_type
+        if region:
+            params["region"] = region
+        if limit is not None:
+            params["limit"] = limit
+
+        resp = await self._client.get("/services/resolve", params=params)
+        self._raise_for_status(resp)
+        return resp.json().get("services", [])
+
+    async def get_service(self, slug_or_id: str) -> dict[str, Any]:
+        """Get detailed information about a service by slug or ID."""
+        resp = await self._client.get(f"/services/{slug_or_id}")
+        self._raise_for_status(resp)
+        return resp.json().get("service", {})
+
+    async def verify_agent(
+        self,
+        agent_did: str,
+        *,
+        ucan_token: Optional[str] = None,
+        required_capabilities: Optional[list[str]] = None,
+        service_key: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Verify an agent's identity and capabilities."""
+        body: dict[str, Any] = {"agent_did": agent_did}
+        if ucan_token:
+            body["ucan_token"] = ucan_token
+        if required_capabilities:
+            body["required_capabilities"] = required_capabilities
+
+        headers = {}
+        if service_key:
+            headers["X-Service-Key"] = service_key
+
+        resp = await self._client.post("/verify/agent", json=body, headers=headers)
+        self._raise_for_status(resp)
+        return resp.json()
+
+    async def get_trust_score(self, did: str) -> dict[str, Any]:
+        """Get the reputation/trust score for a DID."""
+        resp = await self._client.get(f"/reputation/{did}")
+        self._raise_for_status(resp)
+        return resp.json()
+
     # -- Lifecycle ------------------------------------------------------------
 
     async def close(self) -> None:

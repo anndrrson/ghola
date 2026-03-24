@@ -384,6 +384,21 @@ pub struct AgentsTxt {
     pub skills: Vec<AgentsTxtSkill>,
     /// Auth endpoint and method.
     pub auth: Option<AgentsTxtAuth>,
+    /// Per-service pricing declarations.
+    #[serde(default)]
+    pub pricing: Vec<AgentsTxtPricing>,
+    /// SLA guarantees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sla: Option<AgentsTxtSla>,
+    /// URL to OpenAPI spec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openapi: Option<String>,
+    /// Payment configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment: Option<AgentsTxtPayment>,
+    /// Spec version (e.g. "1.1").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// A service entry in agents.txt.
@@ -409,6 +424,38 @@ pub struct AgentsTxtAuth {
     pub url: String,
 }
 
+/// Pricing declaration in agents.txt.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AgentsTxtPricing {
+    /// Service name this pricing applies to.
+    pub service: String,
+    /// Pricing model: "per_request", "per_minute", "per_token", etc.
+    pub model: String,
+    /// Human-readable price string, e.g. "0.001"
+    pub price_usdc: String,
+    /// Free tier description, e.g. "100/day"
+    pub free_tier: Option<String>,
+}
+
+/// SLA declaration in agents.txt.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AgentsTxtSla {
+    pub uptime: Option<String>,
+    pub latency_p50: Option<String>,
+    pub latency_p99: Option<String>,
+}
+
+/// Payment configuration in agents.txt.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AgentsTxtPayment {
+    /// Solana address to receive payments.
+    pub address: String,
+    /// Accepted currencies (e.g. ["usdc", "sol"]).
+    pub currencies: Vec<String>,
+    /// SAID verification endpoint URL.
+    pub verify_url: String,
+}
+
 /// Full .well-known/said.json structure.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WellKnownSaid {
@@ -419,6 +466,27 @@ pub struct WellKnownSaid {
     pub services: Vec<ServiceDefinition>,
     pub operating_hours: Option<serde_json::Value>,
     pub verification: Option<WellKnownVerification>,
+    /// Link to SAID service registry listings for this entity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub services_registry_url: Option<String>,
+    /// URL to OpenAPI spec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openapi_url: Option<String>,
+    /// Payment configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment: Option<WellKnownPayment>,
+    /// Reputation lookup URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reputation_url: Option<String>,
+}
+
+/// Payment configuration in .well-known/said.json.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WellKnownPayment {
+    pub receive_address: String,
+    pub accepted_currencies: Vec<String>,
+    pub verify_url: String,
+    pub meter_url: String,
 }
 
 /// Business info within .well-known/said.json.
@@ -456,6 +524,83 @@ pub struct InferenceNodeRegistration {
     pub price_per_query_micro_usdc: i64,
     pub region: Option<String>,
     pub description: Option<String>,
+}
+
+// ── Service Registry Types ──
+
+/// Status of a registered service listing.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceListingStatus {
+    Pending,
+    Active,
+    Degraded,
+    Offline,
+    Suspended,
+}
+
+/// Auth type required by a service.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceAuthType {
+    None,
+    ApiKey,
+    Ucan,
+    OAuth2,
+    SaidVerify,
+}
+
+/// Pricing model for a service.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PricingModel {
+    PerRequest,
+    PerMinute,
+    PerToken,
+    FlatMonthly,
+    Free,
+}
+
+/// A pricing tier within a service listing.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PricingTier {
+    pub name: String,
+    pub price_micro_usdc: i64,
+    pub rate_limit: Option<i32>,
+    pub description: Option<String>,
+}
+
+/// A structured endpoint within a service listing.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ServiceListingEndpoint {
+    pub name: String,
+    pub path: String,
+    pub method: String,
+    pub description: String,
+    #[serde(default)]
+    pub request_schema: serde_json::Value,
+    #[serde(default)]
+    pub response_schema: serde_json::Value,
+    /// Per-endpoint pricing override (micro USDC). None = use service-level pricing.
+    pub price_micro_usdc: Option<i64>,
+}
+
+/// SLA guarantees for a service.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ServiceSla {
+    pub uptime_percent: Option<f32>,
+    pub latency_p50_ms: Option<i32>,
+    pub latency_p99_ms: Option<i32>,
+}
+
+/// Measured metrics for a service listing.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ServiceMetrics {
+    pub uptime_percent: f32,
+    pub avg_latency_ms: f32,
+    pub total_requests: i64,
+    pub avg_rating: Option<f32>,
+    pub review_count: i32,
 }
 
 // ── Agent Payment Types ──

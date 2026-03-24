@@ -55,7 +55,12 @@ impl From<DbBusinessProfile> for PublicBusinessProfile {
 #[serde(tag = "profile_type")]
 pub enum ResolvedProfile {
     #[serde(rename = "business")]
-    Business(PublicBusinessProfile),
+    Business {
+        #[serde(flatten)]
+        profile: PublicBusinessProfile,
+        /// Registered headless merchant services from the service registry.
+        registered_services: Vec<serde_json::Value>,
+    },
     #[serde(rename = "consumer")]
     Consumer(said_types::PublicProfile),
 }
@@ -87,7 +92,11 @@ pub async fn resolve(
 
         if let Some(profile) = biz {
             log_resolve(&state, profile.id).await;
-            return Ok(Json(ResolvedProfile::Business(profile.into())));
+            let registered_services = fetch_registered_services(&state, &profile.did).await;
+            return Ok(Json(ResolvedProfile::Business {
+                profile: profile.into(),
+                registered_services,
+            }));
         }
 
         // Fall back to public profiles
@@ -124,7 +133,11 @@ pub async fn resolve(
 
         if let Some(profile) = biz {
             log_resolve(&state, profile.id).await;
-            return Ok(Json(ResolvedProfile::Business(profile.into())));
+            let registered_services = fetch_registered_services(&state, &profile.did).await;
+            return Ok(Json(ResolvedProfile::Business {
+                profile: profile.into(),
+                registered_services,
+            }));
         }
 
         // Fall back to public profiles
@@ -220,6 +233,27 @@ pub async fn discover(
     }))
 }
 
+/// Fetch registered service listings for a DID from the service registry.
+async fn fetch_registered_services(
+    state: &AppState,
+    did: &str,
+) -> Vec<serde_json::Value> {
+    sqlx::query_scalar(
+        r#"SELECT json_build_object(
+            'id', id, 'slug', slug, 'name', name, 'category', category,
+            'pricing_model', pricing_model::text, 'price_micro_usdc', price_micro_usdc,
+            'status', status::text, 'avg_rating', avg_rating, 'uptime_percent', uptime_percent,
+            'base_url', base_url, 'total_requests', total_requests
+        )
+        FROM service_listings WHERE owner_did = $1 AND status::text != 'offline'
+        ORDER BY created_at DESC LIMIT 20"#,
+    )
+    .bind(did)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default()
+}
+
 /// Parse an agents.txt file into the AgentsTxt struct.
 fn parse_agents_txt(text: &str) -> said_types::AgentsTxt {
     let mut identity = None;
@@ -279,5 +313,10 @@ fn parse_agents_txt(text: &str) -> said_types::AgentsTxt {
         services,
         skills,
         auth,
+        pricing: Vec::new(),
+        sla: None,
+        openapi: None,
+        payment: None,
+        version: None,
     }
 }

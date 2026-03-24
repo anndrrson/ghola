@@ -290,3 +290,82 @@ export interface EncryptedSnapshot {
   message_count: number;
   snapshot_at: string;
 }
+
+// ── Headless Merchant Economy Types ──
+
+export interface ServiceListingResponse {
+  id: string;
+  owner_did: string;
+  name: string;
+  slug: string;
+  description: string;
+  logo_url: string | null;
+  website: string | null;
+  category: string;
+  tags: string[];
+  base_url: string;
+  auth_type: string;
+  pricing_model: string;
+  price_micro_usdc: number;
+  status: string;
+  uptime_percent: number;
+  avg_latency_ms: number;
+  total_requests: number;
+  avg_rating: number | null;
+  review_count: number;
+  regions: string[];
+  endpoints: unknown[];
+  receive_address: string | null;
+  created_at: string;
+}
+
+export interface ServiceDetail extends ServiceListingResponse {
+  health_check_url: string | null;
+  openapi_url: string | null;
+  auth_details: Record<string, unknown>;
+  pricing_tiers: unknown[] | null;
+  free_tier_requests: number | null;
+  sla_uptime_percent: number | null;
+  sla_latency_p50_ms: number | null;
+  sla_latency_p99_ms: number | null;
+  total_revenue_micro_usdc: number;
+  platform_fee_bps: number;
+  updated_at: string;
+}
+
+export interface ReputationScore {
+  entity_did: string;
+  entity_type: string;
+  overall_score: number;
+  confidence: number;
+  components: {
+    identity: number;
+    transaction: number;
+    quality: number;
+    reliability: number;
+    history: number;
+  };
+  summary: {
+    total_transactions: number;
+    completion_rate: number;
+    dispute_rate: number;
+    total_volume_micro_usdc: number;
+    avg_review_rating: number | null;
+    review_count: number;
+    account_age_days: number;
+  };
+  computed_at: string;
+}
+
+export const SERVICE_CATEGORIES = [
+  "general",
+  "inference",
+  "data",
+  "commerce",
+  "finance",
+  "logistics",
+  "communication",
+  "search",
+  "media",
+  "developer-tools",
+] as const;

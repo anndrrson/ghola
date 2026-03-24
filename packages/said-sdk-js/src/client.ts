@@ -5,6 +5,11 @@ import type {
   AgentsTxt,
   WellKnownSaid,
   PublicProfile,
+  ServiceSearchResult,
+  ServiceSearchOptions,
+  ServiceListing,
+  VerifyAgentResult,
+  ReputationScore,
 } from './types';
 import { SAIDError } from './error';
 import { parseAgentsTxt, parseWellKnownSaid } from './parser';
@@ -71,6 +76,92 @@ export class SAIDClient {
   async getPublicProfile(did: string): Promise<PublicProfile> {
     const encoded = encodeURIComponent(did);
     return this.request<PublicProfile>(`${this.baseUrl}/profile/${encoded}`);
+  }
+
+  // ── Headless Merchant Economy Methods ──
+
+  /**
+   * Search the service registry for headless merchants.
+   *
+   * GET {baseUrl}/services/resolve?task={query}&...
+   */
+  async searchServices(query: string, options?: ServiceSearchOptions): Promise<ServiceSearchResult[]> {
+    const params = new URLSearchParams({ task: query });
+    if (options?.category) params.set('category', options.category);
+    if (options?.maxPriceMicroUsdc !== undefined) params.set('max_price_micro_usdc', String(options.maxPriceMicroUsdc));
+    if (options?.minUptime !== undefined) params.set('min_uptime', String(options.minUptime));
+    if (options?.minRating !== undefined) params.set('min_rating', String(options.minRating));
+    if (options?.minTrustScore !== undefined) params.set('min_trust_score', String(options.minTrustScore));
+    if (options?.authType) params.set('auth_type', options.authType);
+    if (options?.region) params.set('region', options.region);
+    if (options?.limit !== undefined) params.set('limit', String(options.limit));
+
+    const result = await this.request<{ services: ServiceSearchResult[] }>(
+      `${this.baseUrl}/services/resolve?${params.toString()}`
+    );
+    return result.services;
+  }
+
+  /**
+   * Get detailed information about a service by slug or ID.
+   *
+   * GET {baseUrl}/services/{slugOrId}
+   */
+  async getService(slugOrId: string): Promise<ServiceListing> {
+    const result = await this.request<{ service: ServiceListing }>(
+      `${this.baseUrl}/services/${encodeURIComponent(slugOrId)}`
+    );
+    return result.service;
+  }
+
+  /**
+   * Verify an agent's identity and capabilities.
+   * Requires a service API key (set via X-Service-Key header).
+   *
+   * POST {baseUrl}/verify/agent
+   */
+  async verifyAgent(
+    agentDid: string,
+    ucanToken?: string,
+    capabilities?: string[],
+    serviceKey?: string,
+  ): Promise<VerifyAgentResult> {
+    const body: Record<string, unknown> = { agent_did: agentDid };
+    if (ucanToken) body.ucan_token = ucanToken;
+    if (capabilities) body.required_capabilities = capabilities;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeout);
+
+    const headers: Record<string, string> = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+    if (serviceKey) headers['X-Service-Key'] = serviceKey;
+    if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+
+    try {
+      const response = await fetch(`${this.baseUrl}/verify/agent`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      return (await response.json()) as VerifyAgentResult;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Get the reputation/trust score for a DID.
+   *
+   * GET {baseUrl}/reputation/{did}
+   */
+  async getTrustScore(did: string): Promise<ReputationScore> {
+    return this.request<ReputationScore>(
+      `${this.baseUrl}/reputation/${encodeURIComponent(did)}`
+    );
   }
 
   /**

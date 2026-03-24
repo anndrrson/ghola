@@ -14,7 +14,9 @@ mod config;
 mod db;
 mod error;
 mod health_checker;
+mod metered;
 mod routes;
+mod self_register;
 mod state;
 
 use config::Config;
@@ -53,6 +55,15 @@ async fn main() -> anyhow::Result<()> {
     // Spawn background health checker for inference nodes
     tokio::spawn(health_checker::run(state.clone()));
 
+    // Self-register SAID's own APIs as headless merchant services
+    self_register::register_self(&state.db, &config.base_url).await;
+
+    // Spawn reputation recomputer (every 5 minutes)
+    tokio::spawn(routes::reputation::recompute_loop(state.clone()));
+
+    // Spawn settlement processor (every hour)
+    tokio::spawn(routes::billing_service::settlement_loop(state.clone()));
+
     // Spawn usage meter flush task
     let usage_state = state.clone();
     tokio::spawn(async move {
@@ -90,6 +101,12 @@ async fn main() -> anyhow::Result<()> {
     // Public routes
     let public = Router::new()
         .route("/health", get(routes::health::health))
+        // Pricing catalog (headless merchant schema)
+        .route("/v1/pricing", get(routes::pricing::get_pricing))
+        .route(
+            "/v1/pricing/{*path}",
+            get(routes::pricing::get_endpoint_pricing),
+        )
         .route("/v1/auth/register", post(routes::auth::register))
         .route("/v1/auth/login", post(routes::auth::login))
         .route("/v1/consumer/register", post(routes::consumer::register))
@@ -116,6 +133,75 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v1/pay/merchant/{did}",
             get(routes::payments::get_merchant),
+        )
+        // Service registry (public routes)
+        .route("/v1/services", get(routes::services::list_services))
+        .route(
+            "/v1/services/resolve",
+            get(routes::services::resolve_services),
+        )
+        .route(
+            "/v1/services/{id_or_slug}",
+            get(routes::services::get_service),
+        )
+        .route(
+            "/v1/services/{id}/heartbeat",
+            post(routes::services::service_heartbeat),
+        )
+        .route(
+            "/v1/services/{id}/reviews",
+            get(routes::services::get_reviews),
+        )
+        .route(
+            "/v1/services/{id}/payment",
+            post(routes::services::record_payment),
+        )
+        .route(
+            "/v1/services/{id}/openapi",
+            get(routes::services::get_openapi_spec),
+        )
+        // Auth brokering (public + service-key-authed)
+        .route("/v1/verify/did/{did}", get(routes::verify::lookup_did))
+        .route("/v1/verify/agent", post(routes::verify::verify_agent))
+        .route(
+            "/v1/verify/capability",
+            post(routes::verify::verify_capability),
+        )
+        // Reputation (public + service-key-authed)
+        .route(
+            "/v1/reputation/{did}",
+            get(routes::reputation::get_reputation),
+        )
+        .route(
+            "/v1/reputation/{did}/history",
+            get(routes::reputation::get_reputation_history),
+        )
+        .route(
+            "/v1/reputation/event",
+            post(routes::reputation::record_reputation_event),
+        )
+        // Delegation (public + service-key-authed)
+        .route(
+            "/v1/delegation/grants/{did}",
+            get(routes::delegation::list_grants_for_did),
+        )
+        .route(
+            "/v1/delegation/check",
+            get(routes::delegation::check_revocation),
+        )
+        .route(
+            "/v1/delegation/verify-chain",
+            post(routes::delegation::verify_chain),
+        )
+        // Billing-as-a-service (metering + settlements, service-key-authed)
+        .route("/v1/meter", post(routes::billing_service::record_usage))
+        .route(
+            "/v1/meter/summary/{service_id}",
+            get(routes::billing_service::usage_summary),
+        )
+        .route(
+            "/v1/settlements/{service_id}",
+            get(routes::billing_service::list_settlements),
         );
 
     // Protected routes (require Bearer JWT)
@@ -199,6 +285,79 @@ async fn main() -> anyhow::Result<()> {
             "/v1/pay/merchant",
             post(routes::payments::upsert_merchant),
         )
+        // Service registry (protected routes)
+        .route(
+            "/v1/services/mine",
+            get(routes::services::my_services),
+        )
+        .route(
+            "/v1/services/register",
+            post(routes::services::register_service),
+        )
+        .route(
+            "/v1/services/manage/{id}",
+            put(routes::services::update_service).delete(routes::services::delete_service),
+        )
+        .route(
+            "/v1/services/{id}/analytics",
+            get(routes::services::service_analytics),
+        )
+        .route(
+            "/v1/services/{id}/review",
+            post(routes::services::submit_review),
+        )
+        // Delegation management
+        .route(
+            "/v1/delegation/grant",
+            post(routes::delegation::create_grant),
+        )
+        .route(
+            "/v1/delegation/revoke",
+            post(routes::delegation::revoke_grant),
+        )
+        .route(
+            "/v1/delegation/grants",
+            get(routes::delegation::list_my_grants),
+        )
+        // Encrypted credential sharing
+        .route(
+            "/v1/credentials/share",
+            post(routes::credentials::share_credential),
+        )
+        .route(
+            "/v1/credentials/inbox",
+            get(routes::credentials::inbox),
+        )
+        .route(
+            "/v1/credentials/accept/{id}",
+            post(routes::credentials::accept_credential),
+        )
+        .route(
+            "/v1/credentials/revoke/{id}",
+            post(routes::credentials::revoke_credential),
+        )
+        // Service API key management
+        .route(
+            "/v1/service-keys",
+            get(routes::verify::list_service_keys).post(routes::verify::create_service_key),
+        )
+        .route(
+            "/v1/service-keys/{id}",
+            delete(routes::verify::revoke_service_key),
+        )
+        // Service subscriptions (billing-as-a-service, agent-facing)
+        .route(
+            "/v1/services/{id}/subscribe",
+            post(routes::billing_service::subscribe_to_service),
+        )
+        .route(
+            "/v1/services/subscriptions",
+            get(routes::billing_service::list_subscriptions),
+        )
+        .route(
+            "/v1/services/{id}/unsubscribe",
+            delete(routes::billing_service::unsubscribe),
+        )
         // Chat routes
         .route(
             "/v1/chat/agents",
@@ -221,6 +380,10 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .merge(public)
         .merge(protected)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            metered::pricing_headers,
+        ))
         .with_state(state)
         .layer(cors)
         .layer(TraceLayer::new_for_http());

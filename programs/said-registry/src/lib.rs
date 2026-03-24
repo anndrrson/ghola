@@ -37,4 +37,40 @@ pub mod said_registry {
     pub fn update_profile_uri(ctx: Context<UpdateProfileUri>, profile_uri: String) -> Result<()> {
         instructions::update_profile_uri::handler(ctx, profile_uri)
     }
+
+    pub fn register_service(
+        ctx: Context<RegisterService>,
+        slug: String,
+        base_url: String,
+        registry_url: String,
+        price_micro_usdc: u64,
+    ) -> Result<()> {
+        instructions::register_service::handler(ctx, slug, base_url, registry_url, price_micro_usdc)
+    }
+
+    pub fn deactivate_service(ctx: Context<DeactivateService>) -> Result<()> {
+        instructions::deactivate_service::handler(ctx)
+    }
+
+    pub fn attest_reputation(
+        ctx: Context<AttestReputation>,
+        overall_score: u16,
+        confidence: u16,
+        total_transactions: u32,
+    ) -> Result<()> {
+        instructions::attest_reputation::handler(ctx, overall_score, confidence, total_transactions)
+    }
+
+    pub fn record_delegation(
+        ctx: Context<RecordDelegation>,
+        token_hash: [u8; 32],
+        capabilities_hash: [u8; 32],
+        expires_at: i64,
+    ) -> Result<()> {
+        instructions::record_delegation::handler(ctx, token_hash, capabilities_hash, expires_at)
+    }
+
+    pub fn revoke_delegation(ctx: Context<RevokeDelegation>) -> Result<()> {
+        instructions::revoke_delegation::handler(ctx)
+    }
 }

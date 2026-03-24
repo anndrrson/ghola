@@ -248,9 +248,10 @@ pub async fn agents_txt(
 
     let bp: said_types::BusinessProfile = profile.into();
     let profile_url = format!("{}/v1/resolve/{}", state.config.base_url, bp.did);
+    let base_url = &state.config.base_url;
 
     let mut lines = Vec::new();
-    lines.push("# agents.txt - SAID Protocol v1.0".to_string());
+    lines.push("# agents.txt - SAID Protocol v1.1".to_string());
     lines.push(format!("Identity: {}", bp.did));
     lines.push(format!("Profile: {}", profile_url));
     lines.push("Said-Json: /.well-known/said.json".to_string());
@@ -274,6 +275,51 @@ pub async fn agents_txt(
                 lines.push(format!("Skill: {} {}", svc.name, skill_url));
             }
         }
+    }
+
+    // Fetch registered service listings for pricing/SLA/payment directives
+    let service_listings: Vec<(String, String, i64, Option<i32>, Option<f32>, Option<String>, Option<String>)> = sqlx::query_as(
+        r#"SELECT slug, pricing_model::text, price_micro_usdc, free_tier_requests,
+                  sla_uptime_percent, openapi_url, receive_address
+        FROM service_listings WHERE owner_did = $1 AND status::text = 'active'"#,
+    )
+    .bind(&bp.did)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    if !service_listings.is_empty() {
+        lines.push(String::new());
+
+        for (slug, pricing_model, price, free_tier, sla_uptime, openapi_url, receive_addr) in &service_listings {
+            // Pricing directive
+            let price_usdc = *price as f64 / 1_000_000.0;
+            let mut pricing_line = format!("Pricing: {} {} {:.6} USDC", slug, pricing_model, price_usdc);
+            if let Some(free) = free_tier {
+                if *free > 0 {
+                    pricing_line.push_str(&format!(" (free: {}/day)", free));
+                }
+            }
+            lines.push(pricing_line);
+
+            // SLA directive
+            if let Some(uptime) = sla_uptime {
+                lines.push(format!("SLA: {}% uptime", uptime));
+            }
+
+            // OpenAPI directive
+            if let Some(ref url) = openapi_url {
+                lines.push(format!("OpenAPI: {}", url));
+            }
+
+            // Payment directive
+            if let Some(ref addr) = receive_addr {
+                lines.push(format!("Payment: {} USDC", addr));
+            }
+        }
+
+        // Verify endpoint
+        lines.push(format!("Verify: {}/v1/verify/agent", base_url));
     }
 
     let body = lines.join("\n");
@@ -317,8 +363,35 @@ pub async fn well_known(
         }
     });
 
+    let base_url = &state.config.base_url;
+
+    // Check if this business has registered services with payment config
+    let merchant_config: Option<(String, String)> = sqlx::query_as(
+        "SELECT receive_address, openapi_url FROM service_listings \
+         WHERE owner_did = $1 AND status::text = 'active' AND receive_address IS NOT NULL \
+         LIMIT 1",
+    )
+    .bind(&bp.did)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    let payment = merchant_config.as_ref().map(|(addr, _)| {
+        said_types::WellKnownPayment {
+            receive_address: addr.clone(),
+            accepted_currencies: vec!["usdc".into()],
+            verify_url: format!("{}/v1/verify/agent", base_url),
+            meter_url: format!("{}/v1/meter", base_url),
+        }
+    });
+
+    let openapi_url = merchant_config.and_then(|(_, url)| {
+        if url.is_empty() { None } else { Some(url) }
+    });
+
     let well_known = said_types::WellKnownSaid {
-        said_version: "1.0".to_string(),
+        said_version: "1.1".to_string(),
         did: bp.did.clone(),
         profile_url: Some(profile_url),
         business: Some(said_types::WellKnownBusiness {
@@ -329,6 +402,10 @@ pub async fn well_known(
         services: bp.services,
         operating_hours: bp.operating_hours,
         verification,
+        services_registry_url: Some(format!("{}/v1/services?q={}", base_url, simple_url_encode(&bp.business_name))),
+        openapi_url,
+        payment,
+        reputation_url: Some(format!("{}/v1/reputation/{}", base_url, bp.did)),
     };
 
     Ok(Json(well_known))
@@ -494,6 +571,16 @@ async fn check_dns_txt(client: &reqwest::Client, domain: &str, token: &str) -> b
         }
     }
     false
+}
+
+fn simple_url_encode(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            ' ' => "+".to_string(),
+            _ => format!("%{:02X}", c as u8),
+        })
+        .collect()
 }
 
 async fn check_well_known(client: &reqwest::Client, domain: &str, token: &str) -> bool {

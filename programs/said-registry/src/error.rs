@@ -14,4 +14,16 @@ pub enum RegistryError {
     AlreadyInactive,
     #[msg("DID key exceeds maximum length of 64 characters")]
     DidKeyTooLong,
+    #[msg("Slug exceeds maximum length of 64 characters")]
+    SlugTooLong,
+    #[msg("Base URL exceeds maximum length of 128 characters")]
+    BaseUrlTooLong,
+    #[msg("Registry URL exceeds maximum length of 128 characters")]
+    RegistryUrlTooLong,
+    #[msg("Identity record is not active")]
+    IdentityNotActive,
+    #[msg("Service is already inactive")]
+    ServiceAlreadyInactive,
+    #[msg("Score must be between 0 and 10000")]
+    ScoreOutOfRange,
 }

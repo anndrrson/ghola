@@ -19,4 +19,10 @@ export type {
   WellKnownSaid,
   ResolvedProfile,
   DomainDiscovery,
+  ServiceSearchOptions,
+  ServiceSearchResult,
+  ServiceListing,
+  VerifyAgentResult,
+  AgentSpendingSummary,
+  ReputationScore,
 } from './types';
