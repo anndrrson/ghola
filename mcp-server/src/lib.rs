@@ -285,6 +285,14 @@ pub struct SubscribeServiceParams {
     pub api_url: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct VerifyX402MerchantParams {
+    /// Solana address of the merchant (from x402 payTo field)
+    pub address: String,
+    /// SAID Cloud API base URL
+    pub api_url: Option<String>,
+}
+
 // ── MCP Server ──
 
 #[derive(Clone)]
@@ -1578,6 +1586,38 @@ impl SaidServer {
             .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
 
         let output = serde_json::to_string_pretty(&result).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_verify_x402_merchant",
+        description = "Before making an x402 payment, check the merchant's trust score via Ghola. Takes the payTo Solana address and returns identity info, trust score, and a pay/caution/reject recommendation."
+    )]
+    async fn verify_x402_merchant(
+        &self,
+        Parameters(params): Parameters<VerifyX402MerchantParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let api_url = params
+            .api_url
+            .as_deref()
+            .unwrap_or("https://ghola-api.onrender.com");
+
+        let url = format!("{}/v1/verify/x402/{}", api_url, params.address);
+
+        let resp = client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("HTTP error: {e}"), None))?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+        let output = serde_json::to_string_pretty(&body).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 }

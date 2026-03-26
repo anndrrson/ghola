@@ -162,6 +162,10 @@ async fn main() -> anyhow::Result<()> {
         )
         // Auth brokering (public + service-key-authed)
         .route("/v1/verify/did/{did}", get(routes::verify::lookup_did))
+        .route(
+            "/v1/verify/x402/{address}",
+            get(routes::verify::verify_x402_merchant),
+        )
         .route("/v1/verify/agent", post(routes::verify::verify_agent))
         .route(
             "/v1/verify/capability",

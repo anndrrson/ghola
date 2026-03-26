@@ -5,6 +5,7 @@ members = [
     "crates/said-solana",
     "crates/said-cloud",
     "crates/said-wasm",
+    "crates/said-x402",
     "mcp-server",
     "cli",
     "daemon",

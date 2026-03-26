@@ -726,6 +726,74 @@ async fn fetch_spending_summary(
     })
 }
 
+/// GET /v1/verify/x402/{address} (public)
+/// Assess a Solana address for trust — used by agents before x402 payments.
+pub async fn verify_x402_merchant(
+    State(state): State<Arc<AppState>>,
+    Path(address): Path<String>,
+) -> AppResult<Json<serde_json::Value>> {
+    // Look up by Solana address — check if any registered service has this receive_address
+    let service: Option<(String, String, Option<f32>, f32)> = sqlx::query_as(
+        r#"SELECT owner_did, name, avg_rating, uptime_percent
+        FROM service_listings
+        WHERE receive_address = $1 AND status::text = 'active'
+        LIMIT 1"#,
+    )
+    .bind(&address)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let (identity_found, owner_did, display_name, rating, uptime) = match service {
+        Some((did, name, r, u)) => (true, did, Some(name), r, u),
+        None => (false, String::new(), None, None, 0.0),
+    };
+
+    // Get reputation if identity found
+    let (trust_score, confidence) = if identity_found {
+        let score: Option<f32> = sqlx::query_scalar(
+            "SELECT overall_score FROM reputation_scores WHERE entity_did = $1",
+        )
+        .bind(&owner_did)
+        .fetch_optional(&state.db)
+        .await?;
+
+        let conf: Option<f32> = sqlx::query_scalar(
+            "SELECT confidence FROM reputation_scores WHERE entity_did = $1",
+        )
+        .bind(&owner_did)
+        .fetch_optional(&state.db)
+        .await?;
+
+        (score.unwrap_or(0.0), conf.unwrap_or(0.0))
+    } else {
+        (0.0, 0.0)
+    };
+
+    let (recommendation, reason) = if !identity_found {
+        ("caution", "Address not found in Ghola registry. Unverified merchant.")
+    } else if trust_score >= 0.7 {
+        ("pay", "Verified merchant with good trust score.")
+    } else if trust_score >= 0.3 {
+        ("caution", "Merchant found but trust score is moderate.")
+    } else {
+        ("reject", "Merchant has low trust score.")
+    };
+
+    Ok(Json(serde_json::json!({
+        "address": address,
+        "identity_found": identity_found,
+        "owner_did": if identity_found { Some(&owner_did) } else { None },
+        "display_name": display_name,
+        "trust_score": trust_score,
+        "confidence": confidence,
+        "avg_rating": rating,
+        "uptime_percent": uptime,
+        "recommendation": recommendation,
+        "reason": reason,
+        "protocol": "x402",
+    })))
+}
+
 /// Look up cached reputation score from the reputation_scores table.
 /// Returns None if no reputation has been computed yet.
 async fn get_cached_trust_score(state: &AppState, did: &str) -> Option<f32> {
