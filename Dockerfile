@@ -15,6 +15,7 @@ COPY crates/said-core/Cargo.toml crates/said-core/Cargo.toml
 COPY crates/said-solana/Cargo.toml crates/said-solana/Cargo.toml
 COPY crates/said-cloud/Cargo.toml crates/said-cloud/Cargo.toml
 COPY crates/said-wasm/Cargo.toml crates/said-wasm/Cargo.toml
+COPY crates/said-x402/Cargo.toml crates/said-x402/Cargo.toml
 COPY mcp-server/Cargo.toml mcp-server/Cargo.toml
 COPY cli/Cargo.toml cli/Cargo.toml
 COPY daemon/Cargo.toml daemon/Cargo.toml
