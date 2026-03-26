@@ -136,8 +136,15 @@ export default function MarketplacePage() {
             ))}
           </div>
         ) : services.length === 0 ? (
-          <div className="py-20 text-center text-[#8b95a8]">
-            No services found. Try adjusting your filters.
+          <div className="py-20 text-center">
+            <p className="text-[#8b95a8] mb-4">No services registered yet.</p>
+            <Link
+              href="/provide"
+              className="inline-flex items-center gap-2 rounded-xl bg-[#3da8ff] px-6 py-3 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
+            >
+              Register the first service
+              <Zap className="h-4 w-4" />
+            </Link>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">

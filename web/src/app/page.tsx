@@ -28,6 +28,9 @@ export default function Home() {
     }
   }, [authenticated, loading, router]);
 
+  // Don't block rendering for auth check — show the landing page immediately
+  // Only redirect authenticated users after auth finishes loading
+
   useEffect(() => {
     function handleMouseMove(e: MouseEvent) {
       if (!heroRef.current) return;
@@ -41,7 +44,7 @@ export default function Home() {
     return () => window.removeEventListener("mousemove", handleMouseMove);
   }, []);
 
-  if (loading || authenticated) return null;
+  if (authenticated && !loading) return null; // Only hide page AFTER confirming auth
 
   return (
     <div className="min-h-screen pt-16">
