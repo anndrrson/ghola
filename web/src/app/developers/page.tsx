@@ -102,6 +102,23 @@ export default function DevelopersPage() {
           </pre>
         </div>
 
+        {/* Merchant API Banner */}
+        <Link
+          href="/developers/merchant"
+          className="group block rounded-xl border border-[#3da8ff]/30 bg-[#3da8ff]/5 p-5 hover:border-[#3da8ff]/50 transition-colors mb-8"
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#3da8ff] mb-1.5">
+                NEW
+              </span>
+              <h3 className="text-sm font-medium text-[#eef1f8] mb-1">Merchant API — Headless Commerce</h3>
+              <p className="text-xs text-[#8b95a8]">Register your API as a headless merchant. Verify agents. Get paid per request via x402.</p>
+            </div>
+            <ArrowRight className="h-4 w-4 text-[#3da8ff] shrink-0 ml-4" />
+          </div>
+        </Link>
+
         {/* Navigation Cards */}
         <div className="grid gap-4 sm:grid-cols-3">
           <Link
