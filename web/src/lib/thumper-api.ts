@@ -389,3 +389,123 @@ export async function getProviderPayouts(limit?: number): Promise<import("./thum
   const params = limit ? `?limit=${limit}` : "";
   return thumperFetch(`/api/compute/providers/me/payouts${params}`);
 }
+
+// ── Bounty Marketplace ──
+
+import type {
+  MarketplaceTask,
+  ClaimResponse,
+  TaskBounty,
+  EarningsResponse,
+  BountyWithdrawResponse,
+} from "./thumper-types";
+
+export async function browseMarketplace(params?: {
+  task_type?: string;
+  min_bounty?: number;
+  max_bounty?: number;
+  sort?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<MarketplaceTask[]> {
+  const sp = new URLSearchParams();
+  if (params?.task_type) sp.set("task_type", params.task_type);
+  if (params?.min_bounty != null) sp.set("min_bounty", String(params.min_bounty));
+  if (params?.max_bounty != null) sp.set("max_bounty", String(params.max_bounty));
+  if (params?.sort) sp.set("sort", params.sort);
+  if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.offset) sp.set("offset", String(params.offset));
+  const qs = sp.toString();
+  return thumperFetch<MarketplaceTask[]>(`/api/marketplace${qs ? `?${qs}` : ""}`);
+}
+
+export async function getMarketplaceTask(id: string): Promise<MarketplaceTask> {
+  return thumperFetch<MarketplaceTask>(`/api/marketplace/${id}`);
+}
+
+export async function claimTask(taskId: string): Promise<ClaimResponse> {
+  return thumperFetch<ClaimResponse>(`/api/marketplace/${taskId}/claim`, { method: "POST" });
+}
+
+export async function submitTask(
+  taskId: string,
+  result: unknown,
+): Promise<{ task_id: string; status: string }> {
+  return thumperFetch(`/api/marketplace/${taskId}/submit`, {
+    method: "POST",
+    body: JSON.stringify({ result }),
+  });
+}
+
+export async function unclaimTask(
+  taskId: string,
+): Promise<{ task_id: string; status: string; message: string }> {
+  return thumperFetch(`/api/marketplace/${taskId}/unclaim`, { method: "POST" });
+}
+
+export async function createBountyTask(data: {
+  title: string;
+  description: string;
+  task_type: string;
+  bounty_usdc: number;
+  params?: Record<string, unknown>;
+  min_reputation?: number;
+}): Promise<ThumperTaskResponse> {
+  return thumperFetch("/api/tasks", {
+    method: "POST",
+    body: JSON.stringify({
+      ...data,
+      params: data.params || {},
+      is_open: true,
+    }),
+  });
+}
+
+export async function releaseTask(
+  taskId: string,
+): Promise<{
+  task_id: string;
+  status: string;
+  executor_id: string;
+  executor_amount: number;
+  platform_fee: number;
+}> {
+  return thumperFetch(`/api/marketplace/${taskId}/release`, { method: "POST" });
+}
+
+export async function rejectTask(
+  taskId: string,
+  reason?: string,
+): Promise<{ task_id: string; status: string; message: string }> {
+  return thumperFetch(`/api/marketplace/${taskId}/reject`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function listBounties(params?: {
+  status?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<TaskBounty[]> {
+  const sp = new URLSearchParams();
+  if (params?.status) sp.set("status", params.status);
+  if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.offset) sp.set("offset", String(params.offset));
+  const qs = sp.toString();
+  return thumperFetch<TaskBounty[]>(`/api/bounties${qs ? `?${qs}` : ""}`);
+}
+
+export async function getEarnings(): Promise<EarningsResponse> {
+  return thumperFetch<EarningsResponse>("/api/wallet/earnings");
+}
+
+export async function withdrawEarnings(data: {
+  to_address: string;
+  amount_usdc?: number;
+}): Promise<BountyWithdrawResponse> {
+  return thumperFetch<BountyWithdrawResponse>("/api/wallet/withdraw-earnings", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}

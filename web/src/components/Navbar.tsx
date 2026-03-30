@@ -11,9 +11,10 @@ import { getBalance } from "@/lib/api";
 import { GholaLogo } from "@/components/GholaLogo";
 import { Menu, X } from "lucide-react";
 
-type Section = "home" | "identity" | "models" | "chat" | "settings" | "vault" | "developers" | "provide" | "marketplace";
+type Section = "home" | "identity" | "models" | "chat" | "settings" | "vault" | "developers" | "provide" | "marketplace" | "bounties";
 
 function getSection(pathname: string): Section {
+  if (pathname.startsWith("/bounties")) return "bounties";
   if (pathname.startsWith("/marketplace")) return "marketplace";
   if (pathname.startsWith("/provide")) return "provide";
   if (pathname.startsWith("/developers")) return "developers";
@@ -161,6 +162,16 @@ export function Navbar() {
               >
                 Marketplace
               </Link>
+              <Link
+                href="/bounties"
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  section === "bounties"
+                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                    : "text-[#8b95a8] hover:text-[#eef1f8]"
+                }`}
+              >
+                Bounties
+              </Link>
             </div>
           </div>
 
@@ -265,6 +276,41 @@ export function Navbar() {
                     </Link>
                     <Link
                       href="/signup?redirect=/provide"
+                      className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
+                    >
+                      Get Started
+                    </Link>
+                  </>
+                )}
+              </>
+            )}
+            {(section === "bounties") && (
+              <>
+                {thumperAuth.authenticated ? (
+                  <>
+                    <Link
+                      href="/bounties/dashboard"
+                      className="text-sm text-[#8b95a8] transition hover:text-[#eef1f8]"
+                    >
+                      Dashboard
+                    </Link>
+                    <button
+                      onClick={handleThumperLogout}
+                      className="rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] transition-colors cursor-pointer"
+                    >
+                      Log Out
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <Link
+                      href="/signin?redirect=/bounties"
+                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
+                    >
+                      Sign In
+                    </Link>
+                    <Link
+                      href="/signup?redirect=/bounties"
                       className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
                     >
                       Get Started
@@ -424,6 +470,13 @@ export function Navbar() {
               className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
             >
               Marketplace
+            </Link>
+            <Link
+              href="/bounties"
+              onClick={() => setMobileOpen(false)}
+              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+            >
+              Bounties
             </Link>
             <div className="border-t border-[#1e2a3a] pt-2 mt-2">
               {thumperAuth.authenticated ? (

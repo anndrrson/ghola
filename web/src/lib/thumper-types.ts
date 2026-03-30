@@ -31,11 +31,14 @@ export interface ThumperTaskResponse {
   user_id: string;
   template_id: string | null;
   task_type: string;
-  status: "pending" | "in_progress" | "completed" | "failed" | "cancelled";
+  status: "pending" | "in_progress" | "completed" | "failed" | "cancelled" | "awaiting_approval";
   params: Record<string, unknown>;
   result: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
+  completed_at?: string | null;
+  bounty_usdc?: number | null;
+  bounty_status?: string | null;
   steps?: ThumperTaskStepResponse[];
 }
 
@@ -244,3 +247,74 @@ export interface WithdrawalResponse {
   signature: string;
   explorer_url: string;
 }
+
+// ── Bounty Marketplace ──
+
+export interface MarketplaceTask {
+  id: string;
+  task_type: string;
+  title: string | null;
+  description: string | null;
+  status: string;
+  params: Record<string, unknown>;
+  bounty_usdc: number | null;
+  funder_id: string;
+  executor_id: string | null;
+  claimed_at: string | null;
+  claim_expires_at: string | null;
+  created_at: string;
+  // Identity fields
+  funder_name: string | null;
+  funder_reputation: number | null;
+  funder_verified: boolean | null;
+  funder_bounties_funded: number | null;
+  min_reputation: number | null;
+}
+
+export interface ClaimResponse {
+  task_id: string;
+  claimed_at: string;
+  claim_expires_at: string;
+}
+
+export interface TaskBounty {
+  id: string;
+  task_id: string;
+  funder_id: string;
+  executor_id: string | null;
+  amount_usdc: number;
+  platform_fee_bps: number;
+  executor_amount: number;
+  platform_fee: number;
+  status: string;
+  created_at: string;
+  settled_at: string | null;
+}
+
+export interface EarningsResponse {
+  earned_usdc: number;
+  withdrawn_usdc: number;
+  available_usdc: number;
+}
+
+export interface BountyWithdrawResponse {
+  payout_id: string;
+  amount_usdc: number;
+  to_address: string;
+  signature: string | null;
+  status: string;
+}
+
+export const BOUNTY_TASK_TYPES = [
+  "research",
+  "data_collection",
+  "content_creation",
+  "code_review",
+  "testing",
+  "translation",
+  "design",
+  "analysis",
+  "call",
+  "email",
+  "other",
+] as const;
