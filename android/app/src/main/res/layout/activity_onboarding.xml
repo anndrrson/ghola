@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#FFFFFF"
+    android:padding="24dp">
+
+    <!-- Step indicator -->
+    <TextView
+        android:id="@+id/stepIndicator"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Step 1 of 3"
+        android:textSize="14sp"
+        android:textColor="#999999"
+        android:textAlignment="center"
+        android:layout_marginBottom="32dp"
+        android:layout_marginTop="16dp" />
+
+    <!-- Step 1: Sign In -->
+    <LinearLayout
+        android:id="@+id/stepSignIn"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:visibility="visible">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Welcome to Thumper"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:textColor="#1A1A1A"
+            android:textAlignment="center"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Your AI personal assistant that makes phone calls, sends emails, and controls your phone."
+            android:textSize="16sp"
+            android:textColor="#666666"
+            android:textAlignment="center"
+            android:layout_marginBottom="48dp" />
+
+        <Button
+            android:id="@+id/btnGoogleSignIn"
+            android:layout_width="280dp"
+            android:layout_height="48dp"
+            android:text="Sign in with Google"
+            android:layout_marginBottom="16dp"
+            style="@style/Widget.MaterialComponents.Button" />
+
+        <Button
+            android:id="@+id/btnSkipSignIn"
+            android:layout_width="280dp"
+            android:layout_height="48dp"
+            android:text="Skip for now"
+            style="@style/Widget.MaterialComponents.Button.TextButton" />
+    </LinearLayout>
+
+    <!-- Step 2: Accessibility -->
+    <LinearLayout
+        android:id="@+id/stepAccessibility"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Enable Device Control"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:textColor="#1A1A1A"
+            android:textAlignment="center"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Thumper needs the Accessibility Service to control your phone — open apps, tap buttons, and type text on your behalf."
+            android:textSize="16sp"
+            android:textColor="#666666"
+            android:textAlignment="center"
+            android:layout_marginBottom="48dp" />
+
+        <Button
+            android:id="@+id/btnEnableAccessibility"
+            android:layout_width="280dp"
+            android:layout_height="48dp"
+            android:text="Open Accessibility Settings"
+            android:layout_marginBottom="16dp"
+            style="@style/Widget.MaterialComponents.Button" />
+
+        <Button
+            android:id="@+id/btnCheckAccessibility"
+            android:layout_width="280dp"
+            android:layout_height="48dp"
+            android:text="I've enabled it"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+    </LinearLayout>
+
+    <!-- Step 3: Connect Accounts -->
+    <LinearLayout
+        android:id="@+id/stepConnect"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Connect Your Accounts"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:textColor="#1A1A1A"
+            android:textAlignment="center"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Connect Gmail and Calendar so Thumper can send emails and manage your schedule. You can do this later in Settings."
+            android:textSize="16sp"
+            android:textColor="#666666"
+            android:textAlignment="center"
+            android:layout_marginBottom="48dp" />
+
+        <Button
+            android:id="@+id/btnConnectGmail"
+            android:layout_width="280dp"
+            android:layout_height="48dp"
+            android:text="Connect Gmail"
+            android:layout_marginBottom="16dp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <Button
+            android:id="@+id/btnFinish"
+            android:layout_width="280dp"
+            android:layout_height="48dp"
+            android:text="Get Started"
+            style="@style/Widget.MaterialComponents.Button" />
+    </LinearLayout>
+
+</LinearLayout>

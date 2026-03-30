@@ -16,6 +16,12 @@ COPY crates/said-solana/Cargo.toml crates/said-solana/Cargo.toml
 COPY crates/said-cloud/Cargo.toml crates/said-cloud/Cargo.toml
 COPY crates/said-wasm/Cargo.toml crates/said-wasm/Cargo.toml
 COPY crates/said-x402/Cargo.toml crates/said-x402/Cargo.toml
+COPY crates/thumper-types/Cargo.toml crates/thumper-types/Cargo.toml
+COPY crates/thumper-relay/Cargo.toml crates/thumper-relay/Cargo.toml
+COPY crates/thumper-mcp/Cargo.toml crates/thumper-mcp/Cargo.toml
+COPY crates/thumper-cli/Cargo.toml crates/thumper-cli/Cargo.toml
+COPY crates/thumper-cloud/Cargo.toml crates/thumper-cloud/Cargo.toml
+COPY crates/ghola-home/Cargo.toml crates/ghola-home/Cargo.toml
 COPY mcp-server/Cargo.toml mcp-server/Cargo.toml
 COPY cli/Cargo.toml cli/Cargo.toml
 COPY daemon/Cargo.toml daemon/Cargo.toml

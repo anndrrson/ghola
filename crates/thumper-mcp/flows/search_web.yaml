@@ -1,0 +1,23 @@
+name: search_web
+description: Search the web using Chrome
+category: search
+params:
+  query: string
+steps:
+  - action: launch_app
+    package: "com.android.chrome"
+  - action: delay
+    duration_ms: 1500
+  - action: tap
+    selector:
+      text_contains: "Search or type"
+  - action: type_text
+    selector:
+      resource_id: "url_bar"
+    text: "{{query}}"
+  - action: tap
+    selector:
+      desc: "Go"
+  - action: delay
+    duration_ms: 2000
+  - action: read_screen

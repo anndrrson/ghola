@@ -4,3 +4,10 @@
 node_modules
 .next
 *.tsbuildinfo
+android/.gradle/
+android/build/
+android/app/build/
+*.apk
+.idea/
+*.iml
+local.properties

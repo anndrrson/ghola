@@ -1,0 +1,26 @@
+name: check_balance
+description: "Open Phantom wallet and read the current token balances from the home screen."
+category: crypto
+params: []
+steps:
+  - label: "Launch Phantom"
+    action:
+      type: LaunchApp
+      data:
+        package: "app.phantom"
+    wait_for:
+      selector:
+        text_contains: "Phantom"
+      timeout_ms: 5000
+    on_failure: abort
+
+  - label: "Wait for balances to load"
+    action:
+      type: Delay
+      data:
+        ms: 2000
+
+  - label: "Read balance screen"
+    action:
+      type: ReadScreen
+    timeout_ms: 3000

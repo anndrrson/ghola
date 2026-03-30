@@ -1,0 +1,20 @@
+FROM rust:slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+
+RUN cargo build --release -p thumper-relay
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/thumper-relay /usr/local/bin/thumper-relay
+
+ENV THUMPER_RELAY_BIND=0.0.0.0:10000
+ENV THUMPER_DEV_MODE=true
+EXPOSE 10000
+
+CMD ["thumper-relay"]

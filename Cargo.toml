@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    # Identity (SAID)
     "crates/said-types",
     "crates/said-core",
     "crates/said-solana",
@@ -9,6 +10,14 @@ members = [
     "mcp-server",
     "cli",
     "daemon",
+
+    # Assistant (Thumper)
+    "crates/thumper-types",
+    "crates/thumper-relay",
+    "crates/thumper-mcp",
+    "crates/thumper-cli",
+    "crates/thumper-cloud",
+    "crates/ghola-home",
 ]
 exclude = [
     "programs/said-registry",
@@ -36,9 +45,13 @@ curve25519-dalek = { version = "4", features = ["digest"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
 
 # Async
 tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-stream = "0.3"
 
 # MCP
 rmcp = { version = "0.15", features = ["server", "transport-io", "transport-streamable-http-server"] }
@@ -55,9 +68,17 @@ thiserror = "2"
 schemars = { version = "1", features = ["uuid1", "chrono04"] }
 
 # HTTP
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
+jsonwebtoken = "9"
 
 # Misc
 chrono = { version = "0.4", features = ["serde"] }
@@ -65,16 +86,27 @@ uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "6"
 base64 = "0.22"
 bs58 = "0.5"
+dashmap = "6"
+qrcode = "0.14"
+open = "5"
 
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
-# Internal
+# WebSocket
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+
+# Internal — SAID
 said-types = { path = "crates/said-types" }
 said-core = { path = "crates/said-core" }
 said-solana = { path = "crates/said-solana" }
 said-mcp = { path = "mcp-server" }
 said-daemon = { path = "daemon" }
+
+# Internal — Thumper
+thumper-types = { path = "crates/thumper-types" }
+thumper-relay = { path = "crates/thumper-relay" }
+thumper-mcp = { path = "crates/thumper-mcp" }
 
 [profile.release]
 overflow-checks = true
