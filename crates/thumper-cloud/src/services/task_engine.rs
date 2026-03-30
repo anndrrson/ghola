@@ -1,3 +1,4 @@
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::CloudError;
@@ -55,6 +56,9 @@ pub async fn execute_task(
             .bind(task_id)
             .execute(&state.db)
             .await?;
+
+            // Refund bounty on failure
+            let _ = crate::services::bounty_service::refund_bounty(&state.db, task_id).await;
 
             tracing::error!(%task_id, %task_type, error = %e, "task failed");
         }
@@ -221,13 +225,7 @@ async fn execute_calendar_task(
 
     complete_step(state, task_id, 1, &result).await?;
 
-    sqlx::query(
-        "UPDATE tasks SET status = 'completed', result = $1, updated_at = now(), completed_at = now() WHERE id = $2",
-    )
-    .bind(&result)
-    .bind(task_id)
-    .execute(&state.db)
-    .await?;
+    complete_task(&state.db, task_id, &result).await?;
 
     Ok(())
 }
@@ -308,13 +306,7 @@ async fn execute_crypto_task(
 
             complete_step(state, task_id, 3, &result).await?;
 
-            sqlx::query(
-                "UPDATE tasks SET status = 'completed', result = $1, updated_at = now(), completed_at = now() WHERE id = $2",
-            )
-            .bind(&result)
-            .bind(task_id)
-            .execute(&state.db)
-            .await?;
+            complete_task(&state.db, task_id, &result).await?;
         }
         "balance" => {
             add_step(state, task_id, 1, "check_balance", "in_progress").await?;
@@ -328,13 +320,7 @@ async fn execute_crypto_task(
 
             complete_step(state, task_id, 1, &result).await?;
 
-            sqlx::query(
-                "UPDATE tasks SET status = 'completed', result = $1, updated_at = now(), completed_at = now() WHERE id = $2",
-            )
-            .bind(&result)
-            .bind(task_id)
-            .execute(&state.db)
-            .await?;
+            complete_task(&state.db, task_id, &result).await?;
         }
         _ => {
             return Err(CloudError::BadRequest(format!(
@@ -388,5 +374,32 @@ async fn complete_step(
     .bind(step_number)
     .execute(&state.db)
     .await?;
+    Ok(())
+}
+
+/// Mark a task as completed and settle any attached bounty.
+async fn complete_task(
+    db: &PgPool,
+    task_id: Uuid,
+    result: &serde_json::Value,
+) -> Result<(), CloudError> {
+    sqlx::query(
+        "UPDATE tasks SET status = 'completed', result = $1, updated_at = now(), completed_at = now() WHERE id = $2",
+    )
+    .bind(result)
+    .bind(task_id)
+    .execute(db)
+    .await?;
+
+    // Settle bounty if one exists — executor defaults to funder (AI-executed task)
+    if let Ok(Some(bounty)) = crate::services::bounty_service::get_bounty(db, task_id).await {
+        if bounty.status == "held" {
+            let executor_id = bounty.executor_id.unwrap_or(bounty.funder_id);
+            if let Err(e) = crate::services::bounty_service::settle_bounty(db, task_id, executor_id).await {
+                tracing::warn!(%task_id, error = %e, "failed to settle bounty");
+            }
+        }
+    }
+
     Ok(())
 }

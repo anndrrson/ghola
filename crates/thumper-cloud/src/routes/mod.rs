@@ -14,3 +14,7 @@ pub mod telegram;
 pub mod openai_compat;
 pub mod wallet;
 pub mod compute;
+pub mod agents;
+pub mod swarm;
+pub mod x402;
+pub mod marketplace;

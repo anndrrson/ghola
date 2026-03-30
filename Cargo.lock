@@ -3039,6 +3039,7 @@ dependencies = [
  "bs58",
  "chrono",
  "curve25519-dalek",
+ "dashmap",
  "ed25519-bip32",
  "ed25519-dalek",
  "futures",

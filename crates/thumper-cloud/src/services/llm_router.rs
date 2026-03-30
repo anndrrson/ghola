@@ -1581,7 +1581,7 @@ pub async fn generate_community(
 
     // Create escrow
     let estimated_cost = 100; // 100 micro-USDC estimate
-    let escrow_id = compute_service::create_escrow(&state.db, user_id, provider.provider_id, estimated_cost).await?;
+    let escrow_id = compute_service::create_escrow(&state.db, user_id, Some(provider.provider_id), estimated_cost).await?;
 
     // Create job
     let job_id = compute_service::create_job(&state.db, user_id, provider.provider_id, escrow_id, &provider.model_id).await?;
@@ -1671,7 +1671,7 @@ pub async fn stream_community(
 
     let provider = compute_service::select_provider(state, "community", None).await?;
     let estimated_cost = 100;
-    let escrow_id = compute_service::create_escrow(&state.db, user_id, provider.provider_id, estimated_cost).await?;
+    let escrow_id = compute_service::create_escrow(&state.db, user_id, Some(provider.provider_id), estimated_cost).await?;
     let job_id = compute_service::create_job(&state.db, user_id, provider.provider_id, escrow_id, &provider.model_id).await?;
 
     let inference_msgs: Vec<serde_json::Value> = messages.iter().map(|m| {

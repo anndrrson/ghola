@@ -7,3 +7,7 @@ pub mod proactive;
 pub mod telegram;
 pub mod wallet_service;
 pub mod compute_service;
+pub mod agent_service;
+pub mod swarm_service;
+pub mod x402_service;
+pub mod bounty_service;

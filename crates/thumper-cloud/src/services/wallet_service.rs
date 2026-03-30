@@ -147,10 +147,47 @@ pub struct TransferRequest {
     pub currency: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct TxResult {
     pub signature: String,
     pub explorer_url: String,
+}
+
+/// Send USDC from the platform treasury wallet to a recipient address.
+/// Used for provider payout withdrawals.
+pub async fn send_treasury_usdc(
+    mnemonic_str: &str,
+    to_address: &str,
+    amount: u64,
+    rpc_url: &str,
+) -> Result<TxResult, CloudError> {
+    let mnemonic = bip39::Mnemonic::parse(mnemonic_str)
+        .map_err(|e| CloudError::Internal(format!("invalid treasury mnemonic: {e}")))?;
+    let seed = mnemonic.to_seed("");
+    let signing_key = derive_solana_keypair(&seed);
+    let payer = signing_key.verifying_key().to_bytes();
+
+    let to_bytes = bs58::decode(to_address)
+        .into_vec()
+        .map_err(|e| CloudError::BadRequest(format!("invalid recipient address: {e}")))?;
+    let to: [u8; 32] = to_bytes
+        .try_into()
+        .map_err(|_| CloudError::BadRequest("invalid recipient address length".into()))?;
+
+    let is_devnet = rpc_url.contains("devnet");
+    let client = reqwest::Client::new();
+
+    let signature =
+        send_usdc_transfer(&client, rpc_url, &signing_key, &payer, &to, amount, is_devnet)
+            .await?;
+
+    let cluster = if is_devnet { "?cluster=devnet" } else { "" };
+    let explorer_url = format!("https://explorer.solana.com/tx/{signature}{cluster}");
+
+    Ok(TxResult {
+        signature,
+        explorer_url,
+    })
 }
 
 #[derive(Serialize)]
@@ -278,7 +315,12 @@ pub async fn generate_wallet(state: &AppState, user_id: Uuid) -> Result<WalletIn
     .execute(&state.db)
     .await?;
 
-    tracing::info!(%user_id, %address, %network, "wallet provisioned");
+    tracing::info!(
+        user = %crate::privacy::log_id(&user_id),
+        address = %crate::privacy::log_addr(&address),
+        %network,
+        "wallet provisioned"
+    );
 
     Ok(WalletInfo {
         address,
@@ -520,7 +562,17 @@ pub async fn transfer(
             let explorer_url =
                 format!("https://explorer.solana.com/tx/{signature}{cluster}");
 
-            tracing::info!(%user_id, %signature, currency = %req.currency, amount = %req.amount, "transfer confirmed");
+            tracing::info!(
+                user = %crate::privacy::log_id(&user_id),
+                currency = %req.currency,
+                amount = %req.amount,
+                "transfer confirmed"
+            );
+            tracing::debug!(
+                user = %crate::privacy::log_id(&user_id),
+                %signature,
+                "transfer tx signature"
+            );
 
             Ok(TxResult {
                 signature,
@@ -626,6 +678,117 @@ pub async fn execute_tool(
             "unknown wallet tool: {tool_name}"
         ))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// HD-derived intermediate wallets (privacy: break treasury → provider link)
+// ---------------------------------------------------------------------------
+
+/// Derive a unique intermediate keypair for a provider payout.
+/// Path: m / 44' / 501' / {provider_index}' / 0'
+/// Each provider gets a distinct on-chain address so payouts cannot be linked
+/// back to the single treasury wallet.
+fn derive_intermediate_keypair(seed: &[u8; 64], provider_index: u32) -> SigningKey {
+    let hd_secret = hmac_sha512(b"ed25519 seed", seed);
+    let (secret, chain_code): ([u8; 32], [u8; 32]) = {
+        let mut s = [0u8; 32];
+        let mut c = [0u8; 32];
+        s.copy_from_slice(&hd_secret[..32]);
+        c.copy_from_slice(&hd_secret[32..]);
+        (s, c)
+    };
+
+    let root = XPrv::from_nonextended_force(&secret, &chain_code);
+
+    let derived = root
+        .derive(DerivationScheme::V2, HARDENED | 44)
+        .derive(DerivationScheme::V2, HARDENED | 501)
+        .derive(DerivationScheme::V2, HARDENED | provider_index)
+        .derive(DerivationScheme::V2, HARDENED | 0);
+
+    xprv_to_signing_key(&derived)
+}
+
+/// Send USDC to a provider via an HD-derived intermediate wallet.
+/// Three-step fund-on-demand flow:
+///   1. Fund intermediate with SOL (for tx fees) if balance < 0.01 SOL
+///   2. Transfer USDC from treasury → intermediate
+///   3. Transfer USDC from intermediate → provider
+/// Returns the TxResult from step 3 (the provider-visible tx).
+pub async fn send_via_intermediate(
+    mnemonic_str: &str,
+    provider_index: u32,
+    to_address: &str,
+    amount: u64,
+    rpc_url: &str,
+) -> Result<TxResult, CloudError> {
+    let mnemonic = bip39::Mnemonic::parse(mnemonic_str)
+        .map_err(|e| CloudError::Internal(format!("invalid treasury mnemonic: {e}")))?;
+    let seed = mnemonic.to_seed("");
+
+    let treasury_key = derive_solana_keypair(&seed);
+    let treasury_pubkey = treasury_key.verifying_key().to_bytes();
+
+    let intermediate_key = derive_intermediate_keypair(&seed, provider_index);
+    let intermediate_pubkey = intermediate_key.verifying_key().to_bytes();
+    let intermediate_addr = bs58::encode(&intermediate_pubkey).into_string();
+
+    let to_bytes = bs58::decode(to_address)
+        .into_vec()
+        .map_err(|e| CloudError::BadRequest(format!("invalid recipient address: {e}")))?;
+    let to: [u8; 32] = to_bytes
+        .try_into()
+        .map_err(|_| CloudError::BadRequest("invalid recipient address length".into()))?;
+
+    let is_devnet = rpc_url.contains("devnet");
+    let client = reqwest::Client::new();
+
+    // Step 1: Ensure intermediate has enough SOL for tx fees
+    let intermediate_sol = rpc_get_balance(&client, rpc_url, &intermediate_addr).await?;
+    if intermediate_sol < 10_000_000 {
+        // < 0.01 SOL → fund with 0.02 SOL from treasury
+        send_sol_transfer(
+            &client,
+            rpc_url,
+            &treasury_key,
+            &treasury_pubkey,
+            &intermediate_pubkey,
+            20_000_000, // 0.02 SOL
+        )
+        .await?;
+    }
+
+    // Step 2: Transfer USDC from treasury → intermediate
+    send_usdc_transfer(
+        &client,
+        rpc_url,
+        &treasury_key,
+        &treasury_pubkey,
+        &intermediate_pubkey,
+        amount,
+        is_devnet,
+    )
+    .await?;
+
+    // Step 3: Transfer USDC from intermediate → provider
+    let signature = send_usdc_transfer(
+        &client,
+        rpc_url,
+        &intermediate_key,
+        &intermediate_pubkey,
+        &to,
+        amount,
+        is_devnet,
+    )
+    .await?;
+
+    let cluster = if is_devnet { "?cluster=devnet" } else { "" };
+    let explorer_url = format!("https://explorer.solana.com/tx/{signature}{cluster}");
+
+    Ok(TxResult {
+        signature,
+        explorer_url,
+    })
 }
 
 // ---------------------------------------------------------------------------

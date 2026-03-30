@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::auth::AuthUser;
 use crate::error::CloudError;
 use crate::services::compute_service::{
-    self, CommunityModel, DailyStats, EscrowInfo, ProviderInfo, ProviderRegistration,
-    ProviderUpdate, RecentJob,
+    self, CommunityModel, DailyStats, EscrowInfo, ProviderInfo, PublicProviderInfo,
+    ProviderRegistration, ProviderUpdate, RecentJob, WithdrawalRequest, WithdrawalResponse,
 };
 use crate::state::AppState;
 
@@ -76,7 +76,7 @@ pub async fn update_my_provider(
 /// GET /api/compute/providers — List all currently online providers (public).
 pub async fn list_providers(
     State(state): State<AppState>,
-) -> Result<Json<Vec<ProviderInfo>>, CloudError> {
+) -> Result<Json<Vec<PublicProviderInfo>>, CloudError> {
     let providers = compute_service::list_online_providers(&state.db).await?;
     Ok(Json(providers))
 }
@@ -137,5 +137,37 @@ pub async fn get_escrow(
 ) -> Result<Json<Vec<EscrowInfo>>, CloudError> {
     let escrows = compute_service::get_active_escrows(&state.db, claims.sub).await?;
     Ok(Json(escrows))
+}
+
+/// POST /api/compute/providers/me/withdraw — Withdraw provider earnings to
+/// their Solana wallet.
+pub async fn withdraw_earnings(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<WithdrawalRequest>,
+) -> Result<Json<WithdrawalResponse>, CloudError> {
+    let result = compute_service::withdraw_provider_earnings(&state, claims.sub, req).await?;
+    Ok(Json(result))
+}
+
+/// GET /api/compute/providers/me/payouts — Get payout summary and history.
+pub async fn get_payouts(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Query(query): Query<JobsQuery>,
+) -> Result<Json<serde_json::Value>, CloudError> {
+    let provider = compute_service::get_provider_by_user(&state.db, claims.sub)
+        .await?
+        .ok_or_else(|| CloudError::NotFound("no provider profile found".to_string()))?;
+
+    let summary = compute_service::get_payout_summary(&state.db, provider.id).await?;
+    let payouts =
+        compute_service::get_provider_payouts(&state.db, provider.id, query.limit.min(100))
+            .await?;
+
+    Ok(Json(serde_json::json!({
+        "summary": summary,
+        "payouts": payouts,
+    })))
 }
 

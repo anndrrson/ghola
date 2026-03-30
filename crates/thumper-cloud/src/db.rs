@@ -567,4 +567,66 @@ CREATE INDEX IF NOT EXISTS idx_x402_payments_agent ON x402_payments(agent_id);
 -- x402 payment status tracking (pending → settled | failed)
 ALTER TABLE x402_payments ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending'
     CHECK (status IN ('pending', 'settled', 'failed'));
+
+-- Task Bounties: allow escrow_holds without a compute provider
+ALTER TABLE escrow_holds ALTER COLUMN provider_id DROP NOT NULL;
+
+-- Bounty columns on tasks
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS bounty_usdc BIGINT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS executor_id UUID REFERENCES users(id);
+
+-- Earnings tracking on user wallets
+ALTER TABLE user_wallets ADD COLUMN IF NOT EXISTS earned_usdc BIGINT DEFAULT 0;
+ALTER TABLE user_wallets ADD COLUMN IF NOT EXISTS withdrawn_usdc BIGINT DEFAULT 0;
+
+-- Task bounties table
+CREATE TABLE IF NOT EXISTS task_bounties (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE UNIQUE,
+    funder_id UUID NOT NULL REFERENCES users(id),
+    executor_id UUID REFERENCES users(id),
+    amount_usdc BIGINT NOT NULL,
+    platform_fee_bps INT NOT NULL DEFAULT 300,
+    executor_amount BIGINT DEFAULT 0,
+    platform_fee BIGINT DEFAULT 0,
+    status TEXT DEFAULT 'held' CHECK (status IN ('held', 'released', 'refunded', 'expired')),
+    escrow_id UUID REFERENCES escrow_holds(id),
+    created_at TIMESTAMPTZ DEFAULT now(),
+    settled_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_task_bounties_task ON task_bounties(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_bounties_funder ON task_bounties(funder_id);
+CREATE INDEX IF NOT EXISTS idx_task_bounties_executor ON task_bounties(executor_id);
+CREATE INDEX IF NOT EXISTS idx_task_bounties_status ON task_bounties(status);
+
+-- Bounty earnings withdrawal tracking
+CREATE TABLE IF NOT EXISTS bounty_payouts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    amount_usdc BIGINT NOT NULL,
+    to_address TEXT NOT NULL,
+    signature TEXT,
+    status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'failed')),
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_bounty_payouts_user ON bounty_payouts(user_id);
+
+-- Task Marketplace: open bounty tasks that external executors can claim
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS is_open BOOLEAN DEFAULT false;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS title TEXT;
+CREATE INDEX IF NOT EXISTS idx_tasks_marketplace ON tasks(is_open, status) WHERE is_open = true;
+
+-- Identity + reputation for marketplace participants
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reputation_score DOUBLE PRECISION DEFAULT 0.5;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS bounties_completed INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS bounties_funded INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS verified BOOLEAN DEFAULT false;
+
+-- Optional minimum reputation to claim a task
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS min_reputation DOUBLE PRECISION;
 "#;

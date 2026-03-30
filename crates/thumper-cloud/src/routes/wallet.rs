@@ -1,6 +1,6 @@
 use axum::extract::State;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
 use crate::error::CloudError;
@@ -58,4 +58,176 @@ pub async fn get_history(
     let limit = query.limit.unwrap_or(50).min(100);
     let history = wallet_service::get_history(&state, claims.sub, limit).await?;
     Ok(Json(history))
+}
+
+#[derive(Deserialize)]
+pub struct WithdrawEarningsRequest {
+    pub to_address: String,
+    pub amount_usdc: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct WithdrawEarningsResponse {
+    pub payout_id: uuid::Uuid,
+    pub amount_usdc: i64,
+    pub to_address: String,
+    pub signature: Option<String>,
+    pub status: String,
+}
+
+/// GET /api/wallet/earnings — Check earned and withdrawn balances.
+pub async fn get_earnings(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+) -> Result<Json<serde_json::Value>, CloudError> {
+    let row = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+        "SELECT earned_usdc, withdrawn_usdc FROM user_wallets WHERE user_id = $1",
+    )
+    .bind(claims.sub)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(CloudError::NotFound("wallet not provisioned".to_string()))?;
+
+    let earned = row.0.unwrap_or(0);
+    let withdrawn = row.1.unwrap_or(0);
+    let available = earned - withdrawn;
+
+    Ok(Json(serde_json::json!({
+        "earned_usdc": earned,
+        "withdrawn_usdc": withdrawn,
+        "available_usdc": available,
+    })))
+}
+
+const MIN_WITHDRAWAL_USDC: i64 = 100_000; // $0.10
+
+/// POST /api/wallet/withdraw-earnings — Withdraw earned bounty USDC to
+/// an external Solana wallet.
+pub async fn withdraw_earnings(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<WithdrawEarningsRequest>,
+) -> Result<Json<WithdrawEarningsResponse>, CloudError> {
+    let mnemonic = state
+        .config
+        .treasury_mnemonic
+        .as_deref()
+        .ok_or_else(|| {
+            CloudError::ServiceUnavailable("withdrawals not configured yet".to_string())
+        })?;
+
+    // Validate address
+    let to_bytes = bs58::decode(&req.to_address)
+        .into_vec()
+        .map_err(|_| CloudError::BadRequest("invalid Solana address".to_string()))?;
+    if to_bytes.len() != 32 {
+        return Err(CloudError::BadRequest("invalid Solana address length".to_string()));
+    }
+
+    // Fetch earned balance
+    let row = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+        "SELECT earned_usdc, withdrawn_usdc FROM user_wallets WHERE user_id = $1",
+    )
+    .bind(claims.sub)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(CloudError::NotFound("wallet not provisioned".to_string()))?;
+
+    let earned = row.0.unwrap_or(0);
+    let withdrawn = row.1.unwrap_or(0);
+    let available = earned - withdrawn;
+
+    let amount = req.amount_usdc.unwrap_or(available);
+
+    if amount <= 0 {
+        return Err(CloudError::BadRequest("amount must be positive".to_string()));
+    }
+    if amount < MIN_WITHDRAWAL_USDC {
+        return Err(CloudError::BadRequest(format!(
+            "minimum withdrawal is ${:.2}",
+            MIN_WITHDRAWAL_USDC as f64 / 1_000_000.0
+        )));
+    }
+    if amount > available {
+        return Err(CloudError::BadRequest(format!(
+            "insufficient balance: ${:.6} available",
+            available as f64 / 1_000_000.0
+        )));
+    }
+
+    // Check no pending payouts
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM bounty_payouts WHERE user_id = $1 AND status = 'pending'",
+    )
+    .bind(claims.sub)
+    .fetch_one(&state.db)
+    .await?;
+
+    if pending > 0 {
+        return Err(CloudError::BadRequest(
+            "you have a pending withdrawal — wait for it to complete".to_string(),
+        ));
+    }
+
+    // Insert pending payout
+    let payout_id: uuid::Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO bounty_payouts (user_id, amount_usdc, to_address, status)
+        VALUES ($1, $2, $3, 'pending')
+        RETURNING id
+        "#,
+    )
+    .bind(claims.sub)
+    .bind(amount)
+    .bind(&req.to_address)
+    .fetch_one(&state.db)
+    .await?;
+
+    // Send USDC via intermediate wallet
+    let rpc_url = &state.config.solana_rpc_url;
+    // Use a fixed index for bounty payouts (offset from provider indices)
+    let payout_index = 900_000u32 + (claims.sub.as_u128() % 100_000) as u32;
+
+    match wallet_service::send_via_intermediate(
+        mnemonic, payout_index, &req.to_address, amount as u64, rpc_url,
+    )
+    .await
+    {
+        Ok(tx) => {
+            sqlx::query(
+                "UPDATE bounty_payouts SET status = 'confirmed', signature = $1, completed_at = now() WHERE id = $2",
+            )
+            .bind(&tx.signature)
+            .bind(payout_id)
+            .execute(&state.db)
+            .await?;
+
+            sqlx::query(
+                "UPDATE user_wallets SET withdrawn_usdc = COALESCE(withdrawn_usdc, 0) + $1 WHERE user_id = $2",
+            )
+            .bind(amount)
+            .bind(claims.sub)
+            .execute(&state.db)
+            .await?;
+
+            Ok(Json(WithdrawEarningsResponse {
+                payout_id,
+                amount_usdc: amount,
+                to_address: req.to_address,
+                signature: Some(tx.signature),
+                status: "confirmed".to_string(),
+            }))
+        }
+        Err(e) => {
+            sqlx::query(
+                "UPDATE bounty_payouts SET status = 'failed', error_message = $1, completed_at = now() WHERE id = $2",
+            )
+            .bind(e.to_string())
+            .bind(payout_id)
+            .execute(&state.db)
+            .await?;
+
+            Err(e)
+        }
+    }
 }

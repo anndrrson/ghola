@@ -12,6 +12,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::CloudError;
+use crate::privacy::log_id;
 use crate::state::{AppState, CommunityProviderInfo};
 
 // ---------------------------------------------------------------------------
@@ -37,15 +38,33 @@ pub struct ProviderInfo {
     pub models: serde_json::Value,
     pub vram_mb: i32,
     pub max_concurrent: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallet_address: Option<String>,
     pub status: String,
     pub total_requests: i64,
     pub total_tokens_served: i64,
     pub total_earned_usdc: i64,
+    pub total_withdrawn_usdc: i64,
     pub success_rate: f64,
     pub avg_latency_ms: f64,
     pub reputation_score: f64,
     pub last_heartbeat_at: Option<chrono::DateTime<Utc>>,
     pub created_at: chrono::DateTime<Utc>,
+}
+
+/// Public-facing provider info (omits wallet_address and last_heartbeat_at).
+/// Metrics are quantized to prevent fingerprinting.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PublicProviderInfo {
+    pub id: Uuid,
+    pub display_name: String,
+    pub models: serde_json::Value,
+    pub vram_mb: i32,
+    pub status: String,
+    pub total_requests: i64,
+    pub success_rate: f64,
+    pub avg_latency_ms: f64,
+    pub reputation_score: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -145,7 +164,48 @@ pub struct RecentJob {
     pub input_tokens: i32,
     pub output_tokens: i32,
     pub latency_ms: Option<i32>,
+    pub agent_id: Option<Uuid>,
     pub created_at: chrono::DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Types — Provider Withdrawals
+// ---------------------------------------------------------------------------
+
+const MIN_WITHDRAWAL_USDC: i64 = 1_000_000; // $1.00
+
+#[derive(Debug, Deserialize)]
+pub struct WithdrawalRequest {
+    pub amount_usdc: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WithdrawalResponse {
+    pub payout_id: Uuid,
+    pub amount_usdc: i64,
+    pub to_address: String,
+    pub signature: String,
+    pub explorer_url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PayoutInfo {
+    pub id: Uuid,
+    pub amount_usdc: i64,
+    pub to_address: String,
+    pub signature: Option<String>,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub created_at: chrono::DateTime<Utc>,
+    pub completed_at: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PayoutSummary {
+    pub total_earned_usdc: i64,
+    pub total_withdrawn_usdc: i64,
+    pub available_usdc: i64,
+    pub min_withdrawal_usdc: i64,
 }
 
 // =========================================================================
@@ -173,12 +233,13 @@ pub async fn register_provider(
     }
 
     let row = sqlx::query_as::<_, (
-        Uuid, Uuid, String, String, serde_json::Value,
+        Uuid, String, String, serde_json::Value,
         i32, i32, String,
         i64, i64, i64,
         f64, f64, f64,
         Option<chrono::DateTime<Utc>>,
         chrono::DateTime<Utc>,
+        i64,
     )>(
         r#"
         INSERT INTO compute_providers (
@@ -198,11 +259,12 @@ pub async fn register_provider(
             status = 'online',
             updated_at = now()
         RETURNING
-            id, user_id, relay_pubkey, display_name, models,
+            id, relay_pubkey, display_name, models,
             vram_mb, max_concurrent, status,
             total_requests, total_tokens_served, total_earned_usdc,
             success_rate, avg_latency_ms, reputation_score,
-            last_heartbeat_at, created_at
+            last_heartbeat_at, created_at,
+            COALESCE(total_withdrawn_usdc, 0)
         "#,
     )
     .bind(user_id)
@@ -216,28 +278,29 @@ pub async fn register_provider(
     .await?;
 
     tracing::info!(
-        %user_id,
-        relay_pubkey = %req.relay_pubkey,
+        user = %log_id(&user_id),
         "compute provider registered"
     );
 
     Ok(ProviderInfo {
         id: row.0,
-        user_id: row.1,
-        relay_pubkey: row.2,
-        display_name: row.3,
-        models: row.4,
-        vram_mb: row.5,
-        max_concurrent: row.6,
-        status: row.7,
-        total_requests: row.8,
-        total_tokens_served: row.9,
-        total_earned_usdc: row.10,
-        success_rate: row.11,
-        avg_latency_ms: row.12,
-        reputation_score: row.13,
-        last_heartbeat_at: row.14,
-        created_at: row.15,
+        user_id,
+        relay_pubkey: row.1,
+        display_name: row.2,
+        models: row.3,
+        vram_mb: row.4,
+        max_concurrent: row.5,
+        wallet_address: Some(req.wallet_address),
+        status: row.6,
+        total_requests: row.7,
+        total_tokens_served: row.8,
+        total_earned_usdc: row.9,
+        total_withdrawn_usdc: row.15,
+        success_rate: row.10,
+        avg_latency_ms: row.11,
+        reputation_score: row.12,
+        last_heartbeat_at: row.13,
+        created_at: row.14,
     })
 }
 
@@ -272,21 +335,17 @@ pub async fn get_provider_by_user(
     db: &PgPool,
     user_id: Uuid,
 ) -> Result<Option<ProviderInfo>, CloudError> {
-    let row = sqlx::query_as::<_, (
-        Uuid, Uuid, String, String, serde_json::Value,
-        i32, i32, String,
-        i64, i64, i64,
-        f64, f64, f64,
-        Option<chrono::DateTime<Utc>>,
-        chrono::DateTime<Utc>,
-    )>(
+    use sqlx::Row;
+
+    let row = sqlx::query(
         r#"
         SELECT
-            id, user_id, relay_pubkey, display_name, models,
-            vram_mb, max_concurrent, status,
+            id, relay_pubkey, display_name, models,
+            vram_mb, max_concurrent, status, wallet_address,
             total_requests, total_tokens_served, total_earned_usdc,
             success_rate, avg_latency_ms, reputation_score,
-            last_heartbeat_at, created_at
+            last_heartbeat_at, created_at,
+            COALESCE(total_withdrawn_usdc, 0) AS total_withdrawn_usdc
         FROM compute_providers
         WHERE user_id = $1
         "#,
@@ -296,22 +355,24 @@ pub async fn get_provider_by_user(
     .await?;
 
     Ok(row.map(|r| ProviderInfo {
-        id: r.0,
-        user_id: r.1,
-        relay_pubkey: r.2,
-        display_name: r.3,
-        models: r.4,
-        vram_mb: r.5,
-        max_concurrent: r.6,
-        status: r.7,
-        total_requests: r.8,
-        total_tokens_served: r.9,
-        total_earned_usdc: r.10,
-        success_rate: r.11,
-        avg_latency_ms: r.12,
-        reputation_score: r.13,
-        last_heartbeat_at: r.14,
-        created_at: r.15,
+        id: r.get("id"),
+        user_id,
+        relay_pubkey: r.get("relay_pubkey"),
+        display_name: r.get("display_name"),
+        models: r.get("models"),
+        vram_mb: r.get("vram_mb"),
+        max_concurrent: r.get("max_concurrent"),
+        wallet_address: r.get("wallet_address"),
+        status: r.get("status"),
+        total_requests: r.get("total_requests"),
+        total_tokens_served: r.get("total_tokens_served"),
+        total_earned_usdc: r.get("total_earned_usdc"),
+        total_withdrawn_usdc: r.get("total_withdrawn_usdc"),
+        success_rate: r.get("success_rate"),
+        avg_latency_ms: r.get("avg_latency_ms"),
+        reputation_score: r.get("reputation_score"),
+        last_heartbeat_at: r.get("last_heartbeat_at"),
+        created_at: r.get("created_at"),
     }))
 }
 
@@ -323,21 +384,17 @@ pub async fn get_provider_by_id(
     db: &PgPool,
     provider_id: Uuid,
 ) -> Result<Option<ProviderInfo>, CloudError> {
-    let row = sqlx::query_as::<_, (
-        Uuid, Uuid, String, String, serde_json::Value,
-        i32, i32, String,
-        i64, i64, i64,
-        f64, f64, f64,
-        Option<chrono::DateTime<Utc>>,
-        chrono::DateTime<Utc>,
-    )>(
+    use sqlx::Row;
+
+    let row = sqlx::query(
         r#"
         SELECT
             id, user_id, relay_pubkey, display_name, models,
             vram_mb, max_concurrent, status,
             total_requests, total_tokens_served, total_earned_usdc,
             success_rate, avg_latency_ms, reputation_score,
-            last_heartbeat_at, created_at
+            last_heartbeat_at, created_at,
+            COALESCE(total_withdrawn_usdc, 0) AS total_withdrawn_usdc
         FROM compute_providers
         WHERE id = $1
         "#,
@@ -347,22 +404,24 @@ pub async fn get_provider_by_id(
     .await?;
 
     Ok(row.map(|r| ProviderInfo {
-        id: r.0,
-        user_id: r.1,
-        relay_pubkey: r.2,
-        display_name: r.3,
-        models: r.4,
-        vram_mb: r.5,
-        max_concurrent: r.6,
-        status: r.7,
-        total_requests: r.8,
-        total_tokens_served: r.9,
-        total_earned_usdc: r.10,
-        success_rate: r.11,
-        avg_latency_ms: r.12,
-        reputation_score: r.13,
-        last_heartbeat_at: r.14,
-        created_at: r.15,
+        id: r.get("id"),
+        user_id: r.get("user_id"),
+        relay_pubkey: r.get("relay_pubkey"),
+        display_name: r.get("display_name"),
+        models: r.get("models"),
+        vram_mb: r.get("vram_mb"),
+        max_concurrent: r.get("max_concurrent"),
+        wallet_address: None,
+        status: r.get("status"),
+        total_requests: r.get("total_requests"),
+        total_tokens_served: r.get("total_tokens_served"),
+        total_earned_usdc: r.get("total_earned_usdc"),
+        total_withdrawn_usdc: r.get("total_withdrawn_usdc"),
+        success_rate: r.get("success_rate"),
+        avg_latency_ms: r.get("avg_latency_ms"),
+        reputation_score: r.get("reputation_score"),
+        last_heartbeat_at: r.get("last_heartbeat_at"),
+        created_at: r.get("created_at"),
     }))
 }
 
@@ -370,22 +429,19 @@ pub async fn get_provider_by_id(
 // 5. list_online_providers
 // =========================================================================
 
-pub async fn list_online_providers(db: &PgPool) -> Result<Vec<ProviderInfo>, CloudError> {
+pub async fn list_online_providers(db: &PgPool) -> Result<Vec<PublicProviderInfo>, CloudError> {
     let rows = sqlx::query_as::<_, (
-        Uuid, Uuid, String, String, serde_json::Value,
-        i32, i32, String,
-        i64, i64, i64,
+        Uuid, String, serde_json::Value,
+        i32, String,
+        i64,
         f64, f64, f64,
-        Option<chrono::DateTime<Utc>>,
-        chrono::DateTime<Utc>,
     )>(
         r#"
         SELECT
-            id, user_id, relay_pubkey, display_name, models,
-            vram_mb, max_concurrent, status,
-            total_requests, total_tokens_served, total_earned_usdc,
-            success_rate, avg_latency_ms, reputation_score,
-            last_heartbeat_at, created_at
+            id, display_name, models,
+            vram_mb, status,
+            total_requests,
+            success_rate, avg_latency_ms, reputation_score
         FROM compute_providers
         WHERE status = 'online'
         ORDER BY reputation_score DESC
@@ -396,25 +452,34 @@ pub async fn list_online_providers(db: &PgPool) -> Result<Vec<ProviderInfo>, Clo
 
     Ok(rows
         .into_iter()
-        .map(|r| ProviderInfo {
+        .map(|r| PublicProviderInfo {
             id: r.0,
-            user_id: r.1,
-            relay_pubkey: r.2,
-            display_name: r.3,
-            models: r.4,
-            vram_mb: r.5,
-            max_concurrent: r.6,
-            status: r.7,
-            total_requests: r.8,
-            total_tokens_served: r.9,
-            total_earned_usdc: r.10,
-            success_rate: r.11,
-            avg_latency_ms: r.12,
-            reputation_score: r.13,
-            last_heartbeat_at: r.14,
-            created_at: r.15,
+            display_name: r.1,
+            models: r.2,
+            vram_mb: r.3,
+            status: r.4,
+            total_requests: quantize_i64(r.5, 100),
+            success_rate: quantize_pct(r.6, 5.0),
+            avg_latency_ms: quantize_f64(r.7, 10.0),
+            reputation_score: r.8,
         })
         .collect())
+}
+
+// ---------------------------------------------------------------------------
+// Quantization helpers — coarsen metrics to prevent fingerprinting
+// ---------------------------------------------------------------------------
+
+fn quantize_i64(val: i64, step: i64) -> i64 {
+    (val / step) * step
+}
+
+fn quantize_pct(val: f64, step_pct: f64) -> f64 {
+    ((val * 100.0 / step_pct).round() * step_pct) / 100.0
+}
+
+fn quantize_f64(val: f64, step: f64) -> f64 {
+    (val / step).round() * step
 }
 
 // =========================================================================
@@ -471,6 +536,27 @@ pub async fn list_community_models(db: &PgPool) -> Result<Vec<CommunityModel>, C
     models.sort_by(|a, b| b.providers_online.cmp(&a.providers_online));
 
     Ok(models)
+}
+
+// =========================================================================
+// 6b. preview_provider
+// =========================================================================
+
+/// Peek at the compute cache and return the display_name + model_id of the
+/// provider that would be selected, without creating escrow.
+pub async fn preview_provider(state: &AppState) -> Option<(String, String)> {
+    let cache = state.compute_cache.lock().await;
+    cache.first().map(|p| {
+        let model = p
+            .models
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|m| m.get("model_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("community")
+            .to_string();
+        (p.display_name.clone(), model)
+    })
 }
 
 // =========================================================================
@@ -642,6 +728,58 @@ fn compute_score(reputation: f64, load_ratio: f64, price: u64, max_price: f64) -
 }
 
 // =========================================================================
+// 8b. select_providers_batch (for swarm dispatch)
+// =========================================================================
+
+/// Distribute `count` work units across matched agents using round-robin,
+/// weighted by available capacity. Returns indices into the `agents` slice.
+pub fn select_providers_batch(
+    agents: &[crate::services::agent_service::MatchedAgent],
+    count: usize,
+) -> Vec<usize> {
+    if agents.is_empty() {
+        return Vec::new();
+    }
+
+    // Compute available capacity per agent
+    let capacities: Vec<usize> = agents
+        .iter()
+        .map(|a| {
+            let available = ((1.0 - a.provider_load_ratio) * 10.0).ceil() as usize;
+            available.max(1)
+        })
+        .collect();
+
+    let mut assignments = Vec::with_capacity(count);
+    let mut remaining = capacities.clone();
+    let mut idx = 0;
+
+    for _ in 0..count {
+        // Find next agent with remaining capacity (round-robin)
+        let mut found = false;
+        for _ in 0..agents.len() {
+            let agent_idx = idx % agents.len();
+            idx += 1;
+            if remaining[agent_idx] > 0 {
+                assignments.push(agent_idx);
+                remaining[agent_idx] -= 1;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            // All agents exhausted estimated capacity — wrap around
+            remaining = capacities.clone();
+            let agent_idx = idx % agents.len();
+            idx += 1;
+            assignments.push(agent_idx);
+        }
+    }
+
+    assignments
+}
+
+// =========================================================================
 // 9. create_escrow
 // =========================================================================
 
@@ -650,7 +788,7 @@ fn compute_score(reputation: f64, load_ratio: f64, price: u64, max_price: f64) -
 pub async fn create_escrow(
     db: &PgPool,
     user_id: Uuid,
-    provider_id: Uuid,
+    provider_id: Option<Uuid>,
     estimated_cost_usdc: i64,
 ) -> Result<Uuid, CloudError> {
     // Fetch user's daily spending limit
@@ -701,8 +839,8 @@ pub async fn create_escrow(
     .await?;
 
     tracing::info!(
-        %user_id,
-        %provider_id,
+        user = %log_id(&user_id),
+        provider = provider_id.map(|p| log_id(&p)).unwrap_or_else(|| "none".to_string()),
         %escrow_id,
         amount = estimated_cost_usdc,
         "escrow hold created"
@@ -1371,9 +1509,9 @@ pub async fn get_recent_jobs(
     provider_id: Uuid,
     limit: i64,
 ) -> Result<Vec<RecentJob>, CloudError> {
-    let rows = sqlx::query_as::<_, (Uuid, String, String, i32, i32, Option<i32>, chrono::DateTime<Utc>)>(
+    let rows = sqlx::query_as::<_, (Uuid, String, String, i32, i32, Option<i32>, Option<Uuid>, chrono::DateTime<Utc>)>(
         r#"
-        SELECT id, model_id, status, input_tokens, output_tokens, latency_ms, created_at
+        SELECT id, model_id, status, input_tokens, output_tokens, latency_ms, agent_id, created_at
         FROM compute_jobs
         WHERE provider_id = $1
         ORDER BY created_at DESC
@@ -1387,13 +1525,14 @@ pub async fn get_recent_jobs(
 
     Ok(rows
         .into_iter()
-        .map(|(id, model_id, status, input_tokens, output_tokens, latency_ms, created_at)| RecentJob {
+        .map(|(id, model_id, status, input_tokens, output_tokens, latency_ms, agent_id, created_at)| RecentJob {
             id,
             model_id,
             status,
             input_tokens,
             output_tokens,
             latency_ms,
+            agent_id,
             created_at,
         })
         .collect())
@@ -1539,4 +1678,270 @@ pub fn start_reputation_decay_task(db: PgPool) {
             }
         }
     });
+}
+
+// =========================================================================
+// Provider Withdrawals
+// =========================================================================
+
+/// Withdraw provider earnings to their Solana wallet.
+pub async fn withdraw_provider_earnings(
+    state: &AppState,
+    user_id: Uuid,
+    req: WithdrawalRequest,
+) -> Result<WithdrawalResponse, CloudError> {
+    // 1. Check treasury mnemonic is configured
+    let mnemonic = state
+        .config
+        .treasury_mnemonic
+        .as_deref()
+        .ok_or_else(|| {
+            CloudError::ServiceUnavailable("withdrawals are not configured yet".to_string())
+        })?;
+
+    // 2. Load provider
+    let provider = get_provider_by_user(&state.db, user_id)
+        .await?
+        .ok_or_else(|| CloudError::NotFound("no provider profile found".to_string()))?;
+
+    // 3. Check wallet address
+    let wallet_address = provider
+        .wallet_address
+        .as_deref()
+        .filter(|w| !w.is_empty())
+        .ok_or_else(|| {
+            CloudError::BadRequest(
+                "set a wallet address on your provider profile before withdrawing".to_string(),
+            )
+        })?
+        .to_string();
+
+    // 4. Compute available balance
+    let available = provider.total_earned_usdc - provider.total_withdrawn_usdc;
+
+    // 5. Determine withdrawal amount
+    let amount = req.amount_usdc.unwrap_or(available);
+
+    // 6. Validate
+    if amount <= 0 {
+        return Err(CloudError::BadRequest("amount must be positive".to_string()));
+    }
+    if amount < MIN_WITHDRAWAL_USDC {
+        return Err(CloudError::BadRequest(format!(
+            "minimum withdrawal is ${:.2} USDC",
+            MIN_WITHDRAWAL_USDC as f64 / 1_000_000.0
+        )));
+    }
+    if amount > available {
+        return Err(CloudError::BadRequest(format!(
+            "insufficient balance: ${:.6} available",
+            available as f64 / 1_000_000.0
+        )));
+    }
+
+    // 7. Check no pending payouts
+    let pending_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM provider_payouts WHERE provider_id = $1 AND status = 'pending'",
+    )
+    .bind(provider.id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if pending_count > 0 {
+        return Err(CloudError::BadRequest(
+            "you have a pending withdrawal — wait for it to complete".to_string(),
+        ));
+    }
+
+    // 7b. Assign payout_index if not yet set (for HD intermediate wallet derivation)
+    let payout_index: i32 = {
+        let existing: Option<Option<i32>> = sqlx::query_scalar(
+            "SELECT payout_index FROM compute_providers WHERE id = $1",
+        )
+        .bind(provider.id)
+        .fetch_optional(&state.db)
+        .await?;
+
+        match existing.flatten() {
+            Some(idx) => idx,
+            None => {
+                let idx: i32 = sqlx::query_scalar(
+                    r#"
+                    UPDATE compute_providers
+                    SET payout_index = nextval('payout_index_seq')
+                    WHERE id = $1
+                    RETURNING payout_index
+                    "#,
+                )
+                .bind(provider.id)
+                .fetch_one(&state.db)
+                .await?;
+                idx
+            }
+        }
+    };
+
+    // 8. Insert pending payout
+    let payout_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO provider_payouts (provider_id, user_id, amount_usdc, to_address, status)
+        VALUES ($1, $2, $3, $4, 'pending')
+        RETURNING id
+        "#,
+    )
+    .bind(provider.id)
+    .bind(user_id)
+    .bind(amount)
+    .bind(&wallet_address)
+    .fetch_one(&state.db)
+    .await?;
+
+    // 9. Send USDC via HD-derived intermediate wallet (breaks on-chain treasury link)
+    let rpc_url = &state.config.solana_rpc_url;
+    match crate::services::wallet_service::send_via_intermediate(
+        mnemonic,
+        payout_index as u32,
+        &wallet_address,
+        amount as u64,
+        rpc_url,
+    )
+    .await
+    {
+        Ok(tx) => {
+            // 10. Mark confirmed, update withdrawn total
+            sqlx::query(
+                r#"
+                UPDATE provider_payouts
+                SET status = 'confirmed', signature = $1, completed_at = now()
+                WHERE id = $2
+                "#,
+            )
+            .bind(&tx.signature)
+            .bind(payout_id)
+            .execute(&state.db)
+            .await?;
+
+            sqlx::query(
+                "UPDATE compute_providers SET total_withdrawn_usdc = COALESCE(total_withdrawn_usdc, 0) + $1 WHERE id = $2",
+            )
+            .bind(amount)
+            .bind(provider.id)
+            .execute(&state.db)
+            .await?;
+
+            tracing::info!(
+                user = %log_id(&user_id),
+                provider = %log_id(&provider.id),
+                amount,
+                "provider withdrawal confirmed"
+            );
+            tracing::debug!(
+                user = %log_id(&user_id),
+                signature = %tx.signature,
+                "withdrawal tx signature"
+            );
+
+            Ok(WithdrawalResponse {
+                payout_id,
+                amount_usdc: amount,
+                to_address: wallet_address,
+                signature: tx.signature,
+                explorer_url: tx.explorer_url,
+            })
+        }
+        Err(e) => {
+            // 11. Mark failed
+            let err_msg = e.to_string();
+            sqlx::query(
+                r#"
+                UPDATE provider_payouts
+                SET status = 'failed', error_message = $1, completed_at = now()
+                WHERE id = $2
+                "#,
+            )
+            .bind(&err_msg)
+            .bind(payout_id)
+            .execute(&state.db)
+            .await?;
+
+            tracing::error!(
+                user = %log_id(&user_id),
+                provider = %log_id(&provider.id),
+                "provider withdrawal failed"
+            );
+            tracing::debug!(
+                user = %log_id(&user_id),
+                error = %err_msg,
+                "withdrawal error detail"
+            );
+
+            Err(CloudError::Internal(format!("withdrawal failed: {err_msg}")))
+        }
+    }
+}
+
+/// Get payout history for a provider.
+pub async fn get_provider_payouts(
+    db: &PgPool,
+    provider_id: Uuid,
+    limit: i64,
+) -> Result<Vec<PayoutInfo>, CloudError> {
+    let rows = sqlx::query_as::<_, (
+        Uuid, i64, String, Option<String>, String,
+        Option<String>, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>,
+    )>(
+        r#"
+        SELECT id, amount_usdc, to_address, signature, status,
+               error_message, created_at, completed_at
+        FROM provider_payouts
+        WHERE provider_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(provider_id)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| PayoutInfo {
+            id: r.0,
+            amount_usdc: r.1,
+            to_address: r.2,
+            signature: r.3,
+            status: r.4,
+            error_message: r.5,
+            created_at: r.6,
+            completed_at: r.7,
+        })
+        .collect())
+}
+
+/// Get payout summary for a provider.
+pub async fn get_payout_summary(
+    db: &PgPool,
+    provider_id: Uuid,
+) -> Result<PayoutSummary, CloudError> {
+    let (earned, withdrawn): (i64, i64) = sqlx::query_as(
+        r#"
+        SELECT
+            COALESCE(total_earned_usdc, 0),
+            COALESCE(total_withdrawn_usdc, 0)
+        FROM compute_providers
+        WHERE id = $1
+        "#,
+    )
+    .bind(provider_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| CloudError::NotFound("provider not found".to_string()))?;
+
+    Ok(PayoutSummary {
+        total_earned_usdc: earned,
+        total_withdrawn_usdc: withdrawn,
+        available_usdc: earned - withdrawn,
+        min_withdrawal_usdc: MIN_WITHDRAWAL_USDC,
+    })
 }

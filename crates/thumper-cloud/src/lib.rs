@@ -101,6 +101,9 @@ pub async fn run_cloud() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     // GPU compute background tasks
     services::compute_service::start_escrow_expiry_task(state.clone());
     services::compute_service::start_reputation_decay_task(state.db.clone());
+
+    // Marketplace: expire stale claims every 5 minutes
+    tokio::spawn(routes::marketplace::claim_expiry_loop(state.db.clone()));
     // Refresh compute provider cache every 30s
     {
         let state = state.clone();
@@ -146,6 +149,17 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/tasks/{id}", get(routes::tasks::get_task))
         .route("/api/tasks/{id}/steps", get(routes::tasks::get_task_steps))
         .route("/api/tasks/{id}/cancel", post(routes::tasks::cancel_task))
+        .route("/api/tasks/{id}/bounty", get(routes::tasks::get_task_bounty))
+        // Bounties
+        .route("/api/bounties", get(routes::tasks::list_bounties))
+        // Marketplace
+        .route("/api/marketplace", get(routes::marketplace::browse))
+        .route("/api/marketplace/{id}", get(routes::marketplace::get_task))
+        .route("/api/marketplace/{id}/claim", post(routes::marketplace::claim_task))
+        .route("/api/marketplace/{id}/submit", post(routes::marketplace::submit_task))
+        .route("/api/marketplace/{id}/release", post(routes::marketplace::release_task))
+        .route("/api/marketplace/{id}/reject", post(routes::marketplace::reject_task))
+        .route("/api/marketplace/{id}/unclaim", post(routes::marketplace::unclaim_task))
         // Calls
         .route("/api/calls", post(routes::calls::initiate_call))
         .route("/api/calls/webhook", post(routes::calls::call_webhook))
@@ -197,6 +211,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/wallet/balances", get(routes::wallet::get_balances))
         .route("/api/wallet/transfer", post(routes::wallet::transfer))
         .route("/api/wallet/history", get(routes::wallet::get_history))
+        .route("/api/wallet/earnings", get(routes::wallet::get_earnings))
+        .route("/api/wallet/withdraw-earnings", post(routes::wallet::withdraw_earnings))
         // Compute (GPU marketplace)
         .route("/api/compute/providers/register", post(routes::compute::register_provider))
         .route("/api/compute/providers/me", get(routes::compute::get_my_provider).patch(routes::compute::update_my_provider))
