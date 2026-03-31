@@ -1,9 +1,71 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-export function middleware(_request: NextRequest) {
+// AI training crawlers and bulk scrapers that should not index the site.
+// Legitimate agent access should go through the Ghola MCP/API channels.
+const BLOCKED_BOT_PATTERNS = [
+  /GPTBot/i,
+  /CCBot/i,
+  /anthropic-ai/i,
+  /Claude-Web/i,
+  /Google-Extended/i,
+  /PerplexityBot/i,
+  /cohere-ai/i,
+  /Bytespider/i,
+  /ImagesiftBot/i,
+  /omgilibot/i,
+  /FacebookBot/i,
+  /DataForSeoBot/i,
+  /Diffbot/i,
+  // Generic scraping libraries
+  /Scrapy/i,
+  /python-requests/i,
+  /node-fetch/i,
+  /go-http-client/i,
+  /libwww-perl/i,
+];
+
+// Pages that should never be indexed by any crawler
+const NO_INDEX_PATHS = [
+  "/dashboard",
+  "/settings",
+  "/onboarding",
+  "/api/",
+];
+
+function isBlockedBot(ua: string): boolean {
+  return BLOCKED_BOT_PATTERNS.some((pattern) => pattern.test(ua));
+}
+
+function isNoIndexPath(pathname: string): boolean {
+  return NO_INDEX_PATHS.some((p) => pathname.startsWith(p));
+}
+
+export function middleware(request: NextRequest) {
+  const ua = request.headers.get("user-agent") ?? "";
+  const { pathname } = request.nextUrl;
+
+  // Block known AI/scraper bots with a redirect to the API docs
+  if (isBlockedBot(ua)) {
+    return new NextResponse(
+      JSON.stringify({
+        error: "Automated access via web scraping is not permitted.",
+        message:
+          "Use the Ghola API or MCP server for programmatic access. See https://ghola.xyz/docs/api",
+      }),
+      {
+        status: 403,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Robots-Tag": "noindex, nofollow",
+        },
+      }
+    );
+  }
+
   const response = NextResponse.next();
 
+  // Security headers on every response
   response.headers.set(
     "Content-Security-Policy",
     "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://accounts.google.com https://apis.google.com https://*.supabase.co wss://*.supabase.co; frame-src https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self';"
@@ -15,6 +77,20 @@ export function middleware(_request: NextRequest) {
     "Permissions-Policy",
     "camera=(), microphone=(), geolocation=()"
   );
+
+  // Sensitive pages: noindex + nofollow
+  if (isNoIndexPath(pathname)) {
+    response.headers.set("X-Robots-Tag", "noindex, nofollow");
+  }
+
+  // API routes: always noindex, expose Ghola provenance hint
+  if (pathname.startsWith("/api/")) {
+    response.headers.set("X-Robots-Tag", "noindex, nofollow");
+    response.headers.set(
+      "X-Ghola-Api-Docs",
+      "https://ghola.xyz/docs/api"
+    );
+  }
 
   return response;
 }

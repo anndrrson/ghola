@@ -379,13 +379,25 @@ pub async fn register_service(
     Ok((StatusCode::CREATED, Json(service)))
 }
 
-/// GET /v1/services (public)
+/// GET /v1/services (public for page 1 / limit ≤10; auth required for bulk)
 pub async fn list_services(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Query(params): Query<ServiceQuery>,
 ) -> AppResult<Json<serde_json::Value>> {
     let page = params.page.unwrap_or(1).max(1);
-    let limit = params.limit.unwrap_or(20).min(100);
+    let limit = params.limit.unwrap_or(10).min(100);
+
+    // Bulk / paginated access requires authentication
+    let needs_auth = page > 1 || params.limit.map_or(false, |l| l > 10);
+    if needs_auth && !crate::auth::check_bulk_auth(&headers, &state).await {
+        return Err(crate::error::AppError::Forbidden(
+            "Bulk and paginated access to the service catalog requires authentication. \
+             Obtain a SAID identity at https://ghola.xyz and pass a Bearer token \
+             or X-Service-Key header."
+                .into(),
+        ));
+    }
     let offset = (page - 1) * limit;
 
     // Build query based on whether full-text search is requested

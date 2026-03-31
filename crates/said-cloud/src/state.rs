@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use ed25519_dalek::SigningKey;
 use sqlx::PgPool;
 
 use crate::config::Config;
@@ -87,4 +88,29 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub rate_limiter: Arc<RateLimiter>,
     pub usage_meter: Arc<UsageMeter>,
+    /// ed25519 signing key used to sign all API responses.
+    /// Loaded from SIGNING_KEY env var (hex-encoded 32-byte seed)
+    /// or generated fresh at startup if the env var is absent.
+    pub signing_key: Arc<SigningKey>,
+}
+
+impl AppState {
+    /// Build the signing key from config, or generate an ephemeral one.
+    pub fn build_signing_key(config: &Config) -> SigningKey {
+        if let Some(hex_seed) = &config.signing_key_hex {
+            let bytes = hex::decode(hex_seed).expect(
+                "SIGNING_KEY must be a 64-character hex string (32 bytes)",
+            );
+            let arr: [u8; 32] = bytes.try_into().expect("SIGNING_KEY must be exactly 32 bytes");
+            SigningKey::from_bytes(&arr)
+        } else {
+            use rand::rngs::OsRng;
+            let key = SigningKey::generate(&mut OsRng);
+            tracing::warn!(
+                "No SIGNING_KEY set — using ephemeral ed25519 key. \
+                 Set SIGNING_KEY=<hex-seed> for stable verification."
+            );
+            key
+        }
+    }
 }

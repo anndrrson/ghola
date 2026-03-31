@@ -13,6 +13,9 @@ pub struct Config {
     pub stripe_price_business: Option<String>,      // price_xxx for $29/mo
     pub allowed_origins: String,
     pub admin_emails: Vec<String>,
+    /// Optional hex-encoded 32-byte ed25519 seed for response signing.
+    /// If absent, an ephemeral key is generated at startup.
+    pub signing_key_hex: Option<String>,
 }
 
 impl Config {
@@ -38,6 +41,7 @@ impl Config {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            signing_key_hex: env::var("SIGNING_KEY").ok(),
         }
     }
 }

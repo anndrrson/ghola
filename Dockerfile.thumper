@@ -18,6 +18,10 @@ RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/
 COPY --from=builder /app/target/release/thumper-cloud /usr/local/bin/thumper-cloud
 
 ENV THUMPER_CLOUD_BIND=0.0.0.0:10000
+
+RUN useradd --system --no-create-home --uid 65532 nonroot
+USER nonroot
+
 EXPOSE 10000
 
 CMD ["thumper-cloud"]
