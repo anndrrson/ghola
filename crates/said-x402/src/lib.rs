@@ -3,6 +3,16 @@
 //! Wraps the x402 payment flow with pre-payment trust verification via Ghola.
 //! Agents use this to check merchant identity and reputation BEFORE signing a payment.
 //!
+//! # Retry behavior
+//! `GholaX402Client` retries transient HTTP errors (connection refused, timeout) with
+//! exponential backoff.  Trust-logic failures (low score, identity not found) are never
+//! retried — they represent a definitive answer from the registry.
+//!
+//! # Fallback
+//! The cloud API (`ghola_api`) is itself the authoritative fallback for on-chain data:
+//! if the Solana RPC is unreachable, the cloud registry still serves cached identity and
+//! reputation data.  No additional fallback layer is needed in this crate.
+//!
 //! # Example
 //! ```ignore
 //! let client = GholaX402Client::new("https://ghola-api.onrender.com/v1");
@@ -61,6 +71,38 @@ impl X402PaymentPayload {
         Ok(STANDARD.encode(json))
     }
 }
+
+// ── Retry configuration ────────────────────────────────────────────────────
+
+/// Configuration for retry behavior in x402 HTTP operations.
+#[derive(Clone, Debug)]
+pub struct RetryConfig {
+    /// Maximum number of additional attempts after the first (0 = no retries).
+    pub max_retries: u32,
+    /// Base delay in milliseconds; doubled on each attempt (exponential backoff).
+    pub base_delay_ms: u64,
+    /// Maximum delay cap in milliseconds.
+    pub max_delay_ms: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            base_delay_ms: 200,
+            max_delay_ms: 5_000,
+        }
+    }
+}
+
+impl RetryConfig {
+    /// No retries — fail immediately on first error.
+    pub fn none() -> Self {
+        Self { max_retries: 0, base_delay_ms: 0, max_delay_ms: 0 }
+    }
+}
+
+// ── x402 types ────────────────────────────────────────────────────────────
 
 /// x402 PaymentRequired response (parsed from the PAYMENT-REQUIRED header).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +197,8 @@ impl X402PaymentRequired {
     }
 }
 
+// ── Error types ────────────────────────────────────────────────────────────
+
 /// Error types for x402 trust operations.
 #[derive(Debug, thiserror::Error)]
 pub enum X402TrustError {
@@ -168,25 +212,88 @@ pub enum X402TrustError {
     TrustFailed(String),
     #[error("Base64 decode error: {0}")]
     Base64(#[from] base64::DecodeError),
+    /// Returned when all retry attempts are exhausted.
+    #[error("All {attempts} retry attempt(s) failed; last error: {last_error}")]
+    RetriesExhausted { attempts: u32, last_error: String },
 }
+
+impl X402TrustError {
+    /// Returns true for transient errors that are safe to retry.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            // Retry on connection/timeout; not on 4xx or logic failures.
+            X402TrustError::Http(e) => e.is_connect() || e.is_timeout() || e.is_request(),
+            _ => false,
+        }
+    }
+}
+
+// ── Internal retry helper ──────────────────────────────────────────────────
+
+/// Execute `f` up to `1 + config.max_retries` times, sleeping between attempts.
+/// Only retries when `X402TrustError::is_retryable()` returns true.
+async fn retry_op<F, Fut, T>(config: &RetryConfig, f: F) -> Result<T, X402TrustError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, X402TrustError>>,
+{
+    let mut attempt = 0u32;
+    loop {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < config.max_retries && e.is_retryable() => {
+                let delay = std::cmp::min(
+                    config.base_delay_ms.saturating_mul(1u64 << attempt),
+                    config.max_delay_ms,
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                attempt += 1;
+            }
+            Err(e) => {
+                if attempt > 0 {
+                    return Err(X402TrustError::RetriesExhausted {
+                        attempts: attempt + 1,
+                        last_error: e.to_string(),
+                    });
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
+// ── Client ────────────────────────────────────────────────────────────────
 
 /// Ghola x402 trust client — verifies merchant identity before payment.
 pub struct GholaX402Client {
     ghola_api: String,
     http: reqwest::Client,
+    retry: RetryConfig,
 }
 
 impl GholaX402Client {
-    /// Create a new client pointing at a Ghola API instance.
+    /// Create a new client with default retry settings.
     pub fn new(ghola_api_url: &str) -> Self {
         Self {
             ghola_api: ghola_api_url.trim_end_matches('/').to_string(),
             http: reqwest::Client::new(),
+            retry: RetryConfig::default(),
+        }
+    }
+
+    /// Create a new client with a custom retry configuration.
+    pub fn with_retry_config(ghola_api_url: &str, retry: RetryConfig) -> Self {
+        Self {
+            ghola_api: ghola_api_url.trim_end_matches('/').to_string(),
+            http: reqwest::Client::new(),
+            retry,
         }
     }
 
     /// Parse an x402 PaymentRequired header (base64 JSON).
-    pub fn parse_payment_required(header_value: &str) -> Result<X402PaymentRequired, X402TrustError> {
+    pub fn parse_payment_required(
+        header_value: &str,
+    ) -> Result<X402PaymentRequired, X402TrustError> {
         let bytes = STANDARD.decode(header_value)?;
         let parsed: X402PaymentRequired = serde_json::from_slice(&bytes)?;
         Ok(parsed)
@@ -194,50 +301,119 @@ impl GholaX402Client {
 
     /// Assess a merchant by their Solana address (from x402 payTo field).
     /// Returns a trust assessment with a recommendation.
-    pub async fn assess_merchant(&self, address: &str) -> Result<TrustAssessment, X402TrustError> {
-        // 1. Check if this address is known to Ghola via DID lookup
-        let did_resp = self
-            .http
-            .get(format!("{}/verify/did/{}", self.ghola_api, address))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await?;
+    /// Retries transient HTTP errors with exponential backoff.
+    pub async fn assess_merchant(
+        &self,
+        address: &str,
+    ) -> Result<TrustAssessment, X402TrustError> {
+        // 1. Check identity in Ghola cloud registry (which caches on-chain data as
+        //    a fallback when the Solana RPC is unreachable).
+        let did_url = format!("{}/verify/did/{}", self.ghola_api, address);
+        let http = self.http.clone();
 
-        let did_data: serde_json::Value = did_resp.json().await.unwrap_or_default();
+        let did_data: serde_json::Value = retry_op(&self.retry, || {
+            let url = did_url.clone();
+            let h = http.clone();
+            async move {
+                let resp = h
+                    .get(&url)
+                    .timeout(std::time::Duration::from_secs(10))
+                    .send()
+                    .await?;
+                let data: serde_json::Value = resp.json().await.unwrap_or_default();
+                Ok(data)
+            }
+        })
+        .await
+        .unwrap_or_default();
 
-        let identity_found = did_data.get("found").and_then(|v| v.as_bool()).unwrap_or(false);
-        let display_name = did_data.get("display_name").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let profile_type = did_data.get("profile_type").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let on_chain = did_data.get("on_chain_registered").and_then(|v| v.as_bool()).unwrap_or(false);
-        let verified = did_data.get("verified_badge").and_then(|v| v.as_bool()).unwrap_or(false);
+        let identity_found = did_data
+            .get("found")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let display_name = did_data
+            .get("display_name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let profile_type = did_data
+            .get("profile_type")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let on_chain = did_data
+            .get("on_chain_registered")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let verified = did_data
+            .get("verified_badge")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
-        // 2. Get reputation score if identity exists
+        // 2. Get reputation score if identity was found.
         let (trust_score, confidence) = if identity_found {
-            let did = did_data.get("did").and_then(|v| v.as_str()).unwrap_or(address);
-            let rep_resp = self
-                .http
-                .get(format!("{}/reputation/{}", self.ghola_api, did))
-                .timeout(std::time::Duration::from_secs(10))
-                .send()
-                .await?;
+            let did = did_data
+                .get("did")
+                .and_then(|v| v.as_str())
+                .unwrap_or(address)
+                .to_string();
+            let rep_url = format!("{}/reputation/{}", self.ghola_api, did);
+            let http2 = self.http.clone();
 
-            let rep_data: serde_json::Value = rep_resp.json().await.unwrap_or_default();
-            let score = rep_data.get("overall_score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-            let conf = rep_data.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let rep_data: serde_json::Value = retry_op(&self.retry, || {
+                let url = rep_url.clone();
+                let h = http2.clone();
+                async move {
+                    let resp = h
+                        .get(&url)
+                        .timeout(std::time::Duration::from_secs(10))
+                        .send()
+                        .await?;
+                    let data: serde_json::Value = resp.json().await.unwrap_or_default();
+                    Ok(data)
+                }
+            })
+            .await
+            .unwrap_or_default();
+
+            let score = rep_data
+                .get("overall_score")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
+            let conf = rep_data
+                .get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
             (score, conf)
         } else {
             (0.0, 0.0)
         };
 
-        // 3. Make recommendation
+        // 3. Make recommendation.
         let (recommendation, reason) = if !identity_found {
-            ("caution".to_string(), "Merchant not found in Ghola registry. Proceed with caution — unverified merchant.".to_string())
+            (
+                "caution".to_string(),
+                "Merchant not found in Ghola registry. Proceed with caution — unverified merchant.".to_string(),
+            )
         } else if trust_score >= 0.7 {
-            ("pay".to_string(), format!("Merchant verified with trust score {:.2}. Safe to proceed.", trust_score))
+            (
+                "pay".to_string(),
+                format!("Merchant verified with trust score {:.2}. Safe to proceed.", trust_score),
+            )
         } else if trust_score >= 0.3 {
-            ("caution".to_string(), format!("Merchant found but trust score is moderate ({:.2}). Consider the amount before proceeding.", trust_score))
+            (
+                "caution".to_string(),
+                format!(
+                    "Merchant found but trust score is moderate ({:.2}). Consider the amount before proceeding.",
+                    trust_score
+                ),
+            )
         } else {
-            ("reject".to_string(), format!("Merchant has low trust score ({:.2}). Payment not recommended.", trust_score))
+            (
+                "reject".to_string(),
+                format!(
+                    "Merchant has low trust score ({:.2}). Payment not recommended.",
+                    trust_score
+                ),
+            )
         };
 
         Ok(TrustAssessment {
@@ -264,46 +440,60 @@ impl GholaX402Client {
         let option = payment_required
             .accepts
             .first()
-            .ok_or_else(|| X402TrustError::InvalidX402("No payment options in 402 response".into()))?;
+            .ok_or_else(|| {
+                X402TrustError::InvalidX402("No payment options in 402 response".into())
+            })?;
 
         let mut assessment = self.assess_merchant(&option.pay_to).await?;
         assessment.payment = Some(option.clone());
         Ok(assessment)
     }
 
-    /// Full flow: send request, get 402, assess trust, return assessment.
-    /// Does NOT make the payment — the caller decides based on the assessment.
+    /// Full probe → parse → assess flow against a URL.
+    ///
+    /// Sends an initial GET; if it returns 402, parses the PAYMENT-REQUIRED header
+    /// and runs the trust assessment.  Does NOT sign or submit a payment.
+    /// The caller decides whether to proceed based on the returned `TrustAssessment`.
     pub async fn check_before_pay(
         &self,
         url: &str,
     ) -> Result<(TrustAssessment, X402PaymentRequired), X402TrustError> {
-        // Send initial request
-        let resp = self
-            .http
-            .get(url)
-            .timeout(std::time::Duration::from_secs(15))
-            .send()
-            .await?;
+        let url_owned = url.to_string();
+        let http = self.http.clone();
 
-        if resp.status().as_u16() != 402 {
-            return Err(X402TrustError::InvalidX402(format!(
-                "Expected HTTP 402, got {}",
-                resp.status()
-            )));
-        }
+        // Probe the endpoint — retry transient failures.
+        let payment_required = retry_op(&self.retry, || {
+            let url_owned = url_owned.clone();
+            let http = http.clone();
+            async move {
+                let resp = http
+                    .get(&url_owned)
+                    .timeout(std::time::Duration::from_secs(15))
+                    .send()
+                    .await?;
 
-        // Parse the PAYMENT-REQUIRED header
-        let header = resp
-            .headers()
-            .get("payment-required")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| {
-                X402TrustError::InvalidX402("Missing PAYMENT-REQUIRED header".into())
-            })?;
+                if resp.status().as_u16() != 402 {
+                    return Err(X402TrustError::InvalidX402(format!(
+                        "Expected HTTP 402, got {}",
+                        resp.status()
+                    )));
+                }
 
-        let payment_required = Self::parse_payment_required(header)?;
+                let header = resp
+                    .headers()
+                    .get("payment-required")
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| {
+                        X402TrustError::InvalidX402("Missing PAYMENT-REQUIRED header".into())
+                    })?
+                    .to_string();
+
+                Self::parse_payment_required(&header)
+            }
+        })
+        .await?;
+
         let assessment = self.assess_from_402(&payment_required).await?;
-
         Ok((assessment, payment_required))
     }
 }
@@ -355,5 +545,40 @@ mod tests {
         assert_eq!(parsed.accepts.len(), 1);
         assert_eq!(parsed.accepts[0].pay_to, "SoMeAdDrEsS123");
         assert_eq!(parsed.accepts[0].scheme, "exact");
+    }
+
+    #[test]
+    fn test_retry_config_default() {
+        let cfg = RetryConfig::default();
+        assert_eq!(cfg.max_retries, 3);
+        assert!(cfg.base_delay_ms > 0);
+        assert!(cfg.max_delay_ms >= cfg.base_delay_ms);
+    }
+
+    #[test]
+    fn test_retry_config_none() {
+        let cfg = RetryConfig::none();
+        assert_eq!(cfg.max_retries, 0);
+    }
+
+    #[test]
+    fn test_logic_errors_are_not_retryable() {
+        let e1 = X402TrustError::InvalidX402("bad".into());
+        assert!(!e1.is_retryable());
+
+        let e2 = X402TrustError::TrustFailed("rejected".into());
+        assert!(!e2.is_retryable());
+
+        let e3 = X402TrustError::Base64(base64::DecodeError::InvalidByte(0, 0));
+        assert!(!e3.is_retryable());
+    }
+
+    #[test]
+    fn test_retries_exhausted_carries_attempt_count() {
+        let err = X402TrustError::RetriesExhausted {
+            attempts: 4,
+            last_error: "connection refused".to_string(),
+        };
+        assert!(err.to_string().contains("4"));
     }
 }

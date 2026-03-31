@@ -11,6 +11,9 @@ members = [
     "cli",
     "daemon",
 
+    # Tests
+    "integration-tests",
+
     # Assistant (Thumper)
     "crates/thumper-types",
     "crates/thumper-relay",

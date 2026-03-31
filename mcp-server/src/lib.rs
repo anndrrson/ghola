@@ -16,7 +16,8 @@ use serde::Deserialize;
 use said_core::Wallet;
 use said_types::{
     AgentWallet, Capability, ConversationEntry, KnowledgeDoc, McpConfig, Memory, PayCurrency,
-    PaymentTransaction, Preference, Secret, SpendingPolicy, SystemPrompt, TxDirection, TxStatus,
+    PaymentTransaction, Preference, Secret, SpendingPolicy, SpendingStatus, SystemPrompt,
+    TxDirection, TxStatus,
 };
 use said_x402::{GholaX402Client, X402PaymentPayload};
 
@@ -363,6 +364,12 @@ pub struct DiscoverAndPayParams {
     pub rpc_url: Option<String>,
     /// SAID Cloud API base URL (default: https://ghola-api.onrender.com)
     pub api_url: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SpendingStatusParams {
+    /// Agent wallet label
+    pub agent: String,
 }
 
 // ── MCP Server ──
@@ -1355,6 +1362,30 @@ impl SaidServer {
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_spending_status",
+        description = "Get the current spending status for an agent wallet: amount spent today, remaining budget, and whether the circuit breaker has tripped after consecutive payment failures. Use said_pay_transfer to unlock after fixing the underlying issue."
+    )]
+    async fn spending_status(
+        &self,
+        Parameters(params): Parameters<SpendingStatusParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::PayRead)?;
+
+        let wallet = self.wallet.lock().unwrap();
+        let agent = wallet
+            .find_agent_wallet(&params.agent)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let status: SpendingStatus = wallet
+            .spending_status(agent.id)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let json = serde_json::to_string_pretty(&status)
+            .unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
     // ── Headless Merchant Economy Tools ──

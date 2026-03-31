@@ -347,13 +347,28 @@ impl Wallet {
     }
 
     /// Check if a transfer would exceed the agent's spending limits.
-    /// Sums all sends in the last 24 hours and compares against the policy.
+    /// Validates: active status, circuit breaker, optional recipient allowlist,
+    /// per-transaction limit, and 24h daily limit.
     pub fn check_spending_limit(
         &self,
         agent_id: uuid::Uuid,
         currency: &said_types::PayCurrency,
         amount: u64,
     ) -> Result<()> {
+        self.check_spending_limit_with_recipient(agent_id, currency, amount, None)
+    }
+
+    /// Variant that also validates a recipient against the allowlist.
+    pub fn check_spending_limit_with_recipient(
+        &self,
+        agent_id: uuid::Uuid,
+        currency: &said_types::PayCurrency,
+        amount: u64,
+        recipient: Option<&str>,
+    ) -> Result<()> {
+        // Check circuit breaker first — fail fast if spending is locked.
+        self.check_circuit_breaker(agent_id)?;
+
         let wallets: Vec<said_types::AgentWallet> =
             self.storage.load("agent_wallets").unwrap_or_default();
 
@@ -366,7 +381,21 @@ impl Wallet {
             return Err(SaidError::AgentInactive(agent.label.clone()));
         }
 
+        // Allowlist check: if non-empty, recipient must be present.
         let policy = &agent.spending_policy;
+        if !policy.allowed_recipients.is_empty() {
+            match recipient {
+                Some(addr) if policy.allowed_recipients.iter().any(|r| r == addr) => {}
+                Some(addr) => {
+                    return Err(SaidError::RecipientNotAllowed(addr.to_string()));
+                }
+                None => {
+                    return Err(SaidError::RecipientNotAllowed(
+                        "(no recipient provided — allowlist is non-empty)".to_string(),
+                    ));
+                }
+            }
+        }
 
         // Check per-transaction limit
         match currency {
@@ -436,7 +465,6 @@ impl Wallet {
     ) -> Result<()> {
         let wallets: Vec<said_types::AgentWallet> =
             self.storage.load("agent_wallets").unwrap_or_default();
-
         let agent = wallets
             .iter()
             .find(|w| w.id == agent_id)
@@ -456,6 +484,176 @@ impl Wallet {
                 recipient, agent.label
             )))
         }
+    }
+
+    // ── Circuit Breaker Methods ──
+
+    /// Record a failed payment attempt for an agent.
+    /// If `consecutive_failures` reaches `failure_threshold`, the circuit breaker trips
+    /// and `spending` is locked until `unlock_circuit_breaker` is called.
+    /// Returns the updated breaker state.
+    pub fn record_payment_failure(
+        &self,
+        agent_id: uuid::Uuid,
+        failure_threshold: u32,
+    ) -> Result<said_types::SpendingCircuitBreaker> {
+        let mut breakers: Vec<said_types::SpendingCircuitBreaker> =
+            self.storage.load("spending_circuit_breakers").unwrap_or_default();
+
+        let breaker = match breakers.iter_mut().find(|b| b.agent_id == agent_id) {
+            Some(b) => {
+                b.consecutive_failures += 1;
+                b.last_failure_at = Some(chrono::Utc::now());
+                if !b.tripped && b.consecutive_failures >= failure_threshold {
+                    b.tripped = true;
+                    b.tripped_at = Some(chrono::Utc::now());
+                }
+                b.clone()
+            }
+            None => {
+                let now = chrono::Utc::now();
+                let tripped = 1 >= failure_threshold;
+                let new_breaker = said_types::SpendingCircuitBreaker {
+                    agent_id,
+                    consecutive_failures: 1,
+                    tripped,
+                    last_failure_at: Some(now),
+                    tripped_at: if tripped { Some(now) } else { None },
+                };
+                breakers.push(new_breaker.clone());
+                new_breaker
+            }
+        };
+
+        self.storage.save("spending_circuit_breakers", &breakers)?;
+        Ok(breaker)
+    }
+
+    /// Record a successful payment, resetting the consecutive failure counter.
+    /// NOTE: does NOT automatically unlock a tripped breaker — use `unlock_circuit_breaker`.
+    pub fn record_payment_success(&self, agent_id: uuid::Uuid) -> Result<()> {
+        let mut breakers: Vec<said_types::SpendingCircuitBreaker> =
+            self.storage.load("spending_circuit_breakers").unwrap_or_default();
+
+        if let Some(b) = breakers.iter_mut().find(|b| b.agent_id == agent_id) {
+            b.consecutive_failures = 0;
+        }
+
+        self.storage.save("spending_circuit_breakers", &breakers)?;
+        Ok(())
+    }
+
+    /// Get the circuit breaker state for an agent.
+    /// Returns a default (untripped) state if no record exists.
+    pub fn get_circuit_breaker(
+        &self,
+        agent_id: uuid::Uuid,
+    ) -> said_types::SpendingCircuitBreaker {
+        let breakers: Vec<said_types::SpendingCircuitBreaker> =
+            self.storage.load("spending_circuit_breakers").unwrap_or_default();
+
+        breakers
+            .into_iter()
+            .find(|b| b.agent_id == agent_id)
+            .unwrap_or_else(|| said_types::SpendingCircuitBreaker {
+                agent_id,
+                ..Default::default()
+            })
+    }
+
+    /// Manually unlock a tripped circuit breaker, re-enabling agent spending.
+    pub fn unlock_circuit_breaker(&self, agent_id: uuid::Uuid) -> Result<()> {
+        let mut breakers: Vec<said_types::SpendingCircuitBreaker> =
+            self.storage.load("spending_circuit_breakers").unwrap_or_default();
+
+        if let Some(b) = breakers.iter_mut().find(|b| b.agent_id == agent_id) {
+            b.tripped = false;
+            b.consecutive_failures = 0;
+            b.tripped_at = None;
+        }
+
+        self.storage.save("spending_circuit_breakers", &breakers)?;
+        Ok(())
+    }
+
+    /// Check whether an agent's circuit breaker is tripped.
+    /// Returns `Err(CircuitBreakerTripped)` if spending is locked.
+    pub fn check_circuit_breaker(&self, agent_id: uuid::Uuid) -> Result<()> {
+        let b = self.get_circuit_breaker(agent_id);
+        if b.tripped {
+            return Err(SaidError::CircuitBreakerTripped(
+                agent_id.to_string(),
+                b.consecutive_failures,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return the full spending status for an agent wallet.
+    pub fn spending_status(
+        &self,
+        agent_id: uuid::Uuid,
+    ) -> Result<said_types::SpendingStatus> {
+        let wallets: Vec<said_types::AgentWallet> =
+            self.storage.load("agent_wallets").unwrap_or_default();
+        let agent = wallets
+            .iter()
+            .find(|w| w.id == agent_id)
+            .ok_or_else(|| SaidError::AgentNotFound(agent_id.to_string()))?;
+
+        let txs: Vec<said_types::PaymentTransaction> =
+            self.storage.load("pay_transactions").unwrap_or_default();
+        let cutoff = chrono::Utc::now() - chrono::Duration::hours(24);
+
+        let spend_today_sol_lamports: u64 = txs
+            .iter()
+            .filter(|tx| {
+                tx.agent_id == agent_id
+                    && tx.direction == said_types::TxDirection::Send
+                    && tx.currency == said_types::PayCurrency::Sol
+                    && tx.created_at > cutoff
+            })
+            .map(|tx| tx.amount)
+            .sum();
+
+        let spend_today_usdc_micro: u64 = txs
+            .iter()
+            .filter(|tx| {
+                tx.agent_id == agent_id
+                    && tx.direction == said_types::TxDirection::Send
+                    && tx.currency == said_types::PayCurrency::Usdc
+                    && tx.created_at > cutoff
+            })
+            .map(|tx| tx.amount)
+            .sum();
+
+        let policy = &agent.spending_policy;
+        let remaining_sol_lamports = policy
+            .daily_limit_lamports
+            .map(|lim| lim.saturating_sub(spend_today_sol_lamports));
+        let remaining_usdc_micro = policy
+            .daily_limit_usdc_micro
+            .map(|lim| lim.saturating_sub(spend_today_usdc_micro));
+
+        let breaker = self.get_circuit_breaker(agent_id);
+
+        Ok(said_types::SpendingStatus {
+            agent_id,
+            agent_label: agent.label.clone(),
+            solana_address: agent.solana_address.clone(),
+            active: agent.active,
+            spend_today_sol_lamports,
+            spend_today_usdc_micro,
+            daily_limit_sol_lamports: policy.daily_limit_lamports,
+            daily_limit_usdc_micro: policy.daily_limit_usdc_micro,
+            per_tx_limit_sol_lamports: policy.per_tx_limit_lamports,
+            per_tx_limit_usdc_micro: policy.per_tx_limit_usdc_micro,
+            remaining_sol_lamports,
+            remaining_usdc_micro,
+            circuit_breaker_tripped: breaker.tripped,
+            consecutive_failures: breaker.consecutive_failures,
+            tripped_at: breaker.tripped_at,
+        })
     }
 }
 

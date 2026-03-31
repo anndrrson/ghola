@@ -2792,6 +2792,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "said-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "bs58",
+ "chrono",
+ "reqwest",
+ "said-core",
+ "said-solana",
+ "said-types",
+ "said-x402",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "said-mcp"
 version = "0.1.0"
 dependencies = [
