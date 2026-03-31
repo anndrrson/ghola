@@ -1,4 +1,5 @@
 pub mod analytics;
+pub mod audit;
 pub mod auth;
 pub mod badges;
 pub mod billing;
@@ -10,9 +11,12 @@ pub mod chat;
 pub mod consumer;
 pub mod health;
 pub mod nodes;
+pub mod oidc;
 pub mod payments;
 pub mod pricing;
 pub mod reputation;
 pub mod resolve;
 pub mod services;
+pub mod tenant;
+pub mod treasury;
 pub mod verify;

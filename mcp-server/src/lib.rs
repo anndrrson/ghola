@@ -293,6 +293,56 @@ pub struct VerifyX402MerchantParams {
     pub api_url: Option<String>,
 }
 
+// ── Enterprise Tool Parameter Types ──
+
+#[derive(Deserialize, JsonSchema)]
+pub struct AuditLogParams {
+    /// Filter by tenant ID (UUID). If omitted, returns global events.
+    pub tenant_id: Option<String>,
+    /// Filter by event type (e.g. "wallet_op", "payment", "ucan_delegation").
+    pub event_type: Option<String>,
+    /// Filter by actor DID.
+    pub actor_did: Option<String>,
+    /// ISO-8601 start timestamp for the query range.
+    pub since: Option<String>,
+    /// Max results (default 50, max 500).
+    pub limit: Option<u32>,
+    /// Ghola Cloud API base URL (default: https://ghola-api.onrender.com).
+    pub api_url: Option<String>,
+    /// Bearer JWT token for authentication.
+    pub token: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct TreasuryStatusParams {
+    /// Tenant ID (UUID) to query treasury pools for.
+    pub tenant_id: String,
+    /// Specific pool ID (UUID) — if omitted, lists all pools for the tenant.
+    pub pool_id: Option<String>,
+    /// Ghola Cloud API base URL (default: https://ghola-api.onrender.com).
+    pub api_url: Option<String>,
+    /// Bearer JWT token for authentication.
+    pub token: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct RequestApprovalParams {
+    /// Treasury pool ID (UUID) to draw from.
+    pub treasury_pool_id: String,
+    /// Tenant ID (UUID) the pool belongs to.
+    pub tenant_id: String,
+    /// Amount to transfer in micro-USDC (1 USDC = 1_000_000 micro-USDC).
+    pub amount_micro_usdc: i64,
+    /// Recipient Solana address.
+    pub recipient_address: String,
+    /// Human-readable purpose / description for this payment.
+    pub purpose: String,
+    /// Ghola Cloud API base URL (default: https://ghola-api.onrender.com).
+    pub api_url: Option<String>,
+    /// Bearer JWT token for authentication.
+    pub token: Option<String>,
+}
+
 // ── MCP Server ──
 
 #[derive(Clone)]
@@ -1618,6 +1668,265 @@ impl SaidServer {
             .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
 
         let output = serde_json::to_string_pretty(&body).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    // ── Enterprise tools ──────────────────────────────────────────────────────
+
+    #[tool(
+        name = "said_audit_log",
+        description = "Query the tamper-evident audit trail for a tenant. Returns structured audit events \
+                       (wallet ops, payments, policy changes, circuit breaker trips, UCAN delegations). \
+                       Each event is part of a SHA-256 hash chain so any gap or mutation is detectable. \
+                       Useful for compliance reviews, incident investigations, and SOC 2 evidence export.\n\n\
+                       Parameters:\n\
+                       - tenant_id: filter to a specific tenant (UUID)\n\
+                       - event_type: e.g. 'payment', 'wallet_op', 'ucan_delegation', 'circuit_breaker', 'settlement_completed'\n\
+                       - since: ISO-8601 start time (e.g. '2025-01-01T00:00:00Z')\n\
+                       - limit: max results (default 50)\n\
+                       - token: your SAID bearer JWT"
+    )]
+    async fn audit_log(
+        &self,
+        Parameters(params): Parameters<AuditLogParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let api_url = params
+            .api_url
+            .as_deref()
+            .unwrap_or("https://ghola-api.onrender.com");
+
+        let mut query_params: Vec<(&str, String)> = Vec::new();
+        if let Some(ref tid) = params.tenant_id {
+            query_params.push(("tenant_id", tid.clone()));
+        }
+        if let Some(ref et) = params.event_type {
+            query_params.push(("event_type", et.clone()));
+        }
+        if let Some(ref did) = params.actor_did {
+            query_params.push(("actor_did", did.clone()));
+        }
+        if let Some(ref since) = params.since {
+            query_params.push(("since", since.clone()));
+        }
+        if let Some(limit) = params.limit {
+            query_params.push(("limit", limit.to_string()));
+        }
+
+        let mut req = client
+            .get(format!("{api_url}/v1/audit"))
+            .query(&query_params)
+            .timeout(std::time::Duration::from_secs(15));
+
+        if let Some(ref token) = params.token {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("HTTP error: {e}"), None))?;
+
+        let status = resp.status();
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+        if !status.is_success() {
+            let msg = body
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            return Err(ErrorData::internal_error(
+                format!("Audit API error {status}: {msg}"),
+                None,
+            ));
+        }
+
+        let output = serde_json::to_string_pretty(&body).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_treasury_status",
+        description = "Check treasury pool balances, department budget allocations, and spending for a \
+                       tenant. Returns funding wallet address, total/allocated/spent amounts (in micro-USDC, \
+                       where 1 USDC = 1,000,000 micro-USDC), approval threshold, and per-department budgets.\n\n\
+                       Parameters:\n\
+                       - tenant_id: the tenant UUID to query (required)\n\
+                       - pool_id: specific pool UUID — omit to list all pools\n\
+                       - token: your SAID bearer JWT"
+    )]
+    async fn treasury_status(
+        &self,
+        Parameters(params): Parameters<TreasuryStatusParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let api_url = params
+            .api_url
+            .as_deref()
+            .unwrap_or("https://ghola-api.onrender.com");
+
+        let mut req_builder = if let Some(ref pool_id) = params.pool_id {
+            client
+                .get(format!("{api_url}/v1/treasury/pools/{pool_id}"))
+                .timeout(std::time::Duration::from_secs(15))
+        } else {
+            client
+                .get(format!("{api_url}/v1/treasury/pools"))
+                .query(&[("tenant_id", &params.tenant_id)])
+                .timeout(std::time::Duration::from_secs(15))
+        };
+
+        if let Some(ref token) = params.token {
+            req_builder = req_builder.header("Authorization", format!("Bearer {token}"));
+        }
+
+        let resp = req_builder
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("HTTP error: {e}"), None))?;
+
+        let status = resp.status();
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+        if !status.is_success() {
+            let msg = body
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            return Err(ErrorData::internal_error(
+                format!("Treasury API error {status}: {msg}"),
+                None,
+            ));
+        }
+
+        // Enrich with human-readable USDC conversions.
+        let enrich = |v: &serde_json::Value| -> serde_json::Value {
+            let mut out = v.clone();
+            for field in &[
+                "total_budget_micro_usdc",
+                "allocated_micro_usdc",
+                "spent_micro_usdc",
+                "approval_threshold_micro_usdc",
+            ] {
+                if let Some(micro) = v.get(field).and_then(|x| x.as_i64()) {
+                    let key = field.replace("micro_usdc", "usdc");
+                    out[key] = serde_json::json!(micro as f64 / 1_000_000.0);
+                }
+            }
+            out
+        };
+
+        let enriched = match &body {
+            serde_json::Value::Array(pools) => {
+                serde_json::Value::Array(pools.iter().map(enrich).collect())
+            }
+            other => enrich(other),
+        };
+
+        let output = serde_json::to_string_pretty(&enriched).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_request_approval",
+        description = "Submit a treasury payment approval request. Payments below the pool's approval \
+                       threshold are auto-approved immediately. Payments above the threshold are queued \
+                       for review by a tenant admin.\n\n\
+                       Returns the approval request object with its status ('pending' or 'approved'), \
+                       ID, and amount. If auto-approved, the payment can proceed immediately using \
+                       said_pay_transfer. If pending, poll said_treasury_status or wait for admin action.\n\n\
+                       Parameters:\n\
+                       - treasury_pool_id: UUID of the funding pool\n\
+                       - tenant_id: UUID of the tenant\n\
+                       - amount_micro_usdc: amount in micro-USDC (1 USDC = 1,000,000)\n\
+                       - recipient_address: Solana address to pay\n\
+                       - purpose: human-readable reason for the payment\n\
+                       - token: your SAID bearer JWT"
+    )]
+    async fn request_approval(
+        &self,
+        Parameters(params): Parameters<RequestApprovalParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = reqwest::Client::new();
+        let api_url = params
+            .api_url
+            .as_deref()
+            .unwrap_or("https://ghola-api.onrender.com");
+
+        let body = serde_json::json!({
+            "treasury_pool_id": params.treasury_pool_id,
+            "tenant_id": params.tenant_id,
+            "amount_micro_usdc": params.amount_micro_usdc,
+            "recipient_address": params.recipient_address,
+            "purpose": params.purpose,
+        });
+
+        let mut req = client
+            .post(format!("{api_url}/v1/treasury/requests"))
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(15));
+
+        if let Some(ref token) = params.token {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("HTTP error: {e}"), None))?;
+
+        let status = resp.status();
+        let resp_body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+        if !status.is_success() {
+            let msg = resp_body
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            return Err(ErrorData::internal_error(
+                format!("Treasury request error {status}: {msg}"),
+                None,
+            ));
+        }
+
+        let approval_status = resp_body
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        let summary = if approval_status == "approved" {
+            format!(
+                "✓ Approval request auto-approved (below threshold). \
+                 Amount: {} micro-USDC ({:.6} USDC). \
+                 Proceed with said_pay_transfer to execute the payment.",
+                params.amount_micro_usdc,
+                params.amount_micro_usdc as f64 / 1_000_000.0,
+            )
+        } else {
+            format!(
+                "⏳ Approval request submitted (pending admin review). \
+                 Amount: {} micro-USDC ({:.6} USDC). \
+                 A tenant admin must approve before the payment can be executed.",
+                params.amount_micro_usdc,
+                params.amount_micro_usdc as f64 / 1_000_000.0,
+            )
+        };
+
+        let output = format!(
+            "{}\n\n{}",
+            summary,
+            serde_json::to_string_pretty(&resp_body).unwrap_or_default()
+        );
+
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 }

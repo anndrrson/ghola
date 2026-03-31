@@ -206,6 +206,11 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v1/settlements/{service_id}",
             get(routes::billing_service::list_settlements),
+        )
+        // OIDC agent provisioning (public — authenticates via id_token)
+        .route(
+            "/v1/oidc/provision",
+            post(routes::oidc::provision_agent),
         );
 
     // Protected routes (require Bearer JWT)
@@ -376,6 +381,78 @@ async fn main() -> anyhow::Result<()> {
             get(routes::chat::get_history).post(routes::chat::save_history),
         )
         .route("/v1/chat/relay", post(routes::chat::relay))
+        // ── Enterprise: Tenant management ────────────────────────────────────
+        .route(
+            "/v1/tenants",
+            get(routes::tenant::list_tenants).post(routes::tenant::create_tenant),
+        )
+        .route(
+            "/v1/tenants/{id}",
+            get(routes::tenant::get_tenant)
+                .put(routes::tenant::update_tenant)
+                .delete(routes::tenant::delete_tenant),
+        )
+        .route(
+            "/v1/tenants/{id}/members",
+            get(routes::tenant::list_members).post(routes::tenant::add_member),
+        )
+        .route(
+            "/v1/tenants/{id}/members/{user_id}",
+            put(routes::tenant::update_member).delete(routes::tenant::remove_member),
+        )
+        .route(
+            "/v1/tenants/{id}/departments",
+            get(routes::tenant::list_departments).post(routes::tenant::create_department),
+        )
+        .route(
+            "/v1/tenants/{id}/departments/{dept_id}",
+            put(routes::tenant::update_department).delete(routes::tenant::delete_department),
+        )
+        // ── Enterprise: Audit trail ───────────────────────────────────────────
+        .route("/v1/audit", get(routes::audit::list_events))
+        .route("/v1/audit/export", get(routes::audit::export_events))
+        .route(
+            "/v1/audit/verify-chain",
+            post(routes::audit::verify_chain),
+        )
+        // ── Enterprise: OIDC federation ───────────────────────────────────────
+        .route(
+            "/v1/oidc/providers",
+            get(routes::oidc::list_providers).post(routes::oidc::register_provider),
+        )
+        .route(
+            "/v1/oidc/providers/{id}",
+            delete(routes::oidc::deactivate_provider),
+        )
+        // ── Enterprise: Treasury management ──────────────────────────────────
+        .route(
+            "/v1/treasury/pools",
+            get(routes::treasury::list_pools).post(routes::treasury::create_pool),
+        )
+        .route(
+            "/v1/treasury/pools/{id}",
+            get(routes::treasury::get_pool).put(routes::treasury::update_pool),
+        )
+        .route(
+            "/v1/treasury/pools/{id}/budgets",
+            get(routes::treasury::list_budgets).post(routes::treasury::allocate_budget),
+        )
+        .route(
+            "/v1/treasury/requests",
+            get(routes::treasury::list_requests).post(routes::treasury::create_request),
+        )
+        .route(
+            "/v1/treasury/requests/{id}/approve",
+            post(routes::treasury::approve_request),
+        )
+        .route(
+            "/v1/treasury/requests/{id}/reject",
+            post(routes::treasury::reject_request),
+        )
+        .route(
+            "/v1/treasury/requests/{id}/execute",
+            post(routes::treasury::execute_request),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,

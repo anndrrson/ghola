@@ -518,39 +518,145 @@ pub async fn list_settlements(
 
 // ── Settlement Background Task ──
 
-/// Runs every hour, aggregates unsettled usage into settlement batches.
+/// Runs on the global default interval (3600 s) and dispatches per-tenant
+/// settlement runs with their own configurable intervals and RPC failover.
 pub async fn settlement_loop(state: Arc<AppState>) {
-    let interval = std::time::Duration::from_secs(3600); // 1 hour
+    // Global tick: every 60 s, check which tenants are due for settlement.
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        tokio::time::sleep(interval).await;
+        interval.tick().await;
 
-        if let Err(e) = process_settlements(&state).await {
-            tracing::error!("Settlement processing error: {e}");
+        // Collect tenant settlement configs.
+        #[derive(sqlx::FromRow)]
+        struct TenantCfg {
+            id: Option<Uuid>,  // NULL = "global" (no tenant)
+            settlement_interval_secs: i32,
+            fallback_rpc_urls: Vec<String>,
+        }
+
+        let tenants: Vec<TenantCfg> = sqlx::query_as(
+            r#"SELECT id,
+                      settlement_interval_secs,
+                      fallback_rpc_urls
+               FROM tenants
+               UNION ALL
+               -- Always include a "global" row for services without a tenant
+               SELECT NULL::uuid, 3600, ARRAY[]::text[]"#,
+        )
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+        let now_ts = chrono::Utc::now().timestamp();
+
+        for cfg in tenants {
+            // Check if this tenant's settlement interval has elapsed since the
+            // last settlement batch.
+            let last_settled: Option<i64> = sqlx::query_scalar(
+                r#"SELECT EXTRACT(EPOCH FROM MAX(created_at))::bigint
+                   FROM settlement_batches sb
+                   JOIN service_listings sl ON sl.id = sb.service_id
+                   WHERE ($1::uuid IS NULL AND sl.owner_did NOT IN (
+                             SELECT did FROM business_profiles WHERE user_id IN (
+                                 SELECT user_id FROM tenant_members
+                             )
+                         ))
+                      OR EXISTS (
+                             SELECT 1 FROM tenant_members tm
+                             JOIN users u ON u.id = tm.user_id
+                             JOIN business_profiles bp ON bp.user_id = u.id
+                             WHERE bp.did = sl.owner_did AND tm.tenant_id = $1
+                         )"#,
+            )
+            .bind(cfg.id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None)
+            .flatten();
+
+            let elapsed = now_ts - last_settled.unwrap_or(0);
+            if elapsed < cfg.settlement_interval_secs as i64 {
+                continue;
+            }
+
+            // Determine which RPC URL to use (with failover).
+            let rpc_url = pick_healthy_rpc(&state, &cfg.fallback_rpc_urls).await;
+
+            if let Err(e) = process_settlements(&state, cfg.id, rpc_url.as_deref()).await {
+                tracing::error!(tenant_id = ?cfg.id, "Settlement processing error: {e}");
+            }
         }
     }
 }
 
-async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
+/// Select the first healthy RPC URL from the fallback list.
+/// Falls back to `None` (caller uses on-chain defaults) if none are healthy.
+async fn pick_healthy_rpc(state: &AppState, urls: &[String]) -> Option<String> {
+    for url in urls {
+        // Simple liveness check: HEAD or GET the health probe endpoint.
+        let probe_url = format!("{url}");
+        let ok = state
+            .http_client
+            .post(&probe_url)
+            .timeout(std::time::Duration::from_secs(3))
+            .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getHealth"}))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+
+        if ok {
+            return Some(url.clone());
+        } else {
+            tracing::warn!(rpc_url = %url, "RPC health check failed, trying next fallback");
+        }
+    }
+    None
+}
+
+async fn process_settlements(
+    state: &AppState,
+    tenant_id: Option<Uuid>,
+    rpc_url: Option<&str>,
+) -> anyhow::Result<()> {
     let now = chrono::Utc::now();
     let period_end = now;
-    // Use 1 hour ago as period start (or last settlement end)
     let period_start = now - chrono::Duration::hours(1);
 
-    // Find all services with unsettled usage
-    let services: Vec<(Uuid, i32)> = sqlx::query_as(
-        r#"SELECT service_id, COALESCE(platform_fee_bps, 300)
-        FROM metered_usage mu
-        JOIN service_listings sl ON sl.id = mu.service_id
-        WHERE mu.settled = false
-        GROUP BY service_id, sl.platform_fee_bps
-        HAVING SUM(mu.amount_micro_usdc) > 0"#,
+    // Find all services with unsettled usage scoped to this tenant (or global).
+    let services: Vec<(Uuid, i32, Option<String>)> = sqlx::query_as(
+        r#"SELECT mu.service_id,
+                  COALESCE(sl.platform_fee_bps, 300),
+                  sl.owner_did
+           FROM metered_usage mu
+           JOIN service_listings sl ON sl.id = mu.service_id
+           WHERE mu.settled = false
+             AND (
+                 ($1::uuid IS NULL AND NOT EXISTS (
+                     SELECT 1 FROM tenant_members tm
+                     JOIN users u ON u.id = tm.user_id
+                     JOIN business_profiles bp ON bp.user_id = u.id
+                     WHERE bp.did = sl.owner_did
+                 ))
+                 OR EXISTS (
+                     SELECT 1 FROM tenant_members tm
+                     JOIN users u ON u.id = tm.user_id
+                     JOIN business_profiles bp ON bp.user_id = u.id
+                     WHERE bp.did = sl.owner_did AND tm.tenant_id = $1
+                 )
+             )
+           GROUP BY mu.service_id, sl.platform_fee_bps, sl.owner_did
+           HAVING SUM(mu.amount_micro_usdc) > 0"#,
     )
+    .bind(tenant_id)
     .fetch_all(&state.db)
     .await?;
 
-    for (service_id, fee_bps) in services {
-        // Aggregate unsettled usage for this service
+    let mut settled_count = 0usize;
+
+    for (service_id, fee_bps, owner_did) in services {
         let (total_requests, total_amount): (i64, i64) = sqlx::query_as(
             r#"SELECT COALESCE(SUM(request_count), 0), COALESCE(SUM(amount_micro_usdc), 0)
             FROM metered_usage
@@ -564,16 +670,15 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
             continue;
         }
 
-        // Calculate shares
         let platform_share = (total_amount * fee_bps as i64) / 10000;
         let merchant_share = total_amount - platform_share;
 
-        // Create settlement batch
-        sqlx::query(
+        let batch_id: (Uuid,) = sqlx::query_as(
             r#"INSERT INTO settlement_batches
                 (service_id, period_start, period_end, total_requests, total_micro_usdc,
                  merchant_share_micro_usdc, platform_share_micro_usdc, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')"#,
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+            RETURNING id"#,
         )
         .bind(service_id)
         .bind(period_start)
@@ -582,10 +687,27 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
         .bind(total_amount)
         .bind(merchant_share)
         .bind(platform_share)
-        .execute(&state.db)
+        .fetch_one(&state.db)
         .await?;
 
-        // Mark usage as settled
+        // Emit settlement receipt notification.
+        sqlx::query(
+            r#"INSERT INTO settlement_receipts
+                (settlement_batch_id, tenant_id, service_id, total_micro_usdc,
+                 merchant_share_micro_usdc, platform_share_micro_usdc, rpc_url_used)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+        )
+        .bind(batch_id.0)
+        .bind(tenant_id)
+        .bind(service_id)
+        .bind(total_amount)
+        .bind(merchant_share)
+        .bind(platform_share)
+        .bind(rpc_url)
+        .execute(&state.db)
+        .await
+        .ok();
+
         sqlx::query(
             "UPDATE metered_usage SET settled = true WHERE service_id = $1 AND settled = false",
         )
@@ -593,7 +715,6 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
         .execute(&state.db)
         .await?;
 
-        // Update service revenue
         sqlx::query(
             "UPDATE service_listings SET total_revenue_micro_usdc = total_revenue_micro_usdc + $1 WHERE id = $2",
         )
@@ -602,20 +723,12 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
         .execute(&state.db)
         .await?;
 
-        // Emit reputation event for the merchant
-        let owner_did: Option<String> = sqlx::query_scalar(
-            "SELECT owner_did FROM service_listings WHERE id = $1",
-        )
-        .bind(service_id)
-        .fetch_optional(&state.db)
-        .await?;
-
-        if let Some(did) = owner_did {
+        if let Some(did) = &owner_did {
             sqlx::query(
                 r#"INSERT INTO reputation_events (entity_did, event_type, details)
                 VALUES ($1, 'transaction_completed', $2)"#,
             )
-            .bind(&did)
+            .bind(did)
             .bind(serde_json::json!({
                 "settlement_amount": total_amount,
                 "merchant_share": merchant_share,
@@ -626,8 +739,39 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
             .ok();
         }
 
+        // Emit audit event for the settlement.
+        super::audit::emit(
+            &state.db,
+            tenant_id,
+            owner_did.as_deref().unwrap_or("system"),
+            None,
+            "settlement_completed",
+            Some("service"),
+            Some(&service_id.to_string()),
+            serde_json::json!({
+                "total_amount": total_amount,
+                "merchant_share": merchant_share,
+                "requests": total_requests,
+                "rpc_url": rpc_url,
+            }),
+        )
+        .await;
+
+        settled_count += 1;
         tracing::info!(
-            "Settlement created for service {service_id}: {total_requests} requests, {total_amount} micro USDC"
+            tenant_id = ?tenant_id,
+            service_id = %service_id,
+            total_requests,
+            total_amount,
+            "Settlement created"
+        );
+    }
+
+    if settled_count > 0 {
+        tracing::info!(
+            tenant_id = ?tenant_id,
+            count = settled_count,
+            "Settlement run completed"
         );
     }
 
