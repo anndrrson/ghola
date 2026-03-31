@@ -315,6 +315,56 @@ pub struct PayX402Params {
     pub ghola_api_url: Option<String>,
 }
 
+// ── Service Discovery Tool Parameter Types ──
+
+#[derive(Deserialize, JsonSchema)]
+pub struct DiscoverServicesParams {
+    /// Filter by service category (e.g. "data", "inference", "commerce", "finance")
+    pub category: Option<String>,
+    /// Filter by tags (e.g. ["weather", "realtime"])
+    pub tags: Option<Vec<String>>,
+    /// Maximum price per request in USDC (human-readable, e.g. "0.01")
+    pub max_price_usdc: Option<String>,
+    /// Minimum on-chain reputation score 0.0–1.0 (default: 0.0 = no filter)
+    pub min_reputation: Option<f32>,
+    /// Maximum number of results (default 10)
+    pub limit: Option<usize>,
+    /// Solana RPC URL (default: https://api.devnet.solana.com)
+    pub rpc_url: Option<String>,
+    /// SAID Cloud API base URL (default: https://ghola-api.onrender.com)
+    pub api_url: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct EvaluateServiceParams {
+    /// Service slug (e.g. "acme-weather-api")
+    pub slug: String,
+    /// SAID Cloud API base URL (default: https://ghola-api.onrender.com)
+    pub api_url: Option<String>,
+    /// Solana RPC URL for on-chain reputation check (default: https://api.devnet.solana.com)
+    pub rpc_url: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct DiscoverAndPayParams {
+    /// Natural language description of what you need (e.g. "current weather in NYC")
+    pub task: String,
+    /// Filter by category (e.g. "data", "inference")
+    pub category: Option<String>,
+    /// Maximum price per request in USDC (e.g. "0.05")
+    pub max_price_usdc: Option<String>,
+    /// Minimum trust score to proceed with payment (0.0–1.0, default: 0.5)
+    pub min_trust_score: Option<f32>,
+    /// Agent wallet label to pay from
+    pub agent: String,
+    /// Request body to send to the service (JSON string)
+    pub request_body: Option<String>,
+    /// Solana RPC URL (default: https://api.devnet.solana.com)
+    pub rpc_url: Option<String>,
+    /// SAID Cloud API base URL (default: https://ghola-api.onrender.com)
+    pub api_url: Option<String>,
+}
+
 // ── MCP Server ──
 
 #[derive(Clone)]
@@ -1571,7 +1621,7 @@ impl SaidServer {
             .unwrap_or("https://ghola-api.onrender.com");
 
         // Look up the agent wallet (drop lock before async)
-        let (agent_id, body) = {
+        let (_agent_id, body) = {
             let wallet = self.wallet.lock().unwrap();
             let agents: Vec<AgentWallet> =
                 wallet.storage().load("agent_wallets").unwrap_or_default();
@@ -1843,6 +1893,653 @@ impl SaidServer {
 
         let output = serde_json::to_string_pretty(&body).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    // ── Service Discovery Tools ──
+
+    #[tool(
+        name = "said_discover_services",
+        description = "Discover registered services from the on-chain SAID registry. \
+            Queries the Solana program for active ServiceRecord accounts and enriches \
+            results with cloud reputation scores. Supports filtering by category, tags, \
+            price, and minimum reputation. Falls back to cloud-only search if RPC is unavailable."
+    )]
+    async fn discover_services(
+        &self,
+        Parameters(params): Parameters<DiscoverServicesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let rpc_url = params
+            .rpc_url
+            .unwrap_or_else(|| "https://api.devnet.solana.com".to_string());
+        let api_url = params
+            .api_url
+            .unwrap_or_else(|| "https://ghola-api.onrender.com".to_string());
+        let limit = params.limit.unwrap_or(10);
+        let max_price_micro = params.max_price_usdc.as_deref().map(|p| {
+            (p.parse::<f64>().unwrap_or(f64::MAX) * 1_000_000.0) as u64
+        });
+        let min_rep = params.min_reputation.unwrap_or(0.0);
+        let http = reqwest::Client::new();
+
+        // 1. Fetch on-chain service accounts (best-effort)
+        let on_chain = crate::solana_lookup::list_services(&rpc_url, limit * 4)
+            .await
+            .unwrap_or_default();
+
+        let mut results: Vec<serde_json::Value> = Vec::new();
+
+        if !on_chain.is_empty() {
+            // Enrich each on-chain service with cloud metadata and reputation
+            for (pubkey, svc) in &on_chain {
+                // Price filter
+                if let Some(max) = max_price_micro {
+                    if svc.price_micro_usdc > max {
+                        continue;
+                    }
+                }
+
+                // Fetch cloud metadata for category/tag filtering and reputation
+                let cloud_resp = http
+                    .get(format!("{}/v1/services/{}", api_url, svc.slug))
+                    .timeout(std::time::Duration::from_secs(5))
+                    .send()
+                    .await
+                    .ok();
+                let cloud_meta: Option<serde_json::Value> = match cloud_resp {
+                    Some(r) => r.json().await.ok(),
+                    None => None,
+                };
+
+                let cloud_service = cloud_meta.as_ref().and_then(|m| m.get("service"));
+
+                // Category filter
+                if let Some(ref cat_filter) = params.category {
+                    let matches = cloud_service
+                        .and_then(|s| s.get("category"))
+                        .and_then(|c| c.as_str())
+                        .map(|c| c.eq_ignore_ascii_case(cat_filter))
+                        .unwrap_or(false);
+                    if !matches {
+                        continue;
+                    }
+                }
+
+                // Tags filter
+                if let Some(ref tag_filter) = params.tags {
+                    if !tag_filter.is_empty() {
+                        let svc_tags: Vec<String> = cloud_service
+                            .and_then(|s| s.get("tags"))
+                            .and_then(|t| serde_json::from_value(t.clone()).ok())
+                            .unwrap_or_default();
+                        let has_tag = tag_filter.iter().any(|tf| {
+                            svc_tags.iter().any(|st| st.eq_ignore_ascii_case(tf))
+                        });
+                        if !has_tag {
+                            continue;
+                        }
+                    }
+                }
+
+                // Fetch on-chain reputation attestation
+                let on_chain_rep = {
+                    let id_record_bytes = svc.identity_record;
+                    crate::solana_lookup::lookup_reputation_attestation(&rpc_url, &id_record_bytes)
+                        .await
+                        .ok()
+                        .flatten()
+                };
+
+                // Cloud reputation score (from service metadata or separate endpoint)
+                let cloud_rep_score: f32 = cloud_service
+                    .and_then(|s| s.get("reputation_score").or_else(|| s.get("trust_score")))
+                    .and_then(|v| v.as_f64())
+                    .map(|s| s as f32)
+                    .unwrap_or(0.0);
+
+                // Prefer on-chain score if available, else use cloud
+                let rep_score = on_chain_rep
+                    .as_ref()
+                    .map(|r| r.score_f32())
+                    .filter(|&s| s > 0.0)
+                    .unwrap_or(cloud_rep_score);
+
+                if rep_score < min_rep {
+                    continue;
+                }
+
+                results.push(serde_json::json!({
+                    "source": "on_chain",
+                    "pda": pubkey,
+                    "slug": svc.slug,
+                    "base_url": svc.base_url,
+                    "registry_url": svc.registry_url,
+                    "price_usdc": svc.price_usdc(),
+                    "price_micro_usdc": svc.price_micro_usdc,
+                    "authority": svc.authority_bs58(),
+                    "identity_record_pda": svc.identity_record_bs58(),
+                    "active": svc.active,
+                    "reputation_score": rep_score,
+                    "on_chain_reputation": on_chain_rep.as_ref().map(|r| serde_json::json!({
+                        "overall_score": r.score_f32(),
+                        "confidence": r.confidence_f32(),
+                        "total_transactions": r.total_transactions,
+                        "attested_at": r.attested_at,
+                    })),
+                    "cloud_metadata": cloud_meta,
+                }));
+
+                if results.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        // 2. Fall back to cloud-only if on-chain returned nothing
+        if results.is_empty() {
+            let mut url = format!("{}/v1/services", api_url);
+            let mut sep = '?';
+            if let Some(ref cat) = params.category {
+                url.push_str(&format!("{}category={}", sep, cat));
+                sep = '&';
+            }
+            if let Some(ref tags) = params.tags {
+                if !tags.is_empty() {
+                    url.push_str(&format!("{}tags={}", sep, tags.join(",")));
+                    sep = '&';
+                }
+            }
+            if let Some(ref price) = params.max_price_usdc {
+                let micro = (price.parse::<f64>().unwrap_or(0.0) * 1_000_000.0) as i64;
+                url.push_str(&format!("{}max_price_micro_usdc={}", sep, micro));
+                sep = '&';
+            }
+            url.push_str(&format!("{}limit={}", sep, limit));
+
+            let resp = http
+                .get(&url)
+                .timeout(std::time::Duration::from_secs(15))
+                .send()
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("HTTP error: {e}"), None))?;
+
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+            let output = serde_json::to_string_pretty(&body).unwrap_or_default();
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "(on-chain registry empty or unavailable — cloud results)\n\n{}",
+                output
+            ))]));
+        }
+
+        // Sort by reputation descending
+        results.sort_by(|a, b| {
+            let sa = a.get("reputation_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let sb = b.get("reputation_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let output = serde_json::to_string_pretty(&serde_json::json!({
+            "count": results.len(),
+            "services": results,
+        }))
+        .unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_evaluate_service",
+        description = "Evaluate the trustworthiness of a service before paying. \
+            Checks on-chain reputation attestation, delegation records, and cloud reputation scores. \
+            Returns a composite trust assessment with recommendation: pay / caution / reject."
+    )]
+    async fn evaluate_service(
+        &self,
+        Parameters(params): Parameters<EvaluateServiceParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let api_url = params
+            .api_url
+            .unwrap_or_else(|| "https://ghola-api.onrender.com".to_string());
+        let rpc_url = params
+            .rpc_url
+            .unwrap_or_else(|| "https://api.devnet.solana.com".to_string());
+        let http = reqwest::Client::new();
+
+        // 1. Fetch service metadata from cloud registry
+        let svc_resp = http
+            .get(format!("{}/v1/services/{}", api_url, params.slug))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("Service lookup failed: {e}"), None))?;
+
+        let svc_data: serde_json::Value = svc_resp
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+        let service = svc_data.get("service").ok_or_else(|| {
+            ErrorData::internal_error(
+                format!("Service '{}' not found in registry", params.slug),
+                None,
+            )
+        })?;
+
+        let provider_did = service
+            .get("provider_did")
+            .or_else(|| service.get("did"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let base_url = service
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // 2. Fetch cloud reputation
+        let (cloud_score, cloud_confidence, cloud_components) = if !provider_did.is_empty() {
+            let rep_resp = http
+                .get(format!("{}/v1/reputation/{}", api_url, provider_did))
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .ok();
+            let rep_data: serde_json::Value = match rep_resp {
+                Some(r) => r.json().await.unwrap_or_default(),
+                None => serde_json::Value::Null,
+            };
+            let score = rep_data.get("overall_score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let conf = rep_data.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let components = rep_data.get("components").cloned();
+            (score, conf, components)
+        } else {
+            (0.0f32, 0.0f32, None)
+        };
+
+        // 3. Check on-chain reputation attestation via identity_pda in cloud resolve response
+        let on_chain_attestation = if !provider_did.is_empty() {
+            let resolve_resp = http
+                .get(format!("{}/v1/resolve/{}", api_url, provider_did))
+                .timeout(std::time::Duration::from_secs(5))
+                .send()
+                .await
+                .ok();
+            let resolve_data: Option<serde_json::Value> = match resolve_resp {
+                Some(r) => r.json().await.ok(),
+                None => None,
+            };
+
+            // If the cloud resolve response has an identity_pda, look up on-chain attestation
+            let pda_bytes: Option<[u8; 32]> = resolve_data
+                .as_ref()
+                .and_then(|v| v.get("identity_pda"))
+                .and_then(|p| p.as_str())
+                .and_then(|pda_b58| bs58::decode(pda_b58).into_vec().ok())
+                .and_then(|bytes| {
+                    if bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&bytes);
+                        Some(arr)
+                    } else {
+                        None
+                    }
+                });
+
+            if let Some(pda) = pda_bytes {
+                crate::solana_lookup::lookup_reputation_attestation(&rpc_url, &pda)
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // 4. Delegation records count
+        let delegation_count = svc_data
+            .get("delegations")
+            .and_then(|d| d.as_array())
+            .map(|d| d.len())
+            .unwrap_or(0);
+
+        // 5. Composite trust score
+        let identity_found = !provider_did.is_empty();
+        let verified_badge = service.get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
+        let on_chain_registered = on_chain_attestation.is_some()
+            || service.get("on_chain_registered").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let mut composite_score = on_chain_attestation
+            .as_ref()
+            .map(|a| a.score_f32())
+            .filter(|&s| s > 0.0)
+            .unwrap_or(cloud_score);
+        if verified_badge {
+            composite_score = (composite_score + 0.1).min(1.0);
+        }
+        if on_chain_registered {
+            composite_score = (composite_score + 0.05).min(1.0);
+        }
+        if delegation_count > 0 {
+            composite_score = (composite_score + 0.05).min(1.0);
+        }
+
+        let (recommendation, reason) = if !identity_found {
+            ("caution", "Service has no verifiable DID. Unverified provider — proceed with caution.")
+        } else if composite_score >= 0.7 {
+            ("pay", "Service is verified with good reputation. Safe to proceed.")
+        } else if composite_score >= 0.3 {
+            ("caution", "Service found but reputation is moderate. Consider the amount before proceeding.")
+        } else {
+            ("reject", "Service has low reputation score. Payment not recommended.")
+        };
+
+        let assessment = serde_json::json!({
+            "slug": params.slug,
+            "base_url": base_url,
+            "provider_did": provider_did,
+            "identity_found": identity_found,
+            "verified_badge": verified_badge,
+            "on_chain_registered": on_chain_registered,
+            "on_chain_attestation": on_chain_attestation.as_ref().map(|a| serde_json::json!({
+                "overall_score": a.score_f32(),
+                "confidence": a.confidence_f32(),
+                "total_transactions": a.total_transactions,
+                "attested_at": a.attested_at,
+            })),
+            "delegation_count": delegation_count,
+            "cloud_reputation": {
+                "overall_score": cloud_score,
+                "confidence": cloud_confidence,
+                "components": cloud_components,
+            },
+            "composite_trust_score": composite_score,
+            "confidence": cloud_confidence,
+            "recommendation": recommendation,
+            "reason": reason,
+            "service_metadata": service,
+        });
+
+        let output = serde_json::to_string_pretty(&assessment).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_discover_and_pay",
+        description = "Full autonomous service-discovery → trust-evaluation → x402-payment flow in one call. \
+            Discovers services matching a task description, ranks by reputation, evaluates the top \
+            candidate, executes a USDC x402 payment if the trust threshold is met, and returns the \
+            service response. Enforces agent spending limits throughout."
+    )]
+    async fn discover_and_pay(
+        &self,
+        Parameters(params): Parameters<DiscoverAndPayParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::PayTransfer)?;
+
+        let rpc_url = params
+            .rpc_url
+            .clone()
+            .unwrap_or_else(|| "https://api.devnet.solana.com".to_string());
+        let api_url = params
+            .api_url
+            .clone()
+            .unwrap_or_else(|| "https://ghola-api.onrender.com".to_string());
+        let min_trust = params.min_trust_score.unwrap_or(0.5);
+        let is_devnet = rpc_url.contains("devnet");
+        let http = reqwest::Client::new();
+
+        // ── Step 1: Discover matching services ────────────────────────────────
+        let mut discover_url = format!("{}/v1/services/resolve?task={}", api_url, params.task);
+        if let Some(ref cat) = params.category {
+            discover_url.push_str(&format!("&category={}", cat));
+        }
+        if let Some(ref max_price) = params.max_price_usdc {
+            let micro = (max_price.parse::<f64>().unwrap_or(0.0) * 1_000_000.0) as i64;
+            discover_url.push_str(&format!("&max_price_micro_usdc={}", micro));
+        }
+        discover_url.push_str("&limit=5");
+
+        let discover_data: serde_json::Value = http
+            .get(&discover_url)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("Discovery failed: {e}"), None))?
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("Discovery JSON error: {e}"), None))?;
+
+        let top_slug = discover_data
+            .get("services")
+            .and_then(|s| s.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|svc| svc.get("slug").or_else(|| svc.get("id")))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                ErrorData::internal_error(
+                    format!("No services found matching: '{}'", params.task),
+                    None,
+                )
+            })?;
+
+        // ── Step 2: Fetch service details ─────────────────────────────────────
+        let svc_data: serde_json::Value = http
+            .get(format!("{}/v1/services/{}", api_url, top_slug))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("Service lookup failed: {e}"), None))?
+            .json()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
+
+        let service = svc_data.get("service").ok_or_else(|| {
+            ErrorData::internal_error(format!("Service '{}' metadata missing", top_slug), None)
+        })?;
+
+        let base_url = service
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ErrorData::internal_error("Service has no base_url".to_string(), None))?
+            .to_string();
+
+        let provider_did = service
+            .get("provider_did")
+            .or_else(|| service.get("did"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let price_micro_usdc = service
+            .get("price_micro_usdc")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        // ── Step 3: Evaluate trust ─────────────────────────────────────────────
+        let trust_score: f32 = if !provider_did.is_empty() {
+            let rep_resp = http
+                .get(format!("{}/v1/reputation/{}", api_url, provider_did))
+                .timeout(std::time::Duration::from_secs(8))
+                .send()
+                .await
+                .ok();
+            let rep_data: serde_json::Value = match rep_resp {
+                Some(r) => r.json().await.unwrap_or_default(),
+                None => serde_json::Value::Null,
+            };
+            rep_data.get("overall_score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32
+        } else {
+            0.0
+        };
+
+        if trust_score < min_trust {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "ABORTED: Service '{}' trust score ({:.2}) is below minimum ({:.2}).\n\
+                 Provider: {}\n\
+                 Run said_evaluate_service for a full breakdown.",
+                top_slug, trust_score, min_trust, provider_did
+            ))]));
+        }
+
+        // ── Step 4: Spending limit check ───────────────────────────────────────
+        let (kp_bytes, agent_id, agent_label, sender) = {
+            let wallet = self.wallet.lock().unwrap();
+            let agent = wallet
+                .find_agent_wallet(&params.agent)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            wallet
+                .check_spending_limit(agent.id, &PayCurrency::Usdc, price_micro_usdc)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            let kp = wallet.agent_solana_keypair(agent.index);
+            (kp, agent.id, agent.label.clone(), agent.solana_address.clone())
+        };
+
+        // ── Step 5: Initial service call (may return 402) ─────────────────────
+        let endpoint_url = base_url.trim_end_matches('/').to_string();
+        let initial_resp = if let Some(ref body) = params.request_body {
+            http.post(&endpoint_url)
+                .header("Content-Type", "application/json")
+                .body(body.clone())
+        } else {
+            http.get(&endpoint_url)
+        }
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("Service call failed: {e}"), None))?;
+
+        let status = initial_resp.status().as_u16();
+
+        if status == 402 {
+            // ── x402: Parse PAYMENT-REQUIRED header ───────────────────────────
+            let payment_header = initial_resp
+                .headers()
+                .get("payment-required")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            let pay_to = if let Some(ref header) = payment_header {
+                use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+                B64.decode(header)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                    .and_then(|v| {
+                        v.get("accepts")
+                            .and_then(|a| a.as_array())
+                            .and_then(|arr| arr.first())
+                            .and_then(|opt| opt.get("payTo"))
+                            .and_then(|pt| pt.as_str())
+                            .map(|s| s.to_string())
+                    })
+            } else {
+                None
+            }
+            .ok_or_else(|| {
+                ErrorData::internal_error(
+                    "Service returned 402 but PAYMENT-REQUIRED header is missing or malformed"
+                        .to_string(),
+                    None,
+                )
+            })?;
+
+            // ── x402: Execute USDC payment ────────────────────────────────────
+            let to_bytes = bs58::decode(&pay_to)
+                .into_vec()
+                .map_err(|e| ErrorData::internal_error(format!("Invalid payTo: {e}"), None))?;
+            if to_bytes.len() != 32 {
+                return Err(ErrorData::internal_error("payTo must be 32 bytes".to_string(), None));
+            }
+            let mut to_arr = [0u8; 32];
+            to_arr.copy_from_slice(&to_bytes);
+
+            let solana = said_solana::SolanaClient::new(&rpc_url, &kp_bytes)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            let signature = solana
+                .transfer_usdc(&to_arr, price_micro_usdc, is_devnet)
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("Payment failed: {e}"), None))?;
+
+            // Log the payment transaction
+            {
+                let wallet = self.wallet.lock().unwrap();
+                let _ = wallet.log_transaction(PaymentTransaction {
+                    id: uuid::Uuid::new_v4(),
+                    agent_id,
+                    agent_label: agent_label.clone(),
+                    direction: TxDirection::Send,
+                    currency: PayCurrency::Usdc,
+                    amount: price_micro_usdc,
+                    recipient: pay_to.clone(),
+                    sender,
+                    signature: signature.clone(),
+                    memo: Some(format!("x402 payment for service: {}", top_slug)),
+                    status: TxStatus::Confirmed,
+                    created_at: chrono::Utc::now(),
+                });
+            }
+
+            // ── x402: Re-call service with payment proof ──────────────────────
+            let paid_resp = if let Some(ref body) = params.request_body {
+                http.post(&endpoint_url)
+                    .header("Content-Type", "application/json")
+                    .header("X-Payment-Signature", &signature)
+                    .body(body.clone())
+            } else {
+                http.get(&endpoint_url)
+                    .header("X-Payment-Signature", &signature)
+            }
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(format!("Post-payment call failed: {e}"), None)
+            })?;
+
+            let paid_status = paid_resp.status().as_u16();
+            let paid_body = paid_resp.text().await.unwrap_or_else(|_| "<empty>".into());
+
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "=== said_discover_and_pay: SUCCESS ===\n\n\
+                 Service:       {slug}\n\
+                 Base URL:      {base_url}\n\
+                 Trust Score:   {trust:.2}\n\
+                 Payment:       {price:.6} USDC → {pay_to}\n\
+                 TX Signature:  {sig}\n\
+                 Explorer:      https://explorer.solana.com/tx/{sig}?cluster=devnet\n\n\
+                 --- Service Response (HTTP {code}) ---\n{body}",
+                slug = top_slug,
+                base_url = base_url,
+                trust = trust_score,
+                price = price_micro_usdc as f64 / 1_000_000.0,
+                pay_to = pay_to,
+                sig = signature,
+                code = paid_status,
+                body = paid_body,
+            ))]))
+        } else {
+            // Service responded directly — no payment needed
+            let body_text = initial_resp.text().await.unwrap_or_else(|_| "<empty>".into());
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "=== said_discover_and_pay: Direct response (no x402) ===\n\n\
+                 Service:     {slug}\n\
+                 Base URL:    {base_url}\n\
+                 Trust Score: {trust:.2}\n\
+                 HTTP {code}\n\n{body}",
+                slug = top_slug,
+                base_url = base_url,
+                trust = trust_score,
+                code = status,
+                body = body_text,
+            ))]))
+        }
     }
 }
 
