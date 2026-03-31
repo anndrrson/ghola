@@ -118,6 +118,11 @@ enum Commands {
         #[command(subcommand)]
         action: PayAction,
     },
+    /// Service discovery — list and evaluate services from the on-chain SAID registry
+    Discover {
+        #[command(subcommand)]
+        action: DiscoverAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -326,6 +331,32 @@ enum PayAction {
         #[arg(long, default_value = "20")]
         limit: usize,
     },
+    /// Discover a service by task description and pay via x402 autonomously
+    DiscoverAndPay {
+        /// Natural language task description (e.g. "current weather in NYC")
+        task: String,
+        /// Agent wallet label to pay from
+        #[arg(long)]
+        agent: String,
+        /// Filter by service category
+        #[arg(long)]
+        category: Option<String>,
+        /// Maximum price per request in USDC (e.g. "0.05")
+        #[arg(long)]
+        max_price: Option<String>,
+        /// Minimum trust score to proceed (0.0–1.0, default: 0.5)
+        #[arg(long, default_value = "0.5")]
+        min_trust: f32,
+        /// JSON request body to send to the service
+        #[arg(long)]
+        body: Option<String>,
+        /// Solana RPC URL
+        #[arg(long, default_value = DEFAULT_RPC_URL)]
+        rpc_url: String,
+        /// SAID Cloud API base URL
+        #[arg(long, default_value = "https://ghola-api.onrender.com")]
+        api_url: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -370,6 +401,45 @@ enum AgentAction {
     Deactivate {
         /// Agent wallet label
         agent: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum DiscoverAction {
+    /// List active services from the on-chain SAID registry (+ cloud fallback)
+    Services {
+        /// Filter by category (e.g. data, inference, commerce, finance)
+        #[arg(long)]
+        category: Option<String>,
+        /// Filter by tags (comma-separated, e.g. weather,realtime)
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        /// Maximum price per request in USDC (e.g. "0.01")
+        #[arg(long)]
+        max_price: Option<String>,
+        /// Minimum reputation score 0.0–1.0
+        #[arg(long)]
+        min_reputation: Option<f32>,
+        /// Maximum results (default: 10)
+        #[arg(long, default_value = "10")]
+        limit: usize,
+        /// Solana RPC URL
+        #[arg(long, default_value = DEFAULT_RPC_URL)]
+        rpc_url: String,
+        /// SAID Cloud API base URL
+        #[arg(long, default_value = "https://ghola-api.onrender.com")]
+        api_url: String,
+    },
+    /// Evaluate a service's trustworthiness before paying
+    Evaluate {
+        /// Service slug (e.g. "acme-weather-api")
+        slug: String,
+        /// Solana RPC URL
+        #[arg(long, default_value = DEFAULT_RPC_URL)]
+        rpc_url: String,
+        /// SAID Cloud API base URL
+        #[arg(long, default_value = "https://ghola-api.onrender.com")]
+        api_url: String,
     },
 }
 
@@ -935,6 +1005,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::Pay { action } => {
             handle_pay(action, &dir).await?;
+        }
+
+        Commands::Discover { action } => {
+            handle_discover(action).await?;
         }
 
         Commands::Audit {
@@ -1509,6 +1583,417 @@ async fn handle_pay(
                     tx.created_at.format("%Y-%m-%d %H:%M")
                 );
             }
+        }
+
+        PayAction::DiscoverAndPay {
+            task,
+            agent,
+            category,
+            max_price,
+            min_trust,
+            body: request_body,
+            rpc_url,
+            api_url,
+        } => {
+            // Step 1: Discover matching services via cloud resolve
+            let http = reqwest::Client::new();
+            let mut discover_url = format!("{}/v1/services/resolve?task={}", api_url, task);
+            if let Some(ref cat) = category {
+                discover_url.push_str(&format!("&category={}", cat));
+            }
+            if let Some(ref price) = max_price {
+                let micro = (price.parse::<f64>().unwrap_or(0.0) * 1_000_000.0) as i64;
+                discover_url.push_str(&format!("&max_price_micro_usdc={}", micro));
+            }
+            discover_url.push_str("&limit=5");
+
+            println!("Discovering services for: '{}'", task);
+            let discover_data: serde_json::Value = http
+                .get(&discover_url)
+                .timeout(Duration::from_secs(15))
+                .send()
+                .await
+                .map_err(|e| format!("Discovery failed: {e}"))?
+                .json()
+                .await
+                .map_err(|e| format!("Discovery JSON error: {e}"))?;
+
+            let top_slug = discover_data
+                .get("services")
+                .and_then(|s| s.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|svc| svc.get("slug").or_else(|| svc.get("id")))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| format!("No services found matching: '{}'", task))?;
+
+            println!("Top match: {}", top_slug);
+
+            // Step 2: Fetch service details
+            let svc_data: serde_json::Value = http
+                .get(format!("{}/v1/services/{}", api_url, top_slug))
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await
+                .map_err(|e| format!("Service lookup failed: {e}"))?
+                .json()
+                .await
+                .map_err(|e| format!("JSON error: {e}"))?;
+
+            let service = svc_data
+                .get("service")
+                .ok_or_else(|| format!("Service '{}' metadata missing", top_slug))?;
+
+            let base_url = service
+                .get("base_url")
+                .and_then(|v| v.as_str())
+                .ok_or("Service has no base_url")?
+                .to_string();
+
+            let provider_did = service
+                .get("provider_did")
+                .or_else(|| service.get("did"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let price_micro_usdc = service
+                .get("price_micro_usdc")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            // Step 3: Trust check
+            let trust_score: f32 = if !provider_did.is_empty() {
+                let rep_resp = http
+                    .get(format!("{}/v1/reputation/{}", api_url, provider_did))
+                    .timeout(Duration::from_secs(8))
+                    .send()
+                    .await
+                    .ok();
+                let rep_data: serde_json::Value = match rep_resp {
+                    Some(r) => r.json().await.unwrap_or_default(),
+                    None => serde_json::Value::Null,
+                };
+                rep_data.get("overall_score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32
+            } else {
+                0.0
+            };
+
+            println!(
+                "Trust score: {:.2} (minimum: {:.2})",
+                trust_score, min_trust
+            );
+
+            if trust_score < min_trust {
+                eprintln!(
+                    "ABORTED: trust score {:.2} is below minimum {:.2}.\n\
+                     Run `said discover evaluate {}` for a full breakdown.",
+                    trust_score, min_trust, top_slug
+                );
+                std::process::exit(1);
+            }
+
+            // Step 4: Spending limit check
+            let (kp_bytes, agent_id, agent_label, sender) = {
+                let a = wallet.find_agent_wallet(&agent)?;
+                wallet.check_spending_limit(a.id, &PayCurrency::Usdc, price_micro_usdc)?;
+                let kp = wallet.agent_solana_keypair(a.index);
+                (kp, a.id, a.label.clone(), a.solana_address.clone())
+            };
+
+            // Step 5: Initial service call
+            let is_devnet = rpc_url.contains("devnet");
+            let endpoint_url = base_url.trim_end_matches('/').to_string();
+            let initial_resp = if let Some(ref b) = request_body {
+                http.post(&endpoint_url)
+                    .header("Content-Type", "application/json")
+                    .body(b.clone())
+            } else {
+                http.get(&endpoint_url)
+            }
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| format!("Service call failed: {e}"))?;
+
+            let status = initial_resp.status().as_u16();
+
+            if status == 402 {
+                // Step 6: Parse x402 header
+                let payment_header = initial_resp
+                    .headers()
+                    .get("payment-required")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+
+                let pay_to = if let Some(ref header) = payment_header {
+                    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+                    B64.decode(header)
+                        .ok()
+                        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                        .and_then(|v| {
+                            v.get("accepts")
+                                .and_then(|a| a.as_array())
+                                .and_then(|arr| arr.first())
+                                .and_then(|opt| opt.get("payTo"))
+                                .and_then(|pt| pt.as_str())
+                                .map(|s| s.to_string())
+                        })
+                } else {
+                    None
+                }
+                .ok_or("Service returned 402 but PAYMENT-REQUIRED header is missing or malformed")?;
+
+                // Step 7: Execute payment
+                let to_bytes = bs58::decode(&pay_to).into_vec()?;
+                if to_bytes.len() != 32 {
+                    return Err("payTo must be 32 bytes".into());
+                }
+                let mut to_arr = [0u8; 32];
+                to_arr.copy_from_slice(&to_bytes);
+
+                println!(
+                    "Paying {:.6} USDC to {}...",
+                    price_micro_usdc as f64 / 1_000_000.0,
+                    pay_to
+                );
+
+                let client = said_solana::SolanaClient::new(&rpc_url, &kp_bytes)?;
+                let signature = client.transfer_usdc(&to_arr, price_micro_usdc, is_devnet).await?;
+
+                // Log it
+                let _ = wallet.log_transaction(said_types::PaymentTransaction {
+                    id: uuid::Uuid::new_v4(),
+                    agent_id,
+                    agent_label: agent_label.clone(),
+                    direction: TxDirection::Send,
+                    currency: PayCurrency::Usdc,
+                    amount: price_micro_usdc,
+                    recipient: pay_to.clone(),
+                    sender,
+                    signature: signature.clone(),
+                    memo: Some(format!("x402 payment for service: {}", top_slug)),
+                    status: TxStatus::Confirmed,
+                    created_at: chrono::Utc::now(),
+                });
+
+                println!("TX:       {}", signature);
+                println!(
+                    "Explorer: https://explorer.solana.com/tx/{}?cluster=devnet",
+                    signature
+                );
+
+                // Step 8: Re-call with payment proof
+                let paid_resp = if let Some(ref b) = request_body {
+                    http.post(&endpoint_url)
+                        .header("Content-Type", "application/json")
+                        .header("X-Payment-Signature", &signature)
+                        .body(b.clone())
+                } else {
+                    http.get(&endpoint_url)
+                        .header("X-Payment-Signature", &signature)
+                }
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await
+                .map_err(|e| format!("Post-payment call failed: {e}"))?;
+
+                let paid_status = paid_resp.status().as_u16();
+                let paid_body = paid_resp.text().await.unwrap_or_else(|_| "<empty>".into());
+                println!("\n--- Service Response (HTTP {}) ---\n{}", paid_status, paid_body);
+            } else {
+                let body_text = initial_resp.text().await.unwrap_or_else(|_| "<empty>".into());
+                println!("HTTP {} (no x402)\n{}", status, body_text);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_discover(
+    action: DiscoverAction,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let http = reqwest::Client::new();
+
+    match action {
+        DiscoverAction::Services {
+            category,
+            tags,
+            max_price,
+            min_reputation,
+            limit,
+            rpc_url: _rpc_url, // RPC is used by the MCP tool; CLI goes via cloud
+            api_url,
+        } => {
+            println!("Discovering services...");
+            println!();
+
+            let mut url = format!("{}/v1/services", api_url);
+            let mut sep = '?';
+            if let Some(ref cat) = category {
+                url.push_str(&format!("{}category={}", sep, cat));
+                sep = '&';
+            }
+            if let Some(ref tag_list) = tags {
+                if !tag_list.is_empty() {
+                    url.push_str(&format!("{}tags={}", sep, tag_list.join(",")));
+                    sep = '&';
+                }
+            }
+            if let Some(ref price) = max_price {
+                let micro = (price.parse::<f64>().unwrap_or(0.0) * 1_000_000.0) as i64;
+                url.push_str(&format!("{}max_price_micro_usdc={}", sep, micro));
+                sep = '&';
+            }
+            if let Some(min_rep) = min_reputation {
+                url.push_str(&format!("{}min_reputation={}", sep, min_rep));
+                sep = '&';
+            }
+            url.push_str(&format!("{}limit={}", sep, limit));
+
+            let body: serde_json::Value = http
+                .get(&url)
+                .timeout(Duration::from_secs(15))
+                .send()
+                .await
+                .map_err(|e| format!("HTTP error: {e}"))?
+                .json()
+                .await
+                .map_err(|e| format!("JSON error: {e}"))?;
+
+            let services = body.get("services").and_then(|s| s.as_array());
+            match services {
+                None => println!("No services found (or unexpected API response)."),
+                Some(svcs) if svcs.is_empty() => println!("No services found."),
+                Some(svcs) => {
+                    println!(
+                        "{:<30} {:<50} {:<14} {:<12}",
+                        "Slug / ID", "Base URL", "Price (USDC)", "Category"
+                    );
+                    println!("{}", "-".repeat(106));
+                    for svc in svcs.iter().take(limit) {
+                        let slug = svc
+                            .get("slug")
+                            .or_else(|| svc.get("id"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("-");
+                        let base = svc.get("base_url").and_then(|v| v.as_str()).unwrap_or("-");
+                        let price = svc
+                            .get("price_micro_usdc")
+                            .and_then(|v| v.as_u64())
+                            .map(|p| p as f64 / 1_000_000.0)
+                            .unwrap_or(0.0);
+                        let cat = svc.get("category").and_then(|v| v.as_str()).unwrap_or("-");
+                        println!("{:<30} {:<50} {:<14.6} {:<12}", slug, base, price, cat);
+                    }
+                    println!();
+                    println!("  {} service(s) found.", svcs.len().min(limit));
+                    println!("  Run `said discover evaluate <slug>` for a trust assessment.");
+                }
+            }
+        }
+
+        DiscoverAction::Evaluate { slug, rpc_url, api_url } => {
+            println!("Evaluating service: {}", slug);
+            println!();
+
+            // Fetch service details from cloud
+            let svc_data: serde_json::Value = http
+                .get(format!("{}/v1/services/{}", api_url, slug))
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await
+                .map_err(|e| format!("Service lookup failed: {e}"))?
+                .json()
+                .await
+                .map_err(|e| format!("JSON error: {e}"))?;
+
+            let service = svc_data
+                .get("service")
+                .ok_or_else(|| format!("Service '{}' not found", slug))?;
+
+            let provider_did = service
+                .get("provider_did")
+                .or_else(|| service.get("did"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let base_url = service.get("base_url").and_then(|v| v.as_str()).unwrap_or("-");
+            let price_micro = service.get("price_micro_usdc").and_then(|v| v.as_u64()).unwrap_or(0);
+
+            // Fetch cloud reputation
+            let (cloud_score, cloud_confidence) = if !provider_did.is_empty() {
+                let rep_resp = http
+                    .get(format!("{}/v1/reputation/{}", api_url, provider_did))
+                    .timeout(Duration::from_secs(8))
+                    .send()
+                    .await
+                    .ok();
+                let rep_data: serde_json::Value = match rep_resp {
+                    Some(r) => r.json().await.unwrap_or_default(),
+                    None => serde_json::Value::Null,
+                };
+                let score = rep_data.get("overall_score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                let conf = rep_data.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                (score, conf)
+            } else {
+                (0.0f32, 0.0f32)
+            };
+
+            // Resolve identity for on-chain PDA info
+            let identity_pda: Option<String> = if !provider_did.is_empty() {
+                let resolve_resp = http
+                    .get(format!("{}/v1/resolve/{}", api_url, provider_did))
+                    .timeout(Duration::from_secs(5))
+                    .send()
+                    .await
+                    .ok();
+                let resolve_data: serde_json::Value = match resolve_resp {
+                    Some(r) => r.json().await.unwrap_or_default(),
+                    None => serde_json::Value::Null,
+                };
+                resolve_data
+                    .get("identity_pda")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            };
+
+            let verified = service.get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
+            let on_chain_registered = identity_pda.is_some()
+                || service.get("on_chain_registered").and_then(|v| v.as_bool()).unwrap_or(false);
+
+            let mut composite = cloud_score;
+            if verified {
+                composite = (composite + 0.1).min(1.0);
+            }
+            if on_chain_registered {
+                composite = (composite + 0.05).min(1.0);
+            }
+
+            let recommendation = if composite >= 0.7 {
+                "pay  (good reputation)"
+            } else if composite >= 0.3 {
+                "caution  (moderate reputation)"
+            } else {
+                "reject  (low reputation)"
+            };
+
+            println!("  Service:        {}", slug);
+            println!("  Base URL:       {}", base_url);
+            println!("  Price:          {:.6} USDC", price_micro as f64 / 1_000_000.0);
+            println!("  Provider DID:   {}", if provider_did.is_empty() { "(none)" } else { &provider_did });
+            println!("  Verified:       {}", verified);
+            println!("  On-chain:       {} (RPC: {})", on_chain_registered, rpc_url);
+            if let Some(ref pda) = identity_pda {
+                println!("  Identity PDA:   {}", pda);
+            }
+            println!("  Cloud Score:    {:.2}  (confidence: {:.2})", cloud_score, cloud_confidence);
+            println!("  Composite:      {:.2}", composite);
+            println!("  Recommendation: {}", recommendation);
         }
     }
 
