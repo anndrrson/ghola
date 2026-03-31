@@ -23,6 +23,7 @@ base64 = { workspace = true }
 bs58 = { workspace = true }
 rand = { workspace = true }
 said-types = { workspace = true }
+said-solana = { workspace = true }
 
 # Direct deps (not yet in workspace)
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring", "postgres", "chrono", "uuid"] }

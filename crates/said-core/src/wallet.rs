@@ -425,6 +425,38 @@ impl Wallet {
 
         Ok(())
     }
+
+    /// Check whether a recipient address is permitted by the agent's spending policy.
+    /// If `allowed_recipients` is empty, any address is allowed.
+    /// Returns an error if the address is not in the allowlist.
+    pub fn check_recipient_allowed(
+        &self,
+        agent_id: uuid::Uuid,
+        recipient: &str,
+    ) -> Result<()> {
+        let wallets: Vec<said_types::AgentWallet> =
+            self.storage.load("agent_wallets").unwrap_or_default();
+
+        let agent = wallets
+            .iter()
+            .find(|w| w.id == agent_id)
+            .ok_or_else(|| SaidError::AgentNotFound(agent_id.to_string()))?;
+
+        let policy = &agent.spending_policy;
+
+        if policy.allowed_recipients.is_empty() {
+            return Ok(());
+        }
+
+        if policy.allowed_recipients.iter().any(|r| r == recipient) {
+            Ok(())
+        } else {
+            Err(SaidError::SpendingLimitExceeded(format!(
+                "recipient '{}' is not in the allowed list for agent '{}'",
+                recipient, agent.label
+            )))
+        }
+    }
 }
 
 impl Drop for Wallet {

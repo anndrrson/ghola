@@ -15,6 +15,53 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
+/// The payment proof sent in the `x402-Payment` request header.
+///
+/// After executing a Solana transfer, the agent encodes this as base64 JSON
+/// and adds it to the retry request so the server can verify payment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct X402PaymentPayload {
+    #[serde(rename = "x402Version")]
+    pub version: u32,
+    pub scheme: String,
+    pub network: String,
+    pub payload: X402SolanaPayload,
+}
+
+/// Inner Solana-specific payment proof fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct X402SolanaPayload {
+    /// Base58 transaction signature returned by sendTransaction.
+    pub signature: String,
+    /// Base58 public key of the account that sent the payment.
+    pub from: String,
+}
+
+impl X402PaymentPayload {
+    /// Build a payment payload from a completed Solana transaction.
+    pub fn from_solana_tx(
+        network: &str,
+        signature: &str,
+        from_pubkey: &str,
+    ) -> Self {
+        Self {
+            version: 1,
+            scheme: "exact".to_string(),
+            network: network.to_string(),
+            payload: X402SolanaPayload {
+                signature: signature.to_string(),
+                from: from_pubkey.to_string(),
+            },
+        }
+    }
+
+    /// Encode as base64 JSON for the `x402-Payment` HTTP header.
+    pub fn encode(&self) -> Result<String, X402TrustError> {
+        let json = serde_json::to_vec(self)?;
+        Ok(STANDARD.encode(json))
+    }
+}
+
 /// x402 PaymentRequired response (parsed from the PAYMENT-REQUIRED header).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct X402PaymentRequired {
@@ -74,6 +121,37 @@ impl TrustAssessment {
     /// Whether the agent should exercise caution but may proceed.
     pub fn should_caution(&self) -> bool {
         self.recommendation == "caution"
+    }
+}
+
+impl X402PaymentRequired {
+    /// Find the best payment option for Solana (devnet or mainnet).
+    /// Prefers devnet when `is_devnet` is true, falls back to any solana option,
+    /// then falls back to the first option.
+    pub fn best_solana_option(&self, is_devnet: bool) -> Option<&X402PaymentOption> {
+        let devnet_id = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+        let mainnet_id = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+        let preferred = if is_devnet { devnet_id } else { mainnet_id };
+
+        // Exact match first
+        if let Some(opt) = self.accepts.iter().find(|o| o.network == preferred) {
+            return Some(opt);
+        }
+        // Any solana network
+        if let Some(opt) = self.accepts.iter().find(|o| o.network.starts_with("solana:")) {
+            return Some(opt);
+        }
+        self.accepts.first()
+    }
+
+    /// Parse `max_amount_required` as micro-USDC (u64).
+    /// The field may be an integer string like "1000" or a decimal like "1.5".
+    pub fn parse_amount(amount_str: &str) -> Option<u64> {
+        if let Ok(v) = amount_str.parse::<u64>() {
+            return Some(v);
+        }
+        // Fallback: parse as float and truncate
+        amount_str.parse::<f64>().ok().map(|v| v as u64)
     }
 }
 

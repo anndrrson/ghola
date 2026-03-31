@@ -18,6 +18,7 @@ use said_types::{
     AgentWallet, Capability, ConversationEntry, KnowledgeDoc, McpConfig, Memory, PayCurrency,
     PaymentTransaction, Preference, Secret, SpendingPolicy, SystemPrompt, TxDirection, TxStatus,
 };
+use said_x402::{GholaX402Client, X402PaymentPayload};
 
 // ── Tool Parameter Types ──
 
@@ -291,6 +292,27 @@ pub struct VerifyX402MerchantParams {
     pub address: String,
     /// SAID Cloud API base URL
     pub api_url: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct PayX402Params {
+    /// The service URL to call (will be probed for a 402 first)
+    pub url: String,
+    /// HTTP method for the service call (default: GET)
+    pub method: Option<String>,
+    /// Request body as JSON string (for POST/PUT)
+    pub body: Option<String>,
+    /// Agent wallet label to pay from
+    pub agent: String,
+    /// Minimum trust score to proceed with payment (0.0–1.0, default: 0.3).
+    /// Use 0.0 to allow payment to any merchant, 0.7 for verified-only.
+    pub min_trust_score: Option<f32>,
+    /// Optional memo logged with the transaction
+    pub memo: Option<String>,
+    /// Solana RPC URL (default: https://api.devnet.solana.com)
+    pub rpc_url: Option<String>,
+    /// Ghola API base URL for trust checks (default: https://ghola-api.onrender.com/v1)
+    pub ghola_api_url: Option<String>,
 }
 
 // ── MCP Server ──
@@ -1041,6 +1063,11 @@ impl SaidServer {
                 .find_agent_wallet(&params.agent)
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
+            // Check allowlist
+            wallet
+                .check_recipient_allowed(agent.id, &params.to)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
             // Check spending limits
             wallet
                 .check_spending_limit(agent.id, &currency, amount)
@@ -1587,6 +1614,203 @@ impl SaidServer {
 
         let output = serde_json::to_string_pretty(&result).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        name = "said_pay_x402",
+        description = "End-to-end x402 agentic payment: probe a URL for a 402 payment requirement, \
+            verify the merchant's trust score via Ghola, enforce the agent's spending policy and \
+            recipient allowlist, send USDC on Solana, then retry the original request with payment \
+            proof. Returns the service response after payment."
+    )]
+    async fn pay_x402(
+        &self,
+        Parameters(params): Parameters<PayX402Params>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.check_capability(&Capability::PayTransfer)?;
+
+        let rpc_url = params
+            .rpc_url
+            .unwrap_or_else(|| "https://api.devnet.solana.com".to_string());
+        let is_devnet = rpc_url.contains("devnet");
+        let ghola_api = params
+            .ghola_api_url
+            .unwrap_or_else(|| "https://ghola-api.onrender.com/v1".to_string());
+        let min_trust = params.min_trust_score.unwrap_or(0.3);
+        let method_str = params.method.as_deref().unwrap_or("GET").to_uppercase();
+
+        // ── Step 1: Probe the URL to obtain the 402 payment terms ──
+        let http = reqwest::Client::new();
+        let probe_req = {
+            let m: reqwest::Method = method_str
+                .parse()
+                .map_err(|_| ErrorData::internal_error(format!("invalid method: {}", method_str), None))?;
+            let mut r = http.request(m.clone(), &params.url);
+            if let Some(ref b) = params.body {
+                r = r.header("Content-Type", "application/json").body(b.clone());
+            }
+            r
+        };
+
+        let probe_resp = probe_req
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("probe request failed: {e}"), None))?;
+
+        let probe_status = probe_resp.status().as_u16();
+        if probe_status != 402 {
+            // Service responded without requiring payment — return directly
+            let body = probe_resp.text().await.unwrap_or_default();
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "HTTP {} (no payment required)\n\n{}",
+                probe_status, body
+            ))]));
+        }
+
+        // Extract PAYMENT-REQUIRED header
+        let payment_header = probe_resp
+            .headers()
+            .get("payment-required")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| ErrorData::internal_error("Missing PAYMENT-REQUIRED header in 402 response".to_string(), None))?
+            .to_string();
+
+        let payment_required = GholaX402Client::parse_payment_required(&payment_header)
+            .map_err(|e| ErrorData::internal_error(format!("failed to parse payment terms: {e}"), None))?;
+
+        // ── Step 2: Select the best Solana payment option ──
+        let option = payment_required
+            .best_solana_option(is_devnet)
+            .ok_or_else(|| ErrorData::internal_error("No compatible payment option in 402 response".to_string(), None))?
+            .clone();
+
+        let amount_micro_usdc = said_x402::X402PaymentRequired::parse_amount(&option.max_amount_required)
+            .ok_or_else(|| ErrorData::internal_error(
+                format!("unparseable payment amount: {}", option.max_amount_required), None
+            ))?;
+        let pay_to = option.pay_to.clone();
+
+        // ── Step 3: Assess merchant trust ──
+        let trust_client = GholaX402Client::new(&ghola_api);
+        let assessment = trust_client
+            .assess_merchant(&pay_to)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("trust check failed: {e}"), None))?;
+
+        if assessment.trust_score < min_trust && assessment.recommendation == "reject" {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Payment blocked: merchant '{}' has trust score {:.2} (minimum: {:.2})\nReason: {}\nRecommendation: {}",
+                pay_to, assessment.trust_score, min_trust, assessment.reason, assessment.recommendation
+            ))]));
+        }
+
+        // ── Step 4: Enforce spending policy + allowlist ──
+        let (kp_bytes, agent_id, agent_label, sender_address) = {
+            let wallet = self.wallet.lock().unwrap();
+            let agent = wallet
+                .find_agent_wallet(&params.agent)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            // Allowlist check
+            wallet
+                .check_recipient_allowed(agent.id, &pay_to)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            // Spending limit check
+            wallet
+                .check_spending_limit(agent.id, &PayCurrency::Usdc, amount_micro_usdc)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            let kp = wallet.agent_solana_keypair(agent.index);
+            let addr = agent.solana_address.clone();
+            (kp, agent.id, agent.label.clone(), addr)
+        };
+
+        // ── Step 5: Execute the USDC transfer on Solana ──
+        let solana = said_solana::SolanaClient::new(&rpc_url, &kp_bytes)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let to_bytes = bs58::decode(&pay_to)
+            .into_vec()
+            .map_err(|e| ErrorData::internal_error(format!("invalid payTo address: {e}"), None))?;
+        if to_bytes.len() != 32 {
+            return Err(ErrorData::internal_error("payTo must be a 32-byte Solana address".to_string(), None));
+        }
+        let mut to_arr = [0u8; 32];
+        to_arr.copy_from_slice(&to_bytes);
+
+        let tx_sig = solana
+            .transfer_usdc(&to_arr, amount_micro_usdc, is_devnet)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("USDC transfer failed: {e}"), None))?;
+
+        // ── Step 6: Log the transaction locally ──
+        let tx_record = PaymentTransaction {
+            id: uuid::Uuid::new_v4(),
+            agent_id,
+            agent_label: agent_label.clone(),
+            direction: TxDirection::Send,
+            currency: PayCurrency::Usdc,
+            amount: amount_micro_usdc,
+            recipient: pay_to.clone(),
+            sender: sender_address,
+            signature: tx_sig.clone(),
+            memo: params.memo.clone(),
+            status: TxStatus::Confirmed,
+            created_at: chrono::Utc::now(),
+        };
+        let _ = self.wallet.lock().unwrap().log_transaction(tx_record);
+
+        // ── Step 7: Build x402-Payment proof header ──
+        let network = option.network.clone();
+        let sender_pubkey = bs58::encode(&kp_bytes[32..]).into_string();
+        let proof = X402PaymentPayload::from_solana_tx(&network, &tx_sig, &sender_pubkey);
+        let payment_header_value = proof
+            .encode()
+            .map_err(|e| ErrorData::internal_error(format!("failed to encode payment proof: {e}"), None))?;
+
+        // ── Step 8: Retry the original request with payment proof ──
+        let m: reqwest::Method = method_str
+            .parse()
+            .map_err(|_| ErrorData::internal_error(format!("invalid method: {}", method_str), None))?;
+        let mut retry_req = http
+            .request(m, &params.url)
+            .header("x402-Payment", &payment_header_value);
+        if let Some(ref b) = params.body {
+            retry_req = retry_req
+                .header("Content-Type", "application/json")
+                .body(b.clone());
+        }
+
+        let final_resp = retry_req
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("paid request failed: {e}"), None))?;
+
+        let final_status = final_resp.status().as_u16();
+        let final_body = final_resp.text().await.unwrap_or_default();
+
+        // Pretty-print JSON if possible
+        let final_output = serde_json::from_str::<serde_json::Value>(&final_body)
+            .ok()
+            .and_then(|v| serde_json::to_string_pretty(&v).ok())
+            .unwrap_or(final_body);
+
+        let summary = format!(
+            "Paid {:.6} USDC from '{}' to {}\nTX: {}\nTrust: {} ({:.2})\n\nHTTP {} response:\n{}",
+            amount_micro_usdc as f64 / 1_000_000.0,
+            agent_label,
+            pay_to,
+            tx_sig,
+            assessment.recommendation,
+            assessment.trust_score,
+            final_status,
+            final_output,
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(summary)]))
     }
 
     #[tool(

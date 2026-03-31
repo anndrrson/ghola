@@ -13,6 +13,12 @@ pub struct Config {
     pub stripe_price_business: Option<String>,      // price_xxx for $29/mo
     pub allowed_origins: String,
     pub admin_emails: Vec<String>,
+    /// Base58-encoded 64-byte settlement keypair ([secret(32)|pubkey(32)]).
+    /// Required for on-chain USDC settlement. If absent, settlement batches
+    /// are created in the DB but Solana transfers are skipped.
+    pub settlement_keypair_bs58: Option<String>,
+    /// Solana RPC endpoint for settlement transactions (default: devnet).
+    pub solana_rpc_url: String,
 }
 
 impl Config {
@@ -38,6 +44,9 @@ impl Config {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            settlement_keypair_bs58: env::var("SETTLEMENT_KEYPAIR").ok(),
+            solana_rpc_url: env::var("SOLANA_RPC_URL")
+                .unwrap_or_else(|_| "https://api.devnet.solana.com".into()),
         }
     }
 }

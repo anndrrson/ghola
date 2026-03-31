@@ -7,6 +7,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use said_solana::SolanaClient;
+
 use crate::auth::Claims;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -534,8 +536,11 @@ pub async fn settlement_loop(state: Arc<AppState>) {
 async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
     let now = chrono::Utc::now();
     let period_end = now;
-    // Use 1 hour ago as period start (or last settlement end)
     let period_start = now - chrono::Duration::hours(1);
+
+    // Resolve the settlement keypair once — None means skip on-chain transfers
+    let settlement_client: Option<SolanaClient> = build_settlement_client(state);
+    let is_devnet = state.config.solana_rpc_url.contains("devnet");
 
     // Find all services with unsettled usage
     let services: Vec<(Uuid, i32)> = sqlx::query_as(
@@ -564,16 +569,70 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
             continue;
         }
 
-        // Calculate shares
+        // Calculate shares (fee_bps is basis points, e.g. 300 = 3%)
         let platform_share = (total_amount * fee_bps as i64) / 10000;
         let merchant_share = total_amount - platform_share;
 
-        // Create settlement batch
+        // Fetch merchant's receive_address and owner_did
+        let service_info: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT receive_address, owner_did FROM service_listings WHERE id = $1",
+        )
+        .bind(service_id)
+        .fetch_optional(&state.db)
+        .await?;
+
+        let (receive_address, owner_did) = service_info
+            .unwrap_or((None, None));
+
+        // ── Execute on-chain USDC transfer to merchant ──
+        let tx_signature: Option<String> = if let (Some(client), Some(ref addr)) =
+            (&settlement_client, &receive_address)
+        {
+            match execute_merchant_transfer(client, addr, merchant_share as u64, is_devnet).await {
+                Ok(sig) => {
+                    tracing::info!(
+                        service_id = %service_id,
+                        merchant_share,
+                        tx = %sig,
+                        "On-chain settlement transfer submitted"
+                    );
+                    Some(sig)
+                }
+                Err(e) => {
+                    tracing::error!(
+                        service_id = %service_id,
+                        error = %e,
+                        "On-chain settlement transfer failed — batch recorded as pending"
+                    );
+                    // Don't mark usage as settled so we retry next hour
+                    continue;
+                }
+            }
+        } else {
+            if settlement_client.is_none() {
+                tracing::warn!(
+                    service_id = %service_id,
+                    "SETTLEMENT_KEYPAIR not configured — batch recorded without on-chain transfer"
+                );
+            } else {
+                tracing::warn!(
+                    service_id = %service_id,
+                    "Service has no receive_address — batch recorded without on-chain transfer"
+                );
+            }
+            None
+        };
+
+        let batch_status = if tx_signature.is_some() { "completed" } else { "pending" };
+        let settled_at: Option<chrono::DateTime<chrono::Utc>> =
+            if tx_signature.is_some() { Some(now) } else { None };
+
+        // Upsert settlement batch
         sqlx::query(
             r#"INSERT INTO settlement_batches
                 (service_id, period_start, period_end, total_requests, total_micro_usdc,
-                 merchant_share_micro_usdc, platform_share_micro_usdc, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')"#,
+                 merchant_share_micro_usdc, platform_share_micro_usdc, status, tx_signature, settled_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
         )
         .bind(service_id)
         .bind(period_start)
@@ -582,10 +641,13 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
         .bind(total_amount)
         .bind(merchant_share)
         .bind(platform_share)
+        .bind(batch_status)
+        .bind(&tx_signature)
+        .bind(settled_at)
         .execute(&state.db)
         .await?;
 
-        // Mark usage as settled
+        // Mark usage as settled only when transfer succeeded (or no keypair — best-effort)
         sqlx::query(
             "UPDATE metered_usage SET settled = true WHERE service_id = $1 AND settled = false",
         )
@@ -593,7 +655,7 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
         .execute(&state.db)
         .await?;
 
-        // Update service revenue
+        // Update service revenue counter
         sqlx::query(
             "UPDATE service_listings SET total_revenue_micro_usdc = total_revenue_micro_usdc + $1 WHERE id = $2",
         )
@@ -602,24 +664,18 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
         .execute(&state.db)
         .await?;
 
-        // Emit reputation event for the merchant
-        let owner_did: Option<String> = sqlx::query_scalar(
-            "SELECT owner_did FROM service_listings WHERE id = $1",
-        )
-        .bind(service_id)
-        .fetch_optional(&state.db)
-        .await?;
-
-        if let Some(did) = owner_did {
+        // Emit reputation event
+        if let Some(ref did) = owner_did {
             sqlx::query(
                 r#"INSERT INTO reputation_events (entity_did, event_type, details)
                 VALUES ($1, 'transaction_completed', $2)"#,
             )
-            .bind(&did)
+            .bind(did)
             .bind(serde_json::json!({
                 "settlement_amount": total_amount,
                 "merchant_share": merchant_share,
                 "requests": total_requests,
+                "tx_signature": tx_signature,
             }))
             .execute(&state.db)
             .await
@@ -627,9 +683,57 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
         }
 
         tracing::info!(
-            "Settlement created for service {service_id}: {total_requests} requests, {total_amount} micro USDC"
+            service_id = %service_id,
+            total_requests,
+            total_amount,
+            merchant_share,
+            status = batch_status,
+            "Settlement batch processed"
         );
     }
 
     Ok(())
+}
+
+/// Decode the SETTLEMENT_KEYPAIR env var and create a SolanaClient.
+/// Returns None if the env var is absent or malformed.
+fn build_settlement_client(state: &AppState) -> Option<SolanaClient> {
+    let kp_bs58 = state.config.settlement_keypair_bs58.as_deref()?;
+    let kp_bytes = bs58::decode(kp_bs58).into_vec().ok()?;
+    if kp_bytes.len() != 64 {
+        tracing::error!("SETTLEMENT_KEYPAIR must be a 64-byte base58 keypair");
+        return None;
+    }
+    let mut arr = [0u8; 64];
+    arr.copy_from_slice(&kp_bytes);
+    SolanaClient::new(&state.config.solana_rpc_url, &arr)
+        .map_err(|e| {
+            tracing::error!("Failed to create settlement SolanaClient: {e}");
+            e
+        })
+        .ok()
+}
+
+/// Transfer `amount` micro-USDC to the merchant's `receive_address`.
+async fn execute_merchant_transfer(
+    client: &SolanaClient,
+    receive_address: &str,
+    amount_micro_usdc: u64,
+    is_devnet: bool,
+) -> anyhow::Result<String> {
+    let addr_bytes = bs58::decode(receive_address)
+        .into_vec()
+        .map_err(|e| anyhow::anyhow!("invalid receive_address '{}': {}", receive_address, e))?;
+    if addr_bytes.len() != 32 {
+        anyhow::bail!("receive_address must be a 32-byte Solana public key");
+    }
+    let mut addr_arr = [0u8; 32];
+    addr_arr.copy_from_slice(&addr_bytes);
+
+    let sig = client
+        .transfer_usdc(&addr_arr, amount_micro_usdc, is_devnet)
+        .await
+        .map_err(|e| anyhow::anyhow!("transfer_usdc failed: {}", e))?;
+
+    Ok(sig)
 }
