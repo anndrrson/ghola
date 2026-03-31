@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::http::{HeaderName, Method};
@@ -14,9 +15,11 @@ mod config;
 mod db;
 mod error;
 mod health_checker;
+mod ip_rate_limit;
 mod metered;
 mod routes;
 mod self_register;
+mod signing;
 mod state;
 
 use config::Config;
@@ -44,12 +47,19 @@ async fn main() -> anyhow::Result<()> {
     sqlx::migrate!("../../migrations-cloud").run(&db).await?;
     tracing::info!("Migrations applied");
 
+    let signing_key = Arc::new(AppState::build_signing_key(&config));
+    tracing::info!(
+        pubkey = %hex::encode(ed25519_dalek::VerifyingKey::from(signing_key.as_ref()).to_bytes()),
+        "Response signing key loaded"
+    );
+
     let state = Arc::new(AppState {
         db,
         config: config.clone(),
         http_client: reqwest::Client::new(),
         rate_limiter: Arc::new(state::RateLimiter::new()),
         usage_meter: Arc::new(state::UsageMeter::new()),
+        signing_key,
     });
 
     // Spawn background health checker for inference nodes
@@ -95,12 +105,15 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers([
             HeaderName::from_static("content-type"),
             HeaderName::from_static("authorization"),
+            HeaderName::from_static("x-service-key"),
         ])
         .allow_credentials(true);
 
     // Public routes
     let public = Router::new()
         .route("/health", get(routes::health::health))
+        // Expose server's ed25519 public key so clients can verify X-Ghola-Signature
+        .route("/v1/signing-key", get(signing_key_handler))
         // Pricing catalog (headless merchant schema)
         .route("/v1/pricing", get(routes::pricing::get_pricing))
         .route(
@@ -461,6 +474,17 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .merge(public)
         .merge(protected)
+        // IP rate limiting: 30/min unauthenticated, 300/min authenticated
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            ip_rate_limit::ip_rate_limit,
+        ))
+        // Cryptographic response signing (X-Ghola-Signature + X-Ghola-Timestamp)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            signing::sign_responses,
+        ))
+        // Pricing headers (X-Price-Micro-USDC etc.)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             metered::pricing_headers,
@@ -469,13 +493,17 @@ async fn main() -> anyhow::Result<()> {
         .layer(cors)
         .layer(TraceLayer::new_for_http());
 
-    let bind_addr = config.bind_addr.parse::<std::net::SocketAddr>()?;
+    let bind_addr = config.bind_addr.parse::<SocketAddr>()?;
     tracing::info!("Starting SAID Cloud API on {bind_addr}");
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Use connect_info so ip_rate_limit can extract the real socket address
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }
@@ -485,4 +513,22 @@ async fn shutdown_signal() {
         .await
         .expect("Failed to listen for ctrl+c");
     tracing::info!("Shutdown signal received");
+}
+
+/// GET /v1/signing-key — returns the server's ed25519 public key (hex).
+/// Clients can use this to verify X-Ghola-Signature on any response.
+async fn signing_key_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    use ed25519_dalek::VerifyingKey;
+    let pubkey = VerifyingKey::from(state.signing_key.as_ref());
+    axum::Json(serde_json::json!({
+        "algorithm": "ed25519",
+        "public_key_hex": hex::encode(pubkey.to_bytes()),
+        "signed_message_format": "{unix_timestamp}:{HTTP_METHOD}:{path}",
+        "headers": {
+            "signature": "X-Ghola-Signature",
+            "timestamp": "X-Ghola-Timestamp"
+        }
+    }))
 }

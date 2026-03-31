@@ -96,6 +96,46 @@ pub async fn auth_middleware(
     Ok(next.run(req).await)
 }
 
+/// Returns true if the request headers contain a valid JWT Bearer token
+/// OR a non-empty X-Service-Key that exists in the database as an active key.
+/// Used to gate bulk/paginated list endpoints.
+pub async fn check_bulk_auth(
+    headers: &axum::http::HeaderMap,
+    state: &crate::state::AppState,
+) -> bool {
+    // Check Bearer JWT
+    if let Some(token) = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+    {
+        if validate_jwt(token, &state.config.jwt_secret).is_ok() {
+            return true;
+        }
+    }
+
+    // Check X-Service-Key
+    if let Some(raw_key) = headers
+        .get("x-service-key")
+        .and_then(|v| v.to_str().ok())
+    {
+        use sha2::{Digest, Sha256};
+        let key_hash = hex::encode(Sha256::digest(raw_key.as_bytes()));
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM service_api_keys WHERE key_hash = $1 AND active = true)",
+        )
+        .bind(&key_hash)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(false);
+        if exists {
+            return true;
+        }
+    }
+
+    false
+}
+
 pub fn hash_password(password: &str) -> AppResult<String> {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();

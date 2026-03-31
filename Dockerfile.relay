@@ -14,7 +14,19 @@ RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/
 COPY --from=builder /app/target/release/thumper-relay /usr/local/bin/thumper-relay
 
 ENV THUMPER_RELAY_BIND=0.0.0.0:10000
-ENV THUMPER_DEV_MODE=true
+# THUMPER_DEV_MODE is intentionally NOT set here — default is production (false).
+# Set THUMPER_DEV_MODE=true at runtime only for local development.
+#
+# TLS: Set THUMPER_RELAY_TLS_CERT and THUMPER_RELAY_TLS_KEY to paths of a PEM
+# certificate and private key to enable TLS on the WebSocket listener.
+# Example (docker run):
+#   -e THUMPER_RELAY_TLS_CERT=/certs/fullchain.pem
+#   -e THUMPER_RELAY_TLS_KEY=/certs/privkey.pem
+#   -v /etc/letsencrypt/live/yourdomain:/certs:ro
+
+RUN useradd --system --no-create-home --uid 65532 nonroot
+USER nonroot
+
 EXPOSE 10000
 
 CMD ["thumper-relay"]

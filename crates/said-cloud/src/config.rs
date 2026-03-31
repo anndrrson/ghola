@@ -19,6 +19,9 @@ pub struct Config {
     pub settlement_keypair_bs58: Option<String>,
     /// Solana RPC endpoint for settlement transactions (default: devnet).
     pub solana_rpc_url: String,
+    /// Optional hex-encoded 32-byte ed25519 seed for response signing.
+    /// If absent, an ephemeral key is generated at startup.
+    pub signing_key_hex: Option<String>,
 }
 
 impl Config {
@@ -47,6 +50,7 @@ impl Config {
             settlement_keypair_bs58: env::var("SETTLEMENT_KEYPAIR").ok(),
             solana_rpc_url: env::var("SOLANA_RPC_URL")
                 .unwrap_or_else(|_| "https://api.devnet.solana.com".into()),
+            signing_key_hex: env::var("SIGNING_KEY").ok(),
         }
     }
 }

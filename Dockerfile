@@ -49,6 +49,9 @@ COPY --from=builder /app/target/release/said-cloud /usr/local/bin/said-cloud
 
 ENV BIND_ADDR=0.0.0.0:8080
 
+RUN useradd --system --no-create-home --uid 65532 nonroot
+USER nonroot
+
 EXPOSE 8080
 
 CMD ["said-cloud"]
