@@ -520,41 +520,143 @@ pub async fn list_settlements(
 
 // ── Settlement Background Task ──
 
-/// Runs every hour, aggregates unsettled usage into settlement batches.
+/// Runs on the global default interval (3600 s) and dispatches per-tenant
+/// settlement runs with their own configurable intervals and RPC failover.
 pub async fn settlement_loop(state: Arc<AppState>) {
-    let interval = std::time::Duration::from_secs(3600); // 1 hour
+    // Global tick: every 60 s, check which tenants are due for settlement.
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        tokio::time::sleep(interval).await;
+        interval.tick().await;
 
-        if let Err(e) = process_settlements(&state).await {
-            tracing::error!("Settlement processing error: {e}");
+        // Collect tenant settlement configs.
+        #[derive(sqlx::FromRow)]
+        struct TenantCfg {
+            id: Option<Uuid>,  // NULL = "global" (no tenant)
+            settlement_interval_secs: i32,
+            fallback_rpc_urls: Vec<String>,
+        }
+
+        let tenants: Vec<TenantCfg> = sqlx::query_as(
+            r#"SELECT id,
+                      settlement_interval_secs,
+                      fallback_rpc_urls
+               FROM tenants
+               UNION ALL
+               SELECT NULL::uuid, 3600, ARRAY[]::text[]"#,
+        )
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+        let now_ts = chrono::Utc::now().timestamp();
+
+        for cfg in tenants {
+            let last_settled: Option<i64> = sqlx::query_scalar(
+                r#"SELECT EXTRACT(EPOCH FROM MAX(created_at))::bigint
+                   FROM settlement_batches sb
+                   JOIN service_listings sl ON sl.id = sb.service_id
+                   WHERE ($1::uuid IS NULL AND sl.owner_did NOT IN (
+                             SELECT did FROM business_profiles WHERE user_id IN (
+                                 SELECT user_id FROM tenant_members
+                             )
+                         ))
+                      OR EXISTS (
+                             SELECT 1 FROM tenant_members tm
+                             JOIN users u ON u.id = tm.user_id
+                             JOIN business_profiles bp ON bp.user_id = u.id
+                             WHERE bp.did = sl.owner_did AND tm.tenant_id = $1
+                         )"#,
+            )
+            .bind(cfg.id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None)
+            .flatten();
+
+            let elapsed = now_ts - last_settled.unwrap_or(0);
+            if elapsed < cfg.settlement_interval_secs as i64 {
+                continue;
+            }
+
+            let rpc_url = pick_healthy_rpc(&state, &cfg.fallback_rpc_urls).await;
+
+            if let Err(e) = process_settlements(&state, cfg.id, rpc_url.as_deref()).await {
+                tracing::error!(tenant_id = ?cfg.id, "Settlement processing error: {e}");
+            }
         }
     }
 }
 
-async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
+/// Select the first healthy RPC URL from the fallback list.
+async fn pick_healthy_rpc(state: &AppState, urls: &[String]) -> Option<String> {
+    for url in urls {
+        let ok = state
+            .http_client
+            .post(url)
+            .timeout(std::time::Duration::from_secs(3))
+            .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getHealth"}))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+
+        if ok {
+            return Some(url.clone());
+        } else {
+            tracing::warn!(rpc_url = %url, "RPC health check failed, trying next fallback");
+        }
+    }
+    None
+}
+
+async fn process_settlements(
+    state: &AppState,
+    tenant_id: Option<Uuid>,
+    rpc_url: Option<&str>,
+) -> anyhow::Result<()> {
     let now = chrono::Utc::now();
     let period_end = now;
     let period_start = now - chrono::Duration::hours(1);
 
-    // Resolve the settlement keypair once — None means skip on-chain transfers
+    // Resolve the settlement keypair — None means skip on-chain transfers
     let settlement_client: Option<SolanaClient> = build_settlement_client(state);
-    let is_devnet = state.config.solana_rpc_url.contains("devnet");
+    let effective_rpc = rpc_url.unwrap_or(&state.config.solana_rpc_url);
+    let is_devnet = effective_rpc.contains("devnet");
 
-    // Find all services with unsettled usage
-    let services: Vec<(Uuid, i32)> = sqlx::query_as(
-        r#"SELECT service_id, COALESCE(platform_fee_bps, 300)
-        FROM metered_usage mu
-        JOIN service_listings sl ON sl.id = mu.service_id
-        WHERE mu.settled = false
-        GROUP BY service_id, sl.platform_fee_bps
-        HAVING SUM(mu.amount_micro_usdc) > 0"#,
+    // Find all services with unsettled usage scoped to this tenant (or global).
+    let services: Vec<(Uuid, i32, Option<String>)> = sqlx::query_as(
+        r#"SELECT mu.service_id,
+                  COALESCE(sl.platform_fee_bps, 300),
+                  sl.owner_did
+           FROM metered_usage mu
+           JOIN service_listings sl ON sl.id = mu.service_id
+           WHERE mu.settled = false
+             AND (
+                 ($1::uuid IS NULL AND NOT EXISTS (
+                     SELECT 1 FROM tenant_members tm
+                     JOIN users u ON u.id = tm.user_id
+                     JOIN business_profiles bp ON bp.user_id = u.id
+                     WHERE bp.did = sl.owner_did
+                 ))
+                 OR EXISTS (
+                     SELECT 1 FROM tenant_members tm
+                     JOIN users u ON u.id = tm.user_id
+                     JOIN business_profiles bp ON bp.user_id = u.id
+                     WHERE bp.did = sl.owner_did AND tm.tenant_id = $1
+                 )
+             )
+           GROUP BY mu.service_id, sl.platform_fee_bps, sl.owner_did
+           HAVING SUM(mu.amount_micro_usdc) > 0"#,
     )
+    .bind(tenant_id)
     .fetch_all(&state.db)
     .await?;
 
-    for (service_id, fee_bps) in services {
+    let mut settled_count = 0usize;
+
+    for (service_id, fee_bps, owner_did) in services {
         // Aggregate unsettled usage for this service
         let (total_requests, total_amount): (i64, i64) = sqlx::query_as(
             r#"SELECT COALESCE(SUM(request_count), 0), COALESCE(SUM(amount_micro_usdc), 0)
@@ -573,16 +675,14 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
         let platform_share = (total_amount * fee_bps as i64) / 10000;
         let merchant_share = total_amount - platform_share;
 
-        // Fetch merchant's receive_address and owner_did
-        let service_info: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT receive_address, owner_did FROM service_listings WHERE id = $1",
+        // Fetch merchant's receive_address from service info (owner_did already in loop var)
+        let receive_address: Option<String> = sqlx::query_scalar(
+            "SELECT receive_address FROM service_listings WHERE id = $1",
         )
         .bind(service_id)
         .fetch_optional(&state.db)
-        .await?;
-
-        let (receive_address, owner_did) = service_info
-            .unwrap_or((None, None));
+        .await?
+        .flatten();
 
         // ── Execute on-chain USDC transfer to merchant ──
         let tx_signature: Option<String> = if let (Some(client), Some(ref addr)) =
@@ -682,7 +782,9 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
             .ok();
         }
 
+        settled_count += 1;
         tracing::info!(
+            tenant_id = ?tenant_id,
             service_id = %service_id,
             total_requests,
             total_amount,
@@ -690,6 +792,10 @@ async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
             status = batch_status,
             "Settlement batch processed"
         );
+    }
+
+    if settled_count > 0 {
+        tracing::info!(tenant_id = ?tenant_id, count = settled_count, "Settlement run completed");
     }
 
     Ok(())

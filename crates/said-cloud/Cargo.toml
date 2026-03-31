@@ -39,3 +39,5 @@ ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
 hmac = "0.12"
 hex = "0.4"
+aes-gcm = { workspace = true }
+hkdf = { workspace = true }

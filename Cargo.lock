@@ -2717,6 +2717,7 @@ dependencies = [
 name = "said-cloud"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "argon2",
  "axum",
@@ -2727,6 +2728,7 @@ dependencies = [
  "dotenvy",
  "ed25519-dalek",
  "hex",
+ "hkdf",
  "hmac",
  "jsonwebtoken",
  "rand 0.8.5",
