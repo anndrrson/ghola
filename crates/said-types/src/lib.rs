@@ -678,3 +678,52 @@ pub enum TxStatus {
     Confirmed,
     Failed,
 }
+
+// ── Circuit Breaker Types ──
+
+/// Tracks consecutive payment failures for an agent wallet.
+/// When `consecutive_failures` reaches the configured threshold, `tripped` is set to true
+/// and the agent's spending is locked until manually unlocked.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SpendingCircuitBreaker {
+    pub agent_id: Uuid,
+    /// Number of consecutive payment failures since last success or unlock.
+    pub consecutive_failures: u32,
+    /// Whether the circuit breaker has tripped (spending is locked).
+    pub tripped: bool,
+    /// Timestamp of the most recent payment failure.
+    pub last_failure_at: Option<DateTime<Utc>>,
+    /// Timestamp when the circuit breaker tripped.
+    pub tripped_at: Option<DateTime<Utc>>,
+}
+
+/// Spending status for an agent wallet — returned by `said_spending_status`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SpendingStatus {
+    pub agent_id: Uuid,
+    pub agent_label: String,
+    pub solana_address: String,
+    pub active: bool,
+    /// Total SOL sent in the last 24h (lamports).
+    pub spend_today_sol_lamports: u64,
+    /// Total USDC sent in the last 24h (micro-units, 6 decimals).
+    pub spend_today_usdc_micro: u64,
+    /// Daily SOL limit (lamports). None = unlimited.
+    pub daily_limit_sol_lamports: Option<u64>,
+    /// Daily USDC limit (micro-units). None = unlimited.
+    pub daily_limit_usdc_micro: Option<u64>,
+    /// Per-transaction SOL limit (lamports). None = unlimited.
+    pub per_tx_limit_sol_lamports: Option<u64>,
+    /// Per-transaction USDC limit (micro-units). None = unlimited.
+    pub per_tx_limit_usdc_micro: Option<u64>,
+    /// Remaining SOL budget today (lamports). None if no daily limit is set.
+    pub remaining_sol_lamports: Option<u64>,
+    /// Remaining USDC budget today (micro-units). None if no daily limit is set.
+    pub remaining_usdc_micro: Option<u64>,
+    /// Whether the circuit breaker has tripped (spending locked).
+    pub circuit_breaker_tripped: bool,
+    /// Number of consecutive payment failures.
+    pub consecutive_failures: u32,
+    /// When the circuit breaker tripped. None if not tripped.
+    pub tripped_at: Option<DateTime<Utc>>,
+}

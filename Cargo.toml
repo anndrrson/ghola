@@ -11,6 +11,9 @@ members = [
     "cli",
     "daemon",
 
+    # Tests
+    "integration-tests",
+
     # Assistant (Thumper)
     "crates/thumper-types",
     "crates/thumper-relay",
@@ -100,6 +103,7 @@ tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 said-types = { path = "crates/said-types" }
 said-core = { path = "crates/said-core" }
 said-solana = { path = "crates/said-solana" }
+said-x402 = { path = "crates/said-x402" }
 said-mcp = { path = "mcp-server" }
 said-daemon = { path = "daemon" }
 

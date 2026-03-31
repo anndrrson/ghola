@@ -69,4 +69,10 @@ pub enum SaidError {
 
     #[error("agent inactive: {0}")]
     AgentInactive(String),
+
+    #[error("circuit breaker tripped: agent '{0}' has {1} consecutive payment failures — call unlock_circuit_breaker to re-enable spending")]
+    CircuitBreakerTripped(String, u32),
+
+    #[error("recipient not in allowlist: {0}")]
+    RecipientNotAllowed(String),
 }
