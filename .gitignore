@@ -11,3 +11,4 @@ android/app/build/
 .idea/
 *.iml
 local.properties
+.claude/
