@@ -11,9 +11,10 @@ import { getBalance } from "@/lib/api";
 import { GholaLogo } from "@/components/GholaLogo";
 import { Menu, X } from "lucide-react";
 
-type Section = "home" | "identity" | "models" | "chat" | "settings" | "vault" | "developers" | "provide" | "marketplace" | "bounties";
+type Section = "home" | "agents" | "identity" | "models" | "chat" | "settings" | "vault" | "developers" | "provide" | "marketplace" | "bounties";
 
 function getSection(pathname: string): Section {
+  if (pathname.startsWith("/agents")) return "agents";
   if (pathname.startsWith("/bounties")) return "bounties";
   if (pathname.startsWith("/marketplace")) return "marketplace";
   if (pathname.startsWith("/provide")) return "provide";
@@ -76,6 +77,16 @@ export function Navbar() {
               </span>
             </Link>
             <div className="hidden sm:flex items-center gap-1">
+              <Link
+                href="/agents"
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  section === "agents"
+                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                    : "text-[#8b95a8] hover:text-[#eef1f8]"
+                }`}
+              >
+                Agents
+              </Link>
               {thumperAuth.authenticated && (
                 <Link
                   href="/chat"
@@ -409,6 +420,13 @@ export function Navbar() {
       {mobileOpen && (
         <div className="sm:hidden border-t border-[#1e2a3a] bg-[#08090d]/95 backdrop-blur-md">
           <div className="px-4 py-4 space-y-2">
+            <Link
+              href="/agents"
+              onClick={() => setMobileOpen(false)}
+              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+            >
+              Agents
+            </Link>
             {thumperAuth.authenticated && (
               <Link
                 href="/chat"

@@ -87,10 +87,11 @@ export default function BountiesPage() {
         <div className="mb-8 flex items-start justify-between">
           <div>
             <h1 className="text-3xl font-bold text-[#eef1f8]">
-              Bounty Marketplace
+              Job Board for Agents
             </h1>
             <p className="mt-2 text-[#8b95a8]">
-              Browse tasks with USDC bounties. Claim, complete, and get paid.
+              Open jobs paying USDC bounties. Your agent can claim, complete,
+              and get paid — autonomously.
             </p>
           </div>
           <Link

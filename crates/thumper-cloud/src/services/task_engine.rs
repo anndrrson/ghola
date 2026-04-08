@@ -17,20 +17,22 @@ pub async fn execute_task(
         .execute(&state.db)
         .await?;
 
-    // Fetch task details
-    let task = sqlx::query_as::<_, (String, Option<String>, serde_json::Value)>(
-        "SELECT task_type, template_id, params FROM tasks WHERE id = $1",
+    // Fetch task details, including the optional agent_id (Phase M3).
+    // When set, this task is owned by a cryptographically-distinct agent
+    // (the SAID identity from said-cloud) acting on the user's behalf.
+    let task = sqlx::query_as::<_, (String, Option<String>, serde_json::Value, Option<Uuid>)>(
+        "SELECT task_type, template_id, params, agent_id FROM tasks WHERE id = $1",
     )
     .bind(task_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(CloudError::NotFound("task not found".to_string()))?;
 
-    let (task_type, _template_id, params) = task;
+    let (task_type, _template_id, params, agent_id) = task;
 
     let result = match task_type.as_str() {
-        "call" => execute_call_task(state, user_id, task_id, &params).await,
-        "email" => execute_email_task(state, user_id, task_id, &params).await,
+        "call" => execute_call_task(state, user_id, task_id, agent_id, &params).await,
+        "email" => execute_email_task(state, user_id, task_id, agent_id, &params).await,
         "calendar" => execute_calendar_task(state, user_id, task_id, &params).await,
         "crypto" => execute_crypto_task(state, user_id, task_id, &params).await,
         _ => {
@@ -71,6 +73,7 @@ async fn execute_call_task(
     state: &AppState,
     user_id: Uuid,
     task_id: Uuid,
+    agent_id: Option<Uuid>,
     params: &serde_json::Value,
 ) -> Result<(), CloudError> {
     let phone_number = params["phone_number"]
@@ -110,11 +113,13 @@ async fn execute_call_task(
     )
     .await?;
 
-    // Create call record linked to this task
+    // Create call record linked to this task. agent_id is stamped (Phase M3)
+    // so the agent's call history is queryable; v1 still uses the user's
+    // Bland account for billing.
     sqlx::query(
         r#"
-        INSERT INTO calls (user_id, task_id, bland_call_id, phone_number, objective, script, outcome)
-        VALUES ($1, $2, $3, $4, $5, $6, 'in_progress')
+        INSERT INTO calls (user_id, task_id, bland_call_id, phone_number, objective, script, outcome, agent_id)
+        VALUES ($1, $2, $3, $4, $5, $6, 'in_progress', $7)
         "#,
     )
     .bind(user_id)
@@ -123,6 +128,7 @@ async fn execute_call_task(
     .bind(phone_number)
     .bind(objective)
     .bind(&script_json)
+    .bind(agent_id)
     .execute(&state.db)
     .await?;
 
@@ -145,6 +151,7 @@ async fn execute_email_task(
     state: &AppState,
     user_id: Uuid,
     task_id: Uuid,
+    agent_id: Option<Uuid>,
     params: &serde_json::Value,
 ) -> Result<(), CloudError> {
     let intent = params["intent"]
@@ -175,11 +182,13 @@ async fn execute_email_task(
 
     complete_step(state, task_id, 1, &draft_json).await?;
 
-    // Step 2: Create email record and set task to awaiting_approval
+    // Step 2: Create email record and set task to awaiting_approval.
+    // agent_id stamped (Phase M3) so the agent's email history is queryable;
+    // v1 still uses the user's Gmail OAuth for sending.
     sqlx::query(
         r#"
-        INSERT INTO email_actions (user_id, task_id, to_address, subject, body, status)
-        VALUES ($1, $2, $3, $4, $5, 'draft')
+        INSERT INTO email_actions (user_id, task_id, to_address, subject, body, status, agent_id)
+        VALUES ($1, $2, $3, $4, $5, 'draft', $6)
         "#,
     )
     .bind(user_id)
@@ -187,6 +196,7 @@ async fn execute_email_task(
     .bind(&draft.to_address)
     .bind(&draft.subject)
     .bind(&draft.body)
+    .bind(agent_id)
     .execute(&state.db)
     .await?;
 

@@ -369,3 +369,93 @@ export const SERVICE_CATEGORIES = [
   "media",
   "developer-tools",
 ] as const;
+
+// ── Agent Ownership Types ──
+
+export type AgentStatus = "active" | "paused" | "archived";
+
+export interface Agent {
+  id: string;
+  user_id: string;
+  slug: string;
+  display_name: string;
+  bio: string | null;
+  avatar_url: string | null;
+  did: string;
+  solana_address: string;
+  wallet_id: string | null;
+  onchain_identity_pda: string | null;
+  status: AgentStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentWallet {
+  id: string;
+  user_id: string;
+  label: string;
+  hd_index: number;
+  solana_address: string;
+  spending_policy: Record<string, unknown>;
+  active: boolean;
+  agent_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentDetail extends Agent {
+  wallet: AgentWallet | null;
+  service_count: number;
+  reputation_score: number | null;
+}
+
+export interface CreateAgentRequest {
+  slug: string;
+  display_name: string;
+  bio?: string;
+  avatar_url?: string;
+}
+
+export interface UpdateAgentRequest {
+  display_name?: string;
+  bio?: string;
+  avatar_url?: string;
+  status?: AgentStatus;
+}
+
+export interface AgentEarnings {
+  agent_id: string;
+  total_received_micro_usdc: number;
+  total_spent_micro_usdc: number;
+  net_micro_usdc: number;
+  transaction_count: number;
+}
+
+export interface AgentReputationView {
+  entity_did: string;
+  entity_type: string;
+  overall_score: number;
+  confidence: number;
+  total_transactions: number;
+  completed_transactions: number;
+  review_count: number;
+}
+
+export interface CreateAgentServiceRequest {
+  name: string;
+  slug: string;
+  description?: string;
+  category?: string;
+  tags?: string[];
+  base_url: string;
+  health_check_url?: string;
+  openapi_url?: string;
+  auth_type?: string;
+  pricing_model?: string;
+  price_micro_usdc?: number;
+  free_tier_requests?: number;
+  sla_uptime_percent?: number;
+  regions?: string[];
+  receive_address?: string;
+  platform_fee_bps?: number;
+}

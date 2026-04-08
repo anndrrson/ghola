@@ -30,12 +30,18 @@ pub struct BountySettlement {
 
 /// Create a bounty for a task. Holds funds via escrow against the user's
 /// daily spending limit.
+///
+/// Phase M3: `agent_id` is stamped on the bounty row when the task is being
+/// executed by an owned agent (cryptographically distinct from the user).
+/// v1 still escrows from the user's wallet — cross-DB settlement against the
+/// agent's USDC wallet (which lives in said-cloud) is a follow-up phase.
 pub async fn create_bounty(
     db: &PgPool,
     user_id: Uuid,
     task_id: Uuid,
     amount_usdc: i64,
     fee_bps: i32,
+    agent_id: Option<Uuid>,
 ) -> Result<Uuid, CloudError> {
     if amount_usdc <= 0 {
         return Err(CloudError::BadRequest(
@@ -49,8 +55,8 @@ pub async fn create_bounty(
     // Insert bounty record
     let bounty_id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO task_bounties (task_id, funder_id, amount_usdc, platform_fee_bps, escrow_id)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO task_bounties (task_id, funder_id, amount_usdc, platform_fee_bps, escrow_id, agent_id)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id
         "#,
     )
@@ -59,6 +65,7 @@ pub async fn create_bounty(
     .bind(amount_usdc)
     .bind(fee_bps)
     .bind(escrow_id)
+    .bind(agent_id)
     .fetch_one(db)
     .await?;
 

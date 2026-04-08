@@ -122,6 +122,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/v1/auth/register", post(routes::auth::register))
         .route("/v1/auth/login", post(routes::auth::login))
+        .route("/v1/auth/google", post(routes::auth::google_sign_in))
         .route("/v1/consumer/register", post(routes::consumer::register))
         .route("/v1/profile/{did}", get(routes::consumer::get_public_profile))
         .route("/v1/resolve/{did_or_handle}", get(routes::resolve::resolve))
@@ -228,6 +229,34 @@ async fn main() -> anyhow::Result<()> {
 
     // Protected routes (require Bearer JWT)
     let protected = Router::new()
+        // ── Agent ownership (multi-agent per user) ─────────────────────────
+        .route(
+            "/v1/agents",
+            get(routes::agents::list_agents).post(routes::agents::create_agent),
+        )
+        .route(
+            "/v1/agents/{id}",
+            get(routes::agents::get_agent)
+                .patch(routes::agents::update_agent)
+                .delete(routes::agents::delete_agent),
+        )
+        .route(
+            "/v1/agents/{id}/wallet",
+            get(routes::agents::get_agent_wallet),
+        )
+        .route(
+            "/v1/agents/{id}/services",
+            get(routes::agents::list_agent_services)
+                .post(routes::agents::create_agent_service),
+        )
+        .route(
+            "/v1/agents/{id}/reputation",
+            get(routes::agents::get_agent_reputation),
+        )
+        .route(
+            "/v1/agents/{id}/earnings",
+            get(routes::agents::get_agent_earnings),
+        )
         .route("/v1/business/profile", get(routes::business::get_profile))
         .route("/v1/business/profile", put(routes::business::update_profile))
         .route(

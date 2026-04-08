@@ -629,4 +629,18 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS verified BOOLEAN DEFAULT false;
 
 -- Optional minimum reputation to claim a task
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS min_reputation DOUBLE PRECISION;
+
+-- Phase M3: Agent ownership — thread agent_id through task records.
+-- The `agents` table itself lives in the said-cloud database, so we store
+-- agent_id as a bare UUID with no FK constraint. The agent_did is the
+-- did:key string, denormalized for convenience so the task engine can stamp
+-- payment events with the agent identity without a cross-DB lookup.
+-- v1 keeps wallets user-scoped; per-agent settlement is a follow-up phase.
+ALTER TABLE tasks         ADD COLUMN IF NOT EXISTS agent_id UUID;
+ALTER TABLE tasks         ADD COLUMN IF NOT EXISTS agent_did TEXT;
+CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id);
+
+ALTER TABLE calls         ADD COLUMN IF NOT EXISTS agent_id UUID;
+ALTER TABLE email_actions ADD COLUMN IF NOT EXISTS agent_id UUID;
+ALTER TABLE task_bounties ADD COLUMN IF NOT EXISTS agent_id UUID;
 "#;

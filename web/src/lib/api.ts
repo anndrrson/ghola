@@ -18,6 +18,14 @@ import type {
   ServiceListingResponse,
   ServiceDetail,
   ReputationScore,
+  Agent,
+  AgentDetail,
+  AgentWallet,
+  CreateAgentRequest,
+  UpdateAgentRequest,
+  AgentEarnings,
+  AgentReputationView,
+  CreateAgentServiceRequest,
 } from "./types";
 
 const API_BASE =
@@ -714,6 +722,67 @@ export async function getReputation(did: string): Promise<ReputationScore> {
   const res = await fetch(`${API_BASE}/reputation/${encodeURIComponent(did)}`);
   if (!res.ok) throw new Error("Failed to get reputation");
   return res.json();
+}
+
+// ── Agent Ownership ──
+
+export async function listAgents(): Promise<Agent[]> {
+  return apiFetch<Agent[]>("/agents");
+}
+
+export async function getAgent(id: string): Promise<AgentDetail> {
+  return apiFetch<AgentDetail>(`/agents/${id}`);
+}
+
+export async function createAgent(body: CreateAgentRequest): Promise<Agent> {
+  return apiFetch<Agent>("/agents", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateAgent(
+  id: string,
+  body: UpdateAgentRequest,
+): Promise<Agent> {
+  return apiFetch<Agent>(`/agents/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteAgent(id: string): Promise<void> {
+  await apiFetch<void>(`/agents/${id}`, { method: "DELETE" });
+}
+
+export async function getAgentWallet(id: string): Promise<AgentWallet> {
+  return apiFetch<AgentWallet>(`/agents/${id}/wallet`);
+}
+
+export async function listAgentServices(
+  id: string,
+): Promise<ServiceListingResponse[]> {
+  return apiFetch<ServiceListingResponse[]>(`/agents/${id}/services`);
+}
+
+export async function createAgentService(
+  id: string,
+  body: CreateAgentServiceRequest,
+): Promise<ServiceListingResponse> {
+  return apiFetch<ServiceListingResponse>(`/agents/${id}/services`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getAgentReputation(
+  id: string,
+): Promise<AgentReputationView> {
+  return apiFetch<AgentReputationView>(`/agents/${id}/reputation`);
+}
+
+export async function getAgentEarnings(id: string): Promise<AgentEarnings> {
+  return apiFetch<AgentEarnings>(`/agents/${id}/earnings`);
 }
 
 // Namespace export for pages that use api.method()

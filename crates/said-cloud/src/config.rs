@@ -22,6 +22,9 @@ pub struct Config {
     /// Optional hex-encoded 32-byte ed25519 seed for response signing.
     /// If absent, an ephemeral key is generated at startup.
     pub signing_key_hex: Option<String>,
+    /// Google OAuth client ID for verifying Google ID tokens (mobile sign-in).
+    /// Same env var as thumper-cloud uses, so Render only needs one value.
+    pub google_client_id: Option<String>,
 }
 
 impl Config {
@@ -51,6 +54,7 @@ impl Config {
             solana_rpc_url: env::var("SOLANA_RPC_URL")
                 .unwrap_or_else(|_| "https://api.devnet.solana.com".into()),
             signing_key_hex: env::var("SIGNING_KEY").ok(),
+            google_client_id: env::var("GOOGLE_CLIENT_ID").ok(),
         }
     }
 }

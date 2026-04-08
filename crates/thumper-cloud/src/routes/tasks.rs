@@ -25,6 +25,14 @@ pub struct CreateTaskRequest {
     pub claim_deadline_hours: Option<i32>,
     /// Minimum reputation score (0.0-1.0) required to claim this task
     pub min_reputation: Option<f64>,
+    /// Phase M3: optional agent that owns this task. The agent's ID lives in
+    /// said-cloud's `agents` table; we store it here as a bare UUID with no
+    /// FK constraint. v1 still bills the user's wallet — agent_id is purely
+    /// stamped on related rows so the agent's history is queryable.
+    pub agent_id: Option<Uuid>,
+    /// Denormalized DID string for the same agent, so the task engine doesn't
+    /// have to cross-DB lookup said-cloud just to know who's executing.
+    pub agent_did: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -124,8 +132,8 @@ pub async fn create_task(
 
     let row = sqlx::query_as::<_, TaskRow>(
         &format!(
-            "INSERT INTO tasks (user_id, task_type, template_id, params, is_open, title, description, min_reputation) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+            "INSERT INTO tasks (user_id, task_type, template_id, params, is_open, title, description, min_reputation, agent_id, agent_did) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              RETURNING {TASK_SELECT}"
         ),
     )
@@ -137,6 +145,8 @@ pub async fn create_task(
     .bind(&req.title)
     .bind(&req.description)
     .bind(req.min_reputation)
+    .bind(req.agent_id)
+    .bind(&req.agent_did)
     .fetch_one(&state.db)
     .await?;
 
@@ -147,7 +157,7 @@ pub async fn create_task(
     if let Some(bounty_amount) = req.bounty_usdc {
         let fee_bps = req.bounty_fee_bps.unwrap_or(300);
         crate::services::bounty_service::create_bounty(
-            &state.db, claims.sub, task_id, bounty_amount, fee_bps,
+            &state.db, claims.sub, task_id, bounty_amount, fee_bps, req.agent_id,
         )
         .await?;
         bounty_status = Some("held".to_string());

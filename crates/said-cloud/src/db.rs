@@ -6,7 +6,8 @@ use uuid::Uuid;
 pub struct DbUser {
     pub id: Uuid,
     pub email: String,
-    pub password_hash: String,
+    /// Nullable since migration 018: Google sign-in users have no password.
+    pub password_hash: Option<String>,
     pub account_type: String,
     pub created_at: DateTime<Utc>,
 }
@@ -130,6 +131,28 @@ pub struct DbAgentWallet {
     pub solana_address: String,
     pub spending_policy: serde_json::Value,
     pub active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    /// Set when this wallet belongs to a cryptographically-owned agent
+    /// (added by migration 017_agents.sql). NULL for legacy user-level wallets.
+    pub agent_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+pub struct DbAgent {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub slug: String,
+    pub display_name: String,
+    pub bio: Option<String>,
+    pub avatar_url: Option<String>,
+    pub did: String,
+    #[serde(skip)]
+    pub master_pubkey: Vec<u8>,
+    pub solana_address: String,
+    pub wallet_id: Option<Uuid>,
+    pub onchain_identity_pda: Option<String>,
+    pub status: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

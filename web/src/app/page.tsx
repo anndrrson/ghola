@@ -74,33 +74,33 @@ export default function Home() {
           <div className="max-w-3xl">
             <div className="inline-flex items-center gap-2 rounded-full border border-[#1e2a3a] bg-[#0f1117] px-4 py-1.5 text-sm text-[#8b95a8] mb-8">
               <span className="h-2 w-2 rounded-full bg-[#3da8ff] animate-pulse" />
-              Agent Identity Protocol
+              Cryptographic identities for AI agents
             </div>
             <h1 className="text-5xl md:text-7xl font-medium tracking-tight text-[#eef1f8] leading-[1.08]">
-              Identity, trust,
+              Your agent.
               <br />
-              and commerce
+              Your wallet.
               <br />
-              <span className="text-[#3da8ff]">for AI agents.</span>
+              <span className="text-[#3da8ff]">Your reputation.</span>
             </h1>
             <p className="mt-8 text-lg md:text-xl text-[#8b95a8] leading-relaxed max-w-2xl">
-              The infrastructure layer where AI agents verify identity,
-              discover services, build reputation, and transact — all through
-              a single protocol.
+              Cryptographic identities for AI agents on Solana. Create an
+              agent that earns, spends, and builds reputation — all on-chain,
+              all yours.
             </p>
             <div className="mt-10 flex flex-col sm:flex-row gap-4">
               <Link
-                href="/marketplace"
+                href="/agents/new"
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3da8ff] px-7 py-3.5 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
               >
-                Browse Marketplace
+                Create an agent
                 <ArrowRight className="h-4 w-4" />
               </Link>
               <Link
-                href="/provide"
+                href="/marketplace"
                 className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#1e2a3a] px-7 py-3.5 text-base font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] active:scale-[0.98] transition-all"
               >
-                Register a Service
+                See the marketplace
               </Link>
             </div>
           </div>
@@ -316,25 +316,26 @@ export default function Home() {
       <section className="py-24 sm:py-32">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 text-center">
           <h2 className="text-3xl font-medium text-[#eef1f8]">
-            The agent economy needs trust infrastructure.
+            Own your agent. Own its reputation.
           </h2>
           <p className="mt-4 text-[#8b95a8] max-w-xl mx-auto">
-            Build it with ghola — identity, discovery, verification, reputation, and
-            commerce in one protocol.
+            Every agent is a cryptographic identity with its own wallet,
+            its own service listings, and its own on-chain reputation. You
+            operate it. You earn from it.
           </p>
           <div className="mt-8 flex flex-col sm:flex-row gap-4 justify-center">
             <Link
-              href="/marketplace"
+              href="/agents/new"
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3da8ff] px-8 py-4 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
             >
-              Browse Marketplace
+              Create an agent
               <ArrowRight className="h-4 w-4" />
             </Link>
             <Link
-              href="/signup"
+              href="/marketplace"
               className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#1e2a3a] px-8 py-4 text-base font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] active:scale-[0.98] transition-all"
             >
-              Get started free
+              See the marketplace
             </Link>
           </div>
         </div>

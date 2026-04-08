@@ -152,3 +152,91 @@ pub fn verify_password(password: &str, hash: &str) -> AppResult<bool> {
         .verify_password(password.as_bytes(), &parsed)
         .is_ok())
 }
+
+// ── Google ID token verification ────────────────────────────────────────────
+//
+// Mirrors the implementation in `crates/thumper-cloud/src/auth.rs::verify_google_token`
+// (lines 184-274). Used by `routes/auth.rs::google_sign_in` for the mobile app
+// (Android/Seeker), which already has a Google ID token from its existing
+// thumper-cloud sign-in flow and just needs to mint a parallel said-cloud JWT.
+
+#[derive(Debug, Deserialize)]
+pub struct GoogleTokenPayload {
+    pub sub: String,
+    pub email: String,
+    #[serde(default)]
+    pub email_verified: Option<bool>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleJwks {
+    keys: Vec<GoogleJwk>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct GoogleJwk {
+    kid: String,
+    n: String,
+    e: String,
+    alg: Option<String>,
+}
+
+pub async fn verify_google_id_token(
+    id_token: &str,
+    client_id: &str,
+) -> AppResult<GoogleTokenPayload> {
+    use base64::Engine;
+
+    let parts: Vec<&str> = id_token.split('.').collect();
+    if parts.len() != 3 {
+        return Err(AppError::Unauthorized("invalid Google token format".into()));
+    }
+
+    let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[0])
+        .map_err(|e| AppError::Unauthorized(format!("header base64 decode failed: {e}")))?;
+
+    let header: serde_json::Value = serde_json::from_slice(&header_bytes)
+        .map_err(|e| AppError::Unauthorized(format!("invalid token header: {e}")))?;
+
+    let kid = header["kid"]
+        .as_str()
+        .ok_or_else(|| AppError::Unauthorized("no kid in token header".into()))?;
+
+    let client = reqwest::Client::new();
+    let jwks: GoogleJwks = client
+        .get("https://www.googleapis.com/oauth2/v3/certs")
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("failed to fetch Google JWKS: {e}")))?
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("failed to parse Google JWKS: {e}")))?;
+
+    let key = jwks
+        .keys
+        .iter()
+        .find(|k| k.kid == kid)
+        .ok_or_else(|| AppError::Unauthorized("no matching Google key for kid".into()))?;
+
+    let decoding_key = jsonwebtoken::DecodingKey::from_rsa_components(&key.n, &key.e)
+        .map_err(|e| AppError::Unauthorized(format!("invalid RSA key: {e}")))?;
+
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    validation.set_audience(&[client_id]);
+    validation.set_issuer(&["accounts.google.com", "https://accounts.google.com"]);
+
+    let token_data = jsonwebtoken::decode::<GoogleTokenPayload>(id_token, &decoding_key, &validation)
+        .map_err(|e| AppError::Unauthorized(format!("Google token verification failed: {e}")))?;
+
+    let payload = token_data.claims;
+
+    if let Some(false) = payload.email_verified {
+        return Err(AppError::Unauthorized("email not verified".into()));
+    }
+
+    Ok(payload)
+}

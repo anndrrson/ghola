@@ -18,9 +18,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ghola — your AI personal assistant",
+  title: "ghola — you own the agent",
   description:
-    "Your AI assistant that actually does things. Make calls, send emails, manage your calendar, send crypto — all from chat.",
+    "Cryptographic identities for AI agents on Solana. Create an agent that earns, spends, and builds reputation — all on-chain, all yours.",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
