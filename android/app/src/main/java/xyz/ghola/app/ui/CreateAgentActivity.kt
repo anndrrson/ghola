@@ -1,6 +1,7 @@
 package xyz.ghola.app.ui
 
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -10,7 +11,9 @@ import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import kotlinx.coroutines.Dispatchers
@@ -60,6 +63,17 @@ import kotlin.coroutines.resume
  */
 class CreateAgentActivity : AppCompatActivity() {
 
+    companion object {
+        /**
+         * Name of the Seed Vault runtime permission. Hardcoded here instead
+         * of referenced from [com.solanamobile.seedvault.WalletContractV1]
+         * because the SDK doesn't expose the string as a public constant.
+         * Matches the `<uses-permission>` entry in AndroidManifest.xml.
+         */
+        private const val SEED_VAULT_PERMISSION =
+            "com.solanamobile.seedvault.ACCESS_SEED_VAULT"
+    }
+
     private lateinit var storage: SecureStorage
     private lateinit var displayNameInput: EditText
     private lateinit var slugInput: EditText
@@ -76,6 +90,32 @@ class CreateAgentActivity : AppCompatActivity() {
     // safe to construct — the Intent launchers are registered unconditionally
     // and only fire when deriveAgentPubkey() / signAgentMessage() are called.
     private val seederKeyStore = SeederKeyStore(this)
+
+    /**
+     * Runtime-permission launcher for `com.solanamobile.seedvault.ACCESS_SEED_VAULT`.
+     * The permission has protection level `dangerous`, so declaring it in
+     * the manifest isn't enough — we have to request it at runtime just
+     * like `RECORD_AUDIO` or `CAMERA`. Registered as a field initializer so
+     * the launcher is wired in before the Activity reaches `CREATED`.
+     *
+     * On grant, we simply re-invoke [submit] so the flow resumes from the
+     * top with fresh validation. This is intentional — the permission state
+     * might have changed during the prompt (e.g. user tapped Don't Allow
+     * then came back), so starting over is safer than resuming mid-state.
+     */
+    private val seedVaultPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            submit()
+        } else {
+            showError(
+                "Seed Vault access was denied. Grant the permission in " +
+                    "Settings → Apps → Ghola → Permissions, or retry."
+            )
+            finishErrorState()
+        }
+    }
 
     private var slugTouched = false
 
@@ -143,11 +183,6 @@ class CreateAgentActivity : AppCompatActivity() {
             return
         }
 
-        if (!storage.hasSaidAuth()) {
-            showError("Not signed in to said-cloud. Re-run onboarding.")
-            return
-        }
-
         // Op-Better #2: try Seed Vault first; fall back to SoftwareKeyStore
         // on non-Seeker devices that still have a usable ed25519 provider.
         // Only hard-error if BOTH are unavailable — that's the true
@@ -162,14 +197,56 @@ class CreateAgentActivity : AppCompatActivity() {
             return
         }
 
+        // Runtime-permission gate for Seed Vault. `ACCESS_SEED_VAULT` has
+        // protection level `dangerous`, so even with the manifest entry we
+        // must go through the OS permission prompt the first time. If the
+        // user grants, the launcher callback re-enters submit() and we
+        // skip this branch. If we can fall through to software instead,
+        // do that silently rather than nagging the user.
+        if (hasSeedVault &&
+            ContextCompat.checkSelfPermission(this, SEED_VAULT_PERMISSION)
+                != PackageManager.PERMISSION_GRANTED
+        ) {
+            setStatus("Requesting Seed Vault access…")
+            seedVaultPermissionLauncher.launch(SEED_VAULT_PERMISSION)
+            return
+        }
+
         loading.visibility = View.VISIBLE
         createButton.isEnabled = false
 
-        val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
         val useSeedVault = hasSeedVault // decided once, then stays fixed for this attempt
 
         lifecycleScope.launch {
             try {
+                // ---- 0a. Silent anonymous said-cloud bootstrap ----
+                // If the device doesn't yet have a said-cloud token, mint a
+                // throwaway one via /v1/auth/register. This keeps first-run
+                // frictionless — no Google Sign-In screen blocks the user
+                // from creating their first agent. The anonymous account is
+                // a real users row server-side and can be upgraded later.
+                if (!storage.hasSaidAuth()) {
+                    setStatus("Creating your said-cloud account…")
+                    val bootstrapClient = SaidCloudClient(storage.getSaidBaseUrl(), null)
+                    val registered = withContext(Dispatchers.IO) {
+                        bootstrapClient.registerAnon()
+                    }
+                    if (registered == null) {
+                        showError("Could not create a said-cloud account. Check your network.")
+                        finishErrorState()
+                        return@launch
+                    }
+                    storage.setSaidToken(registered.token)
+                    storage.setSaidUserId(registered.userId)
+                }
+
+                // Build the authed client AFTER the bootstrap so it picks up
+                // whichever token we just stashed (pre-existing or freshly
+                // minted). Doing this inside the coroutine also avoids the
+                // old bug where the client captured a null token at submit()
+                // entry and then ignored the post-bootstrap value.
+                val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
+
                 // ---- 0. Fetch current agent count for BIP-44 index ----
                 setStatus("Preparing…")
                 val nextIndex: Int = withContext(Dispatchers.IO) {

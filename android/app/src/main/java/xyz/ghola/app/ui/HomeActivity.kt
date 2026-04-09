@@ -139,7 +139,12 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
 
     override fun onDestroy() {
         super.onDestroy()
-        voiceService.destroy()
+        // Guard against the first-run early-return path, where onCreate
+        // finishes before `voiceService` gets initialized. Touching an
+        // uninitialized lateinit property throws.
+        if (::voiceService.isInitialized) {
+            voiceService.destroy()
+        }
     }
 
     private fun updateGreeting() {

@@ -544,27 +544,74 @@ class SeederKeyStore(private val activity: ComponentActivity) {
          * (since the backend now requires a real signed challenge).
          */
         fun isSupported(context: Context): Boolean {
-            return try {
+            // Step 1 — try the SDK's own precheck. On a production Seeker
+            // or a Seeker running the real (non-impl) Seed Vault, this is
+            // the correct signal.
+            try {
                 val hasUnauthorized = Wallet.hasUnauthorizedSeedsForPurpose(
                     context,
                     WalletContractV1.PURPOSE_SIGN_SOLANA_TRANSACTION
                 )
+                Log.i(TAG, "isSupported: hasUnauthorizedSeedsForPurpose=$hasUnauthorized")
                 if (hasUnauthorized) return true
 
-                // Authorized seeds cursor — any row means we already have a
-                // usable seed for this purpose.
                 val cursor = Wallet.getAuthorizedSeeds(
                     context,
                     WalletContractV1.AUTHORIZED_SEEDS_ALL_COLUMNS
                 )
-                cursor?.use { it.count > 0 } ?: false
+                val count = cursor?.use { it.count } ?: 0
+                Log.i(TAG, "isSupported: authorized seeds count=$count")
+                if (count > 0) return true
+                // No seeds and no throw — hard unsupported.
+                return false
+            } catch (e: SecurityException) {
+                // Dev Seekers and emulators run the **simulator impl**
+                // (`com.solanamobile.seedvaultimpl`) which gates its
+                // WalletContentProvider behind `ACCESS_SEED_VAULT_PRIVILEGED`.
+                // Regular apps can't hold that permission — but the
+                // `authorizeSeed` Intent itself is user-consented and doesn't
+                // require it. So when the precheck throws SecurityException,
+                // fall through to a package-presence heuristic: if a Seed
+                // Vault provider is installed, assume authorize will work
+                // and let the intent flow surface any real errors.
+                Log.w(
+                    TAG,
+                    "isSupported precheck hit SecurityException (likely simulator impl) — falling back to package probe",
+                    e,
+                )
+                return isSeedVaultPackageInstalled(context)
             } catch (e: Throwable) {
-                // Any exception (package not installed, permission denied,
-                // SDK resolution failure) → report as unsupported. The
-                // fallback path handles it.
-                Log.d(TAG, "isSupported check threw — treating as unsupported: ${e.message}")
-                false
+                Log.w(TAG, "isSupported check threw — treating as unsupported", e)
+                return false
             }
+        }
+
+        /**
+         * Fallback presence check: returns true if either the production
+         * Seed Vault package or the simulator impl package is installed.
+         * Both are declared in the manifest `<queries>` block, so
+         * PackageManager will return a non-null ApplicationInfo when
+         * present. This is a "probably works, let the intent decide"
+         * signal — the actual authorize dialog will tell the user if
+         * something is wrong (no seeds, revoked permission, etc).
+         */
+        private fun isSeedVaultPackageInstalled(context: Context): Boolean {
+            val pm = context.packageManager
+            val candidates = listOf(
+                "com.solanamobile.seedvault",
+                "com.solanamobile.seedvaultimpl",
+            )
+            for (pkg in candidates) {
+                try {
+                    pm.getApplicationInfo(pkg, 0)
+                    Log.i(TAG, "isSeedVaultPackageInstalled: $pkg present")
+                    return true
+                } catch (_: Throwable) {
+                    // try next
+                }
+            }
+            Log.i(TAG, "isSeedVaultPackageInstalled: none of the candidates are installed")
+            return false
         }
     }
 }

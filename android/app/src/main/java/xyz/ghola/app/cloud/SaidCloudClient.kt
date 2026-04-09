@@ -52,6 +52,50 @@ class SaidCloudClient(
         return postUnauthenticated("/auth/google", body)
     }
 
+    /**
+     * Anonymous bootstrap. Registers a throwaway said-cloud account with
+     * a randomized email + password so the device can get a valid JWT
+     * without making the user sit through Google Sign-In on first launch.
+     * Returns `(token, userId)` on success, null on failure.
+     *
+     * The resulting account is a real `users` row in said-cloud's database
+     * and behaves identically to a Google-signed user for all downstream
+     * flows (agents, challenges, mutations). The random email never hits
+     * a mailbox — it's just a uniqueness key.
+     *
+     * Used by [xyz.ghola.app.ui.CreateAgentActivity] when the user taps
+     * Create Agent without having signed in yet, so first-time agent
+     * creation "just works" on a fresh install. A future build can
+     * upgrade the anonymous account to a real one via email linking.
+     */
+    data class AnonRegistration(val token: String, val userId: String, val email: String)
+
+    fun registerAnon(): AnonRegistration? {
+        val rand = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
+        val email = "anon-$rand@ghola.device"
+        // Password is a random 32-char string that's never sent anywhere
+        // after this call — the token we get back is the only thing we
+        // need. Making it long so the server's argon2 hash is meaningful
+        // even though we'll never use the password-login path.
+        val password = java.util.UUID.randomUUID().toString() +
+            java.util.UUID.randomUUID().toString()
+        val body = JSONObject().apply {
+            put("email", email)
+            put("password", password)
+            put("business_name", "Ghola Mobile")
+            put("category", "mobile")
+            put("website", "https://ghola.xyz")
+        }
+        val resp = postUnauthenticated("/auth/register", body) ?: return null
+        val token = resp.optString("token", "")
+        val userId = resp.optString("user_id", "")
+        if (token.isEmpty() || userId.isEmpty()) {
+            Log.e(TAG, "register response missing token or user_id: $resp")
+            return null
+        }
+        return AnonRegistration(token = token, userId = userId, email = email)
+    }
+
     // --- Agents (multi-agent ownership, Phase 2 backend) ---
 
     /** GET /v1/agents — list all agents owned by the authenticated user. */

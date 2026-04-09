@@ -8,7 +8,6 @@ import java.security.KeyPairGenerator
 import java.security.Signature
 import java.security.interfaces.EdECPrivateKey
 import java.security.interfaces.EdECPublicKey
-import java.security.spec.NamedParameterSpec
 
 /**
  * # SoftwareKeyStore
@@ -87,8 +86,15 @@ object SoftwareKeyStore {
                 "Ed25519 requires API 33+, got ${Build.VERSION.SDK_INT}"
             )
         }
+        // Do NOT call `gen.initialize(NamedParameterSpec("Ed25519"))`.
+        // When the generator was already obtained via
+        // `getInstance("Ed25519")`, the Conscrypt provider on Seeker
+        // throws `InvalidAlgorithmParameterException: no
+        // AlgorithmParameterSpec classes are supported` because the
+        // curve is already bound and passing a spec is redundant. On
+        // Ed25519 the params are fixed, so generation without
+        // initialize() is the portable path.
         val gen = KeyPairGenerator.getInstance("Ed25519")
-        gen.initialize(NamedParameterSpec("Ed25519"))
         val keypair: KeyPair = gen.generateKeyPair()
 
         val privateKey = keypair.private as EdECPrivateKey
@@ -130,12 +136,23 @@ object SoftwareKeyStore {
         }
 
         // Reconstruct the EdECPrivateKey from the raw seed.
-        val keyFactory = java.security.KeyFactory.getInstance("Ed25519")
-        val keySpec = java.security.spec.EdECPrivateKeySpec(
-            NamedParameterSpec("Ed25519"),
-            privateKeySeed,
+        // Encode as PKCS#8 DER: the ASN.1 wrapper is fixed for Ed25519
+        // — we prepend the 16-byte PrivateKeyInfo header to the 32-byte
+        // seed. This is the only form some Conscrypt builds accept
+        // (EdECPrivateKeySpec was flaky on the Seeker in testing).
+        val pkcs8Header = byteArrayOf(
+            0x30, 0x2e,                   // SEQUENCE (46 bytes)
+            0x02, 0x01, 0x00,             // INTEGER version 0
+            0x30, 0x05,                   // SEQUENCE (5 bytes)
+            0x06, 0x03, 0x2b, 0x65, 0x70, // OID 1.3.101.112 (Ed25519)
+            0x04, 0x22,                   // OCTET STRING (34 bytes)
+            0x04, 0x20,                   // inner OCTET STRING (32 bytes)
         )
-        val privateKey = keyFactory.generatePrivate(keySpec)
+        val pkcs8 = pkcs8Header + privateKeySeed
+        val keyFactory = java.security.KeyFactory.getInstance("Ed25519")
+        val privateKey = keyFactory.generatePrivate(
+            java.security.spec.PKCS8EncodedKeySpec(pkcs8)
+        )
 
         val signature = Signature.getInstance("Ed25519")
         signature.initSign(privateKey)
