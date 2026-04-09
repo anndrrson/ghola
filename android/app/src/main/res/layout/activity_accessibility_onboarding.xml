@@ -165,22 +165,55 @@
             android:lineSpacingMultiplier="1.4"
             android:layout_marginBottom="56dp" />
 
-        <!-- Eyebrow-hint before the CTA -->
+        <!-- Explicit step-by-step guide. On most custom Android ROMs (Samsung,
+             Seeker, etc.) the deep link lands on a LIST of accessibility services
+             instead of jumping straight to Ghola. That's where users previously
+             tapped TalkBack by mistake. This copy names the correct row and
+             explicitly warns against the wrong one. -->
         <TextView
             style="@style/Ghola.Text.Eyebrow"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="› WHAT HAPPENS NEXT"
-            android:layout_marginBottom="8dp" />
+            android:text="› FIND GHOLA IN THE LIST"
+            android:layout_marginBottom="12dp" />
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Android opens its Accessibility settings. Find Ghola, flip the switch, and return here. Ghola will detect the change automatically."
-            android:textColor="#8b95a8"
-            android:textSize="13sp"
-            android:fontFamily="@font/geist"
-            android:lineSpacingMultiplier="1.4"
-            android:layout_marginBottom="24dp" />
+            android:text="1. Android opens the Accessibility settings.\n2. Scroll down to the Installed apps section.\n3. Tap Ghola (look for the blue robot icon).\n4. Flip the switch to ON.\n5. Tap Allow on the confirmation dialog.\n6. Press back. Ghola detects the change automatically."
+            android:textColor="#eef1f8"
+            android:textSize="14sp"
+            android:fontFamily="@font/geist_mono"
+            android:lineSpacingMultiplier="1.6"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Red warning panel — do NOT tap TalkBack -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#1a0a0a"
+            android:padding="16dp"
+            android:layout_marginBottom="32dp">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="› IMPORTANT"
+                android:textColor="#ef4444"
+                android:textSize="11sp"
+                android:fontFamily="@font/geist"
+                android:textFontWeight="500"
+                android:letterSpacing="0.12"
+                android:layout_marginBottom="8dp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="DO NOT tap TalkBack, Select to Speak, or Voice Access. Those are Google&apos;s screen readers — if you enable them by mistake your phone will start announcing every tap and become unusable. Tap GHOLA only."
+                android:textColor="#fca5a5"
+                android:textSize="13sp"
+                android:fontFamily="@font/geist"
+                android:lineSpacingMultiplier="1.4" />
+        </LinearLayout>
 
         <!-- Primary CTA — hard-edged, oversized -->
         <com.google.android.material.button.MaterialButton

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.TextUtils
 import android.util.Log
 import android.view.View
 import android.widget.TextView
@@ -91,7 +92,9 @@ class AccessibilityOnboardingActivity : AppCompatActivity() {
     }
 
     /** Re-check accessibility state. If the service is now enabled,
-     *  show a brief "› GRANTED" badge and auto-finish back to Home. */
+     *  show a brief "› GRANTED" badge and auto-finish back to Home.
+     *  If the user came back with TalkBack enabled instead (they tapped
+     *  the wrong thing), show a specific recovery prompt. */
     private fun refreshStatus() {
         val enabled = AccessibilityUtil.isServiceEnabled(this)
         if (enabled) {
@@ -106,10 +109,47 @@ class AccessibilityOnboardingActivity : AppCompatActivity() {
                 // entire onboarding is a single visible hop.
                 grantButton.postDelayed({ finishGranted() }, 900)
             }
-        } else {
-            statusBadge.text = "› NOT GRANTED"
-            statusBadge.setTextColor(0xFFEF4444.toInt())
+            return
         }
+
+        // Check the specific "user tapped TalkBack by mistake" recovery case.
+        val hasTalkBack = isTalkBackEnabled()
+        if (grantLaunched && hasTalkBack) {
+            statusBadge.text = "› WRONG SERVICE"
+            statusBadge.setTextColor(0xFFEF4444.toInt())
+            // Swap the button to walk the user back to Settings specifically
+            // to disable TalkBack AND enable Ghola.
+            grantButton.text = "FIX IT  →"
+            grantButton.setOnClickListener { launchAccessibilitySettings() }
+            Toast.makeText(
+                this,
+                "TalkBack got enabled instead of Ghola. Tap FIX IT, then toggle TalkBack OFF and Ghola ON.",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+
+        statusBadge.text = "› NOT GRANTED"
+        statusBadge.setTextColor(0xFFEF4444.toInt())
+        grantButton.text = "GRANT PERMISSION  →"
+        grantButton.setOnClickListener { launchAccessibilitySettings() }
+    }
+
+    /** True if Google TalkBack is enabled on this device. Used to detect
+     *  the "user tapped the wrong row in the accessibility list" recovery
+     *  case so we can show a specific error rather than a generic one. */
+    private fun isTalkBackEnabled(): Boolean {
+        val services = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+        ) ?: return false
+        val splitter = TextUtils.SimpleStringSplitter(':')
+        splitter.setString(services)
+        while (splitter.hasNext()) {
+            val entry = splitter.next().trim()
+            if (entry.startsWith("com.google.android.marvin.talkback/")) return true
+        }
+        return false
     }
 
     /**
