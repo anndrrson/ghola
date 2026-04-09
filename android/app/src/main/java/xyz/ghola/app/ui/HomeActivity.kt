@@ -59,7 +59,12 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         voiceStatusText = findViewById(R.id.voiceStatusText)
 
         // Mic FAB
-        micFab.setOnClickListener { toggleVoiceInput() }
+        // Mic + Device card both NEED accessibility (they drive other apps).
+        // Call / Email / Chat go through cloud LLM + don't touch other apps,
+        // so they don't need the accessibility gate.
+        micFab.setOnClickListener {
+            if (ensureAccessibilityOrPrompt()) toggleVoiceInput()
+        }
 
         // Quick action buttons
         findViewById<MaterialCardView>(R.id.actionCall).setOnClickListener {
@@ -69,7 +74,9 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
             startChatWith("I need to send an email")
         }
         findViewById<MaterialCardView>(R.id.actionDevice).setOnClickListener {
-            startActivity(Intent(this, ChatActivity::class.java))
+            if (ensureAccessibilityOrPrompt()) {
+                startActivity(Intent(this, ChatActivity::class.java))
+            }
         }
         // Phase M6: bottom nav now handles Agents tab. actionChat reverts
         // to opening ChatActivity (its original behavior pre-M5).
@@ -92,25 +99,29 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         updateGreeting()
         refreshActiveTasks()
         initCloudClient()
-        maybePromptForAccessibility()
+        // Op-Better #2: accessibility prompt no longer fires here.
+        // The home screen should NEVER bug the user on launch — we only
+        // ask for accessibility at the exact moment the user tries to
+        // drive another app. See `ensureAccessibilityOrPrompt()`.
     }
 
-    /** Session-scoped flag: once the user dismisses the accessibility
-     *  onboarding (via Skip or Back), don't re-show it on every resume.
-     *  Resets on app process kill so a fresh launch re-prompts. */
-    private var accessibilityPromptShown = false
-
     /**
-     * If Ghola's accessibility service isn't enabled, launch the
-     * cinematic one-tap onboarding activity so the user can grant it
-     * without hunting through Android Settings. Only prompts once per
-     * app-process lifetime to avoid an annoying loop.
+     * Op-Better #2: lazy accessibility gate.
+     *
+     * Call this at the top of any action that actually needs the
+     * accessibility service (tap mic, tap Device card, tap "open X"
+     * chat suggestion). Returns true if the service is already enabled
+     * — the caller should proceed normally. Returns false if the
+     * service is missing — the caller should stop and the onboarding
+     * activity is launched instead.
+     *
+     * This replaces the old `maybePromptForAccessibility()` that fired
+     * on every onResume and annoyed users who were just browsing.
      */
-    private fun maybePromptForAccessibility() {
-        if (accessibilityPromptShown) return
-        if (AccessibilityUtil.isServiceEnabled(this)) return
-        accessibilityPromptShown = true
+    private fun ensureAccessibilityOrPrompt(): Boolean {
+        if (AccessibilityUtil.isServiceEnabled(this)) return true
         startActivity(Intent(this, AccessibilityOnboardingActivity::class.java))
+        return false
     }
 
     override fun onDestroy() {

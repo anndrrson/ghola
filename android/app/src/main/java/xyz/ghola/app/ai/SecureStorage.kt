@@ -239,4 +239,27 @@ class SecureStorage(context: Context) {
     fun setFirstRunCompleted(completed: Boolean) {
         prefs.edit().putBoolean(KEY_FIRST_RUN_COMPLETED, completed).apply()
     }
+
+    // --- Software-keyed agent private keys (Op-Better #2) ---
+    //
+    // On non-Seeker devices we fall back to Java ed25519 for agent keys.
+    // The 32-byte seed is stored here keyed by the agent's slug. On a
+    // Seeker the agent uses Seed Vault and this path is never touched.
+    //
+    // Keys are stored base64-encoded because SharedPreferences doesn't
+    // natively handle ByteArray.
+
+    fun getSoftwareAgentKey(slug: String): ByteArray? {
+        val b64 = prefs.getString("sw_agent_key__$slug", null) ?: return null
+        return try {
+            android.util.Base64.decode(b64, android.util.Base64.NO_WRAP)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun setSoftwareAgentKey(slug: String, privateKeySeed: ByteArray) {
+        val b64 = android.util.Base64.encodeToString(privateKeySeed, android.util.Base64.NO_WRAP)
+        prefs.edit().putString("sw_agent_key__$slug", b64).apply()
+    }
 }

@@ -23,6 +23,7 @@ import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.SaidCloudClient
 import xyz.ghola.app.solana.Base58
 import xyz.ghola.app.solana.SeederKeyStore
+import xyz.ghola.app.solana.SoftwareKeyStore
 import kotlin.coroutines.resume
 
 /**
@@ -147,13 +148,16 @@ class CreateAgentActivity : AppCompatActivity() {
             return
         }
 
-        // Hard gate: the new backend requires a real signed challenge, so
-        // we cannot silently fall back to a server-generated keypair on
-        // devices without Seed Vault. Tell the user why and stop.
-        if (!SeederKeyStore.isSupported(this)) {
+        // Op-Better #2: try Seed Vault first; fall back to SoftwareKeyStore
+        // on non-Seeker devices that still have a usable ed25519 provider.
+        // Only hard-error if BOTH are unavailable — that's the true
+        // "can't create any agent at all" state.
+        val hasSeedVault = SeederKeyStore.isSupported(this)
+        val hasSoftware = SoftwareKeyStore.isSupported(this)
+        if (!hasSeedVault && !hasSoftware) {
             showError(
-                "Agent creation requires a Solana Seeker with Seed Vault. " +
-                    "Connect a wallet on the Wallet tab first."
+                "Agent creation requires either a Solana Seeker with Seed " +
+                    "Vault, or Android 13+. This device has neither."
             )
             return
         }
@@ -162,6 +166,7 @@ class CreateAgentActivity : AppCompatActivity() {
         createButton.isEnabled = false
 
         val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
+        val useSeedVault = hasSeedVault // decided once, then stays fixed for this attempt
 
         lifecycleScope.launch {
             try {
@@ -175,21 +180,40 @@ class CreateAgentActivity : AppCompatActivity() {
                     }
                 }
 
-                // ---- 1. DERIVE pubkey from Seed Vault ----
-                setStatus("Deriving hardware key…")
-                val pubkeyBytes: ByteArray = try {
-                    awaitDerive(nextIndex)
-                } catch (e: IllegalStateException) {
-                    // Single-shot guard tripped — the user must have
-                    // mashed the button while a previous flow was still in
-                    // flight. Surface a benign toast and reset the UI.
-                    toast("Seed Vault busy — try again in a moment")
-                    finishErrorState()
-                    return@launch
-                } catch (e: Throwable) {
-                    toast("Seed Vault authorization declined")
-                    finishErrorState()
-                    return@launch
+                // ---- 1. DERIVE or GENERATE pubkey ----
+                // Seed Vault path → hardware-backed private key lives in the
+                // Seeker's secure element. Software path → ed25519 keypair
+                // generated in process memory, private seed stashed in
+                // EncryptedSharedPreferences under the agent's slug.
+                val pubkeyBytes: ByteArray
+                val softwarePrivateKey: ByteArray?
+                if (useSeedVault) {
+                    setStatus("Deriving hardware key…")
+                    try {
+                        pubkeyBytes = awaitDerive(nextIndex)
+                        softwarePrivateKey = null
+                    } catch (e: IllegalStateException) {
+                        toast("Seed Vault busy — try again in a moment")
+                        finishErrorState()
+                        return@launch
+                    } catch (e: Throwable) {
+                        toast("Seed Vault authorization declined")
+                        finishErrorState()
+                        return@launch
+                    }
+                } else {
+                    setStatus("Generating software key…")
+                    try {
+                        val (pub, priv) = withContext(Dispatchers.Default) {
+                            SoftwareKeyStore.generateKeypair()
+                        }
+                        pubkeyBytes = pub
+                        softwarePrivateKey = priv
+                    } catch (e: Throwable) {
+                        showError("Could not generate software key: ${e.message}")
+                        finishErrorState()
+                        return@launch
+                    }
                 }
                 val pubkeyBase58 = Base58.encode(pubkeyBytes)
 
@@ -217,17 +241,31 @@ class CreateAgentActivity : AppCompatActivity() {
                     return@launch
                 }
 
-                setStatus("Signing with Seed Vault…")
-                val signatureBytes: ByteArray = try {
-                    awaitSign(nextIndex, nonceBytes)
-                } catch (e: IllegalStateException) {
-                    toast("Seed Vault busy — try again in a moment")
-                    finishErrorState()
-                    return@launch
-                } catch (e: Throwable) {
-                    toast("Signature declined")
-                    finishErrorState()
-                    return@launch
+                val signatureBytes: ByteArray
+                if (useSeedVault) {
+                    setStatus("Signing with Seed Vault…")
+                    try {
+                        signatureBytes = awaitSign(nextIndex, nonceBytes)
+                    } catch (e: IllegalStateException) {
+                        toast("Seed Vault busy — try again in a moment")
+                        finishErrorState()
+                        return@launch
+                    } catch (e: Throwable) {
+                        toast("Signature declined")
+                        finishErrorState()
+                        return@launch
+                    }
+                } else {
+                    setStatus("Signing with software key…")
+                    try {
+                        signatureBytes = withContext(Dispatchers.Default) {
+                            SoftwareKeyStore.sign(softwarePrivateKey!!, nonceBytes)
+                        }
+                    } catch (e: Throwable) {
+                        showError("Software signing failed: ${e.message}")
+                        finishErrorState()
+                        return@launch
+                    }
                 }
                 val signatureBase64 =
                     Base64.encodeToString(signatureBytes, Base64.NO_WRAP)
@@ -257,6 +295,16 @@ class CreateAgentActivity : AppCompatActivity() {
                     showError(err)
                     finishErrorState()
                     return@launch
+                }
+
+                // If we used the software path, persist the private key seed
+                // keyed by slug so subsequent signing operations on this
+                // agent can reuse it. Seed Vault path: no persistence needed,
+                // the key lives in hardware.
+                if (!useSeedVault && softwarePrivateKey != null) {
+                    withContext(Dispatchers.IO) {
+                        storage.setSoftwareAgentKey(slug, softwarePrivateKey)
+                    }
                 }
 
                 // Set as primary agent if it's the first one (best-effort).
