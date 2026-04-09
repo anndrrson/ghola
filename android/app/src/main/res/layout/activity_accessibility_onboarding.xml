@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Accessibility onboarding — text-first, avant-garde, one-tap path to
+  granting Ghola's accessibility permission. Crumb header, huge display
+  type explaining WHY, three eyebrow-labelled reassurances, one hard-
+  edged blue CTA. Matches the rest of the app's Linear/Arc aesthetic.
+
+  Widget IDs:
+    crumbBack, grantButton, statusBadge
+-->
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:clipToPadding="false"
+    android:paddingTop="24dp"
+    android:paddingStart="24dp"
+    android:paddingEnd="24dp"
+    android:paddingBottom="48dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <!-- Crumb header: ghola / setup / accessibility -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="56dp">
+            <TextView
+                android:id="@+id/crumbBack"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="ghola"
+                android:textColor="#4a5568"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist"
+                android:padding="4dp"
+                android:background="?attr/selectableItemBackgroundBorderless" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="  /  "
+                android:textColor="#4a5568"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist_mono" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="setup"
+                android:textColor="#4a5568"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="  /  "
+                android:textColor="#4a5568"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist_mono" />
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="accessibility"
+                android:textColor="#eef1f8"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist"
+                android:textFontWeight="500" />
+            <TextView
+                android:id="@+id/statusBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="› NOT GRANTED"
+                android:textColor="#ef4444"
+                android:textSize="11sp"
+                android:fontFamily="@font/geist"
+                android:textFontWeight="500"
+                android:letterSpacing="0.12" />
+        </LinearLayout>
+
+        <!-- Eyebrow + hero title -->
+        <TextView
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="› ONE MORE THING"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="The AI that uses your apps."
+            android:textColor="#eef1f8"
+            android:textSize="40sp"
+            android:fontFamily="@font/geist"
+            android:textFontWeight="500"
+            android:letterSpacing="-0.03"
+            android:includeFontPadding="false"
+            android:lineSpacingMultiplier="1.05"
+            android:layout_marginBottom="24dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="To tap buttons, type text, and open things on your behalf, Ghola needs Android's Accessibility permission — the same API a screen reader uses."
+            android:textColor="#8b95a8"
+            android:textSize="16sp"
+            android:fontFamily="@font/geist"
+            android:lineSpacingMultiplier="1.45"
+            android:layout_marginBottom="56dp" />
+
+        <!-- Three reassurances — eyebrow / body pairs -->
+        <TextView
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="› ON DEVICE"
+            android:layout_marginBottom="4dp" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Actions execute locally. Your screen is never recorded or streamed anywhere."
+            android:textColor="#eef1f8"
+            android:textSize="15sp"
+            android:fontFamily="@font/geist"
+            android:lineSpacingMultiplier="1.4"
+            android:layout_marginBottom="24dp" />
+
+        <TextView
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="› HARDWARE-BACKED"
+            android:layout_marginBottom="4dp" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Agent keys live in the Seeker's Seed Vault — the secure element inside your phone."
+            android:textColor="#eef1f8"
+            android:textSize="15sp"
+            android:fontFamily="@font/geist"
+            android:lineSpacingMultiplier="1.4"
+            android:layout_marginBottom="24dp" />
+
+        <TextView
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="› REVOCABLE"
+            android:layout_marginBottom="4dp" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Turn Ghola off at any time in Android Settings → Accessibility. Nothing persists once it's revoked."
+            android:textColor="#eef1f8"
+            android:textSize="15sp"
+            android:fontFamily="@font/geist"
+            android:lineSpacingMultiplier="1.4"
+            android:layout_marginBottom="56dp" />
+
+        <!-- Eyebrow-hint before the CTA -->
+        <TextView
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="› WHAT HAPPENS NEXT"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Android opens its Accessibility settings. Find Ghola, flip the switch, and return here. Ghola will detect the change automatically."
+            android:textColor="#8b95a8"
+            android:textSize="13sp"
+            android:fontFamily="@font/geist"
+            android:lineSpacingMultiplier="1.4"
+            android:layout_marginBottom="24dp" />
+
+        <!-- Primary CTA — hard-edged, oversized -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/grantButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="GRANT PERMISSION  →"
+            android:textColor="#000000"
+            android:textSize="13sp"
+            android:letterSpacing="0.12"
+            android:fontFamily="@font/geist"
+            android:textFontWeight="500"
+            android:paddingStart="28dp"
+            android:paddingEnd="28dp"
+            android:paddingTop="18dp"
+            android:paddingBottom="18dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            app:backgroundTint="#3da8ff"
+            app:cornerRadius="0dp"
+            app:elevation="0dp" />
+
+        <TextView
+            android:id="@+id/skipText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Skip for now"
+            android:textColor="#4a5568"
+            android:textSize="13sp"
+            android:fontFamily="@font/geist"
+            android:padding="12dp"
+            android:layout_marginTop="12dp"
+            android:background="?attr/selectableItemBackgroundBorderless" />
+    </LinearLayout>
+</ScrollView>

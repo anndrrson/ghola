@@ -20,6 +20,7 @@ import xyz.ghola.app.cloud.TaskClassifier
 import xyz.ghola.app.cloud.ThumperCloudClient
 import xyz.ghola.app.demo.DemoScript
 import xyz.ghola.app.service.VoiceInputService
+import xyz.ghola.app.util.AccessibilityUtil
 
 /**
  * New home screen for Thumper — the AI personal assistant.
@@ -91,6 +92,25 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         updateGreeting()
         refreshActiveTasks()
         initCloudClient()
+        maybePromptForAccessibility()
+    }
+
+    /** Session-scoped flag: once the user dismisses the accessibility
+     *  onboarding (via Skip or Back), don't re-show it on every resume.
+     *  Resets on app process kill so a fresh launch re-prompts. */
+    private var accessibilityPromptShown = false
+
+    /**
+     * If Ghola's accessibility service isn't enabled, launch the
+     * cinematic one-tap onboarding activity so the user can grant it
+     * without hunting through Android Settings. Only prompts once per
+     * app-process lifetime to avoid an annoying loop.
+     */
+    private fun maybePromptForAccessibility() {
+        if (accessibilityPromptShown) return
+        if (AccessibilityUtil.isServiceEnabled(this)) return
+        accessibilityPromptShown = true
+        startActivity(Intent(this, AccessibilityOnboardingActivity::class.java))
     }
 
     override fun onDestroy() {
