@@ -174,13 +174,163 @@
             style="@style/Ghola.Text.Eyebrow"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="› FIND GHOLA IN THE LIST"
+            android:text="› TAP THIS ROW"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Visual mockup: an annotated replica of the exact Android list item
+             the user is hunting for. Blue left border, Ghola icon on the
+             left, name + status in geist. Users see what to look for BEFORE
+             they see the real settings list, so the "which one is Ghola"
+             question gets answered upfront. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="#0b0e14"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="18dp"
+            android:paddingBottom="18dp"
+            android:layout_marginBottom="12dp">
+
+            <ImageView
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:src="@mipmap/ic_launcher"
+                android:layout_marginEnd="16dp"
+                android:contentDescription="@null" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Ghola"
+                    android:textColor="#eef1f8"
+                    android:textSize="17sp"
+                    android:fontFamily="@font/geist"
+                    android:textFontWeight="500" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Off"
+                    android:textColor="#8b95a8"
+                    android:textSize="13sp"
+                    android:fontFamily="@font/geist"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="44dp"
+                android:layout_height="24dp"
+                android:background="#1e2a3a" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="  ←"
+                android:textColor="#3da8ff"
+                android:textSize="22sp"
+                android:layout_marginStart="4dp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="This is what you're looking for. Blue robot icon. Name says &quot;Ghola&quot;."
+            android:textColor="#8b95a8"
+            android:textSize="12sp"
+            android:fontFamily="@font/geist"
+            android:lineSpacingMultiplier="1.35"
+            android:layout_marginBottom="32dp" />
+
+        <!-- Anti-pattern mockup: what NOT to tap. Greyed out with a red X to
+             make it visually obvious that this is the "don't tap" row. -->
+        <TextView
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="› NOT THIS ONE"
+            android:textColor="#ef4444"
+            android:layout_marginBottom="12dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="#0b0e14"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="18dp"
+            android:paddingBottom="18dp"
+            android:alpha="0.45"
+            android:layout_marginBottom="12dp">
+
+            <View
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="#374151"
+                android:layout_marginEnd="16dp" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="TalkBack"
+                    android:textColor="#eef1f8"
+                    android:textSize="17sp"
+                    android:fontFamily="@font/geist"
+                    android:textFontWeight="500" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Off"
+                    android:textColor="#8b95a8"
+                    android:textSize="13sp"
+                    android:fontFamily="@font/geist"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="×"
+                android:textColor="#ef4444"
+                android:textSize="28sp"
+                android:textFontWeight="600" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="TalkBack is Google&apos;s screen reader. Turning it on makes your phone read everything aloud and lag heavily. Skip it."
+            android:textColor="#8b95a8"
+            android:textSize="12sp"
+            android:fontFamily="@font/geist"
+            android:lineSpacingMultiplier="1.35"
+            android:layout_marginBottom="40dp" />
+
+        <!-- Numbered textual guide as a reinforcement of the visual -->
+        <TextView
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="› THE SEQUENCE"
             android:layout_marginBottom="12dp" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="1. Android opens the Accessibility settings.\n2. Scroll down to the Installed apps section.\n3. Tap Ghola (look for the blue robot icon).\n4. Flip the switch to ON.\n5. Tap Allow on the confirmation dialog.\n6. Press back. Ghola detects the change automatically."
+            android:text="1. Android opens the Accessibility settings.\n2. Scroll down to Installed apps.\n3. Tap Ghola (blue robot icon).\n4. Flip the switch to ON.\n5. Tap Allow on the dialog.\n6. Press back. Ghola detects the change."
             android:textColor="#eef1f8"
             android:textSize="14sp"
             android:fontFamily="@font/geist_mono"
