@@ -124,7 +124,17 @@ import xyz.ghola.app.ai.SecureStorage
  */
 class SeederKeyStore(private val activity: ComponentActivity) {
 
-    private val storage = SecureStorage(activity)
+    /**
+     * Lazy-initialized so `EncryptedSharedPreferences.create()` doesn't fire
+     * during the Activity constructor chain. Activities' base context isn't
+     * attached until `Activity.attach()` runs, which happens AFTER Kotlin
+     * field initializers. If we touched SecureStorage here at field-init
+     * time, `context.getApplicationContext()` would return null and crash
+     * the Activity before it ever hit `onCreate`. First access happens
+     * inside `startAuthorizeOrReuseCached()` — well after the Activity
+     * is fully attached.
+     */
+    private val storage: SecureStorage by lazy { SecureStorage(activity) }
 
     /** Which operation the current [Pending] slot represents. */
     private enum class Operation { DERIVE, SIGN }
