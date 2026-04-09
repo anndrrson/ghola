@@ -7,6 +7,8 @@ members = [
     "crates/said-cloud",
     "crates/said-wasm",
     "crates/said-x402",
+    "crates/said-turnkey",
+    "crates/ghola-gateway",
     "mcp-server",
     "cli",
     "daemon",
@@ -104,6 +106,7 @@ said-types = { path = "crates/said-types" }
 said-core = { path = "crates/said-core" }
 said-solana = { path = "crates/said-solana" }
 said-x402 = { path = "crates/said-x402" }
+said-turnkey = { path = "crates/said-turnkey" }
 said-mcp = { path = "mcp-server" }
 said-daemon = { path = "daemon" }
 

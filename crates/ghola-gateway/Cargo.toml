@@ -1,0 +1,38 @@
+[package]
+name = "ghola-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Stateless HTTP proxy — the hot path for Ghola's headless merchant gateway."
+
+[[bin]]
+name = "ghola-gateway"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+base64 = { workspace = true }
+said-turnkey = { workspace = true }
+said-x402 = { workspace = true }
+
+# Direct (same pattern said-cloud uses)
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring", "postgres", "chrono", "uuid"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+dotenvy = "0.15"
+anyhow = "1"
+bytes = "1"
+url = "2"
+hex = "0.4"

@@ -11,6 +11,7 @@ pub mod business;
 pub mod chat;
 pub mod consumer;
 pub mod health;
+pub mod merchants;
 pub mod nodes;
 pub mod oidc;
 pub mod payments;

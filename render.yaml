@@ -25,6 +25,12 @@ services:
         value: "https://ghola.xyz"
       - key: ALLOWED_ORIGINS
         value: "https://ghola.xyz,https://www.ghola.xyz"
+      - key: GATEWAY_BASE_URL
+        value: "https://ghola-gateway.onrender.com"
+      # Shared KEK — said-cloud encrypts, ghola-gateway decrypts. MUST match.
+      # Generate with: openssl rand -hex 32
+      - key: GHOLA_VAULT_KEY
+        sync: false
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
@@ -35,4 +41,32 @@ services:
         sync: false
       - key: ADMIN_EMAILS
         sync: false
+    healthCheckPath: /health
+
+  - type: web
+    name: ghola-gateway
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.gateway
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ghola-db
+          property: connectionString
+      - key: BIND_ADDR
+        value: "0.0.0.0:8090"
+      # MUST match said-cloud's GHOLA_VAULT_KEY — both services decrypt
+      # credentials envelope-encrypted by said-cloud's /v1/m/new handler.
+      - key: GHOLA_VAULT_KEY
+        sync: false
+      - key: ROUTE_CACHE_TTL_SECS
+        value: "30"
+      - key: UPSTREAM_TIMEOUT_SECS
+        value: "30"
+      - key: CIRCUIT_FAILURE_THRESHOLD
+        value: "3"
+      - key: CIRCUIT_OPEN_SECS
+        value: "60"
+      - key: PLATFORM_FEE_BPS
+        value: "300"
     healthCheckPath: /health
