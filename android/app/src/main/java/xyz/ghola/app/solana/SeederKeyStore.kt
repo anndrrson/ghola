@@ -14,6 +14,7 @@ import com.solanamobile.seedvault.PublicKeyResponse
 import com.solanamobile.seedvault.SigningRequest
 import com.solanamobile.seedvault.Wallet
 import com.solanamobile.seedvault.WalletContractV1
+import xyz.ghola.app.ai.SecureStorage
 
 /**
  * # SeederKeyStore
@@ -123,14 +124,17 @@ import com.solanamobile.seedvault.WalletContractV1
  */
 class SeederKeyStore(private val activity: ComponentActivity) {
 
+    private val storage = SecureStorage(activity)
+
     /** Which operation the current [Pending] slot represents. */
     private enum class Operation { DERIVE, SIGN }
 
     /**
      * Pending state for a single in-flight operation. Captures the caller's
-     * callback, the BIP-44 account index, the operation kind, and (for SIGN)
-     * the payload bytes to feed into [SigningRequest]. The `authToken` is
-     * nullable because it's populated after the first Intent hop completes.
+     * callback, the BIP-44 account index, the operation kind, (for SIGN)
+     * the payload bytes to feed into [SigningRequest], the `authToken`,
+     * and a `retriedAfterCacheInvalidation` flag so we only retry ONCE if
+     * the cached token turned out to be stale.
      */
     private data class Pending(
         val operation: Operation,
@@ -138,6 +142,7 @@ class SeederKeyStore(private val activity: ComponentActivity) {
         val callback: (Result<ByteArray>) -> Unit,
         val messageToSign: ByteArray?,
         var authToken: Long? = null,
+        var retriedAfterCacheInvalidation: Boolean = false,
     )
 
     private var pending: Pending? = null
@@ -201,7 +206,7 @@ class SeederKeyStore(private val activity: ComponentActivity) {
             callback = callback,
             messageToSign = null,
         )
-        launchAuthorize()
+        startAuthorizeOrReuseCached()
     }
 
     /**
@@ -241,7 +246,56 @@ class SeederKeyStore(private val activity: ComponentActivity) {
             callback = callback,
             messageToSign = message,
         )
+        startAuthorizeOrReuseCached()
+    }
+
+    /**
+     * Op-Better #1: cached authToken fast path.
+     *
+     * If SecureStorage has a previously-issued authToken, skip the
+     * authorize launcher entirely and jump straight to the operation's
+     * next step (requestPublicKeys for DERIVE, signMessages for SIGN).
+     * The cached token might be stale — if the result launcher throws
+     * ActionFailedException we invalidate the cache and fall back to
+     * the full authorize flow. See [maybeRetryAfterCacheInvalidation].
+     */
+    private fun startAuthorizeOrReuseCached() {
+        val p = pending ?: return
+        val cachedToken = storage.getSeedVaultAuthToken()
+        if (cachedToken != -1L) {
+            Log.i(TAG, "using cached Seed Vault authToken — skipping authorize")
+            p.authToken = cachedToken
+            when (p.operation) {
+                Operation.DERIVE -> launchPubkeyRequest(cachedToken)
+                Operation.SIGN -> launchSignRequest(cachedToken)
+            }
+            return
+        }
         launchAuthorize()
+    }
+
+    /**
+     * If the current pending op failed because the cached token was
+     * stale, retry ONCE from the authorize step. Returns true if the
+     * retry was triggered, false if we should surface the failure.
+     */
+    private fun maybeRetryAfterCacheInvalidation(): Boolean {
+        val p = pending ?: return false
+        if (p.retriedAfterCacheInvalidation) {
+            // Already retried once — don't loop.
+            return false
+        }
+        // Only retry if we were actually using a cached token (not a fresh
+        // authorize that just failed because the user denied).
+        val wasUsingCache = storage.hasSeedVaultAuthToken() && p.authToken != null
+        if (!wasUsingCache) return false
+
+        Log.w(TAG, "cached authToken appears stale — invalidating and retrying from authorize")
+        storage.clearSeedVaultAuthToken()
+        p.retriedAfterCacheInvalidation = true
+        p.authToken = null
+        launchAuthorize()
+        return true
     }
 
     /**
@@ -265,7 +319,8 @@ class SeederKeyStore(private val activity: ComponentActivity) {
         }
     }
 
-    /** Step 1 result handler — parse the authToken, then branch on op. */
+    /** Step 1 result handler — parse the authToken, persist it to the
+     *  cache, then branch on op. */
     private fun handleAuthorizeResult(result: ActivityResult) {
         val p = pending ?: run {
             Log.w(TAG, "authorize result arrived with no pending operation")
@@ -282,6 +337,12 @@ class SeederKeyStore(private val activity: ComponentActivity) {
             finishWith(Result.failure(e))
             return
         }
+
+        // Op-Better #1: persist the fresh authToken so future operations
+        // can skip the authorize step. Valid until the user manually
+        // revokes the app's Seed Vault access via system settings.
+        storage.setSeedVaultAuthToken(authToken)
+        Log.i(TAG, "cached fresh Seed Vault authToken")
 
         p.authToken = authToken
         when (p.operation) {
@@ -331,6 +392,9 @@ class SeederKeyStore(private val activity: ComponentActivity) {
         val responses = try {
             Wallet.onRequestPublicKeysResult(result.resultCode, result.data)
         } catch (e: Wallet.ActionFailedException) {
+            // Might be because the cached authToken is stale. Invalidate
+            // and retry ONCE from the authorize step.
+            if (maybeRetryAfterCacheInvalidation()) return
             Log.w(TAG, "user denied requestPublicKeys: ${e.message}")
             finishWith(Result.failure(e))
             return
@@ -399,6 +463,9 @@ class SeederKeyStore(private val activity: ComponentActivity) {
         val responses = try {
             Wallet.onSignMessagesResult(result.resultCode, result.data)
         } catch (e: Wallet.ActionFailedException) {
+            // Might be because the cached authToken is stale. Invalidate
+            // and retry ONCE from the authorize step.
+            if (maybeRetryAfterCacheInvalidation()) return
             Log.w(TAG, "user denied signMessages: ${e.message}")
             finishWith(Result.failure(e))
             return

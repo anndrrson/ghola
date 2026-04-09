@@ -26,6 +26,9 @@ class SecureStorage(context: Context) {
         private const val KEY_SAID_BASE_URL = "said_cloud_base_url"
         private const val KEY_SAID_USER_ID = "said_cloud_user_id"
         private const val KEY_PRIMARY_AGENT_ID = "primary_agent_id"
+        private const val KEY_SEED_VAULT_AUTH_TOKEN = "seed_vault_auth_token"
+        private const val KEY_SEED_VAULT_AUTH_ISSUED_AT = "seed_vault_auth_issued_at"
+        private const val KEY_FIRST_RUN_COMPLETED = "first_run_completed"
         private const val DEFAULT_MODEL = "claude-sonnet-4-6"
         private const val DEFAULT_QWEN_MODEL = "qwen2.5-72b-instruct"
         private const val DEFAULT_CLOUD_URL = "https://api.thumper.ai"
@@ -198,5 +201,42 @@ class SecureStorage(context: Context) {
 
     fun setPrimaryAgentId(id: String) {
         prefs.edit().putString(KEY_PRIMARY_AGENT_ID, id).apply()
+    }
+
+    // --- Seed Vault auth token cache (Op-Better #1) ---
+    //
+    // The Seed Vault SDK returns an opaque `authToken: Long` when the user
+    // approves the authorize dialog. That token is valid until the user
+    // revokes the app's access from the system Seed Vault settings, which
+    // is rare. Caching it here lets us skip the authorize step on every
+    // subsequent derive/sign call — the first agent creation is 2 prompts,
+    // every later one is 1 prompt.
+
+    fun getSeedVaultAuthToken(): Long {
+        return prefs.getLong(KEY_SEED_VAULT_AUTH_TOKEN, -1L)
+    }
+
+    fun setSeedVaultAuthToken(token: Long) {
+        prefs.edit()
+            .putLong(KEY_SEED_VAULT_AUTH_TOKEN, token)
+            .putLong(KEY_SEED_VAULT_AUTH_ISSUED_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    fun clearSeedVaultAuthToken() {
+        prefs.edit()
+            .remove(KEY_SEED_VAULT_AUTH_TOKEN)
+            .remove(KEY_SEED_VAULT_AUTH_ISSUED_AT)
+            .apply()
+    }
+
+    fun hasSeedVaultAuthToken(): Boolean = getSeedVaultAuthToken() != -1L
+
+    // --- First-run sequencer flag (Op-Better #4) ---
+
+    fun isFirstRunCompleted(): Boolean = prefs.getBoolean(KEY_FIRST_RUN_COMPLETED, false)
+
+    fun setFirstRunCompleted(completed: Boolean) {
+        prefs.edit().putBoolean(KEY_FIRST_RUN_COMPLETED, completed).apply()
     }
 }
