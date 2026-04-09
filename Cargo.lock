@@ -1196,6 +1196,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghola-gateway"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "bytes",
+ "chrono",
+ "dashmap",
+ "dotenvy",
+ "futures",
+ "hex",
+ "reqwest",
+ "said-turnkey",
+ "said-x402",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "ghola-home"
 version = "0.1.0"
 dependencies = [
@@ -2734,6 +2763,7 @@ dependencies = [
  "rand 0.8.5",
  "reqwest",
  "said-solana",
+ "said-turnkey",
  "said-types",
  "serde",
  "serde_json",
@@ -2745,6 +2775,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
@@ -2854,6 +2885,26 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+]
+
+[[package]]
+name = "said-turnkey"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "async-trait",
+ "base64",
+ "bs58",
+ "ed25519-dalek",
+ "hex",
+ "rand 0.8.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

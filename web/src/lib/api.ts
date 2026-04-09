@@ -785,6 +785,129 @@ export async function getAgentEarnings(id: string): Promise<AgentEarnings> {
   return apiFetch<AgentEarnings>(`/agents/${id}/earnings`);
 }
 
+// ─── Merchant gateway (zero-account onboarding) ─────────────────────────
+
+export type MerchantAuthMode =
+  | "bearer"
+  | "api_key_header"
+  | "api_key_query"
+  | "basic"
+  | "none";
+
+export interface NewMerchantRequest {
+  origin_url: string;
+  auth_mode: MerchantAuthMode;
+  auth_header_name?: string;
+  auth_credential?: string;
+  price_micro_usdc: number;
+  name?: string;
+  slug?: string;
+  description?: string;
+}
+
+export interface MerchantProbeResult {
+  ok: boolean;
+  status: number | null;
+  latency_ms: number | null;
+  error: string | null;
+}
+
+export interface NewMerchantResponse {
+  slug: string;
+  service_id: string;
+  wallet_address: string;
+  gateway_url: string;
+  public_url: string;
+  dashboard_url: string;
+  origin_probe: MerchantProbeResult;
+}
+
+export interface MerchantPublicListing {
+  slug: string;
+  name: string;
+  description: string;
+  price_micro_usdc: number;
+  wallet_address: string | null;
+  status: string;
+  gateway_url: string;
+  total_requests: number;
+  total_revenue_micro_usdc: number;
+}
+
+export interface MerchantCallLog {
+  id: string;
+  caller_agent_did: string | null;
+  method: string;
+  path: string;
+  upstream_status: number | null;
+  gateway_status: number;
+  latency_ms: number;
+  amount_charged_micro_usdc: number;
+  payment_status: string;
+  error_reason: string | null;
+  created_at: string;
+}
+
+export interface MerchantDailyEarnings {
+  day: string;
+  micro_usdc: number;
+  calls: number;
+}
+
+export interface MerchantEarningsSummary {
+  total_micro_usdc: number;
+  last_24h_micro_usdc: number;
+  total_calls: number;
+  by_day: MerchantDailyEarnings[];
+}
+
+export interface MerchantTestCallResponse {
+  status: number;
+  latency_ms: number;
+  trace_id: string | null;
+  error: string | null;
+}
+
+export async function createMerchant(
+  body: NewMerchantRequest,
+): Promise<NewMerchantResponse> {
+  return apiFetch<NewMerchantResponse>("/m/new", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getMerchantListing(
+  slug: string,
+): Promise<MerchantPublicListing> {
+  return apiFetch<MerchantPublicListing>(`/m/${slug}`);
+}
+
+export async function getMerchantLogs(
+  slug: string,
+  limit = 100,
+): Promise<MerchantCallLog[]> {
+  return apiFetch<MerchantCallLog[]>(`/m/${slug}/logs?limit=${limit}`);
+}
+
+export async function getMerchantEarnings(
+  slug: string,
+): Promise<MerchantEarningsSummary> {
+  return apiFetch<MerchantEarningsSummary>(`/m/${slug}/earnings`);
+}
+
+export async function runMerchantTestCall(
+  slug: string,
+): Promise<MerchantTestCallResponse> {
+  return apiFetch<MerchantTestCallResponse>(`/m/${slug}/test-call`, {
+    method: "POST",
+  });
+}
+
+export async function killMerchant(slug: string): Promise<void> {
+  return apiFetch<void>(`/m/${slug}`, { method: "DELETE" });
+}
+
 // Namespace export for pages that use api.method()
 export const orniApi = {
   orniGetNonce,

@@ -53,6 +53,10 @@ async fn main() -> anyhow::Result<()> {
         "Response signing key loaded"
     );
 
+    let vault = said_turnkey::vault_from_env()
+        .map_err(|e| anyhow::anyhow!("vault init failed: {e}"))?;
+    tracing::info!(backend = vault.backend_name(), "Merchant gateway vault initialized");
+
     let state = Arc::new(AppState {
         db,
         config: config.clone(),
@@ -60,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
         rate_limiter: Arc::new(state::RateLimiter::new()),
         usage_meter: Arc::new(state::UsageMeter::new()),
         signing_key,
+        vault,
     });
 
     // Spawn background health checker for inference nodes
@@ -225,6 +230,22 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v1/oidc/provision",
             post(routes::oidc::provision_agent),
+        )
+        // Merchant gateway onboarding (public — zero-account 60-second flow)
+        .route("/v1/m/new", post(routes::merchants::create_merchant))
+        .route(
+            "/v1/m/{slug}",
+            get(routes::merchants::get_public_listing)
+                .delete(routes::merchants::kill_switch),
+        )
+        .route("/v1/m/{slug}/logs", get(routes::merchants::get_logs))
+        .route(
+            "/v1/m/{slug}/earnings",
+            get(routes::merchants::get_earnings),
+        )
+        .route(
+            "/v1/m/{slug}/test-call",
+            post(routes::merchants::run_test_call),
         );
 
     // Protected routes (require Bearer JWT)

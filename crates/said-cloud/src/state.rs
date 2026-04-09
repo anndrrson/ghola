@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 use ed25519_dalek::SigningKey;
 use sqlx::PgPool;
 
+use said_turnkey::Vault;
+
 use crate::config::Config;
 
 pub struct RateLimiter {
@@ -92,6 +94,10 @@ pub struct AppState {
     /// Loaded from SIGNING_KEY env var (hex-encoded 32-byte seed)
     /// or generated fresh at startup if the env var is absent.
     pub signing_key: Arc<SigningKey>,
+    /// Credential vault for the merchant gateway. LocalVault by default
+    /// (AES-256-GCM under GHOLA_VAULT_KEY), TurnkeyVault when
+    /// TURNKEY_API_KEY is set. Shared with ghola-gateway via the same trait.
+    pub vault: Arc<dyn Vault>,
 }
 
 impl AppState {
