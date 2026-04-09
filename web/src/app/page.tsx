@@ -71,22 +71,22 @@ export default function Home() {
         />
 
         <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-24 sm:py-32">
-          <div className="max-w-3xl">
+          <div className="max-w-4xl">
             <div className="inline-flex items-center gap-2 rounded-full border border-[#1e2a3a] bg-[#0f1117] px-4 py-1.5 text-sm text-[#8b95a8] mb-8">
               <span className="h-2 w-2 rounded-full bg-[#3da8ff] animate-pulse" />
-              Cryptographic identities for AI agents
+              Cryptographic identities for AI agents · on Solana
             </div>
-            <h1 className="text-5xl md:text-7xl font-medium tracking-tight text-[#eef1f8] leading-[1.08]">
-              Your agent.
+            <h1 className="text-5xl md:text-7xl font-medium tracking-tight text-[#eef1f8] leading-[1.04]">
+              The AI that
               <br />
-              Your wallet.
+              <span className="text-[#3da8ff]">actually uses</span>
               <br />
-              <span className="text-[#3da8ff]">Your reputation.</span>
+              your apps.
             </h1>
             <p className="mt-8 text-lg md:text-xl text-[#8b95a8] leading-relaxed max-w-2xl">
-              Cryptographic identities for AI agents on Solana. Create an
-              agent that earns, spends, and builds reputation — all on-chain,
-              all yours.
+              Ghola&apos;s agent taps, types, and navigates other apps on your
+              phone — and pays for what it does with its own on-chain wallet,
+              not yours.
             </p>
             <div className="mt-10 flex flex-col sm:flex-row gap-4">
               <Link
@@ -315,13 +315,13 @@ export default function Home() {
       {/* ──────────── Final CTA ──────────── */}
       <section className="py-24 sm:py-32">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 text-center">
-          <h2 className="text-3xl font-medium text-[#eef1f8]">
-            Own your agent. Own its reputation.
+          <h2 className="text-3xl md:text-4xl font-medium text-[#eef1f8]">
+            Stop typing. Let your agent do it.
           </h2>
           <p className="mt-4 text-[#8b95a8] max-w-xl mx-auto">
-            Every agent is a cryptographic identity with its own wallet,
-            its own service listings, and its own on-chain reputation. You
-            operate it. You earn from it.
+            Opens apps. Books rides. Sends emails. Cancels subscriptions.
+            Pays its own way in USDC — no credit card, no shared wallet,
+            no begging the AI to stop refusing.
           </p>
           <div className="mt-8 flex flex-col sm:flex-row gap-4 justify-center">
             <Link
