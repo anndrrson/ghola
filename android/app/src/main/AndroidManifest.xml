@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="xyz.orni.thumper">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -50,6 +49,25 @@
         <!-- Task detail -->
         <activity
             android:name=".ui.TaskDetailActivity"
+            android:exported="false" />
+
+        <!-- Agent ownership (Phase M5) -->
+        <activity
+            android:name=".ui.AgentsActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ui.AgentDetailActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ui.CreateAgentActivity"
+            android:exported="false" />
+
+        <!-- Bottom nav tabs (Phase M6) -->
+        <activity
+            android:name=".ui.WalletActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ui.ActivityFeedActivity"
             android:exported="false" />
 
         <!-- Accessibility Service (device control) -->

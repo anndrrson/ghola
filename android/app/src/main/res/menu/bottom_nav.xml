@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/tab_assistant"
+        android:title="Assistant"
+        android:icon="@android:drawable/ic_menu_send" />
+    <item
+        android:id="@+id/tab_agents"
+        android:title="Agents"
+        android:icon="@android:drawable/ic_menu_myplaces" />
+    <item
+        android:id="@+id/tab_activity"
+        android:title="Activity"
+        android:icon="@android:drawable/ic_menu_recent_history" />
+    <item
+        android:id="@+id/tab_wallet"
+        android:title="Wallet"
+        android:icon="@android:drawable/ic_menu_manage" />
+</menu>

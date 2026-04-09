@@ -11,7 +11,7 @@
         android:layout_height="match_parent"
         android:padding="16dp"
         android:clipToPadding="false"
-        android:paddingBottom="88dp">
+        android:paddingBottom="144dp">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -175,17 +175,26 @@
         </LinearLayout>
     </ScrollView>
 
-    <!-- Mic FAB -->
+    <!-- Mic FAB (sits above the bottom nav) -->
     <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:id="@+id/micFab"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="24dp"
+        android:layout_marginBottom="80dp"
         android:src="@android:drawable/ic_btn_speak_now"
         android:contentDescription="Voice input"
         app:fabSize="normal"
         app:backgroundTint="#1A1A1A"
         app:tint="@android:color/white" />
+
+    <!-- Phase M6: Bottom navigation -->
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="#FFFFFF"
+        app:menu="@menu/bottom_nav" />
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

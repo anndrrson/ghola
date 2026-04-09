@@ -27,7 +27,7 @@ static void cleanup_context() {
 extern "C" {
 
 JNIEXPORT jboolean JNICALL
-Java_xyz_orni_thumper_ai_llama_LlamaCpp_loadModel(
+Java_xyz_ghola_app_ai_llama_LlamaCpp_loadModel(
     JNIEnv *env, jobject /* this */,
     jstring modelPath, jint contextSize, jint numThreads,
     jfloat temp, jfloat topP) {
@@ -74,7 +74,7 @@ Java_xyz_orni_thumper_ai_llama_LlamaCpp_loadModel(
 }
 
 JNIEXPORT jstring JNICALL
-Java_xyz_orni_thumper_ai_llama_LlamaCpp_generate(
+Java_xyz_ghola_app_ai_llama_LlamaCpp_generate(
     JNIEnv *env, jobject /* this */,
     jstring prompt, jint maxTokens) {
 
@@ -145,7 +145,7 @@ Java_xyz_orni_thumper_ai_llama_LlamaCpp_generate(
 }
 
 JNIEXPORT void JNICALL
-Java_xyz_orni_thumper_ai_llama_LlamaCpp_generateStreaming(
+Java_xyz_ghola_app_ai_llama_LlamaCpp_generateStreaming(
     JNIEnv *env, jobject /* this */,
     jstring prompt, jint maxTokens, jobject callback) {
 
@@ -207,13 +207,13 @@ Java_xyz_orni_thumper_ai_llama_LlamaCpp_generateStreaming(
 }
 
 JNIEXPORT void JNICALL
-Java_xyz_orni_thumper_ai_llama_LlamaCpp_cancel(
+Java_xyz_ghola_app_ai_llama_LlamaCpp_cancel(
     JNIEnv * /* env */, jobject /* this */) {
     cancelled.store(true);
 }
 
 JNIEXPORT void JNICALL
-Java_xyz_orni_thumper_ai_llama_LlamaCpp_release(
+Java_xyz_ghola_app_ai_llama_LlamaCpp_release(
     JNIEnv * /* env */, jobject /* this */) {
     cancelled.store(true);
     cleanup_context();
@@ -225,7 +225,7 @@ Java_xyz_orni_thumper_ai_llama_LlamaCpp_release(
 }
 
 JNIEXPORT jint JNICALL
-Java_xyz_orni_thumper_ai_llama_LlamaCpp_tokenCount(
+Java_xyz_ghola_app_ai_llama_LlamaCpp_tokenCount(
     JNIEnv *env, jobject /* this */,
     jstring text) {
 

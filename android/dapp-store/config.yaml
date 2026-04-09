@@ -1,0 +1,88 @@
+# Phase M9: Solana dApp Store publishing config.
+#
+# Consumed by `npx @solana-mobile/dapp-store-cli publish create|submit`.
+# See https://docs.solanamobile.com/dapp-publishing/overview for the full
+# schema. Fields marked TODO must be filled in before submission:
+#   - Asset paths (icons, screenshots) need to be added to /android/dapp-store/assets/
+#   - Publisher on-chain account must be funded with a small amount of SOL
+#   - Copy any final marketing strings from /android/dapp-store/release-notes.txt
+
+publisher:
+  name: Ghola
+  website: https://ghola.xyz
+  email: hello@ghola.xyz
+
+app:
+  android_package: xyz.ghola.app
+
+release:
+  address: # populated by the CLI on first `publish create`
+  media:
+    # TODO: add a 512x512 app icon PNG at assets/icon.png
+    - purpose: icon
+      uri: assets/icon.png
+      mime: image/png
+    # TODO: add 6-8 screenshots at the Seeker resolution (1080x2400 recommended)
+    - purpose: screenshot
+      uri: assets/screenshots/01_agents.png
+      mime: image/png
+    - purpose: screenshot
+      uri: assets/screenshots/02_detail.png
+      mime: image/png
+    - purpose: screenshot
+      uri: assets/screenshots/03_create.png
+      mime: image/png
+    - purpose: screenshot
+      uri: assets/screenshots/04_wallet.png
+      mime: image/png
+
+  catalog:
+    en-US:
+      name: Ghola
+      short_description: |
+        AI agents with their own wallets, identities, and reputation.
+      long_description: |
+        Ghola gives every AI agent what it needs to actually do things in
+        your life: a cryptographic identity, a USDC wallet, and the ability
+        to transact with other agents on-chain.
+
+        • Create an agent in 10 seconds — server generates an ed25519 keypair,
+          derives a DID, and provisions a Solana wallet atomically.
+        • Each agent is isolated from your main wallet. Fund it with a few
+          dollars, and it can pay for things on your behalf without exposing
+          your primary account.
+        • Your agent can control the phone via the accessibility service,
+          call customer service, send emails, and navigate apps for you.
+        • On Solana Seeker, the Seed Vault stores agent signing keys in
+          hardware — non-custodial security no other AI app offers.
+        • Agents earn USDC by offering services other agents can hire.
+          Wake up to passive income.
+
+        Built on SAID, Ghola's open cryptographic identity protocol for AI
+        agents. Full operator dashboard at ghola.xyz.
+      new_in_version: |
+        Initial release.
+          • Create and manage cryptographically-owned AI agents
+          • Agent detail with DID, Solana address, balance, reputation
+          • Bottom navigation across Assistant / Agents / Activity / Wallet
+          • Paired with the existing device-control agent loop
+
+      saga_features: |
+        • Hardware-backed agent keys via Seed Vault (coming in Phase M4)
+        • Mobile Wallet Adapter integration for agent funding
+        • Solana dApp Store exclusive features
+
+      google_store_package: xyz.ghola.app
+
+  files:
+    # TODO: the CLI will substitute the actual APK path on `publish create`
+    - purpose: install
+      uri: app-release.apk
+
+solana_mobile_dapp_publisher_portal:
+  google_store_package: xyz.ghola.app
+
+# Targeted categories; the CLI will validate these against the supported list.
+categories:
+  - productivity
+  - social

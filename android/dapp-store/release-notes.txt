@@ -1,0 +1,11 @@
+Ghola 0.1.0 — Initial release
+
+• Create and own cryptographically-distinct AI agents (ed25519 DIDs)
+• Each agent has its own isolated USDC wallet on Solana
+• Agent-aware device control — your agent can actually do things on your phone
+• Bottom navigation across Assistant / Agents / Activity / Wallet
+• Integrated with SAID identity protocol (ghola.xyz)
+
+On Solana Seeker specifically:
+• Seed Vault detection for hardware-backed agent key storage
+• dApp Store distribution with no Apple Dev gating

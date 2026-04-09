@@ -4,12 +4,12 @@ plugins {
 }
 
 android {
-    namespace = "xyz.orni.thumper"
+    namespace = "xyz.ghola.app"
     compileSdk = 34
     ndkVersion = "26.1.10909125"
 
     defaultConfig {
-        applicationId = "xyz.orni.thumper"
+        applicationId = "xyz.ghola.app"
         minSdk = 28
         targetSdk = 34
         versionCode = 1
@@ -20,8 +20,50 @@ android {
         }
     }
 
+    // Phase M9: release signing + R8 for Solana dApp Store submission.
+    // Keystore path + passwords are read from gradle.properties or env vars
+    // (`GHOLA_KEYSTORE_PATH`, `GHOLA_KEYSTORE_PASSWORD`, `GHOLA_KEY_ALIAS`,
+    // `GHOLA_KEY_PASSWORD`). Release builds fall back to the debug keystore
+    // if no signing config is provided, so dev builds still work.
+    signingConfigs {
+        create("release") {
+            val keystorePath = providers.gradleProperty("GHOLA_KEYSTORE_PATH")
+                .orElse(providers.environmentVariable("GHOLA_KEYSTORE_PATH"))
+                .orNull
+            if (keystorePath != null) {
+                storeFile = file(keystorePath)
+                storePassword = providers.gradleProperty("GHOLA_KEYSTORE_PASSWORD")
+                    .orElse(providers.environmentVariable("GHOLA_KEYSTORE_PASSWORD"))
+                    .get()
+                keyAlias = providers.gradleProperty("GHOLA_KEY_ALIAS")
+                    .orElse(providers.environmentVariable("GHOLA_KEY_ALIAS"))
+                    .get()
+                keyPassword = providers.gradleProperty("GHOLA_KEY_PASSWORD")
+                    .orElse(providers.environmentVariable("GHOLA_KEY_PASSWORD"))
+                    .get()
+            }
+        }
+    }
+
     buildTypes {
         release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            // Only assign the release signing config if a keystore was found;
+            // otherwise fall back to debug signing so `assembleRelease` still
+            // works for local smoke tests.
+            val hasKeystore = providers.gradleProperty("GHOLA_KEYSTORE_PATH")
+                .orElse(providers.environmentVariable("GHOLA_KEYSTORE_PATH"))
+                .isPresent
+            if (hasKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+        debug {
             isMinifyEnabled = false
         }
     }
@@ -53,6 +95,7 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
+    implementation("androidx.cardview:cardview:1.0.0")
     // Google Sign-In
     implementation("com.google.android.gms:play-services-auth:21.0.0")
     implementation("androidx.credentials:credentials:1.3.0")
