@@ -60,14 +60,94 @@ class SaidCloudClient(
     /** GET /v1/agents/{id} — full detail with wallet, service count, reputation. */
     fun getAgent(id: String): JSONObject? = get("/agents/$id")
 
-    /** POST /v1/agents — create a new agent. Server generates ed25519 keypair,
-     *  derives DID, provisions a dedicated agent_wallets row in one transaction. */
-    fun createAgent(slug: String, displayName: String, bio: String? = null, avatarUrl: String? = null): JSONObject? {
+    /**
+     * Challenge response from `POST /v1/agents/challenge`. The nonce is a
+     * base64-encoded 32-byte random value generated server-side and tied to
+     * the submitted pubkey; `expiresAt` is an RFC3339 timestamp (currently
+     * unused client-side but carried through for diagnostics / future use).
+     */
+    data class AgentChallenge(val nonceBase64: String, val expiresAt: String)
+
+    /**
+     * POST /v1/agents/challenge — request a fresh nonce for the given
+     * master pubkey. The server persists the nonce keyed by pubkey with a
+     * short TTL; the caller signs the raw decoded bytes with their Seed
+     * Vault key and includes the signature in the subsequent
+     * [createAgentSigned] call.
+     *
+     * Returns null on any HTTP failure (network, 401, 429, etc). The caller
+     * should surface a generic error in that case — the underlying reason
+     * is logged at the TAG level but deliberately not returned, because the
+     * UI doesn't need to distinguish rate-limit from auth-failure (both
+     * require the user to retry).
+     */
+    fun requestAgentChallenge(masterPubkeyBase58: String): AgentChallenge? {
+        val body = JSONObject().apply {
+            put("master_pubkey_base58", masterPubkeyBase58)
+        }
+        val resp = post("/agents/challenge", body) ?: return null
+        val nonce = resp.optString("nonce_base64", "")
+        val expires = resp.optString("expires_at", "")
+        if (nonce.isEmpty()) {
+            Log.e(TAG, "challenge response missing nonce_base64: $resp")
+            return null
+        }
+        return AgentChallenge(nonceBase64 = nonce, expiresAt = expires)
+    }
+
+    /**
+     * POST /v1/agents (upgraded, signed variant) — create a new agent bound
+     * to a caller-supplied master pubkey, with a signature proving the
+     * client controls the corresponding private key. Server validates:
+     *   - pubkey length (32 bytes once base58-decoded)
+     *   - signature length (64 bytes once base64-decoded)
+     *   - signature verifies via ed25519 `verify_strict` over the raw nonce
+     *   - challenge has not expired
+     *   - challenge has not already been consumed
+     *   - challenge was issued for the same pubkey being submitted
+     *
+     * On success returns the full agent JSON (same shape as the old
+     * [createAgent]). On failure returns null and logs the HTTP code.
+     * Callers that need the server error message should fall back to the
+     * raw HTTP response via the /agents endpoint with curl for diagnostics.
+     */
+    fun createAgentSigned(
+        slug: String,
+        displayName: String,
+        bio: String?,
+        masterPubkeyBase58: String,
+        challengeNonceBase64: String,
+        signatureBase64: String,
+    ): JSONObject? {
+        val body = JSONObject().apply {
+            put("slug", slug)
+            put("display_name", displayName)
+            if (bio != null) put("bio", bio)
+            put("master_pubkey_base58", masterPubkeyBase58)
+            put("challenge_nonce_base64", challengeNonceBase64)
+            put("signature_base64", signatureBase64)
+        }
+        return post("/agents", body)
+    }
+
+    /** POST /v1/agents — legacy unsigned variant. Kept for backward
+     *  compatibility with callers that haven't been migrated to the signed
+     *  flow yet. The backend now requires all six fields (pubkey + nonce +
+     *  signature), so this method will almost certainly 400 in production.
+     *  New callers should use [createAgentSigned] via the challenge flow. */
+    fun createAgent(
+        slug: String,
+        displayName: String,
+        bio: String? = null,
+        avatarUrl: String? = null,
+        masterPubkeyBase58: String? = null,
+    ): JSONObject? {
         val body = JSONObject().apply {
             put("slug", slug)
             put("display_name", displayName)
             if (bio != null) put("bio", bio)
             if (avatarUrl != null) put("avatar_url", avatarUrl)
+            if (masterPubkeyBase58 != null) put("master_pubkey_base58", masterPubkeyBase58)
         }
         return post("/agents", body)
     }

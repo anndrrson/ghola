@@ -115,6 +115,12 @@ dependencies {
     // it brings kotlinx-coroutines transitively but we also declare it
     // explicitly so the IDE resolves lifecycleScope without surprises.
     implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.3")
+    // Phase M4 — Seed Vault SDK. Intent-based hardware key store for Seeker.
+    // Presence-detected via SeederKeyStore.isSupported() at runtime; safe to
+    // link on non-Seeker devices because all calls go through the SDK's
+    // package-resolution layer and silently fail if the Seed Vault package
+    // isn't installed.
+    implementation("com.solanamobile:seedvault-wallet-sdk:0.4.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
