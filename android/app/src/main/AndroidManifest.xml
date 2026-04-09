@@ -83,6 +83,14 @@
             android:exported="false"
             android:theme="@style/Theme.Ghola" />
 
+        <!-- First-run sequencer (Op-Better #4) — shown exactly once on
+             the very first launch after install. Gated by the
+             SecureStorage.isFirstRunCompleted() flag. -->
+        <activity
+            android:name=".ui.FirstRunActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Ghola" />
+
         <!-- Task detail -->
         <activity
             android:name=".ui.TaskDetailActivity"

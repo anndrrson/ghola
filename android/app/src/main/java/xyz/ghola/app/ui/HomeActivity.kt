@@ -46,9 +46,22 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_home)
 
         secureStorage = SecureStorage(this)
+
+        // Op-Better #4: one-shot first-run sequencer. If this is the very
+        // first launch after install, hand off to FirstRunActivity before
+        // inflating the home layout at all. FirstRunActivity finishes back
+        // into HomeActivity with the flag set to true.
+        if (!secureStorage.isFirstRunCompleted()) {
+            val intent = Intent(this, FirstRunActivity::class.java)
+            startActivity(intent)
+            finish()
+            return
+        }
+
+        setContentView(R.layout.activity_home)
+
         voiceService = VoiceInputService(this)
         voiceService.initialize(this)
 

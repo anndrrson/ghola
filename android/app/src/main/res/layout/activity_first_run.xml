@@ -1,0 +1,228 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  First-run sequencer — one-time cinematic opener shown on cold install.
+  Two beats fit in a single full-screen ViewFlipper:
+    1. Pitch: "The AI that uses your apps." + three one-liners + continue
+    2. Ready: "You're set. Start tapping."
+
+  Google sign-in happens on the Ready screen via a secondary button that
+  delegates to CloudAuthManager — sign-in is optional on first run; the
+  user can skip and sign in later from Settings.
+
+  Widget IDs:
+    rootFlipper, nextButton, skipButton, doneButton, signInButton
+-->
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <ViewFlipper
+        android:id="@+id/rootFlipper"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:measureAllChildren="false">
+
+        <!-- Beat 1: Pitch -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:padding="32dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="32dp"
+                android:layout_marginBottom="56dp">
+                <ImageView
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:src="@mipmap/ic_launcher"
+                    android:layout_marginEnd="12dp"
+                    android:contentDescription="@null" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="ghola"
+                    android:textColor="#eef1f8"
+                    android:textSize="18sp"
+                    android:fontFamily="@font/geist"
+                    android:textFontWeight="500" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="› WELCOME"
+                android:layout_marginBottom="16dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="The AI that actually uses your apps."
+                android:textColor="#eef1f8"
+                android:textSize="44sp"
+                android:fontFamily="@font/geist"
+                android:textFontWeight="500"
+                android:letterSpacing="-0.03"
+                android:lineSpacingMultiplier="1.02"
+                android:includeFontPadding="false"
+                android:layout_marginBottom="32dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Ghola taps, types, and opens things for you. Every agent has its own Solana wallet. Keys live in your Seeker&apos;s secure element, not a server."
+                android:textColor="#8b95a8"
+                android:textSize="17sp"
+                android:fontFamily="@font/geist"
+                android:lineSpacingMultiplier="1.45"
+                android:layout_marginBottom="56dp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <!-- CTA row -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+                <TextView
+                    android:id="@+id/skipButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Skip"
+                    android:textColor="#4a5568"
+                    android:textSize="14sp"
+                    android:fontFamily="@font/geist"
+                    android:padding="12dp"
+                    android:background="?attr/selectableItemBackgroundBorderless" />
+                <View
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/nextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="CONTINUE  →"
+                    android:textColor="#000000"
+                    android:textSize="13sp"
+                    android:letterSpacing="0.12"
+                    android:fontFamily="@font/geist"
+                    android:textFontWeight="500"
+                    android:paddingStart="24dp"
+                    android:paddingEnd="24dp"
+                    android:paddingTop="16dp"
+                    android:paddingBottom="16dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    app:backgroundTint="#3da8ff"
+                    app:cornerRadius="0dp"
+                    app:elevation="0dp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Beat 2: Ready -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:padding="32dp">
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="› READY"
+                android:textColor="#3da8ff"
+                android:layout_marginBottom="16dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="You&apos;re set."
+                android:textColor="#eef1f8"
+                android:textSize="48sp"
+                android:fontFamily="@font/geist"
+                android:textFontWeight="500"
+                android:letterSpacing="-0.03"
+                android:includeFontPadding="false"
+                android:layout_marginBottom="32dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Sign in with Google to create real hardware-backed agents on Solana. You can skip this and just browse — agents are optional."
+                android:textColor="#8b95a8"
+                android:textSize="16sp"
+                android:fontFamily="@font/geist"
+                android:lineSpacingMultiplier="1.45"
+                android:layout_marginBottom="48dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/signInButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="SIGN IN WITH GOOGLE"
+                android:textColor="#000000"
+                android:textSize="13sp"
+                android:letterSpacing="0.12"
+                android:fontFamily="@font/geist"
+                android:textFontWeight="500"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
+                android:paddingTop="16dp"
+                android:paddingBottom="16dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                app:backgroundTint="#3da8ff"
+                app:cornerRadius="0dp"
+                app:elevation="0dp"
+                android:layout_marginBottom="16dp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="end"
+                android:layout_marginTop="32dp">
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/doneButton"
+                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="ENTER GHOLA  →"
+                    android:textColor="#eef1f8"
+                    android:textSize="13sp"
+                    android:letterSpacing="0.12"
+                    android:fontFamily="@font/geist"
+                    android:textFontWeight="500" />
+            </LinearLayout>
+        </LinearLayout>
+    </ViewFlipper>
+</FrameLayout>
