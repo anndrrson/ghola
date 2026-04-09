@@ -1,5 +1,6 @@
-# Stage 1: Builder
-FROM rust:1.85-slim AS builder
+# Stage 1: Builder — tracks latest stable Rust; pinned 1.85-slim was too old
+# for home@0.5.12 which requires rustc 1.88+.
+FROM rust:slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
