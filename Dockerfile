@@ -25,12 +25,14 @@ COPY crates/ghola-home/Cargo.toml crates/ghola-home/Cargo.toml
 COPY mcp-server/Cargo.toml mcp-server/Cargo.toml
 COPY cli/Cargo.toml cli/Cargo.toml
 COPY daemon/Cargo.toml daemon/Cargo.toml
+COPY integration-tests/Cargo.toml integration-tests/Cargo.toml
 
 # Copy all source code
 COPY crates/ crates/
 COPY mcp-server/ mcp-server/
 COPY cli/ cli/
 COPY daemon/ daemon/
+COPY integration-tests/ integration-tests/
 
 # Copy migrations (sqlx::migrate! embeds SQL at compile time)
 COPY migrations-cloud/ migrations-cloud/
