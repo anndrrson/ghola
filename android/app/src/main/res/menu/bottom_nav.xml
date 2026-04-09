@@ -2,18 +2,18 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
     <item
         android:id="@+id/tab_assistant"
-        android:title="Assistant"
-        android:icon="@android:drawable/ic_menu_send" />
+        android:title="Home"
+        android:icon="@drawable/ic_nav_assistant" />
     <item
         android:id="@+id/tab_agents"
         android:title="Agents"
-        android:icon="@android:drawable/ic_menu_myplaces" />
+        android:icon="@drawable/ic_nav_agents" />
     <item
         android:id="@+id/tab_activity"
         android:title="Activity"
-        android:icon="@android:drawable/ic_menu_recent_history" />
+        android:icon="@drawable/ic_nav_activity" />
     <item
         android:id="@+id/tab_wallet"
         android:title="Wallet"
-        android:icon="@android:drawable/ic_menu_manage" />
+        android:icon="@drawable/ic_nav_wallet" />
 </menu>

@@ -4,13 +4,13 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#FAFAFA">
+    android:background="#08090d">
 
     <androidx.appcompat.widget.Toolbar
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        android:background="#FFFFFF"
+        android:background="#0f1117"
         android:elevation="2dp" />
 
     <ScrollView
@@ -28,7 +28,7 @@
                 android:layout_height="wrap_content"
                 android:text="Task Type"
                 android:textSize="12sp"
-                android:textColor="#999999" />
+                android:textColor="#4a5568" />
 
             <TextView
                 android:id="@+id/taskType"
@@ -37,7 +37,7 @@
                 android:text="Loading..."
                 android:textSize="20sp"
                 android:textStyle="bold"
-                android:textColor="#1A1A1A"
+                android:textColor="#eef1f8"
                 android:layout_marginBottom="16dp" />
 
             <TextView
@@ -45,7 +45,7 @@
                 android:layout_height="wrap_content"
                 android:text="Status"
                 android:textSize="12sp"
-                android:textColor="#999999" />
+                android:textColor="#4a5568" />
 
             <TextView
                 android:id="@+id/taskStatus"
@@ -53,7 +53,7 @@
                 android:layout_height="wrap_content"
                 android:text="..."
                 android:textSize="16sp"
-                android:textColor="#1A1A1A"
+                android:textColor="#eef1f8"
                 android:layout_marginBottom="16dp" />
 
             <TextView
@@ -61,7 +61,7 @@
                 android:layout_height="wrap_content"
                 android:text="Parameters"
                 android:textSize="12sp"
-                android:textColor="#999999" />
+                android:textColor="#4a5568" />
 
             <TextView
                 android:id="@+id/taskParams"
@@ -69,7 +69,7 @@
                 android:layout_height="wrap_content"
                 android:text=""
                 android:textSize="14sp"
-                android:textColor="#333333"
+                android:textColor="#eef1f8"
                 android:fontFamily="monospace"
                 android:layout_marginBottom="16dp" />
 
@@ -78,7 +78,7 @@
                 android:layout_height="wrap_content"
                 android:text="Result"
                 android:textSize="12sp"
-                android:textColor="#999999" />
+                android:textColor="#4a5568" />
 
             <TextView
                 android:id="@+id/taskResult"
@@ -86,7 +86,7 @@
                 android:layout_height="wrap_content"
                 android:text="Pending..."
                 android:textSize="14sp"
-                android:textColor="#333333"
+                android:textColor="#eef1f8"
                 android:fontFamily="monospace"
                 android:layout_marginBottom="16dp" />
 
@@ -95,7 +95,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:visibility="gone"
-                android:textColor="#D32F2F"
+                android:textColor="#ef4444"
                 android:textSize="14sp"
                 android:layout_marginBottom="16dp" />
 

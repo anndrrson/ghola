@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Ghola palette — matches ghola.xyz dark theme exactly -->
+    <color name="ghola_bg">#08090d</color>
+    <color name="ghola_surface">#0f1117</color>
+    <color name="ghola_surface_elevated">#161822</color>
+    <color name="ghola_border">#1e2a3a</color>
+    <color name="ghola_border_hover">#2a3a50</color>
+    <color name="ghola_text_primary">#eef1f8</color>
+    <color name="ghola_text_secondary">#8b95a8</color>
+    <color name="ghola_text_tertiary">#4a5568</color>
+    <color name="ghola_accent">#3da8ff</color>
+    <color name="ghola_accent_hover">#5bb8ff</color>
+    <color name="ghola_accent_dim">#2b96f0</color>
+    <color name="ghola_success">#34d399</color>
+    <color name="ghola_warning">#fbbf24</color>
+    <color name="ghola_error">#ef4444</color>
+</resources>

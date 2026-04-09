@@ -9,11 +9,11 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.Toolbar
 import org.json.JSONObject
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.SaidCloudClient
+import xyz.ghola.app.demo.DemoSeed
 import java.util.concurrent.Executors
 
 /**
@@ -53,9 +53,8 @@ class AgentDetailActivity : AppCompatActivity() {
 
         storage = SecureStorage(this)
 
-        val toolbar = findViewById<Toolbar>(R.id.toolbar)
-        setSupportActionBar(toolbar)
-        toolbar.setNavigationOnClickListener { finish() }
+        // Crumb header: tapping "agents" acts as a back button.
+        findViewById<TextView?>(R.id.crumbAgents)?.setOnClickListener { finish() }
 
         displayNameView = findViewById(R.id.displayName)
         slugView = findViewById(R.id.slug)
@@ -89,7 +88,7 @@ class AgentDetailActivity : AppCompatActivity() {
 
     private fun bind(agent: JSONObject) {
         displayNameView.text = agent.optString("display_name", "Agent")
-        slugView.text = "@${agent.optString("slug", "")}"
+        slugView.text = agent.optString("slug", "—")
         val bio = agent.optString("bio", "")
         if (bio.isNotEmpty() && bio != "null") {
             bioView.text = bio
@@ -110,30 +109,56 @@ class AgentDetailActivity : AppCompatActivity() {
     }
 
     private fun loadFresh() {
+        // Demo-first: if this agent is one of the seed fixtures, render the
+        // seeded earnings + reputation immediately so the screen is never
+        // half-populated on stage. Then try the real backend as an overlay.
+        applySeed()
+
         if (!storage.hasSaidAuth()) return
         loading.visibility = View.VISIBLE
 
         executor.execute {
-            val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
-            val agent = client.getAgent(agentId)
-            val earnings = client.getAgentEarnings(agentId)
-            val reputation = client.getAgentReputation(agentId)
+            try {
+                val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
+                val agent = client.getAgent(agentId)
+                val earnings = client.getAgentEarnings(agentId)
+                val reputation = client.getAgentReputation(agentId)
 
-            runOnUiThread {
-                loading.visibility = View.GONE
-                if (agent != null) bind(agent)
-                if (earnings != null) {
-                    val net = earnings.optLong("net_micro_usdc", 0L)
-                    val received = earnings.optLong("total_received_micro_usdc", 0L)
-                    balanceView.text = formatUsdc(net)
-                    earnedView.text = formatUsdc(received)
+                runOnUiThread {
+                    loading.visibility = View.GONE
+                    if (agent != null) bind(agent)
+                    if (earnings != null) {
+                        val net = earnings.optLong("net_micro_usdc", 0L)
+                        val received = earnings.optLong("total_received_micro_usdc", 0L)
+                        balanceView.text = formatUsdc(net)
+                        earnedView.text = formatUsdc(received)
+                    }
+                    if (reputation != null) {
+                        val score = reputation.optDouble("overall_score", 0.0)
+                        reputationView.text = if (score > 0) String.format("%.2f", score) else "—"
+                    }
                 }
-                if (reputation != null) {
-                    val score = reputation.optDouble("overall_score", 0.0)
-                    reputationView.text = if (score > 0) String.format("%.2f", score) else "—"
-                }
+            } catch (_: Exception) {
+                runOnUiThread { loading.visibility = View.GONE }
             }
         }
+    }
+
+    /** Paint the screen from DemoSeed fixtures if this agentId is a seed. */
+    private fun applySeed() {
+        val seed = DemoSeed.agentById(agentId) ?: return
+        bind(seed)
+        DemoSeed.earningsById(agentId)?.let { e ->
+            val net = e.optLong("net_micro_usdc", 0L)
+            val received = e.optLong("total_received_micro_usdc", 0L)
+            balanceView.text = formatUsdc(net)
+            earnedView.text = formatUsdc(received)
+        }
+        DemoSeed.reputationById(agentId)?.let { r ->
+            val score = r.optDouble("overall_score", 0.0)
+            reputationView.text = if (score > 0) String.format("%.2f", score) else "—"
+        }
+        serviceCountView.text = seed.optInt("service_count", 0).toString()
     }
 
     private fun copy(label: String, value: String) {

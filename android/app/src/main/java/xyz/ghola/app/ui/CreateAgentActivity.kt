@@ -5,12 +5,11 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.View
+import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.Toolbar
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.textfield.TextInputEditText
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.SaidCloudClient
@@ -27,9 +26,9 @@ import java.util.concurrent.Executors
 class CreateAgentActivity : AppCompatActivity() {
 
     private lateinit var storage: SecureStorage
-    private lateinit var displayNameInput: TextInputEditText
-    private lateinit var slugInput: TextInputEditText
-    private lateinit var bioInput: TextInputEditText
+    private lateinit var displayNameInput: EditText
+    private lateinit var slugInput: EditText
+    private lateinit var bioInput: EditText
     private lateinit var createButton: MaterialButton
     private lateinit var errorText: TextView
     private lateinit var loading: ProgressBar
@@ -43,9 +42,9 @@ class CreateAgentActivity : AppCompatActivity() {
 
         storage = SecureStorage(this)
 
-        val toolbar = findViewById<Toolbar>(R.id.toolbar)
-        setSupportActionBar(toolbar)
-        toolbar.setNavigationOnClickListener { finish() }
+        // Crumb header: tapping "ghola" or "agents" acts as a back button.
+        findViewById<TextView?>(R.id.crumbBack)?.setOnClickListener { finish() }
+        findViewById<TextView?>(R.id.crumbAgents)?.setOnClickListener { finish() }
 
         displayNameInput = findViewById(R.id.displayNameInput)
         slugInput = findViewById(R.id.slugInput)

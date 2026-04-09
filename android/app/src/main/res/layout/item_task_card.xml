@@ -25,7 +25,7 @@
             android:layout_weight="1"
             android:text="Task"
             android:textSize="15sp"
-            android:textColor="#1A1A1A" />
+            android:textColor="#eef1f8" />
 
         <TextView
             android:id="@+id/taskStatus"
@@ -33,7 +33,7 @@
             android:layout_height="wrap_content"
             android:text="pending"
             android:textSize="12sp"
-            android:textColor="#666666"
+            android:textColor="#8b95a8"
             android:background="@android:drawable/editbox_dropdown_light_frame"
             android:paddingHorizontal="8dp"
             android:paddingVertical="2dp" />

@@ -18,7 +18,7 @@
             android:text="AI Backend"
             android:textSize="16sp"
             android:textStyle="bold"
-            android:textColor="#212121"
+            android:textColor="#eef1f8"
             android:layout_marginBottom="12dp" />
 
         <RadioGroup
@@ -67,7 +67,7 @@
                 android:text="Cloud Configuration"
                 android:textSize="14sp"
                 android:textStyle="bold"
-                android:textColor="#424242"
+                android:textColor="#8b95a8"
                 android:layout_marginBottom="8dp" />
 
             <com.google.android.material.textfield.TextInputLayout
@@ -90,7 +90,7 @@
                 android:layout_height="wrap_content"
                 android:text="Model"
                 android:textSize="14sp"
-                android:textColor="#757575"
+                android:textColor="#8b95a8"
                 android:layout_marginBottom="4dp" />
 
             <Spinner
@@ -117,7 +117,7 @@
                 android:text="Qwen Cloud Configuration"
                 android:textSize="14sp"
                 android:textStyle="bold"
-                android:textColor="#424242"
+                android:textColor="#8b95a8"
                 android:layout_marginBottom="8dp" />
 
             <com.google.android.material.textfield.TextInputLayout
@@ -140,7 +140,7 @@
                 android:layout_height="wrap_content"
                 android:text="Model"
                 android:textSize="14sp"
-                android:textColor="#757575"
+                android:textColor="#8b95a8"
                 android:layout_marginBottom="4dp" />
 
             <Spinner
@@ -167,7 +167,7 @@
                 android:text="On-Device Model"
                 android:textSize="14sp"
                 android:textStyle="bold"
-                android:textColor="#424242"
+                android:textColor="#8b95a8"
                 android:layout_marginBottom="8dp" />
 
             <TextView
@@ -176,7 +176,7 @@
                 android:layout_height="wrap_content"
                 android:text="Model: Not downloaded"
                 android:textSize="14sp"
-                android:textColor="#757575"
+                android:textColor="#8b95a8"
                 android:layout_marginBottom="8dp" />
 
             <ProgressBar
@@ -194,7 +194,7 @@
                 android:layout_height="wrap_content"
                 android:text=""
                 android:textSize="12sp"
-                android:textColor="#9E9E9E"
+                android:textColor="#4a5568"
                 android:gravity="center"
                 android:visibility="gone"
                 android:layout_marginBottom="8dp" />
@@ -212,7 +212,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Delete Model"
-                android:textColor="#F44336"
+                android:textColor="#ef4444"
                 android:visibility="gone"
                 android:layout_marginBottom="16dp"
                 style="@style/Widget.MaterialComponents.Button.TextButton" />
@@ -223,7 +223,7 @@
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:background="#E0E0E0"
+            android:background="#1e2a3a"
             android:layout_marginBottom="16dp" />
 
         <!-- Accessibility Service Section -->
@@ -233,7 +233,7 @@
             android:text="Accessibility Service"
             android:textSize="16sp"
             android:textStyle="bold"
-            android:textColor="#212121"
+            android:textColor="#eef1f8"
             android:layout_marginBottom="12dp" />
 
         <TextView
@@ -242,7 +242,7 @@
             android:layout_height="wrap_content"
             android:text="Status: Unknown"
             android:textSize="14sp"
-            android:textColor="#757575"
+            android:textColor="#8b95a8"
             android:layout_marginBottom="8dp" />
 
         <Button
@@ -257,7 +257,7 @@
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:background="#E0E0E0"
+            android:background="#1e2a3a"
             android:layout_marginBottom="16dp" />
 
         <!-- Relay Mode Section -->
@@ -267,7 +267,7 @@
             android:text="Relay Mode"
             android:textSize="16sp"
             android:textStyle="bold"
-            android:textColor="#212121"
+            android:textColor="#eef1f8"
             android:layout_marginBottom="8dp" />
 
         <TextView
@@ -275,7 +275,7 @@
             android:layout_height="wrap_content"
             android:text="Advanced: Connect to desktop relay"
             android:textSize="13sp"
-            android:textColor="#9E9E9E"
+            android:textColor="#4a5568"
             android:layout_marginBottom="8dp" />
 
         <Button
@@ -292,7 +292,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Save Settings"
-            android:backgroundTint="#1976D2" />
+            android:backgroundTint="#3da8ff" />
 
     </LinearLayout>
 

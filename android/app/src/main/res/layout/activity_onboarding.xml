@@ -4,7 +4,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#FFFFFF"
+    android:background="#0f1117"
     android:padding="24dp">
 
     <!-- Step indicator -->
@@ -14,7 +14,7 @@
         android:layout_height="wrap_content"
         android:text="Step 1 of 3"
         android:textSize="14sp"
-        android:textColor="#999999"
+        android:textColor="#4a5568"
         android:textAlignment="center"
         android:layout_marginBottom="32dp"
         android:layout_marginTop="16dp" />
@@ -34,7 +34,7 @@
             android:text="Welcome to Thumper"
             android:textSize="28sp"
             android:textStyle="bold"
-            android:textColor="#1A1A1A"
+            android:textColor="#eef1f8"
             android:textAlignment="center"
             android:layout_marginBottom="8dp" />
 
@@ -43,7 +43,7 @@
             android:layout_height="wrap_content"
             android:text="Your AI personal assistant that makes phone calls, sends emails, and controls your phone."
             android:textSize="16sp"
-            android:textColor="#666666"
+            android:textColor="#8b95a8"
             android:textAlignment="center"
             android:layout_marginBottom="48dp" />
 
@@ -78,7 +78,7 @@
             android:text="Enable Device Control"
             android:textSize="28sp"
             android:textStyle="bold"
-            android:textColor="#1A1A1A"
+            android:textColor="#eef1f8"
             android:textAlignment="center"
             android:layout_marginBottom="8dp" />
 
@@ -87,7 +87,7 @@
             android:layout_height="wrap_content"
             android:text="Thumper needs the Accessibility Service to control your phone — open apps, tap buttons, and type text on your behalf."
             android:textSize="16sp"
-            android:textColor="#666666"
+            android:textColor="#8b95a8"
             android:textAlignment="center"
             android:layout_marginBottom="48dp" />
 
@@ -122,7 +122,7 @@
             android:text="Connect Your Accounts"
             android:textSize="28sp"
             android:textStyle="bold"
-            android:textColor="#1A1A1A"
+            android:textColor="#eef1f8"
             android:textAlignment="center"
             android:layout_marginBottom="8dp" />
 
@@ -131,7 +131,7 @@
             android:layout_height="wrap_content"
             android:text="Connect Gmail and Calendar so Thumper can send emails and manage your schedule. You can do this later in Settings."
             android:textSize="16sp"
-            android:textColor="#666666"
+            android:textColor="#8b95a8"
             android:textAlignment="center"
             android:layout_marginBottom="48dp" />
 

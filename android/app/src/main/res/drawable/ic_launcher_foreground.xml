@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ghola launcher icon foreground.
+
+  The figure is a hand-ported version of web/src/app/icon.svg: a fully-formed
+  head → shoulders → chest → fragmenting body → rising particles, echoing the
+  "the AI that actually uses your apps" theme of identity materializing from
+  below. Same colour (#3da8ff) and proportions as the web favicon.
+
+  Android adaptive icons use a 108x108 canvas with a 66x66 safe zone in the
+  center. The original SVG is 512x512 with the figure occupying roughly the
+  central 240x420. Coordinates here are mapped onto the 108 canvas so the
+  figure stays within the safe zone (~27–81 on both axes) with a little
+  breathing room for parallax.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Head — fully formed circle (original: cx=256 cy=88 r=48) -->
+    <path
+        android:fillColor="#3da8ff"
+        android:pathData="M 54 8.6
+                          a 10.1 10.1 0 1 0 0.01 0
+                          z" />
+
+    <!-- Shoulders — widest element (original: x=136 y=160 w=240 h=40 rx=20) -->
+    <path
+        android:fillColor="#3da8ff"
+        android:pathData="M 32.8 29.4
+                          h 42.3
+                          a 4.2 4.2 0 0 1 4.2 4.2
+                          v 0.0
+                          a 4.2 4.2 0 0 1 -4.2 4.2
+                          h -42.3
+                          a 4.2 4.2 0 0 1 -4.2 -4.2
+                          v 0.0
+                          a 4.2 4.2 0 0 1 4.2 -4.2
+                          z" />
+
+    <!-- Chest — solid (original: x=168 y=224 w=176 h=32 rx=16) -->
+    <path
+        android:fillColor="#3da8ff"
+        android:pathData="M 38.8 44.0
+                          h 30.4
+                          a 3.4 3.4 0 0 1 3.4 3.4
+                          a 3.4 3.4 0 0 1 -3.4 3.4
+                          h -30.4
+                          a 3.4 3.4 0 0 1 -3.4 -3.4
+                          a 3.4 3.4 0 0 1 3.4 -3.4
+                          z" />
+
+    <!-- Waist left — beginning to split (original: x=176 y=280 w=64 h=28.8 rx=14.4) -->
+    <path
+        android:fillColor="#3da8ff"
+        android:fillAlpha="0.75"
+        android:pathData="M 40.2 55.8
+                          h 10.6
+                          a 3.0 3.0 0 0 1 3.0 3.0
+                          a 3.0 3.0 0 0 1 -3.0 3.0
+                          h -10.6
+                          a 3.0 3.0 0 0 1 -3.0 -3.0
+                          a 3.0 3.0 0 0 1 3.0 -3.0
+                          z" />
+
+    <!-- Waist right (original: x=272 y=280) -->
+    <path
+        android:fillColor="#3da8ff"
+        android:fillAlpha="0.75"
+        android:pathData="M 60.4 55.8
+                          h 10.6
+                          a 3.0 3.0 0 0 1 3.0 3.0
+                          a 3.0 3.0 0 0 1 -3.0 3.0
+                          h -10.6
+                          a 3.0 3.0 0 0 1 -3.0 -3.0
+                          a 3.0 3.0 0 0 1 3.0 -3.0
+                          z" />
+
+    <!-- Fragments — dispersing -->
+    <path
+        android:fillColor="#3da8ff"
+        android:fillAlpha="0.5"
+        android:pathData="M 33.0 67.1
+                          h 7.8
+                          a 2.5 2.5 0 0 1 2.5 2.5
+                          a 2.5 2.5 0 0 1 -2.5 2.5
+                          h -7.8
+                          a 2.5 2.5 0 0 1 -2.5 -2.5
+                          a 2.5 2.5 0 0 1 2.5 -2.5
+                          z" />
+    <path
+        android:fillColor="#3da8ff"
+        android:fillAlpha="0.45"
+        android:pathData="M 51.6 68.8
+                          h 7.8
+                          a 2.2 2.2 0 0 1 2.2 2.2
+                          a 2.2 2.2 0 0 1 -2.2 2.2
+                          h -7.8
+                          a 2.2 2.2 0 0 1 -2.2 -2.2
+                          a 2.2 2.2 0 0 1 2.2 -2.2
+                          z" />
+    <path
+        android:fillColor="#3da8ff"
+        android:fillAlpha="0.4"
+        android:pathData="M 70.1 65.4
+                          h 6.1
+                          a 2.2 2.2 0 0 1 2.2 2.2
+                          a 2.2 2.2 0 0 1 -2.2 2.2
+                          h -6.1
+                          a 2.2 2.2 0 0 1 -2.2 -2.2
+                          a 2.2 2.2 0 0 1 2.2 -2.2
+                          z" />
+
+    <!-- Rising particles -->
+    <path
+        android:fillColor="#3da8ff"
+        android:fillAlpha="0.3"
+        android:pathData="M 33.8 81.0
+                          m -3.4 0
+                          a 3.4 3.4 0 1 0 6.8 0
+                          a 3.4 3.4 0 1 0 -6.8 0
+                          z" />
+    <path
+        android:fillColor="#3da8ff"
+        android:fillAlpha="0.25"
+        android:pathData="M 54.0 82.7
+                          m -3.0 0
+                          a 3.0 3.0 0 1 0 6.0 0
+                          a 3.0 3.0 0 1 0 -6.0 0
+                          z" />
+    <path
+        android:fillColor="#3da8ff"
+        android:fillAlpha="0.2"
+        android:pathData="M 70.9 79.3
+                          m -2.7 0
+                          a 2.7 2.7 0 1 0 5.4 0
+                          a 2.7 2.7 0 1 0 -5.4 0
+                          z" />
+    <path
+        android:fillColor="#3da8ff"
+        android:fillAlpha="0.2"
+        android:pathData="M 43.9 91.4
+                          m -2.4 0
+                          a 2.4 2.4 0 1 0 4.7 0
+                          a 2.4 2.4 0 1 0 -4.7 0
+                          z" />
+    <path
+        android:fillColor="#3da8ff"
+        android:fillAlpha="0.2"
+        android:pathData="M 62.5 93.1
+                          m -2.0 0
+                          a 2.0 2.0 0 1 0 4.1 0
+                          a 2.0 2.0 0 1 0 -4.1 0
+                          z" />
+</vector>

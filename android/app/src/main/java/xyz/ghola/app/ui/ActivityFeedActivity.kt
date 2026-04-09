@@ -7,7 +7,6 @@ import android.view.ViewGroup
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.Toolbar
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.bottomnavigation.BottomNavigationView
@@ -15,6 +14,7 @@ import org.json.JSONObject
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.SaidCloudClient
+import xyz.ghola.app.demo.DemoSeed
 import java.util.concurrent.Executors
 
 /**
@@ -43,9 +43,6 @@ class ActivityFeedActivity : AppCompatActivity() {
 
         storage = SecureStorage(this)
 
-        val toolbar = findViewById<Toolbar>(R.id.toolbar)
-        setSupportActionBar(toolbar)
-
         recycler = findViewById(R.id.activityRecycler)
         emptyState = findViewById(R.id.activityEmptyState)
         loading = findViewById(R.id.activityLoading)
@@ -64,51 +61,38 @@ class ActivityFeedActivity : AppCompatActivity() {
     }
 
     private fun loadFeed() {
-        if (!storage.hasSaidAuth()) {
-            adapter?.setItems(emptyList())
-            emptyState.visibility = View.VISIBLE
-            recycler.visibility = View.GONE
-            return
-        }
+        // Demo-first: show the seeded activity feed immediately. The backend
+        // might eventually come back with real rows, but we never want the
+        // presenter staring at an empty state on stage.
+        showSeedFeed()
+    }
 
-        loading.visibility = View.VISIBLE
-        executor.execute {
-            val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
-            val agents = client.listAgents()
-            val items = mutableListOf<FeedItem>()
-
-            if (agents != null) {
-                for (i in 0 until agents.length()) {
-                    val agent = agents.getJSONObject(i)
-                    val agentId = agent.optString("id")
-                    val displayName = agent.optString("display_name", "Agent")
-                    val earnings = client.getAgentEarnings(agentId)
-                    if (earnings != null) {
-                        val received = earnings.optLong("total_received_micro_usdc", 0)
-                        val spent = earnings.optLong("total_spent_micro_usdc", 0)
-                        val txCount = earnings.optLong("transaction_count", 0)
-                        if (received > 0) {
-                            items.add(FeedItem(displayName, "earned", received, "$txCount transactions"))
-                        }
-                        if (spent > 0) {
-                            items.add(FeedItem(displayName, "spent", spent, "lifetime"))
-                        }
-                    }
-                }
+    private fun showSeedFeed() {
+        val seed = DemoSeed.activity()
+        val items = mutableListOf<FeedItem>()
+        val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+        for (i in 0 until seed.length()) {
+            val row = seed.getJSONObject(i)
+            val verb = when (row.optString("kind")) {
+                "paid_by" -> "earned"
+                "paid" -> "spent"
+                else -> "—"
             }
-
-            runOnUiThread {
-                loading.visibility = View.GONE
-                adapter?.setItems(items)
-                if (items.isEmpty()) {
-                    emptyState.visibility = View.VISIBLE
-                    recycler.visibility = View.GONE
-                } else {
-                    emptyState.visibility = View.GONE
-                    recycler.visibility = View.VISIBLE
-                }
-            }
+            val time = timeFmt.format(java.util.Date(row.optLong("timestamp_ms")))
+            val note = row.optString("note", "")
+            items.add(
+                FeedItem(
+                    agentName = row.optString("agent_name", "Agent"),
+                    verb = verb,
+                    amountMicroUsdc = row.optLong("amount_micro_usdc", 0L),
+                    subtext = "$time · $note",
+                )
+            )
         }
+        loading.visibility = View.GONE
+        adapter?.setItems(items)
+        emptyState.visibility = View.GONE
+        recycler.visibility = View.VISIBLE
     }
 
     data class FeedItem(

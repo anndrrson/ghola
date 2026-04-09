@@ -18,6 +18,7 @@ import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.CloudAuthManager
 import xyz.ghola.app.cloud.TaskClassifier
 import xyz.ghola.app.cloud.ThumperCloudClient
+import xyz.ghola.app.demo.DemoScript
 import xyz.ghola.app.service.VoiceInputService
 
 /**
@@ -222,7 +223,13 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
     override fun onFinalResult(text: String) {
         voiceStatusText.visibility = View.GONE
 
-        // Classify and route
+        // Demo-mode voice routing: every phrase the presenter might utter
+        // maps to a local action (open url, switch tab, pull notifications).
+        // If DemoScript handles it, skip the normal cloud-classification path
+        // entirely — no backend dependency, no LLM, no risk of live failure.
+        if (DemoScript.handle(this, text)) return
+
+        // Classify and route (fallback for anything DemoScript didn't match)
         val classification = TaskClassifier.classify(text, secureStorage.hasCloudAuth())
         when (classification.route) {
             TaskClassifier.TaskRoute.CLOUD_CALL,

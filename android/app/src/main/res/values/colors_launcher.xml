@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Background for the adaptive launcher icon. Matches the dark panel the
+         robot figure sits against on ghola.xyz (#08090d). -->
+    <color name="ic_launcher_background">#08090d</color>
+</resources>

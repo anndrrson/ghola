@@ -25,7 +25,7 @@
             android:text="Checking status..."
             android:textSize="14sp"
             android:fontFamily="monospace"
-            android:background="#f0f0f0"
+            android:background="#0f1117"
             android:padding="16dp"
             android:layout_marginBottom="24dp" />
 
@@ -64,7 +64,7 @@
             android:layout_height="wrap_content"
             android:textSize="12sp"
             android:fontFamily="monospace"
-            android:textColor="#666666"
+            android:textColor="#8b95a8"
             android:padding="8dp" />
 
     </LinearLayout>

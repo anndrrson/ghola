@@ -1,84 +1,155 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Agents — text-first. Crumb header, eyebrow-driven sections, hard-edged list.
+  Widget IDs: agentsRecycler, emptyState, createAgentFab, bottomNav.
+-->
 <androidx.coordinatorlayout.widget.CoordinatorLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#FAFAFA">
-
-    <com.google.android.material.appbar.AppBarLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#FAFAFA"
-        app:elevation="0dp">
-
-        <androidx.appcompat.widget.Toolbar
-            android:id="@+id/toolbar"
-            android:layout_width="match_parent"
-            android:layout_height="?attr/actionBarSize"
-            android:background="#FAFAFA"
-            app:title="My Agents"
-            app:titleTextColor="#1a1a1a" />
-    </com.google.android.material.appbar.AppBarLayout>
-
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/agentsRecycler"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:padding="12dp"
-        android:clipToPadding="false"
-        android:paddingBottom="152dp"
-        app:layout_behavior="@string/appbar_scrolling_view_behavior" />
+    android:background="#000000">
 
     <LinearLayout
-        android:id="@+id/emptyState"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:gravity="center"
-        android:padding="32dp"
-        android:visibility="gone"
-        app:layout_behavior="@string/appbar_scrolling_view_behavior">
+        android:paddingTop="24dp"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp">
 
-        <TextView
-            android:layout_width="wrap_content"
+        <!-- Crumb header -->
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="No agents yet"
-            android:textSize="20sp"
-            android:textStyle="bold"
-            android:textColor="#1a1a1a"
-            android:layout_marginBottom="8dp" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="40dp">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="ghola"
+                android:textColor="#4a5568"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="  /  "
+                android:textColor="#4a5568"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist_mono" />
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="agents"
+                android:textColor="#eef1f8"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist"
+                android:textFontWeight="500" />
+            <!-- inline + button in header instead of FAB -->
+            <TextView
+                android:id="@+id/createInlineButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="+ NEW"
+                android:textColor="#3da8ff"
+                android:textSize="11sp"
+                android:textFontWeight="500"
+                android:letterSpacing="0.12"
+                android:fontFamily="@font/geist"
+                android:padding="8dp"
+                android:background="?attr/selectableItemBackgroundBorderless" />
+        </LinearLayout>
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Create your first AI agent. We&apos;ll generate its DID, provision a Solana wallet, and you&apos;re live."
-            android:textSize="14sp"
-            android:textColor="#666666"
-            android:gravity="center"
-            android:layout_marginBottom="24dp" />
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/agentsRecycler"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:paddingBottom="96dp" />
+
+            <!-- Empty state — typographic, not a card -->
+            <LinearLayout
+                android:id="@+id/emptyState"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:layout_marginTop="64dp"
+                android:visibility="gone">
+
+                <TextView
+                    style="@style/Ghola.Text.Eyebrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="› EMPTY"
+                    android:layout_marginBottom="12dp" />
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="No agents."
+                    android:textColor="#eef1f8"
+                    android:textSize="32sp"
+                    android:fontFamily="@font/geist"
+                    android:textFontWeight="500"
+                    android:letterSpacing="-0.03"
+                    android:includeFontPadding="false"
+                    android:layout_marginBottom="16dp" />
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Create an agent. It gets a cryptographic identity, a Solana wallet, and can transact on your behalf."
+                    android:textColor="#8b95a8"
+                    android:textSize="15sp"
+                    android:fontFamily="@font/geist"
+                    android:lineSpacingMultiplier="1.4"
+                    android:layout_marginBottom="40dp" />
+
+                <!-- Primary action — hard-edged, no rounded corners -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/createAgentFab"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="CREATE AGENT"
+                    android:textColor="#000000"
+                    android:textSize="12sp"
+                    android:letterSpacing="0.12"
+                    android:fontFamily="@font/geist"
+                    android:textFontWeight="500"
+                    android:paddingStart="20dp"
+                    android:paddingEnd="20dp"
+                    android:paddingTop="14dp"
+                    android:paddingBottom="14dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    app:backgroundTint="#3da8ff"
+                    app:cornerRadius="0dp"
+                    app:elevation="0dp" />
+            </LinearLayout>
+        </FrameLayout>
     </LinearLayout>
 
-    <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
-        android:id="@+id/createAgentFab"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="72dp"
-        android:text="Create agent"
-        android:textColor="#FFFFFF"
-        app:backgroundTint="#1a1a1a"
-        app:icon="@android:drawable/ic_input_add"
-        app:iconTint="#FFFFFF" />
-
-    <!-- Phase M6: Bottom navigation -->
     <com.google.android.material.bottomnavigation.BottomNavigationView
         android:id="@+id/bottomNav"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_height="72dp"
         android:layout_gravity="bottom"
-        android:background="#FFFFFF"
+        android:background="#000000"
+        app:elevation="0dp"
         app:menu="@menu/bottom_nav" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="72dp"
+        android:background="#1e2a3a" />
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

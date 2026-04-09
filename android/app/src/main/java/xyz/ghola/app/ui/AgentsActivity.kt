@@ -3,15 +3,16 @@ package xyz.ghola.app.ui
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.Toolbar
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
+import com.google.android.material.button.MaterialButton
 import org.json.JSONObject
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.SaidCloudClient
+import xyz.ghola.app.demo.DemoSeed
 import java.util.concurrent.Executors
 
 /**
@@ -27,7 +28,8 @@ class AgentsActivity : AppCompatActivity() {
     private lateinit var storage: SecureStorage
     private lateinit var recycler: RecyclerView
     private lateinit var emptyState: View
-    private lateinit var fab: ExtendedFloatingActionButton
+    private lateinit var createButton: MaterialButton
+    private lateinit var inlineNewButton: TextView
     private val executor = Executors.newSingleThreadExecutor()
     private var adapter: AgentAdapter? = null
 
@@ -37,12 +39,10 @@ class AgentsActivity : AppCompatActivity() {
 
         storage = SecureStorage(this)
 
-        val toolbar = findViewById<Toolbar>(R.id.toolbar)
-        setSupportActionBar(toolbar)
-
         recycler = findViewById(R.id.agentsRecycler)
         emptyState = findViewById(R.id.emptyState)
-        fab = findViewById(R.id.createAgentFab)
+        createButton = findViewById(R.id.createAgentFab)
+        inlineNewButton = findViewById(R.id.createInlineButton)
 
         recycler.layoutManager = LinearLayoutManager(this)
         adapter = AgentAdapter(emptyList()) { agent ->
@@ -53,9 +53,11 @@ class AgentsActivity : AppCompatActivity() {
         }
         recycler.adapter = adapter
 
-        fab.setOnClickListener {
+        val openCreate = View.OnClickListener {
             startActivity(Intent(this, CreateAgentActivity::class.java))
         }
+        createButton.setOnClickListener(openCreate)
+        inlineNewButton.setOnClickListener(openCreate)
 
         // Phase M6: Bottom navigation
         val bottomNav = findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(R.id.bottomNav)
@@ -68,36 +70,43 @@ class AgentsActivity : AppCompatActivity() {
     }
 
     private fun loadAgents() {
-        if (!storage.hasSaidAuth()) {
-            // Not signed in to said-cloud yet — show empty state with explanation.
-            // Onboarding handles the actual sign-in.
-            adapter?.setAgents(emptyList())
-            emptyState.visibility = View.VISIBLE
-            recycler.visibility = View.GONE
-            return
-        }
+        // Demo-first: always show the three pre-seeded agents immediately so
+        // the screen is never empty, then opportunistically try the real
+        // backend and replace if it returns a non-empty list.
+        showSeedAgents()
+
+        if (!storage.hasSaidAuth()) return
 
         executor.execute {
-            val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
-            val rows = client.listAgents()
-            runOnUiThread {
-                if (rows == null) {
-                    // Network error — keep showing whatever was already there.
-                    return@runOnUiThread
-                }
+            try {
+                val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
+                val rows = client.listAgents() ?: return@execute
+                if (rows.length() == 0) return@execute
                 val list = mutableListOf<JSONObject>()
                 for (i in 0 until rows.length()) {
                     list.add(rows.getJSONObject(i))
                 }
-                adapter?.setAgents(list)
-                if (list.isEmpty()) {
-                    emptyState.visibility = View.VISIBLE
-                    recycler.visibility = View.GONE
-                } else {
+                runOnUiThread {
+                    adapter?.setAgents(list)
                     emptyState.visibility = View.GONE
                     recycler.visibility = View.VISIBLE
                 }
+            } catch (_: Exception) {
+                // Backend unreachable — seed already rendered, nothing to do.
             }
         }
+    }
+
+    /** Render the three demo agents. Always called first so the screen is
+     *  populated within a single frame of onResume, regardless of network. */
+    private fun showSeedAgents() {
+        val seed = DemoSeed.agents()
+        val list = mutableListOf<JSONObject>()
+        for (i in 0 until seed.length()) {
+            list.add(seed.getJSONObject(i))
+        }
+        adapter?.setAgents(list)
+        emptyState.visibility = View.GONE
+        recycler.visibility = View.VISIBLE
     }
 }

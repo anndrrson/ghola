@@ -1,41 +1,57 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ghola home — command center layout.
+  Design POV: trading-terminal-meets-Linear. Hard edges, tabular numerics,
+  Geist Sans + Mono typography, single accent color, generous whitespace,
+  "›" signature prefix on all section headings.
+
+  Widget IDs are preserved so HomeActivity.kt continues to bind them:
+    R.id.greetingText, R.id.profileButton, R.id.activeTasksContainer,
+    R.id.quickActionsContainer, R.id.actionCall, R.id.actionEmail,
+    R.id.actionDevice, R.id.actionChat, R.id.micFab, R.id.voiceStatusText,
+    R.id.bottomNav
+-->
 <androidx.coordinatorlayout.widget.CoordinatorLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#FAFAFA">
+    android:background="#000000">
 
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:padding="16dp"
+        android:fillViewport="true"
         android:clipToPadding="false"
-        android:paddingBottom="144dp">
+        android:paddingBottom="176dp"
+        android:paddingTop="24dp"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical">
 
-            <!-- Greeting + Profile -->
+            <!-- Wordmark + settings -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:layout_marginBottom="24dp"
-                android:layout_marginTop="16dp">
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="56dp">
 
                 <TextView
-                    android:id="@+id/greetingText"
-                    android:layout_width="0dp"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Good morning"
-                    android:textSize="24sp"
-                    android:textStyle="bold"
-                    android:textColor="#1A1A1A" />
+                    android:text="ghola"
+                    android:textColor="#eef1f8"
+                    android:textSize="22sp"
+                    android:fontFamily="@font/geist"
+                    android:textFontWeight="500"
+                    android:letterSpacing="-0.02" />
 
                 <ImageButton
                     android:id="@+id/profileButton"
@@ -43,158 +59,305 @@
                     android:layout_height="40dp"
                     android:src="@android:drawable/ic_menu_preferences"
                     android:background="?attr/selectableItemBackgroundBorderless"
+                    android:tint="#8b95a8"
                     android:contentDescription="Settings" />
             </LinearLayout>
 
-            <!-- Active Tasks -->
+            <!-- Hidden greeting text (kept for HomeActivity.updateGreeting() binding) -->
             <TextView
+                android:id="@+id/greetingText"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:visibility="gone" />
+
+            <!-- Hero balance -->
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Active Tasks"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:textColor="#666666"
-                android:layout_marginBottom="8dp" />
+                android:text="› BALANCE"
+                android:textColor="#4a5568"
+                android:layout_marginBottom="12dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:baselineAligned="false"
+                android:layout_marginBottom="8dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="$"
+                    android:textSize="36sp"
+                    android:textColor="#4a5568"
+                    android:fontFamily="@font/geist"
+                    android:layout_marginEnd="4dp"
+                    android:layout_marginTop="18dp" />
+
+                <TextView
+                    android:id="@+id/balanceText"
+                    style="@style/Ghola.Text.Display"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0.177" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="USDC"
+                    android:textSize="13sp"
+                    android:textColor="#4a5568"
+                    android:fontFamily="@font/geist_mono"
+                    android:letterSpacing="0.12"
+                    android:layout_marginStart="12dp"
+                    android:layout_marginBottom="16dp"
+                    android:gravity="bottom" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="48dp"
+                android:layout_height="1dp"
+                android:background="#3da8ff"
+                android:layout_marginBottom="56dp" />
+
+            <!-- Active tasks -->
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="› ACTIVE"
+                android:layout_marginBottom="16dp" />
 
             <LinearLayout
                 android:id="@+id/activeTasksContainer"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:layout_marginBottom="24dp" />
-
-            <!-- Quick Actions -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Quick Actions"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:textColor="#666666"
                 android:layout_marginBottom="8dp" />
 
-            <LinearLayout
-                android:id="@+id/quickActionsContainer"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginBottom="16dp">
-
-                <com.google.android.material.card.MaterialCardView
-                    android:id="@+id/actionCall"
-                    android:layout_width="0dp"
-                    android:layout_height="80dp"
-                    android:layout_weight="1"
-                    android:layout_marginEnd="8dp"
-                    app:cardCornerRadius="12dp"
-                    app:cardElevation="2dp"
-                    app:cardBackgroundColor="#E8F5E9">
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="match_parent"
-                        android:text="Call"
-                        android:gravity="center"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:textColor="#2E7D32" />
-                </com.google.android.material.card.MaterialCardView>
-
-                <com.google.android.material.card.MaterialCardView
-                    android:id="@+id/actionEmail"
-                    android:layout_width="0dp"
-                    android:layout_height="80dp"
-                    android:layout_weight="1"
-                    android:layout_marginEnd="8dp"
-                    app:cardCornerRadius="12dp"
-                    app:cardElevation="2dp"
-                    app:cardBackgroundColor="#E3F2FD">
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="match_parent"
-                        android:text="Email"
-                        android:gravity="center"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:textColor="#1565C0" />
-                </com.google.android.material.card.MaterialCardView>
-
-                <com.google.android.material.card.MaterialCardView
-                    android:id="@+id/actionDevice"
-                    android:layout_width="0dp"
-                    android:layout_height="80dp"
-                    android:layout_weight="1"
-                    android:layout_marginEnd="8dp"
-                    app:cardCornerRadius="12dp"
-                    app:cardElevation="2dp"
-                    app:cardBackgroundColor="#FFF3E0">
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="match_parent"
-                        android:text="Device"
-                        android:gravity="center"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:textColor="#E65100" />
-                </com.google.android.material.card.MaterialCardView>
-
-                <com.google.android.material.card.MaterialCardView
-                    android:id="@+id/actionChat"
-                    android:layout_width="0dp"
-                    android:layout_height="80dp"
-                    android:layout_weight="1"
-                    app:cardCornerRadius="12dp"
-                    app:cardElevation="2dp"
-                    app:cardBackgroundColor="#F3E5F5">
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="match_parent"
-                        android:text="Chat"
-                        android:gravity="center"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:textColor="#7B1FA2" />
-                </com.google.android.material.card.MaterialCardView>
-
-            </LinearLayout>
-
-            <!-- Voice status -->
             <TextView
                 android:id="@+id/voiceStatusText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:visibility="gone"
                 android:textAlignment="center"
-                android:textSize="16sp"
-                android:textColor="#333333"
-                android:padding="16dp" />
+                android:textSize="13sp"
+                android:textColor="#8b95a8"
+                android:fontFamily="@font/geist_mono"
+                android:paddingTop="16dp"
+                android:paddingBottom="16dp" />
+
+            <Space
+                android:layout_width="match_parent"
+                android:layout_height="56dp" />
+
+            <!-- Quick commands (2x2, monochrome) -->
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="› DO"
+                android:layout_marginBottom="16dp" />
+
+            <LinearLayout
+                android:id="@+id/quickActionsContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="1dp"
+                    android:baselineAligned="false">
+
+                    <com.google.android.material.card.MaterialCardView
+                        android:id="@+id/actionCall"
+                        android:layout_width="0dp"
+                        android:layout_height="96dp"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="1dp"
+                        app:cardCornerRadius="0dp"
+                        app:cardElevation="0dp"
+                        app:cardBackgroundColor="#000000"
+                        app:strokeColor="#1e2a3a"
+                        app:strokeWidth="1dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:orientation="vertical"
+                            android:gravity="bottom"
+                            android:padding="16dp">
+                            <TextView
+                                style="@style/Ghola.Text.Eyebrow"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="01"
+                                android:textColor="#4a5568" />
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Call"
+                                android:textColor="#eef1f8"
+                                android:textSize="22sp"
+                                android:fontFamily="@font/geist"
+                                android:textFontWeight="500"
+                                android:letterSpacing="-0.02" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <com.google.android.material.card.MaterialCardView
+                        android:id="@+id/actionEmail"
+                        android:layout_width="0dp"
+                        android:layout_height="96dp"
+                        android:layout_weight="1"
+                        app:cardCornerRadius="0dp"
+                        app:cardElevation="0dp"
+                        app:cardBackgroundColor="#000000"
+                        app:strokeColor="#1e2a3a"
+                        app:strokeWidth="1dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:orientation="vertical"
+                            android:gravity="bottom"
+                            android:padding="16dp">
+                            <TextView
+                                style="@style/Ghola.Text.Eyebrow"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="02"
+                                android:textColor="#4a5568" />
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Email"
+                                android:textColor="#eef1f8"
+                                android:textSize="22sp"
+                                android:fontFamily="@font/geist"
+                                android:textFontWeight="500"
+                                android:letterSpacing="-0.02" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:baselineAligned="false">
+
+                    <com.google.android.material.card.MaterialCardView
+                        android:id="@+id/actionDevice"
+                        android:layout_width="0dp"
+                        android:layout_height="96dp"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="1dp"
+                        app:cardCornerRadius="0dp"
+                        app:cardElevation="0dp"
+                        app:cardBackgroundColor="#000000"
+                        app:strokeColor="#1e2a3a"
+                        app:strokeWidth="1dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:orientation="vertical"
+                            android:gravity="bottom"
+                            android:padding="16dp">
+                            <TextView
+                                style="@style/Ghola.Text.Eyebrow"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="03"
+                                android:textColor="#4a5568" />
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Device"
+                                android:textColor="#eef1f8"
+                                android:textSize="22sp"
+                                android:fontFamily="@font/geist"
+                                android:textFontWeight="500"
+                                android:letterSpacing="-0.02" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <com.google.android.material.card.MaterialCardView
+                        android:id="@+id/actionChat"
+                        android:layout_width="0dp"
+                        android:layout_height="96dp"
+                        android:layout_weight="1"
+                        app:cardCornerRadius="0dp"
+                        app:cardElevation="0dp"
+                        app:cardBackgroundColor="#000000"
+                        app:strokeColor="#1e2a3a"
+                        app:strokeWidth="1dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:orientation="vertical"
+                            android:gravity="bottom"
+                            android:padding="16dp">
+                            <TextView
+                                style="@style/Ghola.Text.Eyebrow"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="04"
+                                android:textColor="#4a5568" />
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Chat"
+                                android:textColor="#eef1f8"
+                                android:textSize="22sp"
+                                android:fontFamily="@font/geist"
+                                android:textFontWeight="500"
+                                android:letterSpacing="-0.02" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+                </LinearLayout>
+            </LinearLayout>
 
         </LinearLayout>
     </ScrollView>
 
-    <!-- Mic FAB (sits above the bottom nav) -->
+    <!-- Mic FAB -->
     <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:id="@+id/micFab"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
         android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="80dp"
+        android:layout_marginBottom="96dp"
         android:src="@android:drawable/ic_btn_speak_now"
         android:contentDescription="Voice input"
         app:fabSize="normal"
-        app:backgroundTint="#1A1A1A"
-        app:tint="@android:color/white" />
+        app:backgroundTint="#3da8ff"
+        app:tint="#000000"
+        app:borderWidth="0dp"
+        app:elevation="0dp" />
 
-    <!-- Phase M6: Bottom navigation -->
     <com.google.android.material.bottomnavigation.BottomNavigationView
         android:id="@+id/bottomNav"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_height="72dp"
         android:layout_gravity="bottom"
-        android:background="#FFFFFF"
+        android:background="#000000"
+        app:elevation="0dp"
         app:menu="@menu/bottom_nav" />
+
+    <!-- Hard 1px border above the bottom nav — not a shadow -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="72dp"
+        android:background="#1e2a3a" />
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

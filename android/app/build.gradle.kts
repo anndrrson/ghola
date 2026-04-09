@@ -77,11 +77,19 @@ android {
         jvmTarget = "17"
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-        }
-    }
+    // Native llama.cpp build is disabled because the llama.cpp source subtree
+    // was removed in commit ea53f9d ("Remove llama.cpp submodule (breaks
+    // Render Docker builds)"). The local LocalLlamaBackend path will throw
+    // UnsatisfiedLinkError at runtime IF the user selects Settings → Local
+    // backend — but the default backend is cloud Qwen, so the common path
+    // works fine without it. To re-enable: `git clone https://github.com/
+    // ggerganov/llama.cpp app/src/main/cpp/llama.cpp` then uncomment this.
+    //
+    // externalNativeBuild {
+    //     cmake {
+    //         path = file("src/main/cpp/CMakeLists.txt")
+    //     }
+    // }
 }
 
 dependencies {
@@ -101,4 +109,12 @@ dependencies {
     implementation("androidx.credentials:credentials:1.3.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
+
+    // Phase M4 — Solana Mobile Stack.
+    // The ktx variant is a suspend-based wrapper around the core MWA client;
+    // it brings kotlinx-coroutines transitively but we also declare it
+    // explicitly so the IDE resolves lifecycleScope without surprises.
+    implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.3")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }

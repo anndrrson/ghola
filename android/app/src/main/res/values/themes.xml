@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base Ghola theme — dark, matches ghola.xyz, Geist typography -->
+    <style name="Theme.Ghola" parent="Theme.MaterialComponents.NoActionBar">
+        <item name="colorPrimary">@color/ghola_accent</item>
+        <item name="colorPrimaryVariant">@color/ghola_accent_dim</item>
+        <item name="colorOnPrimary">@color/ghola_bg</item>
+        <item name="colorSecondary">@color/ghola_accent</item>
+        <item name="colorSecondaryVariant">@color/ghola_accent_dim</item>
+        <item name="colorOnSecondary">@color/ghola_bg</item>
+        <item name="android:colorBackground">@color/ghola_bg</item>
+        <item name="colorSurface">@color/ghola_surface</item>
+        <item name="colorOnBackground">@color/ghola_text_primary</item>
+        <item name="colorOnSurface">@color/ghola_text_primary</item>
+        <item name="android:statusBarColor">@color/ghola_bg</item>
+        <item name="android:navigationBarColor">@color/ghola_bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:textColorPrimary">@color/ghola_text_primary</item>
+        <item name="android:textColorSecondary">@color/ghola_text_secondary</item>
+        <item name="android:textColorTertiary">@color/ghola_text_tertiary</item>
+        <item name="android:textColorHint">@color/ghola_text_tertiary</item>
+        <!-- Geist as the default font across the whole app. Override with
+             @font/geist_mono on any view that needs monospace (DIDs, addresses,
+             numbers in trading-terminal style). -->
+        <item name="android:fontFamily">@font/geist</item>
+        <item name="fontFamily">@font/geist</item>
+        <item name="materialCardViewStyle">@style/Ghola.CardView</item>
+        <item name="bottomNavigationStyle">@style/Ghola.BottomNav</item>
+    </style>
+
+    <!-- ┌──────────────────────────────────────────────────────────────┐
+         │ TYPE SCALE — Geist-based, tabular, aggressive hierarchy      │
+         └──────────────────────────────────────────────────────────────┘ -->
+
+    <!-- Base parent for the type scale (AAPT requires this when using
+         dot-notation children like Ghola.Text.Display). -->
+    <style name="Ghola.Text" parent="android:Widget.TextView">
+        <item name="android:fontFamily">@font/geist</item>
+        <item name="android:textColor">@color/ghola_text_primary</item>
+    </style>
+
+    <!-- Display: the massive balance number on Home/Agent detail. -->
+    <style name="Ghola.Text.Display">
+        <item name="android:fontFamily">@font/geist</item>
+        <item name="android:textSize">64sp</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:fontFeatureSettings">"tnum"</item>
+        <item name="android:letterSpacing">-0.03</item>
+        <item name="android:textColor">@color/ghola_text_primary</item>
+        <item name="android:includeFontPadding">false</item>
+    </style>
+
+    <!-- Hero: section titles, page titles. -->
+    <style name="Ghola.Text.Hero">
+        <item name="android:fontFamily">@font/geist</item>
+        <item name="android:textSize">28sp</item>
+        <item name="android:textFontWeight">500</item>
+        <item name="android:letterSpacing">-0.02</item>
+        <item name="android:textColor">@color/ghola_text_primary</item>
+    </style>
+
+    <!-- Body: default text. -->
+    <style name="Ghola.Text.Body">
+        <item name="android:fontFamily">@font/geist</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textColor">@color/ghola_text_secondary</item>
+        <item name="android:lineSpacingMultiplier">1.3</item>
+    </style>
+
+    <!-- Eyebrow: `› SECTION NAME` style labels above content blocks. -->
+    <style name="Ghola.Text.Eyebrow">
+        <item name="android:fontFamily">@font/geist</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:textFontWeight">500</item>
+        <item name="android:textColor">@color/ghola_text_secondary</item>
+        <item name="android:letterSpacing">0.12</item>
+        <item name="android:textAllCaps">true</item>
+    </style>
+
+    <!-- Mono: DIDs, addresses, numbers. -->
+    <style name="Ghola.Text.Mono">
+        <item name="android:fontFamily">@font/geist_mono</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textColor">@color/ghola_text_primary</item>
+        <item name="android:fontFeatureSettings">"tnum","ss01"</item>
+    </style>
+
+    <style name="Ghola.Text.Mono.Small" parent="Ghola.Text.Mono">
+        <item name="android:textSize">11sp</item>
+        <item name="android:textColor">@color/ghola_text_secondary</item>
+    </style>
+
+    <style name="Ghola.CardView" parent="Widget.MaterialComponents.CardView">
+        <item name="cardBackgroundColor">@color/ghola_surface</item>
+        <item name="cardCornerRadius">12dp</item>
+        <item name="cardElevation">0dp</item>
+        <item name="strokeColor">@color/ghola_border</item>
+        <item name="strokeWidth">1dp</item>
+    </style>
+
+    <style name="Ghola.BottomNav" parent="Widget.MaterialComponents.BottomNavigationView">
+        <item name="android:background">@color/ghola_surface</item>
+        <item name="itemIconTint">@color/ghola_bottom_nav_tint</item>
+        <item name="itemTextColor">@color/ghola_bottom_nav_tint</item>
+        <item name="itemRippleColor">#223da8ff</item>
+        <item name="elevation">0dp</item>
+    </style>
+</resources>
