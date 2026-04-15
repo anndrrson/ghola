@@ -90,28 +90,61 @@ pub async fn record_metered_usage(
     Ok(())
 }
 
-/// After too many upstream failures in a short window, open the per-merchant
-/// circuit breaker so we stop routing calls to a dead origin. Called from the
-/// proxy error path.
-pub async fn open_circuit_breaker(
+/// Consume a payment signature exactly once across the entire gateway.
+/// Returns `true` if this call won the race and may be charged.
+pub async fn consume_payment_signature(
+    db: &PgPool,
+    service_id: Uuid,
+    signature: &str,
+) -> Result<bool, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"
+        INSERT INTO gateway_consumed_payments (
+            signature, service_listing_id
+        )
+        VALUES ($1, $2)
+        ON CONFLICT (signature) DO NOTHING
+        "#,
+    )
+    .bind(signature)
+    .bind(service_id)
+    .execute(db)
+    .await?
+    .rows_affected();
+    Ok(rows == 1)
+}
+
+/// Record one upstream failure. If the configured threshold is reached,
+/// opens the per-merchant circuit breaker and sets its reopen timestamp.
+pub async fn record_failure_and_maybe_open(
     db: &PgPool,
     service_id: Uuid,
     reopen_at: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+    threshold: u32,
+) -> Result<bool, sqlx::Error> {
+    let threshold = threshold.max(1) as i32;
+    let opened: bool = sqlx::query_scalar(
         r#"
         UPDATE service_listings
-        SET circuit_breaker_open = true,
-            circuit_breaker_until = $2,
-            consecutive_failures = consecutive_failures + 1
+        SET consecutive_failures = consecutive_failures + 1,
+            circuit_breaker_open = CASE
+                WHEN consecutive_failures + 1 >= $2 THEN true
+                ELSE circuit_breaker_open
+            END,
+            circuit_breaker_until = CASE
+                WHEN consecutive_failures + 1 >= $2 THEN $3
+                ELSE circuit_breaker_until
+            END
         WHERE id = $1
+        RETURNING circuit_breaker_open
         "#,
     )
     .bind(service_id)
+    .bind(threshold)
     .bind(reopen_at)
-    .execute(db)
+    .fetch_one(db)
     .await?;
-    Ok(())
+    Ok(opened)
 }
 
 /// Reset the circuit breaker after a successful call. Keeps merchants that

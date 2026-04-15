@@ -5,6 +5,7 @@ use sqlx::PgPool;
 use said_turnkey::Vault;
 
 use crate::config::Config;
+use crate::ip_rate_limit::IpRateLimiter;
 use crate::route_cache::RouteCache;
 
 #[derive(Clone)]
@@ -17,4 +18,5 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub vault: Arc<dyn Vault>,
     pub cache: Arc<RouteCache>,
+    pub ip_rate_limiter: Arc<IpRateLimiter>,
 }

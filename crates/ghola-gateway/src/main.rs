@@ -2,21 +2,26 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
+    extract::DefaultBodyLimit,
     http::{HeaderName, Method, StatusCode},
+    middleware,
     routing::{any, get},
     Router,
 };
 use sqlx::postgres::PgPoolOptions;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 mod auth_inject;
 mod config;
+mod ip_rate_limit;
 mod meter;
 mod proxy;
 mod route_cache;
 mod state;
+mod x402_challenge;
+mod x402_verify;
 
 use config::Config;
 use route_cache::RouteCache;
@@ -46,8 +51,8 @@ async fn main() -> anyhow::Result<()> {
         .pool_max_idle_per_host(32)
         .build()?;
 
-    let vault = said_turnkey::vault_from_env()
-        .map_err(|e| anyhow::anyhow!("vault init failed: {e}"))?;
+    let vault =
+        said_turnkey::vault_from_env().map_err(|e| anyhow::anyhow!("vault init failed: {e}"))?;
     tracing::info!(backend = vault.backend_name(), "Vault initialized");
 
     let cache = Arc::new(RouteCache::new(config.route_cache_ttl_secs));
@@ -58,10 +63,23 @@ async fn main() -> anyhow::Result<()> {
         http,
         vault,
         cache,
+        ip_rate_limiter: Arc::new(ip_rate_limit::IpRateLimiter::new()),
     });
 
+    let origins: Vec<_> = config
+        .allowed_origins
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+
+    if origins.is_empty() {
+        return Err(anyhow::anyhow!(
+            "ALLOWED_ORIGINS produced zero valid origins; refusing wildcard CORS"
+        ));
+    }
+
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(origins)
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -75,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
             HeaderName::from_static("content-type"),
             HeaderName::from_static("authorization"),
             HeaderName::from_static("x-payment"),
+            HeaderName::from_static("x402-payment"),
             HeaderName::from_static("x-payment-signature"),
             HeaderName::from_static("x-agent-did"),
         ])
@@ -90,12 +109,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         // Nested paths on a merchant. Wildcard cannot match empty, so we need
         // both routes below for `curl gateway/m/alpha` and `gateway/m/alpha/`.
-        .route(
-            "/m/{slug}/{*upstream_path}",
-            any(proxy::proxy_handler),
-        )
+        .route("/m/{slug}/{*upstream_path}", any(proxy::proxy_handler))
         .route("/m/{slug}", any(proxy::proxy_root_handler))
         .route("/m/{slug}/", any(proxy::proxy_root_handler))
+        .layer(DefaultBodyLimit::max(config.max_request_body_bytes))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            ip_rate_limit::ip_rate_limit,
+        ))
         .with_state(state)
         .layer(cors)
         .layer(TraceLayer::new_for_http());
@@ -103,7 +124,11 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = config.bind_addr.parse()?;
     tracing::info!(%addr, "ghola-gateway listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
