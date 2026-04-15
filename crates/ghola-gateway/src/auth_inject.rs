@@ -46,14 +46,12 @@ pub fn inject(
         }
 
         AuthMode::ApiKeyQuery => {
-            // Append ?api_key=... (or &api_key=...) depending on whether the
-            // URL already has a query string. Use the `url` crate to handle
-            // escaping correctly.
+            // Append `api_key` to the actual outbound request URL.
+            req = req.query(&[("api_key", plaintext)]);
+            // Also return a deterministic string form for tracing/debug output.
             let mut parsed = url::Url::parse(url)
                 .map_err(|e| anyhow::anyhow!("cannot parse upstream URL: {e}"))?;
-            parsed
-                .query_pairs_mut()
-                .append_pair("api_key", plaintext);
+            parsed.query_pairs_mut().append_pair("api_key", plaintext);
             Ok((req, parsed.to_string()))
         }
 

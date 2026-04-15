@@ -98,11 +98,7 @@ impl RouteCache {
         self.map.remove(slug);
     }
 
-    async fn load(
-        &self,
-        db: &PgPool,
-        slug: &str,
-    ) -> Result<Option<ResolvedRoute>, sqlx::Error> {
+    async fn load(&self, db: &PgPool, slug: &str) -> Result<Option<ResolvedRoute>, sqlx::Error> {
         let row = sqlx::query_as::<_, RouteRow>(
             r#"
             SELECT
