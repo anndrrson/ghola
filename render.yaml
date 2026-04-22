@@ -25,12 +25,30 @@ services:
         value: "https://ghola.xyz"
       - key: ALLOWED_ORIGINS
         value: "https://ghola.xyz,https://www.ghola.xyz"
+      - key: MERCHANT_MANAGE_TOKEN_TTL_SECS
+        value: "86400"
+      - key: ALLOW_INSECURE_MERCHANT_ORIGIN_HTTP
+        value: "false"
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
       - key: GATEWAY_BASE_URL
         value: "https://ghola-gateway.onrender.com"
       # Shared KEK — said-cloud encrypts, ghola-gateway decrypts. MUST match.
       # Generate with: openssl rand -hex 32
       - key: GHOLA_VAULT_KEY
         sync: false
+      # Optional Turnkey backend (preferred for new writes when set).
+      - key: TURNKEY_API_PUBLIC_KEY
+        sync: false
+      - key: TURNKEY_API_PRIVATE_KEY
+        sync: false
+      - key: TURNKEY_ORG_ID
+        sync: false
+      - key: TURNKEY_SIGN_WITH
+        sync: false
+      # Set true to fail startup if Turnkey is configured but unavailable.
+      - key: TURNKEY_STRICT
+        value: "false"
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
@@ -59,6 +77,21 @@ services:
       # credentials envelope-encrypted by said-cloud's /v1/m/new handler.
       - key: GHOLA_VAULT_KEY
         sync: false
+      # Optional Turnkey backend for decrypting turnkey-encrypted credentials.
+      - key: TURNKEY_API_PUBLIC_KEY
+        sync: false
+      - key: TURNKEY_API_PRIVATE_KEY
+        sync: false
+      - key: TURNKEY_ORG_ID
+        sync: false
+      - key: TURNKEY_SIGN_WITH
+        sync: false
+      - key: TURNKEY_STRICT
+        value: "false"
+      - key: SOLANA_RPC_URL
+        value: "https://api.devnet.solana.com"
+      - key: ESCROW_WALLET_ADDRESS
+        sync: false
       - key: ROUTE_CACHE_TTL_SECS
         value: "30"
       - key: UPSTREAM_TIMEOUT_SECS
@@ -69,4 +102,20 @@ services:
         value: "60"
       - key: PLATFORM_FEE_BPS
         value: "300"
+      - key: ALLOW_UNVERIFIED_XPAYMENT
+        value: "false"
+      - key: INSECURE_DEV_MODE
+        value: "false"
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
+      - key: X402_MAX_TX_AGE_SECS
+        value: "600"
+      - key: X402_VERIFY_TIMEOUT_SECS
+        value: "8"
+      - key: GATEWAY_RATE_LIMIT_PER_MINUTE
+        value: "120"
+      - key: GATEWAY_MAX_REQUEST_BODY_BYTES
+        value: "10485760"
+      - key: ALLOWED_ORIGINS
+        value: "https://ghola.xyz,https://www.ghola.xyz,http://localhost:3000"
     healthCheckPath: /health

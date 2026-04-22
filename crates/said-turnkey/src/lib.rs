@@ -3,16 +3,20 @@
 //! Credential vault adapter for Ghola's merchant gateway.
 //!
 //! A [`Vault`] is the boundary between Ghola's process memory and merchant
-//! upstream credentials. Two implementations ship in this crate:
+//! upstream credentials. Two concrete backends ship in this crate:
 //!
 //! - [`LocalVault`] — AES-256-GCM envelope encryption with a Ghola-held KEK
 //!   (env var `GHOLA_VAULT_KEY`, 32 bytes hex). Matches the AES pattern already
 //!   used by thumper-cloud for Gmail OAuth tokens. This is the default, and is
 //!   sufficient for dev + Round-1 prod.
-//! - [`TurnkeyVault`] — stubbed HTTP client against Turnkey's API. Activates
-//!   when `TURNKEY_API_KEY` is set. Currently returns `VaultError::NotConfigured`
-//!   on every call — the wire layer is there so a future build can swap the
-//!   backend without touching the gateway, said-cloud, or the DB schema.
+//! - [`TurnkeyVault`] — Turnkey-backed vault. Activates when
+//!   `TURNKEY_API_PRIVATE_KEY` (or legacy `TURNKEY_API_KEY`) is set and
+//!   `TURNKEY_SIGN_WITH` is configured. Uses Turnkey's signed operations to
+//!   derive per-credential envelope keys.
+//!
+//! [`vault_from_env`] returns a routed implementation that always keeps
+//! `LocalVault` available for backward compatibility, while preferring Turnkey
+//! for new writes whenever Turnkey initializes cleanly.
 //!
 //! Both backends agree on one invariant: **the plaintext upstream credential
 //! exists in Rust memory for at most one request, and never touches Postgres**.
@@ -167,20 +171,142 @@ pub trait Vault: Send + Sync {
     async fn decrypt(&self, stored: &StoredCredential) -> Result<String, VaultError>;
 }
 
+struct RoutedVault {
+    local: LocalVault,
+    turnkey: Option<TurnkeyVault>,
+    strict_turnkey: bool,
+}
+
+impl RoutedVault {
+    fn new(local: LocalVault, turnkey: Option<TurnkeyVault>, strict_turnkey: bool) -> Self {
+        Self {
+            local,
+            turnkey,
+            strict_turnkey,
+        }
+    }
+}
+
+#[async_trait]
+impl Vault for RoutedVault {
+    fn backend_name(&self) -> &'static str {
+        if self.turnkey.is_some() {
+            "turnkey+local"
+        } else {
+            "local"
+        }
+    }
+
+    async fn mint_suborg(&self, merchant_slug: &str) -> Result<SuborgHandle, VaultError> {
+        if let Some(turnkey) = &self.turnkey {
+            match turnkey.mint_suborg(merchant_slug).await {
+                Ok(handle) => return Ok(handle),
+                Err(err) => {
+                    if self.strict_turnkey {
+                        return Err(err);
+                    }
+                    tracing::warn!(
+                        merchant_slug,
+                        "turnkey mint_suborg failed, falling back to LocalVault: {err}"
+                    );
+                }
+            }
+        }
+        self.local.mint_suborg(merchant_slug).await
+    }
+
+    async fn encrypt(
+        &self,
+        mode: AuthMode,
+        plaintext: &str,
+    ) -> Result<StoredCredential, VaultError> {
+        if let Some(turnkey) = &self.turnkey {
+            match turnkey.encrypt(mode, plaintext).await {
+                Ok(stored) => return Ok(stored),
+                Err(err) => {
+                    if self.strict_turnkey {
+                        return Err(err);
+                    }
+                    tracing::warn!(
+                        mode = mode.as_str(),
+                        "turnkey encrypt failed, falling back to LocalVault: {err}"
+                    );
+                }
+            }
+        }
+        self.local.encrypt(mode, plaintext).await
+    }
+
+    async fn decrypt(&self, stored: &StoredCredential) -> Result<String, VaultError> {
+        match stored.backend {
+            "local" => self.local.decrypt(stored).await,
+            "turnkey" => {
+                if let Some(turnkey) = &self.turnkey {
+                    return turnkey.decrypt(stored).await;
+                }
+                Err(VaultError::NotConfigured(
+                    "credential backend is 'turnkey' but Turnkey is not configured".into(),
+                ))
+            }
+            other => Err(VaultError::Backend(format!(
+                "unknown credential backend '{other}'"
+            ))),
+        }
+    }
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 /// Build the default vault from environment variables.
 ///
-/// - If `TURNKEY_API_KEY` is set → returns `TurnkeyVault`. Currently this still
-///   returns `NotConfigured` on every call; the wire layer is only plumbed so
-///   the swap is one config-flag change when a real Turnkey account exists.
-/// - Otherwise → returns `LocalVault` keyed on `GHOLA_VAULT_KEY` (hex, 32 bytes).
-/// - If neither env var is set → returns `LocalVault` with an **ephemeral key**
-///   generated at startup and logs a loud warning. Fine for `cargo run`; never
-///   use in prod — credentials encrypted under an ephemeral key are unreadable
-///   after a restart.
+/// - Always loads `LocalVault` from `GHOLA_VAULT_KEY` (or ephemeral key in dev).
+/// - If Turnkey env vars are present and valid, enables Turnkey as the preferred
+///   backend for new writes while still decrypting legacy `local` records.
+/// - If Turnkey initialization fails and `TURNKEY_STRICT` is truthy (`1/true`),
+///   startup fails. Otherwise startup continues with LocalVault-only mode.
 pub fn vault_from_env() -> Result<std::sync::Arc<dyn Vault>, VaultError> {
-    if std::env::var("TURNKEY_API_KEY").is_ok() {
-        tracing::info!("TURNKEY_API_KEY set — using TurnkeyVault backend");
-        return Ok(std::sync::Arc::new(TurnkeyVault::from_env()?));
+    let local = LocalVault::from_env()?;
+    let strict_turnkey = env_truthy("TURNKEY_STRICT");
+    let turnkey_env_present = std::env::var("TURNKEY_API_PRIVATE_KEY").is_ok()
+        || std::env::var("TURNKEY_API_KEY").is_ok();
+
+    let turnkey = if turnkey_env_present {
+        match TurnkeyVault::from_env() {
+            Ok(vault) => {
+                tracing::info!("Turnkey env detected — using Turnkey as preferred vault backend");
+                Some(vault)
+            }
+            Err(err) => {
+                if strict_turnkey {
+                    return Err(err);
+                }
+                tracing::warn!(
+                    "Turnkey env detected but TurnkeyVault init failed, \
+                     continuing with LocalVault compatibility mode: {err}"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if turnkey.is_none() {
+        tracing::info!("using LocalVault backend");
     }
-    Ok(std::sync::Arc::new(LocalVault::from_env()?))
+    Ok(std::sync::Arc::new(RoutedVault::new(
+        local,
+        turnkey,
+        strict_turnkey,
+    )))
 }

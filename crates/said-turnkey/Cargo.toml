@@ -12,13 +12,15 @@ ed25519-dalek = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-reqwest = { workspace = true }
 async-trait = "0.1"
 base64 = { workspace = true }
 bs58 = { workspace = true }
 hex = "0.4"
 tracing = { workspace = true }
 uuid = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+turnkey_client = "0.6.2"
 
 [dev-dependencies]
 tokio = { workspace = true }
