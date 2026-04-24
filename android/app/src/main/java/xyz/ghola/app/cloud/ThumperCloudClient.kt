@@ -143,13 +143,14 @@ class ThumperCloudClient(
             .build()
 
         return try {
-            val response = client.newCall(request).execute()
-            val body = response.body?.string()
-            if (response.isSuccessful && body != null) {
-                JSONObject(body)
-            } else {
-                Log.e(TAG, "GET $path failed: ${response.code} $body")
-                null
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string()
+                if (response.isSuccessful && !body.isNullOrBlank()) {
+                    parseObject(body, "GET $path")
+                } else {
+                    logHttpFailure("GET $path", response.code, body)
+                    null
+                }
             }
         } catch (e: IOException) {
             Log.e(TAG, "GET $path error", e)
@@ -164,13 +165,14 @@ class ThumperCloudClient(
             .build()
 
         return try {
-            val response = client.newCall(request).execute()
-            val body = response.body?.string()
-            if (response.isSuccessful && body != null) {
-                JSONArray(body)
-            } else {
-                Log.e(TAG, "GET $path failed: ${response.code} $body")
-                null
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string()
+                if (response.isSuccessful && !body.isNullOrBlank()) {
+                    parseArray(body, "GET $path")
+                } else {
+                    logHttpFailure("GET $path", response.code, body)
+                    null
+                }
             }
         } catch (e: IOException) {
             Log.e(TAG, "GET $path error", e)
@@ -186,17 +188,41 @@ class ThumperCloudClient(
             .build()
 
         return try {
-            val response = client.newCall(request).execute()
-            val body = response.body?.string()
-            if (response.isSuccessful && body != null) {
-                JSONObject(body)
-            } else {
-                Log.e(TAG, "POST $path failed: ${response.code} $body")
-                null
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string()
+                if (response.isSuccessful && !body.isNullOrBlank()) {
+                    parseObject(body, "POST $path")
+                } else {
+                    logHttpFailure("POST $path", response.code, body)
+                    null
+                }
             }
         } catch (e: IOException) {
             Log.e(TAG, "POST $path error", e)
             null
         }
+    }
+
+    private fun parseObject(body: String, label: String): JSONObject? {
+        return try {
+            JSONObject(body)
+        } catch (e: Exception) {
+            Log.e(TAG, "$label invalid JSON object")
+            null
+        }
+    }
+
+    private fun parseArray(body: String, label: String): JSONArray? {
+        return try {
+            JSONArray(body)
+        } catch (e: Exception) {
+            Log.e(TAG, "$label invalid JSON array")
+            null
+        }
+    }
+
+    private fun logHttpFailure(label: String, code: Int, body: String?) {
+        val bodyMetadata = if (body.isNullOrEmpty()) "empty_body" else "body_len=${body.length}"
+        Log.e(TAG, "$label failed: status=$code $bodyMetadata")
     }
 }

@@ -55,7 +55,10 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         .route("/metrics", get(handlers::metrics_handler))
         .route("/ws", get(handlers::ws_upgrade))
         .route("/inference", post(handlers::dispatch_inference))
-        .route("/inference-stream", post(handlers::dispatch_inference_stream))
+        .route(
+            "/inference-stream",
+            post(handlers::dispatch_inference_stream),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state);

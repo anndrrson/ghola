@@ -124,10 +124,8 @@ pub fn create_ucan(
     };
 
     // Encode header and payload
-    let header_json =
-        serde_json::to_vec(&header).map_err(|e| SaidError::Ucan(e.to_string()))?;
-    let payload_json =
-        serde_json::to_vec(&payload).map_err(|e| SaidError::Ucan(e.to_string()))?;
+    let header_json = serde_json::to_vec(&header).map_err(|e| SaidError::Ucan(e.to_string()))?;
+    let payload_json = serde_json::to_vec(&payload).map_err(|e| SaidError::Ucan(e.to_string()))?;
 
     let header_b64 = URL_SAFE_NO_PAD.encode(&header_json);
     let payload_b64 = URL_SAFE_NO_PAD.encode(&payload_json);
@@ -221,9 +219,9 @@ pub fn is_capability_subset(child: &[Capability], parent: &[Capability]) -> bool
     if parent.iter().any(|c| *c == Capability::All) {
         return true;
     }
-    child.iter().all(|child_cap| {
-        parent.iter().any(|parent_cap| parent_cap.grants(child_cap))
-    })
+    child
+        .iter()
+        .all(|child_cap| parent.iter().any(|parent_cap| parent_cap.grants(child_cap)))
 }
 
 /// Decode just the payload segment from a JWT token string (without verifying the signature).
@@ -371,10 +369,8 @@ pub fn delegate_ucan(
     };
 
     // Encode header and payload
-    let header_json =
-        serde_json::to_vec(&header).map_err(|e| SaidError::Ucan(e.to_string()))?;
-    let payload_json =
-        serde_json::to_vec(&payload).map_err(|e| SaidError::Ucan(e.to_string()))?;
+    let header_json = serde_json::to_vec(&header).map_err(|e| SaidError::Ucan(e.to_string()))?;
+    let payload_json = serde_json::to_vec(&payload).map_err(|e| SaidError::Ucan(e.to_string()))?;
 
     let header_b64 = URL_SAFE_NO_PAD.encode(&header_json);
     let payload_b64 = URL_SAFE_NO_PAD.encode(&payload_json);
@@ -393,10 +389,7 @@ pub fn delegate_ucan(
 ///   against `root_issuer`.
 /// - If the token has proofs, the parent chain is verified recursively, and then
 ///   the current token's signature, capability attenuation, and expiry are checked.
-pub fn verify_ucan_chain(
-    token: &str,
-    root_issuer: &VerifyingKey,
-) -> Result<UcanPayload> {
+pub fn verify_ucan_chain(token: &str, root_issuer: &VerifyingKey) -> Result<UcanPayload> {
     let payload = decode_payload(token)?;
 
     if payload.prf.is_empty() {
@@ -534,7 +527,11 @@ mod tests {
     fn capabilities_from_payload_roundtrip() {
         let issuer = test_keypair();
         let audience = other_keypair().verifying_key();
-        let caps = vec![Capability::ReadPrompts, Capability::WriteMemories, Capability::All];
+        let caps = vec![
+            Capability::ReadPrompts,
+            Capability::WriteMemories,
+            Capability::All,
+        ];
 
         let token = create_ucan(&issuer, &audience, &caps, Duration::from_secs(3600)).unwrap();
         let payload = verify_ucan(&token, &issuer.verifying_key()).unwrap();
@@ -573,10 +570,7 @@ mod tests {
             &[Capability::ReadPrompts, Capability::ReadMemories],
             &parent
         ));
-        assert!(!is_capability_subset(
-            &[Capability::WriteMemories],
-            &parent
-        ));
+        assert!(!is_capability_subset(&[Capability::WriteMemories], &parent));
         assert!(!is_capability_subset(
             &[Capability::ReadPrompts, Capability::WriteMemories],
             &parent
@@ -591,10 +585,7 @@ mod tests {
 
     #[test]
     fn is_capability_subset_empty_parent() {
-        assert!(!is_capability_subset(
-            &[Capability::ReadPrompts],
-            &[]
-        ));
+        assert!(!is_capability_subset(&[Capability::ReadPrompts], &[]));
         // Empty child with empty parent is trivially true
         assert!(is_capability_subset(&[], &[]));
     }
@@ -707,7 +698,11 @@ mod tests {
         let token_l1 = create_ucan(
             &root,
             &level1.verifying_key(),
-            &[Capability::ReadPrompts, Capability::ReadMemories, Capability::WriteMemories],
+            &[
+                Capability::ReadPrompts,
+                Capability::ReadMemories,
+                Capability::WriteMemories,
+            ],
             Duration::from_secs(7200),
         )
         .unwrap();

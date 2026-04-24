@@ -632,8 +632,7 @@ impl ThumperServer {
     fn handle_action_response(&self, response: Envelope) -> Result<CallToolResult, ErrorData> {
         match response.message {
             MessageType::ActionResult(ref result) => {
-                let mut text =
-                    serde_json::to_string_pretty(&result).unwrap_or_default();
+                let mut text = serde_json::to_string_pretty(&result).unwrap_or_default();
                 if result.screen_after.is_none() {
                     text.push_str(
                         "\n(screen_after omitted — use device_read_screen or device_wait_for to check the result)",

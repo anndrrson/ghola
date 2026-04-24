@@ -263,10 +263,25 @@ pub async fn relay(
 
     if !upstream.status().is_success() {
         let status = upstream.status().as_u16();
+        let request_id = upstream
+            .headers()
+            .get("request-id")
+            .or_else(|| upstream.headers().get("x-request-id"))
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
         let error_body = upstream.text().await.unwrap_or_default();
-        tracing::warn!("Relay upstream error {status}: {error_body}");
+        tracing::warn!(
+            "Relay upstream error {status}{}: {error_body}",
+            request_id
+                .as_ref()
+                .map(|id| format!(" (request_id={id})"))
+                .unwrap_or_default()
+        );
         return Err(AppError::BadRequest(format!(
-            "Provider returned {status}: {error_body}"
+            "Provider returned {status}{}: {error_body}",
+            request_id
+                .map(|id| format!(" (request_id={id})"))
+                .unwrap_or_default()
         )));
     }
 
@@ -366,19 +381,23 @@ fn build_provider_request(req: &RelayRequest) -> AppResult<(String, String)> {
             });
             Ok((url, serde_json::to_string(&body).unwrap()))
         }
-        "groq" | "together" | "ollama" | "deepseek" | "cerebras" | "openrouter" | "kimi" | "qwen" | "glm" => {
-            let base = req.base_url.as_deref().unwrap_or(match req.provider.as_str() {
-                "groq" => "https://api.groq.com/openai",
-                "together" => "https://api.together.xyz",
-                "ollama" => "http://localhost:11434",
-                "deepseek" => "https://api.deepseek.com",
-                "cerebras" => "https://api.cerebras.ai",
-                "openrouter" => "https://openrouter.ai/api",
-                "kimi" => "https://api.moonshot.cn",
-                "qwen" => "https://dashscope.aliyuncs.com/compatible-mode",
-                "glm" => "https://open.bigmodel.cn/api/paas",
-                _ => unreachable!(),
-            });
+        "groq" | "together" | "ollama" | "deepseek" | "cerebras" | "openrouter" | "kimi"
+        | "qwen" | "glm" => {
+            let base = req
+                .base_url
+                .as_deref()
+                .unwrap_or(match req.provider.as_str() {
+                    "groq" => "https://api.groq.com/openai",
+                    "together" => "https://api.together.xyz",
+                    "ollama" => "http://localhost:11434",
+                    "deepseek" => "https://api.deepseek.com",
+                    "cerebras" => "https://api.cerebras.ai",
+                    "openrouter" => "https://openrouter.ai/api",
+                    "kimi" => "https://api.moonshot.cn",
+                    "qwen" => "https://dashscope.aliyuncs.com/compatible-mode",
+                    "glm" => "https://open.bigmodel.cn/api/paas",
+                    _ => unreachable!(),
+                });
             let url = format!("{base}/v1/chat/completions");
 
             let mut messages = req.messages.clone();

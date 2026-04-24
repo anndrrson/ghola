@@ -28,12 +28,12 @@ fn parse_payment_required_header_round_trip() {
 
     assert_eq!(parsed.version, 1);
     assert_eq!(parsed.accepts.len(), 1);
-    assert_eq!(parsed.accepts[0].pay_to, "MerchantAddress111111111111111111");
-    assert_eq!(parsed.accepts[0].scheme, "exact");
     assert_eq!(
-        parsed.accepts[0].max_amount_required,
-        "1000"
+        parsed.accepts[0].pay_to,
+        "MerchantAddress111111111111111111"
     );
+    assert_eq!(parsed.accepts[0].scheme, "exact");
+    assert_eq!(parsed.accepts[0].max_amount_required, "1000");
 }
 
 #[test]
@@ -75,7 +75,11 @@ fn parse_payment_required_rejects_invalid_json() {
 
 // ── Trust assessment logic ─────────────────────────────────────────────────
 
-fn make_assessment(trust_score: f32, identity_found: bool, recommendation: &str) -> TrustAssessment {
+fn make_assessment(
+    trust_score: f32,
+    identity_found: bool,
+    recommendation: &str,
+) -> TrustAssessment {
     TrustAssessment {
         address: "TestAddress111111111111111111111".to_string(),
         identity_found,
@@ -197,10 +201,8 @@ async fn mock_server_probe_returns_402_and_payment_header() {
             async move {
                 let mut resp = Response::new(Body::from("payment required"));
                 *resp.status_mut() = StatusCode::PAYMENT_REQUIRED;
-                resp.headers_mut().insert(
-                    "payment-required",
-                    HeaderValue::from_str(&hval).unwrap(),
-                );
+                resp.headers_mut()
+                    .insert("payment-required", HeaderValue::from_str(&hval).unwrap());
                 resp
             }
         }),
@@ -337,7 +339,10 @@ async fn mock_server_full_discover_and_assess_flow() {
     assert!(assessment.identity_found);
     assert_eq!(assessment.recommendation, "pay");
     assert!(assessment.trust_score >= 0.7);
-    assert_eq!(assessment.payment.as_ref().unwrap().pay_to, "HighTrustMerchant111111111111111");
+    assert_eq!(
+        assessment.payment.as_ref().unwrap().pay_to,
+        "HighTrustMerchant111111111111111"
+    );
 }
 
 // ── Discover-and-pay: agents.txt → x402 ───────────────────────────────────

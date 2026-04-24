@@ -10,6 +10,7 @@ import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.annotation.RequiresApi
 import xyz.ghola.app.network.DeviceKeyManager
 import xyz.ghola.app.network.RelayConnection
 import xyz.ghola.app.network.CommandHandler
@@ -124,7 +125,11 @@ class ThumperAccessibilityService : AccessibilityService() {
             Log.w(TAG, "Screenshot requires Android 11+ (API 30)")
             return null
         }
+        return takeScreenshotApi30(scale, quality)
+    }
 
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun takeScreenshotApi30(scale: Double, quality: Int): ScreenshotData? {
         val latch = CountDownLatch(1)
         var resultBitmap: Bitmap? = null
 

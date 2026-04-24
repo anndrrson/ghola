@@ -2,7 +2,7 @@
 //! and X25519-based encrypted channels between SAID wallets.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use ed25519_dalek::{Signature, Signer, Verifier, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::RngCore;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
@@ -173,12 +173,16 @@ mod tests {
         let (wallet_a, _dir_a) = test_wallet();
         let (wallet_b, _dir_b) = test_wallet();
 
-        let key_a = xprv_to_signing_key(
-            &wallet_a.derive_provider_key(Provider::Master, KeyType::Signing, 0),
-        );
-        let key_b = xprv_to_signing_key(
-            &wallet_b.derive_provider_key(Provider::Master, KeyType::Signing, 0),
-        );
+        let key_a = xprv_to_signing_key(&wallet_a.derive_provider_key(
+            Provider::Master,
+            KeyType::Signing,
+            0,
+        ));
+        let key_b = xprv_to_signing_key(&wallet_b.derive_provider_key(
+            Provider::Master,
+            KeyType::Signing,
+            0,
+        ));
 
         let secret_ab = derive_shared_secret(&key_a, &key_b.verifying_key()).unwrap();
         let secret_ba = derive_shared_secret(&key_b, &key_a.verifying_key()).unwrap();

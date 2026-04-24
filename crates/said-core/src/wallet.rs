@@ -39,8 +39,8 @@ impl Wallet {
             return Err(SaidError::WalletExists(wallet_dir.display().to_string()));
         }
 
-        let mnemonic = Mnemonic::generate(24)
-            .map_err(|e| SaidError::KeyDerivation(format!("{}", e)))?;
+        let mnemonic =
+            Mnemonic::generate(24).map_err(|e| SaidError::KeyDerivation(format!("{}", e)))?;
         let phrase = mnemonic.to_string();
         let seed = mnemonic.to_seed("");
 
@@ -64,10 +64,9 @@ impl Wallet {
         if is_seed_encrypted(&seed_bytes) {
             let pw = password.ok_or(SaidError::PasswordRequired)?;
             let mut decrypted = decrypt_seed_with_password(&seed_bytes, pw)?;
-            let seed: [u8; 64] = decrypted
-                .as_slice()
-                .try_into()
-                .map_err(|_| SaidError::Storage("invalid decrypted seed (expected 64 bytes)".into()))?;
+            let seed: [u8; 64] = decrypted.as_slice().try_into().map_err(|_| {
+                SaidError::Storage("invalid decrypted seed (expected 64 bytes)".into())
+            })?;
             decrypted.zeroize();
             let mut wallet = Self::from_seed(seed, wallet_dir.clone())?;
             wallet.seed_encrypted = true;
@@ -321,8 +320,8 @@ impl Wallet {
 
     /// Log a payment transaction to encrypted storage.
     pub fn log_transaction(&self, tx: said_types::PaymentTransaction) -> Result<()> {
-        let value = serde_json::to_value(&tx)
-            .map_err(|e| SaidError::Serialization(e.to_string()))?;
+        let value =
+            serde_json::to_value(&tx).map_err(|e| SaidError::Serialization(e.to_string()))?;
         self.storage.append_value("pay_transactions", value)?;
         Ok(())
     }
@@ -458,11 +457,7 @@ impl Wallet {
     /// Check whether a recipient address is permitted by the agent's spending policy.
     /// If `allowed_recipients` is empty, any address is allowed.
     /// Returns an error if the address is not in the allowlist.
-    pub fn check_recipient_allowed(
-        &self,
-        agent_id: uuid::Uuid,
-        recipient: &str,
-    ) -> Result<()> {
+    pub fn check_recipient_allowed(&self, agent_id: uuid::Uuid, recipient: &str) -> Result<()> {
         let wallets: Vec<said_types::AgentWallet> =
             self.storage.load("agent_wallets").unwrap_or_default();
         let agent = wallets
@@ -497,8 +492,10 @@ impl Wallet {
         agent_id: uuid::Uuid,
         failure_threshold: u32,
     ) -> Result<said_types::SpendingCircuitBreaker> {
-        let mut breakers: Vec<said_types::SpendingCircuitBreaker> =
-            self.storage.load("spending_circuit_breakers").unwrap_or_default();
+        let mut breakers: Vec<said_types::SpendingCircuitBreaker> = self
+            .storage
+            .load("spending_circuit_breakers")
+            .unwrap_or_default();
 
         let breaker = match breakers.iter_mut().find(|b| b.agent_id == agent_id) {
             Some(b) => {
@@ -532,8 +529,10 @@ impl Wallet {
     /// Record a successful payment, resetting the consecutive failure counter.
     /// NOTE: does NOT automatically unlock a tripped breaker — use `unlock_circuit_breaker`.
     pub fn record_payment_success(&self, agent_id: uuid::Uuid) -> Result<()> {
-        let mut breakers: Vec<said_types::SpendingCircuitBreaker> =
-            self.storage.load("spending_circuit_breakers").unwrap_or_default();
+        let mut breakers: Vec<said_types::SpendingCircuitBreaker> = self
+            .storage
+            .load("spending_circuit_breakers")
+            .unwrap_or_default();
 
         if let Some(b) = breakers.iter_mut().find(|b| b.agent_id == agent_id) {
             b.consecutive_failures = 0;
@@ -545,12 +544,11 @@ impl Wallet {
 
     /// Get the circuit breaker state for an agent.
     /// Returns a default (untripped) state if no record exists.
-    pub fn get_circuit_breaker(
-        &self,
-        agent_id: uuid::Uuid,
-    ) -> said_types::SpendingCircuitBreaker {
-        let breakers: Vec<said_types::SpendingCircuitBreaker> =
-            self.storage.load("spending_circuit_breakers").unwrap_or_default();
+    pub fn get_circuit_breaker(&self, agent_id: uuid::Uuid) -> said_types::SpendingCircuitBreaker {
+        let breakers: Vec<said_types::SpendingCircuitBreaker> = self
+            .storage
+            .load("spending_circuit_breakers")
+            .unwrap_or_default();
 
         breakers
             .into_iter()
@@ -563,8 +561,10 @@ impl Wallet {
 
     /// Manually unlock a tripped circuit breaker, re-enabling agent spending.
     pub fn unlock_circuit_breaker(&self, agent_id: uuid::Uuid) -> Result<()> {
-        let mut breakers: Vec<said_types::SpendingCircuitBreaker> =
-            self.storage.load("spending_circuit_breakers").unwrap_or_default();
+        let mut breakers: Vec<said_types::SpendingCircuitBreaker> = self
+            .storage
+            .load("spending_circuit_breakers")
+            .unwrap_or_default();
 
         if let Some(b) = breakers.iter_mut().find(|b| b.agent_id == agent_id) {
             b.tripped = false;
@@ -590,10 +590,7 @@ impl Wallet {
     }
 
     /// Return the full spending status for an agent wallet.
-    pub fn spending_status(
-        &self,
-        agent_id: uuid::Uuid,
-    ) -> Result<said_types::SpendingStatus> {
+    pub fn spending_status(&self, agent_id: uuid::Uuid) -> Result<said_types::SpendingStatus> {
         let wallets: Vec<said_types::AgentWallet> =
             self.storage.load("agent_wallets").unwrap_or_default();
         let agent = wallets
@@ -683,7 +680,9 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::metadata(wallet_dir.join("seed")).unwrap().permissions();
+            let perms = std::fs::metadata(wallet_dir.join("seed"))
+                .unwrap()
+                .permissions();
             assert_eq!(perms.mode() & 0o777, 0o600);
         }
     }
@@ -760,8 +759,7 @@ mod tests {
         let (wallet, _) = Wallet::init(&wallet_dir, None).unwrap();
 
         let openai_key = wallet.derive_provider_key(Provider::OpenAI, KeyType::Signing, 0);
-        let anthropic_key =
-            wallet.derive_provider_key(Provider::Anthropic, KeyType::Signing, 0);
+        let anthropic_key = wallet.derive_provider_key(Provider::Anthropic, KeyType::Signing, 0);
 
         let openai_pub = openai_key.public();
         let anthropic_pub = anthropic_key.public();
@@ -813,7 +811,7 @@ mod tests {
 
         // Create agent wallet
         let policy = said_types::SpendingPolicy {
-            daily_limit_usdc_micro: Some(50_000_000), // $50
+            daily_limit_usdc_micro: Some(50_000_000),  // $50
             per_tx_limit_usdc_micro: Some(10_000_000), // $10
             ..Default::default()
         };

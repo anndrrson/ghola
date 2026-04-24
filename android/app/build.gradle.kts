@@ -8,6 +8,20 @@ android {
     compileSdk = 34
     ndkVersion = "26.1.10909125"
 
+    val googleWebClientId = providers.gradleProperty("GHOLA_GOOGLE_WEB_CLIENT_ID")
+        .orElse(providers.environmentVariable("GHOLA_GOOGLE_WEB_CLIENT_ID"))
+        .orElse(providers.gradleProperty("GOOGLE_WEB_CLIENT_ID"))
+        .orElse(providers.environmentVariable("GOOGLE_WEB_CLIENT_ID"))
+        .orElse("")
+        .get()
+    val escapedGoogleClientId = googleWebClientId
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "xyz.ghola.app"
         minSdk = 28
@@ -18,53 +32,79 @@ android {
         ndk {
             abiFilters += "arm64-v8a"
         }
+
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$escapedGoogleClientId\"")
     }
 
     // Phase M9: release signing + R8 for Solana dApp Store submission.
     // Keystore path + passwords are read from gradle.properties or env vars
     // (`GHOLA_KEYSTORE_PATH`, `GHOLA_KEYSTORE_PASSWORD`, `GHOLA_KEY_ALIAS`,
-    // `GHOLA_KEY_PASSWORD`). Release builds fall back to the debug keystore
-    // if no signing config is provided, so dev builds still work.
+    // `GHOLA_KEY_PASSWORD`).
+    //
+    // Security hardening:
+    // - release builds must use an explicit release signing key
+    // - release builds must never silently fall back to debug signing
+    val releaseKeystorePath = providers.gradleProperty("GHOLA_KEYSTORE_PATH")
+        .orElse(providers.environmentVariable("GHOLA_KEYSTORE_PATH"))
+        .orNull
+    val releaseStorePassword = providers.gradleProperty("GHOLA_KEYSTORE_PASSWORD")
+        .orElse(providers.environmentVariable("GHOLA_KEYSTORE_PASSWORD"))
+    val releaseKeyAlias = providers.gradleProperty("GHOLA_KEY_ALIAS")
+        .orElse(providers.environmentVariable("GHOLA_KEY_ALIAS"))
+    val releaseKeyPassword = providers.gradleProperty("GHOLA_KEY_PASSWORD")
+        .orElse(providers.environmentVariable("GHOLA_KEY_PASSWORD"))
+    val releaseSigningConfigured = !releaseKeystorePath.isNullOrBlank()
+    val debugDemoModeEnabled = providers.gradleProperty("GHOLA_ENABLE_DEMO_MODE")
+        .orElse(providers.environmentVariable("GHOLA_ENABLE_DEMO_MODE"))
+        .orElse("false")
+        .get()
+        .toBooleanStrictOrNull() ?: false
+    val debugLocalLlmEnabled = providers.gradleProperty("GHOLA_ENABLE_LOCAL_LLM")
+        .orElse(providers.environmentVariable("GHOLA_ENABLE_LOCAL_LLM"))
+        .orElse("false")
+        .get()
+        .toBooleanStrictOrNull() ?: false
+
+    val releaseTaskRequested = gradle.startParameter.taskNames.any { task ->
+        val lower = task.lowercase()
+        lower.contains("release")
+    }
+    if (releaseTaskRequested && !releaseSigningConfigured) {
+        throw org.gradle.api.GradleException(
+            "Release signing is required. Set GHOLA_KEYSTORE_PATH, " +
+                "GHOLA_KEYSTORE_PASSWORD, GHOLA_KEY_ALIAS, and GHOLA_KEY_PASSWORD."
+        )
+    }
+
     signingConfigs {
         create("release") {
-            val keystorePath = providers.gradleProperty("GHOLA_KEYSTORE_PATH")
-                .orElse(providers.environmentVariable("GHOLA_KEYSTORE_PATH"))
-                .orNull
-            if (keystorePath != null) {
-                storeFile = file(keystorePath)
-                storePassword = providers.gradleProperty("GHOLA_KEYSTORE_PASSWORD")
-                    .orElse(providers.environmentVariable("GHOLA_KEYSTORE_PASSWORD"))
-                    .get()
-                keyAlias = providers.gradleProperty("GHOLA_KEY_ALIAS")
-                    .orElse(providers.environmentVariable("GHOLA_KEY_ALIAS"))
-                    .get()
-                keyPassword = providers.gradleProperty("GHOLA_KEY_PASSWORD")
-                    .orElse(providers.environmentVariable("GHOLA_KEY_PASSWORD"))
-                    .get()
+            if (releaseSigningConfigured) {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseStorePassword.get()
+                keyAlias = releaseKeyAlias.get()
+                keyPassword = releaseKeyPassword.get()
             }
         }
     }
 
     buildTypes {
         release {
+            isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
+            buildConfigField("boolean", "ENABLE_DEMO_MODE", "false")
+            buildConfigField("boolean", "ENABLE_LOCAL_LLM", "false")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Only assign the release signing config if a keystore was found;
-            // otherwise fall back to debug signing so `assembleRelease` still
-            // works for local smoke tests.
-            val hasKeystore = providers.gradleProperty("GHOLA_KEYSTORE_PATH")
-                .orElse(providers.environmentVariable("GHOLA_KEYSTORE_PATH"))
-                .isPresent
-            if (hasKeystore) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfig = signingConfigs.getByName("release")
         }
         debug {
+            isDebuggable = true
             isMinifyEnabled = false
+            buildConfigField("boolean", "ENABLE_DEMO_MODE", debugDemoModeEnabled.toString())
+            buildConfigField("boolean", "ENABLE_LOCAL_LLM", debugLocalLlmEnabled.toString())
         }
     }
 

@@ -119,8 +119,10 @@ fn verify_auth_valid_ed25519_signature() {
 
     let canonical = message.canonical_bytes();
     let signature = signing_key.sign(&canonical);
-    let sig_b64 =
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, signature.to_bytes());
+    let sig_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        signature.to_bytes(),
+    );
 
     let payload = AuthPayload {
         message,
@@ -151,8 +153,10 @@ fn verify_auth_invalid_signature_rejected() {
     let wrong_key = SigningKey::generate(&mut OsRng);
     let canonical = message.canonical_bytes();
     let bad_sig = wrong_key.sign(&canonical);
-    let sig_b64 =
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bad_sig.to_bytes());
+    let sig_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        bad_sig.to_bytes(),
+    );
 
     let payload = AuthPayload {
         message,

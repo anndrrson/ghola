@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::auth::AuthUser;
 use crate::error::CloudError;
 use crate::services::compute_service::{
-    self, CommunityModel, DailyStats, EscrowInfo, ProviderInfo, PublicProviderInfo,
-    ProviderRegistration, ProviderUpdate, RecentJob, WithdrawalRequest, WithdrawalResponse,
+    self, CommunityModel, DailyStats, EarningsEstimateRequest, EarningsEstimateResponse,
+    EscrowInfo, ProviderInfo, ProviderRegistration, ProviderUpdate, PublicProviderInfo,
+    ReceiptVerificationSummary, RecentJob, UsageReceiptInfo, WithdrawalRequest, WithdrawalResponse,
 };
 use crate::state::AppState;
 
@@ -125,7 +126,8 @@ pub async fn get_recent_jobs(
         .await?
         .ok_or_else(|| CloudError::NotFound("no provider profile found".to_string()))?;
 
-    let jobs = compute_service::get_recent_jobs(&state.db, provider.id, query.limit.min(100)).await?;
+    let jobs =
+        compute_service::get_recent_jobs(&state.db, provider.id, query.limit.min(100)).await?;
     Ok(Json(jobs))
 }
 
@@ -162,8 +164,7 @@ pub async fn get_payouts(
 
     let summary = compute_service::get_payout_summary(&state.db, provider.id).await?;
     let payouts =
-        compute_service::get_provider_payouts(&state.db, provider.id, query.limit.min(100))
-            .await?;
+        compute_service::get_provider_payouts(&state.db, provider.id, query.limit.min(100)).await?;
 
     Ok(Json(serde_json::json!({
         "summary": summary,
@@ -171,3 +172,55 @@ pub async fn get_payouts(
     })))
 }
 
+/// POST /api/compute/providers/me/estimate — Estimate provider earnings from
+/// current pricing and supplied utilization assumptions.
+pub async fn estimate_earnings(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<EarningsEstimateRequest>,
+) -> Result<Json<EarningsEstimateResponse>, CloudError> {
+    let provider = compute_service::get_provider_by_user(&state.db, claims.sub)
+        .await?
+        .ok_or_else(|| CloudError::NotFound("no provider profile found".to_string()))?;
+
+    let estimate = compute_service::estimate_provider_earnings(&provider, req)?;
+    Ok(Json(estimate))
+}
+
+/// GET /api/compute/providers/me/receipts — Recent signed usage receipts for
+/// payout verification.
+pub async fn get_usage_receipts(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Query(query): Query<JobsQuery>,
+) -> Result<Json<Vec<UsageReceiptInfo>>, CloudError> {
+    let provider = compute_service::get_provider_by_user(&state.db, claims.sub)
+        .await?
+        .ok_or_else(|| CloudError::NotFound("no provider profile found".to_string()))?;
+
+    let receipts =
+        compute_service::get_provider_usage_receipts(&state.db, provider.id, query.limit.min(200))
+            .await?;
+    Ok(Json(receipts))
+}
+
+/// GET /api/compute/providers/me/receipts/verify — Recompute receipt proofs and
+/// return integrity summary.
+pub async fn verify_usage_receipts(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Query(query): Query<JobsQuery>,
+) -> Result<Json<ReceiptVerificationSummary>, CloudError> {
+    let provider = compute_service::get_provider_by_user(&state.db, claims.sub)
+        .await?
+        .ok_or_else(|| CloudError::NotFound("no provider profile found".to_string()))?;
+
+    let summary = compute_service::verify_provider_receipts(
+        &state.db,
+        &state.config.usage_receipt_secret,
+        provider.id,
+        query.limit.min(5000),
+    )
+    .await?;
+    Ok(Json(summary))
+}

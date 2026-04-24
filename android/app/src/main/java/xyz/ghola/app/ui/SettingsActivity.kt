@@ -18,6 +18,7 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.ai.llama.ModelManager
@@ -114,6 +115,14 @@ class SettingsActivity : AppCompatActivity() {
         enableA11yButton = findViewById(R.id.enableA11yButton)
         openRelayButton = findViewById(R.id.openRelayButton)
         saveButton = findViewById(R.id.saveButton)
+
+        if (!BuildConfig.ENABLE_LOCAL_LLM) {
+            radioLocal.visibility = View.GONE
+            if (secureStorage.isLocalMode()) {
+                secureStorage.setBackendMode(SecureStorage.BACKEND_QWEN_CLOUD)
+                Toast.makeText(this, "On-device model is disabled for this build", Toast.LENGTH_LONG).show()
+            }
+        }
 
         // Load existing values
         apiKeyInput.setText(secureStorage.getApiKey())
@@ -291,6 +300,10 @@ class SettingsActivity : AppCompatActivity() {
     private fun saveSettings() {
         when {
             radioLocal.isChecked -> {
+                if (!BuildConfig.ENABLE_LOCAL_LLM) {
+                    Toast.makeText(this, "On-device model is disabled for this build", Toast.LENGTH_SHORT).show()
+                    return
+                }
                 if (!modelManager.isModelDownloaded()) {
                     Toast.makeText(this, "Please download the model first", Toast.LENGTH_SHORT).show()
                     return

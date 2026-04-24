@@ -35,9 +35,9 @@ pub async fn execute_task(
         "email" => execute_email_task(state, user_id, task_id, agent_id, &params).await,
         "calendar" => execute_calendar_task(state, user_id, task_id, &params).await,
         "crypto" => execute_crypto_task(state, user_id, task_id, &params).await,
-        _ => {
-            Err(CloudError::BadRequest(format!("unsupported task type: {task_type}")))
-        }
+        _ => Err(CloudError::BadRequest(format!(
+            "unsupported task type: {task_type}"
+        ))),
     };
 
     match result {
@@ -95,7 +95,8 @@ async fn execute_call_task(
         objective,
         serde_json::to_string(params).unwrap_or_default()
     );
-    let script = crate::services::llm_router::generate(state, user_id, &script_prompt, Some("json")).await?;
+    let script =
+        crate::services::llm_router::generate(state, user_id, &script_prompt, Some("json")).await?;
     let script_json: serde_json::Value = serde_json::from_str(&script).unwrap_or_default();
 
     complete_step(state, task_id, 1, &script_json).await?;
@@ -132,7 +133,13 @@ async fn execute_call_task(
     .execute(&state.db)
     .await?;
 
-    complete_step(state, task_id, 2, &serde_json::json!({ "bland_call_id": bland_call_id })).await?;
+    complete_step(
+        state,
+        task_id,
+        2,
+        &serde_json::json!({ "bland_call_id": bland_call_id }),
+    )
+    .await?;
 
     // Task stays in_progress — webhook will complete it when call finishes
     // Update status to reflect we're waiting on the call
@@ -165,14 +172,9 @@ async fn execute_email_task(
     // Step 1: Generate email draft
     add_step(state, task_id, 1, "generate_draft", "in_progress").await?;
 
-    let draft = crate::services::email_service::generate_email_draft(
-        state,
-        user_id,
-        intent,
-        context,
-        tone,
-    )
-    .await?;
+    let draft =
+        crate::services::email_service::generate_email_draft(state, user_id, intent, context, tone)
+            .await?;
 
     let draft_json = serde_json::json!({
         "to_address": draft.to_address,
@@ -226,12 +228,8 @@ async fn execute_calendar_task(
 ) -> Result<(), CloudError> {
     add_step(state, task_id, 1, "calendar_action", "in_progress").await?;
 
-    let result = crate::services::calendar_service::handle_calendar_request(
-        state,
-        user_id,
-        params,
-    )
-    .await?;
+    let result =
+        crate::services::calendar_service::handle_calendar_request(state, user_id, params).await?;
 
     complete_step(state, task_id, 1, &result).await?;
 
@@ -266,12 +264,11 @@ async fn execute_crypto_task(
                 .ok_or(CloudError::BadRequest("missing 'currency'".to_string()))?;
 
             // Check wallet exists
-            let wallet_exists: Option<(Uuid,)> = sqlx::query_as(
-                "SELECT id FROM user_wallets WHERE user_id = $1",
-            )
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?;
+            let wallet_exists: Option<(Uuid,)> =
+                sqlx::query_as("SELECT id FROM user_wallets WHERE user_id = $1")
+                    .bind(user_id)
+                    .fetch_optional(&state.db)
+                    .await?;
 
             if wallet_exists.is_none() {
                 return Err(CloudError::BadRequest("wallet not provisioned".to_string()));
@@ -405,7 +402,9 @@ async fn complete_task(
     if let Ok(Some(bounty)) = crate::services::bounty_service::get_bounty(db, task_id).await {
         if bounty.status == "held" {
             let executor_id = bounty.executor_id.unwrap_or(bounty.funder_id);
-            if let Err(e) = crate::services::bounty_service::settle_bounty(db, task_id, executor_id).await {
+            if let Err(e) =
+                crate::services::bounty_service::settle_bounty(db, task_id, executor_id).await
+            {
                 tracing::warn!(%task_id, error = %e, "failed to settle bounty");
             }
         }

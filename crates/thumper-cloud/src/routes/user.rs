@@ -68,7 +68,18 @@ pub async fn update_profile(
     AuthUser(claims): AuthUser,
     Json(req): Json<UpdateProfileRequest>,
 ) -> Result<Json<UserProfile>, CloudError> {
-    let row = sqlx::query_as::<_, (Uuid, Option<String>, Option<String>, Option<String>, String, String, DateTime<Utc>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            DateTime<Utc>,
+        ),
+    >(
         r#"
         UPDATE users SET
             display_name = COALESCE($2, display_name),
@@ -102,7 +113,10 @@ pub async fn get_usage(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<UsageResponse>, CloudError> {
-    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let period_start = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-01")
+        .to_string();
 
     let row = sqlx::query_as::<_, (i32, i32, i32, i32, i32)>(
         r#"

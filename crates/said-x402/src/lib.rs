@@ -49,11 +49,7 @@ pub struct X402SolanaPayload {
 
 impl X402PaymentPayload {
     /// Build a payment payload from a completed Solana transaction.
-    pub fn from_solana_tx(
-        network: &str,
-        signature: &str,
-        from_pubkey: &str,
-    ) -> Self {
+    pub fn from_solana_tx(network: &str, signature: &str, from_pubkey: &str) -> Self {
         Self {
             version: 1,
             scheme: "exact".to_string(),
@@ -98,7 +94,11 @@ impl Default for RetryConfig {
 impl RetryConfig {
     /// No retries — fail immediately on first error.
     pub fn none() -> Self {
-        Self { max_retries: 0, base_delay_ms: 0, max_delay_ms: 0 }
+        Self {
+            max_retries: 0,
+            base_delay_ms: 0,
+            max_delay_ms: 0,
+        }
     }
 }
 
@@ -180,7 +180,11 @@ impl X402PaymentRequired {
             return Some(opt);
         }
         // Any solana network
-        if let Some(opt) = self.accepts.iter().find(|o| o.network.starts_with("solana:")) {
+        if let Some(opt) = self
+            .accepts
+            .iter()
+            .find(|o| o.network.starts_with("solana:"))
+        {
             return Some(opt);
         }
         self.accepts.first()
@@ -302,10 +306,7 @@ impl GholaX402Client {
     /// Assess a merchant by their Solana address (from x402 payTo field).
     /// Returns a trust assessment with a recommendation.
     /// Retries transient HTTP errors with exponential backoff.
-    pub async fn assess_merchant(
-        &self,
-        address: &str,
-    ) -> Result<TrustAssessment, X402TrustError> {
+    pub async fn assess_merchant(&self, address: &str) -> Result<TrustAssessment, X402TrustError> {
         // 1. Check identity in Ghola cloud registry (which caches on-chain data as
         //    a fallback when the Solana RPC is unreachable).
         let did_url = format!("{}/verify/did/{}", self.ghola_api, address);
@@ -391,12 +392,16 @@ impl GholaX402Client {
         let (recommendation, reason) = if !identity_found {
             (
                 "caution".to_string(),
-                "Merchant not found in Ghola registry. Proceed with caution — unverified merchant.".to_string(),
+                "Merchant not found in Ghola registry. Proceed with caution — unverified merchant."
+                    .to_string(),
             )
         } else if trust_score >= 0.7 {
             (
                 "pay".to_string(),
-                format!("Merchant verified with trust score {:.2}. Safe to proceed.", trust_score),
+                format!(
+                    "Merchant verified with trust score {:.2}. Safe to proceed.",
+                    trust_score
+                ),
             )
         } else if trust_score >= 0.3 {
             (
@@ -437,12 +442,9 @@ impl GholaX402Client {
         &self,
         payment_required: &X402PaymentRequired,
     ) -> Result<TrustAssessment, X402TrustError> {
-        let option = payment_required
-            .accepts
-            .first()
-            .ok_or_else(|| {
-                X402TrustError::InvalidX402("No payment options in 402 response".into())
-            })?;
+        let option = payment_required.accepts.first().ok_or_else(|| {
+            X402TrustError::InvalidX402("No payment options in 402 response".into())
+        })?;
 
         let mut assessment = self.assess_merchant(&option.pay_to).await?;
         assessment.payment = Some(option.clone());

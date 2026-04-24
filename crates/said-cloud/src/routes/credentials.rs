@@ -90,8 +90,7 @@ pub async fn share_credential(
         ));
     }
 
-    let expires_at =
-        chrono::Utc::now() + chrono::Duration::seconds(req.expires_in_seconds);
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(req.expires_in_seconds);
     let cap = req
         .capability_required
         .unwrap_or_else(|| "said/read_secrets".into());
@@ -180,9 +179,7 @@ pub async fn accept_credential(
 
     if let Some(max_accesses) = max {
         if accessed >= max_accesses {
-            return Err(AppError::BadRequest(
-                "Maximum access count reached".into(),
-            ));
+            return Err(AppError::BadRequest("Maximum access count reached".into()));
         }
     }
 

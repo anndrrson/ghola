@@ -161,12 +161,10 @@ pub async fn resolve(
 }
 
 async fn log_resolve(state: &AppState, profile_id: uuid::Uuid) {
-    let _ = sqlx::query(
-        "INSERT INTO usage_logs (profile_id, endpoint) VALUES ($1, 'resolve')",
-    )
-    .bind(profile_id)
-    .execute(&state.db)
-    .await;
+    let _ = sqlx::query("INSERT INTO usage_logs (profile_id, endpoint) VALUES ($1, 'resolve')")
+        .bind(profile_id)
+        .execute(&state.db)
+        .await;
 }
 
 #[derive(Debug, Deserialize)]
@@ -234,10 +232,7 @@ pub async fn discover(
 }
 
 /// Fetch registered service listings for a DID from the service registry.
-async fn fetch_registered_services(
-    state: &AppState,
-    did: &str,
-) -> Vec<serde_json::Value> {
+async fn fetch_registered_services(state: &AppState, did: &str) -> Vec<serde_json::Value> {
     sqlx::query_scalar(
         r#"SELECT json_build_object(
             'id', id, 'slug', slug, 'name', name, 'category', category,

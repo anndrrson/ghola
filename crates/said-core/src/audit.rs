@@ -5,7 +5,9 @@ use chrono::Utc;
 use serde::Serialize;
 
 use crate::wallet::Wallet;
-use said_types::{Capability, KnowledgeDoc, McpConfig, Memory, Preference, ProviderSession, Secret, SystemPrompt};
+use said_types::{
+    Capability, KnowledgeDoc, McpConfig, Memory, Preference, ProviderSession, Secret, SystemPrompt,
+};
 
 // ── Severity ────────────────────────────────────────────────────────────────
 
@@ -167,9 +169,8 @@ fn discover_clients() -> Vec<String> {
 
     // Claude Desktop
     #[cfg(target_os = "macos")]
-    let claude_desktop = Some(
-        home.join("Library/Application Support/Claude/claude_desktop_config.json"),
-    );
+    let claude_desktop =
+        Some(home.join("Library/Application Support/Claude/claude_desktop_config.json"));
     #[cfg(target_os = "linux")]
     let claude_desktop = Some(home.join(".config/Claude/claude_desktop_config.json"));
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -276,10 +277,7 @@ fn check_sec_002(summary: &VaultSummary, findings: &mut Vec<Finding>) {
                         "{}/seed should be owner-read/write-only (600).",
                         summary.vault_path.display()
                     ),
-                    fix_command: Some(format!(
-                        "chmod 600 {}/seed",
-                        summary.vault_path.display()
-                    )),
+                    fix_command: Some(format!("chmod 600 {}/seed", summary.vault_path.display())),
                     auto_fixable: true,
                 });
             }
@@ -304,10 +302,7 @@ fn check_sec_003(summary: &VaultSummary, findings: &mut Vec<Finding>) {
                         "{}/data/ should be owner-only (700).",
                         summary.vault_path.display()
                     ),
-                    fix_command: Some(format!(
-                        "chmod 700 {}/data",
-                        summary.vault_path.display()
-                    )),
+                    fix_command: Some(format!("chmod 700 {}/data", summary.vault_path.display())),
                     auto_fixable: true,
                 });
             }
@@ -340,9 +335,7 @@ fn check_hyg_001(secrets: &[Secret], findings: &mut Vec<Finding>) {
                  Any agent with ReadSecrets can access these.",
                 quote_list(&unrestricted),
             ),
-            fix_command: Some(
-                "said secret set <name> --providers <list>".into(),
-            ),
+            fix_command: Some("said secret set <name> --providers <list>".into()),
             auto_fixable: false,
         });
     }
@@ -369,9 +362,7 @@ fn check_hyg_002(sessions: &[ProviderSession], findings: &mut Vec<Finding>) {
                  Consider replacing with specific capabilities.",
                 quote_list(&all_cap),
             ),
-            fix_command: Some(
-                "Revoke and re-grant with specific --capabilities".into(),
-            ),
+            fix_command: Some("Revoke and re-grant with specific --capabilities".into()),
             auto_fixable: false,
         });
     }
@@ -392,7 +383,11 @@ fn check_hyg_003(sessions: &[ProviderSession], findings: &mut Vec<Finding>) {
             title: format!(
                 "{} expired session{} not revoked",
                 expired_not_revoked.len(),
-                if expired_not_revoked.len() == 1 { "" } else { "s" },
+                if expired_not_revoked.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                },
             ),
             description: quote_list(&expired_not_revoked),
             fix_command: Some("said provider revoke --id <session_id>".into()),
@@ -407,11 +402,7 @@ fn check_hyg_004(sessions: &[ProviderSession], findings: &mut Vec<Finding>) {
     let now = Utc::now();
     let long_lived: Vec<&str> = sessions
         .iter()
-        .filter(|s| {
-            !s.revoked
-                && s.expires_at > now
-                && (s.expires_at - now).num_days() > 365
-        })
+        .filter(|s| !s.revoked && s.expires_at > now && (s.expires_at - now).num_days() > 365)
         .map(|s| s.label.as_str())
         .collect();
 
@@ -429,9 +420,7 @@ fn check_hyg_004(sessions: &[ProviderSession], findings: &mut Vec<Finding>) {
                  Consider shorter expiry (30d) for better hygiene.",
                 quote_list(&long_lived),
             ),
-            fix_command: Some(
-                "Revoke and re-grant with --expires 30d".into(),
-            ),
+            fix_command: Some("Revoke and re-grant with --expires 30d".into()),
             auto_fixable: false,
         });
     }
@@ -454,9 +443,7 @@ fn check_hyg_005(secrets: &[Secret], findings: &mut Vec<Finding>) {
                 if no_desc.len() == 1 { "" } else { "s" },
             ),
             description: quote_list(&no_desc),
-            fix_command: Some(
-                "said secret set <name> --description \"...\"".into(),
-            ),
+            fix_command: Some("said secret set <name> --description \"...\"".into()),
             auto_fixable: false,
         });
     }
@@ -749,10 +736,7 @@ pub fn format_report(report: &AuditReport, min_severity: Severity) -> String {
     out.push_str(&format!(
         "  Daemon Running .... {}\n",
         if report.summary.daemon_running {
-            format!(
-                "Yes (PID {})",
-                report.summary.daemon_pid.unwrap_or(0)
-            )
+            format!("Yes (PID {})", report.summary.daemon_pid.unwrap_or(0))
         } else {
             "No".into()
         }
@@ -779,8 +763,16 @@ pub fn format_report(report: &AuditReport, min_severity: Severity) -> String {
         out.push_str("\n─── FINDINGS ──────────────────────────────────────\n\n");
 
         // Group by severity
-        for severity in &[Severity::Critical, Severity::High, Severity::Medium, Severity::Low] {
-            let group: Vec<&&Finding> = filtered.iter().filter(|f| f.severity == *severity).collect();
+        for severity in &[
+            Severity::Critical,
+            Severity::High,
+            Severity::Medium,
+            Severity::Low,
+        ] {
+            let group: Vec<&&Finding> = filtered
+                .iter()
+                .filter(|f| f.severity == *severity)
+                .collect();
             if group.is_empty() {
                 continue;
             }
@@ -877,10 +869,7 @@ pub fn format_report_json(report: &AuditReport) -> String {
 
 // ── Auto-Fix ────────────────────────────────────────────────────────────────
 
-pub fn apply_auto_fixes(
-    wallet: &Wallet,
-    findings: &[Finding],
-) -> Vec<String> {
+pub fn apply_auto_fixes(wallet: &Wallet, findings: &[Finding]) -> Vec<String> {
     let mut applied = Vec::new();
 
     for finding in findings.iter().filter(|f| f.auto_fixable) {
@@ -888,13 +877,19 @@ pub fn apply_auto_fixes(
             "SEC-002" => {
                 let seed_path = wallet.wallet_dir().join("seed");
                 if fix_file_permissions(&seed_path, 0o600) {
-                    applied.push(format!("SEC-002: Set {}/seed to mode 600", wallet.wallet_dir().display()));
+                    applied.push(format!(
+                        "SEC-002: Set {}/seed to mode 600",
+                        wallet.wallet_dir().display()
+                    ));
                 }
             }
             "SEC-003" => {
                 let data_path = wallet.wallet_dir().join("data");
                 if fix_file_permissions(&data_path, 0o700) {
-                    applied.push(format!("SEC-003: Set {}/data to mode 700", wallet.wallet_dir().display()));
+                    applied.push(format!(
+                        "SEC-003: Set {}/data to mode 700",
+                        wallet.wallet_dir().display()
+                    ));
                 }
             }
             "HYG-003" => {

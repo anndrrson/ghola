@@ -10,6 +10,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import org.json.JSONObject
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.SaidCloudClient
@@ -109,10 +110,9 @@ class AgentDetailActivity : AppCompatActivity() {
     }
 
     private fun loadFresh() {
-        // Demo-first: if this agent is one of the seed fixtures, render the
-        // seeded earnings + reputation immediately so the screen is never
-        // half-populated on stage. Then try the real backend as an overlay.
-        applySeed()
+        if (BuildConfig.ENABLE_DEMO_MODE) {
+            applySeed()
+        }
 
         if (!storage.hasSaidAuth()) return
         loading.visibility = View.VISIBLE

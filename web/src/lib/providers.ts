@@ -6,7 +6,7 @@ export const PROVIDERS: ProviderConfig[] = [
     name: "Anthropic",
     models: [
       { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4" },
-      { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
+      { id: "claude-haiku-4-20250514", name: "Claude Haiku 4" },
       { id: "claude-opus-4-20250514", name: "Claude Opus 4" },
     ],
   },

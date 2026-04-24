@@ -122,13 +122,12 @@ pub async fn register_self(db: &PgPool, base_url: &str) {
 
 async fn ensure_platform_user(db: &PgPool) -> Option<uuid::Uuid> {
     // Check if platform user exists
-    let existing: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT id FROM users WHERE email = 'platform@ghola.xyz'",
-    )
-    .fetch_optional(db)
-    .await
-    .ok()
-    .flatten();
+    let existing: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'platform@ghola.xyz'")
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
 
     if let Some(id) = existing {
         return Some(id);
@@ -155,14 +154,13 @@ async fn ensure_platform_user(db: &PgPool) -> Option<uuid::Uuid> {
 
 async fn get_or_create_platform_did(db: &PgPool, user_id: uuid::Uuid) -> String {
     // Check for existing profile
-    let existing: Option<String> = sqlx::query_scalar(
-        "SELECT did FROM business_profiles WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(db)
-    .await
-    .ok()
-    .flatten();
+    let existing: Option<String> =
+        sqlx::query_scalar("SELECT did FROM business_profiles WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
 
     if let Some(did) = existing {
         return did;

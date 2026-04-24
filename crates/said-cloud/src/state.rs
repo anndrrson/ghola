@@ -95,8 +95,9 @@ pub struct AppState {
     /// or generated fresh at startup if the env var is absent.
     pub signing_key: Arc<SigningKey>,
     /// Credential vault for the merchant gateway. LocalVault by default
-    /// (AES-256-GCM under GHOLA_VAULT_KEY), TurnkeyVault when
-    /// TURNKEY_API_KEY is set. Shared with ghola-gateway via the same trait.
+    /// (AES-256-GCM under GHOLA_VAULT_KEY), with Turnkey preferred for new
+    /// writes when TURNKEY_API_PRIVATE_KEY is configured. Shared with
+    /// ghola-gateway via the same trait.
     pub vault: Arc<dyn Vault>,
 }
 
@@ -104,10 +105,11 @@ impl AppState {
     /// Build the signing key from config, or generate an ephemeral one.
     pub fn build_signing_key(config: &Config) -> SigningKey {
         if let Some(hex_seed) = &config.signing_key_hex {
-            let bytes = hex::decode(hex_seed).expect(
-                "SIGNING_KEY must be a 64-character hex string (32 bytes)",
-            );
-            let arr: [u8; 32] = bytes.try_into().expect("SIGNING_KEY must be exactly 32 bytes");
+            let bytes = hex::decode(hex_seed)
+                .expect("SIGNING_KEY must be a 64-character hex string (32 bytes)");
+            let arr: [u8; 32] = bytes
+                .try_into()
+                .expect("SIGNING_KEY must be exactly 32 bytes");
             SigningKey::from_bytes(&arr)
         } else {
             use rand::rngs::OsRng;

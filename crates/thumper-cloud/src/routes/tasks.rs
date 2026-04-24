@@ -73,7 +73,12 @@ pub struct TaskListQuery {
 /// Validate task parameters based on task type.
 fn validate_task_params(task_type: &str, params: &serde_json::Value) -> Result<(), CloudError> {
     match task_type {
-        "call" | "customer_service" | "cancel_service" | "request_refund" | "complaint" | "cancel_subscription" => {
+        "call"
+        | "customer_service"
+        | "cancel_service"
+        | "request_refund"
+        | "complaint"
+        | "cancel_subscription" => {
             // Validate phone number
             if let Some(phone) = params["phone_number"].as_str().or(params["phone"].as_str()) {
                 let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
@@ -86,11 +91,13 @@ fn validate_task_params(task_type: &str, params: &serde_json::Value) -> Result<(
         }
         "email" | "follow_up" => {
             // Validate email address
-            if let Some(email) = params["to_address"].as_str().or(params["email"].as_str()).or(params["to"].as_str()) {
+            if let Some(email) = params["to_address"]
+                .as_str()
+                .or(params["email"].as_str())
+                .or(params["to"].as_str())
+            {
                 if !email.contains('@') || !email.contains('.') || email.len() < 5 {
-                    return Err(CloudError::BadRequest(
-                        "invalid email address".to_string(),
-                    ));
+                    return Err(CloudError::BadRequest("invalid email address".to_string()));
                 }
             }
         }
@@ -157,7 +164,12 @@ pub async fn create_task(
     if let Some(bounty_amount) = req.bounty_usdc {
         let fee_bps = req.bounty_fee_bps.unwrap_or(300);
         crate::services::bounty_service::create_bounty(
-            &state.db, claims.sub, task_id, bounty_amount, fee_bps, req.agent_id,
+            &state.db,
+            claims.sub,
+            task_id,
+            bounty_amount,
+            fee_bps,
+            req.agent_id,
         )
         .await?;
         bounty_status = Some("held".to_string());
@@ -169,7 +181,9 @@ pub async fn create_task(
         let state_clone = state.clone();
         let user_id = claims.sub;
         tokio::spawn(async move {
-            if let Err(e) = crate::services::task_engine::execute_task(&state_clone, user_id, task_id).await {
+            if let Err(e) =
+                crate::services::task_engine::execute_task(&state_clone, user_id, task_id).await
+            {
                 tracing::error!(%task_id, "task execution failed: {e}");
             }
         });
@@ -191,7 +205,19 @@ pub async fn create_task(
     }))
 }
 
-type TaskRow = (Uuid, String, Option<String>, String, serde_json::Value, Option<serde_json::Value>, Option<String>, DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>, Option<i64>);
+type TaskRow = (
+    Uuid,
+    String,
+    Option<String>,
+    String,
+    serde_json::Value,
+    Option<serde_json::Value>,
+    Option<String>,
+    DateTime<Utc>,
+    DateTime<Utc>,
+    Option<DateTime<Utc>>,
+    Option<i64>,
+);
 
 fn task_from_row(r: TaskRow) -> TaskResponse {
     TaskResponse {
@@ -252,9 +278,9 @@ pub async fn get_task(
     AuthUser(claims): AuthUser,
     Path(task_id): Path<Uuid>,
 ) -> Result<Json<TaskResponse>, CloudError> {
-    let row = sqlx::query_as::<_, TaskRow>(
-        &format!("SELECT {TASK_SELECT} FROM tasks WHERE id = $1 AND (user_id = $2 OR executor_id = $2)"),
-    )
+    let row = sqlx::query_as::<_, TaskRow>(&format!(
+        "SELECT {TASK_SELECT} FROM tasks WHERE id = $1 AND (user_id = $2 OR executor_id = $2)"
+    ))
     .bind(task_id)
     .bind(claims.sub)
     .fetch_optional(&state.db)
@@ -265,7 +291,9 @@ pub async fn get_task(
 
     // Populate bounty status if this task has a bounty
     if task.bounty_usdc.is_some() {
-        if let Ok(Some(bounty)) = crate::services::bounty_service::get_bounty(&state.db, task_id).await {
+        if let Ok(Some(bounty)) =
+            crate::services::bounty_service::get_bounty(&state.db, task_id).await
+        {
             task.bounty_status = Some(bounty.status);
         }
     }
@@ -292,7 +320,17 @@ pub async fn get_task_steps(
         return Err(CloudError::NotFound("task not found".to_string()));
     }
 
-    let rows = sqlx::query_as::<_, (Uuid, i32, String, String, serde_json::Value, Option<serde_json::Value>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            i32,
+            String,
+            String,
+            serde_json::Value,
+            Option<serde_json::Value>,
+        ),
+    >(
         r#"
         SELECT id, step_number, action_type, status, input, output
         FROM task_steps WHERE task_id = $1

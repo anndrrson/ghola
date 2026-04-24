@@ -3,7 +3,7 @@ package xyz.ghola.app.ai
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKeys
+import androidx.security.crypto.MasterKey
 
 class SecureStorage(context: Context) {
 
@@ -31,7 +31,7 @@ class SecureStorage(context: Context) {
         private const val KEY_FIRST_RUN_COMPLETED = "first_run_completed"
         private const val DEFAULT_MODEL = "claude-sonnet-4-6"
         private const val DEFAULT_QWEN_MODEL = "qwen2.5-72b-instruct"
-        private const val DEFAULT_CLOUD_URL = "https://api.thumper.ai"
+        private const val DEFAULT_CLOUD_URL = "https://thumper-cloud.onrender.com"
         private const val DEFAULT_SAID_URL = "https://ghola-api.onrender.com/v1"
         const val BACKEND_CLOUD = "cloud"
         const val BACKEND_QWEN_CLOUD = "qwen_cloud"
@@ -41,11 +41,13 @@ class SecureStorage(context: Context) {
     private val prefs: SharedPreferences
 
     init {
-        val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
         prefs = EncryptedSharedPreferences.create(
-            PREFS_NAME,
-            masterKeyAlias,
             context,
+            PREFS_NAME,
+            masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )

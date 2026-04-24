@@ -23,11 +23,15 @@
 //! ownership bookkeeping, with a flag that lets them claim it later via
 //! the standard auth flow.
 
+use std::collections::HashSet;
+use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use uuid::Uuid;
@@ -65,10 +69,35 @@ pub struct NewMerchantResponse {
     pub slug: String,
     pub service_id: Uuid,
     pub wallet_address: String,
+    /// Bearer-like capability token for owner actions before claim/sign-in.
+    pub manage_token: String,
     pub gateway_url: String,
     pub public_url: String,
     pub dashboard_url: String,
     pub origin_probe: ProbeResult,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MerchantManageClaims {
+    sub: String,
+    slug: String,
+    service_id: String,
+    purpose: String,
+    iss: String,
+    aud: String,
+    jti: String,
+    exp: u64,
+    iat: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LegacyMerchantManageClaims {
+    sub: String,
+    slug: String,
+    service_id: String,
+    purpose: String,
+    exp: u64,
+    iat: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -139,8 +168,16 @@ pub struct TestCallResponse {
 
 pub async fn create_merchant(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<NewMerchantRequest>,
 ) -> AppResult<(StatusCode, Json<NewMerchantResponse>)> {
+    let ip = request_ip(&headers, Some(addr), state.config.trust_proxy_headers);
+    let onboarding_key = format!("merchant_onboarding:{ip}");
+    if let Err(retry_after) = state.rate_limiter.check(&onboarding_key, 5) {
+        return Err(AppError::TooManyRequests(retry_after));
+    }
+
     // 1. Validate inputs.
     let origin = req.origin_url.trim().trim_end_matches('/');
     if origin.is_empty() {
@@ -153,6 +190,12 @@ pub async fn create_merchant(
             "origin_url must be http:// or https://".into(),
         ));
     }
+    if parsed_origin.scheme() == "http" && !state.config.allow_insecure_merchant_origin_http {
+        return Err(AppError::BadRequest(
+            "origin_url must use https:// (set ALLOW_INSECURE_MERCHANT_ORIGIN_HTTP=true only for local dev)".into(),
+        ));
+    }
+    ensure_safe_origin(&parsed_origin).await?;
 
     let auth_mode = AuthMode::parse(req.auth_mode.trim().to_ascii_lowercase().as_str())
         .map_err(|_| {
@@ -162,7 +205,8 @@ pub async fn create_merchant(
             ))
         })?;
 
-    if !matches!(auth_mode, AuthMode::None) && req.auth_credential.as_deref().unwrap_or("").is_empty()
+    if !matches!(auth_mode, AuthMode::None)
+        && req.auth_credential.as_deref().unwrap_or("").is_empty()
     {
         return Err(AppError::BadRequest(
             "auth_credential is required when auth_mode != 'none'".into(),
@@ -182,16 +226,12 @@ pub async fn create_merchant(
     }
 
     // 2. Derive a slug. Explicit > request field > auto-derive from host.
-    let raw_slug = req
-        .slug
-        .as_deref()
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            parsed_origin
-                .host_str()
-                .unwrap_or("merchant")
-                .replace('.', "-")
-        });
+    let raw_slug = req.slug.as_deref().map(str::to_string).unwrap_or_else(|| {
+        parsed_origin
+            .host_str()
+            .unwrap_or("merchant")
+            .replace('.', "-")
+    });
     let slug = slugify(&raw_slug);
     if slug.is_empty() {
         return Err(AppError::BadRequest("derived slug is empty".into()));
@@ -305,13 +345,11 @@ pub async fn create_merchant(
         .await?
         .get("id");
 
-        sqlx::query(
-            "UPDATE service_listings SET merchant_credential_id = $1 WHERE id = $2",
-        )
-        .bind(id)
-        .bind(service_id)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("UPDATE service_listings SET merchant_credential_id = $1 WHERE id = $2")
+            .bind(id)
+            .bind(service_id)
+            .execute(&mut *tx)
+            .await?;
 
         Some(id)
     } else {
@@ -321,13 +359,14 @@ pub async fn create_merchant(
     tx.commit().await?;
     let _ = credential_id; // silence unused if branch returned None
 
+    let manage_token = issue_manage_token(service_id, &slug, &state.config)?;
+
     // 8. Live probe — best-effort, non-blocking for the response but we wait
     // for the result because showing a green check is the entire point.
     let probe = probe_origin(&state.http_client, origin).await;
 
-    let base = &state.config.base_url;
-    let gateway_base = std::env::var("GATEWAY_BASE_URL")
-        .unwrap_or_else(|_| "https://gateway.ghola.xyz".into());
+    let gateway_base =
+        std::env::var("GATEWAY_BASE_URL").unwrap_or_else(|_| "https://gateway.ghola.xyz".into());
     let frontend = &state.config.frontend_url;
 
     Ok((
@@ -336,6 +375,7 @@ pub async fn create_merchant(
             slug: slug.clone(),
             service_id,
             wallet_address: suborg.solana_address,
+            manage_token,
             gateway_url: format!("{gateway_base}/m/{slug}"),
             public_url: format!("{frontend}/m/{slug}"),
             dashboard_url: format!("{frontend}/m/{slug}/dash"),
@@ -363,13 +403,15 @@ pub async fn get_public_listing(
     .await?
     .ok_or_else(|| AppError::NotFound(format!("no merchant with slug '{slug}'")))?;
 
-    let gateway_base = std::env::var("GATEWAY_BASE_URL")
-        .unwrap_or_else(|_| "https://gateway.ghola.xyz".into());
+    let gateway_base =
+        std::env::var("GATEWAY_BASE_URL").unwrap_or_else(|_| "https://gateway.ghola.xyz".into());
 
     Ok(Json(PublicListing {
         slug: slug.clone(),
         name: row.get("name"),
-        description: row.get::<Option<String>, _>("description").unwrap_or_default(),
+        description: row
+            .get::<Option<String>, _>("description")
+            .unwrap_or_default(),
         price_micro_usdc: row.get("price_micro_usdc"),
         wallet_address: row.get("vault_wallet_address"),
         status: row.get("status"),
@@ -385,7 +427,9 @@ pub async fn get_logs(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
     Query(q): Query<LogsQuery>,
+    headers: HeaderMap,
 ) -> AppResult<Json<Vec<CallLogRow>>> {
+    let service_id = authorize_merchant_access(&state, &slug, &headers).await?;
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
 
     let rows = sqlx::query(
@@ -395,13 +439,12 @@ pub async fn get_logs(
                gcl.amount_charged_micro_usdc, gcl.payment_status,
                gcl.error_reason, gcl.created_at
         FROM gateway_call_logs gcl
-        JOIN service_listings sl ON sl.id = gcl.service_listing_id
-        WHERE sl.slug = $1
+        WHERE gcl.service_listing_id = $1
         ORDER BY gcl.created_at DESC
         LIMIT $2
         "#,
     )
-    .bind(&slug)
+    .bind(service_id)
     .bind(limit)
     .fetch_all(&state.db)
     .await?;
@@ -431,7 +474,9 @@ pub async fn get_logs(
 pub async fn get_earnings(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
+    headers: HeaderMap,
 ) -> AppResult<Json<EarningsSummary>> {
+    let service_id = authorize_merchant_access(&state, &slug, &headers).await?;
     let totals = sqlx::query(
         r#"
         SELECT
@@ -439,11 +484,10 @@ pub async fn get_earnings(
             COALESCE(SUM(CASE WHEN gcl.payment_status='paid' AND gcl.created_at > NOW() - INTERVAL '24 hours' THEN gcl.amount_charged_micro_usdc ELSE 0 END), 0)::bigint AS last_24h_micro_usdc,
             COUNT(*)::bigint AS total_calls
         FROM gateway_call_logs gcl
-        JOIN service_listings sl ON sl.id = gcl.service_listing_id
-        WHERE sl.slug = $1
+        WHERE gcl.service_listing_id = $1
         "#,
     )
-    .bind(&slug)
+    .bind(service_id)
     .fetch_one(&state.db)
     .await?;
 
@@ -453,13 +497,12 @@ pub async fn get_earnings(
                COALESCE(SUM(CASE WHEN gcl.payment_status='paid' THEN gcl.amount_charged_micro_usdc ELSE 0 END), 0)::bigint AS micro_usdc,
                COUNT(*)::bigint AS calls
         FROM gateway_call_logs gcl
-        JOIN service_listings sl ON sl.id = gcl.service_listing_id
-        WHERE sl.slug = $1 AND gcl.created_at > NOW() - INTERVAL '30 days'
+        WHERE gcl.service_listing_id = $1 AND gcl.created_at > NOW() - INTERVAL '30 days'
         GROUP BY 1
         ORDER BY 1 DESC
         "#,
     )
-    .bind(&slug)
+    .bind(service_id)
     .fetch_all(&state.db)
     .await?;
 
@@ -485,12 +528,14 @@ pub async fn get_earnings(
 pub async fn run_test_call(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
+    headers: HeaderMap,
 ) -> AppResult<Json<TestCallResponse>> {
+    let _ = authorize_merchant_access(&state, &slug, &headers).await?;
     // Fire a synthetic GET through the gateway. We use the gateway base URL
     // rather than invoking proxy logic directly — that way the ritual exercises
     // the whole loop: route cache, vault decrypt, auth injection, metering.
-    let gateway_base = std::env::var("GATEWAY_BASE_URL")
-        .unwrap_or_else(|_| "http://localhost:8090".into());
+    let gateway_base =
+        std::env::var("GATEWAY_BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
     let url = format!("{gateway_base}/m/{slug}/");
 
     let start = std::time::Instant::now();
@@ -533,22 +578,335 @@ pub async fn run_test_call(
 pub async fn kill_switch(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
+    headers: HeaderMap,
 ) -> AppResult<StatusCode> {
+    let service_id = authorize_merchant_access(&state, &slug, &headers).await?;
     let affected = sqlx::query(
-        "UPDATE service_listings SET proxy_enabled = false, status = 'suspended' WHERE slug = $1",
+        "UPDATE service_listings SET proxy_enabled = false, status = 'suspended' WHERE id = $1",
     )
-    .bind(&slug)
+    .bind(service_id)
     .execute(&state.db)
     .await?
     .rows_affected();
 
     if affected == 0 {
-        return Err(AppError::NotFound(format!("no merchant with slug '{slug}'")));
+        return Err(AppError::NotFound(
+            "merchant not found or not owned by you".into(),
+        ));
     }
     Ok(StatusCode::NO_CONTENT)
 }
 
 // ─── helpers ───────────────────────────────────────────────────────────────
+
+fn issue_manage_token(
+    service_id: Uuid,
+    slug: &str,
+    config: &crate::config::Config,
+) -> AppResult<String> {
+    let now = chrono::Utc::now().timestamp() as u64;
+    let claims = MerchantManageClaims {
+        sub: format!("merchant:{service_id}"),
+        slug: slug.to_string(),
+        service_id: service_id.to_string(),
+        purpose: "merchant_manage".to_string(),
+        iss: config.base_url.clone(),
+        aud: "ghola-merchant-manage".to_string(),
+        jti: Uuid::new_v4().to_string(),
+        exp: now + config.merchant_manage_token_ttl_secs.max(60),
+        iat: now,
+    };
+
+    jsonwebtoken::encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(config.jwt_secret.as_bytes()),
+    )
+    .map_err(|e| AppError::Internal(format!("failed to issue manage token: {e}")))
+}
+
+fn verify_manage_token(
+    token: &str,
+    config: &crate::config::Config,
+) -> AppResult<MerchantManageClaims> {
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+    validation.required_spec_claims = HashSet::from([
+        "exp".to_string(),
+        "iat".to_string(),
+        "sub".to_string(),
+        "aud".to_string(),
+        "iss".to_string(),
+    ]);
+    validation.set_audience(&["ghola-merchant-manage"]);
+    validation.set_issuer(&[config.base_url.as_str()]);
+
+    let claims = jsonwebtoken::decode::<MerchantManageClaims>(
+        token,
+        &DecodingKey::from_secret(config.jwt_secret.as_bytes()),
+        &validation,
+    );
+    if let Ok(claims) = claims {
+        if claims.claims.purpose != "merchant_manage" {
+            return Err(AppError::Unauthorized(
+                "invalid manage token purpose".into(),
+            ));
+        }
+        if claims.claims.jti.is_empty() {
+            return Err(AppError::Unauthorized("invalid manage token id".into()));
+        }
+        return Ok(claims.claims);
+    }
+
+    // Backward compatibility for manage tokens issued before aud/iss/jti was
+    // added. These tokens still expire and are only accepted if purpose matches.
+    let legacy = jsonwebtoken::decode::<LegacyMerchantManageClaims>(
+        token,
+        &DecodingKey::from_secret(config.jwt_secret.as_bytes()),
+        &Validation::new(Algorithm::HS256),
+    )
+    .map_err(|_| AppError::Unauthorized("invalid or expired manage token".into()))?
+    .claims;
+    if legacy.purpose != "merchant_manage" {
+        return Err(AppError::Unauthorized(
+            "invalid manage token purpose".into(),
+        ));
+    }
+    Ok(MerchantManageClaims {
+        sub: legacy.sub,
+        slug: legacy.slug,
+        service_id: legacy.service_id.clone(),
+        purpose: legacy.purpose,
+        iss: config.base_url.clone(),
+        aud: "ghola-merchant-manage".to_string(),
+        jti: format!("legacy:{}", legacy.service_id),
+        exp: legacy.exp,
+        iat: legacy.iat,
+    })
+}
+
+fn bearer_user_id(headers: &HeaderMap, jwt_secret: &str) -> AppResult<Uuid> {
+    let auth_header = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            AppError::Unauthorized("missing authorization header or x-merchant-manage-token".into())
+        })?;
+
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| AppError::Unauthorized("invalid authorization format".into()))?;
+    let claims = crate::auth::validate_jwt(token, jwt_secret)?;
+    claims
+        .sub
+        .parse()
+        .map_err(|_| AppError::Unauthorized("invalid user id in token".into()))
+}
+
+async fn authorize_merchant_access(
+    state: &AppState,
+    slug: &str,
+    headers: &HeaderMap,
+) -> AppResult<Uuid> {
+    if let Some(token) = headers
+        .get("x-merchant-manage-token")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+    {
+        let claims = verify_manage_token(token, &state.config)?;
+        if claims.slug != slug {
+            return Err(AppError::Unauthorized(
+                "manage token does not match slug".into(),
+            ));
+        }
+        let service_id: Uuid = claims
+            .service_id
+            .parse()
+            .map_err(|_| AppError::Unauthorized("invalid manage token service id".into()))?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM service_listings WHERE id = $1 AND slug = $2)",
+        )
+        .bind(service_id)
+        .bind(slug)
+        .fetch_one(&state.db)
+        .await?;
+        if !exists {
+            return Err(AppError::NotFound(format!(
+                "no merchant with slug '{slug}'"
+            )));
+        }
+        return Ok(service_id);
+    }
+
+    let user_id = bearer_user_id(headers, &state.config.jwt_secret)?;
+    let service_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM service_listings WHERE slug = $1 AND owner_id = $2")
+            .bind(slug)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
+
+    service_id.ok_or_else(|| AppError::NotFound("merchant not found or not owned by you".into()))
+}
+
+fn request_ip(
+    headers: &HeaderMap,
+    socket_addr: Option<SocketAddr>,
+    trust_proxy_headers: bool,
+) -> String {
+    if trust_proxy_headers {
+        if let Some(ip) = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            return ip;
+        }
+    }
+
+    socket_addr
+        .map(|a| a.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+async fn ensure_safe_origin(origin: &url::Url) -> AppResult<()> {
+    let host = origin
+        .host_str()
+        .ok_or_else(|| AppError::BadRequest("origin_url must include a host".into()))?
+        .to_ascii_lowercase();
+
+    if is_blocked_hostname(&host) {
+        return Err(AppError::BadRequest(format!(
+            "origin_url host '{}' is not allowed",
+            host
+        )));
+    }
+
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_blocked_ip(ip) {
+            return Err(AppError::BadRequest(format!(
+                "origin_url IP '{}' is not allowed",
+                ip
+            )));
+        }
+        return Ok(());
+    }
+
+    let port = origin
+        .port_or_known_default()
+        .unwrap_or(if origin.scheme() == "http" { 80 } else { 443 });
+    if is_blocked_port(port) {
+        return Err(AppError::BadRequest(format!(
+            "origin_url port '{}' is not allowed",
+            port
+        )));
+    }
+    let resolved = tokio::net::lookup_host((host.as_str(), port))
+        .await
+        .map_err(|e| AppError::BadRequest(format!("origin_url host lookup failed: {e}")))?;
+
+    let mut resolved_any = false;
+    for addr in resolved {
+        resolved_any = true;
+        if is_blocked_ip(addr.ip()) {
+            return Err(AppError::BadRequest(format!(
+                "origin_url host resolves to private address '{}'",
+                addr.ip()
+            )));
+        }
+    }
+    if !resolved_any {
+        return Err(AppError::BadRequest(
+            "origin_url host resolved to zero addresses".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn is_blocked_hostname(host: &str) -> bool {
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host == "metadata"
+        || host == "metadata.google.internal"
+        || host == "metadata.azure.internal"
+        || host == "instance-data"
+        || host == "instance-data.ec2.internal"
+        || host == "169.254.169.254"
+        || host == "169.254.170.2"
+        || host == "100.100.100.200"
+}
+
+fn is_blocked_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_blocked_ipv4(v4),
+        IpAddr::V6(v6) => is_blocked_ipv6(v6),
+    }
+}
+
+fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || ip.is_unspecified()
+        || o[0] == 0
+        || (o[0] == 100 && (64..=127).contains(&o[1])) // CGNAT
+        || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) // benchmarking
+        || (o[0] == 192 && o[1] == 0 && o[2] == 0) // IETF protocol assignments
+}
+
+fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_unique_local()
+        || ip.is_unicast_link_local()
+        || ip.is_multicast()
+}
+
+fn is_blocked_port(port: u16) -> bool {
+    matches!(
+        port,
+        0 | 22
+            | 23
+            | 25
+            | 53
+            | 111
+            | 135
+            | 137
+            | 138
+            | 139
+            | 161
+            | 389
+            | 445
+            | 1433
+            | 1521
+            | 2049
+            | 2375
+            | 2376
+            | 3306
+            | 3389
+            | 5432
+            | 5672
+            | 5985
+            | 5986
+            | 6379
+            | 7001
+            | 7199
+            | 7474
+            | 7687
+            | 9200
+            | 9300
+            | 11211
+            | 27017
+    )
+}
 
 /// Snake-case, lowercase, strip non-[a-z0-9-], collapse dashes.
 fn slugify(input: &str) -> String {
@@ -590,12 +948,11 @@ async fn make_unique_slug(db: &sqlx::PgPool, base: &str) -> AppResult<String> {
         } else {
             format!("{base}-{i}")
         };
-        let exists: Option<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM service_listings WHERE slug = $1",
-        )
-        .bind(&candidate)
-        .fetch_optional(db)
-        .await?;
+        let exists: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM service_listings WHERE slug = $1")
+                .bind(&candidate)
+                .fetch_optional(db)
+                .await?;
         if exists.is_none() {
             return Ok(candidate);
         }

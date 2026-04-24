@@ -226,16 +226,10 @@ struct DnsAnswer {
 ///
 /// Uses Google's DNS-over-HTTPS API to avoid pulling in a full DNS resolver library.
 /// Looks for a TXT record of the form `said-did=did:key:...` on `_said.<domain>`.
-pub async fn verify_domain_dns(
-    domain: &str,
-    expected_did: &str,
-) -> Result<bool, DiscoveryError> {
+pub async fn verify_domain_dns(domain: &str, expected_did: &str) -> Result<bool, DiscoveryError> {
     let client = reqwest::Client::new();
     let lookup_name = format!("_said.{}", domain);
-    let url = format!(
-        "https://dns.google/resolve?name={}&type=TXT",
-        lookup_name
-    );
+    let url = format!("https://dns.google/resolve?name={}&type=TXT", lookup_name);
 
     let response = client
         .get(&url)
@@ -317,10 +311,7 @@ Auth: ucan https://api.example.com/auth/ucan
             result.profile_url.as_deref(),
             Some("https://example.com/said/profile")
         );
-        assert_eq!(
-            result.said_json.as_deref(),
-            Some("/.well-known/said.json")
-        );
+        assert_eq!(result.said_json.as_deref(), Some("/.well-known/said.json"));
 
         assert_eq!(result.allow_agents.len(), 2);
         assert_eq!(result.allow_agents[0], "*");
@@ -355,10 +346,7 @@ Auth: ucan https://api.example.com/auth/ucan
 
         let result = parse_agents_txt(content).unwrap();
 
-        assert_eq!(
-            result.identity.as_deref(),
-            Some("did:key:z6MkMinimal")
-        );
+        assert_eq!(result.identity.as_deref(), Some("did:key:z6MkMinimal"));
         assert!(result.profile_url.is_none());
         assert!(result.said_json.is_none());
         assert!(result.allow_agents.is_empty());
@@ -379,10 +367,7 @@ Identity: did:key:z6MkCommentTest
 "#;
 
         let result = parse_agents_txt(content).unwrap();
-        assert_eq!(
-            result.identity.as_deref(),
-            Some("did:key:z6MkCommentTest")
-        );
+        assert_eq!(result.identity.as_deref(), Some("did:key:z6MkCommentTest"));
     }
 
     #[test]
@@ -413,18 +398,12 @@ Said-Json: /second.json
 "#;
 
         let result = parse_agents_txt(content).unwrap();
-        assert_eq!(
-            result.identity.as_deref(),
-            Some("did:key:z6MkSecond")
-        );
+        assert_eq!(result.identity.as_deref(), Some("did:key:z6MkSecond"));
         assert_eq!(
             result.profile_url.as_deref(),
             Some("https://second.example.com")
         );
-        assert_eq!(
-            result.said_json.as_deref(),
-            Some("/second.json")
-        );
+        assert_eq!(result.said_json.as_deref(), Some("/second.json"));
     }
 
     #[test]
@@ -466,10 +445,7 @@ Service: reservations https://api.example.com/reserve
 "#;
 
         let result = parse_agents_txt(content).unwrap();
-        assert_eq!(
-            result.identity.as_deref(),
-            Some("did:key:z6MkValid")
-        );
+        assert_eq!(result.identity.as_deref(), Some("did:key:z6MkValid"));
         assert_eq!(result.services.len(), 1);
     }
 
@@ -482,10 +458,7 @@ Foobar: baz
 "#;
 
         let result = parse_agents_txt(content).unwrap();
-        assert_eq!(
-            result.identity.as_deref(),
-            Some("did:key:z6MkKnown")
-        );
+        assert_eq!(result.identity.as_deref(), Some("did:key:z6MkKnown"));
     }
 
     #[test]
@@ -500,10 +473,7 @@ auth: ucan https://auth.example.com
 "#;
 
         let result = parse_agents_txt(content).unwrap();
-        assert_eq!(
-            result.identity.as_deref(),
-            Some("did:key:z6MkLowerCase")
-        );
+        assert_eq!(result.identity.as_deref(), Some("did:key:z6MkLowerCase"));
         assert_eq!(
             result.profile_url.as_deref(),
             Some("https://example.com/profile")
@@ -548,10 +518,7 @@ Profile: https://example.com
         let result = parse_agents_txt(content).unwrap();
         // "Identity:" with no value after trimming -> skipped.
         assert!(result.identity.is_none());
-        assert_eq!(
-            result.profile_url.as_deref(),
-            Some("https://example.com")
-        );
+        assert_eq!(result.profile_url.as_deref(), Some("https://example.com"));
     }
 
     #[test]
@@ -599,10 +566,7 @@ Profile: https://example.com
 
         let verification = result.verification.unwrap();
         assert_eq!(verification.method, "dns-txt");
-        assert_eq!(
-            verification.record.as_deref(),
-            Some("_said.example.com")
-        );
+        assert_eq!(verification.record.as_deref(), Some("_said.example.com"));
     }
 
     #[test]
@@ -680,10 +644,7 @@ Skill: valid https://example.com/skills/valid.json
         assert!(discovery.well_known.is_none());
 
         let agents = discovery.agents_txt.unwrap();
-        assert_eq!(
-            agents.identity.as_deref(),
-            Some("did:key:z6MkTest")
-        );
+        assert_eq!(agents.identity.as_deref(), Some("did:key:z6MkTest"));
         assert_eq!(agents.allow_agents, vec!["*"]);
     }
 
@@ -705,13 +666,7 @@ Auth: ucan https://second.example.com/auth
         let content = "  Identity:   did:key:z6MkSpaces   \n  Profile:  https://example.com  \n";
 
         let result = parse_agents_txt(content).unwrap();
-        assert_eq!(
-            result.identity.as_deref(),
-            Some("did:key:z6MkSpaces")
-        );
-        assert_eq!(
-            result.profile_url.as_deref(),
-            Some("https://example.com")
-        );
+        assert_eq!(result.identity.as_deref(), Some("did:key:z6MkSpaces"));
+        assert_eq!(result.profile_url.as_deref(), Some("https://example.com"));
     }
 }

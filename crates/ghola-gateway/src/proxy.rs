@@ -324,10 +324,31 @@ async fn proxy_inner(
     let credential_plaintext = if matches!(route.auth_mode, said_turnkey::AuthMode::None) {
         None
     } else {
+        let backend = match static_backend(&route.credential_backend) {
+            Some(backend) => backend,
+            None => {
+                tracing::error!(
+                    slug = %slug,
+                    backend = %route.credential_backend,
+                    "unknown credential backend in route cache"
+                );
+                return error_response(
+                    &state,
+                    &route,
+                    &caller_agent_did,
+                    req.method().as_str(),
+                    &upstream_path,
+                    start,
+                    500,
+                    "unknown_credential_backend",
+                )
+                .await;
+            }
+        };
         let stored = said_turnkey::StoredCredential {
-            backend: static_backend(&route.credential_backend),
+            backend,
             key_version: route.credential_key_version,
-            key_ref: None,
+            key_ref: route.credential_key_ref.clone(),
             ciphertext: route.credential_ciphertext.clone(),
             auth_mode: route.auth_mode,
         };
@@ -730,12 +751,13 @@ fn reqwest_method_from_axum(m: &Method) -> Option<reqwest::Method> {
 }
 
 /// Translate a DB-loaded backend string into the `&'static str` that
-/// [`said_turnkey::StoredCredential::backend`] expects. The set is closed —
-/// unknown backends become `"local"` and will fail at the vault boundary.
-fn static_backend(s: &str) -> &'static str {
+/// [`said_turnkey::StoredCredential::backend`] expects. Unknown values are
+/// rejected by the caller.
+fn static_backend(s: &str) -> Option<&'static str> {
     match s {
-        "turnkey" => "turnkey",
-        _ => "local",
+        "local" => Some("local"),
+        "turnkey" => Some("turnkey"),
+        _ => None,
     }
 }
 

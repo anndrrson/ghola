@@ -110,8 +110,14 @@ mod tests {
     fn roundtrip_collection() {
         let (storage, _dir) = test_storage();
         let items = vec![
-            TestItem { name: "a".into(), value: 1 },
-            TestItem { name: "b".into(), value: 2 },
+            TestItem {
+                name: "a".into(),
+                value: 1,
+            },
+            TestItem {
+                name: "b".into(),
+                value: 2,
+            },
         ];
         storage.save("test", &items).unwrap();
         let loaded: Vec<TestItem> = storage.load("test").unwrap();

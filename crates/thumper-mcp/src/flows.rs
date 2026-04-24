@@ -31,7 +31,10 @@ impl FlowRegistry {
             if let Ok(entries) = std::fs::read_dir(&user_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().map_or(false, |e| e == "yaml" || e == "yml") {
+                    if path
+                        .extension()
+                        .map_or(false, |e| e == "yaml" || e == "yml")
+                    {
                         match std::fs::read_to_string(&path) {
                             Ok(contents) => match serde_yaml::from_str::<FlowDefinition>(&contents)
                             {

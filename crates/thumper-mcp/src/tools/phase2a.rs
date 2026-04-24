@@ -6,7 +6,7 @@ use thumper_types::*;
 use crate::memory::{now_millis, ActionRecord};
 use crate::{
     ClipboardGetParams, ClipboardSetParams, DeviceInfoParams, GlobalActionParams, ListAppsParams,
-    LongPressParams, ScrollParams, ScreenshotToolParams, ThumperServer, WaitForParams,
+    LongPressParams, ScreenshotToolParams, ScrollParams, ThumperServer, WaitForParams,
 };
 
 pub(crate) async fn device_screenshot(
@@ -24,9 +24,10 @@ pub(crate) async fn device_screenshot(
     let response = server.send_and_wait(envelope).await?;
 
     match response.message {
-        MessageType::ScreenshotResult(result) => Ok(CallToolResult::success(vec![
-            Content::image(result.image_base64, &result.mime_type),
-        ])),
+        MessageType::ScreenshotResult(result) => Ok(CallToolResult::success(vec![Content::image(
+            result.image_base64,
+            &result.mime_type,
+        )])),
         MessageType::Error(e) => Err(ErrorData::internal_error(
             format!("device error: {} - {}", e.code, e.message),
             None,
@@ -262,9 +263,11 @@ pub(crate) async fn device_list_apps(
     let response = server.send_and_wait(envelope).await?;
 
     match response.message {
-        MessageType::InstalledAppsResult(result) => Ok(CallToolResult::success(vec![
-            Content::text(serde_json::to_string_pretty(&result).unwrap_or_default()),
-        ])),
+        MessageType::InstalledAppsResult(result) => {
+            Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            )]))
+        }
         MessageType::Error(e) => Err(ErrorData::internal_error(
             format!("device error: {} - {}", e.code, e.message),
             None,

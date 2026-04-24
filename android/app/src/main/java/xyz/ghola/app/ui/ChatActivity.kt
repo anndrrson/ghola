@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.RecyclerView
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.AgentController
 import xyz.ghola.app.ai.FastMatch
@@ -168,29 +169,31 @@ class ChatActivity : AppCompatActivity(), AgentListener {
 
     private fun checkPrerequisites() {
         if (secureStorage.isLocalMode()) {
+            if (!BuildConfig.ENABLE_LOCAL_LLM) {
+                secureStorage.setBackendMode(SecureStorage.BACKEND_QWEN_CLOUD)
+                openSetupGate(SetupGateActivity.REASON_LOCAL_UNAVAILABLE)
+                return
+            }
             val modelManager = ModelManager(this)
             if (!modelManager.isModelDownloaded()) {
-                Toast.makeText(this, "Please download the model in Settings", Toast.LENGTH_LONG).show()
-                startActivity(Intent(this, SettingsActivity::class.java))
+                openSetupGate(SetupGateActivity.REASON_LOCAL_MODEL)
                 return
             }
         } else if (secureStorage.isQwenCloudMode()) {
             if (!secureStorage.hasQwenApiKey()) {
-                Toast.makeText(this, "Please set your DashScope API key in Settings", Toast.LENGTH_LONG).show()
-                startActivity(Intent(this, SettingsActivity::class.java))
+                openSetupGate(SetupGateActivity.REASON_BACKEND)
                 return
             }
         } else {
             if (!secureStorage.hasApiKey()) {
-                Toast.makeText(this, "Please set your API key in Settings", Toast.LENGTH_LONG).show()
-                startActivity(Intent(this, SettingsActivity::class.java))
+                openSetupGate(SetupGateActivity.REASON_BACKEND)
                 return
             }
         }
 
         val service = ThumperAccessibilityService.instance
         if (service == null) {
-            Toast.makeText(this, "Please enable the Accessibility Service in Settings", Toast.LENGTH_LONG).show()
+            openSetupGate(SetupGateActivity.REASON_ACCESSIBILITY)
             return
         }
 
@@ -270,26 +273,58 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         showStatus("Loading Qwen3-4B model...")
 
         Thread {
-            val backend = LocalLlamaBackend()
-            val success = backend.loadModel(modelManager.getModelPath())
+            val loadResult = runCatching {
+                val backend = LocalLlamaBackend()
+                Pair(backend, backend.loadModel(modelManager.getModelPath()))
+            }
 
             runOnUiThread {
-                if (success) {
-                    localBackend = backend
-                    agentController = AgentController(
-                        backend, toolExecutor, this,
-                        secureStorage.getWalletPackage(),
-                        secureStorage.isSeeker(),
-                        secureStorage.hasCloudAuth()
-                    )
-                    hideStatus()
-                    setInputEnabled(true)
-                } else {
-                    showStatus("Failed to load model")
-                    Toast.makeText(this, "Failed to load on-device model", Toast.LENGTH_LONG).show()
+                loadResult.onSuccess { (backend, success) ->
+                    if (success) {
+                        localBackend = backend
+                        agentController = AgentController(
+                            backend, toolExecutor, this,
+                            secureStorage.getWalletPackage(),
+                            secureStorage.isSeeker(),
+                            secureStorage.hasCloudAuth()
+                        )
+                        hideStatus()
+                        setInputEnabled(true)
+                    } else {
+                        showStatus("Failed to load model")
+                        Toast.makeText(this, "Failed to load on-device model", Toast.LENGTH_LONG).show()
+                        openSetupGate(SetupGateActivity.REASON_LOCAL_MODEL)
+                    }
+                }.onFailure { error ->
+                    Log.e(TAG, "On-device model initialization unavailable", error)
+                    secureStorage.setBackendMode(SecureStorage.BACKEND_QWEN_CLOUD)
+                    if (secureStorage.hasQwenApiKey()) {
+                        hideStatus()
+                        initializeQwenCloudAgent(toolExecutor)
+                        Toast.makeText(
+                            this,
+                            "On-device model unavailable. Switched to cloud backend.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        showStatus("On-device model unavailable")
+                        Toast.makeText(
+                            this,
+                            "On-device model unavailable in this build. Configure cloud backend in Settings.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        openSetupGate(SetupGateActivity.REASON_BACKEND)
+                    }
                 }
             }
         }.start()
+    }
+
+    private fun openSetupGate(reason: String) {
+        startActivity(
+            Intent(this, SetupGateActivity::class.java)
+                .putExtra(SetupGateActivity.EXTRA_REASON, reason)
+        )
     }
 
     /**

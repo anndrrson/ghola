@@ -180,13 +180,12 @@ pub async fn list_events(
 
     // If a tenant_id is specified, verify the caller is a member.
     if let Some(tid) = params.tenant_id {
-        let member: Option<(String,)> = sqlx::query_as(
-            "SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2",
-        )
-        .bind(tid)
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await?;
+        let member: Option<(String,)> =
+            sqlx::query_as("SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2")
+                .bind(tid)
+                .bind(user_id)
+                .fetch_optional(&state.db)
+                .await?;
 
         if member.is_none() {
             return Err(AppError::Unauthorized("Not a member of this tenant".into()));
@@ -263,13 +262,12 @@ pub async fn export_events(
         .map_err(|_| AppError::Unauthorized("Invalid token".into()))?;
 
     if let Some(tid) = params.tenant_id {
-        let member: Option<(String,)> = sqlx::query_as(
-            "SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2",
-        )
-        .bind(tid)
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await?;
+        let member: Option<(String,)> =
+            sqlx::query_as("SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2")
+                .bind(tid)
+                .bind(user_id)
+                .fetch_optional(&state.db)
+                .await?;
 
         if member.is_none() {
             return Err(AppError::Unauthorized("Not a member of this tenant".into()));
@@ -309,7 +307,10 @@ pub async fn export_events(
     Ok((
         [
             ("content-type", "application/x-ndjson"),
-            ("content-disposition", "attachment; filename=\"audit_export.ndjson\""),
+            (
+                "content-disposition",
+                "attachment; filename=\"audit_export.ndjson\"",
+            ),
         ],
         body,
     ))
@@ -327,13 +328,12 @@ pub async fn verify_chain(
         .map_err(|_| AppError::Unauthorized("Invalid token".into()))?;
 
     if let Some(tid) = req.tenant_id {
-        let member: Option<(String,)> = sqlx::query_as(
-            "SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2",
-        )
-        .bind(tid)
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await?;
+        let member: Option<(String,)> =
+            sqlx::query_as("SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2")
+                .bind(tid)
+                .bind(user_id)
+                .fetch_optional(&state.db)
+                .await?;
 
         if member.is_none() {
             return Err(AppError::Unauthorized("Not a member of this tenant".into()));

@@ -1,7 +1,8 @@
+use dashmap::DashMap;
+use said_turnkey::Vault;
+use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use sqlx::PgPool;
-use dashmap::DashMap;
 
 use crate::config::CloudConfig;
 use crate::middleware::{IpRateLimiter, RateLimiter};
@@ -28,6 +29,7 @@ pub type SwarmChannels = Arc<DashMap<uuid::Uuid, tokio::sync::broadcast::Sender<
 pub struct AppState {
     pub config: CloudConfig,
     pub db: PgPool,
+    pub vault: Arc<dyn Vault>,
     pub rate_limiter: RateLimiter,
     pub ip_rate_limiter: IpRateLimiter,
     pub free_cascade: FreeCascade,
@@ -36,11 +38,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: CloudConfig, db: PgPool) -> Self {
+    pub fn new(config: CloudConfig, db: PgPool, vault: Arc<dyn Vault>) -> Self {
         let free_cascade = FreeCascade::new(&config);
         Self {
             config,
             db,
+            vault,
             rate_limiter: RateLimiter::default(),
             ip_rate_limiter: IpRateLimiter::default(),
             free_cascade,

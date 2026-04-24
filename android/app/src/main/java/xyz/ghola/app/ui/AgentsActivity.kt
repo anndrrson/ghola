@@ -8,6 +8,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
+import xyz.ghola.app.BuildConfig
 import org.json.JSONObject
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
@@ -70,29 +71,46 @@ class AgentsActivity : AppCompatActivity() {
     }
 
     private fun loadAgents() {
-        // Demo-first: always show the three pre-seeded agents immediately so
-        // the screen is never empty, then opportunistically try the real
-        // backend and replace if it returns a non-empty list.
-        showSeedAgents()
+        if (BuildConfig.ENABLE_DEMO_MODE) {
+            showSeedAgents()
+        } else {
+            adapter?.setAgents(emptyList())
+            emptyState.visibility = View.GONE
+            recycler.visibility = View.GONE
+        }
 
-        if (!storage.hasSaidAuth()) return
+        if (!storage.hasSaidAuth()) {
+            if (!BuildConfig.ENABLE_DEMO_MODE) showEmptyState()
+            return
+        }
 
         executor.execute {
             try {
                 val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
-                val rows = client.listAgents() ?: return@execute
-                if (rows.length() == 0) return@execute
+                val rows = client.listAgents()
+                if (rows == null || rows.length() == 0) {
+                    runOnUiThread {
+                        if (!BuildConfig.ENABLE_DEMO_MODE) showEmptyState()
+                    }
+                    return@execute
+                }
                 val list = mutableListOf<JSONObject>()
                 for (i in 0 until rows.length()) {
                     list.add(rows.getJSONObject(i))
                 }
                 runOnUiThread {
-                    adapter?.setAgents(list)
-                    emptyState.visibility = View.GONE
-                    recycler.visibility = View.VISIBLE
+                    if (list.isNotEmpty()) {
+                        adapter?.setAgents(list)
+                        emptyState.visibility = View.GONE
+                        recycler.visibility = View.VISIBLE
+                    } else if (!BuildConfig.ENABLE_DEMO_MODE) {
+                        showEmptyState()
+                    }
                 }
             } catch (_: Exception) {
-                // Backend unreachable — seed already rendered, nothing to do.
+                runOnUiThread {
+                    if (!BuildConfig.ENABLE_DEMO_MODE) showEmptyState()
+                }
             }
         }
     }
@@ -108,5 +126,11 @@ class AgentsActivity : AppCompatActivity() {
         adapter?.setAgents(list)
         emptyState.visibility = View.GONE
         recycler.visibility = View.VISIBLE
+    }
+
+    private fun showEmptyState() {
+        adapter?.setAgents(emptyList())
+        recycler.visibility = View.GONE
+        emptyState.visibility = View.VISIBLE
     }
 }

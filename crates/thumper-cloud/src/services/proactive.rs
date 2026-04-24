@@ -212,10 +212,7 @@ async fn send_email_digest(
     let resp = client
         .get("https://gmail.googleapis.com/gmail/v1/users/me/messages")
         .header("Authorization", format!("Bearer {access_token}"))
-        .query(&[
-            ("q", "is:unread newer_than:1d"),
-            ("maxResults", "20"),
-        ])
+        .query(&[("q", "is:unread newer_than:1d"), ("maxResults", "20")])
         .send()
         .await
         .map_err(|e| CloudError::Internal(format!("Gmail API request failed: {e}")))?;
@@ -261,7 +258,8 @@ async fn send_email_digest(
                         for h in hdrs {
                             match h["name"].as_str() {
                                 Some("Subject") => {
-                                    subject = h["value"].as_str().unwrap_or("(no subject)").to_string()
+                                    subject =
+                                        h["value"].as_str().unwrap_or("(no subject)").to_string()
                                 }
                                 Some("From") => {
                                     from = h["value"].as_str().unwrap_or("").to_string()
@@ -431,10 +429,22 @@ async fn refresh_gmail_token(
     user_id: uuid::Uuid,
     refresh_token: &str,
 ) -> Result<String, CloudError> {
-    let client_id = state.config.gmail_client_id.as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Gmail OAuth not configured".to_string()))?;
-    let client_secret = state.config.gmail_client_secret.as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Gmail OAuth not configured".to_string()))?;
+    let client_id =
+        state
+            .config
+            .gmail_client_id
+            .as_deref()
+            .ok_or(CloudError::ServiceUnavailable(
+                "Gmail OAuth not configured".to_string(),
+            ))?;
+    let client_secret =
+        state
+            .config
+            .gmail_client_secret
+            .as_deref()
+            .ok_or(CloudError::ServiceUnavailable(
+                "Gmail OAuth not configured".to_string(),
+            ))?;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -450,12 +460,13 @@ async fn refresh_gmail_token(
         .map_err(|e| CloudError::Internal(format!("token refresh failed: {e}")))?;
 
     let body: serde_json::Value = resp.json().await.unwrap_or_default();
-    let new_token = body["access_token"]
-        .as_str()
-        .ok_or(CloudError::Internal("no access_token in refresh response".to_string()))?;
+    let new_token = body["access_token"].as_str().ok_or(CloudError::Internal(
+        "no access_token in refresh response".to_string(),
+    ))?;
     let expires_in = body["expires_in"].as_i64().unwrap_or(3600);
 
-    let encrypted = crate::services::email_service::encrypt_token(new_token, &state.config.encryption_key)?;
+    let encrypted =
+        crate::services::email_service::encrypt_token(new_token, &state.config.encryption_key)?;
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(expires_in);
 
     sqlx::query(

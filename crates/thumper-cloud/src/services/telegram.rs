@@ -99,13 +99,16 @@ impl TelegramBot {
             .await
             .map_err(|e| CloudError::Internal(format!("Telegram getUpdates failed: {e}")))?;
 
-        let body: TelegramResponse<Vec<TelegramUpdate>> = resp.json().await
+        let body: TelegramResponse<Vec<TelegramUpdate>> = resp
+            .json()
+            .await
             .map_err(|e| CloudError::Internal(format!("Telegram response parse failed: {e}")))?;
 
         if !body.ok {
-            return Err(CloudError::Internal(
-                format!("Telegram API error: {}", body.description.unwrap_or_default()),
-            ));
+            return Err(CloudError::Internal(format!(
+                "Telegram API error: {}",
+                body.description.unwrap_or_default()
+            )));
         }
 
         Ok(body.result.unwrap_or_default())
@@ -135,7 +138,9 @@ impl TelegramBot {
             .await
             .map_err(|e| CloudError::Internal(format!("Telegram sendMessage failed: {e}")))?;
 
-        let result: TelegramResponse<TelegramMessage> = resp.json().await
+        let result: TelegramResponse<TelegramMessage> = resp
+            .json()
+            .await
             .map_err(|e| CloudError::Internal(format!("Telegram response parse failed: {e}")))?;
 
         result
@@ -171,7 +176,11 @@ impl TelegramBot {
         Ok(())
     }
 
-    async fn answer_callback_query(&self, callback_id: &str, text: Option<&str>) -> Result<(), CloudError> {
+    async fn answer_callback_query(
+        &self,
+        callback_id: &str,
+        text: Option<&str>,
+    ) -> Result<(), CloudError> {
         let mut body = serde_json::json!({ "callback_query_id": callback_id });
         if let Some(t) = text {
             body["text"] = serde_json::Value::String(t.to_string());
@@ -271,7 +280,11 @@ pub async fn start_telegram_bot(state: AppState) {
 // Message handler
 // ---------------------------------------------------------------------------
 
-async fn handle_message(state: &AppState, token: &str, msg: TelegramMessage) -> Result<(), CloudError> {
+async fn handle_message(
+    state: &AppState,
+    token: &str,
+    msg: TelegramMessage,
+) -> Result<(), CloudError> {
     let text = match msg.text.as_deref() {
         Some(t) => t.trim(),
         None => return Ok(()),
@@ -437,9 +450,15 @@ async fn handle_unlink(
         .await?;
 
     if result.rows_affected() > 0 {
-        bot.send_message(chat_id, "Account unlinked. You can re-link anytime at ghola.xyz/settings.", None).await?;
+        bot.send_message(
+            chat_id,
+            "Account unlinked. You can re-link anytime at ghola.xyz/settings.",
+            None,
+        )
+        .await?;
     } else {
-        bot.send_message(chat_id, "No linked account found.", None).await?;
+        bot.send_message(chat_id, "No linked account found.", None)
+            .await?;
     }
 
     Ok(())
@@ -462,9 +481,15 @@ async fn handle_newchat(
     .await?;
 
     if result.rows_affected() > 0 {
-        bot.send_message(chat_id, "Fresh conversation started!", None).await?;
+        bot.send_message(chat_id, "Fresh conversation started!", None)
+            .await?;
     } else {
-        bot.send_message(chat_id, "Link your account first: ghola.xyz/settings → Telegram", None).await?;
+        bot.send_message(
+            chat_id,
+            "Link your account first: ghola.xyz/settings → Telegram",
+            None,
+        )
+        .await?;
     }
 
     Ok(())
@@ -625,15 +650,21 @@ async fn handle_chat(
                     .collect();
 
                 // Edit placeholder with first chunk
-                bot.edit_message(chat_id, placeholder.message_id, chunks[0], None).await?;
+                bot.edit_message(chat_id, placeholder.message_id, chunks[0], None)
+                    .await?;
 
                 // Send remaining chunks
                 for (i, chunk) in chunks[1..].iter().enumerate() {
-                    let mk = if i == chunks.len() - 2 { markup.as_ref() } else { None };
+                    let mk = if i == chunks.len() - 2 {
+                        markup.as_ref()
+                    } else {
+                        None
+                    };
                     bot.send_message(chat_id, chunk, mk).await?;
                 }
             } else {
-                bot.edit_message(chat_id, placeholder.message_id, &reply, markup.as_ref()).await?;
+                bot.edit_message(chat_id, placeholder.message_id, &reply, markup.as_ref())
+                    .await?;
             }
 
             // Save assistant message
@@ -648,7 +679,13 @@ async fn handle_chat(
         }
         Err(e) => {
             tracing::error!("Telegram chat generation failed: {e}");
-            bot.edit_message(chat_id, placeholder.message_id, "Sorry, something went wrong. Please try again.", None).await?;
+            bot.edit_message(
+                chat_id,
+                placeholder.message_id,
+                "Sorry, something went wrong. Please try again.",
+                None,
+            )
+            .await?;
         }
     }
 
@@ -713,11 +750,17 @@ async fn handle_callback(
                 .unwrap_or("Make a phone call");
 
             if phone.is_empty() {
-                bot.send_message(chat_id, "No phone number found in request. Please specify a number.", None).await?;
+                bot.send_message(
+                    chat_id,
+                    "No phone number found in request. Please specify a number.",
+                    None,
+                )
+                .await?;
                 return Ok(());
             }
 
-            bot.send_message(chat_id, &format!("Calling {}...", phone), None).await?;
+            bot.send_message(chat_id, &format!("Calling {}...", phone), None)
+                .await?;
 
             // Update task status
             sqlx::query("UPDATE tasks SET status = 'in_progress' WHERE id = $1")
@@ -726,22 +769,17 @@ async fn handle_callback(
                 .await?;
 
             // Get user_id from task
-            let user_id = sqlx::query_scalar::<_, Uuid>(
-                "SELECT user_id FROM tasks WHERE id = $1",
-            )
-            .bind(task_id)
-            .fetch_one(&state.db)
-            .await?;
+            let user_id = sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM tasks WHERE id = $1")
+                .bind(task_id)
+                .fetch_one(&state.db)
+                .await?;
 
             // Initiate call
             match crate::services::call_service::start_call(
-                state,
-                user_id,
-                task_id,
-                phone,
-                objective,
-                None,
-            ).await {
+                state, user_id, task_id, phone, objective, None,
+            )
+            .await
+            {
                 Ok(bland_call_id) => {
                     // Insert into calls table
                     sqlx::query(
@@ -756,17 +794,21 @@ async fn handle_callback(
                     .await?;
                 }
                 Err(e) => {
-                    bot.send_message(chat_id, &format!("Failed to start call: {e}"), None).await?;
-                    sqlx::query("UPDATE tasks SET status = 'failed', error_message = $1 WHERE id = $2")
-                        .bind(format!("{e}"))
-                        .bind(task_id)
-                        .execute(&state.db)
+                    bot.send_message(chat_id, &format!("Failed to start call: {e}"), None)
                         .await?;
+                    sqlx::query(
+                        "UPDATE tasks SET status = 'failed', error_message = $1 WHERE id = $2",
+                    )
+                    .bind(format!("{e}"))
+                    .bind(task_id)
+                    .execute(&state.db)
+                    .await?;
                 }
             }
         }
         "email" => {
-            bot.send_message(chat_id, "Preparing email...", None).await?;
+            bot.send_message(chat_id, "Preparing email...", None)
+                .await?;
 
             // Get user_id and params
             let row = sqlx::query_as::<_, (Uuid, serde_json::Value)>(
@@ -787,7 +829,12 @@ async fn handle_callback(
                     .unwrap_or("Send an email");
 
                 if to.is_empty() {
-                    bot.send_message(chat_id, "No recipient email found. Please specify who to email.", None).await?;
+                    bot.send_message(
+                        chat_id,
+                        "No recipient email found. Please specify who to email.",
+                        None,
+                    )
+                    .await?;
                     return Ok(());
                 }
 
@@ -796,19 +843,27 @@ async fn handle_callback(
                     "Generate an email to {} with the objective: {}. Return JSON with 'subject' and 'body' fields only.",
                     to, objective
                 );
-                match crate::services::llm_router::generate(state, user_id, &prompt, Some("json")).await {
+                match crate::services::llm_router::generate(state, user_id, &prompt, Some("json"))
+                    .await
+                {
                     Ok(result) => {
-                        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap_or_default();
+                        let parsed: serde_json::Value =
+                            serde_json::from_str(&result).unwrap_or_default();
                         let subject = parsed["subject"].as_str().unwrap_or("(no subject)");
                         let body = parsed["body"].as_str().unwrap_or(&result);
                         bot.send_message(
                             chat_id,
-                            &format!("*Email draft:*\n\nTo: {}\nSubject: {}\n\n{}", to, subject, body),
+                            &format!(
+                                "*Email draft:*\n\nTo: {}\nSubject: {}\n\n{}",
+                                to, subject, body
+                            ),
                             None,
-                        ).await?;
+                        )
+                        .await?;
                     }
                     Err(e) => {
-                        bot.send_message(chat_id, &format!("Failed to generate email: {e}"), None).await?;
+                        bot.send_message(chat_id, &format!("Failed to generate email: {e}"), None)
+                            .await?;
                     }
                 }
             }
@@ -836,7 +891,8 @@ async fn generate_chat(
     messages: &[ChatMsg],
     system: Option<&str>,
 ) -> Result<String, CloudError> {
-    let stream = crate::services::llm_router::generate_stream(state, user_id, messages, system).await?;
+    let stream =
+        crate::services::llm_router::generate_stream(state, user_id, messages, system).await?;
     let mut full_text = String::new();
     futures::pin_mut!(stream);
     while let Some(result) = stream.next().await {
@@ -856,20 +912,14 @@ pub async fn get_telegram_link(
     pool: &sqlx::PgPool,
     user_id: Uuid,
 ) -> Result<Option<(i64,)>, sqlx::Error> {
-    sqlx::query_as::<_, (i64,)>(
-        "SELECT chat_id FROM telegram_links WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
+    sqlx::query_as::<_, (i64,)>("SELECT chat_id FROM telegram_links WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
 }
 
 /// Send a notification to a user's linked Telegram account
-pub async fn notify_user(
-    token: &str,
-    chat_id: i64,
-    message: &str,
-) -> Result<(), CloudError> {
+pub async fn notify_user(token: &str, chat_id: i64, message: &str) -> Result<(), CloudError> {
     let bot = TelegramBot::new(token);
     bot.send_message(chat_id, message, None).await?;
     Ok(())

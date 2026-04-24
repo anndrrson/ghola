@@ -108,20 +108,18 @@ pub async fn withdraw_earnings(
     AuthUser(claims): AuthUser,
     Json(req): Json<WithdrawEarningsRequest>,
 ) -> Result<Json<WithdrawEarningsResponse>, CloudError> {
-    let mnemonic = state
-        .config
-        .treasury_mnemonic
-        .as_deref()
-        .ok_or_else(|| {
-            CloudError::ServiceUnavailable("withdrawals not configured yet".to_string())
-        })?;
+    let mnemonic = state.config.treasury_mnemonic.as_deref().ok_or_else(|| {
+        CloudError::ServiceUnavailable("withdrawals not configured yet".to_string())
+    })?;
 
     // Validate address
     let to_bytes = bs58::decode(&req.to_address)
         .into_vec()
         .map_err(|_| CloudError::BadRequest("invalid Solana address".to_string()))?;
     if to_bytes.len() != 32 {
-        return Err(CloudError::BadRequest("invalid Solana address length".to_string()));
+        return Err(CloudError::BadRequest(
+            "invalid Solana address length".to_string(),
+        ));
     }
 
     // Fetch earned balance
@@ -140,7 +138,9 @@ pub async fn withdraw_earnings(
     let amount = req.amount_usdc.unwrap_or(available);
 
     if amount <= 0 {
-        return Err(CloudError::BadRequest("amount must be positive".to_string()));
+        return Err(CloudError::BadRequest(
+            "amount must be positive".to_string(),
+        ));
     }
     if amount < MIN_WITHDRAWAL_USDC {
         return Err(CloudError::BadRequest(format!(
@@ -189,7 +189,11 @@ pub async fn withdraw_earnings(
     let payout_index = 900_000u32 + (claims.sub.as_u128() % 100_000) as u32;
 
     match wallet_service::send_via_intermediate(
-        mnemonic, payout_index, &req.to_address, amount as u64, rpc_url,
+        mnemonic,
+        payout_index,
+        &req.to_address,
+        amount as u64,
+        rpc_url,
     )
     .await
     {

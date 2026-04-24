@@ -10,7 +10,7 @@ pub struct Config {
     pub stripe_secret_key: Option<String>,
     pub stripe_webhook_secret: Option<String>,
     pub stripe_price_consumer_pro: Option<String>, // price_xxx for $9/mo
-    pub stripe_price_business: Option<String>,      // price_xxx for $29/mo
+    pub stripe_price_business: Option<String>,     // price_xxx for $29/mo
     pub allowed_origins: String,
     pub admin_emails: Vec<String>,
     /// Base58-encoded 64-byte settlement keypair ([secret(32)|pubkey(32)]).
@@ -25,18 +25,28 @@ pub struct Config {
     /// Google OAuth client ID for verifying Google ID tokens (mobile sign-in).
     /// Same env var as thumper-cloud uses, so Render only needs one value.
     pub google_client_id: Option<String>,
+    /// TTL for merchant management capability tokens.
+    pub merchant_manage_token_ttl_secs: u64,
+    /// When false, merchant origins must be HTTPS.
+    pub allow_insecure_merchant_origin_http: bool,
+    /// Whether to trust client IP headers such as x-forwarded-for.
+    /// Keep false unless running behind a trusted proxy that rewrites them.
+    pub trust_proxy_headers: bool,
 }
 
 impl Config {
     pub fn from_env() -> Self {
         Self {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL required"),
-            bind_addr: env::var("BIND_ADDR").or_else(|_| {
-                // Render sets PORT; fall back to it if BIND_ADDR is not set
-                env::var("PORT").map(|p| format!("0.0.0.0:{p}"))
-            }).unwrap_or_else(|_| "0.0.0.0:8080".into()),
+            bind_addr: env::var("BIND_ADDR")
+                .or_else(|_| {
+                    // Render sets PORT; fall back to it if BIND_ADDR is not set
+                    env::var("PORT").map(|p| format!("0.0.0.0:{p}"))
+                })
+                .unwrap_or_else(|_| "0.0.0.0:8080".into()),
             jwt_secret: env::var("JWT_SECRET").unwrap_or_else(|_| "dev-secret-change-me".into()),
-            base_url: env::var("BASE_URL").unwrap_or_else(|_| "https://ghola-api.onrender.com".into()),
+            base_url: env::var("BASE_URL")
+                .unwrap_or_else(|_| "https://ghola-api.onrender.com".into()),
             frontend_url: env::var("FRONTEND_URL").unwrap_or_else(|_| "https://ghola.xyz".into()),
             stripe_secret_key: env::var("STRIPE_SECRET_KEY").ok(),
             stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET").ok(),
@@ -55,6 +65,18 @@ impl Config {
                 .unwrap_or_else(|_| "https://api.devnet.solana.com".into()),
             signing_key_hex: env::var("SIGNING_KEY").ok(),
             google_client_id: env::var("GOOGLE_CLIENT_ID").ok(),
+            merchant_manage_token_ttl_secs: env::var("MERCHANT_MANAGE_TOKEN_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(86_400),
+            allow_insecure_merchant_origin_http: env::var("ALLOW_INSECURE_MERCHANT_ORIGIN_HTTP")
+                .ok()
+                .map(|s| matches!(s.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                .unwrap_or(false),
+            trust_proxy_headers: env::var("TRUST_PROXY_HEADERS")
+                .ok()
+                .map(|s| matches!(s.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                .unwrap_or(false),
         }
     }
 }

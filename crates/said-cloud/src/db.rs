@@ -294,9 +294,7 @@ impl From<DbBusinessProfile> for said_types::BusinessProfile {
             verified_domain: db.verified_domain,
             verified_at: db.verified_at,
             operating_hours: db.operating_hours,
-            location: db
-                .location
-                .and_then(|v| serde_json::from_value(v).ok()),
+            location: db.location.and_then(|v| serde_json::from_value(v).ok()),
             contact: db.contact.and_then(|v| serde_json::from_value(v).ok()),
             services: serde_json::from_value(db.services).unwrap_or_default(),
             policies: serde_json::from_value(db.policies).unwrap_or_default(),

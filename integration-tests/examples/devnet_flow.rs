@@ -40,10 +40,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 2. Create agent wallet ───────────────────────────────────────────
     println!("\n[2/6] Creating agent wallet with spending limits...");
     let policy = SpendingPolicy {
-        daily_limit_lamports: Some(2_000_000_000),   // 2 SOL/day
-        per_tx_limit_lamports: Some(500_000_000),    // 0.5 SOL/tx
-        daily_limit_usdc_micro: Some(5_000_000),     // $5/day
-        per_tx_limit_usdc_micro: Some(1_000_000),    // $1/tx
+        daily_limit_lamports: Some(2_000_000_000), // 2 SOL/day
+        per_tx_limit_lamports: Some(500_000_000),  // 0.5 SOL/tx
+        daily_limit_usdc_micro: Some(5_000_000),   // $5/day
+        per_tx_limit_usdc_micro: Some(1_000_000),  // $1/tx
         allowed_recipients: vec![],
     };
     let agent = wallet.create_agent_wallet("devnet-test-agent", policy)?;
@@ -70,7 +70,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Waiting 5s for confirmations...");
     sleep(Duration::from_secs(5)).await;
 
-    let agent_bal = agent_client.get_balance_of(&agent.solana_address).await.unwrap_or(0);
+    let agent_bal = agent_client
+        .get_balance_of(&agent.solana_address)
+        .await
+        .unwrap_or(0);
     println!("  Agent balance:  {:.9} SOL", agent_bal as f64 / 1e9);
 
     if agent_bal < 100_000 {
@@ -164,10 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  Post-transfer balance: {:.9} SOL", post_bal as f64 / 1e9);
 
                 let delta = agent_bal.saturating_sub(post_bal);
-                println!(
-                    "  Delta (inc. fees): {:.9} SOL",
-                    delta as f64 / 1e9
-                );
+                println!("  Delta (inc. fees): {:.9} SOL", delta as f64 / 1e9);
                 if delta >= transfer_amount {
                     println!("  Transaction settlement VERIFIED.");
                 } else {
@@ -204,11 +204,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "  Remaining (SOL):    {:?}",
-        status.remaining_sol_lamports.map(|v| format!("{:.9} SOL", v as f64 / 1e9))
+        status
+            .remaining_sol_lamports
+            .map(|v| format!("{:.9} SOL", v as f64 / 1e9))
     );
     println!(
         "  Circuit breaker:    {}",
-        if status.circuit_breaker_tripped { "TRIPPED" } else { "OK" }
+        if status.circuit_breaker_tripped {
+            "TRIPPED"
+        } else {
+            "OK"
+        }
     );
     println!("  Consecutive fails:  {}", status.consecutive_failures);
 

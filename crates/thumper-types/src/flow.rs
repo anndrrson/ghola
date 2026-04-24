@@ -46,16 +46,38 @@ pub struct FlowStep {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum FlowAction {
-    LaunchApp { package: String },
-    Tap { selector: NodeSelector },
-    LongPress { selector: NodeSelector, duration_ms: Option<u64> },
-    TypeText { selector: NodeSelector, value: String },
-    Swipe { from: [i32; 2], to: [i32; 2], duration_ms: Option<u64> },
-    Scroll { selector: Option<NodeSelector>, direction: ScrollDirection },
-    WaitFor { selector: NodeSelector, timeout_ms: u64 },
+    LaunchApp {
+        package: String,
+    },
+    Tap {
+        selector: NodeSelector,
+    },
+    LongPress {
+        selector: NodeSelector,
+        duration_ms: Option<u64>,
+    },
+    TypeText {
+        selector: NodeSelector,
+        value: String,
+    },
+    Swipe {
+        from: [i32; 2],
+        to: [i32; 2],
+        duration_ms: Option<u64>,
+    },
+    Scroll {
+        selector: Option<NodeSelector>,
+        direction: ScrollDirection,
+    },
+    WaitFor {
+        selector: NodeSelector,
+        timeout_ms: u64,
+    },
     PressBack,
     ReadScreen,
-    Delay { ms: u64 },
+    Delay {
+        ms: u64,
+    },
     /// Conditional execution: run then_steps if selector matches, else else_steps.
     If {
         condition: NodeSelector,

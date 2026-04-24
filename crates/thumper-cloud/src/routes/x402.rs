@@ -49,7 +49,7 @@ pub async fn get_agent(
         pricing.price_per_1k_input,
         pricing.price_per_1k_output,
         1000, // default max_tokens for pricing estimate
-    );
+    )?;
 
     Ok(Json(serde_json::json!({
         "agent": pricing,

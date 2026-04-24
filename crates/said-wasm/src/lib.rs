@@ -11,7 +11,7 @@
 use std::sync::Mutex;
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
-use aes_gcm::{Aes256Gcm, AeadCore, Nonce};
+use aes_gcm::{AeadCore, Aes256Gcm, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -471,10 +471,7 @@ pub fn init_wallet(password: &str) -> std::result::Result<JsValue, JsValue> {
 ///
 /// Returns a JSON string: `{ handle, encrypted_blob, did }`
 #[wasm_bindgen]
-pub fn recover_wallet(
-    password: &str,
-    mnemonic: &str,
-) -> std::result::Result<JsValue, JsValue> {
+pub fn recover_wallet(password: &str, mnemonic: &str) -> std::result::Result<JsValue, JsValue> {
     core_recover_wallet(password, mnemonic)
         .map(|s| JsValue::from_str(&s))
         .map_err(|e| e.into())
@@ -721,8 +718,7 @@ mod tests {
 
         let caps = r#"["said/read_prompts", "said/read_preferences"]"#;
         let audience_did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
-        let token =
-            core_wallet_create_ucan(handle, audience_did, caps, 3600).unwrap();
+        let token = core_wallet_create_ucan(handle, audience_did, caps, 3600).unwrap();
 
         // JWT has 3 parts
         let parts: Vec<&str> = token.split('.').collect();

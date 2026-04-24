@@ -1,9 +1,7 @@
 use rmcp::{model::*, ErrorData};
 use thumper_types::*;
 
-use crate::{
-    DismissNotificationParams, ListDevicesParams, ReadNotificationsParams, ThumperServer,
-};
+use crate::{DismissNotificationParams, ListDevicesParams, ReadNotificationsParams, ThumperServer};
 
 pub(crate) async fn device_list_devices(
     server: &ThumperServer,
@@ -13,9 +11,11 @@ pub(crate) async fn device_list_devices(
     let response = server.send_and_wait(envelope).await?;
 
     match response.message {
-        MessageType::ConnectedDevicesResult(result) => Ok(CallToolResult::success(vec![
-            Content::text(serde_json::to_string_pretty(&result).unwrap_or_default()),
-        ])),
+        MessageType::ConnectedDevicesResult(result) => {
+            Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            )]))
+        }
         MessageType::Error(e) => Err(ErrorData::internal_error(
             format!("relay error: {} - {}", e.code, e.message),
             None,
@@ -37,9 +37,11 @@ pub(crate) async fn device_read_notifications(
     let response = server.send_and_wait(envelope).await?;
 
     match response.message {
-        MessageType::NotificationsResult(result) => Ok(CallToolResult::success(vec![
-            Content::text(serde_json::to_string_pretty(&result).unwrap_or_default()),
-        ])),
+        MessageType::NotificationsResult(result) => {
+            Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            )]))
+        }
         MessageType::Error(e) => Err(ErrorData::internal_error(
             format!("device error: {} - {}", e.code, e.message),
             None,

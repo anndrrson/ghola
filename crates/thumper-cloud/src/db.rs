@@ -298,6 +298,9 @@ CREATE TABLE IF NOT EXISTS user_wallets (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE,
     solana_address TEXT NOT NULL,
     mnemonic_encrypted BYTEA NOT NULL,
+    mnemonic_vault_backend TEXT DEFAULT 'local',
+    mnemonic_vault_key_version INT DEFAULT 1,
+    mnemonic_vault_key_ref TEXT,
     network TEXT DEFAULT 'devnet' CHECK (network IN ('devnet', 'mainnet-beta')),
     spending_limit_daily_usdc BIGINT DEFAULT 500000,
     created_at TIMESTAMPTZ DEFAULT now()
@@ -405,12 +408,47 @@ CREATE TABLE IF NOT EXISTS provider_payouts (
     amount_usdc BIGINT NOT NULL,
     to_address TEXT NOT NULL,
     signature TEXT,
-    status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'failed')),
+    status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'failed', 'review_required')),
     error_message TEXT,
     created_at TIMESTAMPTZ DEFAULT now(),
     completed_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_provider_payouts_provider ON provider_payouts(provider_id);
+ALTER TABLE provider_payouts DROP CONSTRAINT IF EXISTS provider_payouts_status_check;
+ALTER TABLE provider_payouts ADD CONSTRAINT provider_payouts_status_check
+    CHECK (status IN ('pending', 'confirmed', 'failed', 'review_required'));
+
+-- Receipt-backed usage ledger (required for secure payout accounting)
+CREATE TABLE IF NOT EXISTS compute_usage_receipts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider_id UUID NOT NULL REFERENCES compute_providers(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    job_id UUID REFERENCES compute_jobs(id) ON DELETE SET NULL,
+    escrow_id UUID REFERENCES escrow_holds(id) ON DELETE SET NULL,
+    source TEXT NOT NULL CHECK (source IN ('compute_escrow', 'x402')),
+    source_ref UUID NOT NULL,
+    model_id TEXT,
+    input_tokens BIGINT NOT NULL DEFAULT 0,
+    output_tokens BIGINT NOT NULL DEFAULT 0,
+    provider_amount_usdc BIGINT NOT NULL DEFAULT 0,
+    platform_fee_usdc BIGINT NOT NULL DEFAULT 0,
+    total_cost_usdc BIGINT NOT NULL DEFAULT 0,
+    proof_hash TEXT NOT NULL,
+    receipt_sig TEXT NOT NULL,
+    verified BOOLEAN NOT NULL DEFAULT true,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_compute_usage_receipts_source_ref
+    ON compute_usage_receipts(source, source_ref);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_compute_usage_receipts_escrow
+    ON compute_usage_receipts(escrow_id) WHERE escrow_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_compute_usage_receipts_job
+    ON compute_usage_receipts(job_id) WHERE job_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_compute_usage_receipts_provider_created
+    ON compute_usage_receipts(provider_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_compute_usage_receipts_verified
+    ON compute_usage_receipts(provider_id, verified);
 
 -- Privacy: HD-derived intermediate wallets for provider payouts
 ALTER TABLE compute_providers ADD COLUMN IF NOT EXISTS payout_index INT;
@@ -578,6 +616,15 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS executor_id UUID REFERENCES users(id)
 -- Earnings tracking on user wallets
 ALTER TABLE user_wallets ADD COLUMN IF NOT EXISTS earned_usdc BIGINT DEFAULT 0;
 ALTER TABLE user_wallets ADD COLUMN IF NOT EXISTS withdrawn_usdc BIGINT DEFAULT 0;
+ALTER TABLE user_wallets ADD COLUMN IF NOT EXISTS mnemonic_vault_backend TEXT;
+ALTER TABLE user_wallets ADD COLUMN IF NOT EXISTS mnemonic_vault_key_version INT;
+ALTER TABLE user_wallets ADD COLUMN IF NOT EXISTS mnemonic_vault_key_ref TEXT;
+ALTER TABLE user_wallets ALTER COLUMN mnemonic_vault_backend SET DEFAULT 'local';
+ALTER TABLE user_wallets ALTER COLUMN mnemonic_vault_key_version SET DEFAULT 1;
+UPDATE user_wallets
+SET mnemonic_vault_backend = COALESCE(mnemonic_vault_backend, 'legacy_local');
+UPDATE user_wallets
+SET mnemonic_vault_key_version = COALESCE(mnemonic_vault_key_version, 0);
 
 -- Task bounties table
 CREATE TABLE IF NOT EXISTS task_bounties (

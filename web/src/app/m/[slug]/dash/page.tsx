@@ -9,14 +9,14 @@
  *   3. Live log tail — polled every 3s for now, upgradeable to SSE later
  *   4. Kill switch
  *
- * Intentionally zero auth: the slug itself is the capability. This is fine
- * for Round 1 because merchants share the dash link only with themselves,
- * and the logs don't leak payloads or credentials. Round 2 will require
- * a claim-and-sign-in flow.
+ * Round 1 auth model: read-only dashboard data stays slug-addressable, while
+ * destructive actions (kill switch) require either a JWT owner session or
+ * a signed manage token returned at `/m/new` and persisted in sessionStorage.
  */
 
 import { useEffect, useState, useCallback, use } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   getMerchantListing,
   getMerchantLogs,
@@ -34,10 +34,13 @@ export default function MerchantDashboardPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = use(params);
+  const searchParams = useSearchParams();
 
   const [listing, setListing] = useState<MerchantPublicListing | null>(null);
   const [logs, setLogs] = useState<MerchantCallLog[]>([]);
   const [earnings, setEarnings] = useState<MerchantEarningsSummary | null>(null);
+  const [manageToken, setManageToken] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{
     status: number;
@@ -51,8 +54,8 @@ export default function MerchantDashboardPage({
     try {
       const [l, lg, e] = await Promise.all([
         getMerchantListing(slug),
-        getMerchantLogs(slug, 50),
-        getMerchantEarnings(slug),
+        getMerchantLogs(slug, 50, manageToken ?? undefined),
+        getMerchantEarnings(slug, manageToken ?? undefined),
       ]);
       setListing(l);
       setLogs(lg);
@@ -61,19 +64,34 @@ export default function MerchantDashboardPage({
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to load");
     }
-  }, [slug]);
+  }, [slug, manageToken]);
 
   useEffect(() => {
+    if (!authReady) return;
     refresh();
     const id = setInterval(refresh, 3000);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, authReady]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const key = `ghola_manage_token:${slug}`;
+    const fromQuery = searchParams.get("manage");
+    if (fromQuery) {
+      sessionStorage.setItem(key, fromQuery);
+      setManageToken(fromQuery);
+      setAuthReady(true);
+      return;
+    }
+    setManageToken(sessionStorage.getItem(key));
+    setAuthReady(true);
+  }, [slug, searchParams]);
 
   async function fireTestCall() {
     setTesting(true);
     setTestResult(null);
     try {
-      const r = await runMerchantTestCall(slug);
+      const r = await runMerchantTestCall(slug, manageToken ?? undefined);
       setTestResult({
         status: r.status,
         latency_ms: r.latency_ms,
@@ -97,7 +115,7 @@ export default function MerchantDashboardPage({
       return;
     }
     try {
-      await killMerchant(slug);
+      await killMerchant(slug, manageToken ?? undefined);
       setKilled(true);
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : "Kill failed");

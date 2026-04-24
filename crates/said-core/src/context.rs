@@ -8,9 +8,9 @@ use crate::Wallet;
 
 const STOPWORDS: &[&str] = &[
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
-    "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can",
-    "and", "or", "but", "if", "in", "on", "at", "to", "for", "of", "it", "its", "this", "that",
-    "with", "from", "by", "as", "not", "no",
+    "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can", "and",
+    "or", "but", "if", "in", "on", "at", "to", "for", "of", "it", "its", "this", "that", "with",
+    "from", "by", "as", "not", "no",
 ];
 
 /// Tokenize text into lowercase keywords, splitting on whitespace and punctuation,

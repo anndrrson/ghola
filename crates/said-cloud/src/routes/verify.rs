@@ -49,9 +49,7 @@ fn pub_key_from_did(did: &str) -> Result<VerifyingKey, String> {
     if bytes.len() < 34 || bytes[0..2] != ED25519_MULTICODEC {
         return Err("invalid did:key payload".into());
     }
-    let key_bytes: [u8; 32] = bytes[2..34]
-        .try_into()
-        .map_err(|_| "invalid key length")?;
+    let key_bytes: [u8; 32] = bytes[2..34].try_into().map_err(|_| "invalid key length")?;
     VerifyingKey::from_bytes(&key_bytes).map_err(|e| format!("invalid ed25519 key: {e}"))
 }
 
@@ -165,10 +163,7 @@ pub struct DidLookupResponse {
 
 /// Extract and validate service API key from X-Service-Key header.
 /// Returns (service_id, owner_id) if valid.
-async fn validate_service_key(
-    state: &AppState,
-    key: &str,
-) -> Result<(Uuid, Uuid), AppError> {
+async fn validate_service_key(state: &AppState, key: &str) -> Result<(Uuid, Uuid), AppError> {
     let key_hash = sha256_hex(key);
 
     let row: Option<(Uuid, Uuid, bool)> = sqlx::query_as(
@@ -230,13 +225,12 @@ pub async fn verify_agent(
     }
 
     // Get merchant DID for audit logging
-    let merchant_did: String = sqlx::query_scalar(
-        "SELECT owner_did FROM service_listings WHERE id = $1",
-    )
-    .bind(service_id)
-    .fetch_optional(&state.db)
-    .await?
-    .unwrap_or_default();
+    let merchant_did: String =
+        sqlx::query_scalar("SELECT owner_did FROM service_listings WHERE id = $1")
+            .bind(service_id)
+            .fetch_optional(&state.db)
+            .await?
+            .unwrap_or_default();
 
     // Look up agent profile
     let (profile_type, display_name, on_chain_registered) =
@@ -265,31 +259,35 @@ pub async fn verify_agent(
         if is_revoked {
             (false, vec![], Some("Token has been revoked".to_string()))
         } else {
-        match verify_ucan_token(token) {
-            Ok(payload) => {
-                // Verify the issuer DID matches the claimed agent_did
-                if payload.iss != req.agent_did {
-                    (false, vec![], Some("UCAN issuer does not match agent_did".to_string()))
-                } else {
-                    let caps: Vec<String> = payload.att.iter().map(|a| a.can.clone()).collect();
+            match verify_ucan_token(token) {
+                Ok(payload) => {
+                    // Verify the issuer DID matches the claimed agent_did
+                    if payload.iss != req.agent_did {
+                        (
+                            false,
+                            vec![],
+                            Some("UCAN issuer does not match agent_did".to_string()),
+                        )
+                    } else {
+                        let caps: Vec<String> = payload.att.iter().map(|a| a.can.clone()).collect();
 
-                    // Check required capabilities if specified
-                    if let Some(ref required) = req.required_capabilities {
-                        let has_all = required.iter().all(|req_cap| {
-                            caps.iter().any(|c| c == req_cap || c == "said/*")
-                        });
-                        if !has_all {
-                            (false, caps, Some("Insufficient capabilities".to_string()))
+                        // Check required capabilities if specified
+                        if let Some(ref required) = req.required_capabilities {
+                            let has_all = required
+                                .iter()
+                                .all(|req_cap| caps.iter().any(|c| c == req_cap || c == "said/*"));
+                            if !has_all {
+                                (false, caps, Some("Insufficient capabilities".to_string()))
+                            } else {
+                                (true, caps, None)
+                            }
                         } else {
                             (true, caps, None)
                         }
-                    } else {
-                        (true, caps, None)
                     }
                 }
+                Err(e) => (false, vec![], Some(e)),
             }
-            Err(e) => (false, vec![], Some(e)),
-        }
         }
     } else {
         // No UCAN token — identity-only verification
@@ -685,10 +683,7 @@ async fn compute_trust_score(
     score.min(1.0)
 }
 
-async fn fetch_spending_summary(
-    state: &AppState,
-    did: &str,
-) -> Option<AgentSpendingSummary> {
+async fn fetch_spending_summary(state: &AppState, did: &str) -> Option<AgentSpendingSummary> {
     #[derive(sqlx::FromRow)]
     struct SpendingRow {
         total_transactions: Option<i64>,
@@ -700,7 +695,7 @@ async fn fetch_spending_summary(
     let row: Option<SpendingRow> = sqlx::query_as(
         r#"SELECT
             COUNT(*) as total_transactions,
-            COALESCE(SUM(sp.amount_micro_usdc), 0) as total_spent,
+            COALESCE(SUM(sp.amount_micro_usdc), 0)::BIGINT as total_spent,
             COALESCE(AVG(sp.amount_micro_usdc)::BIGINT, 0) as avg_amount,
             MIN(sp.created_at) as first_tx
         FROM service_payments sp
@@ -750,19 +745,17 @@ pub async fn verify_x402_merchant(
 
     // Get reputation if identity found
     let (trust_score, confidence) = if identity_found {
-        let score: Option<f32> = sqlx::query_scalar(
-            "SELECT overall_score FROM reputation_scores WHERE entity_did = $1",
-        )
-        .bind(&owner_did)
-        .fetch_optional(&state.db)
-        .await?;
+        let score: Option<f32> =
+            sqlx::query_scalar("SELECT overall_score FROM reputation_scores WHERE entity_did = $1")
+                .bind(&owner_did)
+                .fetch_optional(&state.db)
+                .await?;
 
-        let conf: Option<f32> = sqlx::query_scalar(
-            "SELECT confidence FROM reputation_scores WHERE entity_did = $1",
-        )
-        .bind(&owner_did)
-        .fetch_optional(&state.db)
-        .await?;
+        let conf: Option<f32> =
+            sqlx::query_scalar("SELECT confidence FROM reputation_scores WHERE entity_did = $1")
+                .bind(&owner_did)
+                .fetch_optional(&state.db)
+                .await?;
 
         (score.unwrap_or(0.0), conf.unwrap_or(0.0))
     } else {
@@ -770,7 +763,10 @@ pub async fn verify_x402_merchant(
     };
 
     let (recommendation, reason) = if !identity_found {
-        ("caution", "Address not found in Ghola registry. Unverified merchant.")
+        (
+            "caution",
+            "Address not found in Ghola registry. Unverified merchant.",
+        )
     } else if trust_score >= 0.7 {
         ("pay", "Verified merchant with good trust score.")
     } else if trust_score >= 0.3 {
@@ -797,14 +793,12 @@ pub async fn verify_x402_merchant(
 /// Look up cached reputation score from the reputation_scores table.
 /// Returns None if no reputation has been computed yet.
 async fn get_cached_trust_score(state: &AppState, did: &str) -> Option<f32> {
-    sqlx::query_scalar(
-        "SELECT overall_score FROM reputation_scores WHERE entity_did = $1",
-    )
-    .bind(did)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten()
+    sqlx::query_scalar("SELECT overall_score FROM reputation_scores WHERE entity_did = $1")
+        .bind(did)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
 }
 
 fn generate_random_key() -> String {

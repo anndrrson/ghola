@@ -70,6 +70,9 @@ export default function NewMerchantPage() {
 
       const res = await createMerchant(body);
       setResult(res);
+      if (typeof window !== "undefined") {
+        sessionStorage.setItem(`ghola_manage_token:${res.slug}`, res.manage_token);
+      }
       // Redirect to dash after a short ritual beat so the user sees the wallet.
       setTimeout(() => router.push(`/m/${res.slug}/dash?fresh=1`), 1800);
     } catch (err: unknown) {

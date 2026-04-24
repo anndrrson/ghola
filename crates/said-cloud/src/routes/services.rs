@@ -256,15 +256,21 @@ pub async fn register_service(
 
     // Validate tags count
     if req.tags.as_ref().map_or(false, |t| t.len() > 20) {
-        return Err(AppError::BadRequest(
-            "Maximum 20 tags allowed".into(),
-        ));
+        return Err(AppError::BadRequest("Maximum 20 tags allowed".into()));
     }
 
     // Validate category
     let valid_categories = [
-        "general", "inference", "data", "commerce", "finance",
-        "logistics", "communication", "search", "media", "developer-tools",
+        "general",
+        "inference",
+        "data",
+        "commerce",
+        "finance",
+        "logistics",
+        "communication",
+        "search",
+        "media",
+        "developer-tools",
     ];
     let category = req.category.as_deref().unwrap_or("general");
     if !valid_categories.contains(&category) {
@@ -1018,7 +1024,7 @@ pub async fn service_analytics(
 
     // Settlement totals
     let settled_total: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(merchant_share_micro_usdc), 0) FROM settlement_batches WHERE service_id = $1 AND status = 'pending'",
+        "SELECT COALESCE(SUM(merchant_share_micro_usdc), 0)::BIGINT FROM settlement_batches WHERE service_id = $1 AND status = 'pending'",
     )
     .bind(id)
     .fetch_one(&state.db)
@@ -1061,14 +1067,14 @@ pub async fn my_services(
     .await?;
 
     let total_revenue: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(total_revenue_micro_usdc), 0) FROM service_listings WHERE owner_id = $1",
+        "SELECT COALESCE(SUM(total_revenue_micro_usdc), 0)::BIGINT FROM service_listings WHERE owner_id = $1",
     )
     .bind(user_id)
     .fetch_one(&state.db)
     .await?;
 
     let total_requests: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(total_requests), 0) FROM service_listings WHERE owner_id = $1",
+        "SELECT COALESCE(SUM(total_requests), 0)::BIGINT FROM service_listings WHERE owner_id = $1",
     )
     .bind(user_id)
     .fetch_one(&state.db)

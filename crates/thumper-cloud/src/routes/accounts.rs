@@ -33,8 +33,14 @@ pub async fn authorize_gmail(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<AuthorizeUrlResponse>, CloudError> {
-    let client_id = state.config.gmail_client_id.as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Gmail OAuth not configured".to_string()))?;
+    let client_id =
+        state
+            .config
+            .gmail_client_id
+            .as_deref()
+            .ok_or(CloudError::ServiceUnavailable(
+                "Gmail OAuth not configured".to_string(),
+            ))?;
 
     // Encode user_id as a short-lived JWT in the state param (10 min expiry)
     let now = chrono::Utc::now();
@@ -81,10 +87,22 @@ pub async fn callback_gmail(
     let claims = crate::auth::verify_jwt(&params.state, &state.config.jwt_secret)?;
     let user_id = claims.sub;
 
-    let client_id = state.config.gmail_client_id.as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Gmail OAuth not configured".to_string()))?;
-    let client_secret = state.config.gmail_client_secret.as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Gmail OAuth not configured".to_string()))?;
+    let client_id =
+        state
+            .config
+            .gmail_client_id
+            .as_deref()
+            .ok_or(CloudError::ServiceUnavailable(
+                "Gmail OAuth not configured".to_string(),
+            ))?;
+    let client_secret =
+        state
+            .config
+            .gmail_client_secret
+            .as_deref()
+            .ok_or(CloudError::ServiceUnavailable(
+                "Gmail OAuth not configured".to_string(),
+            ))?;
     let redirect_uri = format!("{}/api/accounts/callback/gmail", state.config.base_url);
 
     // Exchange code for tokens
@@ -104,21 +122,25 @@ pub async fn callback_gmail(
 
     if !resp.status().is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(CloudError::Internal(format!("Google token exchange failed: {body}")));
+        return Err(CloudError::Internal(format!(
+            "Google token exchange failed: {body}"
+        )));
     }
 
     let body: serde_json::Value = resp.json().await.unwrap_or_default();
-    let access_token = body["access_token"]
-        .as_str()
-        .ok_or(CloudError::Internal("no access_token in response".to_string()))?;
-    let refresh_token = body["refresh_token"]
-        .as_str()
-        .ok_or(CloudError::Internal("no refresh_token in response — try revoking app access and reconnecting".to_string()))?;
+    let access_token = body["access_token"].as_str().ok_or(CloudError::Internal(
+        "no access_token in response".to_string(),
+    ))?;
+    let refresh_token = body["refresh_token"].as_str().ok_or(CloudError::Internal(
+        "no refresh_token in response — try revoking app access and reconnecting".to_string(),
+    ))?;
     let expires_in = body["expires_in"].as_i64().unwrap_or(3600);
 
     // Encrypt tokens
-    let encrypted_access = crate::services::email_service::encrypt_token(access_token, &state.config.encryption_key)?;
-    let encrypted_refresh = crate::services::email_service::encrypt_token(refresh_token, &state.config.encryption_key)?;
+    let encrypted_access =
+        crate::services::email_service::encrypt_token(access_token, &state.config.encryption_key)?;
+    let encrypted_refresh =
+        crate::services::email_service::encrypt_token(refresh_token, &state.config.encryption_key)?;
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(expires_in);
 
     // Upsert into connected_accounts
@@ -143,7 +165,10 @@ pub async fn callback_gmail(
     tracing::info!(%user_id, "Gmail OAuth connected");
 
     // Redirect back to settings
-    let redirect_url = format!("{}/settings?tab=accounts&gmail=connected", state.config.base_url);
+    let redirect_url = format!(
+        "{}/settings?tab=accounts&gmail=connected",
+        state.config.base_url
+    );
     Ok(Redirect::to(&redirect_url))
 }
 

@@ -10,4 +10,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     thumper_cloud::run_cloud().await
 }
-

@@ -1,7 +1,10 @@
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "said-daemon", about = "SAID background daemon — serves MCP over HTTP")]
+#[command(
+    name = "said-daemon",
+    about = "SAID background daemon — serves MCP over HTTP"
+)]
 struct Args {
     /// Port to listen on
     #[arg(long, default_value = "3000")]

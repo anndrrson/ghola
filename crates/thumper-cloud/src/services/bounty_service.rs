@@ -229,7 +229,22 @@ pub async fn refund_bounty(db: &PgPool, task_id: Uuid) -> Result<(), CloudError>
 
 /// Get bounty details for a task.
 pub async fn get_bounty(db: &PgPool, task_id: Uuid) -> Result<Option<TaskBounty>, CloudError> {
-    let row = sqlx::query_as::<_, (Uuid, Uuid, Uuid, Option<Uuid>, i64, i32, i64, i64, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Uuid,
+            Uuid,
+            Option<Uuid>,
+            i64,
+            i32,
+            i64,
+            i64,
+            String,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+        ),
+    >(
         r#"
         SELECT id, task_id, funder_id, executor_id, amount_usdc, platform_fee_bps,
                executor_amount, platform_fee, status, created_at, settled_at
@@ -265,7 +280,22 @@ pub async fn list_bounties(
     offset: i64,
 ) -> Result<Vec<TaskBounty>, CloudError> {
     let rows = if let Some(status) = status_filter {
-        sqlx::query_as::<_, (Uuid, Uuid, Uuid, Option<Uuid>, i64, i32, i64, i64, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+        sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                Uuid,
+                Uuid,
+                Option<Uuid>,
+                i64,
+                i32,
+                i64,
+                i64,
+                String,
+                DateTime<Utc>,
+                Option<DateTime<Utc>>,
+            ),
+        >(
             r#"
             SELECT id, task_id, funder_id, executor_id, amount_usdc, platform_fee_bps,
                    executor_amount, platform_fee, status, created_at, settled_at
@@ -282,7 +312,22 @@ pub async fn list_bounties(
         .fetch_all(db)
         .await?
     } else {
-        sqlx::query_as::<_, (Uuid, Uuid, Uuid, Option<Uuid>, i64, i32, i64, i64, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+        sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                Uuid,
+                Uuid,
+                Option<Uuid>,
+                i64,
+                i32,
+                i64,
+                i64,
+                String,
+                DateTime<Utc>,
+                Option<DateTime<Utc>>,
+            ),
+        >(
             r#"
             SELECT id, task_id, funder_id, executor_id, amount_usdc, platform_fee_bps,
                    executor_amount, platform_fee, status, created_at, settled_at

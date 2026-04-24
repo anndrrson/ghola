@@ -15,9 +15,7 @@ use thumper_types::{AuthMessage, AuthPayload, ConnectionRole, Envelope};
 use crate::config::ThumperConfig;
 
 type WsSink = futures::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Message,
 >;
 
@@ -52,29 +50,27 @@ impl RelayConnection {
         let ws_tx = Arc::new(Mutex::new(write));
 
         // Authenticate
-        Self::authenticate(&ws_tx, &config, read)
-            .await
-            .map(|read| {
-                connected.store(true, Ordering::Relaxed);
+        Self::authenticate(&ws_tx, &config, read).await.map(|read| {
+            connected.store(true, Ordering::Relaxed);
 
-                // Spawn receive loop
-                Self::spawn_read_loop(
-                    read,
-                    pending.clone(),
-                    connected.clone(),
-                    reconnecting.clone(),
-                    ws_tx.clone(),
-                    config.clone(),
-                );
+            // Spawn receive loop
+            Self::spawn_read_loop(
+                read,
+                pending.clone(),
+                connected.clone(),
+                reconnecting.clone(),
+                ws_tx.clone(),
+                config.clone(),
+            );
 
-                Self {
-                    pending,
-                    ws_tx,
-                    connected,
-                    reconnecting,
-                    config,
-                }
-            })
+            Self {
+                pending,
+                ws_tx,
+                connected,
+                reconnecting,
+                config,
+            }
+        })
     }
 
     /// Perform the authentication handshake on a fresh WebSocket connection.

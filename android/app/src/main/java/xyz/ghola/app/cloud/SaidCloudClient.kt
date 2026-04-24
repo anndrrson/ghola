@@ -90,7 +90,7 @@ class SaidCloudClient(
         val token = resp.optString("token", "")
         val userId = resp.optString("user_id", "")
         if (token.isEmpty() || userId.isEmpty()) {
-            Log.e(TAG, "register response missing token or user_id: $resp")
+            Log.e(TAG, "register response missing token or user_id")
             return null
         }
         return AnonRegistration(token = token, userId = userId, email = email)
@@ -133,7 +133,7 @@ class SaidCloudClient(
         val nonce = resp.optString("nonce_base64", "")
         val expires = resp.optString("expires_at", "")
         if (nonce.isEmpty()) {
-            Log.e(TAG, "challenge response missing nonce_base64: $resp")
+            Log.e(TAG, "challenge response missing nonce_base64")
             return null
         }
         return AgentChallenge(nonceBase64 = nonce, expiresAt = expires)
@@ -253,13 +253,14 @@ class SaidCloudClient(
     private fun getArray(path: String): JSONArray? {
         val req = authedBuilder(path).get().build()
         return try {
-            val resp = client.newCall(req).execute()
-            val body = resp.body?.string()
-            if (resp.isSuccessful && body != null) {
-                JSONArray(body)
-            } else {
-                Log.e(TAG, "GET $path failed: ${resp.code} $body")
-                null
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string()
+                if (resp.isSuccessful && !body.isNullOrBlank()) {
+                    parseArray(body, "GET $path")
+                } else {
+                    logHttpFailure("GET $path", resp.code, body)
+                    null
+                }
             }
         } catch (e: IOException) {
             Log.e(TAG, "GET $path error", e)
@@ -292,11 +293,12 @@ class SaidCloudClient(
     private fun delete(path: String): Boolean {
         val req = authedBuilder(path).delete().build()
         return try {
-            val resp = client.newCall(req).execute()
-            if (!resp.isSuccessful) {
-                Log.e(TAG, "DELETE $path failed: ${resp.code} ${resp.body?.string()}")
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    logHttpFailure("DELETE $path", resp.code, resp.body?.string())
+                }
+                resp.isSuccessful
             }
-            resp.isSuccessful
         } catch (e: IOException) {
             Log.e(TAG, "DELETE $path error", e)
             false
@@ -313,17 +315,41 @@ class SaidCloudClient(
 
     private fun executeJson(req: Request, label: String): JSONObject? {
         return try {
-            val resp = client.newCall(req).execute()
-            val body = resp.body?.string()
-            if (resp.isSuccessful && body != null) {
-                JSONObject(body)
-            } else {
-                Log.e(TAG, "$label failed: ${resp.code} $body")
-                null
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string()
+                if (resp.isSuccessful && !body.isNullOrBlank()) {
+                    parseObject(body, label)
+                } else {
+                    logHttpFailure(label, resp.code, body)
+                    null
+                }
             }
         } catch (e: IOException) {
             Log.e(TAG, "$label error", e)
             null
         }
+    }
+
+    private fun parseObject(body: String, label: String): JSONObject? {
+        return try {
+            JSONObject(body)
+        } catch (e: Exception) {
+            Log.e(TAG, "$label invalid JSON object")
+            null
+        }
+    }
+
+    private fun parseArray(body: String, label: String): JSONArray? {
+        return try {
+            JSONArray(body)
+        } catch (e: Exception) {
+            Log.e(TAG, "$label invalid JSON array")
+            null
+        }
+    }
+
+    private fun logHttpFailure(label: String, code: Int, body: String?) {
+        val bodyMetadata = if (body.isNullOrEmpty()) "empty_body" else "body_len=${body.length}"
+        Log.e(TAG, "$label failed: status=$code $bodyMetadata")
     }
 }

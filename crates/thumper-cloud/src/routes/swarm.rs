@@ -99,13 +99,8 @@ pub async fn get_work_units(
     Path(id): Path<Uuid>,
     Query(query): Query<UnitsQuery>,
 ) -> Result<Json<Vec<WorkUnitInfo>>, CloudError> {
-    let units = swarm_service::get_work_units(
-        &state.db,
-        id,
-        claims.sub,
-        query.status.as_deref(),
-    )
-    .await?;
+    let units =
+        swarm_service::get_work_units(&state.db, id, claims.sub, query.status.as_deref()).await?;
     Ok(Json(units))
 }
 

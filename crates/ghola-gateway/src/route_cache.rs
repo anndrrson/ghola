@@ -40,6 +40,7 @@ pub struct ResolvedRoute {
     // Credential blob. Empty Vec + AuthMode::None means "no upstream auth".
     pub credential_backend: String,
     pub credential_key_version: i32,
+    pub credential_key_ref: Option<String>,
     pub credential_ciphertext: Vec<u8>,
 }
 
@@ -116,6 +117,7 @@ impl RouteCache {
                 sl.vault_wallet_address,
                 mc.vault_backend AS credential_backend,
                 mc.key_version AS credential_key_version,
+                mc.vault_key_ref AS credential_key_ref,
                 mc.ciphertext AS credential_ciphertext
             FROM service_listings sl
             LEFT JOIN merchant_credentials mc ON mc.id = sl.merchant_credential_id
@@ -146,6 +148,7 @@ struct RouteRow {
     vault_wallet_address: Option<String>,
     credential_backend: Option<String>,
     credential_key_version: Option<i32>,
+    credential_key_ref: Option<String>,
     credential_ciphertext: Option<Vec<u8>>,
 }
 
@@ -172,6 +175,7 @@ impl From<RouteRow> for ResolvedRoute {
             vault_wallet_address: r.vault_wallet_address,
             credential_backend: r.credential_backend.unwrap_or_else(|| "none".into()),
             credential_key_version: r.credential_key_version.unwrap_or(0),
+            credential_key_ref: r.credential_key_ref,
             credential_ciphertext: r.credential_ciphertext.unwrap_or_default(),
         }
     }

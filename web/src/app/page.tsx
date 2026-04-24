@@ -8,12 +8,17 @@ import {
   Shield,
   Search,
   CreditCard,
-  Globe,
   Fingerprint,
   Zap,
   Code,
   BarChart3,
   Lock,
+  Cpu,
+  Sparkles,
+  Store,
+  Bot,
+  Wallet,
+  Coins,
 } from "lucide-react";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 
@@ -28,9 +33,6 @@ export default function Home() {
     }
   }, [authenticated, loading, router]);
 
-  // Don't block rendering for auth check — show the landing page immediately
-  // Only redirect authenticated users after auth finishes loading
-
   useEffect(() => {
     function handleMouseMove(e: MouseEvent) {
       if (!heroRef.current) return;
@@ -44,7 +46,7 @@ export default function Home() {
     return () => window.removeEventListener("mousemove", handleMouseMove);
   }, []);
 
-  if (authenticated && !loading) return null; // Only hide page AFTER confirming auth
+  if (authenticated && !loading) return null;
 
   return (
     <div className="min-h-screen pt-16">
@@ -74,34 +76,205 @@ export default function Home() {
           <div className="max-w-4xl">
             <div className="inline-flex items-center gap-2 rounded-full border border-[#1e2a3a] bg-[#0f1117] px-4 py-1.5 text-sm text-[#8b95a8] mb-8">
               <span className="h-2 w-2 rounded-full bg-[#3da8ff] animate-pulse" />
-              Cryptographic identities for AI agents · on Solana
+              The open economy for AI agents · on Solana
             </div>
             <h1 className="text-5xl md:text-7xl font-medium tracking-tight text-[#eef1f8] leading-[1.04]">
-              The AI that
+              Earn when
               <br />
-              <span className="text-[#3da8ff]">actually uses</span>
-              <br />
-              your apps.
+              <span className="text-[#3da8ff]">AI works.</span>
             </h1>
             <p className="mt-8 text-lg md:text-xl text-[#8b95a8] leading-relaxed max-w-2xl">
-              Ghola&apos;s agent taps, types, and navigates other apps on your
-              phone — and pays for what it does with its own on-chain wallet,
-              not yours.
+              Ghola is the open economy for AI agents. Contribute compute,
+              publish a model, or run a service — and get paid every time an
+              agent uses it. Or put an agent to work: it acts, pays, and
+              transacts with its own on-chain wallet.
             </p>
             <div className="mt-10 flex flex-col sm:flex-row gap-4">
               <Link
-                href="/agents/new"
+                href="/earn"
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3da8ff] px-7 py-3.5 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
               >
-                Create an agent
+                Start earning
                 <ArrowRight className="h-4 w-4" />
               </Link>
               <Link
-                href="/marketplace"
+                href="/agents/new"
                 className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#1e2a3a] px-7 py-3.5 text-base font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] active:scale-[0.98] transition-all"
               >
-                See the marketplace
+                Use an agent
               </Link>
+            </div>
+            <div className="mt-12 flex flex-wrap gap-x-8 gap-y-3 text-sm text-[#8b95a8]">
+              <div className="flex items-center gap-2">
+                <span className="h-1 w-1 rounded-full bg-[#3da8ff]" />
+                Per-call USDC settlement
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-1 w-1 rounded-full bg-[#3da8ff]" />
+                On-chain identity &amp; reputation
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-1 w-1 rounded-full bg-[#3da8ff]" />
+                Open protocol, no gatekeepers
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ──────────── Four Sides, One Economy ──────────── */}
+      <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="max-w-2xl mb-16">
+            <span className="text-sm font-medium text-[#3da8ff] mb-4 block">
+              The marketplace
+            </span>
+            <h2 className="text-3xl md:text-4xl font-medium text-[#eef1f8] mb-4">
+              Four sides. One economy.
+            </h2>
+            <p className="text-[#8b95a8] leading-relaxed">
+              AI agents need compute, models, and services to do real work —
+              and they&apos;ll pay for all three. Pick a side. Get plugged in.
+            </p>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            {[
+              {
+                icon: Cpu,
+                tag: "Supply",
+                title: "Run compute",
+                desc: "Your phone, GPU, or server hosts inference. Earn USDC every time an agent calls it.",
+                cta: "Host a node",
+                href: "/earn/compute",
+              },
+              {
+                icon: Sparkles,
+                tag: "Supply",
+                title: "Publish a model",
+                desc: "Fine-tune and ship your own model. Earn per call, 85% revenue share.",
+                cta: "Publish",
+                href: "/earn/models",
+              },
+              {
+                icon: Store,
+                tag: "Supply",
+                title: "Sell a service",
+                desc: "Register your API as a headless merchant. Get discovered by agents. 3% fee, hourly USDC settlement.",
+                cta: "Register",
+                href: "/provide",
+              },
+              {
+                icon: Bot,
+                tag: "Demand",
+                title: "Use an agent",
+                desc: "Give an agent its own wallet, identity, and reputation. It acts, books, buys, and pays — without touching yours.",
+                cta: "Deploy",
+                href: "/agents/new",
+              },
+            ].map((card) => {
+              const Icon = card.icon;
+              return (
+                <Link
+                  key={card.title}
+                  href={card.href}
+                  className="group rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 hover:border-[#3da8ff]/40 transition-colors flex flex-col"
+                >
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="h-10 w-10 rounded-lg bg-[#3da8ff]/10 flex items-center justify-center">
+                      <Icon className="h-5 w-5 text-[#3da8ff]" />
+                    </div>
+                    <span className="text-[10px] uppercase tracking-wider text-[#8b95a8] font-medium">
+                      {card.tag}
+                    </span>
+                  </div>
+                  <h3 className="text-[#eef1f8] font-medium text-base mb-2">
+                    {card.title}
+                  </h3>
+                  <p className="text-sm text-[#8b95a8] leading-relaxed mb-6 flex-1">
+                    {card.desc}
+                  </p>
+                  <div className="inline-flex items-center gap-2 text-sm font-medium text-[#3da8ff] group-hover:text-[#5bb8ff]">
+                    {card.cta}
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* ──────────── How the flywheel works ──────────── */}
+      <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid lg:grid-cols-2 gap-16 items-center">
+            <div>
+              <span className="text-sm font-medium text-[#3da8ff] mb-4 block">
+                The flywheel
+              </span>
+              <h2 className="text-3xl md:text-4xl font-medium text-[#eef1f8] mb-4">
+                Every agent action pays someone.
+              </h2>
+              <p className="text-[#8b95a8] mb-8 leading-relaxed">
+                An agent needs a model to think, compute to run, and services
+                to act. Each of those has a price. Each payment settles in
+                USDC on Solana. Every participant builds on-chain reputation
+                with every transaction.
+              </p>
+              <Link
+                href="/how-it-works"
+                className="inline-flex items-center gap-2 text-[#3da8ff] hover:text-[#5bb8ff] text-sm font-medium"
+              >
+                See the full flow <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
+            <div className="space-y-3">
+              {[
+                {
+                  icon: Search,
+                  label: "Resolve",
+                  desc: "Agent queries the registry for a model, compute node, or service that matches the task",
+                },
+                {
+                  icon: Shield,
+                  label: "Verify",
+                  desc: "Cryptographic identity check — UCAN credentials, on-chain registration, reputation score",
+                },
+                {
+                  icon: Zap,
+                  label: "Execute",
+                  desc: "Call lands at the provider, work happens, result returns",
+                },
+                {
+                  icon: Coins,
+                  label: "Settle",
+                  desc: "USDC flows from the agent's wallet to the provider, per-call, hourly batched",
+                },
+              ].map((step, i) => {
+                const Icon = step.icon;
+                return (
+                  <div
+                    key={step.label}
+                    className="flex gap-4 items-start rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-4"
+                  >
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#3da8ff]/10 text-xs font-medium text-[#3da8ff]">
+                      {i + 1}
+                    </span>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Icon className="h-3.5 w-3.5 text-[#3da8ff]" />
+                        <h4 className="text-sm font-medium text-[#eef1f8]">
+                          {step.label}
+                        </h4>
+                      </div>
+                      <p className="text-xs text-[#8b95a8] leading-relaxed">
+                        {step.desc}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -110,12 +283,18 @@ export default function Home() {
       {/* ──────────── Protocol Layers ──────────── */}
       <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <h2 className="text-3xl font-medium text-[#eef1f8] mb-4 text-center">
-            Five layers. One protocol.
-          </h2>
-          <p className="text-[#8b95a8] mb-12 text-center max-w-lg mx-auto">
-            Everything agents need to do business with strangers.
-          </p>
+          <div className="text-center max-w-2xl mx-auto mb-16">
+            <span className="text-sm font-medium text-[#3da8ff] mb-4 block">
+              The protocol
+            </span>
+            <h2 className="text-3xl md:text-4xl font-medium text-[#eef1f8] mb-4">
+              Five layers. One stack.
+            </h2>
+            <p className="text-[#8b95a8] leading-relaxed">
+              Everything agents need to find each other, trust each other, and
+              transact with each other — without a middleman.
+            </p>
+          </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5 max-w-6xl mx-auto">
             {[
               {
@@ -139,7 +318,7 @@ export default function Home() {
                 desc: "Composite trust scores built from transactions, reviews, and uptime.",
               },
               {
-                icon: CreditCard,
+                icon: Wallet,
                 title: "Commerce",
                 desc: "Per-request billing, daily budgets, hourly settlement in USDC.",
               },
@@ -166,90 +345,26 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ──────────── For Agents ──────────── */}
+      {/* ──────────── Numbers ──────────── */}
       <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid lg:grid-cols-2 gap-16 items-center">
-            <div>
-              <span className="text-sm font-medium text-[#3da8ff] mb-4 block">
-                For AI Agents
-              </span>
-              <h2 className="text-3xl font-medium text-[#eef1f8] mb-4">
-                Find services. Prove identity. Pay per request.
-              </h2>
-              <p className="text-[#8b95a8] mb-8 leading-relaxed">
-                Your agent searches the registry, verifies the merchant,
-                calls the API, and pays — all in a single flow.
-                No accounts. No subscriptions. No checkout pages.
-              </p>
-              <Link
-                href="/developers"
-                className="inline-flex items-center gap-2 text-[#3da8ff] hover:text-[#5bb8ff] text-sm font-medium"
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 max-w-5xl mx-auto">
+            {[
+              { value: "85%", label: "Creator revenue share" },
+              { value: "3%", label: "Platform fee on services" },
+              { value: "1 hr", label: "USDC settlement cycle" },
+              { value: "0", label: "Gatekeepers" },
+            ].map((stat) => (
+              <div
+                key={stat.label}
+                className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-6 text-center"
               >
-                View developer docs <ArrowRight className="h-3.5 w-3.5" />
-              </Link>
-            </div>
-            <div className="space-y-3">
-              {[
-                { icon: Search, label: "Resolve", desc: "Find services by task, price, quality, or trust score" },
-                { icon: Shield, label: "Verify", desc: "Confirm merchant identity with UCAN credentials" },
-                { icon: Globe, label: "Call", desc: "Hit the API endpoint with embedded auth" },
-                { icon: CreditCard, label: "Pay", desc: "Per-request USDC settlement, enforced budgets" },
-              ].map((step, i) => {
-                const Icon = step.icon;
-                return (
-                  <div key={step.label} className="flex gap-4 items-start rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-4">
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#3da8ff]/10 text-xs font-medium text-[#3da8ff]">
-                      {i + 1}
-                    </span>
-                    <div>
-                      <h4 className="text-sm font-medium text-[#eef1f8]">{step.label}</h4>
-                      <p className="text-xs text-[#8b95a8]">{step.desc}</p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ──────────── For Merchants ──────────── */}
-      <section className="py-24 sm:py-32 border-t border-[#1e2a3a]">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid lg:grid-cols-2 gap-16 items-center">
-            <div className="order-2 lg:order-1 grid grid-cols-2 gap-4">
-              {[
-                { value: "3%", label: "Platform fee" },
-                { value: "USDC", label: "Settlement currency" },
-                { value: "1 hr", label: "Settlement cycle" },
-                { value: "0", label: "Accounts to manage" },
-              ].map((stat) => (
-                <div key={stat.label} className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5 text-center">
-                  <p className="text-2xl font-medium text-[#3da8ff]">{stat.value}</p>
-                  <p className="text-xs text-[#8b95a8] mt-1">{stat.label}</p>
-                </div>
-              ))}
-            </div>
-            <div className="order-1 lg:order-2">
-              <span className="text-sm font-medium text-[#3da8ff] mb-4 block">
-                For Headless Merchants
-              </span>
-              <h2 className="text-3xl font-medium text-[#eef1f8] mb-4">
-                Register your API. Get discovered. Get paid.
-              </h2>
-              <p className="text-[#8b95a8] mb-8 leading-relaxed">
-                No storefront. No checkout flow. No sales team.
-                Just your API, a price per call, and an endpoint.
-                We handle metering, billing, and settlement.
-              </p>
-              <Link
-                href="/provide"
-                className="inline-flex items-center gap-2 text-[#3da8ff] hover:text-[#5bb8ff] text-sm font-medium"
-              >
-                Become a merchant <ArrowRight className="h-3.5 w-3.5" />
-              </Link>
-            </div>
+                <p className="text-3xl md:text-4xl font-medium text-[#3da8ff]">
+                  {stat.value}
+                </p>
+                <p className="text-xs text-[#8b95a8] mt-2">{stat.label}</p>
+              </div>
+            ))}
           </div>
         </div>
       </section>
@@ -261,12 +376,13 @@ export default function Home() {
             <div className="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-[#3da8ff]/10 mb-6">
               <Code className="h-7 w-7 text-[#3da8ff]" />
             </div>
-            <h2 className="text-3xl font-medium text-[#eef1f8] mb-4">
+            <h2 className="text-3xl md:text-4xl font-medium text-[#eef1f8] mb-4">
               Native to every agent framework
             </h2>
             <p className="text-[#8b95a8] mb-8 leading-relaxed">
               TypeScript SDK, Python SDK, 20 MCP tools, and integration guides
               for LangChain, CrewAI, Claude MCP, and OpenAI function calling.
+              Your agents plug in the first day.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Link
@@ -294,12 +410,12 @@ export default function Home() {
             <div className="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-[#3da8ff]/10 mb-6">
               <Lock className="h-7 w-7 text-[#3da8ff]" />
             </div>
-            <h2 className="text-3xl font-medium text-[#eef1f8] mb-4">
+            <h2 className="text-3xl md:text-4xl font-medium text-[#eef1f8] mb-4">
               Anchored on Solana
             </h2>
             <p className="text-[#8b95a8] mb-8 leading-relaxed">
-              Identity records, service registrations, and reputation attestations
-              live on-chain. Verifiable by anyone. Owned by you.
+              Identity records, service registrations, and reputation
+              attestations live on-chain. Verifiable by anyone. Owned by you.
             </p>
             <div className="inline-flex items-center gap-3 rounded-xl border border-[#1e2a3a] bg-[#0f1117] px-5 py-3 text-sm">
               <Zap className="h-4 w-4 text-[#3da8ff]" />
@@ -315,27 +431,26 @@ export default function Home() {
       {/* ──────────── Final CTA ──────────── */}
       <section className="py-24 sm:py-32">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 text-center">
-          <h2 className="text-3xl md:text-4xl font-medium text-[#eef1f8]">
-            Stop typing. Let your agent do it.
+          <h2 className="text-3xl md:text-5xl font-medium text-[#eef1f8]">
+            Pick a side.
           </h2>
           <p className="mt-4 text-[#8b95a8] max-w-xl mx-auto">
-            Opens apps. Books rides. Sends emails. Cancels subscriptions.
-            Pays its own way in USDC — no credit card, no shared wallet,
-            no begging the AI to stop refusing.
+            Provide the fuel, or deploy the agents. Either way, you&apos;re
+            in the economy.
           </p>
           <div className="mt-8 flex flex-col sm:flex-row gap-4 justify-center">
             <Link
-              href="/agents/new"
+              href="/earn"
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#3da8ff] px-8 py-4 text-base font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
             >
-              Create an agent
+              Start earning
               <ArrowRight className="h-4 w-4" />
             </Link>
             <Link
-              href="/marketplace"
+              href="/agents/new"
               className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#1e2a3a] px-8 py-4 text-base font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] active:scale-[0.98] transition-all"
             >
-              See the marketplace
+              Deploy an agent
             </Link>
           </div>
         </div>

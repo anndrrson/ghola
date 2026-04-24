@@ -68,7 +68,9 @@ pub fn verify_auth(
     // Check nonce for replay prevention
     if let Some(cache) = nonce_cache {
         if cache.check_and_insert(&payload.message.nonce) {
-            return Err(RelayError::Auth("nonce already used (replay detected)".into()));
+            return Err(RelayError::Auth(
+                "nonce already used (replay detected)".into(),
+            ));
         }
     }
 

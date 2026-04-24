@@ -816,6 +816,7 @@ export interface NewMerchantResponse {
   slug: string;
   service_id: string;
   wallet_address: string;
+  manage_token: string;
   gateway_url: string;
   public_url: string;
   dashboard_url: string;
@@ -886,26 +887,49 @@ export async function getMerchantListing(
 export async function getMerchantLogs(
   slug: string,
   limit = 100,
+  manageToken?: string,
 ): Promise<MerchantCallLog[]> {
-  return apiFetch<MerchantCallLog[]>(`/m/${slug}/logs?limit=${limit}`);
+  const headers: Record<string, string> = {};
+  if (manageToken) {
+    headers["x-merchant-manage-token"] = manageToken;
+  }
+  return apiFetch<MerchantCallLog[]>(`/m/${slug}/logs?limit=${limit}`, { headers });
 }
 
 export async function getMerchantEarnings(
   slug: string,
+  manageToken?: string,
 ): Promise<MerchantEarningsSummary> {
-  return apiFetch<MerchantEarningsSummary>(`/m/${slug}/earnings`);
+  const headers: Record<string, string> = {};
+  if (manageToken) {
+    headers["x-merchant-manage-token"] = manageToken;
+  }
+  return apiFetch<MerchantEarningsSummary>(`/m/${slug}/earnings`, { headers });
 }
 
 export async function runMerchantTestCall(
   slug: string,
+  manageToken?: string,
 ): Promise<MerchantTestCallResponse> {
+  const headers: Record<string, string> = {};
+  if (manageToken) {
+    headers["x-merchant-manage-token"] = manageToken;
+  }
   return apiFetch<MerchantTestCallResponse>(`/m/${slug}/test-call`, {
     method: "POST",
+    headers,
   });
 }
 
-export async function killMerchant(slug: string): Promise<void> {
-  return apiFetch<void>(`/m/${slug}`, { method: "DELETE" });
+export async function killMerchant(
+  slug: string,
+  manageToken?: string,
+): Promise<void> {
+  const headers: Record<string, string> = {};
+  if (manageToken) {
+    headers["x-merchant-manage-token"] = manageToken;
+  }
+  return apiFetch<void>(`/m/${slug}`, { method: "DELETE", headers });
 }
 
 // Namespace export for pages that use api.method()

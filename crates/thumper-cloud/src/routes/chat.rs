@@ -34,7 +34,8 @@ fn friendly_llm_error(err: &CloudError) -> String {
     if msg.contains("api key not configured") || msg.contains("not configured") {
         "No AI model configured. Go to Settings > AI Model to set up your preferred provider and API key.".into()
     } else if msg.contains("decryption failed") || msg.contains("could not be decrypted") {
-        "Your saved API key could not be decrypted. Please re-enter it in Settings > AI Model.".into()
+        "Your saved API key could not be decrypted. Please re-enter it in Settings > AI Model."
+            .into()
     } else if msg.contains("401") || msg.contains("403") || msg.contains("unauthorized") {
         "Your API key was rejected. Please check it in Settings > AI Model.".into()
     } else if msg.contains("429") || msg.contains("rate limit") {
@@ -54,7 +55,10 @@ async fn check_chat_limit(state: &AppState, user_id: Uuid, tier: &str) -> Result
         _ => 50, // free
     };
 
-    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let period_start = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-01")
+        .to_string();
     let count: i64 = sqlx::query_scalar(
         r#"
         SELECT COUNT(*) FROM chat_messages
@@ -216,7 +220,10 @@ pub async fn chat(
 
     // Check which provider will be used (for community GPU indicator)
     let llm_config = llm_router::get_user_llm_config(&state, user_id).await.ok();
-    let is_community = llm_config.as_ref().map(|c| c.provider == llm_router::LlmProvider::Community).unwrap_or(false);
+    let is_community = llm_config
+        .as_ref()
+        .map(|c| c.provider == llm_router::LlmProvider::Community)
+        .unwrap_or(false);
 
     // Standard streaming path (no wallet tools)
     let stream_result = llm_router::generate_stream(&state, user_id, &messages, Some(system)).await;
@@ -315,11 +322,15 @@ async fn agent_chat(
     } else if let Some(ref slug) = req.agent_slug {
         agent_service::get_agent_by_slug(&state.db, slug).await?
     } else {
-        return Err(CloudError::BadRequest("agent_id or agent_slug required".into()));
+        return Err(CloudError::BadRequest(
+            "agent_id or agent_slug required".into(),
+        ));
     };
 
     if !agent.is_active {
-        return Err(CloudError::BadRequest("this agent is currently inactive".into()));
+        return Err(CloudError::BadRequest(
+            "this agent is currently inactive".into(),
+        ));
     }
 
     // Check provider is online and get relay info + pricing
@@ -353,20 +364,21 @@ async fn agent_chat(
             })
         })
         .map(|m| {
-            let i = m.get("price_per_1k_input").and_then(|v| v.as_u64()).unwrap_or(0);
-            let o = m.get("price_per_1k_output").and_then(|v| v.as_u64()).unwrap_or(0);
+            let i = m
+                .get("price_per_1k_input")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let o = m
+                .get("price_per_1k_output")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             (i, o)
         })
         .unwrap_or((0, 0));
 
     // Get or create agent session
-    let session_id = agent_service::get_or_create_session(
-        &state.db,
-        user_id,
-        agent.id,
-        req.session_id,
-    )
-    .await?;
+    let session_id =
+        agent_service::get_or_create_session(&state.db, user_id, agent.id, req.session_id).await?;
 
     // Save user message with agent linkage
     sqlx::query(
@@ -417,12 +429,15 @@ async fn agent_chat(
 
     // Create escrow + job
     let estimated_cost = 100i64; // 100 micro-USDC
-    let escrow_id = compute_service::create_escrow(
-        &state.db, user_id, Some(agent.provider_id), estimated_cost,
-    )
-    .await?;
+    let escrow_id =
+        compute_service::create_escrow(&state.db, user_id, Some(agent.provider_id), estimated_cost)
+            .await?;
     let job_id = compute_service::create_job(
-        &state.db, user_id, agent.provider_id, escrow_id, &agent.model_id,
+        &state.db,
+        user_id,
+        agent.provider_id,
+        escrow_id,
+        &agent.model_id,
     )
     .await?;
 
@@ -441,6 +456,7 @@ async fn agent_chat(
         let system_prompt = agent.system_prompt.clone();
         let db = state.db.clone();
         let state_clone = state.clone();
+        let usage_receipt_secret = state.config.usage_receipt_secret.clone();
 
         let sse_stream: SseStream = Box::pin(async_stream::stream! {
             // Send session + agent info
@@ -494,7 +510,13 @@ async fn agent_chat(
                     let est_output = (result.text.len() as i64 / 4).max(1);
                     let _ = compute_service::complete_job(&db, job_id, 500, est_output, 0, 0.8).await;
                     if let Ok(ref settlement) = compute_service::settle_escrow(
-                        &db, escrow_id, 500, est_output, price_input, price_output,
+                        &db,
+                        &usage_receipt_secret,
+                        escrow_id,
+                        500,
+                        est_output,
+                        price_input,
+                        price_output,
                     ).await {
                         let _ = agent_service::increment_agent_stats(&db, agent_id, session_id, settlement.provider_amount).await;
                         let _ = compute_service::update_daily_stats(&db, agent.provider_id, true, 500 + est_output, settlement.provider_amount, 0.0).await;
@@ -534,6 +556,7 @@ async fn agent_chat(
     let agent_id = agent.id;
     let provider_id = agent.provider_id;
     let db = state.db.clone();
+    let usage_receipt_secret = state.config.usage_receipt_secret.clone();
 
     let stream_result = compute_service::dispatch_inference_stream(
         &state,
@@ -620,7 +643,13 @@ async fn agent_chat(
 
             let _ = compute_service::complete_job(&db, job_id, est_input, est_output, 0, 0.8).await;
             if let Ok(ref settlement) = compute_service::settle_escrow(
-                &db, escrow_id, est_input, est_output, price_input, price_output,
+                &db,
+                &usage_receipt_secret,
+                escrow_id,
+                est_input,
+                est_output,
+                price_input,
+                price_output,
             ).await {
                 let _ = agent_service::increment_agent_stats(&db, agent_id, session_id, settlement.provider_amount).await;
                 let _ = compute_service::update_daily_stats(

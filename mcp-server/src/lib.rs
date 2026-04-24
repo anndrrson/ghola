@@ -744,11 +744,9 @@ impl SaidServer {
                 let json = serde_json::to_string_pretty(&record).unwrap_or_default();
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
-            Err(e) if e.contains("not found") => {
-                Ok(CallToolResult::success(vec![Content::text(
-                    "Identity not registered on-chain.",
-                )]))
-            }
+            Err(e) if e.contains("not found") => Ok(CallToolResult::success(vec![Content::text(
+                "Identity not registered on-chain.",
+            )])),
             Err(e) => Err(ErrorData::internal_error(e, None)),
         }
     }
@@ -762,10 +760,9 @@ impl SaidServer {
         Parameters(params): Parameters<DiscoverBusinessParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let client = reqwest::Client::new();
-        let discovery =
-            said_core::discovery::discover_domain(&client, &params.domain)
-                .await
-                .map_err(|e| ErrorData::internal_error(format!("{}", e), None))?;
+        let discovery = said_core::discovery::discover_domain(&client, &params.domain)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("{}", e), None))?;
 
         let json = serde_json::to_string_pretty(&discovery).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -780,10 +777,9 @@ impl SaidServer {
         Parameters(params): Parameters<FetchAgentsTxtParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let client = reqwest::Client::new();
-        let agents_txt =
-            said_core::discovery::fetch_agents_txt(&client, &params.domain)
-                .await
-                .map_err(|e| ErrorData::internal_error(format!("{}", e), None))?;
+        let agents_txt = said_core::discovery::fetch_agents_txt(&client, &params.domain)
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("{}", e), None))?;
 
         let json = serde_json::to_string_pretty(&agents_txt).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -841,9 +837,9 @@ impl SaidServer {
         let client = reqwest::Client::new();
         let method_str = params.method.as_deref().unwrap_or("GET").to_uppercase();
 
-        let method: reqwest::Method = method_str
-            .parse()
-            .map_err(|_| ErrorData::internal_error(format!("Invalid HTTP method: {}", method_str), None))?;
+        let method: reqwest::Method = method_str.parse().map_err(|_| {
+            ErrorData::internal_error(format!("Invalid HTTP method: {}", method_str), None)
+        })?;
 
         let mut request = client.request(method, &params.url);
 
@@ -1077,10 +1073,7 @@ impl SaidServer {
         let client = said_solana::SolanaClient::new(&rpc_url, &dummy_kp)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-        let sol_balance = client
-            .get_balance_of(&address)
-            .await
-            .unwrap_or(0);
+        let sol_balance = client.get_balance_of(&address).await.unwrap_or(0);
 
         let wallet_bytes = bs58::decode(&address)
             .into_vec()
@@ -1182,7 +1175,12 @@ impl SaidServer {
 
             // Derive agent signing key
             let kp = wallet.agent_solana_keypair(agent.index);
-            (kp, agent.id, agent.label.clone(), agent.solana_address.clone())
+            (
+                kp,
+                agent.id,
+                agent.label.clone(),
+                agent.solana_address.clone(),
+            )
         };
 
         let client = said_solana::SolanaClient::new(&rpc_url, &kp_bytes)
@@ -1230,7 +1228,10 @@ impl SaidServer {
         let wallet = self.wallet.lock().unwrap();
         let _ = wallet.log_transaction(tx);
 
-        let explorer = format!("https://explorer.solana.com/tx/{}?cluster=devnet", signature);
+        let explorer = format!(
+            "https://explorer.solana.com/tx/{}?cluster=devnet",
+            signature
+        );
         let output = format!(
             "Sent {} {} from '{}' to {}\nTX: {}\nExplorer: {}",
             params.amount, currency_str, agent_label, params.to, signature, explorer
@@ -1384,7 +1385,10 @@ impl SaidServer {
                 daily as f64 / 1e9
             ));
         } else {
-            output.push_str(&format!("  Daily:     {:.9} SOL (unlimited)\n", sol_spent as f64 / 1e9));
+            output.push_str(&format!(
+                "  Daily:     {:.9} SOL (unlimited)\n",
+                sol_spent as f64 / 1e9
+            ));
         }
         if let Some(per_tx) = policy.per_tx_limit_lamports {
             output.push_str(&format!("  Per-TX:    {:.9} SOL\n", per_tx as f64 / 1e9));
@@ -1398,7 +1402,10 @@ impl SaidServer {
                 daily as f64 / 1e6
             ));
         } else {
-            output.push_str(&format!("  Daily:     {:.6} USDC (unlimited)\n", usdc_spent as f64 / 1e6));
+            output.push_str(&format!(
+                "  Daily:     {:.6} USDC (unlimited)\n",
+                usdc_spent as f64 / 1e6
+            ));
         }
         if let Some(per_tx) = policy.per_tx_limit_usdc_micro {
             output.push_str(&format!("  Per-TX:    {:.6} USDC\n", per_tx as f64 / 1e6));
@@ -1433,8 +1440,7 @@ impl SaidServer {
             .spending_status(agent.id)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
-        let json = serde_json::to_string_pretty(&status)
-            .unwrap_or_default();
+        let json = serde_json::to_string_pretty(&status).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
@@ -1627,9 +1633,9 @@ impl SaidServer {
             .await
             .map_err(|e| ErrorData::internal_error(format!("JSON error: {e}"), None))?;
 
-        let service = svc_data.get("service").ok_or_else(|| {
-            ErrorData::internal_error("Service not found".to_string(), None)
-        })?;
+        let service = svc_data
+            .get("service")
+            .ok_or_else(|| ErrorData::internal_error("Service not found".to_string(), None))?;
 
         let base_url = service
             .get("base_url")
@@ -1661,7 +1667,9 @@ impl SaidServer {
         };
 
         if let Some(ref body) = params.body {
-            req = req.header("Content-Type", "application/json").body(body.clone());
+            req = req
+                .header("Content-Type", "application/json")
+                .body(body.clone());
         }
         if let Some(ref auth) = params.authorization {
             req = req.header("Authorization", auth.as_str());
@@ -1716,9 +1724,10 @@ impl SaidServer {
                     )
                 })?;
 
-            let daily_budget = params.daily_budget_usdc.as_ref().map(|d| {
-                (d.parse::<f64>().unwrap_or(0.0) * 1_000_000.0) as i64
-            });
+            let daily_budget = params
+                .daily_budget_usdc
+                .as_ref()
+                .map(|d| (d.parse::<f64>().unwrap_or(0.0) * 1_000_000.0) as i64);
 
             let id = agent.id;
             let body = serde_json::json!({
@@ -1773,9 +1782,9 @@ impl SaidServer {
         // ── Step 1: Probe the URL to obtain the 402 payment terms ──
         let http = reqwest::Client::new();
         let probe_req = {
-            let m: reqwest::Method = method_str
-                .parse()
-                .map_err(|_| ErrorData::internal_error(format!("invalid method: {}", method_str), None))?;
+            let m: reqwest::Method = method_str.parse().map_err(|_| {
+                ErrorData::internal_error(format!("invalid method: {}", method_str), None)
+            })?;
             let mut r = http.request(m.clone(), &params.url);
             if let Some(ref b) = params.body {
                 r = r.header("Content-Type", "application/json").body(b.clone());
@@ -1804,22 +1813,39 @@ impl SaidServer {
             .headers()
             .get("payment-required")
             .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| ErrorData::internal_error("Missing PAYMENT-REQUIRED header in 402 response".to_string(), None))?
+            .ok_or_else(|| {
+                ErrorData::internal_error(
+                    "Missing PAYMENT-REQUIRED header in 402 response".to_string(),
+                    None,
+                )
+            })?
             .to_string();
 
-        let payment_required = GholaX402Client::parse_payment_required(&payment_header)
-            .map_err(|e| ErrorData::internal_error(format!("failed to parse payment terms: {e}"), None))?;
+        let payment_required =
+            GholaX402Client::parse_payment_required(&payment_header).map_err(|e| {
+                ErrorData::internal_error(format!("failed to parse payment terms: {e}"), None)
+            })?;
 
         // ── Step 2: Select the best Solana payment option ──
         let option = payment_required
             .best_solana_option(is_devnet)
-            .ok_or_else(|| ErrorData::internal_error("No compatible payment option in 402 response".to_string(), None))?
+            .ok_or_else(|| {
+                ErrorData::internal_error(
+                    "No compatible payment option in 402 response".to_string(),
+                    None,
+                )
+            })?
             .clone();
 
-        let amount_micro_usdc = said_x402::X402PaymentRequired::parse_amount(&option.max_amount_required)
-            .ok_or_else(|| ErrorData::internal_error(
-                format!("unparseable payment amount: {}", option.max_amount_required), None
-            ))?;
+        let amount_micro_usdc = said_x402::X402PaymentRequired::parse_amount(
+            &option.max_amount_required,
+        )
+        .ok_or_else(|| {
+            ErrorData::internal_error(
+                format!("unparseable payment amount: {}", option.max_amount_required),
+                None,
+            )
+        })?;
         let pay_to = option.pay_to.clone();
 
         // ── Step 3: Assess merchant trust ──
@@ -1866,7 +1892,10 @@ impl SaidServer {
             .into_vec()
             .map_err(|e| ErrorData::internal_error(format!("invalid payTo address: {e}"), None))?;
         if to_bytes.len() != 32 {
-            return Err(ErrorData::internal_error("payTo must be a 32-byte Solana address".to_string(), None));
+            return Err(ErrorData::internal_error(
+                "payTo must be a 32-byte Solana address".to_string(),
+                None,
+            ));
         }
         let mut to_arr = [0u8; 32];
         to_arr.copy_from_slice(&to_bytes);
@@ -1897,14 +1926,14 @@ impl SaidServer {
         let network = option.network.clone();
         let sender_pubkey = bs58::encode(&kp_bytes[32..]).into_string();
         let proof = X402PaymentPayload::from_solana_tx(&network, &tx_sig, &sender_pubkey);
-        let payment_header_value = proof
-            .encode()
-            .map_err(|e| ErrorData::internal_error(format!("failed to encode payment proof: {e}"), None))?;
+        let payment_header_value = proof.encode().map_err(|e| {
+            ErrorData::internal_error(format!("failed to encode payment proof: {e}"), None)
+        })?;
 
         // ── Step 8: Retry the original request with payment proof ──
-        let m: reqwest::Method = method_str
-            .parse()
-            .map_err(|_| ErrorData::internal_error(format!("invalid method: {}", method_str), None))?;
+        let m: reqwest::Method = method_str.parse().map_err(|_| {
+            ErrorData::internal_error(format!("invalid method: {}", method_str), None)
+        })?;
         let mut retry_req = http
             .request(m, &params.url)
             .header("x402-Payment", &payment_header_value);
@@ -1996,9 +2025,10 @@ impl SaidServer {
             .api_url
             .unwrap_or_else(|| "https://ghola-api.onrender.com".to_string());
         let limit = params.limit.unwrap_or(10);
-        let max_price_micro = params.max_price_usdc.as_deref().map(|p| {
-            (p.parse::<f64>().unwrap_or(f64::MAX) * 1_000_000.0) as u64
-        });
+        let max_price_micro = params
+            .max_price_usdc
+            .as_deref()
+            .map(|p| (p.parse::<f64>().unwrap_or(f64::MAX) * 1_000_000.0) as u64);
         let min_rep = params.min_reputation.unwrap_or(0.0);
         let http = reqwest::Client::new();
 
@@ -2052,9 +2082,9 @@ impl SaidServer {
                             .and_then(|s| s.get("tags"))
                             .and_then(|t| serde_json::from_value(t.clone()).ok())
                             .unwrap_or_default();
-                        let has_tag = tag_filter.iter().any(|tf| {
-                            svc_tags.iter().any(|st| st.eq_ignore_ascii_case(tf))
-                        });
+                        let has_tag = tag_filter
+                            .iter()
+                            .any(|tf| svc_tags.iter().any(|st| st.eq_ignore_ascii_case(tf)));
                         if !has_tag {
                             continue;
                         }
@@ -2157,8 +2187,14 @@ impl SaidServer {
 
         // Sort by reputation descending
         results.sort_by(|a, b| {
-            let sa = a.get("reputation_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let sb = b.get("reputation_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let sa = a
+                .get("reputation_score")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let sb = b
+                .get("reputation_score")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
             sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
 
@@ -2233,8 +2269,14 @@ impl SaidServer {
                 Some(r) => r.json().await.unwrap_or_default(),
                 None => serde_json::Value::Null,
             };
-            let score = rep_data.get("overall_score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-            let conf = rep_data.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let score = rep_data
+                .get("overall_score")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
+            let conf = rep_data
+                .get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
             let components = rep_data.get("components").cloned();
             (score, conf, components)
         } else {
@@ -2291,9 +2333,15 @@ impl SaidServer {
 
         // 5. Composite trust score
         let identity_found = !provider_did.is_empty();
-        let verified_badge = service.get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
+        let verified_badge = service
+            .get("verified")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let on_chain_registered = on_chain_attestation.is_some()
-            || service.get("on_chain_registered").and_then(|v| v.as_bool()).unwrap_or(false);
+            || service
+                .get("on_chain_registered")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
         let mut composite_score = on_chain_attestation
             .as_ref()
@@ -2311,13 +2359,25 @@ impl SaidServer {
         }
 
         let (recommendation, reason) = if !identity_found {
-            ("caution", "Service has no verifiable DID. Unverified provider — proceed with caution.")
+            (
+                "caution",
+                "Service has no verifiable DID. Unverified provider — proceed with caution.",
+            )
         } else if composite_score >= 0.7 {
-            ("pay", "Service is verified with good reputation. Safe to proceed.")
+            (
+                "pay",
+                "Service is verified with good reputation. Safe to proceed.",
+            )
         } else if composite_score >= 0.3 {
-            ("caution", "Service found but reputation is moderate. Consider the amount before proceeding.")
+            (
+                "caution",
+                "Service found but reputation is moderate. Consider the amount before proceeding.",
+            )
         } else {
-            ("reject", "Service has low reputation score. Payment not recommended.")
+            (
+                "reject",
+                "Service has low reputation score. Payment not recommended.",
+            )
         };
 
         let assessment = serde_json::json!({
@@ -2455,7 +2515,10 @@ impl SaidServer {
                 Some(r) => r.json().await.unwrap_or_default(),
                 None => serde_json::Value::Null,
             };
-            rep_data.get("overall_score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32
+            rep_data
+                .get("overall_score")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32
         } else {
             0.0
         };
@@ -2479,7 +2542,12 @@ impl SaidServer {
                 .check_spending_limit(agent.id, &PayCurrency::Usdc, price_micro_usdc)
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
             let kp = wallet.agent_solana_keypair(agent.index);
-            (kp, agent.id, agent.label.clone(), agent.solana_address.clone())
+            (
+                kp,
+                agent.id,
+                agent.label.clone(),
+                agent.solana_address.clone(),
+            )
         };
 
         // ── Step 5: Initial service call (may return 402) ─────────────────────
@@ -2535,7 +2603,10 @@ impl SaidServer {
                 .into_vec()
                 .map_err(|e| ErrorData::internal_error(format!("Invalid payTo: {e}"), None))?;
             if to_bytes.len() != 32 {
-                return Err(ErrorData::internal_error("payTo must be 32 bytes".to_string(), None));
+                return Err(ErrorData::internal_error(
+                    "payTo must be 32 bytes".to_string(),
+                    None,
+                ));
             }
             let mut to_arr = [0u8; 32];
             to_arr.copy_from_slice(&to_bytes);
@@ -2607,7 +2678,10 @@ impl SaidServer {
             ))]))
         } else {
             // Service responded directly — no payment needed
-            let body_text = initial_resp.text().await.unwrap_or_else(|_| "<empty>".into());
+            let body_text = initial_resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<empty>".into());
             Ok(CallToolResult::success(vec![Content::text(format!(
                 "=== said_discover_and_pay: Direct response (no x402) ===\n\n\
                  Service:     {slug}\n\

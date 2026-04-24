@@ -169,8 +169,7 @@ fn well_known_said_parses_correctly() {
         ]
     });
 
-    let wk: said_types::WellKnownSaid =
-        serde_json::from_value(json).expect("deserialize");
+    let wk: said_types::WellKnownSaid = serde_json::from_value(json).expect("deserialize");
 
     assert_eq!(wk.did, "did:key:z6MkMerchant");
     assert_eq!(wk.said_version, "1.0");
@@ -194,8 +193,7 @@ fn well_known_said_payment_config() {
         }
     });
 
-    let wk: said_types::WellKnownSaid =
-        serde_json::from_value(json).expect("deserialize");
+    let wk: said_types::WellKnownSaid = serde_json::from_value(json).expect("deserialize");
 
     let payment = wk.payment.expect("payment config");
     assert_eq!(payment.receive_address, "SoLaNaAdDrEsS123");

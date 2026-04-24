@@ -29,9 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let envelope =
         Envelope::new(MessageType::ListInstalledApps).with_target(cfg.device_pubkey.clone());
 
-    let response = conn
-        .send_command(envelope, Duration::from_secs(15))
-        .await?;
+    let response = conn.send_command(envelope, Duration::from_secs(15)).await?;
 
     match response.message {
         MessageType::InstalledAppsResult(result) => {
@@ -48,7 +46,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     })
                     .collect();
 
-                println!("=== Apps matching '{}' ({} results) ===\n", f, filtered.len());
+                println!(
+                    "=== Apps matching '{}' ({} results) ===\n",
+                    f,
+                    filtered.len()
+                );
                 for app in &filtered {
                     println!("  {} — {}", app.label, app.package);
                 }

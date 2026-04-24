@@ -12,7 +12,7 @@ use axum::{
 };
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager,
-    tower::{StreamableHttpService, StreamableHttpServerConfig},
+    tower::{StreamableHttpServerConfig, StreamableHttpService},
 };
 use tower_http::cors::CorsLayer;
 
@@ -33,11 +33,7 @@ struct AuthState {
 }
 
 /// Auth middleware: extracts and verifies the UCAN bearer token from the Authorization header.
-async fn auth_middleware(
-    state: AuthState,
-    req: Request,
-    next: Next,
-) -> Result<Response, Response> {
+async fn auth_middleware(state: AuthState, req: Request, next: Next) -> Result<Response, Response> {
     // Extract bearer token from Authorization header
     let auth_header = req
         .headers()
@@ -74,9 +70,10 @@ async fn auth_middleware(
         // Check that the session is not revoked
         let sessions: Vec<said_types::ProviderSession> =
             wallet.storage().load("sessions").unwrap_or_default();
-        let session = sessions.iter().find(|s| s.token == token).ok_or_else(|| {
-            (StatusCode::UNAUTHORIZED, "Unknown session token").into_response()
-        })?;
+        let session = sessions
+            .iter()
+            .find(|s| s.token == token)
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Unknown session token").into_response())?;
         if session.revoked {
             return Err((StatusCode::UNAUTHORIZED, "Session has been revoked").into_response());
         }
@@ -95,10 +92,7 @@ async fn auth_middleware(
 }
 
 /// Start the HTTP MCP server with UCAN authentication.
-pub async fn run_http_server(
-    wallet: Wallet,
-    port: u16,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_http_server(wallet: Wallet, port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let wallet = Arc::new(Mutex::new(wallet));
 
     let auth_state = AuthState {
@@ -116,11 +110,7 @@ pub async fn run_http_server(
     let wallet_for_factory = wallet.clone();
     let mcp_service = StreamableHttpService::new(
         move || {
-            let caps = caps_for_factory
-                .lock()
-                .unwrap()
-                .take()
-                .unwrap_or_default();
+            let caps = caps_for_factory.lock().unwrap().take().unwrap_or_default();
             let label = label_for_factory.lock().unwrap().take();
             Ok(SaidServer::new_with_auth(
                 wallet_for_factory.clone(),

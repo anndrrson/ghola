@@ -36,14 +36,12 @@ pub async fn create_link_code(
         .await?;
 
     // Insert new code
-    sqlx::query(
-        "INSERT INTO telegram_link_codes (user_id, code, expires_at) VALUES ($1, $2, $3)",
-    )
-    .bind(claims.sub)
-    .bind(&code)
-    .bind(expires_at)
-    .execute(&state.db)
-    .await?;
+    sqlx::query("INSERT INTO telegram_link_codes (user_id, code, expires_at) VALUES ($1, $2, $3)")
+        .bind(claims.sub)
+        .bind(&code)
+        .bind(expires_at)
+        .execute(&state.db)
+        .await?;
 
     Ok(Json(TelegramLinkCodeResponse {
         code,

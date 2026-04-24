@@ -9,16 +9,16 @@ pub async fn handle_calendar_request(
     user_id: Uuid,
     params: &serde_json::Value,
 ) -> Result<serde_json::Value, CloudError> {
-    let action = params["action"]
-        .as_str()
-        .unwrap_or("create_event");
+    let action = params["action"].as_str().unwrap_or("create_event");
 
     match action {
         "create_event" => create_event(state, user_id, params).await,
         "list_events" => list_events(state, user_id, params).await,
         "update_event" => update_event(state, user_id, params).await,
         "delete_event" => delete_event(state, user_id, params).await,
-        _ => Err(CloudError::BadRequest(format!("unknown calendar action: {action}"))),
+        _ => Err(CloudError::BadRequest(format!(
+            "unknown calendar action: {action}"
+        ))),
     }
 }
 
@@ -78,10 +78,22 @@ async fn refresh_google_token(
     user_id: Uuid,
     refresh_token: &str,
 ) -> Result<String, CloudError> {
-    let client_id = state.config.gmail_client_id.as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Google OAuth not configured".to_string()))?;
-    let client_secret = state.config.gmail_client_secret.as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Google OAuth not configured".to_string()))?;
+    let client_id =
+        state
+            .config
+            .gmail_client_id
+            .as_deref()
+            .ok_or(CloudError::ServiceUnavailable(
+                "Google OAuth not configured".to_string(),
+            ))?;
+    let client_secret =
+        state
+            .config
+            .gmail_client_secret
+            .as_deref()
+            .ok_or(CloudError::ServiceUnavailable(
+                "Google OAuth not configured".to_string(),
+            ))?;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -97,13 +109,16 @@ async fn refresh_google_token(
         .map_err(|e| CloudError::Internal(format!("token refresh failed: {e}")))?;
 
     let body: serde_json::Value = resp.json().await.unwrap_or_default();
-    let new_access_token = body["access_token"]
-        .as_str()
-        .ok_or(CloudError::Internal("no access_token in refresh response".to_string()))?;
+    let new_access_token = body["access_token"].as_str().ok_or(CloudError::Internal(
+        "no access_token in refresh response".to_string(),
+    ))?;
     let expires_in = body["expires_in"].as_i64().unwrap_or(3600);
 
     // Update stored tokens
-    let encrypted = crate::services::email_service::encrypt_token(new_access_token, &state.config.encryption_key)?;
+    let encrypted = crate::services::email_service::encrypt_token(
+        new_access_token,
+        &state.config.encryption_key,
+    )?;
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(expires_in);
 
     sqlx::query(
@@ -134,10 +149,12 @@ async fn create_event(
     let access_token = get_calendar_token(state, user_id).await?;
 
     let title = params["title"].as_str().unwrap_or("New Event");
-    let start = params["start"].as_str()
-        .ok_or(CloudError::BadRequest("missing 'start' time for event".to_string()))?;
-    let end = params["end"].as_str()
-        .ok_or(CloudError::BadRequest("missing 'end' time for event".to_string()))?;
+    let start = params["start"].as_str().ok_or(CloudError::BadRequest(
+        "missing 'start' time for event".to_string(),
+    ))?;
+    let end = params["end"].as_str().ok_or(CloudError::BadRequest(
+        "missing 'end' time for event".to_string(),
+    ))?;
     let description = params["description"].as_str().unwrap_or("");
     let location = params["location"].as_str().unwrap_or("");
 
@@ -168,9 +185,13 @@ async fn create_event(
         let status = resp.status();
         let error_body = resp.text().await.unwrap_or_default();
         if status.as_u16() == 401 {
-            return Err(CloudError::Auth("Google token expired — re-authenticate".to_string()));
+            return Err(CloudError::Auth(
+                "Google token expired — re-authenticate".to_string(),
+            ));
         }
-        return Err(CloudError::Internal(format!("Calendar API error {status}: {error_body}")));
+        return Err(CloudError::Internal(format!(
+            "Calendar API error {status}: {error_body}"
+        )));
     }
 
     let created: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -204,10 +225,12 @@ async fn list_events(
 
     // Default: today's events
     let now = chrono::Utc::now();
-    let time_min = params["time_min"].as_str()
+    let time_min = params["time_min"]
+        .as_str()
         .unwrap_or(&now.format("%Y-%m-%dT00:00:00Z").to_string())
         .to_string();
-    let time_max = params["time_max"].as_str()
+    let time_max = params["time_max"]
+        .as_str()
         .map(|s| s.to_string())
         .unwrap_or_else(|| {
             (now + chrono::Duration::days(1))
@@ -235,9 +258,13 @@ async fn list_events(
         let status = resp.status();
         let error_body = resp.text().await.unwrap_or_default();
         if status.as_u16() == 401 {
-            return Err(CloudError::Auth("Google token expired — re-authenticate".to_string()));
+            return Err(CloudError::Auth(
+                "Google token expired — re-authenticate".to_string(),
+            ));
         }
-        return Err(CloudError::Internal(format!("Calendar API error {status}: {error_body}")));
+        return Err(CloudError::Internal(format!(
+            "Calendar API error {status}: {error_body}"
+        )));
     }
 
     let body: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -274,8 +301,9 @@ async fn update_event(
 ) -> Result<serde_json::Value, CloudError> {
     let access_token = get_calendar_token(state, user_id).await?;
 
-    let event_id = params["event_id"].as_str()
-        .ok_or(CloudError::BadRequest("missing 'event_id' for update".to_string()))?;
+    let event_id = params["event_id"].as_str().ok_or(CloudError::BadRequest(
+        "missing 'event_id' for update".to_string(),
+    ))?;
 
     // Build patch body with only provided fields
     let mut patch = serde_json::Map::new();
@@ -290,15 +318,23 @@ async fn update_event(
     }
     let tz = params["timezone"].as_str().unwrap_or("America/New_York");
     if let Some(start) = params["start"].as_str() {
-        patch.insert("start".into(), serde_json::json!({"dateTime": start, "timeZone": tz}));
+        patch.insert(
+            "start".into(),
+            serde_json::json!({"dateTime": start, "timeZone": tz}),
+        );
     }
     if let Some(end) = params["end"].as_str() {
-        patch.insert("end".into(), serde_json::json!({"dateTime": end, "timeZone": tz}));
+        patch.insert(
+            "end".into(),
+            serde_json::json!({"dateTime": end, "timeZone": tz}),
+        );
     }
 
     let client = reqwest::Client::new();
     let resp = client
-        .patch(format!("{CALENDAR_API}/calendars/primary/events/{event_id}"))
+        .patch(format!(
+            "{CALENDAR_API}/calendars/primary/events/{event_id}"
+        ))
         .header("Authorization", format!("Bearer {access_token}"))
         .json(&serde_json::Value::Object(patch))
         .send()
@@ -309,9 +345,13 @@ async fn update_event(
         let status = resp.status();
         let error_body = resp.text().await.unwrap_or_default();
         if status.as_u16() == 401 {
-            return Err(CloudError::Auth("Google token expired — re-authenticate".to_string()));
+            return Err(CloudError::Auth(
+                "Google token expired — re-authenticate".to_string(),
+            ));
         }
-        return Err(CloudError::Internal(format!("Calendar API error {status}: {error_body}")));
+        return Err(CloudError::Internal(format!(
+            "Calendar API error {status}: {error_body}"
+        )));
     }
 
     let updated: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -336,12 +376,15 @@ async fn delete_event(
 ) -> Result<serde_json::Value, CloudError> {
     let access_token = get_calendar_token(state, user_id).await?;
 
-    let event_id = params["event_id"].as_str()
-        .ok_or(CloudError::BadRequest("missing 'event_id' for delete".to_string()))?;
+    let event_id = params["event_id"].as_str().ok_or(CloudError::BadRequest(
+        "missing 'event_id' for delete".to_string(),
+    ))?;
 
     let client = reqwest::Client::new();
     let resp = client
-        .delete(format!("{CALENDAR_API}/calendars/primary/events/{event_id}"))
+        .delete(format!(
+            "{CALENDAR_API}/calendars/primary/events/{event_id}"
+        ))
         .header("Authorization", format!("Bearer {access_token}"))
         .send()
         .await
@@ -351,12 +394,16 @@ async fn delete_event(
         let status = resp.status();
         let error_body = resp.text().await.unwrap_or_default();
         if status.as_u16() == 401 {
-            return Err(CloudError::Auth("Google token expired — re-authenticate".to_string()));
+            return Err(CloudError::Auth(
+                "Google token expired — re-authenticate".to_string(),
+            ));
         }
         if status.as_u16() == 404 || status.as_u16() == 410 {
             return Err(CloudError::NotFound("calendar event not found".to_string()));
         }
-        return Err(CloudError::Internal(format!("Calendar API error {status}: {error_body}")));
+        return Err(CloudError::Internal(format!(
+            "Calendar API error {status}: {error_body}"
+        )));
     }
 
     tracing::info!(%user_id, %event_id, "calendar event deleted");

@@ -45,13 +45,13 @@ pub async fn google_sign_in(
     State(state): State<AppState>,
     Json(req): Json<GoogleSignInRequest>,
 ) -> Result<Json<AuthResponse>, CloudError> {
-    let google_client_id = state.config.google_client_id.as_deref()
-        .ok_or_else(|| {
-            tracing::error!("Google sign-in attempted but GOOGLE_CLIENT_ID not configured");
-            CloudError::ServiceUnavailable("Google sign-in is not configured".into())
-        })?;
+    let google_client_id = state.config.google_client_id.as_deref().ok_or_else(|| {
+        tracing::error!("Google sign-in attempted but GOOGLE_CLIENT_ID not configured");
+        CloudError::ServiceUnavailable("Google sign-in is not configured".into())
+    })?;
 
-    let payload = verify_google_token(&req.id_token, google_client_id).await
+    let payload = verify_google_token(&req.id_token, google_client_id)
+        .await
         .map_err(|e| {
             tracing::warn!("Google token verification failed: {e}");
             CloudError::Auth("Google sign-in failed — please try again or use email".into())
@@ -81,8 +81,19 @@ pub async fn google_sign_in(
             tracing::warn!(google_id = %payload.sub, "google auth: skipping profile update (email conflict?): {e}");
         }
 
-        let token = create_jwt(user_id, Some(&payload.email), payload.name.as_deref(), &tier, &state.config.jwt_secret)?;
-        return Ok(Json(AuthResponse { token, user_id, is_new_user: false }));
+        let token = create_jwt(
+            user_id,
+            Some(&payload.email),
+            payload.name.as_deref(),
+            &tier,
+            &state.config.jwt_secret,
+        )?;
+        auto_provision_wallet(state.clone(), user_id);
+        return Ok(Json(AuthResponse {
+            token,
+            user_id,
+            is_new_user: false,
+        }));
     }
 
     tracing::info!("google auth: no google_id match, checking email");
@@ -106,8 +117,19 @@ pub async fn google_sign_in(
         .execute(&state.db)
         .await?;
 
-        let token = create_jwt(user_id, Some(&payload.email), payload.name.as_deref(), &tier, &state.config.jwt_secret)?;
-        return Ok(Json(AuthResponse { token, user_id, is_new_user: false }));
+        let token = create_jwt(
+            user_id,
+            Some(&payload.email),
+            payload.name.as_deref(),
+            &tier,
+            &state.config.jwt_secret,
+        )?;
+        auto_provision_wallet(state.clone(), user_id);
+        return Ok(Json(AuthResponse {
+            token,
+            user_id,
+            is_new_user: false,
+        }));
     }
 
     tracing::info!("google auth: creating new user");
@@ -125,8 +147,18 @@ pub async fn google_sign_in(
     let (user_id, tier) = row;
     tracing::info!(user_id = %user_id, "google auth: new user created");
     auto_provision_wallet(state.clone(), user_id);
-    let token = create_jwt(user_id, Some(&payload.email), payload.name.as_deref(), &tier, &state.config.jwt_secret)?;
-    Ok(Json(AuthResponse { token, user_id, is_new_user: true }))
+    let token = create_jwt(
+        user_id,
+        Some(&payload.email),
+        payload.name.as_deref(),
+        &tier,
+        &state.config.jwt_secret,
+    )?;
+    Ok(Json(AuthResponse {
+        token,
+        user_id,
+        is_new_user: true,
+    }))
 }
 
 /// POST /api/auth/apple
@@ -155,8 +187,19 @@ pub async fn apple_sign_in(
             tracing::warn!(apple_id = %req.user_id, "apple auth: skipping profile update (email conflict?): {e}");
         }
 
-        let token = create_jwt(user_id, req.email.as_deref(), req.full_name.as_deref(), &tier, &state.config.jwt_secret)?;
-        return Ok(Json(AuthResponse { token, user_id, is_new_user: false }));
+        let token = create_jwt(
+            user_id,
+            req.email.as_deref(),
+            req.full_name.as_deref(),
+            &tier,
+            &state.config.jwt_secret,
+        )?;
+        auto_provision_wallet(state.clone(), user_id);
+        return Ok(Json(AuthResponse {
+            token,
+            user_id,
+            is_new_user: false,
+        }));
     }
 
     // 2. Email already in DB from another auth method? Link Apple to that account.
@@ -178,8 +221,19 @@ pub async fn apple_sign_in(
             .execute(&state.db)
             .await?;
 
-            let token = create_jwt(user_id, Some(email), req.full_name.as_deref(), &tier, &state.config.jwt_secret)?;
-            return Ok(Json(AuthResponse { token, user_id, is_new_user: false }));
+            let token = create_jwt(
+                user_id,
+                Some(email),
+                req.full_name.as_deref(),
+                &tier,
+                &state.config.jwt_secret,
+            )?;
+            auto_provision_wallet(state.clone(), user_id);
+            return Ok(Json(AuthResponse {
+                token,
+                user_id,
+                is_new_user: false,
+            }));
         }
     }
 
@@ -195,8 +249,18 @@ pub async fn apple_sign_in(
 
     let (user_id, tier) = row;
     auto_provision_wallet(state.clone(), user_id);
-    let token = create_jwt(user_id, req.email.as_deref(), req.full_name.as_deref(), &tier, &state.config.jwt_secret)?;
-    Ok(Json(AuthResponse { token, user_id, is_new_user: true }))
+    let token = create_jwt(
+        user_id,
+        req.email.as_deref(),
+        req.full_name.as_deref(),
+        &tier,
+        &state.config.jwt_secret,
+    )?;
+    Ok(Json(AuthResponse {
+        token,
+        user_id,
+        is_new_user: true,
+    }))
 }
 
 /// POST /api/auth/twitter
@@ -204,8 +268,7 @@ pub async fn twitter_sign_in(
     State(state): State<AppState>,
     Json(req): Json<TwitterSignInRequest>,
 ) -> Result<Json<AuthResponse>, CloudError> {
-    let display = req.name.clone()
-        .or_else(|| req.username.clone());
+    let display = req.name.clone().or_else(|| req.username.clone());
 
     // 1. Returning user? (already linked Twitter)
     let existing = sqlx::query_as::<_, (Uuid, String)>(
@@ -228,8 +291,19 @@ pub async fn twitter_sign_in(
             tracing::warn!(twitter_id = %req.twitter_id, "twitter auth: skipping profile update (email conflict?): {e}");
         }
 
-        let token = create_jwt(user_id, req.email.as_deref(), display.as_deref(), &tier, &state.config.jwt_secret)?;
-        return Ok(Json(AuthResponse { token, user_id, is_new_user: false }));
+        let token = create_jwt(
+            user_id,
+            req.email.as_deref(),
+            display.as_deref(),
+            &tier,
+            &state.config.jwt_secret,
+        )?;
+        auto_provision_wallet(state.clone(), user_id);
+        return Ok(Json(AuthResponse {
+            token,
+            user_id,
+            is_new_user: false,
+        }));
     }
 
     // 2. Email already in DB from another auth method? Link Twitter to that account.
@@ -251,8 +325,19 @@ pub async fn twitter_sign_in(
             .execute(&state.db)
             .await?;
 
-            let token = create_jwt(user_id, Some(email), display.as_deref(), &tier, &state.config.jwt_secret)?;
-            return Ok(Json(AuthResponse { token, user_id, is_new_user: false }));
+            let token = create_jwt(
+                user_id,
+                Some(email),
+                display.as_deref(),
+                &tier,
+                &state.config.jwt_secret,
+            )?;
+            auto_provision_wallet(state.clone(), user_id);
+            return Ok(Json(AuthResponse {
+                token,
+                user_id,
+                is_new_user: false,
+            }));
         }
     }
 
@@ -268,8 +353,18 @@ pub async fn twitter_sign_in(
 
     let (user_id, tier) = row;
     auto_provision_wallet(state.clone(), user_id);
-    let token = create_jwt(user_id, req.email.as_deref(), display.as_deref(), &tier, &state.config.jwt_secret)?;
-    Ok(Json(AuthResponse { token, user_id, is_new_user: true }))
+    let token = create_jwt(
+        user_id,
+        req.email.as_deref(),
+        display.as_deref(),
+        &tier,
+        &state.config.jwt_secret,
+    )?;
+    Ok(Json(AuthResponse {
+        token,
+        user_id,
+        is_new_user: true,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -298,22 +393,24 @@ pub async fn email_sign_up(
         return Err(CloudError::BadRequest("invalid email".to_string()));
     }
     if req.password.len() < 8 {
-        return Err(CloudError::BadRequest("password must be at least 8 characters".to_string()));
+        return Err(CloudError::BadRequest(
+            "password must be at least 8 characters".to_string(),
+        ));
     }
 
     // Hash password with HMAC-SHA256 + per-user salt
     let password_hash = hash_password_v2(&req.password);
 
     // Check if email already exists
-    let existing: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM users WHERE email = $1",
-    )
-    .bind(&req.email)
-    .fetch_optional(&state.db)
-    .await?;
+    let existing: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM users WHERE email = $1")
+        .bind(&req.email)
+        .fetch_optional(&state.db)
+        .await?;
 
     if existing.is_some() {
-        return Err(CloudError::BadRequest("email already registered — use sign in".to_string()));
+        return Err(CloudError::BadRequest(
+            "email already registered — use sign in".to_string(),
+        ));
     }
 
     let row = sqlx::query_as::<_, (Uuid, String)>(
@@ -331,7 +428,13 @@ pub async fn email_sign_up(
 
     let (user_id, tier) = row;
     auto_provision_wallet(state.clone(), user_id);
-    let token = create_jwt(user_id, Some(&req.email), req.display_name.as_deref(), &tier, &state.config.jwt_secret)?;
+    let token = create_jwt(
+        user_id,
+        Some(&req.email),
+        req.display_name.as_deref(),
+        &tier,
+        &state.config.jwt_secret,
+    )?;
 
     Ok(Json(AuthResponse {
         token,
@@ -355,8 +458,9 @@ pub async fn email_sign_in(
 
     let (user_id, tier, stored_hash, display_name) = row;
 
-    let stored_hash = stored_hash
-        .ok_or(CloudError::Auth("this account uses Apple/Google sign-in".to_string()))?;
+    let stored_hash = stored_hash.ok_or(CloudError::Auth(
+        "this account uses Apple/Google sign-in".to_string(),
+    ))?;
 
     if !verify_password(&req.password, &stored_hash) {
         return Err(CloudError::Auth("invalid email or password".to_string()));
@@ -373,7 +477,14 @@ pub async fn email_sign_in(
         tracing::info!(%user_id, "migrated password hash to v2");
     }
 
-    let token = create_jwt(user_id, Some(&req.email), display_name.as_deref(), &tier, &state.config.jwt_secret)?;
+    let token = create_jwt(
+        user_id,
+        Some(&req.email),
+        display_name.as_deref(),
+        &tier,
+        &state.config.jwt_secret,
+    )?;
+    auto_provision_wallet(state.clone(), user_id);
 
     Ok(Json(AuthResponse {
         token,
@@ -505,7 +616,7 @@ fn needs_rehash(stored: &str) -> bool {
     !stored.starts_with("v3:")
 }
 
-/// Auto-provision a Solana wallet for new users (fire-and-forget).
+/// Ensure every authenticated user has a Solana wallet (fire-and-forget).
 fn auto_provision_wallet(state: AppState, user_id: Uuid) {
     tokio::spawn(async move {
         match crate::services::wallet_service::generate_wallet(&state, user_id).await {
@@ -536,7 +647,13 @@ pub async fn refresh_token(
     .ok_or(CloudError::NotFound("user not found".to_string()))?;
 
     let (tier, email, display_name) = row;
-    let token = create_jwt(claims.sub, email.as_deref(), display_name.as_deref(), &tier, &state.config.jwt_secret)?;
+    let token = create_jwt(
+        claims.sub,
+        email.as_deref(),
+        display_name.as_deref(),
+        &tier,
+        &state.config.jwt_secret,
+    )?;
 
     Ok(Json(AuthResponse {
         token,

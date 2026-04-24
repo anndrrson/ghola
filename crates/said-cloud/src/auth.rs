@@ -14,7 +14,7 @@ const JWT_EXPIRY: u64 = 86400; // 24 hours
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: String,   // user_id (UUID as string)
+    pub sub: String, // user_id (UUID as string)
     pub email: String,
     pub exp: u64,
     pub iat: u64,
@@ -81,7 +81,10 @@ pub async fn auth_middleware(
             // Seconds until midnight UTC
             {
                 let now = chrono::Utc::now();
-                let tomorrow = (now + chrono::Duration::days(1)).date_naive().and_hms_opt(0, 0, 0).unwrap();
+                let tomorrow = (now + chrono::Duration::days(1))
+                    .date_naive()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap();
                 let midnight = tomorrow.and_utc();
                 (midnight - now).num_seconds().max(1) as u64
             },
@@ -115,10 +118,7 @@ pub async fn check_bulk_auth(
     }
 
     // Check X-Service-Key
-    if let Some(raw_key) = headers
-        .get("x-service-key")
-        .and_then(|v| v.to_str().ok())
-    {
+    if let Some(raw_key) = headers.get("x-service-key").and_then(|v| v.to_str().ok()) {
         use sha2::{Digest, Sha256};
         let key_hash = hex::encode(Sha256::digest(raw_key.as_bytes()));
         let exists: bool = sqlx::query_scalar(
@@ -229,8 +229,10 @@ pub async fn verify_google_id_token(
     validation.set_audience(&[client_id]);
     validation.set_issuer(&["accounts.google.com", "https://accounts.google.com"]);
 
-    let token_data = jsonwebtoken::decode::<GoogleTokenPayload>(id_token, &decoding_key, &validation)
-        .map_err(|e| AppError::Unauthorized(format!("Google token verification failed: {e}")))?;
+    let token_data =
+        jsonwebtoken::decode::<GoogleTokenPayload>(id_token, &decoding_key, &validation).map_err(
+            |e| AppError::Unauthorized(format!("Google token verification failed: {e}")),
+        )?;
 
     let payload = token_data.claims;
 

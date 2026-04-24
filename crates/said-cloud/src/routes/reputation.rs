@@ -359,19 +359,17 @@ async fn bootstrap_new_entities(state: &AppState) -> anyhow::Result<()> {
 
 async fn recompute_single(state: &AppState, did: &str) -> anyhow::Result<()> {
     // Determine entity type
-    let is_business: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM business_profiles WHERE did = $1)",
-    )
-    .bind(did)
-    .fetch_one(&state.db)
-    .await?;
+    let is_business: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM business_profiles WHERE did = $1)")
+            .bind(did)
+            .fetch_one(&state.db)
+            .await?;
 
-    let is_consumer: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM public_profiles WHERE did = $1)",
-    )
-    .bind(did)
-    .fetch_one(&state.db)
-    .await?;
+    let is_consumer: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public_profiles WHERE did = $1)")
+            .bind(did)
+            .fetch_one(&state.db)
+            .await?;
 
     let entity_type = if is_business {
         "business"
@@ -480,10 +478,7 @@ async fn recompute_single(state: &AppState, did: &str) -> anyhow::Result<()> {
     .await?;
 
     let avg_rating = review_stats.as_ref().and_then(|r| r.avg_rating);
-    let review_count = review_stats
-        .as_ref()
-        .and_then(|r| r.count)
-        .unwrap_or(0) as i32;
+    let review_count = review_stats.as_ref().and_then(|r| r.count).unwrap_or(0) as i32;
 
     let quality_score: f32 = avg_rating.map(|r| r / 5.0).unwrap_or(0.0).min(1.0);
 
@@ -500,15 +495,16 @@ async fn recompute_single(state: &AppState, did: &str) -> anyhow::Result<()> {
     let reliability_score: f32 = avg_uptime.map(|u| u / 100.0).unwrap_or(0.0).min(1.0);
 
     // ── History Score (0.0 - 1.0) ──
-    let account_age_days: f64 = sqlx::query_scalar(
-        r#"SELECT EXTRACT(EPOCH FROM (NOW() - LEAST(
+    let account_age_seconds: i64 = sqlx::query_scalar(
+        r#"SELECT COALESCE(EXTRACT(EPOCH FROM (NOW() - LEAST(
             COALESCE((SELECT created_at FROM public_profiles WHERE did = $1), NOW()),
             COALESCE((SELECT created_at FROM business_profiles WHERE did = $1), NOW())
-        ))) / 86400.0"#,
+        )), 0)::BIGINT"#,
     )
     .bind(did)
     .fetch_one(&state.db)
     .await?;
+    let account_age_days = account_age_seconds as f64 / 86_400.0;
 
     let history_score: f32 = (account_age_days as f32 / 365.0).min(1.0);
 
@@ -525,7 +521,7 @@ async fn recompute_single(state: &AppState, did: &str) -> anyhow::Result<()> {
 
     // ── Total volume ──
     let total_volume: i64 = sqlx::query_scalar(
-        r#"SELECT COALESCE(SUM(amount_micro_usdc), 0) FROM service_payments
+        r#"SELECT COALESCE(SUM(amount_micro_usdc), 0)::BIGINT FROM service_payments
         WHERE payer_did = $1 OR service_id IN (SELECT id FROM service_listings WHERE owner_did = $1)"#,
     )
     .bind(did)

@@ -13,14 +13,18 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.CloudAuthManager
+import xyz.ghola.app.cloud.SaidCloudClient
 import xyz.ghola.app.cloud.TaskClassifier
 import xyz.ghola.app.cloud.ThumperCloudClient
+import xyz.ghola.app.demo.DemoSeed
 import xyz.ghola.app.demo.DemoScript
 import xyz.ghola.app.service.VoiceInputService
 import xyz.ghola.app.util.AccessibilityUtil
+import java.util.concurrent.Executors
 
 /**
  * New home screen for Thumper — the AI personal assistant.
@@ -41,8 +45,10 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
     private lateinit var quickActionsContainer: LinearLayout
     private lateinit var micFab: FloatingActionButton
     private lateinit var voiceStatusText: TextView
+    private lateinit var balanceText: TextView
 
     private var cloudClient: ThumperCloudClient? = null
+    private val executor = Executors.newSingleThreadExecutor()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,6 +76,7 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         quickActionsContainer = findViewById(R.id.quickActionsContainer)
         micFab = findViewById(R.id.micFab)
         voiceStatusText = findViewById(R.id.voiceStatusText)
+        balanceText = findViewById(R.id.balanceText)
 
         // Mic FAB
         // Mic + Device card both NEED accessibility (they drive other apps).
@@ -110,6 +117,7 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
     override fun onResume() {
         super.onResume()
         updateGreeting()
+        refreshBalance()
         refreshActiveTasks()
         initCloudClient()
         // Op-Better #2: accessibility prompt no longer fires here.
@@ -145,6 +153,7 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         if (::voiceService.isInitialized) {
             voiceService.destroy()
         }
+        executor.shutdownNow()
     }
 
     private fun updateGreeting() {
@@ -168,6 +177,49 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
                 secureStorage.getCloudBaseUrl(),
                 secureStorage.getCloudAuthToken()!!
             )
+        }
+    }
+
+    private fun refreshBalance() {
+        if (BuildConfig.ENABLE_DEMO_MODE && !secureStorage.hasSaidAuth()) {
+            balanceText.text = formatUsdc(DemoSeed.walletBalanceMicroUsdc())
+            return
+        }
+
+        if (!secureStorage.hasSaidAuth()) {
+            balanceText.text = formatUsdc(0L)
+            return
+        }
+
+        balanceText.text = "..."
+        executor.execute {
+            val totalMicroUsdc = runCatching { loadOwnedAgentNetBalanceMicroUsdc() }.getOrDefault(0L)
+            runOnUiThread {
+                balanceText.text = formatUsdc(totalMicroUsdc)
+            }
+        }
+    }
+
+    private fun loadOwnedAgentNetBalanceMicroUsdc(): Long {
+        val client = SaidCloudClient(secureStorage.getSaidBaseUrl(), secureStorage.getSaidToken())
+        val agents = client.listAgents() ?: return 0L
+        var total = 0L
+        for (i in 0 until agents.length()) {
+            val agent = agents.optJSONObject(i) ?: continue
+            val agentId = agent.optString("id")
+            if (agentId.isBlank()) continue
+            val earnings = client.getAgentEarnings(agentId) ?: continue
+            total += earnings.optLong("net_micro_usdc", 0L)
+        }
+        return total
+    }
+
+    private fun formatUsdc(microUsdc: Long): String {
+        val usdc = microUsdc / 1_000_000.0
+        return if (usdc in 0.0..0.01 && usdc > 0.0) {
+            String.format("%.4f", usdc)
+        } else {
+            String.format("%.2f", usdc)
         }
     }
 
@@ -276,7 +328,7 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         // maps to a local action (open url, switch tab, pull notifications).
         // If DemoScript handles it, skip the normal cloud-classification path
         // entirely — no backend dependency, no LLM, no risk of live failure.
-        if (DemoScript.handle(this, text)) return
+        if (BuildConfig.ENABLE_DEMO_MODE && DemoScript.handle(this, text)) return
 
         // Classify and route (fallback for anything DemoScript didn't match)
         val classification = TaskClassifier.classify(text, secureStorage.hasCloudAuth())

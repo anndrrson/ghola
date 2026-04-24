@@ -11,7 +11,7 @@ use crate::state::AppState;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub sub: Uuid,       // user_id
+    pub sub: Uuid, // user_id
     pub email: Option<String>,
     pub name: Option<String>,
     pub tier: String,
@@ -21,7 +21,7 @@ pub struct Claims {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GoogleTokenPayload {
-    pub sub: String,      // Google user ID
+    pub sub: String, // Google user ID
     pub email: String,
     pub name: Option<String>,
     pub picture: Option<String>,
@@ -33,11 +33,17 @@ pub struct GoogleTokenPayload {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppleTokenPayload {
-    pub sub: String,      // Apple user ID
+    pub sub: String, // Apple user ID
     pub email: Option<String>,
 }
 
-pub fn create_jwt(user_id: Uuid, email: Option<&str>, name: Option<&str>, tier: &str, secret: &str) -> Result<String, CloudError> {
+pub fn create_jwt(
+    user_id: Uuid,
+    email: Option<&str>,
+    name: Option<&str>,
+    tier: &str,
+    secret: &str,
+) -> Result<String, CloudError> {
     let now = Utc::now();
     let claims = Claims {
         sub: user_id,
@@ -74,7 +80,10 @@ pub struct AuthUser(pub Claims);
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = CloudError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let auth_header = parts
             .headers
             .get("authorization")
@@ -201,18 +210,15 @@ pub async fn verify_google_token(
             CloudError::Auth(format!("header base64 decode failed: {e}"))
         })?;
 
-    let header: serde_json::Value = serde_json::from_slice(&header_bytes)
-        .map_err(|e| {
-            tracing::warn!("Google token header JSON parse failed: {e}");
-            CloudError::Auth(format!("invalid token header: {e}"))
-        })?;
+    let header: serde_json::Value = serde_json::from_slice(&header_bytes).map_err(|e| {
+        tracing::warn!("Google token header JSON parse failed: {e}");
+        CloudError::Auth(format!("invalid token header: {e}"))
+    })?;
 
-    let kid = header["kid"]
-        .as_str()
-        .ok_or_else(|| {
-            tracing::warn!("Google token header missing 'kid' field");
-            CloudError::Auth("no kid in token header".to_string())
-        })?;
+    let kid = header["kid"].as_str().ok_or_else(|| {
+        tracing::warn!("Google token header missing 'kid' field");
+        CloudError::Auth("no kid in token header".to_string())
+    })?;
 
     // Step 2: Fetch Google's public keys
     let client = reqwest::Client::new();
@@ -225,47 +231,44 @@ pub async fn verify_google_token(
             CloudError::Internal(format!("failed to fetch Google JWKS: {e}"))
         })?;
 
-    let jwks: GoogleJwks = jwks_resp
-        .json()
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to parse Google JWKS response: {e}");
-            CloudError::Internal(format!("failed to parse Google JWKS: {e}"))
-        })?;
+    let jwks: GoogleJwks = jwks_resp.json().await.map_err(|e| {
+        tracing::error!("Failed to parse Google JWKS response: {e}");
+        CloudError::Internal(format!("failed to parse Google JWKS: {e}"))
+    })?;
 
     // Step 3: Find the matching key
-    let key = jwks
-        .keys
-        .iter()
-        .find(|k| k.kid == kid)
-        .ok_or_else(|| {
-            tracing::warn!("No matching Google JWKS key for kid={kid}");
-            CloudError::Auth("no matching Google key for kid".to_string())
-        })?;
+    let key = jwks.keys.iter().find(|k| k.kid == kid).ok_or_else(|| {
+        tracing::warn!("No matching Google JWKS key for kid={kid}");
+        CloudError::Auth("no matching Google key for kid".to_string())
+    })?;
 
     // Step 4: Build the RSA public key and verify
-    let decoding_key = DecodingKey::from_rsa_components(&key.n, &key.e)
-        .map_err(|e| {
-            tracing::warn!("Invalid RSA key from Google JWKS: {e}");
-            CloudError::Auth(format!("invalid RSA key: {e}"))
-        })?;
+    let decoding_key = DecodingKey::from_rsa_components(&key.n, &key.e).map_err(|e| {
+        tracing::warn!("Invalid RSA key from Google JWKS: {e}");
+        CloudError::Auth(format!("invalid RSA key: {e}"))
+    })?;
 
     let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
     validation.set_audience(&[client_id]);
     validation.set_issuer(&["accounts.google.com", "https://accounts.google.com"]);
 
-    let token_data = jsonwebtoken::decode::<GoogleTokenPayload>(id_token, &decoding_key, &validation)
-        .map_err(|e| {
-            tracing::warn!("Google token verification failed (aud={client_id}): {e}");
-            CloudError::Auth(format!("Google token verification failed: {e}"))
-        })?;
+    let token_data =
+        jsonwebtoken::decode::<GoogleTokenPayload>(id_token, &decoding_key, &validation).map_err(
+            |e| {
+                tracing::warn!("Google token verification failed (aud={client_id}): {e}");
+                CloudError::Auth(format!("Google token verification failed: {e}"))
+            },
+        )?;
 
     let payload = token_data.claims;
 
     // Step 5: Additional checks
     if let Some(ref email_verified) = payload.email_verified {
         if !email_verified {
-            tracing::warn!("Google sign-in rejected: email not verified for {}", payload.email);
+            tracing::warn!(
+                "Google sign-in rejected: email not verified for {}",
+                payload.email
+            );
             return Err(CloudError::Auth("email not verified".to_string()));
         }
     }

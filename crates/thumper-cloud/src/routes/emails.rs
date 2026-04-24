@@ -85,7 +85,18 @@ pub async fn generate_email(
     )
     .await?;
 
-    let row = sqlx::query_as::<_, (Uuid, String, String, String, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            String,
+            String,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+        ),
+    >(
         r#"
         INSERT INTO email_actions (user_id, task_id, to_address, subject, body, status)
         VALUES ($1, $2, $3, $4, $5, 'draft')
@@ -142,7 +153,18 @@ pub async fn send_email(
     .await?;
 
     // Update status
-    let row = sqlx::query_as::<_, (Uuid, String, String, String, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            String,
+            String,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+        ),
+    >(
         r#"
         UPDATE email_actions SET status = 'sent', gmail_message_id = $1, sent_at = now()
         WHERE id = $2
@@ -155,7 +177,10 @@ pub async fn send_email(
     .await?;
 
     // Update usage
-    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let period_start = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-01")
+        .to_string();
     sqlx::query(
         r#"
         INSERT INTO usage_tracking (user_id, period_start, email_count)
@@ -170,7 +195,9 @@ pub async fn send_email(
     .await?;
 
     // Notify via Telegram if linked
-    if let Ok(Some(tg_link)) = crate::services::telegram::get_telegram_link(&state.db, claims.sub).await {
+    if let Ok(Some(tg_link)) =
+        crate::services::telegram::get_telegram_link(&state.db, claims.sub).await
+    {
         if let Some(ref token) = state.config.telegram_bot_token {
             let summary = format!("Email sent!\n\nTo: {}\nSubject: {}", &draft.0, &draft.2);
             let _ = crate::services::telegram::notify_user(token, tg_link.0, &summary).await;
@@ -231,7 +258,18 @@ pub async fn send_email_direct(
     .await?;
 
     // Update status to sent
-    let row = sqlx::query_as::<_, (Uuid, String, String, String, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            String,
+            String,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+        ),
+    >(
         r#"
         UPDATE email_actions SET status = 'sent', gmail_message_id = $1, sent_at = now()
         WHERE id = $2
@@ -244,7 +282,10 @@ pub async fn send_email_direct(
     .await?;
 
     // Update usage
-    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let period_start = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-01")
+        .to_string();
     sqlx::query(
         r#"
         INSERT INTO usage_tracking (user_id, period_start, email_count)
@@ -259,7 +300,9 @@ pub async fn send_email_direct(
     .await?;
 
     // Notify via Telegram if linked
-    if let Ok(Some(tg_link)) = crate::services::telegram::get_telegram_link(&state.db, claims.sub).await {
+    if let Ok(Some(tg_link)) =
+        crate::services::telegram::get_telegram_link(&state.db, claims.sub).await
+    {
         if let Some(ref token) = state.config.telegram_bot_token {
             let summary = format!("Email sent!\n\nTo: {}\nSubject: {}", &req.to, &req.subject);
             let _ = crate::services::telegram::notify_user(token, tg_link.0, &summary).await;
@@ -285,7 +328,10 @@ async fn check_email_limit(state: &AppState, user_id: Uuid, tier: &str) -> Resul
         _ => 10, // free
     };
 
-    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let period_start = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-01")
+        .to_string();
     let count: i64 = sqlx::query_scalar(
         "SELECT COALESCE(email_count, 0) FROM usage_tracking WHERE user_id = $1 AND period_start = $2::date",
     )
@@ -308,7 +354,18 @@ pub async fn list_emails(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<Vec<EmailResponse>>, CloudError> {
-    let rows = sqlx::query_as::<_, (Uuid, String, String, String, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            String,
+            String,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+        ),
+    >(
         r#"
         SELECT id, to_address, subject, body, status, created_at, sent_at
         FROM email_actions WHERE user_id = $1

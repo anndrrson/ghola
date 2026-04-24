@@ -111,9 +111,7 @@ fn user_id_from_claims(claims: &Claims) -> AppResult<Uuid> {
 
 fn validate_slug(slug: &str) -> AppResult<()> {
     if slug.is_empty() || slug.len() > 64 {
-        return Err(AppError::BadRequest(
-            "slug must be 1-64 characters".into(),
-        ));
+        return Err(AppError::BadRequest("slug must be 1-64 characters".into()));
     }
     if !slug
         .chars()
@@ -167,13 +165,12 @@ pub async fn create_agent(
     }
 
     // Reject duplicate slug for this user up front (unique constraint also enforces it)
-    let existing: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM agents WHERE user_id = $1 AND slug = $2",
-    )
-    .bind(user_id)
-    .bind(&req.slug)
-    .fetch_optional(&state.db)
-    .await?;
+    let existing: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM agents WHERE user_id = $1 AND slug = $2")
+            .bind(user_id)
+            .bind(&req.slug)
+            .fetch_optional(&state.db)
+            .await?;
     if existing.is_some() {
         return Err(AppError::Conflict(format!(
             "agent with slug '{}' already exists",
@@ -232,13 +229,12 @@ pub async fn create_agent(
     .await?;
 
     // Link the wallet back into the agent row
-    let agent: DbAgent = sqlx::query_as(
-        "UPDATE agents SET wallet_id = $1 WHERE id = $2 RETURNING *",
-    )
-    .bind(wallet.id)
-    .bind(agent.id)
-    .fetch_one(&mut *tx)
-    .await?;
+    let agent: DbAgent =
+        sqlx::query_as("UPDATE agents SET wallet_id = $1 WHERE id = $2 RETURNING *")
+            .bind(wallet.id)
+            .bind(agent.id)
+            .fetch_one(&mut *tx)
+            .await?;
 
     tx.commit().await?;
 
@@ -270,14 +266,12 @@ pub async fn get_agent(
 ) -> AppResult<Json<AgentDetailResponse>> {
     let user_id = user_id_from_claims(&claims)?;
 
-    let agent: DbAgent = sqlx::query_as(
-        "SELECT * FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
+    let agent: DbAgent = sqlx::query_as("SELECT * FROM agents WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
 
     let wallet: Option<DbAgentWallet> = if let Some(wid) = agent.wallet_id {
         sqlx::query_as("SELECT * FROM agent_wallets WHERE id = $1")
@@ -288,19 +282,17 @@ pub async fn get_agent(
         None
     };
 
-    let service_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM service_listings WHERE agent_id = $1",
-    )
-    .bind(id)
-    .fetch_one(&state.db)
-    .await?;
+    let service_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM service_listings WHERE agent_id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
 
-    let reputation_score: Option<f32> = sqlx::query_scalar(
-        "SELECT overall_score FROM reputation_scores WHERE entity_did = $1",
-    )
-    .bind(&agent.did)
-    .fetch_optional(&state.db)
-    .await?;
+    let reputation_score: Option<f32> =
+        sqlx::query_scalar("SELECT overall_score FROM reputation_scores WHERE entity_did = $1")
+            .bind(&agent.did)
+            .fetch_optional(&state.db)
+            .await?;
 
     Ok(Json(AgentDetailResponse {
         agent: agent.into(),
@@ -320,13 +312,12 @@ pub async fn update_agent(
     let user_id = user_id_from_claims(&claims)?;
 
     // Verify ownership before any update
-    let existing: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let existing: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM agents WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
     if existing.is_none() {
         return Err(AppError::NotFound("agent not found".into()));
     }
@@ -371,13 +362,12 @@ pub async fn delete_agent(
 ) -> AppResult<StatusCode> {
     let user_id = user_id_from_claims(&claims)?;
 
-    let result = sqlx::query(
-        "UPDATE agents SET status = 'archived' WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .execute(&state.db)
-    .await?;
+    let result =
+        sqlx::query("UPDATE agents SET status = 'archived' WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .execute(&state.db)
+            .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("agent not found".into()));
@@ -418,13 +408,12 @@ pub async fn list_agent_services(
     let user_id = user_id_from_claims(&claims)?;
 
     // Confirm ownership
-    let owns: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let owns: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM agents WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
     if owns.is_none() {
         return Err(AppError::NotFound("agent not found".into()));
     }
@@ -471,14 +460,12 @@ pub async fn create_agent_service(
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
     let user_id = user_id_from_claims(&claims)?;
 
-    let agent: DbAgent = sqlx::query_as(
-        "SELECT * FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
+    let agent: DbAgent = sqlx::query_as("SELECT * FROM agents WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
 
     if req.name.trim().is_empty() || req.slug.trim().is_empty() || req.base_url.trim().is_empty() {
         return Err(AppError::BadRequest(
@@ -538,21 +525,18 @@ pub async fn get_agent_reputation(
 ) -> AppResult<Json<serde_json::Value>> {
     let user_id = user_id_from_claims(&claims)?;
 
-    let agent: DbAgent = sqlx::query_as(
-        "SELECT * FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
+    let agent: DbAgent = sqlx::query_as("SELECT * FROM agents WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
 
-    let row: Option<serde_json::Value> = sqlx::query_scalar(
-        "SELECT to_jsonb(r.*) FROM reputation_scores r WHERE r.entity_did = $1",
-    )
-    .bind(&agent.did)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT to_jsonb(r.*) FROM reputation_scores r WHERE r.entity_did = $1")
+            .bind(&agent.did)
+            .fetch_optional(&state.db)
+            .await?;
 
     // No row yet → return a zeroed scaffold so the frontend always gets valid JSON
     let payload = row.unwrap_or_else(|| {
@@ -579,14 +563,12 @@ pub async fn get_agent_earnings(
 ) -> AppResult<Json<EarningsResponse>> {
     let user_id = user_id_from_claims(&claims)?;
 
-    let agent: DbAgent = sqlx::query_as(
-        "SELECT * FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
+    let agent: DbAgent = sqlx::query_as("SELECT * FROM agents WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
 
     let wallet_id = match agent.wallet_id {
         Some(w) => w,
@@ -619,12 +601,11 @@ pub async fn get_agent_earnings(
     .fetch_one(&state.db)
     .await?;
 
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM payment_transactions WHERE agent_wallet_id = $1",
-    )
-    .bind(wallet_id)
-    .fetch_one(&state.db)
-    .await?;
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM payment_transactions WHERE agent_wallet_id = $1")
+            .bind(wallet_id)
+            .fetch_one(&state.db)
+            .await?;
 
     let received = received.unwrap_or(0);
     let spent = spent.unwrap_or(0);

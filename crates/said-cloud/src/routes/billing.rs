@@ -39,8 +39,8 @@ pub async fn webhook(
     }
 
     // Parse event
-    let event: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|_| AppError::BadRequest("Invalid JSON".into()))?;
+    let event: serde_json::Value =
+        serde_json::from_str(&body).map_err(|_| AppError::BadRequest("Invalid JSON".into()))?;
 
     let event_type = event
         .get("type")
@@ -60,13 +60,12 @@ pub async fn webhook(
                     .get("metadata")
                     .and_then(|m| m.get("product"))
                     .and_then(|p| p.as_str());
-                let stripe_subscription_id = session
-                    .get("subscription")
-                    .and_then(|s| s.as_str());
+                let stripe_subscription_id = session.get("subscription").and_then(|s| s.as_str());
 
                 if let (Some(user_id), Some(product)) = (user_id, product) {
                     tracing::info!("Checkout completed: user={user_id} product={product}");
-                    handle_checkout_completed(&state, user_id, product, stripe_subscription_id).await;
+                    handle_checkout_completed(&state, user_id, product, stripe_subscription_id)
+                        .await;
                 }
             }
         }
@@ -88,7 +87,7 @@ pub async fn webhook(
                     tracing::info!("Invoice paid for customer {cid}, extending subscription");
                     let _ = sqlx::query(
                         "UPDATE users SET subscription_expires_at = NOW() + INTERVAL '35 days' \
-                         WHERE stripe_customer_id = $1 AND subscription_tier != 'free'"
+                         WHERE stripe_customer_id = $1 AND subscription_tier != 'free'",
                     )
                     .bind(cid)
                     .execute(&state.db)
@@ -205,7 +204,7 @@ async fn handle_subscription_updated(state: &AppState, sub: &serde_json::Value) 
             tracing::info!("Subscription canceled for customer {cid}, downgrading to free");
             let _ = sqlx::query(
                 "UPDATE users SET subscription_tier = 'free', subscription_expires_at = NULL, \
-                 stripe_subscription_id = NULL WHERE stripe_customer_id = $1"
+                 stripe_subscription_id = NULL WHERE stripe_customer_id = $1",
             )
             .bind(cid)
             .execute(&state.db)
@@ -222,7 +221,7 @@ async fn handle_subscription_deleted(state: &AppState, sub: &serde_json::Value) 
     tracing::info!("Subscription deleted for customer {cid}, downgrading to free");
     let _ = sqlx::query(
         "UPDATE users SET subscription_tier = 'free', subscription_expires_at = NULL, \
-         stripe_subscription_id = NULL WHERE stripe_customer_id = $1"
+         stripe_subscription_id = NULL WHERE stripe_customer_id = $1",
     )
     .bind(cid)
     .execute(&state.db)
@@ -297,7 +296,8 @@ pub async fn create_checkout(
         .map_err(|_| AppError::Internal("Invalid user ID in token".into()))?;
 
     // Get or create Stripe customer
-    let customer_id = get_or_create_stripe_customer(&state, stripe_key, user_id, &claims.email).await?;
+    let customer_id =
+        get_or_create_stripe_customer(&state, stripe_key, user_id, &claims.email).await?;
 
     // Route based on product type
     match body.product.as_str() {
@@ -338,8 +338,20 @@ async fn create_subscription_checkout(
     let params = [
         ("mode", "subscription"),
         ("customer", customer_id),
-        ("success_url", &format!("{}/identity/dashboard?billing=success", state.config.frontend_url)),
-        ("cancel_url", &format!("{}/identity/dashboard?billing=cancel", state.config.frontend_url)),
+        (
+            "success_url",
+            &format!(
+                "{}/identity/dashboard?billing=success",
+                state.config.frontend_url
+            ),
+        ),
+        (
+            "cancel_url",
+            &format!(
+                "{}/identity/dashboard?billing=cancel",
+                state.config.frontend_url
+            ),
+        ),
         ("metadata[user_id]", &user_id.to_string()),
         ("metadata[product]", product),
         ("line_items[0][price]", price_id),
@@ -364,8 +376,14 @@ async fn create_subscription_checkout(
         .get("url")
         .and_then(|u| u.as_str())
         .ok_or_else(|| {
-            let err = resp_json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str());
-            AppError::Internal(format!("Stripe checkout failed: {}", err.unwrap_or("unknown error")))
+            let err = resp_json
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str());
+            AppError::Internal(format!(
+                "Stripe checkout failed: {}",
+                err.unwrap_or("unknown error")
+            ))
         })?;
 
     Ok(Json(CheckoutResponse {
@@ -385,13 +403,31 @@ async fn create_onetime_checkout(
     let params = [
         ("mode", "payment"),
         ("customer", customer_id),
-        ("success_url", &format!("{}/identity/dashboard?billing=success", state.config.frontend_url)),
-        ("cancel_url", &format!("{}/identity/dashboard?billing=cancel", state.config.frontend_url)),
+        (
+            "success_url",
+            &format!(
+                "{}/identity/dashboard?billing=success",
+                state.config.frontend_url
+            ),
+        ),
+        (
+            "cancel_url",
+            &format!(
+                "{}/identity/dashboard?billing=cancel",
+                state.config.frontend_url
+            ),
+        ),
         ("metadata[user_id]", &user_id.to_string()),
         ("metadata[product]", product),
         ("line_items[0][price_data][currency]", "usd"),
-        ("line_items[0][price_data][product_data][name]", product_name),
-        ("line_items[0][price_data][unit_amount]", &amount_cents.to_string()),
+        (
+            "line_items[0][price_data][product_data][name]",
+            product_name,
+        ),
+        (
+            "line_items[0][price_data][unit_amount]",
+            &amount_cents.to_string(),
+        ),
         ("line_items[0][quantity]", "1"),
     ];
 
@@ -413,8 +449,14 @@ async fn create_onetime_checkout(
         .get("url")
         .and_then(|u| u.as_str())
         .ok_or_else(|| {
-            let err = resp_json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str());
-            AppError::Internal(format!("Stripe checkout failed: {}", err.unwrap_or("unknown error")))
+            let err = resp_json
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str());
+            AppError::Internal(format!(
+                "Stripe checkout failed: {}",
+                err.unwrap_or("unknown error")
+            ))
         })?;
 
     Ok(Json(CheckoutResponse {
@@ -429,12 +471,11 @@ async fn get_or_create_stripe_customer(
     email: &str,
 ) -> AppResult<String> {
     // Check if user already has a Stripe customer ID
-    let existing: Option<(Option<String>,)> = sqlx::query_as(
-        "SELECT stripe_customer_id FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let existing: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT stripe_customer_id FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     if let Some((Some(customer_id),)) = existing {
         if !customer_id.is_empty() {
@@ -534,10 +575,26 @@ pub async fn get_effective_tier(
 
 pub fn tier_limits(tier: &str) -> TierLimits {
     match tier {
-        "consumer_pro" => TierLimits { resolve_per_day: 10_000, profiles: 5, analytics: true },
-        "business" => TierLimits { resolve_per_day: 50_000, profiles: 20, analytics: true },
-        "enterprise" => TierLimits { resolve_per_day: u64::MAX, profiles: 100, analytics: true },
-        _ => TierLimits { resolve_per_day: 1_000, profiles: 1, analytics: false },
+        "consumer_pro" => TierLimits {
+            resolve_per_day: 10_000,
+            profiles: 5,
+            analytics: true,
+        },
+        "business" => TierLimits {
+            resolve_per_day: 50_000,
+            profiles: 20,
+            analytics: true,
+        },
+        "enterprise" => TierLimits {
+            resolve_per_day: u64::MAX,
+            profiles: 100,
+            analytics: true,
+        },
+        _ => TierLimits {
+            resolve_per_day: 1_000,
+            profiles: 1,
+            analytics: false,
+        },
     }
 }
 
@@ -557,9 +614,8 @@ pub async fn status(
     .fetch_optional(&state.db)
     .await?;
 
-    let (_raw_tier, stripe_customer_id, expires_at) = row.unwrap_or_else(|| {
-        ("free".to_string(), None, None)
-    });
+    let (_raw_tier, stripe_customer_id, expires_at) =
+        row.unwrap_or_else(|| ("free".to_string(), None, None));
 
     // Use effective tier (checks expiration)
     let (effective_tier, limits) = get_effective_tier(&state.db, &user_id)
@@ -623,16 +679,15 @@ pub async fn portal(
         .map_err(|_| AppError::Internal("Invalid user ID in token".into()))?;
 
     // Get user's Stripe customer ID
-    let row: Option<(Option<String>,)> = sqlx::query_as(
-        "SELECT stripe_customer_id FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT stripe_customer_id FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
 
-    let customer_id = row
-        .and_then(|(c,)| c)
-        .ok_or_else(|| AppError::BadRequest("No billing account found. Please make a purchase first.".into()))?;
+    let customer_id = row.and_then(|(c,)| c).ok_or_else(|| {
+        AppError::BadRequest("No billing account found. Please make a purchase first.".into())
+    })?;
 
     let resp = state
         .http_client
@@ -640,7 +695,10 @@ pub async fn portal(
         .header("Authorization", format!("Bearer {stripe_key}"))
         .form(&[
             ("customer", customer_id.as_str()),
-            ("return_url", &format!("{}/identity/dashboard", state.config.frontend_url)),
+            (
+                "return_url",
+                &format!("{}/identity/dashboard", state.config.frontend_url),
+            ),
         ])
         .send()
         .await

@@ -30,16 +30,35 @@ pub async fn create_checkout(
     AuthUser(claims): AuthUser,
     Json(req): Json<CreateCheckoutRequest>,
 ) -> Result<Json<CheckoutResponse>, CloudError> {
-    let stripe_key = state.config.stripe_secret_key.as_deref()
-        .ok_or(CloudError::ServiceUnavailable("billing not configured".to_string()))?;
+    let stripe_key =
+        state
+            .config
+            .stripe_secret_key
+            .as_deref()
+            .ok_or(CloudError::ServiceUnavailable(
+                "billing not configured".to_string(),
+            ))?;
 
-    let price_id = match req.tier.as_str() {
-        "pro" => state.config.stripe_price_pro.as_deref()
-            .ok_or(CloudError::ServiceUnavailable("pro price not configured".to_string()))?,
-        "unlimited" => state.config.stripe_price_unlimited.as_deref()
-            .ok_or(CloudError::ServiceUnavailable("unlimited price not configured".to_string()))?,
-        _ => return Err(CloudError::BadRequest("tier must be 'pro' or 'unlimited'".to_string())),
-    };
+    let price_id =
+        match req.tier.as_str() {
+            "pro" => {
+                state
+                    .config
+                    .stripe_price_pro
+                    .as_deref()
+                    .ok_or(CloudError::ServiceUnavailable(
+                        "pro price not configured".to_string(),
+                    ))?
+            }
+            "unlimited" => state.config.stripe_price_unlimited.as_deref().ok_or(
+                CloudError::ServiceUnavailable("unlimited price not configured".to_string()),
+            )?,
+            _ => {
+                return Err(CloudError::BadRequest(
+                    "tier must be 'pro' or 'unlimited'".to_string(),
+                ))
+            }
+        };
 
     // Get or create Stripe customer
     let email: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
@@ -55,8 +74,14 @@ pub async fn create_checkout(
         ("mode", "subscription".to_string()),
         ("line_items[0][price]", price_id.to_string()),
         ("line_items[0][quantity]", "1".to_string()),
-        ("success_url", format!("{}/billing/success", state.config.base_url)),
-        ("cancel_url", format!("{}/billing/cancel", state.config.base_url)),
+        (
+            "success_url",
+            format!("{}/billing/success", state.config.base_url),
+        ),
+        (
+            "cancel_url",
+            format!("{}/billing/cancel", state.config.base_url),
+        ),
         ("client_reference_id", claims.sub.to_string()),
     ];
 
@@ -79,14 +104,20 @@ pub async fn create_checkout(
 
     let checkout_url = body["url"]
         .as_str()
-        .ok_or(CloudError::Internal("no checkout URL in Stripe response".to_string()))?
+        .ok_or(CloudError::Internal(
+            "no checkout URL in Stripe response".to_string(),
+        ))?
         .to_string();
 
     Ok(Json(CheckoutResponse { checkout_url }))
 }
 
 /// Verify Stripe webhook signature (HMAC-SHA256).
-fn verify_stripe_signature(payload: &str, sig_header: &str, secret: &str) -> Result<(), CloudError> {
+fn verify_stripe_signature(
+    payload: &str,
+    sig_header: &str,
+    secret: &str,
+) -> Result<(), CloudError> {
     // Parse Stripe-Signature header: "t=timestamp,v1=signature"
     let mut timestamp = None;
     let mut signatures = Vec::new();
@@ -99,18 +130,23 @@ fn verify_stripe_signature(payload: &str, sig_header: &str, secret: &str) -> Res
         }
     }
 
-    let timestamp = timestamp
-        .ok_or(CloudError::BadRequest("missing timestamp in Stripe signature".to_string()))?;
+    let timestamp = timestamp.ok_or(CloudError::BadRequest(
+        "missing timestamp in Stripe signature".to_string(),
+    ))?;
 
     if signatures.is_empty() {
-        return Err(CloudError::BadRequest("missing v1 signature in Stripe header".to_string()));
+        return Err(CloudError::BadRequest(
+            "missing v1 signature in Stripe header".to_string(),
+        ));
     }
 
     // Reject if timestamp is older than 5 minutes (replay protection)
     if let Ok(ts) = timestamp.parse::<i64>() {
         let now = chrono::Utc::now().timestamp();
         if (now - ts).abs() > 300 {
-            return Err(CloudError::BadRequest("Stripe webhook timestamp too old".to_string()));
+            return Err(CloudError::BadRequest(
+                "Stripe webhook timestamp too old".to_string(),
+            ));
         }
     }
 
@@ -133,7 +169,9 @@ fn verify_stripe_signature(payload: &str, sig_header: &str, secret: &str) -> Res
     });
 
     if !matched {
-        return Err(CloudError::BadRequest("invalid Stripe webhook signature".to_string()));
+        return Err(CloudError::BadRequest(
+            "invalid Stripe webhook signature".to_string(),
+        ));
     }
 
     Ok(())
@@ -194,7 +232,9 @@ fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static s
     }
 
     // Fallback: check amount if price ID not available
-    let amount = event["data"]["object"]["amount_total"].as_i64().unwrap_or(0);
+    let amount = event["data"]["object"]["amount_total"]
+        .as_i64()
+        .unwrap_or(0);
     if amount >= 2999 {
         "unlimited"
     } else {
@@ -217,7 +257,9 @@ pub async fn billing_webhook(
     let sig_header = headers
         .get("stripe-signature")
         .and_then(|v| v.to_str().ok())
-        .ok_or(CloudError::BadRequest("missing Stripe-Signature header".to_string()))?;
+        .ok_or(CloudError::BadRequest(
+            "missing Stripe-Signature header".to_string(),
+        ))?;
     verify_stripe_signature(&body, sig_header, webhook_secret)?;
 
     let event: serde_json::Value = serde_json::from_str(&body)
@@ -230,9 +272,7 @@ pub async fn billing_webhook(
             let user_id_str = event["data"]["object"]["client_reference_id"]
                 .as_str()
                 .unwrap_or("");
-            let customer_id = event["data"]["object"]["customer"]
-                .as_str()
-                .unwrap_or("");
+            let customer_id = event["data"]["object"]["customer"].as_str().unwrap_or("");
 
             if let Ok(user_id) = user_id_str.parse::<uuid::Uuid>() {
                 // Determine tier from the checkout session's price ID
@@ -251,9 +291,7 @@ pub async fn billing_webhook(
             }
         }
         "customer.subscription.deleted" => {
-            let customer_id = event["data"]["object"]["customer"]
-                .as_str()
-                .unwrap_or("");
+            let customer_id = event["data"]["object"]["customer"].as_str().unwrap_or("");
 
             sqlx::query(
                 "UPDATE users SET tier = 'free', updated_at = now() WHERE stripe_customer_id = $1",

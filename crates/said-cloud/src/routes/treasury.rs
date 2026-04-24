@@ -49,7 +49,7 @@ pub struct UpdatePoolRequest {
 pub struct AllocateBudgetRequest {
     pub department_id: Uuid,
     pub allocated_micro_usdc: i64,
-    pub period: Option<String>,  // daily | weekly | monthly
+    pub period: Option<String>, // daily | weekly | monthly
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,13 +145,12 @@ async fn require_tenant_member(
     tenant_id: Uuid,
     user_id: Uuid,
 ) -> AppResult<String> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2",
-    )
-    .bind(tenant_id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2")
+            .bind(tenant_id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     row.map(|r| r.0)
         .ok_or_else(|| AppError::Unauthorized("Not a member of this tenant".into()))
@@ -164,7 +163,9 @@ async fn require_tenant_admin(
 ) -> AppResult<()> {
     let role = require_tenant_member(state, tenant_id, user_id).await?;
     if role != "owner" && role != "admin" {
-        return Err(AppError::Unauthorized("Admin or owner role required".into()));
+        return Err(AppError::Unauthorized(
+            "Admin or owner role required".into(),
+        ));
     }
     Ok(())
 }
@@ -184,7 +185,9 @@ pub async fn create_pool(
         return Err(AppError::BadRequest("Pool name is required".into()));
     }
     if req.funding_wallet_address.is_empty() {
-        return Err(AppError::BadRequest("Funding wallet address is required".into()));
+        return Err(AppError::BadRequest(
+            "Funding wallet address is required".into(),
+        ));
     }
 
     let pool = sqlx::query_as::<_, TreasuryPoolResponse>(
@@ -247,13 +250,12 @@ pub async fn get_pool(
 ) -> AppResult<Json<TreasuryPoolResponse>> {
     let user_id = parse_user_id(&claims)?;
 
-    let pool = sqlx::query_as::<_, TreasuryPoolResponse>(
-        "SELECT * FROM treasury_pools WHERE id = $1",
-    )
-    .bind(pool_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("Treasury pool not found".into()))?;
+    let pool =
+        sqlx::query_as::<_, TreasuryPoolResponse>("SELECT * FROM treasury_pools WHERE id = $1")
+            .bind(pool_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Treasury pool not found".into()))?;
 
     require_tenant_member(&state, pool.tenant_id, user_id).await?;
 
@@ -269,13 +271,12 @@ pub async fn update_pool(
 ) -> AppResult<Json<TreasuryPoolResponse>> {
     let user_id = parse_user_id(&claims)?;
 
-    let existing = sqlx::query_as::<_, TreasuryPoolResponse>(
-        "SELECT * FROM treasury_pools WHERE id = $1",
-    )
-    .bind(pool_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("Treasury pool not found".into()))?;
+    let existing =
+        sqlx::query_as::<_, TreasuryPoolResponse>("SELECT * FROM treasury_pools WHERE id = $1")
+            .bind(pool_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Treasury pool not found".into()))?;
 
     require_tenant_admin(&state, existing.tenant_id, user_id).await?;
 
@@ -333,7 +334,9 @@ pub async fn allocate_budget(
     require_tenant_admin(&state, tenant_id, user_id).await?;
 
     if req.allocated_micro_usdc < 0 {
-        return Err(AppError::BadRequest("Allocation must be non-negative".into()));
+        return Err(AppError::BadRequest(
+            "Allocation must be non-negative".into(),
+        ));
     }
     if allocated + req.allocated_micro_usdc > total {
         return Err(AppError::BadRequest(
@@ -555,12 +558,11 @@ pub async fn approve_request(
 ) -> AppResult<Json<ApprovalRequestResponse>> {
     let user_id = parse_user_id(&claims)?;
 
-    let existing: Option<(Uuid, String)> = sqlx::query_as(
-        "SELECT tenant_id, status FROM approval_requests WHERE id = $1",
-    )
-    .bind(request_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let existing: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT tenant_id, status FROM approval_requests WHERE id = $1")
+            .bind(request_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     let (tenant_id, status) =
         existing.ok_or_else(|| AppError::NotFound("Approval request not found".into()))?;
@@ -612,12 +614,11 @@ pub async fn reject_request(
 ) -> AppResult<Json<ApprovalRequestResponse>> {
     let user_id = parse_user_id(&claims)?;
 
-    let existing: Option<(Uuid, String)> = sqlx::query_as(
-        "SELECT tenant_id, status FROM approval_requests WHERE id = $1",
-    )
-    .bind(request_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let existing: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT tenant_id, status FROM approval_requests WHERE id = $1")
+            .bind(request_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     let (tenant_id, status) =
         existing.ok_or_else(|| AppError::NotFound("Approval request not found".into()))?;
@@ -701,13 +702,11 @@ pub async fn execute_request(
     .await?;
 
     // Update pool spent total.
-    sqlx::query(
-        "UPDATE treasury_pools SET spent_micro_usdc = spent_micro_usdc + $1 WHERE id = $2",
-    )
-    .bind(amount)
-    .bind(pool_id)
-    .execute(&state.db)
-    .await?;
+    sqlx::query("UPDATE treasury_pools SET spent_micro_usdc = spent_micro_usdc + $1 WHERE id = $2")
+        .bind(amount)
+        .bind(pool_id)
+        .execute(&state.db)
+        .await?;
 
     super::audit::emit(
         &state.db,

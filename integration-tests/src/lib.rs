@@ -52,10 +52,10 @@ pub fn fake_usdc_tx(agent_id: Uuid, agent_label: &str, amount: u64) -> PaymentTr
 /// Default policy with SOL daily 5 SOL, per-tx 1 SOL, USDC daily $50, per-tx $10.
 pub fn standard_policy() -> SpendingPolicy {
     SpendingPolicy {
-        daily_limit_lamports: Some(5_000_000_000),      // 5 SOL
-        per_tx_limit_lamports: Some(1_000_000_000),     // 1 SOL
-        daily_limit_usdc_micro: Some(50_000_000),       // $50
-        per_tx_limit_usdc_micro: Some(10_000_000),      // $10
+        daily_limit_lamports: Some(5_000_000_000),  // 5 SOL
+        per_tx_limit_lamports: Some(1_000_000_000), // 1 SOL
+        daily_limit_usdc_micro: Some(50_000_000),   // $50
+        per_tx_limit_usdc_micro: Some(10_000_000),  // $10
         allowed_recipients: vec![],
     }
 }

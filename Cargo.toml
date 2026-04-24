@@ -117,3 +117,8 @@ thumper-mcp = { path = "crates/thumper-mcp" }
 
 [profile.release]
 overflow-checks = true
+
+[patch.crates-io]
+rmcp = { path = "vendor/rmcp-0.15.0" }
+time = { path = "vendor/time-0.3.47" }
+time-macros = { path = "vendor/time-macros-0.2.27" }

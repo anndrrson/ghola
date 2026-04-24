@@ -3,6 +3,7 @@ package xyz.ghola.app.solana
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import androidx.annotation.RequiresApi
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.Signature
@@ -80,6 +81,7 @@ object SoftwareKeyStore {
      *
      * Throws [UnsupportedOperationException] on API < 33.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     fun generateKeypair(): Pair<ByteArray, ByteArray> {
         if (!Build.VERSION.SDK_INT.supportsEd25519()) {
             throw UnsupportedOperationException(
@@ -123,6 +125,7 @@ object SoftwareKeyStore {
      * [privateKeySeed] must be exactly 32 bytes (the raw ed25519 seed).
      * Returns the 64-byte signature.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     fun sign(privateKeySeed: ByteArray, message: ByteArray): ByteArray {
         if (privateKeySeed.size != 32) {
             throw IllegalArgumentException(
@@ -171,6 +174,7 @@ object SoftwareKeyStore {
      * format (32 bytes little-endian y with the sign bit of x in bit 255
      * of the last byte). Compose it manually.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun extractRawPublicKey(publicKey: EdECPublicKey): ByteArray {
         val point = publicKey.point
         val y = point.y.toByteArray() // big-endian unsigned

@@ -33,6 +33,12 @@ services:
         value: "true"
       - key: GATEWAY_BASE_URL
         value: "https://ghola-gateway.onrender.com"
+      # Settlement processor config (for merchant payouts).
+      - key: SOLANA_RPC_URL
+        value: "https://api.mainnet-beta.solana.com"
+      # Base58-encoded 64-byte keypair used for settlement transfers.
+      - key: SETTLEMENT_KEYPAIR
+        sync: false
       # Shared KEK — said-cloud encrypts, ghola-gateway decrypts. MUST match.
       # Generate with: openssl rand -hex 32
       - key: GHOLA_VAULT_KEY
@@ -89,7 +95,7 @@ services:
       - key: TURNKEY_STRICT
         value: "false"
       - key: SOLANA_RPC_URL
-        value: "https://api.devnet.solana.com"
+        value: "https://api.mainnet-beta.solana.com"
       - key: ESCROW_WALLET_ADDRESS
         sync: false
       - key: ROUTE_CACHE_TTL_SECS
@@ -118,4 +124,73 @@ services:
         value: "10485760"
       - key: ALLOWED_ORIGINS
         value: "https://ghola.xyz,https://www.ghola.xyz,http://localhost:3000"
+    healthCheckPath: /health
+
+  - type: web
+    name: ghola-cloud
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.thumper
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ghola-db
+          property: connectionString
+      - key: THUMPER_CLOUD_BIND
+        value: "0.0.0.0:10000"
+      - key: BASE_URL
+        value: "https://ghola-cloud.onrender.com"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: USAGE_RECEIPT_SECRET
+        sync: false
+      # Required for encrypted BYOM/provider credentials in thumper-cloud.
+      # Generate with: openssl rand -hex 32
+      - key: THUMPER_ENCRYPTION_KEY
+        sync: false
+      # Required for wallet/credential vault compatibility paths.
+      - key: GHOLA_VAULT_KEY
+        sync: false
+      - key: RELAY_URL
+        value: "https://ghola-relay.onrender.com"
+      - key: SOLANA_RPC_URL
+        value: "https://api.mainnet-beta.solana.com"
+      # Required for x402/payment requirements + verification.
+      - key: PLATFORM_WALLET_ADDRESS
+        sync: false
+      # Required for provider and bounty withdrawal transfers.
+      - key: TREASURY_MNEMONIC
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: TURNKEY_API_PUBLIC_KEY
+        sync: false
+      - key: TURNKEY_API_PRIVATE_KEY
+        sync: false
+      - key: TURNKEY_ORG_ID
+        sync: false
+      - key: TURNKEY_SIGN_WITH
+        sync: false
+      - key: TURNKEY_STRICT
+        value: "false"
+    healthCheckPath: /health
+
+  - type: web
+    name: ghola-relay
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.relay
+    envVars:
+      - key: THUMPER_RELAY_BIND
+        value: "0.0.0.0:10000"
+      - key: THUMPER_DEV_MODE
+        value: "false"
+      - key: THUMPER_RATE_LIMIT
+        value: "30"
+      - key: THUMPER_MAX_MSG_SIZE
+        value: "1048576"
+      - key: THUMPER_AUTH_TIMEOUT
+        value: "300"
     healthCheckPath: /health

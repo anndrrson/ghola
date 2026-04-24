@@ -4,19 +4,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::extract::Query;
+use axum::response::Html;
 use clap::{Parser, Subcommand};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use axum::extract::Query;
-use axum::response::Html;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(
-    name = "ghola",
-    about = "Ghola — your AI, your hardware",
-    version
-)]
+#[command(name = "ghola", about = "Ghola — your AI, your hardware", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -257,11 +253,21 @@ async fn cmd_status(relay_url_override: Option<String>) {
             if resp.status().is_success() {
                 match resp.json::<serde_json::Value>().await {
                     Ok(body) => {
-                        let status = body.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let status = body
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
                         let devices = body.get("devices").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let mcp_clients = body.get("mcp_clients").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let mcp_clients = body
+                            .get("mcp_clients")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
 
-                        println!("Relay:       {} ({})", if status == "ok" { "ONLINE" } else { status }, relay_url);
+                        println!(
+                            "Relay:       {} ({})",
+                            if status == "ok" { "ONLINE" } else { status },
+                            relay_url
+                        );
                         println!("Devices:     {}", devices);
                         println!("MCP Clients: {}", mcp_clients);
                     }
@@ -331,7 +337,10 @@ fn cmd_config(
 
     if generate_key {
         let keypair = generate_ed25519_keypair();
-        config.insert("mcp_pubkey".into(), toml::Value::String(keypair.pubkey.clone()));
+        config.insert(
+            "mcp_pubkey".into(),
+            toml::Value::String(keypair.pubkey.clone()),
+        );
         changed = true;
         println!("Generated new MCP keypair:");
         println!("  Public key:  {}", keypair.pubkey);
@@ -443,7 +452,8 @@ fn cmd_qr(relay_url_override: Option<String>) {
         .or_else(|| load_config_value("relay_url"))
         .unwrap_or_else(|| "ws://localhost:8080/ws".to_string());
 
-    let mcp_pubkey = load_config_value("mcp_pubkey").unwrap_or_else(|| "not_configured".to_string());
+    let mcp_pubkey =
+        load_config_value("mcp_pubkey").unwrap_or_else(|| "not_configured".to_string());
 
     // Encode config as a simple JSON payload
     let payload = serde_json::json!({
@@ -583,7 +593,10 @@ async fn cmd_login(cloud_url: String) {
     let toml_str = toml::to_string_pretty(&config).expect("failed to serialize config");
     std::fs::write(&config_path, toml_str).expect("failed to write config");
 
-    println!("Logged in successfully! Token saved to {}", config_path.display());
+    println!(
+        "Logged in successfully! Token saved to {}",
+        config_path.display()
+    );
     println!("\nRun `ghola up` to start providing GPU compute.");
 }
 
@@ -633,12 +646,21 @@ async fn cmd_up(inference_url: String, name: Option<String>) {
             }
         }
     } else {
-        println!("  Models: {} found ({})", discovered_models.len(),
-            discovered_models.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
+        println!(
+            "  Models: {} found ({})",
+            discovered_models.len(),
+            discovered_models
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 
     // 3. Check auth
-    let auth_token = std::env::var("GHOLA_TOKEN").ok()
+    let auth_token = std::env::var("GHOLA_TOKEN")
+        .ok()
         .or_else(|| load_config_value("token"))
         .unwrap_or_default();
 
@@ -659,7 +681,10 @@ async fn cmd_up(inference_url: String, name: Option<String>) {
         config.insert("token".into(), toml::Value::String(token.clone()));
         let toml_str = toml::to_string_pretty(&config).expect("failed to serialize config");
         std::fs::write(&config_path, toml_str).expect("failed to write config");
-        println!("  \x1b[32m✓ Logged in\x1b[0m — token saved to {}", config_path.display());
+        println!(
+            "  \x1b[32m✓ Logged in\x1b[0m — token saved to {}",
+            config_path.display()
+        );
 
         token
     } else {
@@ -684,15 +709,15 @@ async fn cmd_up(inference_url: String, name: Option<String>) {
     // 5. Delegate to gpu-serve with defaults
     cmd_gpu_serve(
         inference_url,
-        None,          // relay_url — use default
-        None,          // cloud_url — use default
+        None, // relay_url — use default
+        None, // cloud_url — use default
         provider_name,
-        10,            // price_input
-        30,            // price_output
-        2,             // max_concurrent
-        0,             // vram
+        10, // price_input
+        30, // price_output
+        2,  // max_concurrent
+        0,  // vram
         Some(auth_token),
-        None,          // wallet_address
+        None, // wallet_address
     )
     .await;
 }
@@ -725,7 +750,10 @@ async fn cmd_gpu_serve(
     // 2. Discover models from local inference server
     let discovered_models = discover_models(&inference_url).await;
     if discovered_models.is_empty() {
-        println!("Warning: No models discovered from {}. Provider will advertise an empty model list.", inference_url);
+        println!(
+            "Warning: No models discovered from {}. Provider will advertise an empty model list.",
+            inference_url
+        );
     } else {
         println!("Discovered {} model(s):", discovered_models.len());
         for m in &discovered_models {
@@ -827,11 +855,9 @@ async fn cmd_gpu_serve(
         }
         println!("Generated new keypair: {}", kp.pubkey);
         // Decode secret to get SigningKey
-        let key_bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            kp.secret.trim(),
-        )
-        .expect("failed to decode generated key");
+        let key_bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, kp.secret.trim())
+                .expect("failed to decode generated key");
         let sk = ed25519_dalek::SigningKey::from_bytes(
             key_bytes[..32]
                 .try_into()
@@ -859,7 +885,10 @@ async fn cmd_gpu_serve(
                 pair
             }
             Err(e) => {
-                eprintln!("Failed to connect to relay: {}. Retrying in {}s...", e, backoff_secs);
+                eprintln!(
+                    "Failed to connect to relay: {}. Retrying in {}s...",
+                    e, backoff_secs
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                 backoff_secs = (backoff_secs * 2).min(60);
                 continue;
@@ -886,8 +915,10 @@ async fn cmd_gpu_serve(
             use ed25519_dalek::Signer;
             signing_key.sign(&auth_msg.canonical_bytes())
         };
-        let sig_b64 =
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig_bytes.to_bytes());
+        let sig_b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            sig_bytes.to_bytes(),
+        );
 
         let auth_payload = thumper_types::AuthPayload {
             message: auth_msg,
@@ -896,7 +927,9 @@ async fn cmd_gpu_serve(
 
         let auth_json = serde_json::to_string(&auth_payload).unwrap();
         if let Err(e) = ws_write
-            .send(tokio_tungstenite::tungstenite::Message::Text(auth_json.into()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                auth_json.into(),
+            ))
             .await
         {
             eprintln!("Failed to send auth: {}. Reconnecting...", e);
@@ -930,18 +963,21 @@ async fn cmd_gpu_serve(
         }
 
         // Send ProviderAdvertise
-        let advertise = thumper_types::Envelope::new(thumper_types::MessageType::ProviderAdvertise(
-            thumper_types::ProviderAdvertisePayload {
-                name: name.clone(),
-                models: model_infos.clone(),
-                vram_mb: vram,
-                max_concurrent,
-                wallet_address: wallet.clone(),
-            },
-        ));
+        let advertise =
+            thumper_types::Envelope::new(thumper_types::MessageType::ProviderAdvertise(
+                thumper_types::ProviderAdvertisePayload {
+                    name: name.clone(),
+                    models: model_infos.clone(),
+                    vram_mb: vram,
+                    max_concurrent,
+                    wallet_address: wallet.clone(),
+                },
+            ));
         let adv_json = serde_json::to_string(&advertise).unwrap();
         if let Err(e) = ws_write
-            .send(tokio_tungstenite::tungstenite::Message::Text(adv_json.into()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                adv_json.into(),
+            ))
             .await
         {
             eprintln!("Failed to send advertise: {}. Reconnecting...", e);
@@ -969,7 +1005,9 @@ async fn cmd_gpu_serve(
                             }
                         }
                         _ => {
-                            println!("Received unexpected message during registration, continuing...");
+                            println!(
+                                "Received unexpected message during registration, continuing..."
+                            );
                         }
                     }
                 } else {
@@ -987,7 +1025,11 @@ async fn cmd_gpu_serve(
         }
 
         // Print live status block
-        print_status_block(model_count, total_requests.load(Ordering::Relaxed), &start_time);
+        print_status_block(
+            model_count,
+            total_requests.load(Ordering::Relaxed),
+            &start_time,
+        );
 
         // Create channel for sending messages back to the WebSocket
         let (tx, mut rx) = mpsc::unbounded_channel::<tokio_tungstenite::tungstenite::Message>();
@@ -1000,15 +1042,14 @@ async fn cmd_gpu_serve(
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 interval.tick().await;
-                let hb = thumper_types::Envelope::new(
-                    thumper_types::MessageType::ProviderHeartbeat(
+                let hb =
+                    thumper_types::Envelope::new(thumper_types::MessageType::ProviderHeartbeat(
                         thumper_types::ProviderHeartbeatPayload {
                             active_jobs: heartbeat_active.load(Ordering::Relaxed),
                             models: heartbeat_models.clone(),
                             vram_free_mb: None,
                         },
-                    ),
-                );
+                    ));
                 let json = serde_json::to_string(&hb).unwrap();
                 if heartbeat_tx
                     .send(tokio_tungstenite::tungstenite::Message::Text(json.into()))
@@ -1120,7 +1161,8 @@ fn print_status_block(model_count: usize, total_reqs: u32, start_time: &Instant)
     let mins = (elapsed.as_secs() % 3600) / 60;
     println!();
     println!("\x1b[1m━━━ Ghola Provider ━━━━━━━━━━━━━━━━━━━━\x1b[0m");
-    println!("  \x1b[32mOnline\x1b[0m · {} model{} · {} request{}",
+    println!(
+        "  \x1b[32mOnline\x1b[0m · {} model{} · {} request{}",
         model_count,
         if model_count == 1 { "" } else { "s" },
         total_reqs,
@@ -1245,7 +1287,9 @@ async fn handle_inference_request(
                                     continue;
                                 }
                                 if let Some(data) = line.strip_prefix("data: ") {
-                                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                    if let Ok(json) =
+                                        serde_json::from_str::<serde_json::Value>(data)
+                                    {
                                         if let Some(delta) = json
                                             .get("choices")
                                             .and_then(|c| c.get(0))
@@ -1265,7 +1309,8 @@ async fn handle_inference_request(
                                                     },
                                                 ),
                                             );
-                                            let json_str = serde_json::to_string(&chunk_env).unwrap();
+                                            let json_str =
+                                                serde_json::to_string(&chunk_env).unwrap();
                                             let _ = ws_sender.send(
                                                 tokio_tungstenite::tungstenite::Message::Text(
                                                     json_str.into(),
@@ -1296,16 +1341,14 @@ async fn handle_inference_request(
                     })
                     .sum::<u32>();
 
-                let end_env = envelope.response(
-                    thumper_types::MessageType::InferenceStreamEnd(
-                        thumper_types::InferenceStreamEnd {
-                            job_id: payload.job_id.clone(),
-                            input_tokens,
-                            output_tokens,
-                            latency_ms,
-                        },
-                    ),
-                );
+                let end_env = envelope.response(thumper_types::MessageType::InferenceStreamEnd(
+                    thumper_types::InferenceStreamEnd {
+                        job_id: payload.job_id.clone(),
+                        input_tokens,
+                        output_tokens,
+                        latency_ms,
+                    },
+                ));
                 let json_str = serde_json::to_string(&end_env).unwrap();
                 let _ = ws_sender.send(tokio_tungstenite::tungstenite::Message::Text(
                     json_str.into(),
@@ -1340,8 +1383,8 @@ async fn handle_inference_request(
 
                         let latency_ms = start.elapsed().as_millis() as u64;
 
-                        let resp_env = envelope.response(
-                            thumper_types::MessageType::InferenceResponse(
+                        let resp_env =
+                            envelope.response(thumper_types::MessageType::InferenceResponse(
                                 thumper_types::InferenceResponsePayload {
                                     job_id: payload.job_id.clone(),
                                     text,
@@ -1349,12 +1392,11 @@ async fn handle_inference_request(
                                     output_tokens,
                                     latency_ms,
                                 },
-                            ),
-                        );
+                            ));
                         let json_str = serde_json::to_string(&resp_env).unwrap();
-                        let _ = ws_sender.send(
-                            tokio_tungstenite::tungstenite::Message::Text(json_str.into()),
-                        );
+                        let _ = ws_sender.send(tokio_tungstenite::tungstenite::Message::Text(
+                            json_str.into(),
+                        ));
 
                         println!(
                             "Completed job {} ({}+{} tokens, {}ms)",
@@ -1362,7 +1404,12 @@ async fn handle_inference_request(
                         );
                     }
                     Err(e) => {
-                        send_error(envelope, &payload.job_id, &format!("Failed to parse inference response: {}", e), ws_sender);
+                        send_error(
+                            envelope,
+                            &payload.job_id,
+                            &format!("Failed to parse inference response: {}", e),
+                            ws_sender,
+                        );
                     }
                 }
             }

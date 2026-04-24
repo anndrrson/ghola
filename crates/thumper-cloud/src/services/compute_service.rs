@@ -2,7 +2,7 @@
 //! Manages community GPU providers, escrow, inference dispatch, quality
 //! validation, reputation, and background maintenance tasks.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 
 use chrono::{NaiveDate, Utc};
@@ -72,6 +72,85 @@ pub struct ProviderUpdate {
     pub models: Option<serde_json::Value>,
     pub max_concurrent: Option<i32>,
     pub vram_mb: Option<i32>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModelOffer {
+    pub model_id: String,
+    pub price_per_1k_input: u64,
+    pub price_per_1k_output: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EarningsEstimateRequest {
+    #[serde(default = "default_avg_input_tokens")]
+    pub avg_input_tokens: u32,
+    #[serde(default = "default_avg_output_tokens")]
+    pub avg_output_tokens: u32,
+    #[serde(default = "default_requests_per_hour_per_slot")]
+    pub requests_per_hour_per_slot: f64,
+    #[serde(default = "default_uptime_hours_per_day")]
+    pub uptime_hours_per_day: f64,
+    #[serde(default = "default_utilization_ratio")]
+    pub utilization_ratio: f64,
+    #[serde(default = "default_projection_days")]
+    pub projection_days: u32,
+}
+
+fn default_avg_input_tokens() -> u32 {
+    1000
+}
+
+fn default_avg_output_tokens() -> u32 {
+    800
+}
+
+fn default_requests_per_hour_per_slot() -> f64 {
+    12.0
+}
+
+fn default_uptime_hours_per_day() -> f64 {
+    12.0
+}
+
+fn default_utilization_ratio() -> f64 {
+    0.65
+}
+
+fn default_projection_days() -> u32 {
+    30
+}
+
+#[derive(Debug, Serialize)]
+pub struct EarningsAssumptions {
+    pub avg_input_tokens: u32,
+    pub avg_output_tokens: u32,
+    pub requests_per_hour_per_slot: f64,
+    pub uptime_hours_per_day: f64,
+    pub utilization_ratio: f64,
+    pub projection_days: u32,
+    pub max_concurrent: i32,
+    pub provider_revenue_share_pct: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelEarningsEstimate {
+    pub model_id: String,
+    pub price_per_1k_input: u64,
+    pub price_per_1k_output: u64,
+    pub estimated_requests_per_day: f64,
+    pub gross_usdc_per_day: i64,
+    pub provider_usdc_per_day: i64,
+    pub provider_usdc_projection: i64,
+    pub provider_usd_per_day: f64,
+    pub provider_usd_projection: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EarningsEstimateResponse {
+    pub assumptions: EarningsAssumptions,
+    pub models: Vec<ModelEarningsEstimate>,
 }
 
 #[derive(Debug, Serialize)]
@@ -173,6 +252,23 @@ pub struct RecentJob {
 // ---------------------------------------------------------------------------
 
 const MIN_WITHDRAWAL_USDC: i64 = 1_000_000; // $1.00
+const PROVIDER_REVENUE_SHARE_BPS: u64 = 8500;
+const MAX_MODELS_PER_PROVIDER: usize = 64;
+const MAX_MODEL_ID_LEN: usize = 128;
+const MAX_PRICE_PER_1K_USDC: u64 = 5_000_000_000; // $5,000 / 1K tokens cap
+const MIN_VRAM_MB: i32 = 1024;
+const MAX_VRAM_MB: i32 = 2_097_152; // 2TB logical cap
+const MIN_MAX_CONCURRENT: i32 = 1;
+const MAX_MAX_CONCURRENT: i32 = 512;
+const RECEIPT_SOURCE_COMPUTE_ESCROW: &str = "compute_escrow";
+const RECEIPT_VERIFY_SCAN_LIMIT: i64 = 5000;
+const REVIEW_HARD_THRESHOLD_USDC: i64 = 250_000_000; // $250
+const REVIEW_NEW_PROVIDER_DAYS: i64 = 7;
+const REVIEW_NEW_PROVIDER_MAX_USDC: i64 = 50_000_000; // $50
+const REVIEW_LOW_SUCCESS_RATE: f64 = 0.90;
+const REVIEW_LOW_SUCCESS_MAX_USDC: i64 = 20_000_000; // $20
+const REVIEW_BALANCE_SHARE_BPS: i64 = 9000; // 90%
+const REVIEW_MAX_PAYOUTS_24H: i64 = 2;
 
 #[derive(Debug, Deserialize)]
 pub struct WithdrawalRequest {
@@ -203,9 +299,456 @@ pub struct PayoutInfo {
 #[derive(Debug, Serialize)]
 pub struct PayoutSummary {
     pub total_earned_usdc: i64,
+    pub receipt_verified_earned_usdc: i64,
     pub total_withdrawn_usdc: i64,
     pub available_usdc: i64,
+    pub receipt_verified_available_usdc: i64,
     pub min_withdrawal_usdc: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReceiptVerificationSummary {
+    pub checked: usize,
+    pub valid: usize,
+    pub invalid: usize,
+    pub invalid_receipt_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UsageReceiptInfo {
+    pub id: Uuid,
+    pub source: String,
+    pub source_ref: Uuid,
+    pub model_id: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub provider_amount_usdc: i64,
+    pub platform_fee_usdc: i64,
+    pub total_cost_usdc: i64,
+    pub proof_hash: String,
+    pub receipt_sig: String,
+    pub verified: bool,
+    pub created_at: chrono::DateTime<Utc>,
+}
+
+fn normalize_display_name(display_name: &str) -> Result<String, CloudError> {
+    let name = display_name.trim();
+    if name.len() < 2 || name.len() > 80 {
+        return Err(CloudError::BadRequest(
+            "display_name must be 2..80 characters".to_string(),
+        ));
+    }
+    Ok(name.to_string())
+}
+
+fn validate_wallet_address(wallet_address: &str) -> Result<String, CloudError> {
+    let trimmed = wallet_address.trim();
+    let raw = bs58::decode(trimmed).into_vec().map_err(|_| {
+        CloudError::BadRequest("wallet_address must be a valid base58 Solana address".to_string())
+    })?;
+    if raw.len() != 32 {
+        return Err(CloudError::BadRequest(
+            "wallet_address must decode to 32 bytes".to_string(),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_vram_mb(vram_mb: i32) -> Result<(), CloudError> {
+    if !(MIN_VRAM_MB..=MAX_VRAM_MB).contains(&vram_mb) {
+        return Err(CloudError::BadRequest(format!(
+            "vram_mb must be between {MIN_VRAM_MB} and {MAX_VRAM_MB}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_max_concurrent(max_concurrent: i32) -> Result<(), CloudError> {
+    if !(MIN_MAX_CONCURRENT..=MAX_MAX_CONCURRENT).contains(&max_concurrent) {
+        return Err(CloudError::BadRequest(format!(
+            "max_concurrent must be between {MIN_MAX_CONCURRENT} and {MAX_MAX_CONCURRENT}"
+        )));
+    }
+    Ok(())
+}
+
+fn normalize_provider_status(status: &str) -> Result<String, CloudError> {
+    let normalized = status.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "online" | "offline" => Ok(normalized),
+        _ => Err(CloudError::BadRequest(
+            "status must be one of: online, offline".to_string(),
+        )),
+    }
+}
+
+fn is_valid_model_id(model_id: &str) -> bool {
+    if model_id.is_empty() || model_id.len() > MAX_MODEL_ID_LEN {
+        return false;
+    }
+    model_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':'))
+}
+
+fn parse_model_offers(models: &serde_json::Value) -> Result<Vec<ModelOffer>, CloudError> {
+    let mut offers: Vec<ModelOffer> = serde_json::from_value(models.clone()).map_err(|_| {
+        CloudError::BadRequest(
+            "models must be a JSON array of {model_id, price_per_1k_input, price_per_1k_output}"
+                .to_string(),
+        )
+    })?;
+
+    if offers.is_empty() {
+        return Err(CloudError::BadRequest(
+            "at least one model is required".to_string(),
+        ));
+    }
+
+    if offers.len() > MAX_MODELS_PER_PROVIDER {
+        return Err(CloudError::BadRequest(format!(
+            "too many models; max is {MAX_MODELS_PER_PROVIDER}"
+        )));
+    }
+
+    let mut seen = HashSet::new();
+    for offer in &mut offers {
+        offer.model_id = offer.model_id.trim().to_string();
+        if !is_valid_model_id(&offer.model_id) {
+            return Err(CloudError::BadRequest(format!(
+                "invalid model_id '{}': use 1..{} chars from [A-Za-z0-9-_.:/]",
+                offer.model_id, MAX_MODEL_ID_LEN
+            )));
+        }
+        if !seen.insert(offer.model_id.to_ascii_lowercase()) {
+            return Err(CloudError::BadRequest(format!(
+                "duplicate model_id '{}'",
+                offer.model_id
+            )));
+        }
+        if offer.price_per_1k_input == 0 || offer.price_per_1k_output == 0 {
+            return Err(CloudError::BadRequest(format!(
+                "model '{}' prices must be > 0",
+                offer.model_id
+            )));
+        }
+        if offer.price_per_1k_input > MAX_PRICE_PER_1K_USDC
+            || offer.price_per_1k_output > MAX_PRICE_PER_1K_USDC
+        {
+            return Err(CloudError::BadRequest(format!(
+                "model '{}' price too high; max is {} micro-USDC per 1k tokens",
+                offer.model_id, MAX_PRICE_PER_1K_USDC
+            )));
+        }
+    }
+
+    Ok(offers)
+}
+
+fn normalize_models_json(models: &serde_json::Value) -> Result<serde_json::Value, CloudError> {
+    let offers = parse_model_offers(models)?;
+    serde_json::to_value(offers)
+        .map_err(|e| CloudError::Internal(format!("failed to encode models: {e}")))
+}
+
+fn round_to_i64(value: f64) -> i64 {
+    value
+        .round()
+        .clamp(i64::MIN as f64, i64::MAX as f64)
+        .trunc() as i64
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+
+    let block_size = 64;
+    let mut k = vec![0u8; block_size];
+    if key.len() > block_size {
+        let hash = Sha256::digest(key);
+        k[..32].copy_from_slice(&hash);
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+
+    let mut ipad = vec![0x36u8; block_size];
+    let mut opad = vec![0x5cu8; block_size];
+    for i in 0..block_size {
+        ipad[i] ^= k[i];
+        opad[i] ^= k[i];
+    }
+
+    let mut inner = Sha256::new();
+    inner.update(&ipad);
+    inner.update(data);
+    let inner_hash = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(&opad);
+    outer.update(inner_hash);
+    let result = outer.finalize();
+
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&result);
+    out
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(data);
+    to_hex(&digest)
+}
+
+fn sign_receipt_hex(secret: &str, payload: &[u8]) -> String {
+    let sig = hmac_sha256(secret.as_bytes(), payload);
+    to_hex(&sig)
+}
+
+pub struct UsageReceiptInsert {
+    pub provider_id: Uuid,
+    pub user_id: Option<Uuid>,
+    pub job_id: Option<Uuid>,
+    pub escrow_id: Option<Uuid>,
+    pub source: &'static str,
+    pub source_ref: Uuid,
+    pub model_id: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub provider_amount_usdc: i64,
+    pub platform_fee_usdc: i64,
+    pub total_cost_usdc: i64,
+    pub metadata: serde_json::Value,
+}
+
+fn usage_receipt_payload(
+    provider_id: Uuid,
+    user_id: Option<Uuid>,
+    job_id: Option<Uuid>,
+    escrow_id: Option<Uuid>,
+    source: &str,
+    source_ref: Uuid,
+    model_id: Option<&str>,
+    input_tokens: i64,
+    output_tokens: i64,
+    provider_amount_usdc: i64,
+    platform_fee_usdc: i64,
+    total_cost_usdc: i64,
+    metadata: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "provider_id": provider_id,
+        "user_id": user_id,
+        "job_id": job_id,
+        "escrow_id": escrow_id,
+        "source": source,
+        "source_ref": source_ref,
+        "model_id": model_id,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "provider_amount_usdc": provider_amount_usdc,
+        "platform_fee_usdc": platform_fee_usdc,
+        "total_cost_usdc": total_cost_usdc,
+        "metadata": metadata,
+    })
+}
+
+pub(crate) async fn record_usage_receipt_inner<'e, E>(
+    executor: E,
+    usage_receipt_secret: &str,
+    receipt: UsageReceiptInsert,
+) -> Result<Uuid, CloudError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    if usage_receipt_secret.is_empty() {
+        return Err(CloudError::Internal(
+            "usage receipt secret must not be empty".to_string(),
+        ));
+    }
+
+    let payload = usage_receipt_payload(
+        receipt.provider_id,
+        receipt.user_id,
+        receipt.job_id,
+        receipt.escrow_id,
+        receipt.source,
+        receipt.source_ref,
+        receipt.model_id.as_deref(),
+        receipt.input_tokens,
+        receipt.output_tokens,
+        receipt.provider_amount_usdc,
+        receipt.platform_fee_usdc,
+        receipt.total_cost_usdc,
+        &receipt.metadata,
+    );
+
+    let payload_bytes = serde_json::to_vec(&payload)
+        .map_err(|e| CloudError::Internal(format!("failed to serialize receipt payload: {e}")))?;
+    let proof_hash = sha256_hex(&payload_bytes);
+    let receipt_sig = sign_receipt_hex(usage_receipt_secret, &payload_bytes);
+
+    let id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO compute_usage_receipts (
+            provider_id, user_id, job_id, escrow_id,
+            source, source_ref, model_id,
+            input_tokens, output_tokens,
+            provider_amount_usdc, platform_fee_usdc, total_cost_usdc,
+            proof_hash, receipt_sig, verified, metadata
+        ) VALUES (
+            $1, $2, $3, $4,
+            $5, $6, $7,
+            $8, $9,
+            $10, $11, $12,
+            $13, $14, true, $15
+        )
+        ON CONFLICT (source, source_ref) DO UPDATE SET
+            provider_id = EXCLUDED.provider_id,
+            user_id = EXCLUDED.user_id,
+            job_id = EXCLUDED.job_id,
+            escrow_id = EXCLUDED.escrow_id,
+            model_id = EXCLUDED.model_id,
+            input_tokens = EXCLUDED.input_tokens,
+            output_tokens = EXCLUDED.output_tokens,
+            provider_amount_usdc = EXCLUDED.provider_amount_usdc,
+            platform_fee_usdc = EXCLUDED.platform_fee_usdc,
+            total_cost_usdc = EXCLUDED.total_cost_usdc,
+            proof_hash = EXCLUDED.proof_hash,
+            receipt_sig = EXCLUDED.receipt_sig,
+            verified = true,
+            metadata = EXCLUDED.metadata
+        RETURNING id
+        "#,
+    )
+    .bind(receipt.provider_id)
+    .bind(receipt.user_id)
+    .bind(receipt.job_id)
+    .bind(receipt.escrow_id)
+    .bind(receipt.source)
+    .bind(receipt.source_ref)
+    .bind(receipt.model_id)
+    .bind(receipt.input_tokens)
+    .bind(receipt.output_tokens)
+    .bind(receipt.provider_amount_usdc)
+    .bind(receipt.platform_fee_usdc)
+    .bind(receipt.total_cost_usdc)
+    .bind(proof_hash)
+    .bind(receipt_sig)
+    .bind(receipt.metadata)
+    .fetch_one(executor)
+    .await?;
+
+    Ok(id)
+}
+
+pub async fn record_usage_receipt(
+    db: &PgPool,
+    usage_receipt_secret: &str,
+    receipt: UsageReceiptInsert,
+) -> Result<Uuid, CloudError> {
+    record_usage_receipt_inner(db, usage_receipt_secret, receipt).await
+}
+
+fn validate_estimate_request(req: &EarningsEstimateRequest) -> Result<(), CloudError> {
+    if req.avg_input_tokens == 0 {
+        return Err(CloudError::BadRequest(
+            "avg_input_tokens must be > 0".to_string(),
+        ));
+    }
+    if req.avg_output_tokens == 0 {
+        return Err(CloudError::BadRequest(
+            "avg_output_tokens must be > 0".to_string(),
+        ));
+    }
+    if !(0.0..=24.0).contains(&req.uptime_hours_per_day) || req.uptime_hours_per_day == 0.0 {
+        return Err(CloudError::BadRequest(
+            "uptime_hours_per_day must be > 0 and <= 24".to_string(),
+        ));
+    }
+    if !(0.0..=1.0).contains(&req.utilization_ratio) || req.utilization_ratio == 0.0 {
+        return Err(CloudError::BadRequest(
+            "utilization_ratio must be > 0 and <= 1".to_string(),
+        ));
+    }
+    if !(0.0..=10000.0).contains(&req.requests_per_hour_per_slot)
+        || req.requests_per_hour_per_slot == 0.0
+    {
+        return Err(CloudError::BadRequest(
+            "requests_per_hour_per_slot must be > 0 and <= 10000".to_string(),
+        ));
+    }
+    if req.projection_days == 0 || req.projection_days > 365 {
+        return Err(CloudError::BadRequest(
+            "projection_days must be in 1..=365".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn estimate_provider_earnings(
+    provider: &ProviderInfo,
+    req: EarningsEstimateRequest,
+) -> Result<EarningsEstimateResponse, CloudError> {
+    validate_estimate_request(&req)?;
+    let offers = parse_model_offers(&provider.models)?;
+    let max_concurrent = provider
+        .max_concurrent
+        .clamp(MIN_MAX_CONCURRENT, MAX_MAX_CONCURRENT);
+
+    let requests_per_day = req.requests_per_hour_per_slot
+        * req.uptime_hours_per_day
+        * req.utilization_ratio
+        * max_concurrent as f64;
+
+    let mut models: Vec<ModelEarningsEstimate> = offers
+        .into_iter()
+        .map(|offer| {
+            let gross_per_request = ((req.avg_input_tokens as f64 * offer.price_per_1k_input as f64)
+                + (req.avg_output_tokens as f64 * offer.price_per_1k_output as f64))
+                / 1000.0;
+            let gross_per_day = round_to_i64(gross_per_request * requests_per_day);
+            let provider_per_day =
+                round_to_i64(gross_per_day as f64 * PROVIDER_REVENUE_SHARE_BPS as f64 / 10_000.0);
+            let projection = provider_per_day.saturating_mul(req.projection_days as i64);
+
+            ModelEarningsEstimate {
+                model_id: offer.model_id,
+                price_per_1k_input: offer.price_per_1k_input,
+                price_per_1k_output: offer.price_per_1k_output,
+                estimated_requests_per_day: requests_per_day,
+                gross_usdc_per_day: gross_per_day,
+                provider_usdc_per_day: provider_per_day,
+                provider_usdc_projection: projection,
+                provider_usd_per_day: provider_per_day as f64 / 1_000_000.0,
+                provider_usd_projection: projection as f64 / 1_000_000.0,
+            }
+        })
+        .collect();
+
+    models.sort_by(|a, b| b.provider_usdc_projection.cmp(&a.provider_usdc_projection));
+
+    Ok(EarningsEstimateResponse {
+        assumptions: EarningsAssumptions {
+            avg_input_tokens: req.avg_input_tokens,
+            avg_output_tokens: req.avg_output_tokens,
+            requests_per_hour_per_slot: req.requests_per_hour_per_slot,
+            uptime_hours_per_day: req.uptime_hours_per_day,
+            utilization_ratio: req.utilization_ratio,
+            projection_days: req.projection_days,
+            max_concurrent,
+            provider_revenue_share_pct: PROVIDER_REVENUE_SHARE_BPS as f64 / 100.0,
+        },
+        models,
+    })
 }
 
 // =========================================================================
@@ -219,12 +762,11 @@ pub async fn register_provider(
     req: ProviderRegistration,
 ) -> Result<ProviderInfo, CloudError> {
     // Verify user has a wallet first
-    let has_wallet: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM user_wallets WHERE user_id = $1)",
-    )
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await?;
+    let has_wallet: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM user_wallets WHERE user_id = $1)")
+            .bind(user_id)
+            .fetch_one(&state.db)
+            .await?;
 
     if !has_wallet {
         return Err(CloudError::BadRequest(
@@ -232,15 +774,33 @@ pub async fn register_provider(
         ));
     }
 
-    let row = sqlx::query_as::<_, (
-        Uuid, String, String, serde_json::Value,
-        i32, i32, String,
-        i64, i64, i64,
-        f64, f64, f64,
-        Option<chrono::DateTime<Utc>>,
-        chrono::DateTime<Utc>,
-        i64,
-    )>(
+    validate_vram_mb(req.vram_mb)?;
+    validate_max_concurrent(req.max_concurrent)?;
+    let display_name = normalize_display_name(&req.display_name)?;
+    let wallet_address = validate_wallet_address(&req.wallet_address)?;
+    let models = normalize_models_json(&req.models)?;
+
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            serde_json::Value,
+            i32,
+            i32,
+            String,
+            i64,
+            i64,
+            i64,
+            f64,
+            f64,
+            f64,
+            Option<chrono::DateTime<Utc>>,
+            chrono::DateTime<Utc>,
+            i64,
+        ),
+    >(
         r#"
         INSERT INTO compute_providers (
             user_id, relay_pubkey, display_name, models, vram_mb,
@@ -269,11 +829,11 @@ pub async fn register_provider(
     )
     .bind(user_id)
     .bind(&req.relay_pubkey)
-    .bind(&req.display_name)
-    .bind(&req.models)
+    .bind(&display_name)
+    .bind(&models)
     .bind(req.vram_mb)
     .bind(req.max_concurrent)
-    .bind(&req.wallet_address)
+    .bind(&wallet_address)
     .fetch_one(&state.db)
     .await?;
 
@@ -290,7 +850,7 @@ pub async fn register_provider(
         models: row.3,
         vram_mb: row.4,
         max_concurrent: row.5,
-        wallet_address: Some(req.wallet_address),
+        wallet_address: Some(wallet_address),
         status: row.6,
         total_requests: row.7,
         total_tokens_served: row.8,
@@ -313,13 +873,12 @@ pub async fn update_provider_status(
     provider_id: Uuid,
     status: &str,
 ) -> Result<(), CloudError> {
-    let result = sqlx::query(
-        "UPDATE compute_providers SET status = $1, updated_at = now() WHERE id = $2",
-    )
-    .bind(status)
-    .bind(provider_id)
-    .execute(db)
-    .await?;
+    let result =
+        sqlx::query("UPDATE compute_providers SET status = $1, updated_at = now() WHERE id = $2")
+            .bind(status)
+            .bind(provider_id)
+            .execute(db)
+            .await?;
 
     if result.rows_affected() == 0 {
         return Err(CloudError::NotFound("provider not found".to_string()));
@@ -430,12 +989,20 @@ pub async fn get_provider_by_id(
 // =========================================================================
 
 pub async fn list_online_providers(db: &PgPool) -> Result<Vec<PublicProviderInfo>, CloudError> {
-    let rows = sqlx::query_as::<_, (
-        Uuid, String, serde_json::Value,
-        i32, String,
-        i64,
-        f64, f64, f64,
-    )>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            serde_json::Value,
+            i32,
+            String,
+            i64,
+            f64,
+            f64,
+            f64,
+        ),
+    >(
         r#"
         SELECT
             id, display_name, models,
@@ -488,11 +1055,10 @@ fn quantize_f64(val: f64, step: f64) -> f64 {
 
 /// Aggregate models across all online providers, returning per-model stats.
 pub async fn list_community_models(db: &PgPool) -> Result<Vec<CommunityModel>, CloudError> {
-    let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
-        "SELECT models FROM compute_providers WHERE status = 'online'",
-    )
-    .fetch_all(db)
-    .await?;
+    let rows: Vec<(serde_json::Value,)> =
+        sqlx::query_as("SELECT models FROM compute_providers WHERE status = 'online'")
+            .fetch_all(db)
+            .await?;
 
     // model_id -> (count, min_input, min_output)
     let mut aggregated: HashMap<String, (usize, u64, u64)> = HashMap::new();
@@ -568,15 +1134,20 @@ pub async fn update_provider(
     provider_id: Uuid,
     update: ProviderUpdate,
 ) -> Result<(), CloudError> {
-    // Run individual updates per field for simplicity
+    let mut any_updated = false;
+
     if let Some(ref models) = update.models {
+        let normalized = normalize_models_json(models)?;
         sqlx::query("UPDATE compute_providers SET models = $1, updated_at = now() WHERE id = $2")
-            .bind(models)
+            .bind(&normalized)
             .bind(provider_id)
             .execute(db)
             .await?;
+        any_updated = true;
     }
+
     if let Some(max_concurrent) = update.max_concurrent {
+        validate_max_concurrent(max_concurrent)?;
         sqlx::query(
             "UPDATE compute_providers SET max_concurrent = $1, updated_at = now() WHERE id = $2",
         )
@@ -584,19 +1155,31 @@ pub async fn update_provider(
         .bind(provider_id)
         .execute(db)
         .await?;
-    }
-    if let Some(vram_mb) = update.vram_mb {
-        sqlx::query(
-            "UPDATE compute_providers SET vram_mb = $1, updated_at = now() WHERE id = $2",
-        )
-        .bind(vram_mb)
-        .bind(provider_id)
-        .execute(db)
-        .await?;
+        any_updated = true;
     }
 
-    // If nothing was set, just touch updated_at
-    if update.models.is_none() && update.max_concurrent.is_none() && update.vram_mb.is_none() {
+    if let Some(vram_mb) = update.vram_mb {
+        validate_vram_mb(vram_mb)?;
+        sqlx::query("UPDATE compute_providers SET vram_mb = $1, updated_at = now() WHERE id = $2")
+            .bind(vram_mb)
+            .bind(provider_id)
+            .execute(db)
+            .await?;
+        any_updated = true;
+    }
+
+    if let Some(status) = update.status {
+        let normalized = normalize_provider_status(&status)?;
+        sqlx::query("UPDATE compute_providers SET status = $1, updated_at = now() WHERE id = $2")
+            .bind(&normalized)
+            .bind(provider_id)
+            .execute(db)
+            .await?;
+        any_updated = true;
+    }
+
+    // If nothing was set, just touch updated_at.
+    if !any_updated {
         sqlx::query("UPDATE compute_providers SET updated_at = now() WHERE id = $1")
             .bind(provider_id)
             .execute(db)
@@ -706,9 +1289,13 @@ pub async fn select_provider(
     let best = candidates
         .iter()
         .max_by(|a, b| {
-            let score_a = compute_score(a.reputation, a.load_ratio, a.price_per_1k_input, max_price);
-            let score_b = compute_score(b.reputation, b.load_ratio, b.price_per_1k_input, max_price);
-            score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+            let score_a =
+                compute_score(a.reputation, a.load_ratio, a.price_per_1k_input, max_price);
+            let score_b =
+                compute_score(b.reputation, b.load_ratio, b.price_per_1k_input, max_price);
+            score_a
+                .partial_cmp(&score_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
         })
         .unwrap(); // candidates is non-empty
 
@@ -792,12 +1379,11 @@ pub async fn create_escrow(
     estimated_cost_usdc: i64,
 ) -> Result<Uuid, CloudError> {
     // Fetch user's daily spending limit
-    let spending_limit: Option<i64> = sqlx::query_scalar(
-        "SELECT spending_limit_daily_usdc FROM user_wallets WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(db)
-    .await?;
+    let spending_limit: Option<i64> =
+        sqlx::query_scalar("SELECT spending_limit_daily_usdc FROM user_wallets WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?;
 
     let daily_limit = spending_limit.ok_or_else(|| {
         CloudError::BadRequest("wallet not provisioned — cannot create escrow".to_string())
@@ -857,12 +1443,15 @@ pub async fn create_escrow(
 /// released.
 pub async fn settle_escrow(
     db: &PgPool,
+    usage_receipt_secret: &str,
     escrow_id: Uuid,
     actual_input_tokens: i64,
     actual_output_tokens: i64,
     price_per_1k_input: u64,
     price_per_1k_output: u64,
 ) -> Result<EscrowSettlement, CloudError> {
+    let mut tx = db.begin().await?;
+
     let actual_cost = ((actual_input_tokens as u64 * price_per_1k_input
         + actual_output_tokens as u64 * price_per_1k_output)
         / 1000) as i64;
@@ -883,7 +1472,7 @@ pub async fn settle_escrow(
     .bind(provider_amount)
     .bind(platform_fee)
     .bind(escrow_id)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
 
     if result.rows_affected() == 0 {
@@ -899,8 +1488,54 @@ pub async fn settle_escrow(
     )
     .bind(provider_amount)
     .bind(escrow_id)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
+
+    let details: (Option<Uuid>, Uuid, Option<Uuid>, Option<String>, i64) = sqlx::query_as(
+        r#"
+        SELECT
+            eh.provider_id,
+            eh.user_id,
+            cj.id,
+            cj.model_id,
+            eh.amount_usdc
+        FROM escrow_holds eh
+        LEFT JOIN compute_jobs cj ON cj.escrow_id = eh.id
+        WHERE eh.id = $1
+        "#,
+    )
+    .bind(escrow_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    if let Some(provider_id) = details.0 {
+        record_usage_receipt_inner(
+            &mut *tx,
+            usage_receipt_secret,
+            UsageReceiptInsert {
+                provider_id,
+                user_id: Some(details.1),
+                job_id: details.2,
+                escrow_id: Some(escrow_id),
+                source: RECEIPT_SOURCE_COMPUTE_ESCROW,
+                source_ref: escrow_id,
+                model_id: details.3.clone(),
+                input_tokens: actual_input_tokens,
+                output_tokens: actual_output_tokens,
+                provider_amount_usdc: provider_amount,
+                platform_fee_usdc: platform_fee,
+                total_cost_usdc: actual_cost,
+                metadata: serde_json::json!({
+                    "price_per_1k_input": price_per_1k_input,
+                    "price_per_1k_output": price_per_1k_output,
+                    "escrow_held_amount_usdc": details.4,
+                }),
+            },
+        )
+        .await?;
+    }
+
+    tx.commit().await?;
 
     tracing::info!(
         %escrow_id,
@@ -949,10 +1584,7 @@ pub async fn refund_escrow(db: &PgPool, escrow_id: Uuid) -> Result<(), CloudErro
 // =========================================================================
 
 /// Expire escrow holds older than `max_age_secs`. Returns the count expired.
-pub async fn expire_stale_escrows(
-    db: &PgPool,
-    max_age_secs: u64,
-) -> Result<u64, CloudError> {
+pub async fn expire_stale_escrows(db: &PgPool, max_age_secs: u64) -> Result<u64, CloudError> {
     let interval_str = format!("{max_age_secs} seconds");
 
     let result = sqlx::query(
@@ -1061,11 +1693,7 @@ pub async fn complete_job(
 // 15. fail_job
 // =========================================================================
 
-pub async fn fail_job(
-    db: &PgPool,
-    job_id: Uuid,
-    error_message: &str,
-) -> Result<(), CloudError> {
+pub async fn fail_job(db: &PgPool, job_id: Uuid, error_message: &str) -> Result<(), CloudError> {
     sqlx::query(
         r#"
         UPDATE compute_jobs
@@ -1138,9 +1766,7 @@ pub async fn dispatch_inference(
         .timeout(std::time::Duration::from_secs(120))
         .send()
         .await
-        .map_err(|e| {
-            CloudError::ServiceUnavailable(format!("relay request failed: {e}"))
-        })?;
+        .map_err(|e| CloudError::ServiceUnavailable(format!("relay request failed: {e}")))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -1152,9 +1778,10 @@ pub async fn dispatch_inference(
 
     let latency_ms = start.elapsed().as_millis() as u64;
 
-    let result: serde_json::Value = resp.json().await.map_err(|e| {
-        CloudError::Internal(format!("failed to parse relay response: {e}"))
-    })?;
+    let result: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| CloudError::Internal(format!("failed to parse relay response: {e}")))?;
 
     let text = result
         .get("text")
@@ -1215,9 +1842,7 @@ pub async fn dispatch_inference_stream(
         .timeout(std::time::Duration::from_secs(300))
         .send()
         .await
-        .map_err(|e| {
-            CloudError::ServiceUnavailable(format!("relay stream request failed: {e}"))
-        })?;
+        .map_err(|e| CloudError::ServiceUnavailable(format!("relay stream request failed: {e}")))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -1488,15 +2113,17 @@ pub async fn get_provider_stats(
 
     Ok(rows
         .into_iter()
-        .map(|(stat_date, total, success, failed, tokens, earned, latency)| DailyStats {
-            stat_date,
-            requests_total: total,
-            requests_success: success,
-            requests_failed: failed,
-            tokens_served: tokens,
-            earned_usdc: earned,
-            avg_latency_ms: latency,
-        })
+        .map(
+            |(stat_date, total, success, failed, tokens, earned, latency)| DailyStats {
+                stat_date,
+                requests_total: total,
+                requests_success: success,
+                requests_failed: failed,
+                tokens_served: tokens,
+                earned_usdc: earned,
+                avg_latency_ms: latency,
+            },
+        )
         .collect())
 }
 
@@ -1509,7 +2136,19 @@ pub async fn get_recent_jobs(
     provider_id: Uuid,
     limit: i64,
 ) -> Result<Vec<RecentJob>, CloudError> {
-    let rows = sqlx::query_as::<_, (Uuid, String, String, i32, i32, Option<i32>, Option<Uuid>, chrono::DateTime<Utc>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            i32,
+            i32,
+            Option<i32>,
+            Option<Uuid>,
+            chrono::DateTime<Utc>,
+        ),
+    >(
         r#"
         SELECT id, model_id, status, input_tokens, output_tokens, latency_ms, agent_id, created_at
         FROM compute_jobs
@@ -1525,16 +2164,27 @@ pub async fn get_recent_jobs(
 
     Ok(rows
         .into_iter()
-        .map(|(id, model_id, status, input_tokens, output_tokens, latency_ms, agent_id, created_at)| RecentJob {
-            id,
-            model_id,
-            status,
-            input_tokens,
-            output_tokens,
-            latency_ms,
-            agent_id,
-            created_at,
-        })
+        .map(
+            |(
+                id,
+                model_id,
+                status,
+                input_tokens,
+                output_tokens,
+                latency_ms,
+                agent_id,
+                created_at,
+            )| RecentJob {
+                id,
+                model_id,
+                status,
+                input_tokens,
+                output_tokens,
+                latency_ms,
+                agent_id,
+                created_at,
+            },
+        )
         .collect())
 }
 
@@ -1542,10 +2192,7 @@ pub async fn get_recent_jobs(
 // 23. get_active_escrows
 // =========================================================================
 
-pub async fn get_active_escrows(
-    db: &PgPool,
-    user_id: Uuid,
-) -> Result<Vec<EscrowInfo>, CloudError> {
+pub async fn get_active_escrows(db: &PgPool, user_id: Uuid) -> Result<Vec<EscrowInfo>, CloudError> {
     let rows = sqlx::query_as::<_, (Uuid, Uuid, i64, chrono::DateTime<Utc>)>(
         r#"
         SELECT id, provider_id, amount_usdc, created_at
@@ -1590,17 +2237,19 @@ pub async fn refresh_provider_cache(state: &AppState) -> Result<(), CloudError> 
 
     let providers: Vec<CommunityProviderInfo> = rows
         .into_iter()
-        .map(|(id, relay_pubkey, display_name, models, reputation, max_concurrent)| {
-            CommunityProviderInfo {
-                provider_id: id,
-                relay_pubkey,
-                display_name,
-                models,
-                reputation_score: reputation,
-                current_load: 0, // reset on refresh; heartbeats update this
-                max_concurrent,
-            }
-        })
+        .map(
+            |(id, relay_pubkey, display_name, models, reputation, max_concurrent)| {
+                CommunityProviderInfo {
+                    provider_id: id,
+                    relay_pubkey,
+                    display_name,
+                    models,
+                    reputation_score: reputation,
+                    current_load: 0, // reset on refresh; heartbeats update this
+                    max_concurrent,
+                }
+            },
+        )
         .collect();
 
     let count = providers.len();
@@ -1646,8 +2295,7 @@ pub fn start_escrow_expiry_task(state: AppState) {
 /// Background task: decay reputation for offline providers every 24 hours.
 pub fn start_reputation_decay_task(db: PgPool) {
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
         interval.tick().await; // skip immediate tick
 
         loop {
@@ -1684,6 +2332,234 @@ pub fn start_reputation_decay_task(db: PgPool) {
 // Provider Withdrawals
 // =========================================================================
 
+pub async fn verify_provider_receipts(
+    db: &PgPool,
+    usage_receipt_secret: &str,
+    provider_id: Uuid,
+    limit: i64,
+) -> Result<ReceiptVerificationSummary, CloudError> {
+    if usage_receipt_secret.is_empty() {
+        return Err(CloudError::Internal(
+            "usage receipt secret must not be empty".to_string(),
+        ));
+    }
+
+    let capped_limit = limit.clamp(1, RECEIPT_VERIFY_SCAN_LIMIT);
+
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Option<Uuid>,
+            Option<Uuid>,
+            Option<Uuid>,
+            String,
+            Uuid,
+            Option<String>,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            serde_json::Value,
+            String,
+            String,
+            bool,
+        ),
+    >(
+        r#"
+        SELECT
+            id, user_id, job_id, escrow_id,
+            source, source_ref, model_id,
+            input_tokens, output_tokens,
+            provider_amount_usdc, platform_fee_usdc, total_cost_usdc,
+            metadata, proof_hash, receipt_sig, verified
+        FROM compute_usage_receipts
+        WHERE provider_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(provider_id)
+    .bind(capped_limit)
+    .fetch_all(db)
+    .await?;
+
+    let mut checked = 0usize;
+    let mut valid = 0usize;
+    let mut invalid = 0usize;
+    let mut invalid_receipt_ids = Vec::new();
+
+    for row in rows {
+        checked += 1;
+        let payload = usage_receipt_payload(
+            provider_id,
+            row.1,
+            row.2,
+            row.3,
+            &row.4,
+            row.5,
+            row.6.as_deref(),
+            row.7,
+            row.8,
+            row.9,
+            row.10,
+            row.11,
+            &row.12,
+        );
+
+        let payload_bytes = serde_json::to_vec(&payload).map_err(|e| {
+            CloudError::Internal(format!("failed to serialize verification payload: {e}"))
+        })?;
+        let expected_hash = sha256_hex(&payload_bytes);
+        let expected_sig = sign_receipt_hex(usage_receipt_secret, &payload_bytes);
+        let is_valid = row.13 == expected_hash && row.14 == expected_sig;
+
+        if row.15 != is_valid {
+            sqlx::query("UPDATE compute_usage_receipts SET verified = $1 WHERE id = $2")
+                .bind(is_valid)
+                .bind(row.0)
+                .execute(db)
+                .await?;
+        }
+
+        if is_valid {
+            valid += 1;
+        } else {
+            invalid += 1;
+            invalid_receipt_ids.push(row.0);
+        }
+    }
+
+    Ok(ReceiptVerificationSummary {
+        checked,
+        valid,
+        invalid,
+        invalid_receipt_ids,
+    })
+}
+
+async fn get_provider_receipted_earned_usdc(db: &PgPool, provider_id: Uuid) -> Result<i64, CloudError> {
+    let earned: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(provider_amount_usdc), 0)
+        FROM compute_usage_receipts
+        WHERE provider_id = $1 AND verified = true
+        "#,
+    )
+    .bind(provider_id)
+    .fetch_one(db)
+    .await?;
+
+    Ok(earned.max(0))
+}
+
+async fn assess_withdrawal_risk(
+    db: &PgPool,
+    provider: &ProviderInfo,
+    amount_usdc: i64,
+    verified_available_usdc: i64,
+    receipt_check: &ReceiptVerificationSummary,
+) -> Result<Vec<String>, CloudError> {
+    let mut reasons = Vec::new();
+
+    if receipt_check.invalid > 0 {
+        reasons.push("receipt integrity mismatch detected".to_string());
+    }
+
+    if amount_usdc >= REVIEW_HARD_THRESHOLD_USDC {
+        reasons.push(format!(
+            "withdrawal amount exceeds automatic review threshold (${:.2})",
+            REVIEW_HARD_THRESHOLD_USDC as f64 / 1_000_000.0
+        ));
+    }
+
+    let provider_age_days = (Utc::now() - provider.created_at).num_days().max(0);
+    if provider_age_days < REVIEW_NEW_PROVIDER_DAYS && amount_usdc > REVIEW_NEW_PROVIDER_MAX_USDC {
+        reasons.push(format!(
+            "new provider profile (<{} days) requested larger-than-allowed withdrawal",
+            REVIEW_NEW_PROVIDER_DAYS
+        ));
+    }
+
+    if provider.success_rate < REVIEW_LOW_SUCCESS_RATE && amount_usdc > REVIEW_LOW_SUCCESS_MAX_USDC {
+        reasons.push(format!(
+            "provider success rate {:.1}% below {:.1}% for requested amount",
+            provider.success_rate * 100.0,
+            REVIEW_LOW_SUCCESS_RATE * 100.0
+        ));
+    }
+
+    if verified_available_usdc > 0
+        && amount_usdc.saturating_mul(10_000)
+            >= verified_available_usdc.saturating_mul(REVIEW_BALANCE_SHARE_BPS)
+    {
+        reasons.push("withdrawal drains most verified available balance".to_string());
+    }
+
+    let payouts_24h: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM provider_payouts
+        WHERE provider_id = $1
+          AND created_at >= now() - interval '24 hours'
+          AND status IN ('pending', 'confirmed', 'review_required')
+        "#,
+    )
+    .bind(provider.id)
+    .fetch_one(db)
+    .await?;
+    if payouts_24h >= REVIEW_MAX_PAYOUTS_24H {
+        reasons.push("high payout frequency in the last 24 hours".to_string());
+    }
+
+    let receipts_24h: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM compute_usage_receipts
+        WHERE provider_id = $1
+          AND verified = true
+          AND created_at >= now() - interval '24 hours'
+        "#,
+    )
+    .bind(provider.id)
+    .fetch_one(db)
+    .await?;
+    if receipts_24h < 2 && amount_usdc > REVIEW_LOW_SUCCESS_MAX_USDC {
+        reasons.push("sparse recent signed usage for requested payout size".to_string());
+    }
+
+    Ok(reasons)
+}
+
+async fn create_review_required_payout(
+    db: &PgPool,
+    provider_id: Uuid,
+    user_id: Uuid,
+    amount_usdc: i64,
+    to_address: &str,
+    reasons: &[String],
+) -> Result<Uuid, CloudError> {
+    let reason_text = format!("security review hold: {}", reasons.join("; "));
+    let payout_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO provider_payouts
+            (provider_id, user_id, amount_usdc, to_address, status, error_message)
+        VALUES
+            ($1, $2, $3, $4, 'review_required', $5)
+        RETURNING id
+        "#,
+    )
+    .bind(provider_id)
+    .bind(user_id)
+    .bind(amount_usdc)
+    .bind(to_address)
+    .bind(reason_text)
+    .fetch_one(db)
+    .await?;
+    Ok(payout_id)
+}
+
 /// Withdraw provider earnings to their Solana wallet.
 pub async fn withdraw_provider_earnings(
     state: &AppState,
@@ -1691,13 +2567,9 @@ pub async fn withdraw_provider_earnings(
     req: WithdrawalRequest,
 ) -> Result<WithdrawalResponse, CloudError> {
     // 1. Check treasury mnemonic is configured
-    let mnemonic = state
-        .config
-        .treasury_mnemonic
-        .as_deref()
-        .ok_or_else(|| {
-            CloudError::ServiceUnavailable("withdrawals are not configured yet".to_string())
-        })?;
+    let mnemonic = state.config.treasury_mnemonic.as_deref().ok_or_else(|| {
+        CloudError::ServiceUnavailable("withdrawals are not configured yet".to_string())
+    })?;
 
     // 2. Load provider
     let provider = get_provider_by_user(&state.db, user_id)
@@ -1716,15 +2588,28 @@ pub async fn withdraw_provider_earnings(
         })?
         .to_string();
 
+    // 3b. Reconcile receipt integrity before using verified earnings for payout.
+    let receipt_check = verify_provider_receipts(
+        &state.db,
+        &state.config.usage_receipt_secret,
+        provider.id,
+        RECEIPT_VERIFY_SCAN_LIMIT,
+    )
+    .await?;
+
     // 4. Compute available balance
-    let available = provider.total_earned_usdc - provider.total_withdrawn_usdc;
+    let receipted_earned = get_provider_receipted_earned_usdc(&state.db, provider.id).await?;
+    let capped_receipted_earned = receipted_earned.min(provider.total_earned_usdc).max(0);
+    let available = capped_receipted_earned.saturating_sub(provider.total_withdrawn_usdc);
 
     // 5. Determine withdrawal amount
     let amount = req.amount_usdc.unwrap_or(available);
 
     // 6. Validate
     if amount <= 0 {
-        return Err(CloudError::BadRequest("amount must be positive".to_string()));
+        return Err(CloudError::BadRequest(
+            "amount must be positive".to_string(),
+        ));
     }
     if amount < MIN_WITHDRAWAL_USDC {
         return Err(CloudError::BadRequest(format!(
@@ -1734,14 +2619,14 @@ pub async fn withdraw_provider_earnings(
     }
     if amount > available {
         return Err(CloudError::BadRequest(format!(
-            "insufficient balance: ${:.6} available",
+            "insufficient verified balance: ${:.6} available",
             available as f64 / 1_000_000.0
         )));
     }
 
     // 7. Check no pending payouts
     let pending_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM provider_payouts WHERE provider_id = $1 AND status = 'pending'",
+        "SELECT COUNT(*) FROM provider_payouts WHERE provider_id = $1 AND status IN ('pending', 'review_required')",
     )
     .bind(provider.id)
     .fetch_one(&state.db)
@@ -1753,14 +2638,31 @@ pub async fn withdraw_provider_earnings(
         ));
     }
 
+    // 7a. Security hold if anomaly/risk rules trigger.
+    let risk_reasons =
+        assess_withdrawal_risk(&state.db, &provider, amount, available, &receipt_check).await?;
+    if !risk_reasons.is_empty() {
+        let payout_id = create_review_required_payout(
+            &state.db,
+            provider.id,
+            user_id,
+            amount,
+            &wallet_address,
+            &risk_reasons,
+        )
+        .await?;
+        return Err(CloudError::BadRequest(format!(
+            "withdrawal placed in security review (payout_id: {payout_id})"
+        )));
+    }
+
     // 7b. Assign payout_index if not yet set (for HD intermediate wallet derivation)
     let payout_index: i32 = {
-        let existing: Option<Option<i32>> = sqlx::query_scalar(
-            "SELECT payout_index FROM compute_providers WHERE id = $1",
-        )
-        .bind(provider.id)
-        .fetch_optional(&state.db)
-        .await?;
+        let existing: Option<Option<i32>> =
+            sqlx::query_scalar("SELECT payout_index FROM compute_providers WHERE id = $1")
+                .bind(provider.id)
+                .fetch_optional(&state.db)
+                .await?;
 
         match existing.flatten() {
             Some(idx) => idx,
@@ -1875,7 +2777,9 @@ pub async fn withdraw_provider_earnings(
                 "withdrawal error detail"
             );
 
-            Err(CloudError::Internal(format!("withdrawal failed: {err_msg}")))
+            Err(CloudError::Internal(format!(
+                "withdrawal failed: {err_msg}"
+            )))
         }
     }
 }
@@ -1886,10 +2790,19 @@ pub async fn get_provider_payouts(
     provider_id: Uuid,
     limit: i64,
 ) -> Result<Vec<PayoutInfo>, CloudError> {
-    let rows = sqlx::query_as::<_, (
-        Uuid, i64, String, Option<String>, String,
-        Option<String>, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>,
-    )>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            i64,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            chrono::DateTime<Utc>,
+            Option<chrono::DateTime<Utc>>,
+        ),
+    >(
         r#"
         SELECT id, amount_usdc, to_address, signature, status,
                error_message, created_at, completed_at
@@ -1938,10 +2851,173 @@ pub async fn get_payout_summary(
     .await?
     .ok_or_else(|| CloudError::NotFound("provider not found".to_string()))?;
 
+    let receipt_verified_earned_usdc = get_provider_receipted_earned_usdc(db, provider_id).await?;
+    let capped_receipted_earned = receipt_verified_earned_usdc.min(earned).max(0);
+
     Ok(PayoutSummary {
         total_earned_usdc: earned,
+        receipt_verified_earned_usdc,
         total_withdrawn_usdc: withdrawn,
-        available_usdc: earned - withdrawn,
+        available_usdc: earned.saturating_sub(withdrawn),
+        receipt_verified_available_usdc: capped_receipted_earned.saturating_sub(withdrawn),
         min_withdrawal_usdc: MIN_WITHDRAWAL_USDC,
     })
+}
+
+pub async fn get_provider_usage_receipts(
+    db: &PgPool,
+    provider_id: Uuid,
+    limit: i64,
+) -> Result<Vec<UsageReceiptInfo>, CloudError> {
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            Uuid,
+            Option<String>,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            String,
+            String,
+            bool,
+            chrono::DateTime<Utc>,
+        ),
+    >(
+        r#"
+        SELECT
+            id, source, source_ref, model_id,
+            input_tokens, output_tokens,
+            provider_amount_usdc, platform_fee_usdc, total_cost_usdc,
+            proof_hash, receipt_sig, verified, created_at
+        FROM compute_usage_receipts
+        WHERE provider_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(provider_id)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                source,
+                source_ref,
+                model_id,
+                input_tokens,
+                output_tokens,
+                provider_amount_usdc,
+                platform_fee_usdc,
+                total_cost_usdc,
+                proof_hash,
+                receipt_sig,
+                verified,
+                created_at,
+            )| UsageReceiptInfo {
+                id,
+                source,
+                source_ref,
+                model_id,
+                input_tokens,
+                output_tokens,
+                provider_amount_usdc,
+                platform_fee_usdc,
+                total_cost_usdc,
+                proof_hash,
+                receipt_sig,
+                verified,
+                created_at,
+            },
+        )
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn sample_provider(models: serde_json::Value) -> ProviderInfo {
+        ProviderInfo {
+            id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            relay_pubkey: "relay".to_string(),
+            display_name: "Provider".to_string(),
+            models,
+            vram_mb: 24_000,
+            max_concurrent: 2,
+            wallet_address: Some("11111111111111111111111111111111".to_string()),
+            status: "online".to_string(),
+            total_requests: 0,
+            total_tokens_served: 0,
+            total_earned_usdc: 0,
+            total_withdrawn_usdc: 0,
+            success_rate: 1.0,
+            avg_latency_ms: 0.0,
+            reputation_score: 1.0,
+            last_heartbeat_at: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn parse_model_offers_rejects_duplicates() {
+        let models = json!([
+            {"model_id":"llama-70b","price_per_1k_input":1000,"price_per_1k_output":2000},
+            {"model_id":"llama-70b","price_per_1k_input":1000,"price_per_1k_output":2000}
+        ]);
+        let err = parse_model_offers(&models).expect_err("duplicate model ids must fail");
+        assert!(err.to_string().contains("duplicate model_id"));
+    }
+
+    #[test]
+    fn parse_model_offers_rejects_invalid_id() {
+        let models = json!([
+            {"model_id":"bad model id","price_per_1k_input":1000,"price_per_1k_output":2000}
+        ]);
+        let err = parse_model_offers(&models).expect_err("invalid model id must fail");
+        assert!(err.to_string().contains("invalid model_id"));
+    }
+
+    #[test]
+    fn estimate_provider_earnings_computes_expected_values() {
+        let provider = sample_provider(json!([
+            {"model_id":"llama-70b","price_per_1k_input":1000,"price_per_1k_output":1000}
+        ]));
+        let req = EarningsEstimateRequest {
+            avg_input_tokens: 1000,
+            avg_output_tokens: 1000,
+            requests_per_hour_per_slot: 1.0,
+            uptime_hours_per_day: 1.0,
+            utilization_ratio: 1.0,
+            projection_days: 1,
+        };
+
+        let estimate = estimate_provider_earnings(&provider, req).expect("estimate should succeed");
+        assert_eq!(estimate.models.len(), 1);
+        let model = &estimate.models[0];
+        assert_eq!(model.gross_usdc_per_day, 4000);
+        assert_eq!(model.provider_usdc_per_day, 3400);
+        assert_eq!(model.provider_usdc_projection, 3400);
+    }
+
+    #[test]
+    fn receipt_signature_is_deterministic_and_payload_bound() {
+        let secret = "test-secret";
+        let payload_a = br#"{"a":1,"b":2}"#;
+        let payload_b = br#"{"a":1,"b":3}"#;
+        let sig_a1 = sign_receipt_hex(secret, payload_a);
+        let sig_a2 = sign_receipt_hex(secret, payload_a);
+        let sig_b = sign_receipt_hex(secret, payload_b);
+        assert_eq!(sig_a1, sig_a2);
+        assert_ne!(sig_a1, sig_b);
+    }
 }

@@ -53,14 +53,12 @@ pub async fn chat(
     };
 
     // Save user message
-    sqlx::query(
-        "INSERT INTO chat_messages (session_id, role, content) VALUES (?1, 'user', ?2)",
-    )
-    .bind(&session_id)
-    .bind(&req.message)
-    .execute(&state.db)
-    .await
-    .map_err(|e| HomeError::Internal(format!("failed to save message: {e}")))?;
+    sqlx::query("INSERT INTO chat_messages (session_id, role, content) VALUES (?1, 'user', ?2)")
+        .bind(&session_id)
+        .bind(&req.message)
+        .execute(&state.db)
+        .await
+        .map_err(|e| HomeError::Internal(format!("failed to save message: {e}")))?;
 
     // Load conversation history (last 20 messages)
     let history = sqlx::query_as::<_, (String, String)>(

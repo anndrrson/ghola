@@ -314,7 +314,7 @@ pub async fn spending_summary(
 
     // Sum last 24h sends
     let sol_spent: Option<i64> = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(amount), 0) FROM payment_transactions \
+        "SELECT COALESCE(SUM(amount), 0)::BIGINT FROM payment_transactions \
          WHERE agent_wallet_id = $1 AND direction = 'send' AND currency = 'sol' \
          AND created_at > now() - interval '24 hours'",
     )
@@ -324,7 +324,7 @@ pub async fn spending_summary(
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let usdc_spent: Option<i64> = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(amount), 0) FROM payment_transactions \
+        "SELECT COALESCE(SUM(amount), 0)::BIGINT FROM payment_transactions \
          WHERE agent_wallet_id = $1 AND direction = 'send' AND currency = 'usdc' \
          AND created_at > now() - interval '24 hours'",
     )

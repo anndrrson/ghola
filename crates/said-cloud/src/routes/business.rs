@@ -69,13 +69,12 @@ pub async fn update_profile(
 
     // Check handle uniqueness if provided
     if let Some(ref handle) = req.handle {
-        let existing: Option<(Uuid,)> = sqlx::query_as(
-            "SELECT id FROM business_profiles WHERE handle = $1 AND user_id != $2",
-        )
-        .bind(handle)
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await?;
+        let existing: Option<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM business_profiles WHERE handle = $1 AND user_id != $2")
+                .bind(handle)
+                .bind(user_id)
+                .fetch_optional(&state.db)
+                .await?;
 
         if existing.is_some() {
             return Err(AppError::Conflict("Handle is already taken".into()));
@@ -159,13 +158,12 @@ pub async fn verify_domain(
     }
 
     // Get profile
-    let profile: (Uuid, String, String) = sqlx::query_as(
-        "SELECT id, did, website FROM business_profiles WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("Business profile not found".into()))?;
+    let profile: (Uuid, String, String) =
+        sqlx::query_as("SELECT id, did, website FROM business_profiles WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Business profile not found".into()))?;
 
     let (profile_id, did, website) = profile;
 
@@ -208,8 +206,7 @@ pub async fn verify_domain(
                     "Place the following JSON at https://{}/.well-known/said-verify.json",
                     domain
                 ),
-                serde_json::to_string_pretty(&json_content)
-                    .unwrap_or_default(),
+                serde_json::to_string_pretty(&json_content).unwrap_or_default(),
             )
         }
         _ => unreachable!(),
@@ -278,7 +275,15 @@ pub async fn agents_txt(
     }
 
     // Fetch registered service listings for pricing/SLA/payment directives
-    let service_listings: Vec<(String, String, i64, Option<i32>, Option<f32>, Option<String>, Option<String>)> = sqlx::query_as(
+    let service_listings: Vec<(
+        String,
+        String,
+        i64,
+        Option<i32>,
+        Option<f32>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
         r#"SELECT slug, pricing_model::text, price_micro_usdc, free_tier_requests,
                   sla_uptime_percent, openapi_url, receive_address
         FROM service_listings WHERE owner_did = $1 AND status::text = 'active'"#,
@@ -291,10 +296,13 @@ pub async fn agents_txt(
     if !service_listings.is_empty() {
         lines.push(String::new());
 
-        for (slug, pricing_model, price, free_tier, sla_uptime, openapi_url, receive_addr) in &service_listings {
+        for (slug, pricing_model, price, free_tier, sla_uptime, openapi_url, receive_addr) in
+            &service_listings
+        {
             // Pricing directive
             let price_usdc = *price as f64 / 1_000_000.0;
-            let mut pricing_line = format!("Pricing: {} {} {:.6} USDC", slug, pricing_model, price_usdc);
+            let mut pricing_line =
+                format!("Pricing: {} {} {:.6} USDC", slug, pricing_model, price_usdc);
             if let Some(free) = free_tier {
                 if *free > 0 {
                     pricing_line.push_str(&format!(" (free: {}/day)", free));
@@ -324,10 +332,7 @@ pub async fn agents_txt(
 
     let body = lines.join("\n");
 
-    Ok((
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        body,
-    ))
+    Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body))
 }
 
 /// GET /v1/business/well-known
@@ -356,12 +361,13 @@ pub async fn well_known(
     let bp: said_types::BusinessProfile = profile.into();
     let profile_url = format!("{}/v1/resolve/{}", state.config.base_url, bp.did);
 
-    let verification = bp.verified_domain.as_ref().map(|_| {
-        said_types::WellKnownVerification {
+    let verification = bp
+        .verified_domain
+        .as_ref()
+        .map(|_| said_types::WellKnownVerification {
             method: "dns-txt".to_string(),
             record: Some(format!("said-verify={}", bp.did)),
-        }
-    });
+        });
 
     let base_url = &state.config.base_url;
 
@@ -377,18 +383,17 @@ pub async fn well_known(
     .ok()
     .flatten();
 
-    let payment = merchant_config.as_ref().map(|(addr, _)| {
-        said_types::WellKnownPayment {
+    let payment = merchant_config
+        .as_ref()
+        .map(|(addr, _)| said_types::WellKnownPayment {
             receive_address: addr.clone(),
             accepted_currencies: vec!["usdc".into()],
             verify_url: format!("{}/v1/verify/agent", base_url),
             meter_url: format!("{}/v1/meter", base_url),
-        }
-    });
+        });
 
-    let openapi_url = merchant_config.and_then(|(_, url)| {
-        if url.is_empty() { None } else { Some(url) }
-    });
+    let openapi_url =
+        merchant_config.and_then(|(_, url)| if url.is_empty() { None } else { Some(url) });
 
     let well_known = said_types::WellKnownSaid {
         said_version: "1.1".to_string(),
@@ -402,7 +407,11 @@ pub async fn well_known(
         services: bp.services,
         operating_hours: bp.operating_hours,
         verification,
-        services_registry_url: Some(format!("{}/v1/services?q={}", base_url, simple_url_encode(&bp.business_name))),
+        services_registry_url: Some(format!(
+            "{}/v1/services?q={}",
+            base_url,
+            simple_url_encode(&bp.business_name)
+        )),
         openapi_url,
         payment,
         reputation_url: Some(format!("{}/v1/reputation/{}", base_url, bp.did)),
@@ -491,8 +500,7 @@ pub async fn check_domain_verification(
                 verified: false,
                 domain: None,
                 message: Some(
-                    "No verification request found. Please start domain verification first."
-                        .into(),
+                    "No verification request found. Please start domain verification first.".into(),
                 ),
             }));
         }

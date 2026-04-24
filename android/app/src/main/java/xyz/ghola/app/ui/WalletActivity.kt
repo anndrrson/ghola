@@ -10,6 +10,7 @@ import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.button.MaterialButton
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import kotlinx.coroutines.launch
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.SaidCloudClient
@@ -161,10 +162,11 @@ class WalletActivity : AppCompatActivity() {
     }
 
     private fun loadAgentCount() {
-        // Demo-first: always show the seed agent count (3) immediately so the
-        // huge 56sp number is never "—". Backend value, if present, replaces it.
-        val seedCount = DemoSeed.agents().length()
-        agentCount.text = seedCount.toString()
+        agentCount.text = if (BuildConfig.ENABLE_DEMO_MODE) {
+            DemoSeed.agents().length().toString()
+        } else {
+            "0"
+        }
 
         if (!storage.hasSaidAuth()) return
         executor.execute {
@@ -173,10 +175,12 @@ class WalletActivity : AppCompatActivity() {
                 val rows = client.listAgents()
                 runOnUiThread {
                     val realCount = rows?.length() ?: 0
-                    if (realCount > 0) agentCount.text = realCount.toString()
+                    agentCount.text = realCount.toString()
                 }
             } catch (_: Exception) {
-                // Seed value already rendered — swallow silently.
+                if (!BuildConfig.ENABLE_DEMO_MODE) {
+                    runOnUiThread { agentCount.text = "0" }
+                }
             }
         }
     }

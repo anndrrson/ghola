@@ -1,5 +1,7 @@
 package xyz.ghola.app.service
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -10,6 +12,7 @@ import android.app.Service
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import androidx.core.content.ContextCompat
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.SaidCloudClient
@@ -223,6 +226,16 @@ class ProactiveService : Service() {
                 .setContentIntent(pending)
                 .setAutoCancel(true)
                 .build()
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "Skipping earnings notification; POST_NOTIFICATIONS not granted")
+            return
         }
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

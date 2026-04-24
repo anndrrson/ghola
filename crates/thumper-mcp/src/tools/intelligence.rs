@@ -83,8 +83,7 @@ pub(crate) async fn device_smart_read(
 
                 // Add the screenshot
                 if let MessageType::ScreenshotResult(result) = screenshot_response.message {
-                    contents
-                        .push(Content::image(result.image_base64, &result.mime_type));
+                    contents.push(Content::image(result.image_base64, &result.mime_type));
                 }
 
                 return Ok(CallToolResult::success(contents));

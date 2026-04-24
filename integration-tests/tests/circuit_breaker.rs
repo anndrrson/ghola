@@ -17,11 +17,15 @@ fn consecutive_failures_increment() {
         .create_agent_wallet("agent", SpendingPolicy::default())
         .unwrap();
 
-    let b1 = wallet.record_payment_failure(agent.id, DEFAULT_THRESHOLD).unwrap();
+    let b1 = wallet
+        .record_payment_failure(agent.id, DEFAULT_THRESHOLD)
+        .unwrap();
     assert_eq!(b1.consecutive_failures, 1);
     assert!(!b1.tripped);
 
-    let b2 = wallet.record_payment_failure(agent.id, DEFAULT_THRESHOLD).unwrap();
+    let b2 = wallet
+        .record_payment_failure(agent.id, DEFAULT_THRESHOLD)
+        .unwrap();
     assert_eq!(b2.consecutive_failures, 2);
     assert!(!b2.tripped);
 }
@@ -34,9 +38,16 @@ fn circuit_breaker_trips_after_threshold() {
         .unwrap();
 
     for i in 0..DEFAULT_THRESHOLD {
-        let b = wallet.record_payment_failure(agent.id, DEFAULT_THRESHOLD).unwrap();
+        let b = wallet
+            .record_payment_failure(agent.id, DEFAULT_THRESHOLD)
+            .unwrap();
         let expected_tripped = i + 1 >= DEFAULT_THRESHOLD;
-        assert_eq!(b.tripped, expected_tripped, "tripped mismatch at failure {}", i + 1);
+        assert_eq!(
+            b.tripped,
+            expected_tripped,
+            "tripped mismatch at failure {}",
+            i + 1
+        );
     }
 
     // Circuit breaker is now tripped — check_circuit_breaker should fail
@@ -52,7 +63,9 @@ fn tripped_at_is_set_when_circuit_trips() {
         .unwrap();
 
     for _ in 0..DEFAULT_THRESHOLD {
-        wallet.record_payment_failure(agent.id, DEFAULT_THRESHOLD).unwrap();
+        wallet
+            .record_payment_failure(agent.id, DEFAULT_THRESHOLD)
+            .unwrap();
     }
 
     let state = wallet.get_circuit_breaker(agent.id);
@@ -69,7 +82,9 @@ fn unlock_clears_tripped_state() {
         .unwrap();
 
     for _ in 0..DEFAULT_THRESHOLD {
-        wallet.record_payment_failure(agent.id, DEFAULT_THRESHOLD).unwrap();
+        wallet
+            .record_payment_failure(agent.id, DEFAULT_THRESHOLD)
+            .unwrap();
     }
 
     // Confirm tripped
@@ -109,15 +124,22 @@ fn success_resets_consecutive_failure_count() {
         .unwrap();
 
     // Two failures
-    wallet.record_payment_failure(agent.id, DEFAULT_THRESHOLD).unwrap();
-    wallet.record_payment_failure(agent.id, DEFAULT_THRESHOLD).unwrap();
+    wallet
+        .record_payment_failure(agent.id, DEFAULT_THRESHOLD)
+        .unwrap();
+    wallet
+        .record_payment_failure(agent.id, DEFAULT_THRESHOLD)
+        .unwrap();
 
     // One success — resets counter but does NOT auto-unlock if already tripped
     wallet.record_payment_success(agent.id).unwrap();
 
     let state = wallet.get_circuit_breaker(agent.id);
     assert_eq!(state.consecutive_failures, 0);
-    assert!(!state.tripped, "should not have tripped (only 2 failures < threshold 3)");
+    assert!(
+        !state.tripped,
+        "should not have tripped (only 2 failures < threshold 3)"
+    );
 }
 
 #[test]
@@ -129,7 +151,9 @@ fn success_does_not_auto_unlock_tripped_breaker() {
 
     // Trip the breaker
     for _ in 0..DEFAULT_THRESHOLD {
-        wallet.record_payment_failure(agent.id, DEFAULT_THRESHOLD).unwrap();
+        wallet
+            .record_payment_failure(agent.id, DEFAULT_THRESHOLD)
+            .unwrap();
     }
 
     // A "success" (e.g. manual retry that worked) resets the counter but leaves it tripped
@@ -153,7 +177,9 @@ fn tripped_circuit_breaker_blocks_check_spending_limit() {
         .unwrap();
 
     for _ in 0..DEFAULT_THRESHOLD {
-        wallet.record_payment_failure(agent.id, DEFAULT_THRESHOLD).unwrap();
+        wallet
+            .record_payment_failure(agent.id, DEFAULT_THRESHOLD)
+            .unwrap();
     }
 
     let err = wallet
@@ -170,7 +196,9 @@ fn after_unlock_spending_limit_check_passes() {
         .unwrap();
 
     for _ in 0..DEFAULT_THRESHOLD {
-        wallet.record_payment_failure(agent.id, DEFAULT_THRESHOLD).unwrap();
+        wallet
+            .record_payment_failure(agent.id, DEFAULT_THRESHOLD)
+            .unwrap();
     }
 
     wallet.unlock_circuit_breaker(agent.id).unwrap();
@@ -190,7 +218,9 @@ fn spending_status_shows_tripped_breaker() {
         .unwrap();
 
     for _ in 0..DEFAULT_THRESHOLD {
-        wallet.record_payment_failure(agent.id, DEFAULT_THRESHOLD).unwrap();
+        wallet
+            .record_payment_failure(agent.id, DEFAULT_THRESHOLD)
+            .unwrap();
     }
 
     let status = wallet.spending_status(agent.id).unwrap();
@@ -256,7 +286,9 @@ fn circuit_breakers_are_isolated_per_agent() {
 
     // Trip agent-a
     for _ in 0..DEFAULT_THRESHOLD {
-        wallet.record_payment_failure(agent_a.id, DEFAULT_THRESHOLD).unwrap();
+        wallet
+            .record_payment_failure(agent_a.id, DEFAULT_THRESHOLD)
+            .unwrap();
     }
 
     // agent-b should be unaffected

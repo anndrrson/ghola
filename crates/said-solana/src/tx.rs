@@ -38,9 +38,7 @@ pub fn build_message(
 
     for ix in instructions {
         // Program ID is a non-signer, read-only account
-        account_map
-            .entry(ix.program_id)
-            .or_insert((false, false));
+        account_map.entry(ix.program_id).or_insert((false, false));
 
         for meta in &ix.accounts {
             let entry = account_map.entry(meta.pubkey).or_insert((false, false));

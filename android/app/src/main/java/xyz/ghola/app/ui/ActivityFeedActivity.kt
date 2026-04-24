@@ -10,7 +10,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.bottomnavigation.BottomNavigationView
-import org.json.JSONObject
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.SaidCloudClient
@@ -61,10 +61,27 @@ class ActivityFeedActivity : AppCompatActivity() {
     }
 
     private fun loadFeed() {
-        // Demo-first: show the seeded activity feed immediately. The backend
-        // might eventually come back with real rows, but we never want the
-        // presenter staring at an empty state on stage.
-        showSeedFeed()
+        loading.visibility = View.VISIBLE
+        emptyState.visibility = View.GONE
+        recycler.visibility = View.GONE
+
+        if (!storage.hasSaidAuth()) {
+            if (BuildConfig.ENABLE_DEMO_MODE) showSeedFeed() else showEmptyState()
+            return
+        }
+
+        executor.execute {
+            val items = buildLiveFeed()
+            runOnUiThread {
+                if (items.isNotEmpty()) {
+                    showFeed(items)
+                } else if (BuildConfig.ENABLE_DEMO_MODE) {
+                    showSeedFeed()
+                } else {
+                    showEmptyState()
+                }
+            }
+        }
     }
 
     private fun showSeedFeed() {
@@ -89,10 +106,73 @@ class ActivityFeedActivity : AppCompatActivity() {
                 )
             )
         }
+        showFeed(items)
+    }
+
+    private fun buildLiveFeed(): List<FeedItem> {
+        return try {
+            val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
+            val agents = client.listAgents() ?: return emptyList()
+            val items = mutableListOf<FeedItem>()
+            for (i in 0 until agents.length()) {
+                val agent = agents.getJSONObject(i)
+                val agentId = agent.optString("id", "")
+                if (agentId.isEmpty()) continue
+                val agentName = agent.optString("display_name", "Agent")
+                val earnings = client.getAgentEarnings(agentId) ?: continue
+                val received = earnings.optLong("total_received_micro_usdc", 0L)
+                val spent = earnings.optLong("total_spent_micro_usdc", 0L)
+                val net = earnings.optLong("net_micro_usdc", 0L)
+
+                if (received > 0) {
+                    items.add(
+                        FeedItem(
+                            agentName = agentName,
+                            verb = "earned",
+                            amountMicroUsdc = received,
+                            subtext = "lifetime received"
+                        )
+                    )
+                }
+                if (spent > 0) {
+                    items.add(
+                        FeedItem(
+                            agentName = agentName,
+                            verb = "spent",
+                            amountMicroUsdc = spent,
+                            subtext = "lifetime spent"
+                        )
+                    )
+                }
+                if (received == 0L && spent == 0L && net > 0L) {
+                    items.add(
+                        FeedItem(
+                            agentName = agentName,
+                            verb = "holds",
+                            amountMicroUsdc = net,
+                            subtext = "current net"
+                        )
+                    )
+                }
+            }
+            items.sortedByDescending { it.amountMicroUsdc }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun showFeed(items: List<FeedItem>) {
         loading.visibility = View.GONE
         adapter?.setItems(items)
         emptyState.visibility = View.GONE
         recycler.visibility = View.VISIBLE
+    }
+
+    private fun showEmptyState() {
+        loading.visibility = View.GONE
+        adapter?.setItems(emptyList())
+        recycler.visibility = View.GONE
+        emptyState.visibility = View.VISIBLE
     }
 
     data class FeedItem(

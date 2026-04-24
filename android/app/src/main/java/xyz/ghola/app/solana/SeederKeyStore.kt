@@ -3,7 +3,9 @@ package xyz.ghola.app.solana
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.ActivityResultLauncher
@@ -168,7 +170,19 @@ class SeederKeyStore(private val activity: ComponentActivity) {
     private val authorizeLauncher: ActivityResultLauncher<Intent> =
         activity.registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
-        ) { result -> handleAuthorizeResult(result) }
+        ) { result ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                handleAuthorizeResult(result)
+            } else {
+                finishWith(
+                    Result.failure(
+                        UnsupportedOperationException(
+                            "Seed Vault callbacks require Android 11+ (API 30)"
+                        )
+                    )
+                )
+            }
+        }
 
     /**
      * Launches `Wallet.requestPublicKeys(...)`. Fired after the authorize
@@ -178,7 +192,19 @@ class SeederKeyStore(private val activity: ComponentActivity) {
     private val pubkeyLauncher: ActivityResultLauncher<Intent> =
         activity.registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
-        ) { result -> handlePubkeyResult(result) }
+        ) { result ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                handlePubkeyResult(result)
+            } else {
+                finishWith(
+                    Result.failure(
+                        UnsupportedOperationException(
+                            "Seed Vault callbacks require Android 11+ (API 30)"
+                        )
+                    )
+                )
+            }
+        }
 
     /**
      * Launches `Wallet.signMessages(...)`. Fired after the authorize
@@ -188,7 +214,19 @@ class SeederKeyStore(private val activity: ComponentActivity) {
     private val signLauncher: ActivityResultLauncher<Intent> =
         activity.registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
-        ) { result -> handleSignResult(result) }
+        ) { result ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                handleSignResult(result)
+            } else {
+                finishWith(
+                    Result.failure(
+                        UnsupportedOperationException(
+                            "Seed Vault callbacks require Android 11+ (API 30)"
+                        )
+                    )
+                )
+            }
+        }
 
     /**
      * Derive the BIP-44 Solana public key for a given agent index. Single-
@@ -270,6 +308,17 @@ class SeederKeyStore(private val activity: ComponentActivity) {
      * the full authorize flow. See [maybeRetryAfterCacheInvalidation].
      */
     private fun startAuthorizeOrReuseCached() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            finishWith(
+                Result.failure(
+                    UnsupportedOperationException(
+                        "Seed Vault requires Android 11+ (API 30), got ${Build.VERSION.SDK_INT}"
+                    )
+                )
+            )
+            return
+        }
+
         val p = pending ?: return
         val cachedToken = storage.getSeedVaultAuthToken()
         if (cachedToken != -1L) {
@@ -289,6 +338,7 @@ class SeederKeyStore(private val activity: ComponentActivity) {
      * stale, retry ONCE from the authorize step. Returns true if the
      * retry was triggered, false if we should surface the failure.
      */
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun maybeRetryAfterCacheInvalidation(): Boolean {
         val p = pending ?: return false
         if (p.retriedAfterCacheInvalidation) {
@@ -313,6 +363,7 @@ class SeederKeyStore(private val activity: ComponentActivity) {
      * both DERIVE and SIGN — they both need an authToken, and in v1 we
      * always re-authorize to avoid token-caching bugs.
      */
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun launchAuthorize() {
         try {
             val intent = Wallet.authorizeSeed(
@@ -331,6 +382,7 @@ class SeederKeyStore(private val activity: ComponentActivity) {
 
     /** Step 1 result handler — parse the authToken, persist it to the
      *  cache, then branch on op. */
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun handleAuthorizeResult(result: ActivityResult) {
         val p = pending ?: run {
             Log.w(TAG, "authorize result arrived with no pending operation")
@@ -381,6 +433,7 @@ class SeederKeyStore(private val activity: ComponentActivity) {
     }
 
     /** DERIVE step 2 — fire the requestPublicKeys launcher. */
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun launchPubkeyRequest(authToken: Long) {
         val p = pending ?: return
         val path = buildPath(p.agentIndex)
@@ -394,6 +447,7 @@ class SeederKeyStore(private val activity: ComponentActivity) {
     }
 
     /** DERIVE step 2 result — extract the 32-byte raw pubkey. */
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun handlePubkeyResult(result: ActivityResult) {
         val p = pending ?: run {
             Log.w(TAG, "pubkey result arrived with no pending operation")
@@ -446,6 +500,7 @@ class SeederKeyStore(private val activity: ComponentActivity) {
      * `(byte[] payload, List<Uri> requestedSignatures)`. We pass a
      * single-element list so we get exactly one signature back.
      */
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun launchSignRequest(authToken: Long) {
         val p = pending ?: return
         val message = p.messageToSign ?: run {
@@ -465,6 +520,7 @@ class SeederKeyStore(private val activity: ComponentActivity) {
     }
 
     /** SIGN step 2 result — extract the 64-byte raw ed25519 signature. */
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun handleSignResult(result: ActivityResult) {
         val p = pending ?: run {
             Log.w(TAG, "sign result arrived with no pending operation")
@@ -544,6 +600,14 @@ class SeederKeyStore(private val activity: ComponentActivity) {
          * (since the backend now requires a real signed challenge).
          */
         fun isSupported(context: Context): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                return false
+            }
+            return isSupportedApi30(context)
+        }
+
+        @RequiresApi(Build.VERSION_CODES.R)
+        private fun isSupportedApi30(context: Context): Boolean {
             // Step 1 — try the SDK's own precheck. On a production Seeker
             // or a Seeker running the real (non-impl) Seed Vault, this is
             // the correct signal.

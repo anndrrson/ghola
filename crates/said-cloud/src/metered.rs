@@ -36,10 +36,7 @@ pub async fn pricing_headers(
         if let Ok(v) = HeaderValue::from_str(&price_micro.to_string()) {
             headers.insert("X-Price-Micro-USDC", v);
         }
-        headers.insert(
-            "X-Currency",
-            HeaderValue::from_static("USDC"),
-        );
+        headers.insert("X-Currency", HeaderValue::from_static("USDC"));
         if let Ok(v) = HeaderValue::from_str(&free_tier.to_string()) {
             headers.insert("X-Free-Tier-Daily", v);
         }

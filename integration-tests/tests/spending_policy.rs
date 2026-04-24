@@ -11,7 +11,9 @@ use said_types::{PayCurrency, SpendingPolicy};
 #[test]
 fn per_tx_sol_limit_blocks_large_transfer() {
     let (wallet, _dir) = make_wallet();
-    let agent = wallet.create_agent_wallet("agent", standard_policy()).unwrap();
+    let agent = wallet
+        .create_agent_wallet("agent", standard_policy())
+        .unwrap();
 
     // 0.5 SOL is under per-tx limit of 1 SOL — OK
     wallet
@@ -28,7 +30,9 @@ fn per_tx_sol_limit_blocks_large_transfer() {
 #[test]
 fn per_tx_usdc_limit_blocks_large_transfer() {
     let (wallet, _dir) = make_wallet();
-    let agent = wallet.create_agent_wallet("agent", standard_policy()).unwrap();
+    let agent = wallet
+        .create_agent_wallet("agent", standard_policy())
+        .unwrap();
 
     // $5 is under per-tx limit of $10 — OK
     wallet
@@ -48,15 +52,19 @@ fn per_tx_usdc_limit_blocks_large_transfer() {
 fn daily_sol_limit_accumulates_across_transactions() {
     let (wallet, _dir) = make_wallet();
     let policy = SpendingPolicy {
-        daily_limit_lamports: Some(3_000_000_000), // 3 SOL
+        daily_limit_lamports: Some(3_000_000_000),  // 3 SOL
         per_tx_limit_lamports: Some(1_500_000_000), // 1.5 SOL per tx
         ..Default::default()
     };
     let agent = wallet.create_agent_wallet("agent", policy).unwrap();
 
     // Log 2 × 1 SOL = 2 SOL spent already
-    wallet.log_transaction(fake_sol_tx(agent.id, "agent", 1_000_000_000)).unwrap();
-    wallet.log_transaction(fake_sol_tx(agent.id, "agent", 1_000_000_000)).unwrap();
+    wallet
+        .log_transaction(fake_sol_tx(agent.id, "agent", 1_000_000_000))
+        .unwrap();
+    wallet
+        .log_transaction(fake_sol_tx(agent.id, "agent", 1_000_000_000))
+        .unwrap();
 
     // Requesting another 0.5 SOL → total 2.5 SOL, within 3 SOL limit — OK
     wallet
@@ -74,15 +82,19 @@ fn daily_sol_limit_accumulates_across_transactions() {
 fn daily_usdc_limit_accumulates_across_transactions() {
     let (wallet, _dir) = make_wallet();
     let policy = SpendingPolicy {
-        daily_limit_usdc_micro: Some(20_000_000), // $20
+        daily_limit_usdc_micro: Some(20_000_000),  // $20
         per_tx_limit_usdc_micro: Some(10_000_000), // $10
         ..Default::default()
     };
     let agent = wallet.create_agent_wallet("agent", policy).unwrap();
 
     // Log 2 × $8 = $16 spent
-    wallet.log_transaction(fake_usdc_tx(agent.id, "agent", 8_000_000)).unwrap();
-    wallet.log_transaction(fake_usdc_tx(agent.id, "agent", 8_000_000)).unwrap();
+    wallet
+        .log_transaction(fake_usdc_tx(agent.id, "agent", 8_000_000))
+        .unwrap();
+    wallet
+        .log_transaction(fake_usdc_tx(agent.id, "agent", 8_000_000))
+        .unwrap();
 
     // Requesting $3 → $19 total, within $20 — OK
     wallet
@@ -104,7 +116,9 @@ fn unlimited_policy_never_blocks() {
 
     // Log many large transactions
     for _ in 0..10 {
-        wallet.log_transaction(fake_sol_tx(agent.id, "agent", 100_000_000_000)).unwrap();
+        wallet
+            .log_transaction(fake_sol_tx(agent.id, "agent", 100_000_000_000))
+            .unwrap();
     }
 
     // Still should not block since there are no limits
@@ -190,7 +204,9 @@ fn empty_allowlist_allows_any_recipient() {
 #[test]
 fn inactive_agent_is_blocked() {
     let (wallet, _dir) = make_wallet();
-    let agent = wallet.create_agent_wallet("agent", SpendingPolicy::default()).unwrap();
+    let agent = wallet
+        .create_agent_wallet("agent", SpendingPolicy::default())
+        .unwrap();
 
     wallet.deactivate_agent(agent.id).unwrap();
 
@@ -205,10 +221,16 @@ fn inactive_agent_is_blocked() {
 #[test]
 fn spending_status_reflects_logged_transactions() {
     let (wallet, _dir) = make_wallet();
-    let agent = wallet.create_agent_wallet("agent", standard_policy()).unwrap();
+    let agent = wallet
+        .create_agent_wallet("agent", standard_policy())
+        .unwrap();
 
-    wallet.log_transaction(fake_sol_tx(agent.id, "agent", 500_000_000)).unwrap();
-    wallet.log_transaction(fake_usdc_tx(agent.id, "agent", 3_000_000)).unwrap();
+    wallet
+        .log_transaction(fake_sol_tx(agent.id, "agent", 500_000_000))
+        .unwrap();
+    wallet
+        .log_transaction(fake_usdc_tx(agent.id, "agent", 3_000_000))
+        .unwrap();
 
     let status = wallet.spending_status(agent.id).unwrap();
     assert_eq!(status.spend_today_sol_lamports, 500_000_000);
@@ -225,7 +247,9 @@ fn spending_status_remaining_budget_is_computed() {
         ..Default::default()
     };
     let agent = wallet.create_agent_wallet("agent", policy).unwrap();
-    wallet.log_transaction(fake_usdc_tx(agent.id, "agent", 3_000_000)).unwrap();
+    wallet
+        .log_transaction(fake_usdc_tx(agent.id, "agent", 3_000_000))
+        .unwrap();
 
     let status = wallet.spending_status(agent.id).unwrap();
     // Remaining = $10 - $3 = $7

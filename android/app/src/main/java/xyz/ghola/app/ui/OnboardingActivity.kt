@@ -13,6 +13,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.CloudAuthManager
@@ -29,8 +30,6 @@ class OnboardingActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "Onboarding"
         private const val RC_SIGN_IN = 9001
-        // Replace with your actual Google OAuth client ID for Android
-        private const val GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com"
     }
 
     private lateinit var secureStorage: SecureStorage
@@ -55,15 +54,23 @@ class OnboardingActivity : AppCompatActivity() {
         stepConnect = findViewById(R.id.stepConnect)
 
         // Configure Google Sign-In
-        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-            .requestIdToken(GOOGLE_CLIENT_ID)
-            .requestEmail()
-            .requestProfile()
-            .build()
-        googleSignInClient = GoogleSignIn.getClient(this, gso)
+        val googleClientId = BuildConfig.GOOGLE_WEB_CLIENT_ID.trim()
+        val signInButton = findViewById<Button>(R.id.btnGoogleSignIn)
+        if (googleClientId.isBlank()) {
+            signInButton.isEnabled = false
+            signInButton.alpha = 0.6f
+            signInButton.text = "Google Sign-In Unavailable"
+        } else {
+            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                .requestIdToken(googleClientId)
+                .requestEmail()
+                .requestProfile()
+                .build()
+            googleSignInClient = GoogleSignIn.getClient(this, gso)
+        }
 
         // Step 1: Sign In
-        findViewById<Button>(R.id.btnGoogleSignIn).setOnClickListener {
+        signInButton.setOnClickListener {
             startGoogleSignIn()
         }
         findViewById<Button>(R.id.btnSkipSignIn).setOnClickListener {
@@ -104,7 +111,10 @@ class OnboardingActivity : AppCompatActivity() {
     }
 
     private fun startGoogleSignIn() {
-        val signInIntent = googleSignInClient?.signInIntent ?: return
+        val signInIntent = googleSignInClient?.signInIntent ?: run {
+            Toast.makeText(this, "Google sign-in is not configured in this build.", Toast.LENGTH_LONG).show()
+            return
+        }
         startActivityForResult(signInIntent, RC_SIGN_IN)
     }
 

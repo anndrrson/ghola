@@ -195,6 +195,7 @@ mod tests {
             vault_wallet_address: None,
             credential_backend: "none".into(),
             credential_key_version: 0,
+            credential_key_ref: None,
             credential_ciphertext: vec![],
         }
     }

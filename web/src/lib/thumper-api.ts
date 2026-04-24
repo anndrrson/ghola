@@ -17,7 +17,11 @@ import type {
 } from "./thumper-types";
 
 const THUMPER_API_BASE =
-  process.env.NEXT_PUBLIC_THUMPER_API_URL || "http://localhost:3000";
+  process.env.NEXT_PUBLIC_THUMPER_API_URL ||
+  (typeof window !== "undefined" &&
+  /(^|\.)ghola\.xyz$/.test(window.location.hostname)
+    ? "https://thumper-cloud.onrender.com"
+    : "http://localhost:3000");
 
 function getThumperToken(): string | null {
   if (typeof window === "undefined") return null;

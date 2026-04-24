@@ -17,22 +17,38 @@ pub fn auto_discover(port: u16) -> Vec<DiscoveryResult> {
         DiscoveryResult {
             name: "Claude Code",
             configured: configure_claude_code(port),
-            reason: if claude_config_path().is_some() { None } else { Some("not installed") },
+            reason: if claude_config_path().is_some() {
+                None
+            } else {
+                Some("not installed")
+            },
         },
         DiscoveryResult {
             name: "Cursor",
             configured: configure_cursor(port),
-            reason: if cursor_config_path().is_some() { None } else { Some("not installed") },
+            reason: if cursor_config_path().is_some() {
+                None
+            } else {
+                Some("not installed")
+            },
         },
         DiscoveryResult {
             name: "Claude Desktop",
             configured: configure_claude_desktop(port),
-            reason: if claude_desktop_config_path().is_some() { None } else { Some("not found (install from claude.ai/download)") },
+            reason: if claude_desktop_config_path().is_some() {
+                None
+            } else {
+                Some("not found (install from claude.ai/download)")
+            },
         },
         DiscoveryResult {
             name: "Windsurf",
             configured: configure_windsurf(port),
-            reason: if windsurf_config_path().is_some() { None } else { Some("not installed") },
+            reason: if windsurf_config_path().is_some() {
+                None
+            } else {
+                Some("not installed")
+            },
         },
     ]
 }
@@ -122,11 +138,7 @@ fn configure_claude_code(port: u16) -> bool {
         json!({ "url": format!("http://127.0.0.1:{}/mcp", port) }),
     );
 
-    fs::write(
-        &config_path,
-        serde_json::to_string_pretty(&config).unwrap(),
-    )
-    .is_ok()
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).is_ok()
 }
 
 fn configure_cursor(port: u16) -> bool {
@@ -159,11 +171,7 @@ fn configure_cursor(port: u16) -> bool {
         json!({ "url": format!("http://127.0.0.1:{}/mcp", port) }),
     );
 
-    fs::write(
-        &config_path,
-        serde_json::to_string_pretty(&config).unwrap(),
-    )
-    .is_ok()
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).is_ok()
 }
 
 fn unconfigure_claude_code() -> bool {
@@ -181,16 +189,9 @@ fn unconfigure_claude_code() -> bool {
         return false;
     };
 
-    if let Some(servers) = config
-        .get_mut("mcpServers")
-        .and_then(|s| s.as_object_mut())
-    {
+    if let Some(servers) = config.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
         if servers.remove("said").is_some() {
-            return fs::write(
-                &config_path,
-                serde_json::to_string_pretty(&config).unwrap(),
-            )
-            .is_ok();
+            return fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).is_ok();
         }
     }
     false
@@ -221,11 +222,7 @@ fn configure_claude_desktop(port: u16) -> bool {
         json!({ "url": format!("http://127.0.0.1:{}/mcp", port) }),
     );
 
-    fs::write(
-        &config_path,
-        serde_json::to_string_pretty(&config).unwrap(),
-    )
-    .is_ok()
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).is_ok()
 }
 
 fn configure_windsurf(port: u16) -> bool {
@@ -257,11 +254,7 @@ fn configure_windsurf(port: u16) -> bool {
         json!({ "url": format!("http://127.0.0.1:{}/mcp", port) }),
     );
 
-    fs::write(
-        &config_path,
-        serde_json::to_string_pretty(&config).unwrap(),
-    )
-    .is_ok()
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).is_ok()
 }
 
 fn unconfigure_claude_desktop() -> bool {
@@ -279,16 +272,9 @@ fn unconfigure_claude_desktop() -> bool {
         return false;
     };
 
-    if let Some(servers) = config
-        .get_mut("mcpServers")
-        .and_then(|s| s.as_object_mut())
-    {
+    if let Some(servers) = config.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
         if servers.remove("said").is_some() {
-            return fs::write(
-                &config_path,
-                serde_json::to_string_pretty(&config).unwrap(),
-            )
-            .is_ok();
+            return fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).is_ok();
         }
     }
     false
@@ -309,16 +295,9 @@ fn unconfigure_windsurf() -> bool {
         return false;
     };
 
-    if let Some(servers) = config
-        .get_mut("mcpServers")
-        .and_then(|s| s.as_object_mut())
-    {
+    if let Some(servers) = config.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
         if servers.remove("said").is_some() {
-            return fs::write(
-                &config_path,
-                serde_json::to_string_pretty(&config).unwrap(),
-            )
-            .is_ok();
+            return fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).is_ok();
         }
     }
     false
@@ -339,16 +318,9 @@ fn unconfigure_cursor() -> bool {
         return false;
     };
 
-    if let Some(servers) = config
-        .get_mut("mcpServers")
-        .and_then(|s| s.as_object_mut())
-    {
+    if let Some(servers) = config.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
         if servers.remove("said").is_some() {
-            return fs::write(
-                &config_path,
-                serde_json::to_string_pretty(&config).unwrap(),
-            )
-            .is_ok();
+            return fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).is_ok();
         }
     }
     false

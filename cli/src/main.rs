@@ -13,7 +13,10 @@ use said_types::{
 };
 
 #[derive(Parser)]
-#[command(name = "said", about = "Sovereign AI Identity — portable AI data wallet")]
+#[command(
+    name = "said",
+    about = "Sovereign AI Identity — portable AI data wallet"
+)]
 struct Cli {
     /// Custom wallet directory (default: ~/.said)
     #[arg(long, global = true)]
@@ -483,13 +486,19 @@ fn load_wallet(dir: &std::path::PathBuf) -> Result<Wallet, Box<dyn std::error::E
 fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim();
     if let Some(num) = s.strip_suffix('h') {
-        let n: u64 = num.parse().map_err(|_| format!("invalid duration: {}", s))?;
+        let n: u64 = num
+            .parse()
+            .map_err(|_| format!("invalid duration: {}", s))?;
         Ok(Duration::from_secs(n * 3600))
     } else if let Some(num) = s.strip_suffix('d') {
-        let n: u64 = num.parse().map_err(|_| format!("invalid duration: {}", s))?;
+        let n: u64 = num
+            .parse()
+            .map_err(|_| format!("invalid duration: {}", s))?;
         Ok(Duration::from_secs(n * 86400))
     } else if let Some(num) = s.strip_suffix('y') {
-        let n: u64 = num.parse().map_err(|_| format!("invalid duration: {}", s))?;
+        let n: u64 = num
+            .parse()
+            .map_err(|_| format!("invalid duration: {}", s))?;
         Ok(Duration::from_secs(n * 365 * 86400))
     } else {
         Err(format!(
@@ -515,7 +524,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| Wallet::default_wallet_dir().expect("could not determine home dir"));
 
     match cli.command {
-        Commands::Init { words, password: use_password } => {
+        Commands::Init {
+            words,
+            password: use_password,
+        } => {
             if words != 12 && words != 24 {
                 return Err("--words must be 12 or 24".into());
             }
@@ -656,8 +668,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     serde_json::to_string_pretty(&items)?
                 }
                 ExportTarget::Memories => {
-                    let items: Vec<Memory> =
-                        wallet.storage().load("memories").unwrap_or_default();
+                    let items: Vec<Memory> = wallet.storage().load("memories").unwrap_or_default();
                     serde_json::to_string_pretty(&items)?
                 }
                 ExportTarget::Preferences => {
@@ -736,8 +747,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 SecretAction::Get { name } => {
-                    let secrets: Vec<Secret> =
-                        wallet.storage().load("secrets").unwrap_or_default();
+                    let secrets: Vec<Secret> = wallet.storage().load("secrets").unwrap_or_default();
 
                     if let Some(secret) = secrets.iter().find(|s| s.name == name) {
                         println!("{}", secret.value);
@@ -747,8 +757,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 SecretAction::List => {
-                    let secrets: Vec<Secret> =
-                        wallet.storage().load("secrets").unwrap_or_default();
+                    let secrets: Vec<Secret> = wallet.storage().load("secrets").unwrap_or_default();
 
                     if secrets.is_empty() {
                         println!("No secrets stored. Add one with: said secret set <name> <value>");
@@ -760,10 +769,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         println!("{}", "-".repeat(110));
 
                         for s in &secrets {
-                            let desc = s
-                                .description
-                                .as_deref()
-                                .unwrap_or("-");
+                            let desc = s.description.as_deref().unwrap_or("-");
                             let tags = if s.tags.is_empty() {
                                 "-".to_string()
                             } else {
@@ -826,7 +832,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     println!("  Session ID: {}", session.id);
                     println!("  Provider:   {:?}", session.provider);
                     println!("  Label:      {}", session.label);
-                    println!("  Expires:    {}", session.expires_at.format("%Y-%m-%d %H:%M UTC"));
+                    println!(
+                        "  Expires:    {}",
+                        session.expires_at.format("%Y-%m-%d %H:%M UTC")
+                    );
                     println!("  Capabilities:");
                     for cap in &session.capabilities {
                         println!("    - {:?}", cap);
@@ -890,10 +899,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        Commands::Context {
-            topic,
-            prompt_only,
-        } => {
+        Commands::Context { topic, prompt_only } => {
             let wallet = load_wallet(&dir)?;
 
             if prompt_only {
@@ -960,7 +966,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     println!("Daemon started (PID {}, port {}).", pid, port);
                     println!("Auto-discovering AI tool configs...");
                 } else {
-                    println!("Daemon spawned on port {}. Check ~/.said/daemon.log if issues arise.", port);
+                    println!(
+                        "Daemon spawned on port {}. Check ~/.said/daemon.log if issues arise.",
+                        port
+                    );
                 }
             }
 
@@ -1016,13 +1025,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             json,
             severity,
         } => {
-            let min_severity = said_core::audit::parse_severity(&severity)
-                .ok_or_else(|| {
-                    format!(
-                        "invalid severity '{}': use low, medium, high, or critical",
-                        severity
-                    )
-                })?;
+            let min_severity = said_core::audit::parse_severity(&severity).ok_or_else(|| {
+                format!(
+                    "invalid severity '{}': use low, medium, high, or critical",
+                    severity
+                )
+            })?;
 
             let wallet = load_wallet(&dir)?;
             let report = said_core::audit::build_report(&wallet);
@@ -1032,21 +1040,21 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 print!("{}", said_core::audit::format_report(&report, min_severity));
 
-                let auto_fixable: Vec<_> = report
-                    .findings
-                    .iter()
-                    .filter(|f| f.auto_fixable)
-                    .collect();
+                let auto_fixable: Vec<_> =
+                    report.findings.iter().filter(|f| f.auto_fixable).collect();
 
                 if !auto_fixable.is_empty() {
                     if fix {
                         // Auto-apply all safe fixes
-                        let applied =
-                            said_core::audit::apply_auto_fixes(&wallet, &report.findings);
+                        let applied = said_core::audit::apply_auto_fixes(&wallet, &report.findings);
                         if applied.is_empty() {
                             println!("No fixes were applicable.");
                         } else {
-                            println!("Applied {} fix{}:", applied.len(), if applied.len() == 1 { "" } else { "es" });
+                            println!(
+                                "Applied {} fix{}:",
+                                applied.len(),
+                                if applied.len() == 1 { "" } else { "es" }
+                            );
                             for a in &applied {
                                 println!("  - {}", a);
                             }
@@ -1099,19 +1107,20 @@ async fn handle_solana(
             let did_key = wallet.master_did_key();
 
             // Sign the register message with the SAID master key
-            let master_xprv =
-                wallet.derive_provider_key(Provider::Master, KeyType::Signing, 0);
+            let master_xprv = wallet.derive_provider_key(Provider::Master, KeyType::Signing, 0);
             let master_signing = said_core::ucan::xprv_to_signing_key(&master_xprv);
             let master_pub_bytes = master_signing.verifying_key().to_bytes();
 
-            let message =
-                said_solana::build_register_message(&master_pub_bytes, &did_key);
+            let message = said_solana::build_register_message(&master_pub_bytes, &did_key);
             let sig = master_signing.sign(message.as_bytes());
 
             println!("Registering identity on-chain...");
             println!("  DID:      {}", did_key);
             println!("  Payer:    {}", client.payer_pubkey_bs58());
-            println!("  Master:   {}", bs58::encode(&master_pub_bytes).into_string());
+            println!(
+                "  Master:   {}",
+                bs58::encode(&master_pub_bytes).into_string()
+            );
 
             let tx_sig = client
                 .register(&master_pub_bytes, &did_key, &sig.to_bytes())
@@ -1126,9 +1135,7 @@ async fn handle_solana(
             // Determine if query is a DID or base58 pubkey
             let pubkey_bytes = if query.starts_with("did:key:") {
                 // Parse did:key to extract the Ed25519 public key
-                let z_part = query
-                    .strip_prefix("did:key:")
-                    .ok_or("invalid DID format")?;
+                let z_part = query.strip_prefix("did:key:").ok_or("invalid DID format")?;
                 let decoded = bs58::decode(z_part).into_vec()?;
                 // Skip 2-byte multicodec prefix (0xed, 0x01)
                 if decoded.len() < 34 || decoded[0] != 0xed || decoded[1] != 0x01 {
@@ -1180,8 +1187,7 @@ async fn handle_solana(
 
         SolanaAction::Deactivate { rpc_url } => {
             let client = said_solana::SolanaClient::new(&rpc_url, &solana_kp)?;
-            let master_xprv =
-                wallet.derive_provider_key(Provider::Master, KeyType::Signing, 0);
+            let master_xprv = wallet.derive_provider_key(Provider::Master, KeyType::Signing, 0);
             let master_signing = said_core::ucan::xprv_to_signing_key(&master_xprv);
             let master_pub_bytes = master_signing.verifying_key().to_bytes();
 
@@ -1193,8 +1199,7 @@ async fn handle_solana(
 
         SolanaAction::Reactivate { rpc_url } => {
             let client = said_solana::SolanaClient::new(&rpc_url, &solana_kp)?;
-            let master_xprv =
-                wallet.derive_provider_key(Provider::Master, KeyType::Signing, 0);
+            let master_xprv = wallet.derive_provider_key(Provider::Master, KeyType::Signing, 0);
             let master_signing = said_core::ucan::xprv_to_signing_key(&master_xprv);
             let master_pub_bytes = master_signing.verifying_key().to_bytes();
 
@@ -1206,8 +1211,7 @@ async fn handle_solana(
 
         SolanaAction::Status { rpc_url } => {
             let client = said_solana::SolanaClient::new(&rpc_url, &solana_kp)?;
-            let master_xprv =
-                wallet.derive_provider_key(Provider::Master, KeyType::Signing, 0);
+            let master_xprv = wallet.derive_provider_key(Provider::Master, KeyType::Signing, 0);
             let master_signing = said_core::ucan::xprv_to_signing_key(&master_xprv);
             let master_pub_bytes = master_signing.verifying_key().to_bytes();
 
@@ -1216,10 +1220,7 @@ async fn handle_solana(
             println!("  Payer:    {}", client.payer_pubkey_bs58());
 
             let balance = client.get_balance().await?;
-            println!(
-                "  Balance:  {} SOL",
-                balance as f64 / 1_000_000_000.0
-            );
+            println!("  Balance:  {} SOL", balance as f64 / 1_000_000_000.0);
 
             match client.lookup_by_pubkey(&master_pub_bytes).await {
                 Ok(record) => {
@@ -1248,12 +1249,12 @@ async fn handle_solana(
 
             let balance = client.get_balance().await?;
             println!("Solana Address: {}", pubkey);
-            println!(
-                "Balance:        {} SOL",
-                balance as f64 / 1_000_000_000.0
-            );
+            println!("Balance:        {} SOL", balance as f64 / 1_000_000_000.0);
 
-            if rpc_url.contains("devnet") || rpc_url.contains("localhost") || rpc_url.contains("127.0.0.1") {
+            if rpc_url.contains("devnet")
+                || rpc_url.contains("localhost")
+                || rpc_url.contains("127.0.0.1")
+            {
                 println!("Requesting 1 SOL airdrop...");
                 match client.request_airdrop(1_000_000_000).await {
                     Ok(sig) => {
@@ -1261,13 +1262,13 @@ async fn handle_solana(
                         // Wait briefly for confirmation
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         let new_balance = client.get_balance().await?;
-                        println!(
-                            "New Balance: {} SOL",
-                            new_balance as f64 / 1_000_000_000.0
-                        );
+                        println!("New Balance: {} SOL", new_balance as f64 / 1_000_000_000.0);
                     }
                     Err(e) => {
-                        println!("Airdrop failed: {}. Try again or use https://faucet.solana.com", e);
+                        println!(
+                            "Airdrop failed: {}. Try again or use https://faucet.solana.com",
+                            e
+                        );
                     }
                 }
             } else {
@@ -1280,8 +1281,7 @@ async fn handle_solana(
             rpc_url,
         } => {
             let client = said_solana::SolanaClient::new(&rpc_url, &solana_kp)?;
-            let master_xprv =
-                wallet.derive_provider_key(Provider::Master, KeyType::Signing, 0);
+            let master_xprv = wallet.derive_provider_key(Provider::Master, KeyType::Signing, 0);
             let master_signing = said_core::ucan::xprv_to_signing_key(&master_xprv);
             let master_pub_bytes = master_signing.verifying_key().to_bytes();
 
@@ -1343,14 +1343,8 @@ async fn handle_pay(
                 .unwrap_or(0);
 
             println!("Wallet: {} ({})", label, address);
-            println!(
-                "SOL:  {:.9}",
-                sol_balance as f64 / 1_000_000_000.0
-            );
-            println!(
-                "USDC: {:.6}",
-                usdc_balance as f64 / 1_000_000.0
-            );
+            println!("SOL:  {:.9}", sol_balance as f64 / 1_000_000_000.0);
+            println!("USDC: {:.6}", usdc_balance as f64 / 1_000_000.0);
         }
 
         PayAction::Address { agent } => {
@@ -1410,7 +1404,11 @@ async fn handle_pay(
 
             let signature = match currency_enum {
                 PayCurrency::Sol => client.transfer_sol(&to_arr, amount_units).await?,
-                PayCurrency::Usdc => client.transfer_usdc(&to_arr, amount_units, is_devnet).await?,
+                PayCurrency::Usdc => {
+                    client
+                        .transfer_usdc(&to_arr, amount_units, is_devnet)
+                        .await?
+                }
             };
 
             // Log transaction
@@ -1446,14 +1444,10 @@ async fn handle_pay(
                 per_tx_sol_limit,
             } => {
                 let policy = SpendingPolicy {
-                    daily_limit_lamports: daily_sol_limit
-                        .map(|v| (v * 1_000_000_000.0) as u64),
-                    daily_limit_usdc_micro: daily_usdc_limit
-                        .map(|v| (v * 1_000_000.0) as u64),
-                    per_tx_limit_lamports: per_tx_sol_limit
-                        .map(|v| (v * 1_000_000_000.0) as u64),
-                    per_tx_limit_usdc_micro: per_tx_usdc_limit
-                        .map(|v| (v * 1_000_000.0) as u64),
+                    daily_limit_lamports: daily_sol_limit.map(|v| (v * 1_000_000_000.0) as u64),
+                    daily_limit_usdc_micro: daily_usdc_limit.map(|v| (v * 1_000_000.0) as u64),
+                    per_tx_limit_lamports: per_tx_sol_limit.map(|v| (v * 1_000_000_000.0) as u64),
+                    per_tx_limit_usdc_micro: per_tx_usdc_limit.map(|v| (v * 1_000_000.0) as u64),
                     allowed_recipients: vec![],
                 };
 
@@ -1674,7 +1668,10 @@ async fn handle_pay(
                     Some(r) => r.json().await.unwrap_or_default(),
                     None => serde_json::Value::Null,
                 };
-                rep_data.get("overall_score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32
+                rep_data
+                    .get("overall_score")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32
             } else {
                 0.0
             };
@@ -1742,7 +1739,9 @@ async fn handle_pay(
                 } else {
                     None
                 }
-                .ok_or("Service returned 402 but PAYMENT-REQUIRED header is missing or malformed")?;
+                .ok_or(
+                    "Service returned 402 but PAYMENT-REQUIRED header is missing or malformed",
+                )?;
 
                 // Step 7: Execute payment
                 let to_bytes = bs58::decode(&pay_to).into_vec()?;
@@ -1759,7 +1758,9 @@ async fn handle_pay(
                 );
 
                 let client = said_solana::SolanaClient::new(&rpc_url, &kp_bytes)?;
-                let signature = client.transfer_usdc(&to_arr, price_micro_usdc, is_devnet).await?;
+                let signature = client
+                    .transfer_usdc(&to_arr, price_micro_usdc, is_devnet)
+                    .await?;
 
                 // Log it
                 let _ = wallet.log_transaction(said_types::PaymentTransaction {
@@ -1800,9 +1801,15 @@ async fn handle_pay(
 
                 let paid_status = paid_resp.status().as_u16();
                 let paid_body = paid_resp.text().await.unwrap_or_else(|_| "<empty>".into());
-                println!("\n--- Service Response (HTTP {}) ---\n{}", paid_status, paid_body);
+                println!(
+                    "\n--- Service Response (HTTP {}) ---\n{}",
+                    paid_status, paid_body
+                );
             } else {
-                let body_text = initial_resp.text().await.unwrap_or_else(|_| "<empty>".into());
+                let body_text = initial_resp
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "<empty>".into());
                 println!("HTTP {} (no x402)\n{}", status, body_text);
             }
         }
@@ -1894,7 +1901,11 @@ async fn handle_discover(
             }
         }
 
-        DiscoverAction::Evaluate { slug, rpc_url, api_url } => {
+        DiscoverAction::Evaluate {
+            slug,
+            rpc_url,
+            api_url,
+        } => {
             println!("Evaluating service: {}", slug);
             println!();
 
@@ -1920,8 +1931,14 @@ async fn handle_discover(
                 .unwrap_or("")
                 .to_string();
 
-            let base_url = service.get("base_url").and_then(|v| v.as_str()).unwrap_or("-");
-            let price_micro = service.get("price_micro_usdc").and_then(|v| v.as_u64()).unwrap_or(0);
+            let base_url = service
+                .get("base_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+            let price_micro = service
+                .get("price_micro_usdc")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
 
             // Fetch cloud reputation
             let (cloud_score, cloud_confidence) = if !provider_did.is_empty() {
@@ -1935,8 +1952,14 @@ async fn handle_discover(
                     Some(r) => r.json().await.unwrap_or_default(),
                     None => serde_json::Value::Null,
                 };
-                let score = rep_data.get("overall_score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                let conf = rep_data.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                let score = rep_data
+                    .get("overall_score")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32;
+                let conf = rep_data
+                    .get("confidence")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32;
                 (score, conf)
             } else {
                 (0.0f32, 0.0f32)
@@ -1962,9 +1985,15 @@ async fn handle_discover(
                 None
             };
 
-            let verified = service.get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
+            let verified = service
+                .get("verified")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let on_chain_registered = identity_pda.is_some()
-                || service.get("on_chain_registered").and_then(|v| v.as_bool()).unwrap_or(false);
+                || service
+                    .get("on_chain_registered")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
             let mut composite = cloud_score;
             if verified {
@@ -1984,14 +2013,30 @@ async fn handle_discover(
 
             println!("  Service:        {}", slug);
             println!("  Base URL:       {}", base_url);
-            println!("  Price:          {:.6} USDC", price_micro as f64 / 1_000_000.0);
-            println!("  Provider DID:   {}", if provider_did.is_empty() { "(none)" } else { &provider_did });
+            println!(
+                "  Price:          {:.6} USDC",
+                price_micro as f64 / 1_000_000.0
+            );
+            println!(
+                "  Provider DID:   {}",
+                if provider_did.is_empty() {
+                    "(none)"
+                } else {
+                    &provider_did
+                }
+            );
             println!("  Verified:       {}", verified);
-            println!("  On-chain:       {} (RPC: {})", on_chain_registered, rpc_url);
+            println!(
+                "  On-chain:       {} (RPC: {})",
+                on_chain_registered, rpc_url
+            );
             if let Some(ref pda) = identity_pda {
                 println!("  Identity PDA:   {}", pda);
             }
-            println!("  Cloud Score:    {:.2}  (confidence: {:.2})", cloud_score, cloud_confidence);
+            println!(
+                "  Cloud Score:    {:.2}  (confidence: {:.2})",
+                cloud_score, cloud_confidence
+            );
             println!("  Composite:      {:.2}", composite);
             println!("  Recommendation: {}", recommendation);
         }

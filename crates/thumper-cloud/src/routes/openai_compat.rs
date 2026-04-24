@@ -14,7 +14,9 @@ use uuid::Uuid;
 use crate::auth::{AuthUser, Claims};
 use crate::error::CloudError;
 use crate::services::{
-    agent_service, compute_service, llm_router::{self, ChatMsg}, x402_service,
+    agent_service, compute_service,
+    llm_router::{self, ChatMsg},
+    x402_service,
 };
 use crate::state::AppState;
 
@@ -206,9 +208,7 @@ async fn handle_x402_agent_request(
     let matched_agent = matched
         .iter()
         .find(|a| a.agent_id == agent_info.id)
-        .ok_or_else(|| {
-            CloudError::ServiceUnavailable("agent's provider is offline".into())
-        })?;
+        .ok_or_else(|| CloudError::ServiceUnavailable("agent's provider is offline".into()))?;
 
     let max_tokens = req.max_tokens.unwrap_or(matched_agent.max_tokens as u32);
     let required_amount = x402_service::estimate_agent_price(
@@ -234,19 +234,17 @@ async fn handle_x402_agent_request(
                 matched_agent.price_per_1k_input,
                 matched_agent.price_per_1k_output,
                 max_tokens,
-            );
+            )?;
             return Ok(x402_service::build_402_response(&requirements));
         }
     };
 
     // Decode and parse payment proof
-    let proof_bytes = STANDARD.decode(payment_header).map_err(|_| {
-        CloudError::PaymentRequired("invalid PAYMENT-SIGNATURE: bad base64".into())
-    })?;
-    let proof: x402_service::PaymentProof =
-        serde_json::from_slice(&proof_bytes).map_err(|e| {
-            CloudError::PaymentRequired(format!("invalid PAYMENT-SIGNATURE: {e}"))
-        })?;
+    let proof_bytes = STANDARD
+        .decode(payment_header)
+        .map_err(|_| CloudError::PaymentRequired("invalid PAYMENT-SIGNATURE: bad base64".into()))?;
+    let proof: x402_service::PaymentProof = serde_json::from_slice(&proof_bytes)
+        .map_err(|e| CloudError::PaymentRequired(format!("invalid PAYMENT-SIGNATURE: {e}")))?;
 
     // Verify payment on-chain
     let verified = x402_service::verify_payment(
@@ -318,7 +316,11 @@ async fn handle_x402_agent_request(
     };
 
     // Build OpenAI-compatible response
-    let prompt_tokens = req.messages.iter().map(|m| m.content.len() / 4).sum::<usize>() as u32;
+    let prompt_tokens = req
+        .messages
+        .iter()
+        .map(|m| m.content.len() / 4)
+        .sum::<usize>() as u32;
     let completion_tokens = (inference_result.text.len() / 4) as u32;
 
     let completion = ChatCompletion {
@@ -351,9 +353,11 @@ async fn handle_x402_agent_request(
     let payment_id = verified.payment_id;
     let provider_id = matched_agent.provider_id;
     let db = state.db.clone();
+    let usage_receipt_secret = state.config.usage_receipt_secret.clone();
     tokio::spawn(async move {
         let _ = x402_service::settle_x402_payment(
             &db,
+            &usage_receipt_secret,
             payment_id,
             actual_input,
             actual_output,
@@ -362,13 +366,8 @@ async fn handle_x402_agent_request(
             price_out,
         )
         .await;
-        let _ = compute_service::update_reputation(
-            &db,
-            provider_id,
-            true,
-            Some(latency as i64),
-        )
-        .await;
+        let _ =
+            compute_service::update_reputation(&db, provider_id, true, Some(latency as i64)).await;
     });
 
     // Build PAYMENT-RESPONSE header
@@ -418,13 +417,8 @@ async fn chat_completions_non_stream(
     }
 
     // Generate using streaming internally, collect full response
-    let mut text_stream = llm_router::generate_stream(
-        &state,
-        claims.sub,
-        &messages,
-        system.as_deref(),
-    )
-    .await?;
+    let mut text_stream =
+        llm_router::generate_stream(&state, claims.sub, &messages, system.as_deref()).await?;
 
     let mut full_response = String::new();
     while let Some(result) = text_stream.next().await {
@@ -435,7 +429,11 @@ async fn chat_completions_non_stream(
     }
 
     // Rough token estimate
-    let prompt_tokens = req.messages.iter().map(|m| m.content.len() / 4).sum::<usize>() as u32;
+    let prompt_tokens = req
+        .messages
+        .iter()
+        .map(|m| m.content.len() / 4)
+        .sum::<usize>() as u32;
     let completion_tokens = (full_response.len() / 4) as u32;
 
     Ok(Json(ChatCompletion {
@@ -480,13 +478,8 @@ async fn chat_completions_stream(
         }
     }
 
-    let text_stream = llm_router::generate_stream(
-        &state,
-        claims.sub,
-        &messages,
-        system.as_deref(),
-    )
-    .await?;
+    let text_stream =
+        llm_router::generate_stream(&state, claims.sub, &messages, system.as_deref()).await?;
 
     let completion_id = format!("chatcmpl-{}", Uuid::new_v4());
     let created = Utc::now().timestamp();

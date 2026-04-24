@@ -125,11 +125,7 @@ impl LlmProvider {
                 "gpt-4.1-mini",
                 "o4-mini",
             ],
-            LlmProvider::Google => vec![
-                "gemini-2.0-flash",
-                "gemini-2.5-pro",
-                "gemini-2.5-flash",
-            ],
+            LlmProvider::Google => vec!["gemini-2.0-flash", "gemini-2.5-pro", "gemini-2.5-flash"],
             LlmProvider::Groq => vec![
                 "llama-3.3-70b-versatile",
                 "llama-3.1-8b-instant",
@@ -147,30 +143,11 @@ impl LlmProvider {
                 "mistral-small-latest",
                 "codestral-latest",
             ],
-            LlmProvider::Kimi => vec![
-                "moonshot-v1-128k",
-                "moonshot-v1-32k",
-                "moonshot-v1-8k",
-            ],
-            LlmProvider::Qwen => vec![
-                "qwen-max",
-                "qwen-plus",
-                "qwen-turbo",
-                "qwen-long",
-            ],
-            LlmProvider::Glm => vec![
-                "glm-4-plus",
-                "glm-4",
-                "glm-4-flash",
-            ],
-            LlmProvider::DeepSeek => vec![
-                "deepseek-chat",
-                "deepseek-reasoner",
-            ],
-            LlmProvider::Cerebras => vec![
-                "llama-3.3-70b",
-                "llama-3.1-8b",
-            ],
+            LlmProvider::Kimi => vec!["moonshot-v1-128k", "moonshot-v1-32k", "moonshot-v1-8k"],
+            LlmProvider::Qwen => vec!["qwen-max", "qwen-plus", "qwen-turbo", "qwen-long"],
+            LlmProvider::Glm => vec!["glm-4-plus", "glm-4", "glm-4-flash"],
+            LlmProvider::DeepSeek => vec!["deepseek-chat", "deepseek-reasoner"],
+            LlmProvider::Cerebras => vec!["llama-3.3-70b", "llama-3.1-8b"],
             LlmProvider::OpenRouter => vec![
                 "meta-llama/llama-3.3-70b-instruct:free",
                 "google/gemma-2-9b-it:free",
@@ -277,7 +254,11 @@ impl FreeCascade {
         let found = inner.available.iter().find_map(|&provider| {
             let count = inner.counts.get(&provider).copied().unwrap_or(0);
             let limit = inner.limits.get(&provider).copied().unwrap_or(0);
-            if count < limit { Some(provider) } else { None }
+            if count < limit {
+                Some(provider)
+            } else {
+                None
+            }
         });
 
         // Increment count (mutable, after immutable borrow released)
@@ -374,9 +355,7 @@ pub async fn get_user_llm_config(
 
         // No BYOM key — only cascade for the default Anthropic fallback path
         match provider {
-            LlmProvider::Anthropic => {
-                resolve_cascade_or_claude(state, model, base_url).await
-            }
+            LlmProvider::Anthropic => resolve_cascade_or_claude(state, model, base_url).await,
             _ => {
                 // Non-Anthropic with no key — BYOM user who hasn't entered key yet
                 Ok(UserLlmConfig {
@@ -479,7 +458,10 @@ pub async fn generate(
 
     // Community provider — special path
     if config.provider == LlmProvider::Community {
-        let messages = vec![ChatMsg { role: "user".to_string(), content: prompt.to_string() }];
+        let messages = vec![ChatMsg {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        }];
         let (text, _model) = generate_community(state, user_id, &messages, None).await?;
         return Ok(text);
     }
@@ -519,7 +501,9 @@ async fn generate_anthropic(
     let api_key = config
         .api_key
         .as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Anthropic API key not configured".into()))?;
+        .ok_or(CloudError::ServiceUnavailable(
+            "Anthropic API key not configured".into(),
+        ))?;
 
     let system = if response_format == Some("json") {
         "You are a helpful assistant. Always respond with valid JSON only, no markdown or extra text."
@@ -547,23 +531,28 @@ async fn generate_anthropic(
 
     if !resp.status().is_success() {
         let status = resp.status();
+        let request_id = upstream_request_id(&resp);
         let error_body = resp.text().await.unwrap_or_default();
         return Err(CloudError::Internal(format!(
-            "Anthropic API returned {status}: {error_body}"
+            "Anthropic API returned {status}{}: {error_body}",
+            request_id
+                .map(|id| format!(" (request_id={id})"))
+                .unwrap_or_default()
         )));
     }
 
-    let resp_body: serde_json::Value = resp.json().await.map_err(|e| {
-        CloudError::Internal(format!("Anthropic response parse failed: {e}"))
-    })?;
+    let resp_body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| CloudError::Internal(format!("Anthropic response parse failed: {e}")))?;
 
     extract_anthropic_text(&resp_body)
 }
 
 fn extract_anthropic_text(body: &serde_json::Value) -> Result<String, CloudError> {
-    let content = body["content"]
-        .as_array()
-        .ok_or(CloudError::Internal("no content in Anthropic response".into()))?;
+    let content = body["content"].as_array().ok_or(CloudError::Internal(
+        "no content in Anthropic response".into(),
+    ))?;
 
     let text: String = content
         .iter()
@@ -578,6 +567,14 @@ fn extract_anthropic_text(body: &serde_json::Value) -> Result<String, CloudError
         .join("");
 
     Ok(text)
+}
+
+fn upstream_request_id(resp: &reqwest::Response) -> Option<String> {
+    resp.headers()
+        .get("request-id")
+        .or_else(|| resp.headers().get("x-request-id"))
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
 }
 
 async fn generate_openai_compat(
@@ -645,9 +642,10 @@ async fn generate_openai_compat(
         )));
     }
 
-    let resp_body: serde_json::Value = resp.json().await.map_err(|e| {
-        CloudError::Internal(format!("LLM response parse failed: {e}"))
-    })?;
+    let resp_body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| CloudError::Internal(format!("LLM response parse failed: {e}")))?;
 
     resp_body["choices"][0]["message"]["content"]
         .as_str()
@@ -663,7 +661,9 @@ async fn generate_google(
     let api_key = config
         .api_key
         .as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Google API key not configured".into()))?;
+        .ok_or(CloudError::ServiceUnavailable(
+            "Google API key not configured".into(),
+        ))?;
 
     let system_instruction = if response_format == Some("json") {
         Some("Always respond with valid JSON only, no markdown or extra text.")
@@ -708,9 +708,10 @@ async fn generate_google(
         )));
     }
 
-    let resp_body: serde_json::Value = resp.json().await.map_err(|e| {
-        CloudError::Internal(format!("Gemini response parse failed: {e}"))
-    })?;
+    let resp_body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| CloudError::Internal(format!("Gemini response parse failed: {e}")))?;
 
     resp_body["candidates"][0]["content"]["parts"][0]["text"]
         .as_str()
@@ -722,7 +723,8 @@ async fn generate_google(
 // Streaming generation (for SSE chat)
 // ---------------------------------------------------------------------------
 
-pub type TextStream = Pin<Box<dyn futures::stream::Stream<Item = Result<String, CloudError>> + Send>>;
+pub type TextStream =
+    Pin<Box<dyn futures::stream::Stream<Item = Result<String, CloudError>> + Send>>;
 
 async fn dispatch_stream(
     config: &UserLlmConfig,
@@ -787,7 +789,9 @@ async fn stream_anthropic(
     let api_key = config
         .api_key
         .as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Anthropic API key not configured".into()))?
+        .ok_or(CloudError::ServiceUnavailable(
+            "Anthropic API key not configured".into(),
+        ))?
         .to_string();
 
     let msgs: Vec<serde_json::Value> = messages
@@ -821,9 +825,13 @@ async fn stream_anthropic(
 
     if !resp.status().is_success() {
         let status = resp.status();
+        let request_id = upstream_request_id(&resp);
         let error_body = resp.text().await.unwrap_or_default();
         return Err(CloudError::Internal(format!(
-            "Anthropic API returned {status}: {error_body}"
+            "Anthropic API returned {status}{}: {error_body}",
+            request_id
+                .map(|id| format!(" (request_id={id})"))
+                .unwrap_or_default()
         )));
     }
 
@@ -966,13 +974,19 @@ async fn stream_google(
     let api_key = config
         .api_key
         .as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Google API key not configured".into()))?
+        .ok_or(CloudError::ServiceUnavailable(
+            "Google API key not configured".into(),
+        ))?
         .to_string();
 
     let contents: Vec<serde_json::Value> = messages
         .iter()
         .map(|m| {
-            let role = if m.role == "assistant" { "model" } else { "user" };
+            let role = if m.role == "assistant" {
+                "model"
+            } else {
+                "user"
+            };
             serde_json::json!({ "role": role, "parts": [{ "text": &m.content }] })
         })
         .collect();
@@ -1099,10 +1113,7 @@ Only return JSON, no other text."#
     });
 
     Ok(IntentClassification {
-        category: parsed["category"]
-            .as_str()
-            .unwrap_or("chat")
-            .to_string(),
+        category: parsed["category"].as_str().unwrap_or("chat").to_string(),
         confidence: parsed["confidence"].as_f64().unwrap_or(0.5),
         template_id: parsed["template_id"].as_str().map(|s| s.to_string()),
         extracted_params: parsed["extracted_params"].clone(),
@@ -1150,11 +1161,12 @@ pub async fn generate_with_tools(
         LlmProvider::Community => {
             // Community providers don't support tool-use; fall back to plain generation
             let (text, _model) = generate_community(state, user_id, messages, system).await?;
-            Ok(ToolUseResult { text, tool_calls: vec![] })
+            Ok(ToolUseResult {
+                text,
+                tool_calls: vec![],
+            })
         }
-        _ => {
-            generate_with_tools_openai(state, user_id, &config, messages, system, tools).await
-        }
+        _ => generate_with_tools_openai(state, user_id, &config, messages, system, tools).await,
     }
 }
 
@@ -1170,7 +1182,9 @@ async fn generate_with_tools_anthropic(
     let api_key = config
         .api_key
         .as_deref()
-        .ok_or(CloudError::ServiceUnavailable("API key not configured".into()))?;
+        .ok_or(CloudError::ServiceUnavailable(
+            "API key not configured".into(),
+        ))?;
 
     let mut conversation: Vec<serde_json::Value> = messages
         .iter()
@@ -1202,11 +1216,19 @@ async fn generate_with_tools_anthropic(
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let request_id = upstream_request_id(&resp);
             let error_body = resp.text().await.unwrap_or_default();
-            return Err(CloudError::Internal(format!("Anthropic {status}: {error_body}")));
+            return Err(CloudError::Internal(format!(
+                "Anthropic {status}{}: {error_body}",
+                request_id
+                    .map(|id| format!(" (request_id={id})"))
+                    .unwrap_or_default()
+            )));
         }
 
-        let resp_body: serde_json::Value = resp.json().await
+        let resp_body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| CloudError::Internal(format!("parse failed: {e}")))?;
 
         let stop_reason = resp_body["stop_reason"].as_str().unwrap_or("");
@@ -1230,7 +1252,8 @@ async fn generate_with_tools_anthropic(
 
                     let result = crate::services::wallet_service::execute_tool(
                         state, user_id, tool_name, tool_input,
-                    ).await;
+                    )
+                    .await;
 
                     match result {
                         Ok(value) => {
@@ -1264,10 +1287,14 @@ async fn generate_with_tools_anthropic(
 
             conversation.push(serde_json::json!({ "role": "user", "content": tool_results }));
         } else {
-            let text: String = content.iter()
+            let text: String = content
+                .iter()
                 .filter_map(|b| {
-                    if b["type"].as_str() == Some("text") { b["text"].as_str().map(|s| s.to_string()) }
-                    else { None }
+                    if b["type"].as_str() == Some("text") {
+                        b["text"].as_str().map(|s| s.to_string())
+                    } else {
+                        None
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join("");
@@ -1275,7 +1302,9 @@ async fn generate_with_tools_anthropic(
         }
     }
 
-    Err(CloudError::Internal("tool-use loop exceeded max rounds".into()))
+    Err(CloudError::Internal(
+        "tool-use loop exceeded max rounds".into(),
+    ))
 }
 
 /// OpenAI-compatible tool-use loop.
@@ -1292,16 +1321,19 @@ async fn generate_with_tools_openai(
     let needs_auth = config.provider != LlmProvider::Ollama;
 
     // Convert Anthropic tool format → OpenAI function calling format
-    let openai_tools: Vec<serde_json::Value> = tools.iter().map(|t| {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": t["name"],
-                "description": t["description"],
-                "parameters": t["input_schema"],
-            }
+    let openai_tools: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["input_schema"],
+                }
+            })
         })
-    }).collect();
+        .collect();
 
     let mut conversation: Vec<serde_json::Value> = Vec::new();
     if let Some(sys) = system {
@@ -1338,7 +1370,9 @@ async fn generate_with_tools_openai(
                 .header("X-Title", "Ghola");
         }
 
-        let resp = req.send().await
+        let resp = req
+            .send()
+            .await
             .map_err(|e| CloudError::Internal(format!("LLM request failed: {e}")))?;
 
         if !resp.status().is_success() {
@@ -1347,7 +1381,9 @@ async fn generate_with_tools_openai(
             return Err(CloudError::Internal(format!("LLM {status}: {error_body}")));
         }
 
-        let resp_body: serde_json::Value = resp.json().await
+        let resp_body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| CloudError::Internal(format!("parse failed: {e}")))?;
 
         let choice = &resp_body["choices"][0];
@@ -1355,7 +1391,8 @@ async fn generate_with_tools_openai(
         let finish_reason = choice["finish_reason"].as_str().unwrap_or("");
 
         // Check for tool calls
-        let has_tool_calls = message.get("tool_calls")
+        let has_tool_calls = message
+            .get("tool_calls")
             .and_then(|tc| tc.as_array())
             .map_or(false, |tc| !tc.is_empty());
 
@@ -1363,7 +1400,10 @@ async fn generate_with_tools_openai(
             // Add assistant message with tool_calls to conversation
             conversation.push(message.clone());
 
-            let tc_array = message["tool_calls"].as_array().cloned().unwrap_or_default();
+            let tc_array = message["tool_calls"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
             for tc in &tc_array {
                 let call_id = tc["id"].as_str().unwrap_or("");
                 let func = &tc["function"];
@@ -1376,12 +1416,16 @@ async fn generate_with_tools_openai(
                     result: None,
                 });
 
-                let tool_input: serde_json::Value = serde_json::from_str(arguments_str)
-                    .unwrap_or(serde_json::json!({}));
+                let tool_input: serde_json::Value =
+                    serde_json::from_str(arguments_str).unwrap_or(serde_json::json!({}));
 
                 let result = crate::services::wallet_service::execute_tool(
-                    state, user_id, tool_name, &tool_input,
-                ).await;
+                    state,
+                    user_id,
+                    tool_name,
+                    &tool_input,
+                )
+                .await;
 
                 match result {
                     Ok(value) => {
@@ -1413,11 +1457,16 @@ async fn generate_with_tools_openai(
         } else {
             // Final text response
             let text = message["content"].as_str().unwrap_or("").to_string();
-            return Ok(ToolUseResult { text, tool_calls: tool_calls_out });
+            return Ok(ToolUseResult {
+                text,
+                tool_calls: tool_calls_out,
+            });
         }
     }
 
-    Err(CloudError::Internal("tool-use loop exceeded max rounds".into()))
+    Err(CloudError::Internal(
+        "tool-use loop exceeded max rounds".into(),
+    ))
 }
 
 /// Google Gemini tool-use loop.
@@ -1429,22 +1478,36 @@ async fn generate_with_tools_google(
     system: Option<&str>,
     tools: &[serde_json::Value],
 ) -> Result<ToolUseResult, CloudError> {
-    let api_key = config.api_key.as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Google API key not configured".into()))?;
+    let api_key = config
+        .api_key
+        .as_deref()
+        .ok_or(CloudError::ServiceUnavailable(
+            "Google API key not configured".into(),
+        ))?;
 
     // Convert Anthropic tool format → Gemini function declarations
-    let function_declarations: Vec<serde_json::Value> = tools.iter().map(|t| {
-        serde_json::json!({
-            "name": t["name"],
-            "description": t["description"],
-            "parameters": t["input_schema"],
+    let function_declarations: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["input_schema"],
+            })
         })
-    }).collect();
+        .collect();
 
-    let contents: Vec<serde_json::Value> = messages.iter().map(|m| {
-        let role = if m.role == "assistant" { "model" } else { "user" };
-        serde_json::json!({ "role": role, "parts": [{ "text": &m.content }] })
-    }).collect();
+    let contents: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            let role = if m.role == "assistant" {
+                "model"
+            } else {
+                "user"
+            };
+            serde_json::json!({ "role": role, "parts": [{ "text": &m.content }] })
+        })
+        .collect();
 
     let mut conversation = contents;
     let mut tool_calls_out = Vec::new();
@@ -1476,10 +1539,14 @@ async fn generate_with_tools_google(
         if !resp.status().is_success() {
             let status = resp.status();
             let error_body = resp.text().await.unwrap_or_default();
-            return Err(CloudError::Internal(format!("Gemini {status}: {error_body}")));
+            return Err(CloudError::Internal(format!(
+                "Gemini {status}: {error_body}"
+            )));
         }
 
-        let resp_body: serde_json::Value = resp.json().await
+        let resp_body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| CloudError::Internal(format!("parse failed: {e}")))?;
 
         let parts = resp_body["candidates"][0]["content"]["parts"]
@@ -1488,7 +1555,8 @@ async fn generate_with_tools_google(
             .unwrap_or_default();
 
         // Check for function calls
-        let function_calls: Vec<&serde_json::Value> = parts.iter()
+        let function_calls: Vec<&serde_json::Value> = parts
+            .iter()
             .filter(|p| p.get("functionCall").is_some())
             .collect();
 
@@ -1513,7 +1581,8 @@ async fn generate_with_tools_google(
 
                 let result = crate::services::wallet_service::execute_tool(
                     state, user_id, tool_name, tool_args,
-                ).await;
+                )
+                .await;
 
                 match result {
                     Ok(value) => {
@@ -1551,15 +1620,21 @@ async fn generate_with_tools_google(
             }));
         } else {
             // Final text response
-            let text: String = parts.iter()
+            let text: String = parts
+                .iter()
                 .filter_map(|p| p["text"].as_str())
                 .collect::<Vec<_>>()
                 .join("");
-            return Ok(ToolUseResult { text, tool_calls: tool_calls_out });
+            return Ok(ToolUseResult {
+                text,
+                tool_calls: tool_calls_out,
+            });
         }
     }
 
-    Err(CloudError::Internal("tool-use loop exceeded max rounds".into()))
+    Err(CloudError::Internal(
+        "tool-use loop exceeded max rounds".into(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1581,18 +1656,34 @@ pub async fn generate_community(
 
     // Create escrow
     let estimated_cost = 100; // 100 micro-USDC estimate
-    let escrow_id = compute_service::create_escrow(&state.db, user_id, Some(provider.provider_id), estimated_cost).await?;
+    let escrow_id = compute_service::create_escrow(
+        &state.db,
+        user_id,
+        Some(provider.provider_id),
+        estimated_cost,
+    )
+    .await?;
 
     // Create job
-    let job_id = compute_service::create_job(&state.db, user_id, provider.provider_id, escrow_id, &provider.model_id).await?;
+    let job_id = compute_service::create_job(
+        &state.db,
+        user_id,
+        provider.provider_id,
+        escrow_id,
+        &provider.model_id,
+    )
+    .await?;
 
     // Build inference messages as JSON
-    let inference_msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
-        serde_json::json!({
-            "role": m.role,
-            "content": m.content,
+    let inference_msgs: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "role": m.role,
+                "content": m.content,
+            })
         })
-    }).collect();
+        .collect();
     let messages_json = serde_json::Value::Array(inference_msgs);
 
     // Dispatch to relay
@@ -1604,7 +1695,8 @@ pub async fn generate_community(
         &provider.model_id,
         2048,
         &job_id.to_string(),
-    ).await;
+    )
+    .await;
 
     match result {
         Ok(inference_result) => {
@@ -1613,36 +1705,48 @@ pub async fn generate_community(
 
             // Complete job
             let _ = compute_service::complete_job(
-                &state.db, job_id,
+                &state.db,
+                job_id,
                 inference_result.input_tokens as i64,
                 inference_result.output_tokens as i64,
                 inference_result.latency_ms as i64,
                 quality.score,
-            ).await;
+            )
+            .await;
 
             // Settle escrow
             let settle_result = compute_service::settle_escrow(
-                &state.db, escrow_id,
+                &state.db,
+                &state.config.usage_receipt_secret,
+                escrow_id,
                 inference_result.input_tokens as i64,
                 inference_result.output_tokens as i64,
                 provider.price_per_1k_input,
                 provider.price_per_1k_output,
-            ).await;
+            )
+            .await;
 
             // Update daily stats
             if let Ok(ref settlement) = settle_result {
                 let _ = compute_service::update_daily_stats(
-                    &state.db, provider.provider_id, true,
+                    &state.db,
+                    provider.provider_id,
+                    true,
                     inference_result.input_tokens as i64 + inference_result.output_tokens as i64,
                     settlement.provider_amount,
                     inference_result.latency_ms as f64,
-                ).await;
+                )
+                .await;
             }
 
             // Update reputation
             let _ = compute_service::update_reputation(
-                &state.db, provider.provider_id, true, Some(inference_result.latency_ms as i64),
-            ).await;
+                &state.db,
+                provider.provider_id,
+                true,
+                Some(inference_result.latency_ms as i64),
+            )
+            .await;
 
             Ok((inference_result.text, provider.model_id))
         }
@@ -1650,10 +1754,18 @@ pub async fn generate_community(
             // Refund escrow on failure
             let _ = compute_service::refund_escrow(&state.db, escrow_id).await;
             let _ = compute_service::fail_job(&state.db, job_id, &e.to_string()).await;
-            let _ = compute_service::update_reputation(&state.db, provider.provider_id, false, None).await;
+            let _ =
+                compute_service::update_reputation(&state.db, provider.provider_id, false, None)
+                    .await;
             let _ = compute_service::update_daily_stats(
-                &state.db, provider.provider_id, false, 0, 0, 0.0,
-            ).await;
+                &state.db,
+                provider.provider_id,
+                false,
+                0,
+                0,
+                0.0,
+            )
+            .await;
             Err(e)
         }
     }
@@ -1671,15 +1783,31 @@ pub async fn stream_community(
 
     let provider = compute_service::select_provider(state, "community", None).await?;
     let estimated_cost = 100;
-    let escrow_id = compute_service::create_escrow(&state.db, user_id, Some(provider.provider_id), estimated_cost).await?;
-    let job_id = compute_service::create_job(&state.db, user_id, provider.provider_id, escrow_id, &provider.model_id).await?;
+    let escrow_id = compute_service::create_escrow(
+        &state.db,
+        user_id,
+        Some(provider.provider_id),
+        estimated_cost,
+    )
+    .await?;
+    let job_id = compute_service::create_job(
+        &state.db,
+        user_id,
+        provider.provider_id,
+        escrow_id,
+        &provider.model_id,
+    )
+    .await?;
 
-    let inference_msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
-        serde_json::json!({
-            "role": m.role,
-            "content": m.content,
+    let inference_msgs: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "role": m.role,
+                "content": m.content,
+            })
         })
-    }).collect();
+        .collect();
     let messages_json = serde_json::Value::Array(inference_msgs);
 
     let text_stream = compute_service::dispatch_inference_stream(
@@ -1690,7 +1818,8 @@ pub async fn stream_community(
         &provider.model_id,
         2048,
         &job_id.to_string(),
-    ).await?;
+    )
+    .await?;
 
     // Wrap the stream to handle escrow settlement on completion
     let model_id = provider.model_id.clone();
@@ -1698,6 +1827,7 @@ pub async fn stream_community(
     let provider_id = provider.provider_id;
     let price_input = provider.price_per_1k_input;
     let price_output = provider.price_per_1k_output;
+    let usage_receipt_secret = state.config.usage_receipt_secret.clone();
 
     // For streaming, we settle after the stream ends. We can't know exact token counts
     // from the stream, so we estimate. The relay's InferenceStreamEnd would have them
@@ -1730,7 +1860,13 @@ pub async fn stream_community(
                 &db, job_id, est_input_tokens, est_output_tokens, 0i64, 0.8,
             ).await;
             let settle_result = compute_service::settle_escrow(
-                &db, escrow_id, est_input_tokens, est_output_tokens, price_input, price_output,
+                &db,
+                &usage_receipt_secret,
+                escrow_id,
+                est_input_tokens,
+                est_output_tokens,
+                price_input,
+                price_output,
             ).await;
             if let Ok(ref settlement) = settle_result {
                 let _ = compute_service::update_daily_stats(

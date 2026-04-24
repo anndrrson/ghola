@@ -87,10 +87,7 @@ fn message_type_name(msg: &MessageType) -> &'static str {
 }
 
 /// WebSocket upgrade handler.
-pub async fn ws_upgrade(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.max_message_size(state.config().max_message_size_bytes)
         .on_upgrade(move |socket| handle_ws(socket, state))
 }
@@ -203,30 +200,26 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
         ConnectionRole::GpuProvider => {
             // GPU provider must send ProviderAdvertise as second message
             let advertise = match ws_receiver.next().await {
-                Some(Ok(Message::Text(text))) => {
-                    match serde_json::from_str::<Envelope>(&text) {
-                        Ok(env) => match env.message {
-                            MessageType::ProviderAdvertise(adv) => adv,
-                            _ => {
-                                let _ = ws_sender
-                                    .send(text_msg(
-                                        json!({"error": "expected ProviderAdvertise message"})
-                                            .to_string(),
-                                    ))
-                                    .await;
-                                return;
-                            }
-                        },
-                        Err(_) => {
+                Some(Ok(Message::Text(text))) => match serde_json::from_str::<Envelope>(&text) {
+                    Ok(env) => match env.message {
+                        MessageType::ProviderAdvertise(adv) => adv,
+                        _ => {
                             let _ = ws_sender
                                 .send(text_msg(
-                                    json!({"error": "invalid envelope"}).to_string(),
+                                    json!({"error": "expected ProviderAdvertise message"})
+                                        .to_string(),
                                 ))
                                 .await;
                             return;
                         }
+                    },
+                    Err(_) => {
+                        let _ = ws_sender
+                            .send(text_msg(json!({"error": "invalid envelope"}).to_string()))
+                            .await;
+                        return;
                     }
-                }
+                },
                 _ => return,
             };
 
@@ -253,9 +246,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                 message: Some("registered".to_string()),
             }));
             let _ = ws_sender
-                .send(text_msg(
-                    serde_json::to_string(&ack).unwrap_or_default(),
-                ))
+                .send(text_msg(serde_json::to_string(&ack).unwrap_or_default()))
                 .await;
 
             device_pubkey_for_mcp = None;
@@ -326,10 +317,9 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                                 .map(|(pubkey, label)| ConnectedDevice { pubkey, label })
                                 .collect();
 
-                            let response =
-                                envelope.response(MessageType::ConnectedDevicesResult(
-                                    ConnectedDevicesResult { devices },
-                                ));
+                            let response = envelope.response(MessageType::ConnectedDevicesResult(
+                                ConnectedDevicesResult { devices },
+                            ));
                             let _ = tx_clone.send(text_msg(
                                 serde_json::to_string(&response).unwrap_or_default(),
                             ));
@@ -337,7 +327,9 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                         }
 
                         // Record command in metrics
-                        state.metrics().record_command(message_type_name(&envelope.message));
+                        state
+                            .metrics()
+                            .record_command(message_type_name(&envelope.message));
 
                         // MCP client → device: forward command to the target device
                         if let Some(ref target) = device_target {
@@ -374,8 +366,10 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     ConnectionRole::Device => {
                         // If the device sends a DeviceInfoResult, extract the label
                         if let MessageType::DeviceInfoResult(ref info) = envelope.message {
-                            let label =
-                                format!("{} {} (Android {})", info.manufacturer, info.model, info.android_version);
+                            let label = format!(
+                                "{} {} (Android {})",
+                                info.manufacturer, info.model, info.android_version
+                            );
                             state.set_device_label(&auth_pubkey_clone, label);
                         }
 
@@ -544,30 +538,26 @@ pub async fn dispatch_inference(
 
     // Await response with 120s timeout
     match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
-        Ok(Ok(response_envelope)) => {
-            match response_envelope.message {
-                MessageType::InferenceResponse(resp) => {
-                    Json(json!({
-                        "job_id": resp.job_id,
-                        "text": resp.text,
-                        "input_tokens": resp.input_tokens,
-                        "output_tokens": resp.output_tokens,
-                        "latency_ms": resp.latency_ms,
-                    }))
-                    .into_response()
-                }
-                MessageType::Error(err) => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": err.message, "code": err.code})),
-                )
-                    .into_response(),
-                _ => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "unexpected response type from provider"})),
-                )
-                    .into_response(),
-            }
-        }
+        Ok(Ok(response_envelope)) => match response_envelope.message {
+            MessageType::InferenceResponse(resp) => Json(json!({
+                "job_id": resp.job_id,
+                "text": resp.text,
+                "input_tokens": resp.input_tokens,
+                "output_tokens": resp.output_tokens,
+                "latency_ms": resp.latency_ms,
+            }))
+            .into_response(),
+            MessageType::Error(err) => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": err.message, "code": err.code})),
+            )
+                .into_response(),
+            _ => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "unexpected response type from provider"})),
+            )
+                .into_response(),
+        },
         Ok(Err(_)) => {
             // Oneshot sender was dropped (provider disconnected)
             state.decrement_gpu_provider_jobs(&req.provider_pubkey);

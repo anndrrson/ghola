@@ -10,10 +10,12 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::error::CloudError;
-use crate::services::llm_router::{decrypt_api_key, encrypt_api_key};
+use crate::services::llm_router::decrypt_api_key;
 use crate::state::AppState;
+use said_turnkey::{AuthMode as VaultAuthMode, StoredCredential};
 
 const HARDENED: u32 = 0x80000000;
+const LEGACY_WALLET_BACKEND: &str = "legacy_local";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -21,16 +23,14 @@ const HARDENED: u32 = 0x80000000;
 
 /// SPL Token Program ID: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
 const TOKEN_PROGRAM_ID: [u8; 32] = [
-    0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93, 0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79,
-    0xac, 0x1c, 0xb4, 0x85, 0xed, 0x5f, 0x5b, 0x37, 0x91, 0x3a, 0x8c, 0xf5, 0x85, 0x7e, 0xff,
-    0x00, 0xa9,
+    0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93, 0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79, 0xac,
+    0x1c, 0xb4, 0x85, 0xed, 0x5f, 0x5b, 0x37, 0x91, 0x3a, 0x8c, 0xf5, 0x85, 0x7e, 0xff, 0x00, 0xa9,
 ];
 
 /// Associated Token Account Program ID: ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL
 const ATA_PROGRAM_ID: [u8; 32] = [
-    0x8c, 0x97, 0x25, 0x8f, 0x4e, 0x24, 0x89, 0xf1, 0xbb, 0x3d, 0x10, 0x29, 0x14, 0x8e, 0x0d,
-    0x83, 0x0b, 0x5a, 0x13, 0x99, 0xda, 0xff, 0x10, 0x84, 0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9,
-    0xf8, 0x59,
+    0x8c, 0x97, 0x25, 0x8f, 0x4e, 0x24, 0x89, 0xf1, 0xbb, 0x3d, 0x10, 0x29, 0x14, 0x8e, 0x0d, 0x83,
+    0x0b, 0x5a, 0x13, 0x99, 0xda, 0xff, 0x10, 0x84, 0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9, 0xf8, 0x59,
 ];
 
 /// System Program ID: 11111111111111111111111111111111
@@ -38,16 +38,14 @@ const SYSTEM_PROGRAM_ID: [u8; 32] = [0u8; 32];
 
 /// USDC Mint (Mainnet): EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
 const USDC_MINT_MAINNET: [u8; 32] = [
-    0xc6, 0xfa, 0x7a, 0xf3, 0xbe, 0xdb, 0xad, 0x39, 0x22, 0x22, 0x76, 0x5e, 0x44, 0x70, 0x04,
-    0x64, 0xe3, 0xdf, 0x71, 0x23, 0xc0, 0x81, 0x5f, 0x84, 0xf4, 0x6f, 0xb3, 0x50, 0x8e, 0x97,
-    0xf8, 0xa7,
+    0xc6, 0xfa, 0x7a, 0xf3, 0xbe, 0xdb, 0xad, 0x39, 0x22, 0x22, 0x76, 0x5e, 0x44, 0x70, 0x04, 0x64,
+    0xe3, 0xdf, 0x71, 0x23, 0xc0, 0x81, 0x5f, 0x84, 0xf4, 0x6f, 0xb3, 0x50, 0x8e, 0x97, 0xf8, 0xa7,
 ];
 
 /// USDC Mint (Devnet): 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
 const USDC_MINT_DEVNET: [u8; 32] = [
-    0x3b, 0x44, 0x2c, 0xc7, 0x14, 0xf8, 0x4f, 0x7a, 0x4c, 0x3c, 0x09, 0x65, 0xf5, 0xc8, 0xac,
-    0x51, 0xdb, 0x35, 0xd5, 0x73, 0x45, 0x6e, 0x6e, 0x52, 0xb7, 0x05, 0x2b, 0xe7, 0x57, 0x3b,
-    0x15, 0x7f,
+    0x3b, 0x44, 0x2c, 0xc7, 0x14, 0xf8, 0x4f, 0x7a, 0x4c, 0x3c, 0x09, 0x65, 0xf5, 0xc8, 0xac, 0x51,
+    0xdb, 0x35, 0xd5, 0x73, 0x45, 0x6e, 0x6e, 0x52, 0xb7, 0x05, 0x2b, 0xe7, 0x57, 0x3b, 0x15, 0x7f,
 ];
 
 const USDC_DECIMALS: u8 = 6;
@@ -177,9 +175,16 @@ pub async fn send_treasury_usdc(
     let is_devnet = rpc_url.contains("devnet");
     let client = reqwest::Client::new();
 
-    let signature =
-        send_usdc_transfer(&client, rpc_url, &signing_key, &payer, &to, amount, is_devnet)
-            .await?;
+    let signature = send_usdc_transfer(
+        &client,
+        rpc_url,
+        &signing_key,
+        &payer,
+        &to,
+        amount,
+        is_devnet,
+    )
+    .await?;
 
     let cluster = if is_devnet { "?cluster=devnet" } else { "" };
     let explorer_url = format!("https://explorer.solana.com/tx/{signature}{cluster}");
@@ -256,15 +261,87 @@ pub fn wallet_tool_definitions() -> Vec<serde_json::Value> {
 // Wallet operations
 // ---------------------------------------------------------------------------
 
+struct EncryptedWalletMnemonic {
+    backend: String,
+    key_version: i32,
+    key_ref: Option<String>,
+    ciphertext: Vec<u8>,
+}
+
+fn static_wallet_backend(backend: &str) -> Option<&'static str> {
+    match backend {
+        "local" => Some("local"),
+        "turnkey" => Some("turnkey"),
+        _ => None,
+    }
+}
+
+async fn encrypt_wallet_mnemonic(
+    state: &AppState,
+    mnemonic: &str,
+) -> Result<EncryptedWalletMnemonic, CloudError> {
+    let stored = state
+        .vault
+        .encrypt(VaultAuthMode::None, mnemonic)
+        .await
+        .map_err(|e| {
+            CloudError::Internal(format!(
+                "wallet mnemonic vault encryption failed using backend '{}': {e}",
+                state.vault.backend_name()
+            ))
+        })?;
+
+    Ok(EncryptedWalletMnemonic {
+        backend: stored.backend.to_string(),
+        key_version: stored.key_version,
+        key_ref: stored.key_ref,
+        ciphertext: stored.ciphertext,
+    })
+}
+
+async fn decrypt_wallet_mnemonic(
+    state: &AppState,
+    encrypted: &[u8],
+    backend: Option<&str>,
+    key_version: Option<i32>,
+    key_ref: Option<&str>,
+) -> Result<String, CloudError> {
+    if let Some(backend_name) = backend.filter(|s| !s.trim().is_empty()) {
+        if backend_name == LEGACY_WALLET_BACKEND {
+            return decrypt_api_key(encrypted, &state.config.encryption_key);
+        }
+
+        if let Some(static_backend) = static_wallet_backend(backend_name) {
+            let stored = StoredCredential {
+                backend: static_backend,
+                key_version: key_version.unwrap_or(1),
+                key_ref: key_ref.map(|s| s.to_string()),
+                ciphertext: encrypted.to_vec(),
+                auth_mode: VaultAuthMode::None,
+            };
+            return state.vault.decrypt(&stored).await.map_err(|e| {
+                CloudError::Internal(format!(
+                    "wallet mnemonic decrypt failed for backend '{backend_name}': {e}"
+                ))
+            });
+        }
+
+        return Err(CloudError::Internal(format!(
+            "unknown wallet vault backend '{backend_name}'"
+        )));
+    }
+
+    decrypt_api_key(encrypted, &state.config.encryption_key)
+}
+
 /// Provision a new Solana wallet for a user via BIP39 + BIP32-Ed25519.
 pub async fn generate_wallet(state: &AppState, user_id: Uuid) -> Result<WalletInfo, CloudError> {
     // Check if wallet already exists
-    let existing: Option<(String, String)> = sqlx::query_as(
-        "SELECT solana_address, network FROM user_wallets WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let existing: Option<(String, String)> =
+        sqlx::query_as("SELECT solana_address, network FROM user_wallets WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     if let Some((address, network)) = existing {
         return Ok(WalletInfo { address, network });
@@ -283,7 +360,7 @@ pub async fn generate_wallet(state: &AppState, user_id: Uuid) -> Result<WalletIn
 
     // Encrypt mnemonic
     let mnemonic_str = mnemonic.to_string();
-    let encrypted = encrypt_api_key(&mnemonic_str, &state.config.encryption_key)?;
+    let encrypted = encrypt_wallet_mnemonic(state, &mnemonic_str).await?;
 
     // Determine network from RPC URL
     let network = if state.config.solana_rpc_url.contains("devnet") {
@@ -293,23 +370,29 @@ pub async fn generate_wallet(state: &AppState, user_id: Uuid) -> Result<WalletIn
     };
 
     // Set spending limit based on user tier
-    let tier: Option<String> =
-        sqlx::query_scalar("SELECT tier FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .flatten();
+    let tier: Option<String> = sqlx::query_scalar("SELECT tier FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .flatten();
     let daily_limit = spending_limit_daily(&tier.unwrap_or_else(|| "free".to_string()));
 
     sqlx::query(
         r#"
-        INSERT INTO user_wallets (user_id, solana_address, mnemonic_encrypted, network, spending_limit_daily_usdc)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO user_wallets (
+            user_id, solana_address, mnemonic_encrypted,
+            mnemonic_vault_backend, mnemonic_vault_key_version, mnemonic_vault_key_ref,
+            network, spending_limit_daily_usdc
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         "#,
     )
     .bind(user_id)
     .bind(&address)
-    .bind(&encrypted)
+    .bind(&encrypted.ciphertext)
+    .bind(&encrypted.backend)
+    .bind(encrypted.key_version)
+    .bind(encrypted.key_ref.as_deref())
     .bind(network)
     .bind(daily_limit)
     .execute(&state.db)
@@ -330,13 +413,12 @@ pub async fn generate_wallet(state: &AppState, user_id: Uuid) -> Result<WalletIn
 
 /// Get the wallet address for a user (without decrypting the mnemonic).
 pub async fn get_address(state: &AppState, user_id: Uuid) -> Result<WalletInfo, CloudError> {
-    let row: (String, String) = sqlx::query_as(
-        "SELECT solana_address, network FROM user_wallets WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(CloudError::NotFound("wallet not provisioned".to_string()))?;
+    let row: (String, String) =
+        sqlx::query_as("SELECT solana_address, network FROM user_wallets WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(CloudError::NotFound("wallet not provisioned".to_string()))?;
 
     Ok(WalletInfo {
         address: row.0,
@@ -346,13 +428,12 @@ pub async fn get_address(state: &AppState, user_id: Uuid) -> Result<WalletInfo, 
 
 /// Fetch SOL and USDC balances for a user's wallet.
 pub async fn get_balances(state: &AppState, user_id: Uuid) -> Result<Balances, CloudError> {
-    let (address, network): (String, String) = sqlx::query_as(
-        "SELECT solana_address, network FROM user_wallets WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(CloudError::NotFound("wallet not provisioned".to_string()))?;
+    let (address, network): (String, String) =
+        sqlx::query_as("SELECT solana_address, network FROM user_wallets WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(CloudError::NotFound("wallet not provisioned".to_string()))?;
 
     let pubkey_bytes = bs58::decode(&address)
         .into_vec()
@@ -377,7 +458,9 @@ pub async fn get_balances(state: &AppState, user_id: Uuid) -> Result<Balances, C
     };
     let ata = find_ata(&pubkey, &mint);
     let ata_b58 = bs58::encode(&ata).into_string();
-    let usdc_micro = rpc_get_token_balance(&client, rpc_url, &ata_b58).await.unwrap_or(0);
+    let usdc_micro = rpc_get_token_balance(&client, rpc_url, &ata_b58)
+        .await
+        .unwrap_or(0);
     let usdc = usdc_micro as f64 / 1_000_000.0;
 
     Ok(Balances { sol, usdc, address })
@@ -479,14 +562,31 @@ pub async fn transfer(
     check_pending_transfers(state, user_id).await?;
 
     // Load wallet
-    let (wallet_id, encrypted_mnemonic, network, daily_limit): (Uuid, Vec<u8>, String, i64) =
-        sqlx::query_as(
-            "SELECT id, mnemonic_encrypted, network, spending_limit_daily_usdc FROM user_wallets WHERE user_id = $1",
-        )
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(CloudError::NotFound("wallet not provisioned".to_string()))?;
+    let (
+        wallet_id,
+        encrypted_mnemonic,
+        network,
+        daily_limit,
+        mnemonic_backend,
+        mnemonic_key_version,
+        mnemonic_key_ref,
+    ): (
+        Uuid,
+        Vec<u8>,
+        String,
+        i64,
+        Option<String>,
+        Option<i32>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT id, mnemonic_encrypted, network, spending_limit_daily_usdc, \
+         mnemonic_vault_backend, mnemonic_vault_key_version, mnemonic_vault_key_ref \
+         FROM user_wallets WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(CloudError::NotFound("wallet not provisioned".to_string()))?;
 
     // Check spending limits (for USDC transfers)
     if req.currency == "USDC" {
@@ -502,7 +602,14 @@ pub async fn transfer(
         .map_err(|_| CloudError::BadRequest("invalid recipient address length".to_string()))?;
 
     // Decrypt mnemonic → derive keypair
-    let mnemonic_str = decrypt_api_key(&encrypted_mnemonic, &state.config.encryption_key)?;
+    let mnemonic_str = decrypt_wallet_mnemonic(
+        state,
+        &encrypted_mnemonic,
+        mnemonic_backend.as_deref(),
+        mnemonic_key_version,
+        mnemonic_key_ref.as_deref(),
+    )
+    .await?;
     let mnemonic = bip39::Mnemonic::parse(&mnemonic_str)
         .map_err(|e| CloudError::Internal(format!("invalid mnemonic: {e}")))?;
     let seed = mnemonic.to_seed("");
@@ -531,9 +638,7 @@ pub async fn transfer(
 
     // Build and send transaction
     let result = match req.currency.as_str() {
-        "SOL" => {
-            send_sol_transfer(&client, rpc_url, &signing_key, &payer, &to, req.amount).await
-        }
+        "SOL" => send_sol_transfer(&client, rpc_url, &signing_key, &payer, &to, req.amount).await,
         "USDC" => {
             send_usdc_transfer(
                 &client,
@@ -552,15 +657,16 @@ pub async fn transfer(
     match result {
         Ok(signature) => {
             // Mark confirmed
-            sqlx::query("UPDATE wallet_transactions SET signature = $1, status = 'confirmed' WHERE id = $2")
-                .bind(&signature)
-                .bind(tx_id)
-                .execute(&state.db)
-                .await?;
+            sqlx::query(
+                "UPDATE wallet_transactions SET signature = $1, status = 'confirmed' WHERE id = $2",
+            )
+            .bind(&signature)
+            .bind(tx_id)
+            .execute(&state.db)
+            .await?;
 
             let cluster = if is_devnet { "?cluster=devnet" } else { "" };
-            let explorer_url =
-                format!("https://explorer.solana.com/tx/{signature}{cluster}");
+            let explorer_url = format!("https://explorer.solana.com/tx/{signature}{cluster}");
 
             tracing::info!(
                 user = %crate::privacy::log_id(&user_id),
@@ -596,7 +702,19 @@ pub async fn get_history(
     user_id: Uuid,
     limit: i64,
 ) -> Result<Vec<TxHistoryEntry>, CloudError> {
-    let rows = sqlx::query_as::<_, (Uuid, String, String, i64, Option<String>, Option<String>, String, chrono::DateTime<chrono::Utc>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            i64,
+            Option<String>,
+            Option<String>,
+            String,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(
         r#"
         SELECT id, tx_type, currency, amount, to_address, signature, status, created_at
         FROM wallet_transactions
@@ -612,18 +730,20 @@ pub async fn get_history(
 
     Ok(rows
         .into_iter()
-        .map(|(id, tx_type, currency, amount, to_address, signature, status, created_at)| {
-            TxHistoryEntry {
-                id,
-                tx_type,
-                currency,
-                amount,
-                to_address,
-                signature,
-                status,
-                created_at,
-            }
-        })
+        .map(
+            |(id, tx_type, currency, amount, to_address, signature, status, created_at)| {
+                TxHistoryEntry {
+                    id,
+                    tx_type,
+                    currency,
+                    amount,
+                    to_address,
+                    signature,
+                    status,
+                    created_at,
+                }
+            },
+        )
         .collect())
 }
 
@@ -797,19 +917,19 @@ pub async fn send_via_intermediate(
 
 fn spending_limit_daily(tier: &str) -> i64 {
     match tier {
-        "pro" => 100_000_000,       // $100 in micro-USDC
+        "pro" => 100_000_000,         // $100 in micro-USDC
         "unlimited" => 1_000_000_000, // $1,000 in micro-USDC
         "enterprise" => i64::MAX,
-        _ => 500_000,                // $0.50 free tier
+        _ => 500_000, // $0.50 free tier
     }
 }
 
 fn spending_limit_per_tx(tier: &str) -> i64 {
     match tier {
         "pro" => 50_000_000,        // $50
-        "unlimited" => 500_000_000,  // $500
+        "unlimited" => 500_000_000, // $500
         "enterprise" => i64::MAX,
-        _ => 250_000,                // $0.25 free tier
+        _ => 250_000, // $0.25 free tier
     }
 }
 
@@ -820,12 +940,11 @@ async fn check_spending_limit(
     daily_limit: i64,
 ) -> Result<(), CloudError> {
     // Check per-tx limit
-    let tier: Option<String> =
-        sqlx::query_scalar("SELECT tier FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .flatten();
+    let tier: Option<String> = sqlx::query_scalar("SELECT tier FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .flatten();
     let tier = tier.unwrap_or_else(|| "free".to_string());
     let per_tx = spending_limit_per_tx(&tier);
 
@@ -1143,11 +1262,7 @@ fn is_on_curve(bytes: &[u8; 32]) -> bool {
     compressed.decompress().is_some()
 }
 
-fn build_create_ata_ix(
-    payer: &[u8; 32],
-    wallet: &[u8; 32],
-    mint: &[u8; 32],
-) -> RawInstruction {
+fn build_create_ata_ix(payer: &[u8; 32], wallet: &[u8; 32], mint: &[u8; 32]) -> RawInstruction {
     let ata = find_ata(wallet, mint);
     RawInstruction {
         program_id: ATA_PROGRAM_ID,
@@ -1194,10 +1309,7 @@ fn build_sol_transfer_ix(from: &[u8; 32], to: &[u8; 32], lamports: u64) -> RawIn
 
     RawInstruction {
         program_id: SYSTEM_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(*from, true),
-            AccountMeta::new(*to, false),
-        ],
+        accounts: vec![AccountMeta::new(*from, true), AccountMeta::new(*to, false)],
         data,
     }
 }

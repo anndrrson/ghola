@@ -30,7 +30,10 @@ pub struct LocalVault {
 impl LocalVault {
     /// Build a [`LocalVault`] from a 32-byte KEK.
     pub fn new(kek: [u8; 32]) -> Self {
-        Self { kek, key_version: 1 }
+        Self {
+            kek,
+            key_version: 1,
+        }
     }
 
     /// Load from `GHOLA_VAULT_KEY` env var (hex-encoded 32 bytes). If the
@@ -125,8 +128,7 @@ impl Vault for LocalVault {
             )));
         }
         let pt = envelope::open(&self.kek, &stored.ciphertext)?;
-        String::from_utf8(pt)
-            .map_err(|e| VaultError::Decrypt(format!("non-utf8 plaintext: {e}")))
+        String::from_utf8(pt).map_err(|e| VaultError::Decrypt(format!("non-utf8 plaintext: {e}")))
     }
 }
 

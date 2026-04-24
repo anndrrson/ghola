@@ -3,6 +3,7 @@ package xyz.ghola.app.ui
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Build
 import android.text.Editable
 import android.text.TextWatcher
 import android.util.Base64
@@ -279,6 +280,11 @@ class CreateAgentActivity : AppCompatActivity() {
                         return@launch
                     }
                 } else {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                        showError("Software signing requires Android 13+ on this build.")
+                        finishErrorState()
+                        return@launch
+                    }
                     setStatus("Generating software key…")
                     try {
                         val (pub, priv) = withContext(Dispatchers.Default) {

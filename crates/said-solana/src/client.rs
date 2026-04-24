@@ -75,11 +75,7 @@ impl SolanaClient {
     }
 
     /// JSON-RPC call to the Solana cluster.
-    async fn rpc_call(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    async fn rpc_call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -154,8 +150,12 @@ impl SolanaClient {
         did_key: &str,
         signature: &[u8; 64],
     ) -> Result<String> {
-        let ixs =
-            instructions::build_register_ix(&self.payer_pubkey(), master_pubkey, did_key, signature);
+        let ixs = instructions::build_register_ix(
+            &self.payer_pubkey(),
+            master_pubkey,
+            did_key,
+            signature,
+        );
         let blockhash = self.get_latest_blockhash().await?;
         let msg = tx::build_message(&ixs, &self.payer_pubkey(), &blockhash);
         let tx_bytes = tx::sign_and_serialize(&msg, &self.payer);
@@ -180,8 +180,11 @@ impl SolanaClient {
         master_pubkey: &[u8; 32],
         new_authority: &[u8; 32],
     ) -> Result<String> {
-        let ix =
-            instructions::build_update_authority_ix(&self.payer_pubkey(), master_pubkey, new_authority);
+        let ix = instructions::build_update_authority_ix(
+            &self.payer_pubkey(),
+            master_pubkey,
+            new_authority,
+        );
         self.send_single_ix(ix).await
     }
 
@@ -276,11 +279,7 @@ impl SolanaClient {
 
     /// Get the SPL token balance for a wallet + mint pair.
     /// Returns the balance in the token's smallest unit (e.g., micro-USDC).
-    pub async fn get_token_balance(
-        &self,
-        wallet: &[u8; 32],
-        mint: &[u8; 32],
-    ) -> Result<u64> {
+    pub async fn get_token_balance(&self, wallet: &[u8; 32], mint: &[u8; 32]) -> Result<u64> {
         let ata = crate::spl::find_ata(wallet, mint);
         let ata_b58 = bs58::encode(&ata).into_string();
 
@@ -315,12 +314,7 @@ impl SolanaClient {
     /// Creates the recipient's ATA if it doesn't exist.
     /// `amount` is in micro-USDC (6 decimals).
     /// `devnet` controls which USDC mint to use.
-    pub async fn transfer_usdc(
-        &self,
-        to: &[u8; 32],
-        amount: u64,
-        devnet: bool,
-    ) -> Result<String> {
+    pub async fn transfer_usdc(&self, to: &[u8; 32], amount: u64, devnet: bool) -> Result<String> {
         let mint = if devnet {
             crate::spl::USDC_MINT_DEVNET
         } else {

@@ -9,11 +9,11 @@ use uuid::Uuid;
 use said_types::{Capability, KeyType, Provider, ProviderSession};
 
 use crate::error::{Result, SaidError};
-use crate::ucan::{
-    capabilities_from_payload, create_ucan, delegate_ucan, verify_ucan_chain,
-    xprv_to_signing_key, xprv_to_verifying_key,
-};
 use crate::ucan::UcanPayload;
+use crate::ucan::{
+    capabilities_from_payload, create_ucan, delegate_ucan, verify_ucan_chain, xprv_to_signing_key,
+    xprv_to_verifying_key,
+};
 use crate::wallet::Wallet;
 
 /// Walk the proof chain to find the root token string.
@@ -68,15 +68,14 @@ impl Wallet {
             capabilities,
             token,
             issued_at: now,
-            expires_at: now + chrono::Duration::from_std(expires_in).unwrap_or(chrono::Duration::days(30)),
+            expires_at: now
+                + chrono::Duration::from_std(expires_in).unwrap_or(chrono::Duration::days(30)),
             revoked: false,
         };
 
         // Persist to encrypted storage
-        let mut sessions: Vec<ProviderSession> = self
-            .storage()
-            .load("sessions")
-            .unwrap_or_default();
+        let mut sessions: Vec<ProviderSession> =
+            self.storage().load("sessions").unwrap_or_default();
         sessions.push(session.clone());
         self.storage().save("sessions", &sessions)?;
 
@@ -85,10 +84,8 @@ impl Wallet {
 
     /// Revoke a provider session by ID.
     pub fn revoke_session(&self, session_id: Uuid) -> Result<()> {
-        let mut sessions: Vec<ProviderSession> = self
-            .storage()
-            .load("sessions")
-            .unwrap_or_default();
+        let mut sessions: Vec<ProviderSession> =
+            self.storage().load("sessions").unwrap_or_default();
 
         let session = sessions
             .iter_mut()
@@ -127,10 +124,7 @@ impl Wallet {
 
         // Look up the session — for delegated tokens, find the root session
         // by walking the proof chain to the root token
-        let sessions: Vec<ProviderSession> = self
-            .storage()
-            .load("sessions")
-            .unwrap_or_default();
+        let sessions: Vec<ProviderSession> = self.storage().load("sessions").unwrap_or_default();
 
         let root_token = find_root_token(token, &payload);
         let session = sessions
@@ -147,9 +141,10 @@ impl Wallet {
         let token_caps = capabilities_from_payload(&payload);
         let has_cap = token_caps.iter().any(|c| c.grants(required_cap));
         if !has_cap {
-            return Err(SaidError::InsufficientCapability(
-                format!("{:?}", required_cap),
-            ));
+            return Err(SaidError::InsufficientCapability(format!(
+                "{:?}",
+                required_cap
+            )));
         }
 
         Ok(session)
@@ -167,10 +162,7 @@ impl Wallet {
         capabilities: Vec<Capability>,
         expires_in: Duration,
     ) -> Result<String> {
-        let sessions: Vec<ProviderSession> = self
-            .storage()
-            .load("sessions")
-            .unwrap_or_default();
+        let sessions: Vec<ProviderSession> = self.storage().load("sessions").unwrap_or_default();
 
         let parent_session = sessions
             .iter()

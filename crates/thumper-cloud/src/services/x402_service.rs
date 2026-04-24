@@ -9,6 +9,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::CloudError;
+use crate::services::compute_service::{self, UsageReceiptInsert};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -16,27 +17,23 @@ use crate::state::AppState;
 // ---------------------------------------------------------------------------
 
 const TOKEN_PROGRAM_ID: [u8; 32] = [
-    0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93, 0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79,
-    0xac, 0x1c, 0xb4, 0x85, 0xed, 0x5f, 0x5b, 0x37, 0x91, 0x3a, 0x8c, 0xf5, 0x85, 0x7e, 0xff,
-    0x00, 0xa9,
+    0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93, 0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79, 0xac,
+    0x1c, 0xb4, 0x85, 0xed, 0x5f, 0x5b, 0x37, 0x91, 0x3a, 0x8c, 0xf5, 0x85, 0x7e, 0xff, 0x00, 0xa9,
 ];
 
 const ATA_PROGRAM_ID: [u8; 32] = [
-    0x8c, 0x97, 0x25, 0x8f, 0x4e, 0x24, 0x89, 0xf1, 0xbb, 0x3d, 0x10, 0x29, 0x14, 0x8e, 0x0d,
-    0x83, 0x0b, 0x5a, 0x13, 0x99, 0xda, 0xff, 0x10, 0x84, 0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9,
-    0xf8, 0x59,
+    0x8c, 0x97, 0x25, 0x8f, 0x4e, 0x24, 0x89, 0xf1, 0xbb, 0x3d, 0x10, 0x29, 0x14, 0x8e, 0x0d, 0x83,
+    0x0b, 0x5a, 0x13, 0x99, 0xda, 0xff, 0x10, 0x84, 0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9, 0xf8, 0x59,
 ];
 
 const USDC_MINT_MAINNET: [u8; 32] = [
-    0xc6, 0xfa, 0x7a, 0xf3, 0xbe, 0xdb, 0xad, 0x39, 0x22, 0x22, 0x76, 0x5e, 0x44, 0x70, 0x04,
-    0x64, 0xe3, 0xdf, 0x71, 0x23, 0xc0, 0x81, 0x5f, 0x84, 0xf4, 0x6f, 0xb3, 0x50, 0x8e, 0x97,
-    0xf8, 0xa7,
+    0xc6, 0xfa, 0x7a, 0xf3, 0xbe, 0xdb, 0xad, 0x39, 0x22, 0x22, 0x76, 0x5e, 0x44, 0x70, 0x04, 0x64,
+    0xe3, 0xdf, 0x71, 0x23, 0xc0, 0x81, 0x5f, 0x84, 0xf4, 0x6f, 0xb3, 0x50, 0x8e, 0x97, 0xf8, 0xa7,
 ];
 
 const USDC_MINT_DEVNET: [u8; 32] = [
-    0x3b, 0x44, 0x2c, 0xc7, 0x14, 0xf8, 0x4f, 0x7a, 0x4c, 0x3c, 0x09, 0x65, 0xf5, 0xc8, 0xac,
-    0x51, 0xdb, 0x35, 0xd5, 0x73, 0x45, 0x6e, 0x6e, 0x52, 0xb7, 0x05, 0x2b, 0xe7, 0x57, 0x3b,
-    0x15, 0x7f,
+    0x3b, 0x44, 0x2c, 0xc7, 0x14, 0xf8, 0x4f, 0x7a, 0x4c, 0x3c, 0x09, 0x65, 0xf5, 0xc8, 0xac, 0x51,
+    0xdb, 0x35, 0xd5, 0x73, 0x45, 0x6e, 0x6e, 0x52, 0xb7, 0x05, 0x2b, 0xe7, 0x57, 0x3b, 0x15, 0x7f,
 ];
 
 /// USDC mint base58 addresses
@@ -214,7 +211,11 @@ async fn rpc_call(
 // ---------------------------------------------------------------------------
 
 /// Estimate cost in micro-USDC for one inference request.
-pub fn estimate_agent_price(price_per_1k_input: i64, price_per_1k_output: i64, max_tokens: u32) -> i64 {
+pub fn estimate_agent_price(
+    price_per_1k_input: i64,
+    price_per_1k_output: i64,
+    max_tokens: u32,
+) -> i64 {
     let input_estimate: i64 = 500; // typical user message + system prompt
     let output_estimate = max_tokens as i64;
     let cost = (input_estimate * price_per_1k_input + output_estimate * price_per_1k_output) / 1000;
@@ -230,7 +231,7 @@ pub fn build_payment_requirements(
     price_per_1k_input: i64,
     price_per_1k_output: i64,
     max_tokens: u32,
-) -> PaymentRequirements {
+) -> Result<PaymentRequirements, CloudError> {
     let amount = estimate_agent_price(price_per_1k_input, price_per_1k_output, max_tokens);
     let rpc_url = &state.config.solana_rpc_url;
     let network = detect_network(rpc_url).to_string();
@@ -238,10 +239,17 @@ pub fn build_payment_requirements(
     let destination = state
         .config
         .platform_wallet_address
-        .clone()
-        .unwrap_or_default();
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            CloudError::ServiceUnavailable(
+                "x402 payments are not configured (PLATFORM_WALLET_ADDRESS missing)".into(),
+            )
+        })?
+        .to_string();
 
-    PaymentRequirements {
+    Ok(PaymentRequirements {
         accepts: vec![PaymentOption {
             scheme: "exact".to_string(),
             network,
@@ -258,13 +266,11 @@ pub fn build_payment_requirements(
                 price_per_1k_output,
             },
         }],
-    }
+    })
 }
 
 /// Build the HTTP 402 response with payment requirements.
-pub fn build_402_response(
-    requirements: &PaymentRequirements,
-) -> axum::response::Response {
+pub fn build_402_response(requirements: &PaymentRequirements) -> axum::response::Response {
     use axum::http::{header, StatusCode};
     use axum::response::IntoResponse;
 
@@ -350,9 +356,7 @@ pub async fn verify_payment(
         ]),
     )
     .await
-    .map_err(|e| {
-        CloudError::PaymentRequired(format!("failed to fetch transaction: {e}"))
-    })?;
+    .map_err(|e| CloudError::PaymentRequired(format!("failed to fetch transaction: {e}")))?;
 
     // Check that the transaction exists and succeeded
     if result.is_null() {
@@ -361,7 +365,12 @@ pub async fn verify_payment(
         ));
     }
 
-    if result.get("meta").and_then(|m| m.get("err")).map(|e| !e.is_null()).unwrap_or(true) {
+    if result
+        .get("meta")
+        .and_then(|m| m.get("err"))
+        .map(|e| !e.is_null())
+        .unwrap_or(true)
+    {
         return Err(CloudError::PaymentRequired(
             "transaction failed on-chain".to_string(),
         ));
@@ -376,7 +385,8 @@ pub async fn verify_payment(
         Some(bt) if (now - bt) > MAX_TX_AGE_SECS => {
             return Err(CloudError::PaymentRequired(format!(
                 "transaction too old: {} seconds ago (max {})",
-                now - bt, MAX_TX_AGE_SECS
+                now - bt,
+                MAX_TX_AGE_SECS
             )));
         }
         None => {
@@ -407,11 +417,8 @@ pub async fn verify_payment(
     let expected_ata_b58 = bs58::encode(&expected_ata).into_string();
 
     // Search through inner instructions and top-level instructions
-    let (paid_amount, payer_address) = extract_transfer_info(
-        &result,
-        expected_mint,
-        &expected_ata_b58,
-    )?;
+    let (paid_amount, payer_address) =
+        extract_transfer_info(&result, expected_mint, &expected_ata_b58)?;
 
     // Check amount
     if paid_amount < required_amount {
@@ -444,7 +451,9 @@ pub async fn verify_payment(
         .await
         .map_err(|e| {
             if e.to_string().contains("unique") || e.to_string().contains("duplicate") {
-                CloudError::PaymentRequired("transaction already used (replay rejected)".to_string())
+                CloudError::PaymentRequired(
+                    "transaction already used (replay rejected)".to_string(),
+                )
             } else {
                 CloudError::Database(e)
             }
@@ -508,7 +517,10 @@ fn extract_transfer_info(
 
         if ix_type == "transferChecked" {
             let mint = info.get("mint").and_then(|v| v.as_str()).unwrap_or("");
-            let dest = info.get("destination").and_then(|v| v.as_str()).unwrap_or("");
+            let dest = info
+                .get("destination")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
 
             if mint == expected_mint && dest == expected_destination_ata {
                 let amount_str = info
@@ -534,6 +546,7 @@ fn extract_transfer_info(
 /// Settle an x402 payment after successful inference (85/15 split).
 pub async fn settle_x402_payment(
     db: &PgPool,
+    usage_receipt_secret: &str,
     payment_id: Uuid,
     input_tokens: i32,
     output_tokens: i32,
@@ -541,9 +554,11 @@ pub async fn settle_x402_payment(
     price_per_1k_input: i64,
     price_per_1k_output: i64,
 ) -> Result<(), CloudError> {
-    let actual_cost =
-        (input_tokens as i64 * price_per_1k_input + output_tokens as i64 * price_per_1k_output)
-            / 1000;
+    let mut tx = db.begin().await?;
+
+    let actual_cost = (input_tokens as i64 * price_per_1k_input
+        + output_tokens as i64 * price_per_1k_output)
+        / 1000;
     let actual_cost = actual_cost.max(1000); // minimum $0.001
 
     let provider_amount = actual_cost * 85 / 100;
@@ -569,7 +584,7 @@ pub async fn settle_x402_payment(
     .bind(output_tokens)
     .bind(latency_ms)
     .bind(payment_id)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
 
     // Credit provider's total_earned_usdc
@@ -582,8 +597,47 @@ pub async fn settle_x402_payment(
     )
     .bind(provider_amount)
     .bind(payment_id)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
+
+    let details: (Uuid, String, String, Option<String>, i64, i64) = sqlx::query_as(
+        r#"
+        SELECT provider_id, tx_signature, payer_address, model_id, amount_usdc, required_amount_usdc
+        FROM x402_payments
+        WHERE id = $1
+        "#,
+    )
+    .bind(payment_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    compute_service::record_usage_receipt_inner(
+        &mut *tx,
+        usage_receipt_secret,
+        UsageReceiptInsert {
+            provider_id: details.0,
+            user_id: None,
+            job_id: None,
+            escrow_id: None,
+            source: "x402",
+            source_ref: payment_id,
+            model_id: details.3.clone(),
+            input_tokens: input_tokens as i64,
+            output_tokens: output_tokens as i64,
+            provider_amount_usdc: provider_amount,
+            platform_fee_usdc: platform_fee,
+            total_cost_usdc: actual_cost,
+            metadata: serde_json::json!({
+                "tx_signature": details.1,
+                "payer_address": details.2,
+                "amount_usdc": details.4,
+                "required_amount_usdc": details.5,
+            }),
+        },
+    )
+    .await?;
+
+    tx.commit().await?;
 
     tracing::info!(
         %payment_id, input_tokens, output_tokens, actual_cost,
@@ -610,8 +664,15 @@ pub async fn list_agent_pricing(
     let destination = state
         .config
         .platform_wallet_address
-        .clone()
-        .unwrap_or_default();
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            CloudError::ServiceUnavailable(
+                "x402 discovery is not configured (PLATFORM_WALLET_ADDRESS missing)".into(),
+            )
+        })?
+        .to_string();
 
     let order = match sort {
         Some("price") => "price_estimate ASC",
@@ -633,7 +694,11 @@ pub async fn list_agent_pricing(
         ORDER BY {order}
         LIMIT 100
         "#,
-        tag_filter = if tags_filter.is_some() { "AND a.tags && $1" } else { "" },
+        tag_filter = if tags_filter.is_some() {
+            "AND a.tags && $1"
+        } else {
+            ""
+        },
         order = order,
     );
 
@@ -703,6 +768,18 @@ pub async fn get_agent_pricing(
     let max_tokens: i32 = row.get("max_tokens");
     let (price_in, price_out) = extract_model_pricing(&provider_models, &model_id);
     let price_estimate = estimate_agent_price(price_in, price_out, max_tokens as u32);
+    let destination = state
+        .config
+        .platform_wallet_address
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            CloudError::ServiceUnavailable(
+                "x402 discovery is not configured (PLATFORM_WALLET_ADDRESS missing)".into(),
+            )
+        })?
+        .to_string();
 
     Ok(AgentPricing {
         slug: row.get("slug"),
@@ -717,11 +794,7 @@ pub async fn get_agent_pricing(
         price_per_1k_output: price_out,
         payment_network: detect_network(rpc_url).to_string(),
         payment_asset: usdc_mint_b58(rpc_url).to_string(),
-        payment_destination: state
-            .config
-            .platform_wallet_address
-            .clone()
-            .unwrap_or_default(),
+        payment_destination: destination,
     })
 }
 

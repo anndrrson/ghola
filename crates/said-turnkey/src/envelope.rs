@@ -52,8 +52,8 @@ pub fn open(key: &[u8; 32], sealed: &[u8]) -> Result<Vec<u8>, VaultError> {
 /// Parse a 64-character hex string into a 32-byte key. Used for
 /// `GHOLA_VAULT_KEY` at startup.
 pub fn parse_hex_key(hex_str: &str) -> Result<[u8; 32], VaultError> {
-    let bytes = hex::decode(hex_str)
-        .map_err(|e| VaultError::InvalidKey(format!("hex decode: {e}")))?;
+    let bytes =
+        hex::decode(hex_str).map_err(|e| VaultError::InvalidKey(format!("hex decode: {e}")))?;
     if bytes.len() != 32 {
         return Err(VaultError::InvalidKey(format!(
             "expected 32 bytes, got {}",

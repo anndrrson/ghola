@@ -27,8 +27,7 @@ impl HomeConfig {
             n.to_string()
         });
 
-        let server_name =
-            std::env::var("GHOLA_HOME_NAME").unwrap_or_else(|_| "Ghola Home".into());
+        let server_name = std::env::var("GHOLA_HOME_NAME").unwrap_or_else(|_| "Ghola Home".into());
 
         Self {
             bind_addr,

@@ -322,7 +322,9 @@ impl AppState {
         models: Vec<String>,
     ) {
         if let Some(entry) = self.inner.gpu_providers.get(pubkey) {
-            entry.last_activity.store(now_epoch_secs(), Ordering::Relaxed);
+            entry
+                .last_activity
+                .store(now_epoch_secs(), Ordering::Relaxed);
             entry.active_jobs.store(active_jobs, Ordering::Relaxed);
             // `models` from heartbeat is a Vec<String> of model IDs — used for logging/monitoring.
             // The full ProviderModelInfo list stays as advertised.
@@ -342,9 +344,10 @@ impl AppState {
 
     /// Increment active_jobs for a provider. Returns the new count.
     pub fn increment_gpu_provider_jobs(&self, pubkey: &str) -> Option<u32> {
-        self.inner.gpu_providers.get(pubkey).map(|entry| {
-            entry.active_jobs.fetch_add(1, Ordering::Relaxed) + 1
-        })
+        self.inner
+            .gpu_providers
+            .get(pubkey)
+            .map(|entry| entry.active_jobs.fetch_add(1, Ordering::Relaxed) + 1)
     }
 
     /// Decrement active_jobs for a provider.
@@ -536,8 +539,8 @@ impl AppState {
         }
 
         // Clean up rate limiters for devices that are no longer connected
-        self.inner.device_rate_limiters.retain(|key, _| {
-            self.inner.devices.contains_key(key)
-        });
+        self.inner
+            .device_rate_limiters
+            .retain(|key, _| self.inner.devices.contains_key(key));
     }
 }
