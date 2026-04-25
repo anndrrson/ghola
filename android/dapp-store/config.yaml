@@ -18,22 +18,30 @@ app:
 release:
   address: # populated by the CLI on first `publish create`
   media:
-    # TODO: add a 512x512 app icon PNG at assets/icon.png
     - purpose: icon
       uri: assets/icon.png
       mime: image/png
-    # TODO: add 6-8 screenshots at the Seeker resolution (1080x2400 recommended)
+    # Screenshots captured on Solana Seeker (1200x2670 native).
     - purpose: screenshot
-      uri: assets/screenshots/01_agents.png
+      uri: assets/screenshots/01-welcome.png
       mime: image/png
     - purpose: screenshot
-      uri: assets/screenshots/02_detail.png
+      uri: assets/screenshots/02-welcome-ready.png
       mime: image/png
     - purpose: screenshot
-      uri: assets/screenshots/03_create.png
+      uri: assets/screenshots/03-home.png
       mime: image/png
     - purpose: screenshot
-      uri: assets/screenshots/04_wallet.png
+      uri: assets/screenshots/04-activity.png
+      mime: image/png
+    - purpose: screenshot
+      uri: assets/screenshots/05-agents.png
+      mime: image/png
+    - purpose: screenshot
+      uri: assets/screenshots/06-wallet.png
+      mime: image/png
+    - purpose: screenshot
+      uri: assets/screenshots/07-setup-gate.png
       mime: image/png
 
   catalog:

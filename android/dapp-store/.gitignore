@@ -1,0 +1,11 @@
+# Build artifacts — APK is rebuilt from source via `./gradlew assembleRelease`,
+# the on-chain Release NFT references the canonical Arweave-hosted copy.
+app-release.apk
+
+# Local APK copy in legacy-mint/ — same as parent app-release.apk, used by the
+# old @solana-mobile/dapp-store-cli (≤0.15.0) `create release` flow.
+legacy-mint/app-release.apk
+
+# Legacy-mint media is staged from /assets/ for the create-release upload.
+# Duplicates live under android/dapp-store/assets/{icon.png,screenshots/*}.
+legacy-mint/media/
