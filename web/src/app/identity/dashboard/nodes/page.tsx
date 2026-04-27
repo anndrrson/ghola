@@ -97,7 +97,7 @@ export default function NodesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-[#eef1f8]">Inference Nodes</h1>
+          <h1 className="font-display text-2xl font-medium text-[#eef1f8]">Inference Nodes</h1>
           <p className="text-sm text-[#8b95a8] mt-1">
             Register and manage your self-hosted OpenAI-compatible inference endpoints.
           </p>

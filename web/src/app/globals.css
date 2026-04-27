@@ -5,6 +5,7 @@
   --color-foreground: #eef1f8;
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-display);
   --color-ghola-50: #e6f3ff;
   --color-ghola-100: #cce7ff;
   --color-ghola-200: #99cfff;
@@ -19,10 +20,14 @@
   --color-amber-500: #C49240;
 }
 
+.font-display {
+  letter-spacing: -0.02em;
+}
+
 body {
   background: var(--color-background);
   color: var(--color-foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 
 ::-webkit-scrollbar {

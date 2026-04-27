@@ -55,7 +55,7 @@ export default function ConsumerExportPage() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-[#eef1f8]">Export Identity</h1>
+        <h1 className="font-display text-2xl font-medium text-[#eef1f8]">Export Identity</h1>
         <p className="mt-1 text-[#8b95a8]">
           Back up your vault, export your recovery phrase, or run fully
           local.

@@ -219,7 +219,7 @@ export default function ConsumerProfilePage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-[#eef1f8]">My Profile</h1>
+        <h1 className="font-display text-2xl font-medium text-[#eef1f8]">My Profile</h1>
         <p className="mt-1 text-[#8b95a8]">
           Configure how AI agents see and interact with you.
         </p>

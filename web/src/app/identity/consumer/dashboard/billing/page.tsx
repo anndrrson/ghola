@@ -62,7 +62,7 @@ export default function ConsumerBillingPage() {
       <div>
         <div className="flex items-center gap-2">
           <CreditCard className="h-6 w-6 text-[#3da8ff]" />
-          <h1 className="text-2xl font-bold text-[#eef1f8]">Billing</h1>
+          <h1 className="font-display text-2xl font-medium text-[#eef1f8]">Billing</h1>
         </div>
         <p className="mt-1 text-[#8b95a8]">
           Your usage and billing details

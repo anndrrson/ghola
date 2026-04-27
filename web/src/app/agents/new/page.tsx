@@ -95,7 +95,7 @@ export default function NewAgentPage() {
             <Sparkles className="h-3.5 w-3.5 text-[#3da8ff]" />
             New agent
           </div>
-          <h1 className="text-3xl md:text-4xl font-medium text-[#eef1f8] mb-3">
+          <h1 className="font-display text-3xl md:text-4xl font-medium text-[#eef1f8] mb-3">
             Create an agent.
           </h1>
           <p className="text-[#8b95a8]">

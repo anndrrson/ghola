@@ -218,7 +218,7 @@ export default function AgentsTxtPage() {
   return (
     <div className="mx-auto max-w-4xl px-4 py-24 sm:px-6 lg:px-8">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#eef1f8]">File Generator</h1>
+        <h1 className="font-display text-2xl font-medium text-[#eef1f8]">File Generator</h1>
         <p className="mt-1 text-[#8b95a8]">
           Generate and deploy your agents.txt and .well-known/said.json files
         </p>

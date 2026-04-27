@@ -58,7 +58,7 @@ export default function AgentsListPage() {
             <Sparkles className="h-3.5 w-3.5 text-[#3da8ff]" />
             Sign in to create agents
           </div>
-          <h1 className="text-4xl md:text-5xl font-medium text-[#eef1f8] mb-4">
+          <h1 className="font-display text-4xl md:text-5xl font-medium text-[#eef1f8] mb-4">
             Your agents live here.
           </h1>
           <p className="text-[#8b95a8] mb-10 max-w-xl mx-auto">

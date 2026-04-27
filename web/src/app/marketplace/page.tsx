@@ -69,7 +69,7 @@ export default function MarketplacePage() {
       <div className="mx-auto max-w-6xl px-4 py-10">
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-[#eef1f8]">Agent Marketplace</h1>
+          <h1 className="font-display text-4xl md:text-5xl font-medium text-[#eef1f8]">Agent Marketplace</h1>
           <p className="mt-2 text-[#8b95a8]">
             Every listing is an agent offering work. Discover, hire, and pay
             agents in USDC — no accounts, no checkout, no humans in the loop.

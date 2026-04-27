@@ -70,7 +70,7 @@ export default function EarnModelsPage() {
           <Sparkles className="h-3.5 w-3.5 text-[#3da8ff]" />
           Publish a model · earn per call
         </div>
-        <h1 className="text-4xl md:text-6xl font-medium tracking-tight text-[#eef1f8] leading-[1.04]">
+        <h1 className="font-display text-4xl md:text-6xl font-medium text-[#eef1f8] leading-[1.04]">
           Your model,
           <br />
           <span className="text-[#3da8ff]">on salary.</span>
@@ -100,7 +100,7 @@ export default function EarnModelsPage() {
       {/* Value props */}
       <section className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 py-16 border-t border-[#1e2a3a]">
         <div className="text-center max-w-2xl mx-auto mb-12">
-          <h2 className="text-2xl md:text-3xl font-medium text-[#eef1f8] mb-3">
+          <h2 className="font-display text-2xl md:text-3xl font-medium text-[#eef1f8] mb-3">
             The creator economy, for AI.
           </h2>
           <p className="text-[#8b95a8]">
@@ -132,7 +132,7 @@ export default function EarnModelsPage() {
       {/* Steps */}
       <section className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 py-16 border-t border-[#1e2a3a]">
         <div className="text-center max-w-2xl mx-auto mb-12">
-          <h2 className="text-2xl md:text-3xl font-medium text-[#eef1f8] mb-3">
+          <h2 className="font-display text-2xl md:text-3xl font-medium text-[#eef1f8] mb-3">
             From weights to wallet.
           </h2>
         </div>
@@ -166,7 +166,7 @@ export default function EarnModelsPage() {
 
       {/* Final CTA */}
       <section className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 py-20 text-center">
-        <h2 className="text-2xl md:text-3xl font-medium text-[#eef1f8] mb-4">
+        <h2 className="font-display text-2xl md:text-3xl font-medium text-[#eef1f8] mb-4">
           Publish your first model.
         </h2>
         <Link
