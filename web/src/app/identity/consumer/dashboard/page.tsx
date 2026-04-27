@@ -68,7 +68,7 @@ export default function ConsumerDashboardPage() {
     <div className="space-y-8">
       {/* Welcome header */}
       <div>
-        <h1 className="text-2xl font-bold text-[#eef1f8]">
+        <h1 className="font-display text-2xl font-medium text-[#eef1f8]">
           Welcome back{profile?.display_name ? `, ${profile.display_name}` : ""}
         </h1>
         <p className="mt-1 text-[#8b95a8]">

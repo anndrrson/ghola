@@ -165,7 +165,7 @@ export default function ProfilePage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-[#eef1f8]">Edit Profile</h1>
+      <h1 className="font-display text-2xl font-medium text-[#eef1f8]">Edit Profile</h1>
       <p className="mt-1 mb-8 text-[#8b95a8]">
         Update your business information that AI agents will use to understand
         your identity.

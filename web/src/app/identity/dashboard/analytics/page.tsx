@@ -245,7 +245,7 @@ export default function AnalyticsPage() {
       <div>
         <div className="flex items-center gap-2">
           <BarChart3 className="h-6 w-6 text-[#3da8ff]" />
-          <h1 className="text-2xl font-bold text-[#eef1f8]">Analytics</h1>
+          <h1 className="font-display text-2xl font-medium text-[#eef1f8]">Analytics</h1>
         </div>
         <p className="mt-1 text-[#8b95a8]">
           Monitor how agents discover and interact with your business identity

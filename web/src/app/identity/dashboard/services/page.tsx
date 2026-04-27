@@ -624,7 +624,7 @@ export default function ServicesPage() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 pt-24 pb-16">
-      <h1 className="text-2xl font-bold text-[#eef1f8] mb-6">
+      <h1 className="font-display text-2xl font-medium text-[#eef1f8] mb-6">
         Services &amp; Endpoints
       </h1>
 

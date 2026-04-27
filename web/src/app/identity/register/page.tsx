@@ -99,7 +99,7 @@ export default function RegisterPage() {
             <div className="mx-auto mb-4 inline-flex h-12 w-12 items-center justify-center rounded-lg bg-[#3da8ff]/10 text-[#3da8ff]">
               <Shield className="h-6 w-6" />
             </div>
-            <h1 className="text-2xl font-bold text-[#eef1f8]">
+            <h1 className="font-display text-2xl font-medium text-[#eef1f8]">
               Create your ghola
             </h1>
             <p className="mt-2 text-sm text-[#8b95a8]">

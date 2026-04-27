@@ -105,7 +105,7 @@ export default function ServiceDetailPage() {
         <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-[#eef1f8]">{service.name}</h1>
+              <h1 className="font-display text-3xl font-medium text-[#eef1f8]">{service.name}</h1>
               <StatusBadge status={service.status} />
             </div>
             <p className="mt-1 text-sm text-[#8b95a8]">

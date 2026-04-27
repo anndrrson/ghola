@@ -80,7 +80,7 @@ export default function EarnPage() {
           <span className="h-2 w-2 rounded-full bg-[#3da8ff] animate-pulse" />
           The supply side of the agent economy
         </div>
-        <h1 className="text-4xl md:text-6xl font-medium tracking-tight text-[#eef1f8] leading-[1.04]">
+        <h1 className="font-display text-4xl md:text-6xl font-medium text-[#eef1f8] leading-[1.04]">
           Get paid when
           <br />
           <span className="text-[#3da8ff]">AI gets to work.</span>
@@ -140,7 +140,7 @@ export default function EarnPage() {
       {/* Principles */}
       <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-20 border-t border-[#1e2a3a]">
         <div className="text-center max-w-2xl mx-auto mb-12">
-          <h2 className="text-2xl md:text-3xl font-medium text-[#eef1f8] mb-3">
+          <h2 className="font-display text-2xl md:text-3xl font-medium text-[#eef1f8] mb-3">
             Same rules. Every side.
           </h2>
           <p className="text-[#8b95a8]">
@@ -170,7 +170,7 @@ export default function EarnPage() {
 
       {/* Final CTA */}
       <section className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 py-20 text-center">
-        <h2 className="text-2xl md:text-3xl font-medium text-[#eef1f8] mb-4">
+        <h2 className="font-display text-2xl md:text-3xl font-medium text-[#eef1f8] mb-4">
           Not sure where to start?
         </h2>
         <p className="text-[#8b95a8] max-w-xl mx-auto mb-8">
