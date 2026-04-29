@@ -53,11 +53,25 @@ export function Footer() {
               >
                 GitHub
               </a>
+              <Link href="/privacy" className="block text-sm text-[#4a5568] hover:text-[#8b95a8] transition-colors">
+                Privacy Policy
+              </Link>
+              <Link href="/terms" className="block text-sm text-[#4a5568] hover:text-[#8b95a8] transition-colors">
+                Terms of Service
+              </Link>
             </div>
           </div>
         </div>
-        <div className="mt-8 border-t border-[#1e2a3a] pt-8 text-center text-xs text-[#4a5568]">
-          &copy; {new Date().getFullYear()} ghola. All rights reserved.
+        <div className="mt-8 border-t border-[#1e2a3a] pt-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-[#4a5568]">
+          <span>&copy; {new Date().getFullYear()} ghola. All rights reserved.</span>
+          <div className="flex items-center gap-4">
+            <Link href="/privacy" className="hover:text-[#8b95a8] transition-colors">
+              Privacy
+            </Link>
+            <Link href="/terms" className="hover:text-[#8b95a8] transition-colors">
+              Terms
+            </Link>
+          </div>
         </div>
       </div>
     </footer>
