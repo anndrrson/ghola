@@ -36,7 +36,12 @@ pub async fn get_creator_by_slug(
             u.display_name as creator_name, u.wallet_address as creator_wallet,
             m.status, m.price_per_query, m.total_queries, m.category, m.tags,
             u.did as creator_did, COALESCE(u.said_verified, false) as creator_verified,
-            m.is_featured, m.free_queries_per_day
+            m.is_featured, m.free_queries_per_day,
+            m.is_foundation, m.developer, m.params_b, m.active_params_b,
+            m.license, m.context_window, m.modality,
+            (m.provider_model_id IS NULL
+                AND m.self_hosted_endpoint IS NULL
+                AND m.self_hosted_node_id IS NULL) as awaiting_host
         FROM models m
         JOIN users u ON u.id = m.creator_id
         WHERE u.slug = $1 AND m.status = 'live'

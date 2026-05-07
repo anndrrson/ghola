@@ -60,6 +60,20 @@ pub struct Model {
     pub review_count: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    // Foundation catalog metadata (Phase 1).
+    pub params_b: Option<f64>,
+    pub active_params_b: Option<f64>,
+    pub license: Option<String>,
+    pub license_url: Option<String>,
+    pub developer: Option<String>,
+    pub architecture: Option<String>,
+    pub context_window: Option<i32>,
+    pub modality: Vec<String>,
+    pub hf_id: Option<String>,
+    pub release_date: Option<chrono::NaiveDate>,
+    pub is_foundation: bool,
+    pub gguf_available: bool,
+    pub recommended_vram_gb: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -271,6 +285,16 @@ pub struct ModelCard {
     pub creator_verified: bool,
     pub is_featured: bool,
     pub free_queries_per_day: i32,
+    // Foundation catalog metadata surfaced on browse cards.
+    pub is_foundation: bool,
+    pub developer: Option<String>,
+    pub params_b: Option<f64>,
+    pub active_params_b: Option<f64>,
+    pub license: Option<String>,
+    pub context_window: Option<i32>,
+    pub modality: Vec<String>,
+    // Derived: provider_model_id IS NULL AND self_hosted_endpoint IS NULL AND self_hosted_node_id IS NULL
+    pub awaiting_host: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -316,6 +340,21 @@ pub struct MarketplaceQuery {
     pub sort: Option<String>,
     pub page: Option<i64>,
     pub limit: Option<i64>,
+    pub is_foundation: Option<bool>,
+    pub developer: Option<String>,
+    pub license: Option<String>,
+    pub min_params: Option<f64>,
+    pub max_params: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ModelInterestRequest {
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelInterestResponse {
+    pub registered: bool,
 }
 
 #[derive(Debug, Serialize)]

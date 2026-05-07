@@ -9,7 +9,8 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use orni_models_types::{
     AddContentRequest, ContentSource, CreateModelRequest, CreateReviewRequest, Model,
-    ModelReview, QuickListRequest, QuickListResponse, ReviewWithUser, UpdateModelRequest,
+    ModelInterestRequest, ModelInterestResponse, ModelReview, QuickListRequest, QuickListResponse,
+    ReviewWithUser, UpdateModelRequest,
 };
 
 pub async fn create_model(
@@ -269,6 +270,44 @@ pub async fn get_reviews(
     .await?;
 
     Ok(Json(reviews))
+}
+
+/// POST /api/models/{slug}/interest — Register interest in a catalog-only model.
+/// Public endpoint: anon users supply email; logged-in users may pass their email
+/// from their profile. Idempotent via unique indexes on (model_id, email/user_id).
+pub async fn register_interest(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+    Json(req): Json<ModelInterestRequest>,
+) -> AppResult<Json<ModelInterestResponse>> {
+    let email = req
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::BadRequest("email is required".into()))?;
+
+    if !email.contains('@') || email.len() > 254 {
+        return Err(AppError::BadRequest("invalid email".into()));
+    }
+
+    let model_id: Uuid = sqlx::query_scalar("SELECT id FROM models WHERE slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Model not found".into()))?;
+
+    // Idempotent insert — unique index on (model_id, email) absorbs duplicates.
+    sqlx::query(
+        "INSERT INTO model_interest (model_id, email) VALUES ($1, $2)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(model_id)
+    .bind(email)
+    .execute(&state.db)
+    .await?;
+
+    Ok(Json(ModelInterestResponse { registered: true }))
 }
 
 // ── Quick List ──

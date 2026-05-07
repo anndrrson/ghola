@@ -144,6 +144,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/models/featured", get(routes::marketplace::get_featured))
         .route("/models/{slug}", get(routes::models::get_model))
         .route("/models/{slug}/reviews", get(routes::models::get_reviews))
+        .route(
+            "/models/{slug}/interest",
+            post(routes::models::register_interest),
+        )
         .route("/ai", get(routes::ai::get_ai_key))
         .route(
             "/creator/{did}/profile",
