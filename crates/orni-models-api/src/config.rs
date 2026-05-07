@@ -23,6 +23,16 @@ pub struct Config {
     pub stripe_webhook_secret: Option<String>,
     pub frontend_url: String,
     pub platform_did: String,
+    /// x402 acceptance for unauthenticated agentic payment.
+    /// Off by default — re-enabling requires a verified facilitator URL.
+    pub x402_enabled: bool,
+    /// x402 facilitator that verifies + settles X-Payment payloads. We don't
+    /// trust the X-Payment header on its own; the facilitator confirms the
+    /// on-chain transfer landed.
+    pub x402_facilitator_url: String,
+    /// Network identifier echoed in the 402 paymentRequirements. CAIP-2 style
+    /// for Solana: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" (mainnet genesis).
+    pub x402_network: String,
 }
 
 impl Config {
@@ -57,6 +67,13 @@ impl Config {
             stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET").ok(),
             frontend_url: env::var("FRONTEND_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
             platform_did: env::var("PLATFORM_DID").unwrap_or_else(|_| "did:key:orni-models-platform".into()),
+            x402_enabled: env::var("X402_ENABLED")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes"))
+                .unwrap_or(false),
+            x402_facilitator_url: env::var("X402_FACILITATOR_URL")
+                .unwrap_or_else(|_| "https://x402.org/facilitator".into()),
+            x402_network: env::var("X402_NETWORK")
+                .unwrap_or_else(|_| "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".into()),
         }
     }
 }

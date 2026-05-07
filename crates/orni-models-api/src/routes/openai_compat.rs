@@ -13,6 +13,7 @@ use uuid::Uuid;
 use axum::response::IntoResponse;
 use crate::error::{AppError, AppResult};
 use crate::services::inference::InferenceService;
+use crate::services::x402_facilitator::X402Client;
 use crate::state::AppState;
 use orni_models_types::{InferenceChatMessage, Model, ModelStatus, OpenAIChatRequest};
 
@@ -67,20 +68,107 @@ async fn chat_completions_inner(
         model_name: req.model.clone(),
     })?;
 
-    // ── x402 payment proof is logged but NOT accepted until on-chain verification ──
-    // The 402 response with payment instructions still works for x402 discovery.
-    // Actual payment verification will be added via Merit's facilitator.
-    if let Some(payment_header) = headers.get("x-payment").and_then(|v| v.to_str().ok()) {
-        tracing::info!(
-            model = %model.slug,
-            payment_proof = %&payment_header[..payment_header.len().min(20)],
-            "x402 payment received but verification not yet implemented — rejecting"
-        );
-        // Fall through to standard auth — don't grant free access
+    // ── x402 payment proof: verify + settle via the configured facilitator ──
+    //
+    // The X-Payment header carries a base64-encoded JSON payment payload.
+    // We never trust it on its own — the facilitator (default x402.org) confirms
+    // the on-chain transfer satisfies the requirements before we grant service.
+    //
+    // x402_enabled defaults to false. Re-enabling requires a reachable
+    // facilitator (env: X402_FACILITATOR_URL). Failures here always reject —
+    // we don't grant free inference on facilitator outages.
+    let mut x402_paid = false;
+
+    if state.config.x402_enabled {
+        if let Some(payment_header) = headers.get("x-payment").and_then(|v| v.to_str().ok()) {
+            let requirements = serde_json::json!({
+                "scheme": "exact",
+                "network": state.config.x402_network,
+                "asset": "USDC",
+                "amount": model.price_per_query.to_string(),
+                "payTo": state.config.escrow_wallet_address,
+                "maxTimeoutSeconds": 60,
+                "resource": {
+                    "url": "/v1/chat/completions",
+                    "description": format!("Inference on {}", model.name),
+                    "mimeType": "text/event-stream"
+                },
+                "extra": {
+                    "platform": "ghola.xyz",
+                    "model": model.slug,
+                }
+            });
+
+            let client = X402Client::new(
+                state.http_client.clone(),
+                state.config.x402_facilitator_url.clone(),
+            );
+
+            match client.verify(payment_header, &requirements).await {
+                Ok(v) if v.is_valid => match client.settle(payment_header, &requirements).await {
+                    Ok(s) if s.success => {
+                        tracing::info!(
+                            model = %model.slug,
+                            payer = ?s.payer,
+                            tx = ?s.transaction,
+                            "x402 settled"
+                        );
+                        x402_paid = true;
+                    }
+                    Ok(s) => {
+                        tracing::warn!(
+                            model = %model.slug,
+                            reason = ?s.error_reason,
+                            "x402 settle failed"
+                        );
+                        return Err(AppError::X402PaymentRequired {
+                            pay_to: state.config.escrow_wallet_address.clone(),
+                            amount_micro_usdc: model.price_per_query,
+                            model_slug: model.slug.clone(),
+                            model_name: model.name.clone(),
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(model = %model.slug, error = ?e, "x402 settle error");
+                        return Err(AppError::X402PaymentRequired {
+                            pay_to: state.config.escrow_wallet_address.clone(),
+                            amount_micro_usdc: model.price_per_query,
+                            model_slug: model.slug.clone(),
+                            model_name: model.name.clone(),
+                        });
+                    }
+                },
+                Ok(v) => {
+                    tracing::warn!(
+                        model = %model.slug,
+                        reason = ?v.invalid_reason,
+                        "x402 payment rejected"
+                    );
+                    return Err(AppError::X402PaymentRequired {
+                        pay_to: state.config.escrow_wallet_address.clone(),
+                        amount_micro_usdc: model.price_per_query,
+                        model_slug: model.slug.clone(),
+                        model_name: model.name.clone(),
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(model = %model.slug, error = ?e, "x402 verify error");
+                    return Err(AppError::X402PaymentRequired {
+                        pay_to: state.config.escrow_wallet_address.clone(),
+                        amount_micro_usdc: model.price_per_query,
+                        model_slug: model.slug.clone(),
+                        model_name: model.name.clone(),
+                    });
+                }
+            }
+        }
     }
 
-    // ── Standard API key auth ──
-    let (user_id, model_id, is_free_query) = {
+    // ── Auth: x402 short-circuits, otherwise standard API-key flow ──
+    let (user_id, _model_id, is_free_query) = if x402_paid {
+        // The agent already paid on-chain; no account needed.
+        (None, model.id, false)
+    } else {
         // Require API key
         let auth_header = headers
             .get("authorization")
