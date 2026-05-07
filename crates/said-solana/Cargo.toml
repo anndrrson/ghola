@@ -1,0 +1,26 @@
+[package]
+name = "said-solana"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Vendored from anndrrson/said@main to decouple orni-models from a private
+# git dep that fails to clone in build environments without a GitHub PAT
+# (Render native Rust runtime, in particular). Keep in sync if upstream
+# said-solana changes; this is the only consumer of these APIs.
+
+[lib]
+name = "said_solana"
+path = "src/lib.rs"
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+bs58 = { workspace = true }
+base64 = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+borsh = { workspace = true }
+curve25519-dalek = { workspace = true }
