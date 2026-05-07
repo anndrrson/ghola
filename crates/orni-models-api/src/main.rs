@@ -256,6 +256,11 @@ async fn main() -> anyhow::Result<()> {
     let global_limiter = Arc::new(security::GlobalRateLimiter::new());
     let anomaly_detector = Arc::new(security::AnomalyDetector::new());
 
+    // Layer ordering note: the LAST .layer() call is the OUTERMOST and runs
+    // FIRST on each request. Middleware that reads an Extension must be
+    // wrapped INSIDE the .layer() call that inserts the Extension — i.e. the
+    // Extension layers below must come AFTER (= more outer than) the
+    // rate_limit_middleware layer that reads them.
     let app = Router::new()
         .merge(honeypots)
         .merge(root_routes)
@@ -263,9 +268,9 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state)
         // 256KB max request body
         .layer(DefaultBodyLimit::max(256 * 1024))
+        .layer(middleware::from_fn(security::rate_limit_middleware))
         .layer(axum::Extension(global_limiter))
         .layer(axum::Extension(anomaly_detector))
-        .layer(middleware::from_fn(security::rate_limit_middleware))
         .layer(middleware::from_fn(security::security_headers))
         .layer(cors)
         .layer(TraceLayer::new_for_http());
