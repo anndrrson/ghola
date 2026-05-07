@@ -25,6 +25,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -33,6 +36,11 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          # CARGO_NET_GITHUB_TOKEN is a fine-grained PAT scoped to read-only
+          # access on anndrrson/said (Contents: Read). Required for cargo to
+          # fetch the private said-solana git dependency during the build.
+          secrets: |
+            github_token=${{ secrets.CARGO_NET_GITHUB_TOKEN }}
 
       - name: Deploy to Render
         if: success()

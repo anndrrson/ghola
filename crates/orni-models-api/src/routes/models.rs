@@ -275,8 +275,10 @@ pub async fn get_reviews(
 /// POST /api/models/{slug}/interest — Register interest in a catalog-only model.
 /// Public endpoint: anon users supply email; logged-in users may pass their email
 /// from their profile. Idempotent via unique indexes on (model_id, email/user_id).
+/// Rate-limited per IP and per email to prevent table-fill spam.
 pub async fn register_interest(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Path(slug): Path<String>,
     Json(req): Json<ModelInterestRequest>,
 ) -> AppResult<Json<ModelInterestResponse>> {
@@ -289,6 +291,30 @@ pub async fn register_interest(
 
     if !email.contains('@') || email.len() > 254 {
         return Err(AppError::BadRequest("invalid email".into()));
+    }
+
+    // Per-IP and per-email rate limits. The AuthRateLimiter sliding window
+    // catches scripted spam before it lands a row; the unique index already
+    // absorbs honest duplicates.
+    let client_ip = headers
+        .get("cf-connecting-ip")
+        .or_else(|| headers.get("x-forwarded-for"))
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or("").trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    if let Err(retry_after) = state
+        .auth_rate_limiter
+        .check(&format!("interest:ip:{client_ip}"), 5, 60)
+    {
+        return Err(AppError::TooManyRequests(retry_after));
+    }
+    if let Err(retry_after) = state
+        .auth_rate_limiter
+        .check(&format!("interest:email:{}", email.to_lowercase()), 10, 3600)
+    {
+        return Err(AppError::TooManyRequests(retry_after));
     }
 
     let model_id: Uuid = sqlx::query_scalar("SELECT id FROM models WHERE slug = $1")
