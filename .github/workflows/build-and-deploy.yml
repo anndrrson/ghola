@@ -3,6 +3,7 @@ name: Build and Deploy Backend
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -42,10 +43,17 @@ jobs:
           secrets: |
             github_token=${{ secrets.CARGO_NET_GITHUB_TOKEN }}
 
-      - name: Deploy to Render
-        if: success()
+      - name: Trigger Render deploy
+        env:
+          HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_ORNI_MODELS }}
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
         run: |
-          curl -s -X POST "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys" \
-            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{"clearCache": "do_not_clear"}' || true
+          set -euo pipefail
+          if [ -z "${HOOK_URL}" ]; then
+            echo "::error::RENDER_DEPLOY_HOOK_ORNI_MODELS secret is missing."
+            echo "Mint a deploy hook in the Render dashboard: orni-models-api -> Settings -> Deploy Hooks."
+            exit 1
+          fi
+          IMG_ENC=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "${IMAGE_REF}")
+          curl -fsS -X POST "${HOOK_URL}?imgURL=${IMG_ENC}"
+          echo "Render deploy triggered for ${IMAGE_REF}"
