@@ -76,7 +76,39 @@ async fn main() -> anyhow::Result<()> {
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
-    // Load escrow keypair for on-chain USDC settlements
+    // Phase 3.1: verify each accepted stablecoin mint is real, owned by the
+    // canonical SPL Token program (not Token-2022), and has the configured
+    // decimals. A misconfigured mint env var becomes a startup panic instead
+    // of a silent fake-mint deposit hole.
+    if std::env::var("SKIP_MINT_VERIFY").is_err() {
+        for token in &config.accepted_tokens {
+            match said_solana::spl::verify_mint(
+                &http_client,
+                &config.solana_rpc_url,
+                &token.mint_b58,
+                token.decimals,
+            )
+            .await
+            {
+                Ok(v) => tracing::info!(
+                    symbol = %token.symbol,
+                    mint = %v.mint_b58,
+                    decimals = v.decimals,
+                    "Stablecoin mint verified"
+                ),
+                Err(e) => {
+                    panic!(
+                        "Mint verification failed for {} ({}): {}. Set SKIP_MINT_VERIFY=1 only in tests.",
+                        token.symbol, token.mint_b58, e
+                    );
+                }
+            }
+        }
+    } else {
+        tracing::warn!("SKIP_MINT_VERIFY set — stablecoin mints are NOT being verified at startup");
+    }
+
+    // Load escrow keypair for on-chain stablecoin settlements
     let escrow_keypair: Option<[u8; 64]> = if let Some(ref path) = config.escrow_keypair_path {
         match std::fs::read(path) {
             Ok(bytes) => {
@@ -103,6 +135,12 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // Phase 3.3: sanctions / risk-screening backend. Default is no-op; swap in
+    // a real backend (Chainalysis / TRM / Range / custom block-list) by
+    // changing this construction site — every route that screens deposits
+    // already routes through the trait.
+    let screener: Arc<dyn services::screening::Screener> = Arc::new(services::screening::NoopScreener);
+
     let state = Arc::new(AppState {
         db,
         config: config.clone(),
@@ -111,13 +149,24 @@ async fn main() -> anyhow::Result<()> {
         guest_rate_limits: Arc::new(Default::default()),
         auth_rate_limiter: Arc::new(state::AuthRateLimiter::new()),
         escrow_keypair,
+        screener,
     });
 
     // Spawn settlement loop (every 5 minutes)
     if state.escrow_keypair.is_some() {
         tokio::spawn(services::settlement::settlement_loop(state.clone()));
         tracing::info!("Settlement loop started (5-minute cycle)");
+
+        // Phase 3.3: hot/cold treasury sweep. No-op if COLD_WALLET_ADDRESS
+        // is unset, so this is safe to spawn unconditionally when escrow is
+        // available.
+        tokio::spawn(services::treasury::treasury_loop(state.clone()));
+        tracing::info!("Treasury sweep loop started (hourly)");
     }
+
+    // Phase 3.4: peg monitor (alerting only, never auto-pauses).
+    tokio::spawn(services::peg_monitor::peg_monitor_loop(state.clone()));
+    tracing::info!("Peg monitor started (5-minute cycle, alerting only)");
 
     // CORS — locked to allowed origins only
     let allowed_origins: Vec<_> = config
@@ -208,6 +257,7 @@ async fn main() -> anyhow::Result<()> {
         )
         // Payments
         .route("/balance", get(routes::payments::get_balance))
+        .route("/deposit-address", get(routes::payments::get_deposit_address))
         .route("/deposits", post(routes::payments::submit_deposit))
         .route("/withdraw", post(routes::payments::request_withdraw))
         .route("/checkout", post(routes::payments::create_checkout))

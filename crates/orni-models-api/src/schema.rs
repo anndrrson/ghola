@@ -174,6 +174,149 @@ pub async fn ensure_schema(db: &PgPool) -> anyhow::Result<()> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_settlement_queue_wallet ON orni.settlement_queue(creator_wallet)")
         .execute(db).await.ok();
 
+    // ── Multi-currency stablecoin support (USDT primary, USDC secondary) ──
+    // Native per-currency balance ledger. `users.usdc_balance` remains as a
+    // legacy column during the transition; new writes go here.
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS orni.currency_balances (
+            user_id    UUID NOT NULL REFERENCES orni.users(id) ON DELETE CASCADE,
+            currency   VARCHAR(10) NOT NULL,
+            balance    BIGINT NOT NULL DEFAULT 0,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (user_id, currency)
+        )
+    "#).execute(db).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_currency_balances_user ON orni.currency_balances(user_id)")
+        .execute(db).await.ok();
+
+    // Tag payment-touching rows with the moved currency. Default 'USDC' keeps
+    // pre-migration rows interpretable.
+    for stmt in [
+        "ALTER TABLE orni.deposits         ADD COLUMN IF NOT EXISTS currency VARCHAR(10) NOT NULL DEFAULT 'USDC'",
+        "ALTER TABLE orni.payments         ADD COLUMN IF NOT EXISTS currency VARCHAR(10) NOT NULL DEFAULT 'USDC'",
+        "ALTER TABLE orni.settlement_queue ADD COLUMN IF NOT EXISTS currency VARCHAR(10) NOT NULL DEFAULT 'USDC'",
+    ] {
+        sqlx::query(stmt).execute(db).await?;
+    }
+
+    // One-shot backfill — idempotent via ON CONFLICT.
+    sqlx::query(r#"
+        INSERT INTO orni.currency_balances (user_id, currency, balance)
+        SELECT id, 'USDC', usdc_balance FROM orni.users WHERE usdc_balance > 0
+        ON CONFLICT (user_id, currency) DO NOTHING
+    "#).execute(db).await.ok();
+
+    // ── Phase 3.5: large-withdrawal gating + replay protection ──
+    // settlement_queue gains:
+    //   - `approval_status`: 'auto' (small enough to skip approval), 'pending'
+    //     (waiting on second-admin sign-off), 'approved', 'rejected'.
+    //   - `withdrawal_id`: idempotency key (UNIQUE per user) so a retried
+    //     POST /withdraw can't double-spend.
+    for stmt in [
+        "ALTER TABLE orni.settlement_queue ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) NOT NULL DEFAULT 'auto'",
+        "ALTER TABLE orni.settlement_queue ADD COLUMN IF NOT EXISTS withdrawal_id UUID",
+        "ALTER TABLE orni.settlement_queue ADD COLUMN IF NOT EXISTS requested_by UUID",
+        "ALTER TABLE orni.settlement_queue ADD COLUMN IF NOT EXISTS approved_by UUID",
+        "ALTER TABLE orni.settlement_queue ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ",
+    ] {
+        sqlx::query(stmt).execute(db).await?;
+    }
+    // Idempotency: same (requested_by, withdrawal_id) cannot be enqueued twice.
+    sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS uq_settlement_withdrawal ON orni.settlement_queue(requested_by, withdrawal_id) WHERE withdrawal_id IS NOT NULL")
+        .execute(db).await.ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_settlement_approval_status ON orni.settlement_queue(approval_status) WHERE approval_status IN ('pending','approved')")
+        .execute(db).await.ok();
+
+    // ── Phase 3.7: append-only audit tables ──
+    // Sanctions / risk-screening blocks. We store only the *hashed* address +
+    // the screening result, never the cleartext address (Phase 4.4 alignment).
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS orni.screening_blocks (
+            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id         UUID REFERENCES orni.users(id) ON DELETE SET NULL,
+            address_hash    VARCHAR(64) NOT NULL,
+            backend         VARCHAR(32) NOT NULL,
+            reason          TEXT,
+            blocked_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    "#).execute(db).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_screening_blocks_user ON orni.screening_blocks(user_id)")
+        .execute(db).await.ok();
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_screening_blocks_address ON orni.screening_blocks(address_hash)")
+        .execute(db).await.ok();
+
+    // Append-only marker: every UPDATE on payments/deposits is rejected at the
+    // DB level. Lets us catch any code that tries to mutate a settled payment
+    // (which would corrupt the audit trail).
+    sqlx::query(r#"
+        CREATE OR REPLACE FUNCTION orni.reject_update_after_insert() RETURNS TRIGGER AS $$
+        BEGIN
+            RAISE EXCEPTION 'rows in % are append-only', TG_TABLE_NAME;
+        END;
+        $$ LANGUAGE plpgsql
+    "#).execute(db).await.ok();
+    // Drop-and-recreate so we can run repeatedly without DROP TRIGGER IF EXISTS gymnastics.
+    sqlx::query("DROP TRIGGER IF EXISTS payments_no_update ON orni.payments").execute(db).await.ok();
+    sqlx::query("CREATE TRIGGER payments_no_update BEFORE UPDATE ON orni.payments FOR EACH ROW EXECUTE FUNCTION orni.reject_update_after_insert()")
+        .execute(db).await.ok();
+
+    // ── Phase 4.1: per-user deposit subaddresses ──
+    // Each user gets a fresh wallet (per-currency ATA) for deposits. The
+    // hot/cold sweep from Phase 3 pulls funds from these into the platform
+    // hot wallet. On-chain observers can no longer query "all Ghola deposits"
+    // by hitting one address.
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS orni.user_deposit_wallets (
+            user_id              UUID NOT NULL REFERENCES orni.users(id) ON DELETE CASCADE,
+            wallet_pubkey        VARCHAR(64) NOT NULL,
+            encrypted_secret_key BYTEA NOT NULL,
+            provider             VARCHAR(32) NOT NULL DEFAULT 'local',
+            created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (user_id)
+        )
+    "#).execute(db).await?;
+    sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS uq_user_deposit_wallets_pubkey ON orni.user_deposit_wallets(wallet_pubkey)")
+        .execute(db).await.ok();
+
+    // ── Phase 4.3: HMAC'd address storage ──
+    // Per-user secret keyed-MAC. A DB breach now reveals tier balances and
+    // aggregate volumes but not the on-chain graph linking wallets to users.
+    // Cleartext addresses still exist on rows where we need to send a transfer
+    // (settlement_queue.creator_wallet, deposits during verification) — those
+    // get wiped once the on-chain action completes; the `*_address_hash`
+    // columns are what we keep long-term.
+    for stmt in [
+        "ALTER TABLE orni.users ADD COLUMN IF NOT EXISTS address_hmac_key BYTEA NOT NULL DEFAULT gen_random_bytes(32)",
+        "ALTER TABLE orni.deposits ADD COLUMN IF NOT EXISTS source_address_hash VARCHAR(64)",
+        "ALTER TABLE orni.settlement_queue ADD COLUMN IF NOT EXISTS dest_address_hash VARCHAR(64)",
+    ] {
+        sqlx::query(stmt).execute(db).await?;
+    }
+
+    // ── Phase 4.6: tiered compliance ──
+    // Default tier = privacy-first (per-user subaddresses, 30-day retention,
+    // hash-only screening). Verified tier = full sanctions data + 7-year
+    // retention, triggered by volume / fiat off-ramp / large withdrawal.
+    for stmt in [
+        "ALTER TABLE orni.users ADD COLUMN IF NOT EXISTS tier VARCHAR(20) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE orni.screening_blocks ADD COLUMN IF NOT EXISTS retention_days INT NOT NULL DEFAULT 30",
+    ] {
+        sqlx::query(stmt).execute(db).await?;
+    }
+
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS orni.tier_events (
+            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id     UUID NOT NULL REFERENCES orni.users(id) ON DELETE CASCADE,
+            from_tier   VARCHAR(20) NOT NULL,
+            to_tier     VARCHAR(20) NOT NULL,
+            reason      TEXT NOT NULL,
+            occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    "#).execute(db).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_tier_events_user ON orni.tier_events(user_id)")
+        .execute(db).await.ok();
+
     // Seed platform user + models
     sqlx::query(r#"
         INSERT INTO orni.users (id, wallet_address, display_name, is_creator)

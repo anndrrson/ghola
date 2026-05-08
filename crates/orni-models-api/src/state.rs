@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::auth::NonceStore;
 use crate::config::Config;
+use crate::services::screening::Screener;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -17,9 +18,12 @@ pub struct AppState {
     pub nonce_store: Arc<NonceStore>,
     pub guest_rate_limits: Arc<Mutex<HashMap<IpAddr, Vec<Instant>>>>,
     pub auth_rate_limiter: Arc<AuthRateLimiter>,
-    /// Escrow wallet keypair for on-chain USDC settlements.
+    /// Escrow wallet keypair for on-chain stablecoin settlements.
     /// None if no keypair is configured (Stripe-only mode).
     pub escrow_keypair: Option<[u8; 64]>,
+    /// Sanctions / risk-screening backend for incoming deposits. Default is
+    /// the no-op screener; production should swap in a real backend.
+    pub screener: Arc<dyn Screener>,
 }
 
 /// Simple rate limiter for auth endpoints (login/register).

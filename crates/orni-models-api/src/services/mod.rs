@@ -1,6 +1,13 @@
+pub mod balances;
+pub mod deposit_wallets;
 pub mod inference;
 pub mod node_resolver;
+pub mod peg_monitor;
+pub mod privacy;
+pub mod screening;
 pub mod settlement;
 pub mod solana;
 pub mod stripe;
+pub mod tier;
+pub mod treasury;
 pub mod x402_facilitator;

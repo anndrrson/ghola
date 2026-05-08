@@ -43,7 +43,8 @@ export default function ModelDetailClient({ slug }: { slug: string }) {
   const fetchBalance = useCallback(() => {
     if (authenticated) {
       getBalance()
-        .then((b) => setBalance(b.balance))
+        // Sum across stablecoins (USDT + USDC, both 1:1 USD).
+        .then((b) => setBalance(b.balances.reduce((s, x) => s + x.balance, 0)))
         .catch(() => setBalance(null));
     }
   }, [authenticated]);

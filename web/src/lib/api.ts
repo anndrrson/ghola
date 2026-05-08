@@ -274,21 +274,47 @@ export async function getModelUsage(slug: string) {
 
 // ── Balance & Payments ──
 
-export async function getBalance() {
-  return apiFetch<{ balance: number; pending_earnings: number }>("/balance");
+export interface CurrencyBalance {
+  currency: string;
+  balance: number;
 }
 
-export async function submitDeposit(txSignature: string, amount: number) {
-  return apiFetch<{ id: string; amount: number }>("/deposits", {
+export interface BalanceResponse {
+  balances: CurrencyBalance[];
+  pending_earnings: number;
+}
+
+export async function getBalance() {
+  return apiFetch<BalanceResponse>("/balance");
+}
+
+export async function submitDeposit(
+  txSignature: string,
+  amount: number,
+  currency?: string,
+) {
+  return apiFetch<{ id: string; amount: number; currency: string }>("/deposits", {
     method: "POST",
-    body: JSON.stringify({ tx_signature: txSignature, amount }),
+    body: JSON.stringify({
+      tx_signature: txSignature,
+      amount,
+      ...(currency ? { currency } : {}),
+    }),
   });
 }
 
-export async function requestWithdraw(amount: number, destinationWallet: string) {
-  return apiFetch<{ status: string; message: string }>("/withdraw", {
+export async function requestWithdraw(
+  amount: number,
+  destinationWallet: string,
+  currency?: string,
+) {
+  return apiFetch<{ status: string; message: string; currency: string }>("/withdraw", {
     method: "POST",
-    body: JSON.stringify({ amount, destination_wallet: destinationWallet }),
+    body: JSON.stringify({
+      amount,
+      destination_wallet: destinationWallet,
+      ...(currency ? { currency } : {}),
+    }),
   });
 }
 

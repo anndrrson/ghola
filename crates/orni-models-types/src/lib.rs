@@ -185,6 +185,20 @@ pub struct Deposit {
     pub tx_signature: String,
     pub verified: bool,
     pub created_at: DateTime<Utc>,
+    /// Stablecoin symbol (e.g. "USDT", "USDC"). Default 'USDC' for pre-migration rows.
+    #[serde(default = "default_currency")]
+    pub currency: String,
+}
+
+fn default_currency() -> String {
+    "USDC".to_string()
+}
+
+/// Per-currency balance row from the currency_balances table.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct CurrencyBalance {
+    pub currency: String,
+    pub balance: i64,
 }
 
 // ── API DTOs ──
@@ -319,11 +333,18 @@ pub struct AddContentRequest {
 pub struct DepositRequest {
     pub tx_signature: String,
     pub amount: i64,
+    /// Stablecoin used for this deposit (e.g. "USDT"). Optional — when omitted
+    /// the on-chain verifier determines it from the transaction.
+    #[serde(default)]
+    pub currency: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct BalanceResponse {
-    pub balance: i64,
+    /// Per-currency balances. Each entry is in the smallest unit (micro-units
+    /// for 6-decimal stablecoins).
+    pub balances: Vec<CurrencyBalance>,
+    /// Sum of outstanding creator earnings, in USD micro-units (1:1 with either stablecoin).
     pub pending_earnings: i64,
 }
 
@@ -331,6 +352,10 @@ pub struct BalanceResponse {
 pub struct WithdrawRequest {
     pub amount: i64,
     pub destination_wallet: String,
+    /// Stablecoin to withdraw (e.g. "USDT"). Defaults to the platform's primary
+    /// stablecoin when omitted.
+    #[serde(default)]
+    pub currency: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -2,13 +2,20 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Wallet, ArrowDownToLine, ArrowUpFromLine, RefreshCw, CreditCard, Key, Copy, Trash2, Plus } from 'lucide-react';
-import { api, createCheckout, listApiKeys, createApiKey, revokeApiKey, getModels, type ApiKeyInfo, type Model } from '@/lib/api';
+import { api, createCheckout, listApiKeys, createApiKey, revokeApiKey, getModels, type ApiKeyInfo, type Model, type BalanceResponse } from '@/lib/api';
+
+// USDT first = platform default. UI ordering matches the backend's
+// accepted_tokens config so the picker lines up with x402 challenge order.
+const SUPPORTED_CURRENCIES = ['USDT', 'USDC'] as const;
+type Currency = typeof SUPPORTED_CURRENCIES[number];
 
 export default function AccountPage() {
-  const [balance, setBalance] = useState<{ balance: number; pending_earnings: number } | null>(null);
+  const [balance, setBalance] = useState<BalanceResponse | null>(null);
   const [depositAmount, setDepositAmount] = useState('');
   const [depositTx, setDepositTx] = useState('');
+  const [depositCurrency, setDepositCurrency] = useState<Currency>('USDT');
   const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawCurrency, setWithdrawCurrency] = useState<Currency>('USDT');
   const [loading, setLoading] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
 
@@ -47,13 +54,21 @@ export default function AccountPage() {
     fetchModels();
   }, [fetchBalance, fetchApiKeys, fetchModels]);
 
-  const formatUSDC = (micro: number) => `$${(micro / 1_000_000).toFixed(2)}`;
+  const formatStablecoin = (micro: number, currency: string) =>
+    `${(micro / 1_000_000).toFixed(2)} ${currency}`;
+
+  const totalBalanceUsd = (b: BalanceResponse | null) =>
+    b ? b.balances.reduce((sum, x) => sum + x.balance, 0) : 0;
 
   const handleDeposit = async () => {
     if (!depositTx || !depositAmount) return;
     setLoading(true);
     try {
-      await api.submitDeposit(depositTx, Math.round(parseFloat(depositAmount) * 1_000_000));
+      await api.submitDeposit(
+        depositTx,
+        Math.round(parseFloat(depositAmount) * 1_000_000),
+        depositCurrency,
+      );
       setDepositTx(''); setDepositAmount('');
       await fetchBalance();
     } catch (err: unknown) {
@@ -65,7 +80,11 @@ export default function AccountPage() {
     if (!withdrawAmount) return;
     setLoading(true);
     try {
-      await api.requestWithdraw(Math.round(parseFloat(withdrawAmount) * 1_000_000), '');
+      await api.requestWithdraw(
+        Math.round(parseFloat(withdrawAmount) * 1_000_000),
+        '',
+        withdrawCurrency,
+      );
       setWithdrawAmount('');
       await fetchBalance();
     } catch (err: unknown) {
@@ -122,12 +141,30 @@ export default function AccountPage() {
       <div className="bg-[#141414] border border-[#262626] rounded-xl p-8 mb-8">
         <div className="flex items-center gap-3 mb-4">
           <Wallet className="w-6 h-6 text-[#fafafa]" />
-          <span className="text-[#a1a1a1] text-sm font-medium">USDC Balance</span>
+          <span className="text-[#a1a1a1] text-sm font-medium">Stablecoin Balances</span>
           <button onClick={fetchBalance} className="ml-auto text-[#666] hover:text-[#fafafa] transition-colors"><RefreshCw className="w-4 h-4" /></button>
         </div>
-        <p className="text-5xl font-medium text-[#00E5A0] font-mono mb-2">{balance ? formatUSDC(balance.balance) : '\u2014'}</p>
+        {balance && balance.balances.length > 0 ? (
+          <div className="space-y-2">
+            {balance.balances.map((b) => (
+              <div key={b.currency} className="flex items-baseline justify-between">
+                <span className="text-sm text-[#a1a1a1] font-medium">{b.currency}</span>
+                <span className="text-3xl font-medium text-[#00E5A0] font-mono">
+                  {formatStablecoin(b.balance, b.currency)}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-5xl font-medium text-[#00E5A0] font-mono mb-2">{'\u2014'}</p>
+        )}
         {balance && balance.pending_earnings > 0 && (
-          <p className="text-sm text-[#00E5A0]/70">+{formatUSDC(balance.pending_earnings)} creator earnings</p>
+          <p className="text-sm text-[#00E5A0]/70 mt-3">
+            +${(balance.pending_earnings / 1_000_000).toFixed(2)} creator earnings (paid in deposit currency)
+          </p>
+        )}
+        {balance && totalBalanceUsd(balance) === 0 && (
+          <p className="text-xs text-[#666] mt-2">Deposit USDT or USDC on Solana to start chatting.</p>
         )}
       </div>
 
@@ -248,26 +285,60 @@ export default function AccountPage() {
 
       <div className="bg-[#141414] border border-[#262626] rounded-lg p-6 mb-6">
         <h2 className="text-lg font-medium mb-4 flex items-center gap-2">
-          <ArrowDownToLine className="w-5 h-5 text-[#00E5A0]" /> Deposit USDC
+          <ArrowDownToLine className="w-5 h-5 text-[#00E5A0]" /> Deposit
         </h2>
-        <p className="text-sm text-[#a1a1a1] mb-4">Send USDC to the platform escrow wallet on Solana, then paste the transaction signature below.</p>
+        <p className="text-2xl font-medium text-[#fafafa] mb-1">{depositCurrency} on Solana only</p>
+        <p className="text-sm text-[#a1a1a1] mb-4">
+          Sending {depositCurrency} on Ethereum, Tron, or any other chain will be lost forever. Verify the chain in your wallet before signing.
+        </p>
         <div className="space-y-3">
-          <input type="number" step="0.01" placeholder="Amount (USDC)" value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} className="w-full bg-[#141414] border border-[#262626] rounded-lg px-4 py-3 text-[#fafafa] focus:border-[#444] focus:outline-none" />
+          <div className="flex gap-2">
+            {SUPPORTED_CURRENCIES.map((c) => (
+              <button
+                key={c}
+                onClick={() => setDepositCurrency(c)}
+                className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                  depositCurrency === c
+                    ? 'border-[#00E5A0] bg-[#00E5A0]/10 text-[#00E5A0]'
+                    : 'border-[#262626] text-[#a1a1a1] hover:border-[#333]'
+                }`}
+              >
+                {c}
+                {c === 'USDT' && <span className="ml-1 text-[10px] text-[#666]">(recommended)</span>}
+              </button>
+            ))}
+          </div>
+          <input type="number" step="0.01" placeholder={`Amount (${depositCurrency})`} value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} className="w-full bg-[#141414] border border-[#262626] rounded-lg px-4 py-3 text-[#fafafa] focus:border-[#444] focus:outline-none" />
           <input type="text" placeholder="Transaction signature" value={depositTx} onChange={(e) => setDepositTx(e.target.value)} className="w-full bg-[#141414] border border-[#262626] rounded-lg px-4 py-3 text-[#fafafa] focus:border-[#444] focus:outline-none font-mono text-sm" />
           <button onClick={handleDeposit} disabled={loading || !depositTx || !depositAmount} className="w-full py-3 bg-[#00E5A0] hover:bg-[#00cc8e] disabled:opacity-50 text-[#0a0a0a] rounded-lg font-medium transition-colors active:scale-[0.98]">
-            {loading ? 'Verifying...' : 'Verify Deposit'}
+            {loading ? 'Verifying...' : `Verify ${depositCurrency} Deposit`}
           </button>
         </div>
       </div>
 
       <div className="bg-[#141414] border border-[#262626] rounded-lg p-6">
         <h2 className="text-lg font-medium mb-4 flex items-center gap-2">
-          <ArrowUpFromLine className="w-5 h-5 text-[#a1a1a1]" /> Withdraw USDC
+          <ArrowUpFromLine className="w-5 h-5 text-[#a1a1a1]" /> Withdraw
         </h2>
         <div className="space-y-3">
-          <input type="number" step="0.01" placeholder="Amount (USDC)" value={withdrawAmount} onChange={(e) => setWithdrawAmount(e.target.value)} className="w-full bg-[#141414] border border-[#262626] rounded-lg px-4 py-3 text-[#fafafa] focus:border-[#444] focus:outline-none" />
+          <div className="flex gap-2">
+            {SUPPORTED_CURRENCIES.map((c) => (
+              <button
+                key={c}
+                onClick={() => setWithdrawCurrency(c)}
+                className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                  withdrawCurrency === c
+                    ? 'border-[#fafafa] bg-[#fafafa]/5 text-[#fafafa]'
+                    : 'border-[#262626] text-[#a1a1a1] hover:border-[#333]'
+                }`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+          <input type="number" step="0.01" placeholder={`Amount (${withdrawCurrency})`} value={withdrawAmount} onChange={(e) => setWithdrawAmount(e.target.value)} className="w-full bg-[#141414] border border-[#262626] rounded-lg px-4 py-3 text-[#fafafa] focus:border-[#444] focus:outline-none" />
           <button onClick={handleWithdraw} disabled={loading || !withdrawAmount} className="w-full py-3 border border-[#262626] hover:border-[#333] text-[#a1a1a1] hover:text-[#fafafa] disabled:opacity-50 rounded-lg font-medium transition-colors active:scale-[0.98]">
-            {loading ? 'Processing...' : 'Withdraw'}
+            {loading ? 'Processing...' : `Withdraw ${withdrawCurrency}`}
           </button>
         </div>
       </div>

@@ -51,6 +51,8 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }
 urlencoding = { workspace = true }
+async-trait = { workspace = true }
+aes-gcm = { workspace = true }
 
 # Solana payments
 said-solana = { workspace = true }

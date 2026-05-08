@@ -18,7 +18,8 @@ export default function Navbar() {
   useEffect(() => {
     if (authenticated) {
       getBalance()
-        .then((b) => setBalance(b.balance))
+        // Sum across stablecoins — both USDT and USDC are 1:1 USD pegged.
+        .then((b) => setBalance(b.balances.reduce((s, x) => s + x.balance, 0)))
         .catch(() => setBalance(null));
     } else {
       setBalance(null);

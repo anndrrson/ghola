@@ -91,7 +91,7 @@ export default function Home() {
             {
               color: "#00E5A0",
               title: "Pay Per Query",
-              desc: "No subscriptions. Pay only for what you use with USDC on Solana.",
+              desc: "No subscriptions. Pay only for what you use with USDT or USDC on Solana.",
             },
             {
               color: "#F3037E",

@@ -122,7 +122,7 @@ pub async fn openapi_json(
             "title": "Ghola AI Inference API",
             "version": "1.0.0",
             "description": "Chat with any open-source AI model. Pay per request via x402.",
-            "x-guidance": "Send a POST to /v1/chat/completions with a model name and messages array. Without payment, you get a 402 with USDC payment instructions on Solana."
+            "x-guidance": "Send a POST to /v1/chat/completions with a model name and messages array. Without payment, you get a 402 with stablecoin (USDT/USDC) payment instructions on Solana."
         },
         "servers": [{"url": "https://orni-models-api.onrender.com"}],
         "paths": {
@@ -173,6 +173,13 @@ pub async fn well_known_x402(
     State(state): State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
     let pay_to = &state.config.escrow_wallet_address;
+    let accepted: Vec<String> = state
+        .config
+        .accepted_tokens
+        .iter()
+        .filter(|t| !t.paused)
+        .map(|t| t.symbol.clone())
+        .collect();
     axum::Json(serde_json::json!({
         "version": 1,
         "resources": [
@@ -182,12 +189,16 @@ pub async fn well_known_x402(
         "x-payment-info": {
             "price": {
                 "mode": "fixed",
-                "currency": "USDC",
+                // Pricing is denominated in USD; the platform debits a 1:1
+                // amount from whichever stablecoin the user pays in.
+                "currency": "USD",
                 "amount": "0.05"
             },
+            "currencies": accepted,
+            "primary_currency": &state.config.primary_token,
             "protocols": [{ "x402": {} }],
             "payTo": pay_to,
-            "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+            "network": &state.config.x402_network
         }
     }))
 }

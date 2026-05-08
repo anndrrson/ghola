@@ -63,20 +63,23 @@ pub async fn send_message(
         }
     }
 
-    // Atomic balance check + deduction (prevents double-spending race condition)
-    if !is_free_query {
-        let deducted: Option<i64> = sqlx::query_scalar(
-            "UPDATE users SET usdc_balance = usdc_balance - $1 WHERE id = $2 AND usdc_balance >= $1 RETURNING usdc_balance",
+    // Atomic multi-currency debit. Tries the platform's primary stablecoin
+    // first, falls back to other accepted (non-paused) currencies. The chosen
+    // currency tags the payment row and the creator's settlement queue entry,
+    // so creators are paid in whatever currency the user spent.
+    let payment_currency = if !is_free_query {
+        let (currency, _new_balance) = crate::services::balances::debit_preferred(
+            &state.db,
+            &state.config,
+            user_id,
+            model.price_per_query,
+            None,
         )
-        .bind(model.price_per_query)
-        .bind(user_id)
-        .fetch_optional(&state.db)
         .await?;
-
-        if deducted.is_none() {
-            return Err(AppError::InsufficientBalance);
-        }
-    }
+        Some(currency)
+    } else {
+        None
+    };
 
     // Get or create session — if no session_id provided, create a new one
     let session_id = if let Some(sid) = req.session_id {
@@ -134,15 +137,15 @@ pub async fn send_message(
             .execute(&state.db)
             .await?;
     } else {
-        // Balance already deducted atomically above — just record the payment
+        // Balance already deducted atomically above — just record the payment.
+        let currency = payment_currency.as_deref().unwrap_or(&state.config.primary_token);
 
-        // Record payment with split
         let platform_share =
             model.price_per_query * state.config.platform_share_bps as i64 / 10_000;
         let creator_share = model.price_per_query - platform_share;
 
         sqlx::query(
-            "INSERT INTO payments (id, user_id, model_id, amount, creator_share, platform_share) VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO payments (id, user_id, model_id, amount, creator_share, platform_share, currency) VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(Uuid::new_v4())
         .bind(user_id)
@@ -150,16 +153,19 @@ pub async fn send_message(
         .bind(model.price_per_query)
         .bind(creator_share)
         .bind(platform_share)
+        .bind(currency)
         .execute(&state.db)
         .await?;
 
-        // Credit creator
-        sqlx::query("UPDATE users SET usdc_balance = usdc_balance + $1 WHERE id = $2")
-            .bind(creator_share)
-            .execute(&state.db)
-            .await?;
+        // Credit creator in the same currency the user paid with.
+        crate::services::balances::credit(
+            &state.db,
+            model.creator_id,
+            currency,
+            creator_share,
+        )
+        .await?;
 
-        // Update model stats
         sqlx::query(
             "UPDATE models SET total_queries = total_queries + 1, total_revenue = total_revenue + $1 WHERE id = $2",
         )
@@ -168,7 +174,6 @@ pub async fn send_message(
         .execute(&state.db)
         .await?;
 
-        // Queue on-chain settlement (if creator has a wallet)
         let creator_wallet: Option<String> = sqlx::query_scalar(
             "SELECT wallet_address FROM users WHERE id = $1",
         )
@@ -179,15 +184,16 @@ pub async fn send_message(
 
         if let Some(ref wallet) = creator_wallet {
             sqlx::query(
-                "INSERT INTO settlement_queue (id, creator_id, creator_wallet, amount_micro_usdc) VALUES ($1, $2, $3, $4)",
+                "INSERT INTO settlement_queue (id, creator_id, creator_wallet, amount_micro_usdc, currency) VALUES ($1, $2, $3, $4, $5)",
             )
             .bind(Uuid::new_v4())
             .bind(model.creator_id)
             .bind(wallet)
             .bind(creator_share)
+            .bind(currency)
             .execute(&state.db)
             .await
-            .ok(); // Don't fail the chat if queueing fails
+            .ok();
         }
 
         // If model uses self-hosted node, record payment with SAID cloud

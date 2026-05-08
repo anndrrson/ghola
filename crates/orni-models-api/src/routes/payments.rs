@@ -9,9 +9,60 @@ use orni_models_types::CheckoutRequest;
 
 use crate::auth::Claims;
 use crate::error::{AppError, AppResult};
-use crate::services::solana;
+use crate::services::{balances, deposit_wallets, solana};
 use crate::state::AppState;
 use orni_models_types::{BalanceResponse, Deposit, DepositRequest, WithdrawRequest};
+
+/// Phase 4.1: GET /api/deposit-address?currency=USDT — returns the user's
+/// per-user deposit ATA for the requested stablecoin. Provisions a fresh
+/// per-user wallet on first call. Replaces the previous "send to the global
+/// escrow" UX so on-chain observers can't graph all platform deposits to one
+/// address.
+#[derive(Debug, serde::Deserialize)]
+pub struct DepositAddressQuery {
+    pub currency: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct DepositAddressResponse {
+    pub currency: String,
+    pub mint: String,
+    pub wallet: String,
+    pub ata: String,
+    pub note: String,
+}
+
+pub async fn get_deposit_address(
+    State(state): State<Arc<AppState>>,
+    claims: axum::Extension<Claims>,
+    axum::extract::Query(q): axum::extract::Query<DepositAddressQuery>,
+) -> AppResult<Json<DepositAddressResponse>> {
+    let user_id: Uuid = claims
+        .sub
+        .parse()
+        .map_err(|_| AppError::Unauthorized("Invalid token".into()))?;
+
+    let symbol = q
+        .currency
+        .as_deref()
+        .map(|s| s.to_uppercase())
+        .unwrap_or_else(|| state.config.primary_token.clone());
+    let token = state
+        .config
+        .find_token(&symbol)
+        .ok_or_else(|| AppError::BadRequest(format!("{symbol} not currently accepted")))?;
+
+    let wallet = deposit_wallets::provision_or_get(&state.db, user_id).await?;
+    let ata = deposit_wallets::deposit_ata_for(&state.db, user_id, &token.mint_b58).await?;
+
+    Ok(Json(DepositAddressResponse {
+        currency: token.symbol.clone(),
+        mint: token.mint_b58.clone(),
+        wallet: wallet.wallet_pubkey,
+        ata,
+        note: format!("Send {} on Solana only. Funds sent on any other chain will be lost.", token.symbol),
+    }))
+}
 
 pub async fn get_balance(
     State(state): State<Arc<AppState>>,
@@ -19,11 +70,7 @@ pub async fn get_balance(
 ) -> AppResult<Json<BalanceResponse>> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized("Invalid token".into()))?;
 
-    let balance: i64 =
-        sqlx::query_scalar("SELECT usdc_balance FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&state.db)
-            .await?;
+    let balances = balances::list_balances(&state.db, &state.config, user_id).await?;
 
     let pending_earnings: i64 = sqlx::query_scalar(
         r#"
@@ -38,7 +85,7 @@ pub async fn get_balance(
     .await?;
 
     Ok(Json(BalanceResponse {
-        balance,
+        balances,
         pending_earnings,
     }))
 }
@@ -50,7 +97,6 @@ pub async fn submit_deposit(
 ) -> AppResult<Json<Deposit>> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized("Invalid token".into()))?;
 
-    // Check for duplicate
     let existing = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM deposits WHERE tx_signature = $1",
     )
@@ -62,7 +108,6 @@ pub async fn submit_deposit(
         return Err(AppError::Conflict("Deposit already processed".into()));
     }
 
-    // Verify on-chain
     let wallet: Option<String> =
         sqlx::query_scalar("SELECT wallet_address FROM users WHERE id = $1")
             .bind(user_id)
@@ -70,7 +115,7 @@ pub async fn submit_deposit(
             .await?;
 
     let wallet = wallet.ok_or_else(|| AppError::BadRequest(
-        "No wallet address linked. USDC deposits require a connected wallet.".into(),
+        "No wallet address linked. Stablecoin deposits require a connected wallet.".into(),
     ))?;
 
     let verified = solana::verify_deposit(
@@ -80,19 +125,40 @@ pub async fn submit_deposit(
         req.amount as u64,
         &wallet,
     )
-    .await?;
+    .await?
+    .ok_or_else(|| AppError::BadRequest("Could not verify deposit transaction".into()))?;
 
-    if !verified {
-        return Err(AppError::BadRequest(
-            "Could not verify deposit transaction".into(),
-        ));
+    // If the request named a currency, sanity-check it matches what landed on-chain.
+    if let Some(claimed) = &req.currency {
+        if !claimed.eq_ignore_ascii_case(&verified.currency) {
+            return Err(AppError::BadRequest(format!(
+                "Deposit currency mismatch: claimed {}, on-chain {}",
+                claimed, verified.currency
+            )));
+        }
     }
 
-    // Record deposit and credit balance
+    // Phase 3.3: screen the source wallet before crediting balance. Blocked
+    // deposits are recorded in `screening_blocks` (hash-only, no cleartext)
+    // and the request is refused. The cleartext wallet address is sent to
+    // the screening backend but never stored.
+    crate::services::screening::enforce(
+        &state.db,
+        state.screener.as_ref(),
+        Some(user_id),
+        &wallet,
+    )
+    .await?;
+
+    // Phase 4.3: persist the source address as a per-user HMAC, not cleartext.
+    // A DB breach now reveals tier balances and aggregate volumes but not
+    // which user is linked to which on-chain wallet.
+    let source_hash = crate::services::privacy::hmac_address(&state.db, user_id, &wallet).await?;
+
     let deposit = sqlx::query_as::<_, Deposit>(
         r#"
-        INSERT INTO deposits (id, user_id, amount, tx_signature, verified)
-        VALUES ($1, $2, $3, $4, true)
+        INSERT INTO deposits (id, user_id, amount, tx_signature, verified, currency, source_address_hash)
+        VALUES ($1, $2, $3, $4, true, $5, $6)
         RETURNING *
         "#,
     )
@@ -100,14 +166,15 @@ pub async fn submit_deposit(
     .bind(user_id)
     .bind(req.amount)
     .bind(&req.tx_signature)
+    .bind(&verified.currency)
+    .bind(&source_hash)
     .fetch_one(&state.db)
     .await?;
 
-    sqlx::query("UPDATE users SET usdc_balance = usdc_balance + $1 WHERE id = $2")
-        .bind(req.amount)
-        .bind(user_id)
-        .execute(&state.db)
-        .await?;
+    balances::credit(&state.db, user_id, &verified.currency, req.amount).await?;
+
+    // Phase 4.6: rolling-volume tier check after every deposit. Idempotent.
+    crate::services::tier::check_and_promote(&state.db, user_id, None).await.ok();
 
     Ok(Json(deposit))
 }
@@ -119,37 +186,136 @@ pub async fn request_withdraw(
 ) -> AppResult<Json<serde_json::Value>> {
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized("Invalid token".into()))?;
 
-    let balance: i64 =
-        sqlx::query_scalar("SELECT usdc_balance FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&state.db)
-            .await?;
-
-    if balance < req.amount {
-        return Err(AppError::InsufficientBalance);
+    if req.amount <= 0 {
+        return Err(AppError::BadRequest("Withdraw amount must be positive".into()));
+    }
+    if req.destination_wallet.trim().is_empty() {
+        return Err(AppError::BadRequest("Destination wallet required".into()));
     }
 
-    // Deduct balance
-    sqlx::query("UPDATE users SET usdc_balance = usdc_balance - $1 WHERE id = $2")
-        .bind(req.amount)
-        .bind(user_id)
-        .execute(&state.db)
-        .await?;
+    // Resolve currency: explicit > primary. Reject paused tokens up front.
+    let currency = req
+        .currency
+        .as_deref()
+        .map(|s| s.to_uppercase())
+        .unwrap_or_else(|| state.config.primary_token.clone());
 
-    // TODO: Actually send USDC on-chain via escrow wallet
-    // For MVP, just record the withdrawal request
+    let token = state
+        .config
+        .find_token(&currency)
+        .ok_or_else(|| AppError::BadRequest(format!(
+            "{} is not currently accepted for withdrawal",
+            currency
+        )))?;
+
+    // Phase 3.5: per-user daily cap. Sum recent settlement_queue rows in any
+    // currency (treating both stablecoins as 1:1 USD) and reject if the
+    // requested amount would push the rolling-24h total past the cap.
+    let recent_total: i64 = sqlx::query_scalar(
+        r#"SELECT COALESCE(SUM(amount_micro_usdc), 0)::BIGINT
+           FROM settlement_queue
+           WHERE requested_by = $1
+             AND created_at > NOW() - INTERVAL '24 hours'
+             AND approval_status != 'rejected'"#,
+    )
+    .bind(user_id)
+    .fetch_one(&state.db)
+    .await?;
+    if recent_total + req.amount > state.config.daily_withdrawal_limit_micro {
+        return Err(AppError::Forbidden(format!(
+            "Daily withdrawal cap exceeded ({} of ${} used in last 24h)",
+            (recent_total as f64) / 1_000_000.0,
+            state.config.daily_withdrawal_limit_micro / 1_000_000,
+        )));
+    }
+
+    // Atomic deduct — returns InsufficientBalance if the user is short.
+    balances::debit(&state.db, user_id, &token.symbol, req.amount).await?;
+
+    // Phase 3.5: large withdrawals are queued in `pending` for a second admin.
+    // Sub-threshold withdrawals go straight to `auto` and the settlement loop
+    // picks them up immediately.
+    let approval_status = if req.amount >= state.config.large_withdrawal_threshold_micro {
+        "pending"
+    } else {
+        "auto"
+    };
+
+    // Phase 4.6: tier promotion triggers. A single $2k+ withdrawal or a
+    // rolling-30d-volume crossing both promote to verified.
+    let large_withdrawal_promote_threshold: i64 = std::env::var("TIER_LARGE_WITHDRAWAL_USD")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(2_000)
+        * 1_000_000;
+    let explicit_reason = if req.amount >= large_withdrawal_promote_threshold {
+        Some(crate::services::tier::PromotionReason::large_withdrawal(req.amount))
+    } else {
+        None
+    };
+    crate::services::tier::check_and_promote(&state.db, user_id, explicit_reason)
+        .await
+        .ok();
+
+    // Replay protection (Phase 3.5): the (requested_by, withdrawal_id) tuple
+    // is unique, so a retried POST /withdraw with the same client-supplied id
+    // returns the existing row instead of double-spending.
+    let withdrawal_id = Uuid::new_v4();
+
+    // Phase 4.3: hash the destination address for the long-lived audit row.
+    // The cleartext stays in `creator_wallet` until settlement broadcasts,
+    // then a follow-up step can null that out (kept here for the settlement
+    // worker — the column is dropped to history once the tx is confirmed).
+    let dest_hash =
+        crate::services::privacy::hmac_address(&state.db, user_id, &req.destination_wallet).await?;
+
+    sqlx::query(
+        r#"INSERT INTO settlement_queue
+            (id, creator_id, creator_wallet, amount_micro_usdc, currency, status,
+             approval_status, requested_by, withdrawal_id, dest_address_hash)
+           VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(user_id)
+    .bind(&req.destination_wallet)
+    .bind(req.amount)
+    .bind(&token.symbol)
+    .bind(approval_status)
+    .bind(user_id)
+    .bind(withdrawal_id)
+    .bind(&dest_hash)
+    .execute(&state.db)
+    .await?;
+
     tracing::info!(
         user_id = %user_id,
         amount = req.amount,
+        currency = %token.symbol,
+        approval_status = %approval_status,
         destination = %req.destination_wallet,
-        "Withdrawal requested — manual payout required"
+        "Withdrawal queued for settlement"
     );
+
+    let message = if approval_status == "pending" {
+        format!(
+            "Large withdrawal: {} requires a second admin's approval before payout.",
+            token.symbol
+        )
+    } else {
+        format!(
+            "Withdrawal submitted. {} will be sent on the next settlement run.",
+            token.symbol
+        )
+    };
 
     Ok(Json(serde_json::json!({
         "status": "pending",
+        "approval_status": approval_status,
         "amount": req.amount,
+        "currency": token.symbol,
         "destination": req.destination_wallet,
-        "message": "Withdrawal submitted. USDC will be sent within 24 hours."
+        "withdrawal_id": withdrawal_id,
+        "message": message,
     })))
 }
 
@@ -271,16 +437,14 @@ pub async fn stripe_webhook(
             .execute(&state.db)
             .await?;
 
-            // Credit user balance
-            sqlx::query("UPDATE users SET usdc_balance = usdc_balance + $1 WHERE id = $2")
-                .bind(amount_micro_usdc)
-                .bind(user_id)
-                .execute(&state.db)
-                .await?;
+            // Credit user's primary stablecoin balance — Stripe is fiat in,
+            // platform converts to the primary stablecoin internally.
+            balances::credit(&state.db, user_id, &state.config.primary_token, amount_micro_usdc).await?;
 
             tracing::info!(
                 user_id = %user_id,
                 amount = amount_micro_usdc,
+                currency = %state.config.primary_token,
                 "Stripe checkout completed, credits added"
             );
         }

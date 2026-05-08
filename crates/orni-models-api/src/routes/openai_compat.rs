@@ -81,13 +81,51 @@ async fn chat_completions_inner(
 
     if state.config.x402_enabled {
         if let Some(payment_header) = headers.get("x-payment").and_then(|v| v.to_str().ok()) {
+            // Build accepts-array entries — one per non-paused stablecoin.
+            // Ordered so the platform's primary stablecoin is first; agents
+            // SHOULD pick the first they can pay in.
+            let accepts: Vec<serde_json::Value> = state
+                .config
+                .accepted_tokens
+                .iter()
+                .filter(|t| !t.paused)
+                .map(|t| serde_json::json!({
+                    "scheme": "exact",
+                    "network": state.config.x402_network,
+                    "asset": &t.mint_b58,
+                    "currency_symbol": &t.symbol,
+                    "decimals": t.decimals,
+                    "amount": model.price_per_query.to_string(),
+                    "payTo": state.config.escrow_wallet_address,
+                    "maxTimeoutSeconds": 60,
+                    "resource": {
+                        "url": "/v1/chat/completions",
+                        "description": format!("Inference on {}", model.name),
+                        "mimeType": "text/event-stream"
+                    },
+                    "extra": {
+                        "platform": "ghola.xyz",
+                        "model": model.slug,
+                    }
+                }))
+                .collect();
+            // Backwards-compatible: keep the historical `requirements` shape
+            // pointing at the primary token, but expose the full list under
+            // `requirements.accepts` for multi-mint-aware clients.
+            let primary = accepts
+                .first()
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
             let requirements = serde_json::json!({
                 "scheme": "exact",
                 "network": state.config.x402_network,
-                "asset": "USDC",
+                "asset": &state.config.usdc_mint,
+                "currency_symbol": &state.config.primary_token,
                 "amount": model.price_per_query.to_string(),
                 "payTo": state.config.escrow_wallet_address,
                 "maxTimeoutSeconds": 60,
+                "accepts": accepts,
+                "primary": primary,
                 "resource": {
                     "url": "/v1/chat/completions",
                     "description": format!("Inference on {}", model.name),
@@ -165,9 +203,12 @@ async fn chat_completions_inner(
     }
 
     // ── Auth: x402 short-circuits, otherwise standard API-key flow ──
-    let (user_id, _model_id, is_free_query) = if x402_paid {
+    // Tuple: (user_id, model_id, is_free_query, payment_currency).
+    // payment_currency is the symbol the user's balance was debited in
+    // (None for x402-paid agents and for free-tier queries).
+    let (user_id, _model_id, is_free_query, payment_currency) = if x402_paid {
         // The agent already paid on-chain; no account needed.
-        (None, model.id, false)
+        (None, model.id, false, None)
     } else {
         // Require API key
         let auth_header = headers
@@ -223,27 +264,34 @@ async fn chat_completions_inner(
             }
         }
 
-        // Atomic balance check + deduction (prevents double-spending)
-        if !is_free {
-            let deducted: Option<i64> = sqlx::query_scalar(
-                "UPDATE users SET usdc_balance = usdc_balance - $1 WHERE id = $2 AND usdc_balance >= $1 RETURNING usdc_balance",
+        // Atomic multi-currency debit (prevents double-spending). Tries
+        // primary stablecoin first, falls back to other accepted currencies.
+        let chosen_currency = if !is_free {
+            match crate::services::balances::debit_preferred(
+                &state.db,
+                &state.config,
+                uid,
+                model.price_per_query,
+                None,
             )
-            .bind(model.price_per_query)
-            .bind(uid)
-            .fetch_optional(&state.db)
-            .await?;
-
-            if deducted.is_none() {
-                return Err(AppError::X402PaymentRequired {
-                    pay_to: state.config.escrow_wallet_address.clone(),
-                    amount_micro_usdc: model.price_per_query,
-                    model_slug: model.slug.clone(),
-                    model_name: model.name.clone(),
-                });
+            .await
+            {
+                Ok((currency, _new_balance)) => Some(currency),
+                Err(AppError::InsufficientBalance) => {
+                    return Err(AppError::X402PaymentRequired {
+                        pay_to: state.config.escrow_wallet_address.clone(),
+                        amount_micro_usdc: model.price_per_query,
+                        model_slug: model.slug.clone(),
+                        model_name: model.name.clone(),
+                    });
+                }
+                Err(other) => return Err(other),
             }
-        }
+        } else {
+            None
+        };
 
-        (Some(uid), model.id, is_free)
+        (Some(uid), model.id, is_free, chosen_currency)
     };
 
     // ── Charge user (skip for x402 — they already paid on-chain) ──
@@ -265,13 +313,14 @@ async fn chat_completions_inner(
                 .await?;
         } else {
             // Balance already deducted atomically above
+            let currency = payment_currency.as_deref().unwrap_or(&state.config.primary_token);
 
             let platform_share =
                 model.price_per_query * state.config.platform_share_bps as i64 / 10_000;
             let creator_share = model.price_per_query - platform_share;
 
             sqlx::query(
-                "INSERT INTO payments (id, user_id, model_id, amount, creator_share, platform_share) VALUES ($1, $2, $3, $4, $5, $6)",
+                "INSERT INTO payments (id, user_id, model_id, amount, creator_share, platform_share, currency) VALUES ($1, $2, $3, $4, $5, $6, $7)",
             )
             .bind(Uuid::new_v4())
             .bind(uid)
@@ -279,13 +328,17 @@ async fn chat_completions_inner(
             .bind(model.price_per_query)
             .bind(creator_share)
             .bind(platform_share)
+            .bind(currency)
             .execute(&state.db)
             .await?;
 
-            sqlx::query("UPDATE users SET usdc_balance = usdc_balance + $1 WHERE id = $2")
-                .bind(creator_share)
-                .execute(&state.db)
-                .await?;
+            crate::services::balances::credit(
+                &state.db,
+                model.creator_id,
+                currency,
+                creator_share,
+            )
+            .await?;
 
             sqlx::query(
                 "UPDATE models SET total_queries = total_queries + 1, total_revenue = total_revenue + $1 WHERE id = $2",
@@ -412,13 +465,20 @@ pub async fn x402_discovery(
 
     let pay_to = &state.config.escrow_wallet_address;
 
-    let x402_payload = serde_json::json!({
-        "x402Version": 2,
-        "accepts": [{
+    // One accepts entry per non-paused stablecoin. Primary token is listed first
+    // so agents reading `accepts[0]` get the platform default.
+    let accepts: Vec<serde_json::Value> = state
+        .config
+        .accepted_tokens
+        .iter()
+        .filter(|t| !t.paused)
+        .map(|t| serde_json::json!({
             "scheme": "exact",
-            "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+            "network": state.config.x402_network,
             "amount": "50000",
-            "asset": "USDC",
+            "asset": &t.mint_b58,
+            "currency_symbol": &t.symbol,
+            "decimals": t.decimals,
             "payTo": pay_to,
             "maxTimeoutSeconds": 60,
             "resource": {
@@ -430,20 +490,25 @@ pub async fn x402_discovery(
                 "platform": "ghola.xyz",
                 "models": ["llama-3-8b", "llama-3-70b", "qwen-32b", "deepseek-r1-120b", "kimi-k2"]
             }
-        }]
+        }))
+        .collect();
+
+    let x402_payload = serde_json::json!({
+        "x402Version": 2,
+        "accepts": accepts,
     });
 
     let encoded = STANDARD.encode(serde_json::to_vec(&x402_payload).unwrap_or_default());
 
-    // Body must be the x402 payload itself for v1 compatibility
     let body = axum::Json(x402_payload.clone());
+    let primary_symbol = state.config.primary_token.clone();
 
     (
         StatusCode::PAYMENT_REQUIRED,
         [
             ("payment-required", encoded.as_str()),
             ("x-price-micro-usdc", "50000"),
-            ("x-currency", "USDC"),
+            ("x-currency", primary_symbol.as_str()),
             ("x-payment-address", pay_to.as_str()),
         ],
         body,
