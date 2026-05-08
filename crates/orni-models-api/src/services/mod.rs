@@ -1,4 +1,5 @@
 pub mod balances;
+pub mod budgets;
 pub mod deposit_wallets;
 pub mod inference;
 pub mod node_resolver;

@@ -322,6 +322,28 @@ pub async fn ensure_schema(db: &PgPool) -> anyhow::Result<()> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_tier_events_user ON orni.tier_events(user_id)")
         .execute(db).await.ok();
 
+    // ── Spending budgets (caps, not seats) ──
+    // Pre-charge enforcement: every debit checks the user's rolling-window
+    // spend against their caps. Defaults below are sane for first-deposit
+    // users who never touch the UI ($50/day, $1k/month). The real value is
+    // unlocking larger deposits — a user with a cap will deposit 10× what
+    // they would without one, because the loss-aversion math changes.
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS orni.user_budgets (
+            user_id           UUID PRIMARY KEY REFERENCES orni.users(id) ON DELETE CASCADE,
+            daily_cap_micro   BIGINT NOT NULL DEFAULT 50000000,
+            monthly_cap_micro BIGINT NOT NULL DEFAULT 1000000000,
+            total_cap_micro   BIGINT,
+            enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    "#).execute(db).await?;
+    // payments.created_at is the substrate the budget check sums over —
+    // make sure it's indexed so the rolling-window queries stay fast.
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_payments_user_created ON orni.payments(user_id, created_at DESC)")
+        .execute(db).await.ok();
+
     // Seed platform user + models
     sqlx::query(r#"
         INSERT INTO orni.users (id, wallet_address, display_name, is_creator)

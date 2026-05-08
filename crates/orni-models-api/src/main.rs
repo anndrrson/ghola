@@ -261,6 +261,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/deposits", post(routes::payments::submit_deposit))
         .route("/withdraw", post(routes::payments::request_withdraw))
         .route("/checkout", post(routes::payments::create_checkout))
+        // Spending limits (budget caps)
+        .route("/limits", get(routes::limits::get_limits))
+        .route("/limits", post(routes::limits::update_limits))
         // Identity
         .route("/identity/link", post(routes::identity::link_did))
         // API Keys

@@ -63,6 +63,12 @@ pub async fn send_message(
         }
     }
 
+    // Pre-charge budget check — runs *before* the debit so a cap-breach
+    // returns 402 with structured detail instead of charging then bouncing.
+    if !is_free_query {
+        crate::services::budgets::check_or_reject(&state.db, user_id, model.price_per_query).await?;
+    }
+
     // Atomic multi-currency debit. Tries the platform's primary stablecoin
     // first, falls back to other accepted (non-paused) currencies. The chosen
     // currency tags the payment row and the creator's settlement queue entry,

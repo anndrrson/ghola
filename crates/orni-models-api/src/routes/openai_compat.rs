@@ -264,6 +264,14 @@ async fn chat_completions_inner(
             }
         }
 
+        // Pre-charge budget check (daily/monthly/total caps) before the
+        // debit. If the user would breach a cap, return 402 with structured
+        // detail so the client can render "you've hit your daily limit"
+        // rather than failing mid-request after a partial charge.
+        if !is_free {
+            crate::services::budgets::check_or_reject(&state.db, uid, model.price_per_query).await?;
+        }
+
         // Atomic multi-currency debit (prevents double-spending). Tries
         // primary stablecoin first, falls back to other accepted currencies.
         let chosen_currency = if !is_free {

@@ -21,7 +21,21 @@ export default function Home() {
   return (
     <div className="min-h-screen pt-16">
       {/* ──────────── Hero ──────────── */}
-      <section className="relative min-h-[calc(100vh-4rem)] flex items-center overflow-hidden">
+      <section className="relative min-h-[calc(100vh-4rem)] flex flex-col overflow-hidden">
+        {/* Subtle grid backdrop. Keep it low-contrast so the typography
+            stays the focal point — the previous "busy" iteration of this
+            hero loaded too much going on. */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0"
+          style={{
+            backgroundImage:
+              "radial-gradient(circle, #14202e 1px, transparent 1px)",
+            backgroundSize: "32px 32px",
+            maskImage:
+              "radial-gradient(ellipse 80% 60% at 50% 50%, black, transparent 75%)",
+          }}
+        />
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0"
@@ -31,48 +45,65 @@ export default function Home() {
           }}
         />
 
-        <div className="relative mx-auto w-full max-w-6xl px-6 lg:px-12 py-24 sm:py-32">
-          <div className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#8b95a8] mb-10 flex items-center gap-3">
-            <span className="h-px w-8 bg-[#2a3a50]" />
-            Open agentic economy · Solana
+        <div className="relative flex-1 flex items-center">
+          <div className="mx-auto w-full max-w-6xl px-6 lg:px-12 py-24 sm:py-32">
+            {/* Live indicator — just the pulse + "Live". The "on Solana" / chain
+                detail belongs in the bottom strip and the deposit/x402 pages,
+                not in the headline real estate where most visitors don't care. */}
+            <div className="inline-flex items-center gap-2 mb-10 font-mono text-[11px] uppercase tracking-[0.22em] text-[#8b95a8]">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#22c55e] opacity-60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-[#22c55e]" />
+              </span>
+              Live
+            </div>
+
+            {/* Multi-line display headline with mixed weights — restores the
+                typographic energy of the older landing without the busyness. */}
+            <h1 className="font-display text-[clamp(3rem,9vw,7.5rem)] leading-[0.94] text-[#eef1f8] font-medium">
+              Every open model.
+              <br />
+              <span className="italic text-[#8b95a8] font-light">One protocol.</span>
+              <br />
+              <span className="text-[#3da8ff]">No gatekeepers.</span>
+            </h1>
+
+            <p className="mt-10 max-w-xl text-lg text-[#8b95a8] leading-relaxed">
+              Chat with any open-source AI for free. Or plug in compute, a
+              model, or a service and earn per call.
+            </p>
+
+            <div className="mt-12 flex flex-col sm:flex-row gap-3">
+              <Link
+                href="/models"
+                className="group inline-flex items-center justify-center gap-2 rounded-full bg-[#3da8ff] px-7 py-3.5 text-[15px] font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
+              >
+                Start chatting
+                <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+              </Link>
+              <Link
+                href="/earn"
+                className="inline-flex items-center justify-center gap-2 rounded-full border border-[#1e2a3a] px-7 py-3.5 text-[15px] font-medium text-[#cfd4dd] hover:border-[#3a4a60] hover:text-[#eef1f8] active:scale-[0.98] transition-all"
+              >
+                List a model
+              </Link>
+            </div>
           </div>
+        </div>
 
-          <h1 className="font-display text-[clamp(3rem,9vw,7.5rem)] leading-[0.94] text-[#eef1f8] font-medium">
-            Earn when{" "}
-            <span className="text-[#3da8ff]">AI works.</span>
-          </h1>
-
-          <p className="mt-10 max-w-xl text-lg text-[#8b95a8] leading-relaxed">
-            Plug in compute, models, or services. Get paid per call, in USDC —
-            every time an agent uses what you provide.
-          </p>
-
-          <div className="mt-12 flex flex-col sm:flex-row gap-3">
-            <Link
-              href="/earn"
-              className="group inline-flex items-center justify-center gap-2 rounded-full bg-[#3da8ff] px-7 py-3.5 text-[15px] font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
-            >
-              Start earning
-              <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-            </Link>
-            <Link
-              href="/agents/new"
-              className="inline-flex items-center justify-center gap-2 rounded-full border border-[#1e2a3a] px-7 py-3.5 text-[15px] font-medium text-[#cfd4dd] hover:border-[#3a4a60] hover:text-[#eef1f8] active:scale-[0.98] transition-all"
-            >
-              Deploy an agent
-            </Link>
-          </div>
-
-          <div className="mt-16 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-[#6f798c] font-mono">
-            <span>Per-call USDC</span>
+        {/* Bottom strip — "active on network" status row, lives in its own
+            band so it reads as live system state, not a feature list. */}
+        <div className="relative border-t border-[#1e2a3a] bg-[#0a0b10]/60 backdrop-blur-sm">
+          <div className="mx-auto max-w-6xl px-6 lg:px-12 py-5 flex flex-wrap items-center gap-x-8 gap-y-2 font-mono text-[11px] uppercase tracking-[0.22em] text-[#6f798c]">
+            <span className="text-[#8b95a8]">Active on network</span>
+            <span className="text-[#2a3a50]">·</span>
+            <span>USDT + USDC settlement</span>
             <span className="text-[#2a3a50]">·</span>
             <span>On-chain identity</span>
             <span className="text-[#2a3a50]">·</span>
             <span>No gatekeepers</span>
           </div>
         </div>
-
-        <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-[#1e2a3a] to-transparent" />
       </section>
 
       {/* ──────────── Marketplace ──────────── */}
@@ -102,7 +133,7 @@ export default function Home() {
                 num: "i",
                 tag: "Supply",
                 title: "Run compute",
-                desc: "Your phone, GPU, or server hosts inference. Earn USDC every time an agent calls it.",
+                desc: "Your phone, GPU, or server hosts inference. Earn USDT or USDC every time an agent calls it.",
                 cta: "Host a node",
                 href: "/earn/compute",
               },
@@ -118,7 +149,7 @@ export default function Home() {
                 num: "iii",
                 tag: "Supply",
                 title: "Sell a service",
-                desc: "Register your API as a headless merchant. 3% fee, hourly USDC settlement.",
+                desc: "Register your API as a headless merchant. 3% fee, stablecoin settlement (USDT or USDC).",
                 cta: "Register",
                 href: "/provide",
               },
@@ -176,8 +207,8 @@ export default function Home() {
               </h2>
               <p className="text-[#8b95a8] leading-relaxed mb-8">
                 An agent needs a model to think, compute to run, and services
-                to act. Each has a price. Each settles in USDC on Solana. Each
-                builds reputation.
+                to act. Each has a price. Each settles in USDT or USDC on
+                Solana. Each builds reputation.
               </p>
               <Link
                 href="/how-it-works"

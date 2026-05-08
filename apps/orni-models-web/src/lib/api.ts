@@ -325,6 +325,48 @@ export async function createCheckout(pack: string) {
   });
 }
 
+// ── Spending limits (budget caps) ──
+
+export interface BudgetLimits {
+  user_id: string;
+  daily_cap_micro: number;
+  monthly_cap_micro: number;
+  total_cap_micro: number | null;
+  enabled: boolean;
+}
+
+export interface SpendSnapshot {
+  day_micro: number;
+  month_micro: number;
+  total_micro: number;
+}
+
+export interface LimitsView {
+  budget: BudgetLimits;
+  spend: SpendSnapshot;
+}
+
+export async function getLimits() {
+  return apiFetch<LimitsView>("/limits");
+}
+
+export async function updateLimits(req: {
+  daily_cap_usd: number;
+  monthly_cap_usd: number;
+  total_cap_usd?: number | null;
+  enabled?: boolean;
+}) {
+  return apiFetch<BudgetLimits>("/limits", {
+    method: "POST",
+    body: JSON.stringify({
+      daily_cap_usd: req.daily_cap_usd,
+      monthly_cap_usd: req.monthly_cap_usd,
+      total_cap_usd: req.total_cap_usd ?? null,
+      enabled: req.enabled ?? true,
+    }),
+  });
+}
+
 export async function getFeaturedModels() {
   return apiFetch<Model[]>("/models/featured");
 }

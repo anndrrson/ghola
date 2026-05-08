@@ -23,6 +23,15 @@ pub enum AppError {
     #[error("Insufficient balance")]
     InsufficientBalance,
 
+    /// Spending budget cap reached (daily / monthly / total). Returns 402
+    /// with structured detail so the client can render a useful message.
+    #[error("Spending {kind} cap reached")]
+    BudgetExceeded {
+        kind: &'static str,
+        limit_micro: i64,
+        used_micro: i64,
+    },
+
     /// x402-compliant payment required response.
     /// Carries payment instructions for agents.
     #[error("Payment required (x402)")]
@@ -107,7 +116,17 @@ impl IntoResponse for AppError {
                     .into_response();
             }
             AppError::InsufficientBalance => {
-                let body = axum::Json(json!({ "error": "Insufficient USDC balance" }));
+                let body = axum::Json(json!({ "error": "Insufficient stablecoin balance" }));
+                return (StatusCode::PAYMENT_REQUIRED, body).into_response();
+            }
+            AppError::BudgetExceeded { kind, limit_micro, used_micro } => {
+                let body = axum::Json(json!({
+                    "error": "budget_exceeded",
+                    "kind": kind,
+                    "limit_usd": (*limit_micro as f64) / 1_000_000.0,
+                    "used_usd": (*used_micro as f64) / 1_000_000.0,
+                    "message": format!("Spending {kind} cap reached"),
+                }));
                 return (StatusCode::PAYMENT_REQUIRED, body).into_response();
             }
             _ => {}

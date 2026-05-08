@@ -20,7 +20,7 @@ const NAV_ITEMS = [
   { href: "/models",   label: "Models",   match: "/models"   },
   { href: "/agents",   label: "Agents",   match: "/agents"   },
   { href: "/earn",     label: "Earn",     match: "/earn"     },
-  { href: "/identity", label: "Identity", match: "/identity" },
+  { href: "/identity/login", label: "Identity", match: "/identity" },
 ] as const;
 
 function truncateAddress(address: string): string {

@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Wallet, ArrowDownToLine, ArrowUpFromLine, RefreshCw, CreditCard, Key, Copy, Trash2, Plus } from 'lucide-react';
+import Link from 'next/link';
+import { Wallet, ArrowDownToLine, ArrowUpFromLine, RefreshCw, CreditCard, Key, Copy, Trash2, Plus, Shield, ArrowRight } from 'lucide-react';
 import { api, createCheckout, listApiKeys, createApiKey, revokeApiKey, getModels, type ApiKeyInfo, type Model, type BalanceResponse } from '@/lib/api';
 
 // USDT first = platform default. UI ordering matches the backend's
@@ -137,6 +138,23 @@ export default function AccountPage() {
   return (
     <div className="max-w-2xl mx-auto py-12 px-4">
       <h1 className="text-3xl font-medium mb-8">Account</h1>
+
+      {/* Spending limits link — discoverable but not in your face. The few
+          users who care (production agents, security-minded folks) find
+          this when they need it; everyone else uses sane defaults. */}
+      <Link
+        href="/account/limits"
+        className="group flex items-center justify-between rounded-xl border border-[#262626] bg-[#141414] p-4 mb-6 hover:border-[#00E5A0]/40 hover:bg-[#1a1a1a] transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          <Shield className="w-5 h-5 text-[#00E5A0]" />
+          <div>
+            <div className="text-sm font-medium text-[#fafafa]">Spending limits</div>
+            <div className="text-xs text-[#666]">Cap daily / monthly / lifetime spend</div>
+          </div>
+        </div>
+        <ArrowRight className="w-4 h-4 text-[#666] group-hover:text-[#fafafa] group-hover:translate-x-0.5 transition" />
+      </Link>
 
       <div className="bg-[#141414] border border-[#262626] rounded-xl p-8 mb-8">
         <div className="flex items-center gap-3 mb-4">
