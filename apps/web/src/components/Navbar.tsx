@@ -11,21 +11,17 @@ import { getBalance } from "@/lib/api";
 import { GholaLogo } from "@/components/GholaLogo";
 import { Menu, X } from "lucide-react";
 
-type Section = "home" | "agents" | "identity" | "models" | "chat" | "settings" | "vault" | "developers" | "provide" | "marketplace" | "bounties";
-
-function getSection(pathname: string): Section {
-  if (pathname.startsWith("/agents")) return "agents";
-  if (pathname.startsWith("/bounties")) return "bounties";
-  if (pathname.startsWith("/marketplace")) return "marketplace";
-  if (pathname.startsWith("/provide")) return "provide";
-  if (pathname.startsWith("/developers")) return "developers";
-  if (pathname.startsWith("/identity")) return "identity";
-  if (pathname.startsWith("/models")) return "models";
-  if (pathname.startsWith("/chat")) return "chat";
-  if (pathname.startsWith("/settings")) return "settings";
-  if (pathname.startsWith("/vault")) return "vault";
-  return "home";
-}
+// Top-nav items: kept to 4 always-visible product surfaces. Per-section
+// pages (Provide, Bounties, Marketplace, Developers, Settings, Chat) still
+// have their routes — they're reached from contextual links inside Models,
+// Earn, or the user menu. The old top nav had 10 items; this is the
+// "simplify down" pass.
+const NAV_ITEMS = [
+  { href: "/models",   label: "Models",   match: "/models"   },
+  { href: "/agents",   label: "Agents",   match: "/agents"   },
+  { href: "/earn",     label: "Earn",     match: "/earn"     },
+  { href: "/identity", label: "Identity", match: "/identity" },
+] as const;
 
 function truncateAddress(address: string): string {
   return `${address.slice(0, 4)}...${address.slice(-4)}`;
@@ -38,37 +34,58 @@ export function Navbar() {
   const { walletAddress } = useTurnkeyWallet();
   const router = useRouter();
   const pathname = usePathname();
-  const section = getSection(pathname);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
 
   useEffect(() => {
     if (walletAuth.authenticated) {
       getBalance()
-        .then((b) => setBalance(b.balance))
+        // Sum stablecoins (USDT + USDC are both 1:1 USD).
+        .then((b) =>
+          setBalance(
+            "balances" in b
+              // New shape from the post-Tether API.
+              ? (b as { balances: { balance: number }[] }).balances.reduce(
+                  (s, x) => s + x.balance,
+                  0,
+                )
+              // Old shape, in case this hits a not-yet-redeployed instance.
+              : (b as unknown as { balance: number }).balance,
+          ),
+        )
         .catch(() => setBalance(null));
     } else {
       setBalance(null);
     }
   }, [walletAuth.authenticated]);
 
+  const isActive = (match: string) => pathname.startsWith(match);
+
   function handleLogout() {
     logout();
     setMobileOpen(false);
+    setAccountOpen(false);
     router.push("/");
   }
 
   function handleThumperLogout() {
     thumperAuth.logout();
     setMobileOpen(false);
+    setAccountOpen(false);
     router.push("/");
   }
+
+  // One unified auth area replaces the old per-section conditional blocks.
+  // Logic: if you have a wallet OR an account, show a compact identity pill;
+  // otherwise show a single Sign In / Get Started pair.
+  const isAuthed = authenticated || thumperAuth.authenticated || walletAuth.authenticated;
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 bg-[#08090d]/80 backdrop-blur-md border-b border-[#1e2a3a]">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex h-16 items-center justify-between">
-          {/* Logo + Section Tabs */}
+          {/* Logo + nav items */}
           <div className="flex items-center gap-8">
             <Link href="/" className="flex items-center gap-1.5">
               <GholaLogo size={28} className="text-[#eef1f8]" />
@@ -77,329 +94,130 @@ export function Navbar() {
               </span>
             </Link>
             <div className="hidden sm:flex items-center gap-1">
+              {NAV_ITEMS.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    isActive(item.match)
+                      ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                      : "text-[#8b95a8] hover:text-[#eef1f8]"
+                  }`}
+                >
+                  {item.label}
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          {/* Desktop auth area — one block, no per-section variants */}
+          <div className="hidden sm:flex items-center gap-3">
+            {/* Balance pill, when a wallet is connected */}
+            {walletAuth.authenticated && balance !== null && (
               <Link
-                href="/agents"
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  section === "agents"
-                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
-                    : "text-[#8b95a8] hover:text-[#eef1f8]"
-                }`}
+                href="/vault"
+                className="rounded-lg bg-[#161822] px-3 py-1.5 text-sm font-mono text-[#8b95a8] transition hover:bg-[#1c1f2e]"
+                title="Vault"
               >
-                Agents
+                ${(balance / 1_000_000).toFixed(2)}
               </Link>
-              {thumperAuth.authenticated && (
-                <Link
-                  href="/chat"
-                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                    section === "chat"
-                      ? "bg-[#3da8ff]/10 text-[#3da8ff]"
-                      : "text-[#8b95a8] hover:text-[#eef1f8]"
-                  }`}
-                >
-                  Chat
-                </Link>
-              )}
-              {thumperAuth.authenticated && (
-                <Link
-                  href="/settings"
-                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                    section === "settings"
-                      ? "bg-[#3da8ff]/10 text-[#3da8ff]"
-                      : "text-[#8b95a8] hover:text-[#eef1f8]"
-                  }`}
-                >
-                  Settings
-                </Link>
-              )}
-              {thumperAuth.authenticated && (
-                <Link
-                  href="/developers"
-                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                    section === "developers"
-                      ? "bg-[#3da8ff]/10 text-[#3da8ff]"
-                      : "text-[#8b95a8] hover:text-[#eef1f8]"
-                  }`}
-                >
-                  Developers
-                </Link>
-              )}
+            )}
+
+            {/* Vault is the account hub — always reachable when authed */}
+            {isAuthed && (
               <Link
                 href="/vault"
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  section === "vault"
+                  pathname.startsWith("/vault")
                     ? "bg-[#3da8ff]/10 text-[#3da8ff]"
                     : "text-[#8b95a8] hover:text-[#eef1f8]"
                 }`}
               >
                 Vault
               </Link>
-              <Link
-                href="/identity/login"
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  section === "identity"
-                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
-                    : "text-[#8b95a8] hover:text-[#eef1f8]"
-                }`}
-              >
-                Identity
-              </Link>
-              <Link
-                href="/models"
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  section === "models"
-                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
-                    : "text-[#8b95a8] hover:text-[#eef1f8]"
-                }`}
-              >
-                Models
-              </Link>
-              <Link
-                href="/provide"
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  section === "provide"
-                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
-                    : "text-[#8b95a8] hover:text-[#eef1f8]"
-                }`}
-              >
-                Provide
-              </Link>
-              <Link
-                href="/marketplace"
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  section === "marketplace"
-                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
-                    : "text-[#8b95a8] hover:text-[#eef1f8]"
-                }`}
-              >
-                Marketplace
-              </Link>
-              <Link
-                href="/bounties"
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  section === "bounties"
-                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
-                    : "text-[#8b95a8] hover:text-[#eef1f8]"
-                }`}
-              >
-                Bounties
-              </Link>
-            </div>
-          </div>
+            )}
 
-          {/* Desktop auth area */}
-          <div className="hidden sm:flex items-center gap-4">
-            {walletAddress && thumperAuth.authenticated && (
-              <Link
-                href="/models"
-                className="rounded-lg bg-[#161822] px-3 py-1.5 text-sm font-mono text-[#8b95a8] transition hover:bg-[#1c1f2e]"
-              >
-                {truncateAddress(walletAddress)}
-              </Link>
-            )}
-            {section === "identity" && (
-              <>
-                {loading ? (
-                  <div className="h-5 w-24 animate-pulse rounded bg-[#161822]" />
-                ) : authenticated ? (
-                  <>
-                    <span className="text-sm text-[#8b95a8]">{user?.email}</span>
-                    <Link
-                      href="/identity/dashboard"
-                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
-                    >
-                      Dashboard
-                    </Link>
-                    <button
-                      onClick={handleLogout}
-                      className="rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] transition-colors cursor-pointer"
-                    >
-                      Log Out
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <Link
-                      href="/identity/login"
-                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
-                    >
-                      Log In
-                    </Link>
-                    <Link
-                      href="/identity/register"
-                      className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
-                    >
-                      Get Started
-                    </Link>
-                  </>
-                )}
-              </>
-            )}
-            {section === "models" && (
-              <>
-                <Link
-                  href="/models/nodes"
-                  className="text-sm text-[#8b95a8] transition hover:text-[#eef1f8]"
+            {/* Account menu: collapses Chat / Settings / Developers / Identity Dashboard / Sign Out */}
+            {isAuthed ? (
+              <div className="relative">
+                <button
+                  onClick={() => setAccountOpen((v) => !v)}
+                  className="flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors cursor-pointer"
                 >
-                  Nodes
-                </Link>
-                {walletAuth.authenticated && walletAuth.isCreator && (
-                  <Link
-                    href="/models/creator"
-                    className="text-sm text-[#8b95a8] transition hover:text-[#eef1f8]"
-                  >
-                    Creator
-                  </Link>
+                  {walletAddress ? (
+                    <span className="font-mono">{truncateAddress(walletAddress)}</span>
+                  ) : (
+                    <span>Account</span>
+                  )}
+                  <span className="text-[#4a5568]">▾</span>
+                </button>
+                {accountOpen && (
+                  <div className="absolute right-0 mt-2 w-56 rounded-lg border border-[#1e2a3a] bg-[#0f1117] py-1 shadow-xl">
+                    {(authenticated || thumperAuth.authenticated) && (
+                      <p className="border-b border-[#1e2a3a] px-3 py-2 text-xs text-[#4a5568]">
+                        {user?.email || thumperAuth.user?.email}
+                      </p>
+                    )}
+                    {thumperAuth.authenticated && (
+                      <>
+                        <Link
+                          href="/chat"
+                          onClick={() => setAccountOpen(false)}
+                          className="block px-3 py-2 text-sm text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#161822]"
+                        >
+                          Chat
+                        </Link>
+                        <Link
+                          href="/settings"
+                          onClick={() => setAccountOpen(false)}
+                          className="block px-3 py-2 text-sm text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#161822]"
+                        >
+                          Settings
+                        </Link>
+                        <Link
+                          href="/developers"
+                          onClick={() => setAccountOpen(false)}
+                          className="block px-3 py-2 text-sm text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#161822]"
+                        >
+                          Developers
+                        </Link>
+                      </>
+                    )}
+                    {authenticated && (
+                      <Link
+                        href="/identity/dashboard"
+                        onClick={() => setAccountOpen(false)}
+                        className="block px-3 py-2 text-sm text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#161822]"
+                      >
+                        Identity Dashboard
+                      </Link>
+                    )}
+                    <div className="border-t border-[#1e2a3a] mt-1 pt-1">
+                      <button
+                        onClick={authenticated ? handleLogout : handleThumperLogout}
+                        className="block w-full px-3 py-2 text-left text-sm text-[#4a5568] hover:text-[#eef1f8] hover:bg-[#161822] cursor-pointer"
+                      >
+                        Sign Out
+                      </button>
+                    </div>
+                  </div>
                 )}
-                {walletAuth.authenticated && balance !== null && (
-                  <Link
-                    href="/models/account"
-                    className="rounded-lg bg-[#161822] px-3 py-1.5 text-sm font-medium text-[#8b95a8] transition hover:bg-[#1c1f2e]"
-                  >
-                    ${(balance / 1_000_000).toFixed(2)}
-                  </Link>
-                )}
-                {!walletAddress && !thumperAuth.authenticated && (
-                  <Link
-                    href="/signin"
-                    className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
-                  >
-                    Sign in
-                  </Link>
-                )}
-              </>
-            )}
-            {(section === "provide") && (
+              </div>
+            ) : loading ? (
+              <div className="h-8 w-24 animate-pulse rounded bg-[#161822]" />
+            ) : (
               <>
-                {thumperAuth.authenticated ? (
-                  <button
-                    onClick={handleThumperLogout}
-                    className="rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] transition-colors cursor-pointer"
-                  >
-                    Log Out
-                  </button>
-                ) : (
-                  <>
-                    <Link
-                      href="/signin?redirect=/provide"
-                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
-                    >
-                      Sign In
-                    </Link>
-                    <Link
-                      href="/signup?redirect=/provide"
-                      className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
-                    >
-                      Get Started
-                    </Link>
-                  </>
-                )}
-              </>
-            )}
-            {(section === "bounties") && (
-              <>
-                {thumperAuth.authenticated ? (
-                  <>
-                    <Link
-                      href="/bounties/dashboard"
-                      className="text-sm text-[#8b95a8] transition hover:text-[#eef1f8]"
-                    >
-                      Dashboard
-                    </Link>
-                    <button
-                      onClick={handleThumperLogout}
-                      className="rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] transition-colors cursor-pointer"
-                    >
-                      Log Out
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <Link
-                      href="/signin?redirect=/bounties"
-                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
-                    >
-                      Sign In
-                    </Link>
-                    <Link
-                      href="/signup?redirect=/bounties"
-                      className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
-                    >
-                      Get Started
-                    </Link>
-                  </>
-                )}
-              </>
-            )}
-            {(section === "marketplace") && (
-              <>
-                {thumperAuth.authenticated ? (
-                  <button
-                    onClick={handleThumperLogout}
-                    className="rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] transition-colors cursor-pointer"
-                  >
-                    Log Out
-                  </button>
-                ) : (
-                  <>
-                    <Link
-                      href="/signin?redirect=/marketplace"
-                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
-                    >
-                      Sign In
-                    </Link>
-                    <Link
-                      href="/signup?redirect=/marketplace"
-                      className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
-                    >
-                      Get Started
-                    </Link>
-                  </>
-                )}
-              </>
-            )}
-            {(section === "home" || section === "vault") && (
-              <>
-                {thumperAuth.authenticated ? (
-                  <>
-                    <Link
-                      href="/chat"
-                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
-                    >
-                      Chat
-                    </Link>
-                    <button
-                      onClick={handleThumperLogout}
-                      className="rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] transition-colors cursor-pointer"
-                    >
-                      Log Out
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <Link
-                      href="/signin"
-                      className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
-                    >
-                      Sign In
-                    </Link>
-                    <Link
-                      href="/signup"
-                      className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
-                    >
-                      Get Started
-                    </Link>
-                  </>
-                )}
-              </>
-            )}
-            {section === "settings" && thumperAuth.authenticated && (
-              <>
-                <span className="text-sm text-[#8b95a8]">{thumperAuth.user?.email}</span>
                 <Link
-                  href="/chat"
+                  href="/signin"
                   className="rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
                 >
-                  Chat
+                  Sign In
+                </Link>
+                <Link
+                  href="/signup"
+                  className="rounded-md bg-[#3da8ff] px-4 py-2 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors"
+                >
+                  Get Started
                 </Link>
               </>
             )}
@@ -416,95 +234,87 @@ export function Navbar() {
         </div>
       </div>
 
-      {/* Mobile menu */}
+      {/* Mobile menu — same 4 nav items, then auth */}
       {mobileOpen && (
         <div className="sm:hidden border-t border-[#1e2a3a] bg-[#08090d]/95 backdrop-blur-md">
-          <div className="px-4 py-4 space-y-2">
-            <Link
-              href="/agents"
-              onClick={() => setMobileOpen(false)}
-              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
-            >
-              Agents
-            </Link>
-            {thumperAuth.authenticated && (
+          <div className="px-4 py-4 space-y-1">
+            {NAV_ITEMS.map((item) => (
               <Link
-                href="/chat"
+                key={item.href}
+                href={item.href}
                 onClick={() => setMobileOpen(false)}
-                className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+                className={`block rounded-md px-3 py-2 text-sm font-medium ${
+                  isActive(item.match)
+                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                    : "text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+                }`}
               >
-                Chat
+                {item.label}
               </Link>
-            )}
-            {thumperAuth.authenticated && (
-              <Link
-                href="/settings"
-                onClick={() => setMobileOpen(false)}
-                className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
-              >
-                Settings
-              </Link>
-            )}
-            {thumperAuth.authenticated && (
-              <Link
-                href="/developers"
-                onClick={() => setMobileOpen(false)}
-                className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
-              >
-                Developers
-              </Link>
-            )}
+            ))}
             <Link
               href="/vault"
               onClick={() => setMobileOpen(false)}
               className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
             >
               Vault
+              {walletAuth.authenticated && balance !== null && (
+                <span className="ml-2 font-mono text-xs text-[#4a5568]">
+                  ${(balance / 1_000_000).toFixed(2)}
+                </span>
+              )}
             </Link>
-            <Link
-              href="/identity/login"
-              onClick={() => setMobileOpen(false)}
-              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
-            >
-              Identity
-            </Link>
-            <Link
-              href="/models"
-              onClick={() => setMobileOpen(false)}
-              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
-            >
-              Models
-            </Link>
-            <Link
-              href="/provide"
-              onClick={() => setMobileOpen(false)}
-              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
-            >
-              Provide
-            </Link>
-            <Link
-              href="/marketplace"
-              onClick={() => setMobileOpen(false)}
-              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
-            >
-              Marketplace
-            </Link>
-            <Link
-              href="/bounties"
-              onClick={() => setMobileOpen(false)}
-              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
-            >
-              Bounties
-            </Link>
-            <div className="border-t border-[#1e2a3a] pt-2 mt-2">
-              {thumperAuth.authenticated ? (
+
+            <div className="border-t border-[#1e2a3a] pt-2 mt-2 space-y-1">
+              {thumperAuth.authenticated && (
                 <>
-                  <p className="px-3 py-2 text-sm text-[#4a5568]">{thumperAuth.user?.email}</p>
+                  <Link
+                    href="/chat"
+                    onClick={() => setMobileOpen(false)}
+                    className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+                  >
+                    Chat
+                  </Link>
+                  <Link
+                    href="/settings"
+                    onClick={() => setMobileOpen(false)}
+                    className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+                  >
+                    Settings
+                  </Link>
+                  <Link
+                    href="/developers"
+                    onClick={() => setMobileOpen(false)}
+                    className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+                  >
+                    Developers
+                  </Link>
+                </>
+              )}
+              {authenticated && (
+                <Link
+                  href="/identity/dashboard"
+                  onClick={() => setMobileOpen(false)}
+                  className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+                >
+                  Identity Dashboard
+                </Link>
+              )}
+              {isAuthed ? (
+                <>
+                  <p className="px-3 py-2 text-xs text-[#4a5568]">
+                    {user?.email || thumperAuth.user?.email}
+                    {walletAddress && (
+                      <span className="ml-2 font-mono">
+                        ({truncateAddress(walletAddress)})
+                      </span>
+                    )}
+                  </p>
                   <button
-                    onClick={handleThumperLogout}
+                    onClick={authenticated ? handleLogout : handleThumperLogout}
                     className="block w-full text-left rounded-md px-3 py-2 text-sm font-medium text-[#4a5568] hover:text-[#eef1f8] hover:bg-[#0f1117] cursor-pointer"
                   >
-                    Log Out
+                    Sign Out
                   </button>
                 </>
               ) : (
@@ -524,11 +334,6 @@ export function Navbar() {
                     Get Started
                   </Link>
                 </>
-              )}
-              {walletAddress && (
-                <p className="mt-2 px-3 py-1 text-xs font-mono text-[#4a5568]">
-                  {truncateAddress(walletAddress)}
-                </p>
               )}
             </div>
           </div>
