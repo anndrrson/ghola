@@ -35,6 +35,10 @@ resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
+# Pinned to 2021. Bumping to 2024 surfaces pattern-binding-modifier
+# changes across many existing crates (thumper-cloud, etc.). Until
+# those are migrated as a focused pass, the simple_asn1/time/time-macros
+# lockfile pin keeps modern dep-graphs compatible.
 edition = "2021"
 license = "MIT OR Apache-2.0"
 

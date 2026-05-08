@@ -192,3 +192,135 @@ fn curve25519_dalek_check_not_on_curve(bytes: &[u8; 32]) -> bool {
     use ed25519_dalek::VerifyingKey;
     VerifyingKey::from_bytes(bytes).is_err()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::scan_instructions;
+    use crate::config::{Config, TokenConfig};
+
+    const USDT_MINT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+    const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const SENDER: &str = "5xT2pYtQwBmCxfP9KqMHWwPTwCRpzPa2Vw9aChunkSEN";
+
+    fn cfg(usdt_paused: bool) -> Config {
+        Config {
+            database_url: "x".into(),
+            bind_addr: "x".into(),
+            jwt_secret: "x".into(),
+            together_api_key: "".into(),
+            together_base_url: "".into(),
+            default_base_model: "".into(),
+            solana_rpc_url: "https://api.mainnet-beta.solana.com".into(),
+            accepted_tokens: vec![
+                TokenConfig {
+                    symbol: "USDT".into(),
+                    mint_b58: USDT_MINT.into(),
+                    decimals: 6,
+                    paused: usdt_paused,
+                },
+                TokenConfig {
+                    symbol: "USDC".into(),
+                    mint_b58: USDC_MINT.into(),
+                    decimals: 6,
+                    paused: false,
+                },
+            ],
+            primary_token: "USDT".into(),
+            usdc_mint: USDT_MINT.into(),
+            escrow_wallet_address: "".into(),
+            escrow_keypair_path: None,
+            r2_endpoint: None,
+            r2_access_key: None,
+            r2_secret_key: None,
+            r2_bucket: "x".into(),
+            platform_share_bps: 1500,
+            anthropic_api_key: "".into(),
+            said_cloud_url: "".into(),
+            stripe_secret_key: None,
+            stripe_webhook_secret: None,
+            frontend_url: "".into(),
+            platform_did: "".into(),
+            x402_enabled: false,
+            x402_facilitator_url: "".into(),
+            x402_network: "solana:mainnet".into(),
+            daily_withdrawal_limit_micro: 2_000_000_000,
+            large_withdrawal_threshold_micro: 10_000_000_000,
+        }
+    }
+
+    fn transfer_checked_ix(mint: &str, authority: &str, amount: &str) -> serde_json::Value {
+        serde_json::json!({
+            "program": "spl-token",
+            "parsed": {
+                "type": "transferChecked",
+                "info": {
+                    "mint": mint,
+                    "authority": authority,
+                    "source": "fakeSrc",
+                    "destination": "fakeDst",
+                    "tokenAmount": { "amount": amount, "decimals": 6 }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn accepts_usdt_deposit() {
+        let ixs = vec![transfer_checked_ix(USDT_MINT, SENDER, "1000000")];
+        let v = scan_instructions(&ixs, &cfg(false), 1_000_000, SENDER).unwrap();
+        assert_eq!(v.currency, "USDT");
+        assert_eq!(v.amount, 1_000_000);
+    }
+
+    #[test]
+    fn accepts_usdc_deposit() {
+        let ixs = vec![transfer_checked_ix(USDC_MINT, SENDER, "5000000")];
+        let v = scan_instructions(&ixs, &cfg(false), 5_000_000, SENDER).unwrap();
+        assert_eq!(v.currency, "USDC");
+    }
+
+    #[test]
+    fn rejects_unknown_mint() {
+        let fake = "FakeFakeFakeFakeFakeFakeFakeFakeFakeFakeFAKE";
+        let ixs = vec![transfer_checked_ix(fake, SENDER, "1000000")];
+        assert!(scan_instructions(&ixs, &cfg(false), 1_000_000, SENDER).is_none());
+    }
+
+    #[test]
+    fn rejects_paused_currency() {
+        // Same USDT deposit, but USDT is paused → no acceptance.
+        let ixs = vec![transfer_checked_ix(USDT_MINT, SENDER, "1000000")];
+        assert!(scan_instructions(&ixs, &cfg(true), 1_000_000, SENDER).is_none());
+    }
+
+    #[test]
+    fn rejects_sender_mismatch() {
+        let ixs = vec![transfer_checked_ix(USDT_MINT, "different-authority", "1000000")];
+        assert!(scan_instructions(&ixs, &cfg(false), 1_000_000, SENDER).is_none());
+    }
+
+    #[test]
+    fn rejects_amount_below_required() {
+        let ixs = vec![transfer_checked_ix(USDT_MINT, SENDER, "999999")];
+        assert!(scan_instructions(&ixs, &cfg(false), 1_000_000, SENDER).is_none());
+    }
+
+    #[test]
+    fn rejects_legacy_transfer_without_mint() {
+        // A plain `transfer` (not transferChecked) is rejected because we
+        // can't safely identify which mint moved.
+        let ix = serde_json::json!({
+            "program": "spl-token",
+            "parsed": {
+                "type": "transfer",
+                "info": {
+                    "authority": SENDER,
+                    "source": "fakeSrc",
+                    "destination": "fakeDst",
+                    "amount": "1000000"
+                }
+            }
+        });
+        assert!(scan_instructions(&[ix], &cfg(false), 1_000_000, SENDER).is_none());
+    }
+}

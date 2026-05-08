@@ -99,3 +99,24 @@ pub async fn enforce(
         ))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_is_deterministic_and_one_way() {
+        let addr = "5xT2pYtQwBmCxfP9KqMHWwPTwCRpzPa2Vw9aChunkSEN";
+        assert_eq!(hash_address(addr), hash_address(addr));
+        assert_eq!(hash_address(addr).len(), 64);
+        assert_ne!(hash_address(addr), hash_address("different-addr"));
+        assert!(!hash_address(addr).contains(addr));
+    }
+
+    #[tokio::test]
+    async fn noop_screener_allows_everything() {
+        let s = NoopScreener;
+        assert!(matches!(s.check("any-address").await.unwrap(), Verdict::Allowed));
+        assert_eq!(s.name(), "noop");
+    }
+}

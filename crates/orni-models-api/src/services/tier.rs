@@ -161,3 +161,27 @@ pub async fn check_and_promote(
 
     Ok(Tier::Verified)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tier_round_trips_through_strings() {
+        for t in [Tier::Default, Tier::Verified] {
+            assert_eq!(Tier::from_str(t.as_str()), t);
+        }
+        // Unknown strings collapse to Default — never silently promote.
+        assert_eq!(Tier::from_str("anything-else"), Tier::Default);
+        assert_eq!(Tier::from_str(""), Tier::Default);
+    }
+
+    #[test]
+    fn promotion_reasons_carry_typed_kinds() {
+        let r = PromotionReason::large_withdrawal(2_500_000_000);
+        assert_eq!(r.kind, "large_withdrawal");
+        assert!(r.detail.contains("2500"));
+        assert_eq!(PromotionReason::fiat_offramp().kind, "fiat_offramp");
+        assert_eq!(PromotionReason::volume(1_500_000_000).kind, "volume");
+    }
+}

@@ -1,3 +1,4 @@
+use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -72,6 +73,24 @@ async fn main() -> anyhow::Result<()> {
         .filter_map(|s| s.trim().parse().ok())
         .collect();
 
+    // Production safety checks. In prod, refuse to start with insecure
+    // settings. ALLOW_INSECURE_STARTUP=1 bypasses (with a loud warning).
+    let issues = startup_issues(
+        &config,
+        origins.len(),
+        is_production_env(),
+        insecure_startup_override_enabled(),
+    );
+    if !issues.is_empty() {
+        for issue in &issues {
+            tracing::error!(%issue, "fail-closed startup guard");
+        }
+        return Err(anyhow::anyhow!(
+            "refusing to start in production with insecure config: {} issue(s)",
+            issues.len()
+        ));
+    }
+
     if origins.is_empty() {
         return Err(anyhow::anyhow!(
             "ALLOWED_ORIGINS produced zero valid origins; refusing wildcard CORS"
@@ -134,4 +153,139 @@ async fn main() -> anyhow::Result<()> {
 
 async fn health() -> (StatusCode, &'static str) {
     (StatusCode::OK, "ok")
+}
+
+/// Production-only fail-closed startup guards. Returns a list of fatal
+/// configuration problems; an empty list means "safe to start".
+fn startup_issues(
+    config: &Config,
+    allowed_origin_count: usize,
+    is_production: bool,
+    allow_insecure_override: bool,
+) -> Vec<String> {
+    if !is_production {
+        return Vec::new();
+    }
+    if allow_insecure_override {
+        tracing::warn!(
+            "ALLOW_INSECURE_STARTUP=true set in production; bypassing fail-closed startup guards"
+        );
+        return Vec::new();
+    }
+
+    let mut issues = Vec::new();
+    if config.allow_unverified_xpayment {
+        issues.push("ALLOW_UNVERIFIED_XPAYMENT must be false".to_string());
+    }
+    if config.escrow_wallet_address.is_none() {
+        issues.push("ESCROW_WALLET_ADDRESS is required in production".to_string());
+    }
+    if allowed_origin_count == 0 {
+        issues.push("ALLOWED_ORIGINS parsed to an empty set".to_string());
+    }
+    if config.accepted_mints.is_empty() {
+        issues.push("ACCEPTED_STABLECOINS produced zero accepted mints".to_string());
+    }
+    issues
+}
+
+fn is_production_env() -> bool {
+    let raw = env::var("APP_ENV")
+        .or_else(|_| env::var("RUST_ENV"))
+        .or_else(|_| env::var("ENVIRONMENT"))
+        .unwrap_or_default();
+    matches!(raw.trim().to_ascii_lowercase().as_str(), "prod" | "production")
+}
+
+fn insecure_startup_override_enabled() -> bool {
+    env::var("ALLOW_INSECURE_STARTUP")
+        .ok()
+        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::startup_issues;
+    use crate::config::{AcceptedMint, Config};
+
+    fn base_config() -> Config {
+        Config {
+            database_url: "postgres://example".into(),
+            bind_addr: "0.0.0.0:8090".into(),
+            platform_fee_bps: 300,
+            route_cache_ttl_secs: 30,
+            upstream_timeout_secs: 30,
+            circuit_failure_threshold: 3,
+            circuit_open_secs: 60,
+            allow_unverified_xpayment: false,
+            solana_rpc_url: "https://api.mainnet-beta.solana.com".into(),
+            escrow_wallet_address: Some("dummy-wallet".into()),
+            x402_max_tx_age_secs: 600,
+            x402_verify_timeout_secs: 8,
+            rate_limit_per_minute: 120,
+            rate_limit_max_keys: 50_000,
+            max_request_body_bytes: 10 * 1024 * 1024,
+            allowed_origins: "https://example.com".into(),
+            trust_proxy_headers: false,
+            accepted_mints: vec![AcceptedMint {
+                symbol: "USDT".into(),
+                mint_b58: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB".into(),
+                decimals: 6,
+                paused: false,
+            }],
+            primary_mint_symbol: "USDT".into(),
+        }
+    }
+
+    #[test]
+    fn dev_mode_never_blocks_startup() {
+        let mut cfg = base_config();
+        cfg.allow_unverified_xpayment = true;
+        cfg.escrow_wallet_address = None;
+        let issues = startup_issues(&cfg, 0, false, false);
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn production_has_no_issues_when_config_is_strong() {
+        let cfg = base_config();
+        let issues = startup_issues(&cfg, 1, true, false);
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn production_reports_critical_gateway_issues() {
+        let mut cfg = base_config();
+        cfg.allow_unverified_xpayment = true;
+        cfg.escrow_wallet_address = None;
+        let issues = startup_issues(&cfg, 0, true, false);
+        // unverified-xpayment, missing escrow, zero origins
+        assert_eq!(issues.len(), 3);
+    }
+
+    #[test]
+    fn production_flags_empty_accepted_mints() {
+        let mut cfg = base_config();
+        cfg.accepted_mints.clear();
+        let issues = startup_issues(&cfg, 1, true, false);
+        assert_eq!(issues, vec!["ACCEPTED_STABLECOINS produced zero accepted mints".to_string()]);
+    }
+
+    #[test]
+    fn override_bypasses_production_guards() {
+        let mut cfg = base_config();
+        cfg.allow_unverified_xpayment = true;
+        cfg.escrow_wallet_address = None;
+        let issues = startup_issues(&cfg, 0, true, true);
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn production_reports_only_active_issues() {
+        // Strong config but no allowed origins: only the origin issue fires.
+        let cfg = base_config();
+        let issues = startup_issues(&cfg, 0, true, false);
+        assert_eq!(issues, vec!["ALLOWED_ORIGINS parsed to an empty set".to_string()]);
+    }
 }

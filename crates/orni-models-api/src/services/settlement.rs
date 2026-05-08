@@ -46,6 +46,29 @@ fn round_to_dime(total: i64) -> (i64, i64) {
     (rounded, remainder)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::round_to_dime;
+
+    #[test]
+    fn rounds_down_to_nearest_dime() {
+        assert_eq!(round_to_dime(423_700), (400_000, 23_700));
+        assert_eq!(round_to_dime(5_000_000), (5_000_000, 0));
+        assert_eq!(round_to_dime(50_000), (0, 50_000));
+        assert_eq!(round_to_dime(0), (0, 0));
+    }
+
+    #[test]
+    fn rounding_remainder_invariant() {
+        for total in [1_i64, 99_999, 100_000, 100_001, 12_345_678, 987_654_321] {
+            let (rounded, remainder) = round_to_dime(total);
+            assert_eq!(rounded + remainder, total);
+            assert!(remainder >= 0 && remainder < 100_000);
+            assert_eq!(rounded % 100_000, 0);
+        }
+    }
+}
+
 async fn process_settlements(state: &AppState) -> anyhow::Result<()> {
     // Batch pending payouts by (creator_wallet, currency). Each batch becomes
     // a single on-chain transfer in the matching SPL token.

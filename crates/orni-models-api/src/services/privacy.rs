@@ -48,3 +48,18 @@ pub fn daily_ip_hash(ip: &str) -> String {
     let h = hasher.finalize();
     hex::encode(&h[..8])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ip_hash_truncated_and_deterministic_within_day() {
+        let h1 = daily_ip_hash("203.0.113.42");
+        let h2 = daily_ip_hash("203.0.113.42");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 16);
+        assert_ne!(h1, daily_ip_hash("198.51.100.1"));
+        assert!(!h1.contains("203.0.113.42"));
+    }
+}
