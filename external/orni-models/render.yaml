@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: orni-models-api
+    runtime: image
+    image:
+      url: ghcr.io/anndrrson/orni-models:latest
+    region: ohio
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: TOGETHER_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ESCROW_WALLET_ADDRESS
+        value: H1zX51s8Fba3FYymhSvQ5fTNK5AVwnJJMaDJ59upumAf
+      - key: BIND_ADDR
+        value: 0.0.0.0:8080
+      - key: FRONTEND_URL
+        sync: false

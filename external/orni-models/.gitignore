@@ -1,0 +1,12 @@
+/target
+.env
+*.pem
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+node_modules/
+.next/
+web/.next/
+web/node_modules/
+escrow-keypair.json

@@ -1,0 +1,8 @@
+target/
+web/
+.env
+*.pem
+escrow-keypair.json
+.git/
+.gitignore
+README.md
