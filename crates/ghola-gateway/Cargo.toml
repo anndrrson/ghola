@@ -28,6 +28,7 @@ sha2 = { workspace = true }
 curve25519-dalek = { workspace = true }
 said-turnkey = { workspace = true }
 said-x402 = { workspace = true }
+said-solana = { path = "../said-solana" }
 
 # Direct (same pattern said-cloud uses)
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring", "postgres", "chrono", "uuid"] }

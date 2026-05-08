@@ -1,5 +1,14 @@
 use std::env;
 
+/// Per-stablecoin entry in the gateway's accepted-mints list.
+#[derive(Debug, Clone)]
+pub struct AcceptedMint {
+    pub symbol: String,
+    pub mint_b58: String,
+    pub decimals: u8,
+    pub paused: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
@@ -34,29 +43,24 @@ pub struct Config {
     pub x402_verify_timeout_secs: u64,
     /// Flat per-IP request cap on the public gateway ingress.
     pub rate_limit_per_minute: u32,
+    /// Upper bound for in-memory distinct IP buckets kept by the edge limiter.
+    pub rate_limit_max_keys: usize,
     /// Hard cap on inbound request body size at the gateway edge.
     pub max_request_body_bytes: usize,
     /// Browser origins allowed to call the gateway directly.
     pub allowed_origins: String,
-    /// Whether to trust client IP headers (for deployments behind a trusted
-    /// reverse proxy). Defaults to false to prevent header spoofing.
+    /// Whether to trust client IP/scheme headers from a known proxy.
     pub trust_proxy_headers: bool,
+    /// Stablecoins this gateway accepts in 402 challenges. Ordered, primary
+    /// first. The verify path accepts payment in any non-paused mint here.
+    pub accepted_mints: Vec<AcceptedMint>,
+    /// Symbol of the primary stablecoin (e.g. "USDT"). Drives challenge
+    /// ordering and the legacy single-mint fallback path.
+    pub primary_mint_symbol: String,
 }
 
 impl Config {
     pub fn from_env() -> Self {
-        let insecure_dev_mode = env::var("INSECURE_DEV_MODE")
-            .ok()
-            .map(|s| parse_bool(&s))
-            .unwrap_or(false);
-        let allow_unverified_xpayment = env::var("ALLOW_UNVERIFIED_XPAYMENT")
-            .ok()
-            .map(|s| parse_bool(&s))
-            .unwrap_or(false);
-        if allow_unverified_xpayment && !insecure_dev_mode {
-            panic!("ALLOW_UNVERIFIED_XPAYMENT=true is only allowed when INSECURE_DEV_MODE=true");
-        }
-
         Self {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL required"),
             bind_addr: env::var("BIND_ADDR")
@@ -82,7 +86,10 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(60),
-            allow_unverified_xpayment,
+            allow_unverified_xpayment: env::var("ALLOW_UNVERIFIED_XPAYMENT")
+                .ok()
+                .map(|s| parse_bool(&s))
+                .unwrap_or(false),
             solana_rpc_url: env::var("SOLANA_RPC_URL")
                 .unwrap_or_else(|_| "https://api.devnet.solana.com".into()),
             escrow_wallet_address: env::var("ESCROW_WALLET_ADDRESS")
@@ -101,19 +108,84 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(120),
+            rate_limit_max_keys: env::var("GATEWAY_RATE_LIMIT_MAX_KEYS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(50_000),
             max_request_body_bytes: env::var("GATEWAY_MAX_REQUEST_BODY_BYTES")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(10 * 1024 * 1024),
-            allowed_origins: env::var("ALLOWED_ORIGINS").unwrap_or_else(|_| {
-                "https://ghola.xyz,https://www.ghola.xyz,http://localhost:3000".into()
-            }),
+            allowed_origins: env::var("ALLOWED_ORIGINS")
+                .unwrap_or_else(|_| "https://ghola.xyz,https://www.ghola.xyz,http://localhost:3000".into()),
             trust_proxy_headers: env::var("TRUST_PROXY_HEADERS")
                 .ok()
                 .map(|s| parse_bool(&s))
                 .unwrap_or(false),
+            accepted_mints: load_accepted_mints(
+                &env::var("SOLANA_RPC_URL")
+                    .unwrap_or_else(|_| "https://api.devnet.solana.com".into()),
+            ),
+            primary_mint_symbol: env::var("PRIMARY_STABLECOIN")
+                .unwrap_or_else(|_| "USDT".into())
+                .to_uppercase(),
         }
     }
+
+    /// Look up an accepted-and-not-paused mint by base58.
+    pub fn find_mint(&self, mint_b58: &str) -> Option<&AcceptedMint> {
+        self.accepted_mints
+            .iter()
+            .find(|m| m.mint_b58 == mint_b58 && !m.paused)
+    }
+
+    /// Look up by symbol (case-insensitive).
+    pub fn find_symbol(&self, symbol: &str) -> Option<&AcceptedMint> {
+        self.accepted_mints
+            .iter()
+            .find(|m| m.symbol.eq_ignore_ascii_case(symbol) && !m.paused)
+    }
+}
+
+fn load_accepted_mints(solana_rpc_url: &str) -> Vec<AcceptedMint> {
+    let is_devnet = solana_rpc_url.contains("devnet") || solana_rpc_url.contains("localhost");
+    let accepted_csv = env::var("ACCEPTED_STABLECOINS").unwrap_or_else(|_| "USDT,USDC".into());
+    let mut out = Vec::new();
+    for raw in accepted_csv.split(',') {
+        let symbol = raw.trim().to_uppercase();
+        if symbol.is_empty() {
+            continue;
+        }
+        let registry = match said_solana::spl::token_for_symbol(&symbol) {
+            Some(t) => t,
+            None => {
+                tracing::warn!("ACCEPTED_STABLECOINS has unknown symbol: {}", symbol);
+                continue;
+            }
+        };
+        let env_mint_var = format!("{}_MINT", symbol);
+        let mint_b58 = env::var(&env_mint_var).unwrap_or_else(|_| {
+            let default = registry.mint_b58(is_devnet);
+            if default.is_empty() {
+                panic!(
+                    "{} has no canonical mint on this network — set {} env var",
+                    symbol, env_mint_var
+                );
+            }
+            default.to_string()
+        });
+        let pause_var = format!("STABLECOIN_{}_PAUSED", symbol);
+        let paused = env::var(&pause_var)
+            .map(|s| parse_bool(&s))
+            .unwrap_or(false);
+        out.push(AcceptedMint {
+            symbol: registry.symbol.to_string(),
+            mint_b58,
+            decimals: registry.decimals,
+            paused,
+        });
+    }
+    out
 }
 
 fn parse_bool(v: &str) -> bool {

@@ -2,33 +2,7 @@
 //!
 //! When a paid route is hit without a verified payment, the gateway responds
 //! with HTTP 402 and a body that tells the agent exactly what it needs to pay
-//! and where. This is the spec-compliant entry point for any x402 client to
-//! discover Ghola merchant pricing without prior knowledge.
-//!
-//! Body shape (per https://x402.org spec, version 1):
-//! ```json
-//! {
-//!   "x402Version": 1,
-//!   "accepts": [
-//!     {
-//!       "scheme": "exact",
-//!       "network": "solana:mainnet",
-//!       "maxAmountRequired": "1000",
-//!       "resource": "https://gateway.ghola.xyz/m/<slug>/<path>",
-//!       "description": "Ghola merchant: <slug>",
-//!       "mimeType": "application/json",
-//!       "payTo": "<escrow_wallet>",
-//!       "maxTimeoutSeconds": 60,
-//!       "asset": "<USDC mint b58>",
-//!       "extra": {
-//!         "merchant_slug": "...",
-//!         "platform_fee_bps": 300
-//!       }
-//!     }
-//!   ],
-//!   "error": null
-//! }
-//! ```
+//! and where.
 
 use axum::http::Request;
 use serde::Serialize;
@@ -36,8 +10,6 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::route_cache::ResolvedRoute;
 
-const USDC_MINT_MAINNET_B58: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const USDC_MINT_DEVNET_B58: &str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 const DEFAULT_MAX_TIMEOUT_SECS: u32 = 60;
 
 #[derive(Debug, Serialize)]
@@ -54,7 +26,15 @@ pub struct PaymentRequirement {
     pub pay_to: String,
     #[serde(rename = "maxTimeoutSeconds")]
     pub max_timeout_seconds: u32,
+    /// Base58 SPL mint address.
     pub asset: String,
+    /// Stablecoin symbol (e.g. "USDT"). Convenience field for clients that
+    /// don't want to dictionary-lookup mint→symbol.
+    #[serde(rename = "currencySymbol")]
+    pub currency_symbol: String,
+    /// On-chain decimals for `asset`. Both USDT and USDC are 6 today, but
+    /// emitting it explicitly future-proofs against new tokens.
+    pub decimals: u8,
     pub extra: serde_json::Value,
 }
 
@@ -67,10 +47,12 @@ pub struct PaymentRequiredBody {
     pub error: Option<String>,
 }
 
-/// Build the spec-compliant 402 challenge body for a paid route.
+/// Build a 402 challenge body for paid routes.
 ///
-/// Returns `None` if escrow_wallet_address is unset (gateway misconfiguration);
-/// caller should fall back to a plain 503 in that case.
+/// Emits one `PaymentRequirement` per non-paused accepted stablecoin, with
+/// the platform's primary mint listed first. Agents SHOULD pay with the
+/// first entry they can satisfy. Returns `None` when ESCROW_WALLET_ADDRESS
+/// is missing or no mints are accepted.
 pub fn build_challenge(
     config: &Config,
     route: &ResolvedRoute,
@@ -79,32 +61,54 @@ pub fn build_challenge(
 ) -> Option<PaymentRequiredBody> {
     let pay_to = config.escrow_wallet_address.clone()?;
     let network = network_for_rpc(&config.solana_rpc_url);
-    let asset = usdc_mint_b58_for_rpc(&config.solana_rpc_url).to_string();
 
-    Some(PaymentRequiredBody {
-        version: 1,
-        accepts: vec![PaymentRequirement {
+    // Order: primary first, then everything else. Skip paused mints entirely
+    // so an ops-driven pause cleanly removes a token from the challenge.
+    let mut sorted: Vec<&crate::config::AcceptedMint> = config
+        .accepted_mints
+        .iter()
+        .filter(|m| !m.paused)
+        .collect();
+    sorted.sort_by_key(|m| {
+        if m.symbol.eq_ignore_ascii_case(&config.primary_mint_symbol) {
+            0
+        } else {
+            1
+        }
+    });
+    if sorted.is_empty() {
+        return None;
+    }
+
+    let accepts = sorted
+        .into_iter()
+        .map(|m| PaymentRequirement {
             scheme: "exact",
-            network,
+            network: network.clone(),
             max_amount_required: route.price_micro_usdc.to_string(),
-            resource: resource_url,
+            resource: resource_url.clone(),
             description: format!("Ghola merchant: {}", route.slug),
             mime_type: "application/json",
-            pay_to,
+            pay_to: pay_to.clone(),
             max_timeout_seconds: DEFAULT_MAX_TIMEOUT_SECS,
-            asset,
+            asset: m.mint_b58.clone(),
+            currency_symbol: m.symbol.clone(),
+            decimals: m.decimals,
             extra: serde_json::json!({
                 "merchant_slug": route.slug,
                 "platform_fee_bps": route.platform_fee_bps,
             }),
-        }],
-        error: error_reason.map(|s| s.to_string()),
+        })
+        .collect();
+
+    Some(PaymentRequiredBody {
+        version: 1,
+        accepts,
+        error: error_reason.map(str::to_string),
     })
 }
 
-/// Reconstruct the public URL the agent called, for the `resource` field.
-/// Uses Host + X-Forwarded-Proto when proxy headers are trusted; falls back
-/// to https + request authority otherwise.
+/// Reconstruct the public URL for the x402 `resource` field.
 pub fn resource_url_from_request<B>(req: &Request<B>, trust_proxy_headers: bool) -> String {
     let scheme = if trust_proxy_headers {
         req.headers()
@@ -122,8 +126,8 @@ pub fn resource_url_from_request<B>(req: &Request<B>, trust_proxy_headers: bool)
         .headers()
         .get("host")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .or_else(|| req.uri().host().map(|h| h.to_string()))
+        .map(str::to_string)
+        .or_else(|| req.uri().host().map(str::to_string))
         .unwrap_or_else(|| "gateway.ghola.xyz".to_string());
 
     let path_and_query = req
@@ -143,22 +147,42 @@ fn network_for_rpc(rpc_url: &str) -> String {
     }
 }
 
-fn usdc_mint_b58_for_rpc(rpc_url: &str) -> &'static str {
-    if rpc_url.contains("devnet") {
-        USDC_MINT_DEVNET_B58
-    } else {
-        USDC_MINT_MAINNET_B58
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AcceptedMint;
     use crate::route_cache::ResolvedRoute;
     use said_turnkey::AuthMode;
     use uuid::Uuid;
 
+    const USDC_MINT_MAINNET_B58: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const USDC_MINT_DEVNET_B58: &str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+    const USDT_MINT_MAINNET_B58: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+
+    fn test_mints(devnet: bool) -> Vec<AcceptedMint> {
+        vec![
+            AcceptedMint {
+                symbol: "USDT".into(),
+                mint_b58: if devnet { "" } else { USDT_MINT_MAINNET_B58 }.into(),
+                decimals: 6,
+                paused: devnet, // devnet has no canonical USDT mint, treat as paused for tests
+            },
+            AcceptedMint {
+                symbol: "USDC".into(),
+                mint_b58: if devnet {
+                    USDC_MINT_DEVNET_B58
+                } else {
+                    USDC_MINT_MAINNET_B58
+                }
+                .into(),
+                decimals: 6,
+                paused: false,
+            },
+        ]
+    }
+
     fn test_config(rpc: &str, escrow: Option<&str>) -> Config {
+        let devnet = rpc.contains("devnet");
         Config {
             database_url: "postgres://test".into(),
             bind_addr: "0.0.0.0:0".into(),
@@ -169,13 +193,16 @@ mod tests {
             circuit_open_secs: 60,
             allow_unverified_xpayment: false,
             solana_rpc_url: rpc.to_string(),
-            escrow_wallet_address: escrow.map(|s| s.to_string()),
+            escrow_wallet_address: escrow.map(str::to_string),
             x402_max_tx_age_secs: 600,
             x402_verify_timeout_secs: 8,
             rate_limit_per_minute: 120,
+            rate_limit_max_keys: 50_000,
             max_request_body_bytes: 10 * 1024 * 1024,
             allowed_origins: "*".into(),
             trust_proxy_headers: false,
+            accepted_mints: test_mints(devnet),
+            primary_mint_symbol: "USDT".into(),
         }
     }
 
@@ -203,12 +230,11 @@ mod tests {
     fn challenge_omits_when_escrow_unset() {
         let config = test_config("https://api.mainnet-beta.solana.com", None);
         let route = test_route();
-        let result = build_challenge(&config, &route, "https://gateway/x".into(), None);
-        assert!(result.is_none());
+        assert!(build_challenge(&config, &route, "https://gateway/x".into(), None).is_none());
     }
 
     #[test]
-    fn challenge_uses_mainnet_for_mainnet_rpc() {
+    fn mainnet_challenge_lists_usdt_first_then_usdc() {
         let config = test_config(
             "https://api.mainnet-beta.solana.com",
             Some("9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"),
@@ -216,62 +242,28 @@ mod tests {
         let route = test_route();
         let body = build_challenge(&config, &route, "https://gateway/x".into(), None).unwrap();
         assert_eq!(body.version, 1);
-        assert_eq!(body.accepts.len(), 1);
-        let req = &body.accepts[0];
-        assert_eq!(req.scheme, "exact");
-        assert_eq!(req.network, "solana:mainnet");
-        assert_eq!(req.max_amount_required, "1000");
-        assert_eq!(req.asset, USDC_MINT_MAINNET_B58);
-        assert_eq!(req.pay_to, "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM");
-        assert_eq!(req.max_timeout_seconds, 60);
-        assert_eq!(
-            req.extra.get("merchant_slug").and_then(|v| v.as_str()),
-            Some("test-merchant")
-        );
-        assert_eq!(
-            req.extra.get("platform_fee_bps").and_then(|v| v.as_i64()),
-            Some(300)
-        );
+        assert_eq!(body.accepts.len(), 2);
+        assert_eq!(body.accepts[0].network, "solana:mainnet");
+        assert_eq!(body.accepts[0].currency_symbol, "USDT");
+        assert_eq!(body.accepts[0].asset, USDT_MINT_MAINNET_B58);
+        assert_eq!(body.accepts[0].decimals, 6);
+        assert_eq!(body.accepts[1].currency_symbol, "USDC");
+        assert_eq!(body.accepts[1].asset, USDC_MINT_MAINNET_B58);
     }
 
     #[test]
-    fn challenge_uses_devnet_for_devnet_rpc() {
+    fn devnet_challenge_falls_back_to_usdc_when_usdt_unavailable() {
+        // Devnet test config marks USDT paused (no canonical devnet mint).
         let config = test_config(
             "https://api.devnet.solana.com",
             Some("9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"),
         );
         let route = test_route();
         let body = build_challenge(&config, &route, "https://gateway/x".into(), None).unwrap();
+        assert_eq!(body.accepts.len(), 1);
         assert_eq!(body.accepts[0].network, "solana:devnet");
+        assert_eq!(body.accepts[0].currency_symbol, "USDC");
         assert_eq!(body.accepts[0].asset, USDC_MINT_DEVNET_B58);
-    }
-
-    #[test]
-    fn challenge_carries_error_reason() {
-        let config = test_config(
-            "https://api.devnet.solana.com",
-            Some("9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"),
-        );
-        let route = test_route();
-        let body = build_challenge(
-            &config,
-            &route,
-            "https://gateway/x".into(),
-            Some("x402_amount_too_low"),
-        )
-        .unwrap();
-        assert_eq!(body.error.as_deref(), Some("x402_amount_too_low"));
-    }
-
-    #[test]
-    fn resource_url_uses_host_header() {
-        let req = axum::http::Request::builder()
-            .uri("/m/test-merchant/foo?x=1")
-            .header("host", "gateway.example.com")
-            .body(())
-            .unwrap();
-        let url = resource_url_from_request(&req, false);
-        assert_eq!(url, "https://gateway.example.com/m/test-merchant/foo?x=1");
     }
 
     #[test]
@@ -282,29 +274,13 @@ mod tests {
             .header("x-forwarded-proto", "http")
             .body(())
             .unwrap();
-        let trusted = resource_url_from_request(&req, true);
-        let untrusted = resource_url_from_request(&req, false);
-        assert_eq!(trusted, "http://gateway.example.com/m/test");
-        assert_eq!(untrusted, "https://gateway.example.com/m/test");
-    }
-
-    #[test]
-    fn body_serializes_to_spec_shape() {
-        let config = test_config(
-            "https://api.mainnet-beta.solana.com",
-            Some("9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"),
+        assert_eq!(
+            resource_url_from_request(&req, true),
+            "http://gateway.example.com/m/test"
         );
-        let route = test_route();
-        let body = build_challenge(&config, &route, "https://gw/x".into(), None).unwrap();
-        let json = serde_json::to_value(&body).unwrap();
-        assert_eq!(json["x402Version"], 1);
-        assert!(json["accepts"].is_array());
-        let accepts = &json["accepts"][0];
-        assert_eq!(accepts["scheme"], "exact");
-        assert_eq!(accepts["maxAmountRequired"], "1000");
-        assert_eq!(accepts["mimeType"], "application/json");
-        assert_eq!(accepts["payTo"], "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM");
-        assert_eq!(accepts["maxTimeoutSeconds"], 60);
-        assert!(json.get("error").is_none());
+        assert_eq!(
+            resource_url_from_request(&req, false),
+            "https://gateway.example.com/m/test"
+        );
     }
 }

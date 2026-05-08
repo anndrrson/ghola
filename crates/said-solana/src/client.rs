@@ -311,10 +311,38 @@ impl SolanaClient {
         self.send_single_ix(ix).await
     }
 
-    /// Transfer USDC from the payer to a recipient.
-    /// Creates the recipient's ATA if it doesn't exist.
-    /// `amount` is in micro-USDC (6 decimals).
-    /// `devnet` controls which USDC mint to use.
+    /// Transfer an SPL token from the payer to a recipient.
+    /// Creates the recipient's ATA if it doesn't exist (idempotent).
+    /// `amount` is in the token's smallest unit (micro-units for 6-decimal stables).
+    pub async fn transfer_token(
+        &self,
+        to: &[u8; 32],
+        mint: &[u8; 32],
+        amount: u64,
+        decimals: u8,
+    ) -> Result<String> {
+        let payer = self.payer_pubkey();
+        let source_ata = crate::spl::find_ata(&payer, mint);
+        let dest_ata = crate::spl::find_ata(to, mint);
+
+        let create_ata_ix = crate::spl::build_create_ata_ix(&payer, to, mint);
+        let transfer_ix = crate::spl::build_transfer_checked_ix(
+            &source_ata,
+            mint,
+            &dest_ata,
+            &payer,
+            amount,
+            decimals,
+        );
+
+        let blockhash = self.get_latest_blockhash().await?;
+        let msg = crate::tx::build_message(&[create_ata_ix, transfer_ix], &payer, &blockhash);
+        let tx_bytes = crate::tx::sign_and_serialize(&msg, &self.payer);
+        self.send_transaction(&tx_bytes).await
+    }
+
+    /// Backward-compatible USDC-only wrapper. New callers should use
+    /// `transfer_token` with a token from the registry instead.
     pub async fn transfer_usdc(
         &self,
         to: &[u8; 32],
@@ -326,26 +354,7 @@ impl SolanaClient {
         } else {
             crate::spl::USDC_MINT_MAINNET
         };
-
-        let payer = self.payer_pubkey();
-        let source_ata = crate::spl::find_ata(&payer, &mint);
-        let dest_ata = crate::spl::find_ata(to, &mint);
-
-        // Create dest ATA (idempotent) + TransferChecked
-        let create_ata_ix = crate::spl::build_create_ata_ix(&payer, to, &mint);
-        let transfer_ix = crate::spl::build_transfer_checked_ix(
-            &source_ata,
-            &mint,
-            &dest_ata,
-            &payer,
-            amount,
-            crate::spl::USDC_DECIMALS,
-        );
-
-        let blockhash = self.get_latest_blockhash().await?;
-        let msg = crate::tx::build_message(&[create_ata_ix, transfer_ix], &payer, &blockhash);
-        let tx_bytes = crate::tx::sign_and_serialize(&msg, &self.payer);
-        self.send_transaction(&tx_bytes).await
+        self.transfer_token(to, &mint, amount, crate::spl::USDC_DECIMALS).await
     }
 
     /// Build, sign, and send a transaction with multiple instructions using a custom signer.

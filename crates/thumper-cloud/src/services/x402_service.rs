@@ -1,6 +1,10 @@
 //! x402 Payment Protocol service.
-//! Handles payment requirement generation, Solana USDC transaction verification,
-//! and settlement for anonymous pay-per-request agent access.
+//! Handles payment requirement generation, Solana stablecoin transaction
+//! verification, and settlement for anonymous pay-per-request agent access.
+//!
+//! Multi-currency: USDT primary, USDC secondary. Per-stablecoin pause flags
+//! (`STABLECOIN_USDT_PAUSED`, `STABLECOIN_USDC_PAUSED`) act as the runtime
+//! lever for depeg / freeze events.
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
@@ -27,21 +31,74 @@ const ATA_PROGRAM_ID: [u8; 32] = [
     0xf8, 0x59,
 ];
 
-const USDC_MINT_MAINNET: [u8; 32] = [
-    0xc6, 0xfa, 0x7a, 0xf3, 0xbe, 0xdb, 0xad, 0x39, 0x22, 0x22, 0x76, 0x5e, 0x44, 0x70, 0x04,
-    0x64, 0xe3, 0xdf, 0x71, 0x23, 0xc0, 0x81, 0x5f, 0x84, 0xf4, 0x6f, 0xb3, 0x50, 0x8e, 0x97,
-    0xf8, 0xa7,
-];
+// ─── Stablecoin registry ─────────────────────────────────────────────────────
+//
+// Keep this in sync with `said-solana::spl::SUPPORTED_TOKENS`. Thumper-cloud
+// lives in a separate workspace from said and orni-models, so the registry
+// is duplicated here rather than imported.
 
-const USDC_MINT_DEVNET: [u8; 32] = [
-    0x3b, 0x44, 0x2c, 0xc7, 0x14, 0xf8, 0x4f, 0x7a, 0x4c, 0x3c, 0x09, 0x65, 0xf5, 0xc8, 0xac,
-    0x51, 0xdb, 0x35, 0xd5, 0x73, 0x45, 0x6e, 0x6e, 0x52, 0xb7, 0x05, 0x2b, 0xe7, 0x57, 0x3b,
-    0x15, 0x7f,
-];
+#[derive(Debug, Clone, Copy)]
+struct StableToken {
+    symbol: &'static str,
+    mint_mainnet_b58: &'static str,
+    mint_devnet_b58: &'static str,
+    decimals: u8,
+}
 
-/// USDC mint base58 addresses
-const USDC_MINT_MAINNET_B58: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const USDC_MINT_DEVNET_B58: &str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+const USDT: StableToken = StableToken {
+    symbol: "USDT",
+    mint_mainnet_b58: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+    // No canonical devnet USDT; operators must override via USDT_MINT env on devnet.
+    mint_devnet_b58: "",
+    decimals: 6,
+};
+const USDC: StableToken = StableToken {
+    symbol: "USDC",
+    mint_mainnet_b58: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    mint_devnet_b58: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    decimals: 6,
+};
+
+/// USDT first = primary stablecoin. UI / agents picking `accepts[0]` get USDT.
+const SUPPORTED_TOKENS: &[StableToken] = &[USDT, USDC];
+
+/// Returns the active set of accepted (non-paused) stablecoins for the given
+/// RPC, with their resolved mint addresses. Skips tokens that don't have a
+/// canonical mint on the active network (e.g. USDT on devnet without an
+/// override).
+fn active_tokens(rpc_url: &str) -> Vec<(StableToken, String)> {
+    let devnet = rpc_url.contains("devnet") || rpc_url.contains("localhost");
+    let mut out = Vec::new();
+    for t in SUPPORTED_TOKENS {
+        let pause_var = format!("STABLECOIN_{}_PAUSED", t.symbol);
+        let paused = std::env::var(&pause_var)
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes"))
+            .unwrap_or(false);
+        if paused {
+            continue;
+        }
+        let env_mint_var = format!("{}_MINT", t.symbol);
+        let mint = std::env::var(&env_mint_var).unwrap_or_else(|_| {
+            if devnet {
+                t.mint_devnet_b58.to_string()
+            } else {
+                t.mint_mainnet_b58.to_string()
+            }
+        });
+        if mint.is_empty() {
+            continue;
+        }
+        out.push((*t, mint));
+    }
+    out
+}
+
+/// Look up a token by its on-chain base58 mint string for the active network.
+fn token_for_mint(rpc_url: &str, mint_b58: &str) -> Option<(StableToken, String)> {
+    active_tokens(rpc_url)
+        .into_iter()
+        .find(|(_, m)| m == mint_b58)
+}
 
 // ---------------------------------------------------------------------------
 // Types — x402 Protocol
@@ -93,7 +150,12 @@ pub struct VerifiedPayment {
     pub payment_id: Uuid,
     pub tx_signature: String,
     pub payer_address: String,
+    /// Amount paid in the on-chain stablecoin's smallest unit (micro-units
+    /// for both USDT and USDC). The legacy field name is kept to avoid
+    /// touching every consumer of this struct in the same pass.
     pub amount_usdc: i64,
+    /// Stablecoin symbol the agent paid in (e.g. "USDT", "USDC").
+    pub currency: String,
 }
 
 /// Public agent pricing info for x402 discovery.
@@ -134,20 +196,8 @@ fn detect_network(rpc_url: &str) -> &'static str {
     }
 }
 
-fn usdc_mint_b58(rpc_url: &str) -> &'static str {
-    if rpc_url.contains("devnet") {
-        USDC_MINT_DEVNET_B58
-    } else {
-        USDC_MINT_MAINNET_B58
-    }
-}
-
-fn usdc_mint_bytes(rpc_url: &str) -> &'static [u8; 32] {
-    if rpc_url.contains("devnet") {
-        &USDC_MINT_DEVNET
-    } else {
-        &USDC_MINT_MAINNET
-    }
+fn decode_mint_bytes(mint_b58: &str) -> Option<[u8; 32]> {
+    bs58::decode(mint_b58).into_vec().ok().and_then(|v| v.try_into().ok())
 }
 
 /// Derive the Associated Token Account for a wallet + mint (same as wallet_service::find_ata).
@@ -234,21 +284,26 @@ pub fn build_payment_requirements(
     let amount = estimate_agent_price(price_per_1k_input, price_per_1k_output, max_tokens);
     let rpc_url = &state.config.solana_rpc_url;
     let network = detect_network(rpc_url).to_string();
-    let asset = usdc_mint_b58(rpc_url).to_string();
     let destination = state
         .config
         .platform_wallet_address
         .clone()
         .unwrap_or_default();
 
-    PaymentRequirements {
-        accepts: vec![PaymentOption {
+    // One PaymentOption per non-paused stablecoin. USDT comes first in the
+    // SUPPORTED_TOKENS slice; agents reading `accepts[0]` get the platform
+    // default. If both stablecoins are paused for some reason, accepts is
+    // empty and the 402 response correctly tells the agent "nothing accepted
+    // right now".
+    let accepts = active_tokens(rpc_url)
+        .into_iter()
+        .map(|(token, mint)| PaymentOption {
             scheme: "exact".to_string(),
-            network,
+            network: network.clone(),
             amount: amount.to_string(),
-            asset,
-            destination,
-            description: format!("Agent: {agent_slug} — 1 inference request"),
+            asset: mint,
+            destination: destination.clone(),
+            description: format!("Agent: {agent_slug} — 1 inference request ({})", token.symbol),
             extra: PaymentExtra {
                 agent_id: agent_id.to_string(),
                 agent_slug: agent_slug.to_string(),
@@ -257,8 +312,10 @@ pub fn build_payment_requirements(
                 price_per_1k_input,
                 price_per_1k_output,
             },
-        }],
-    }
+        })
+        .collect();
+
+    PaymentRequirements { accepts }
 }
 
 /// Build the HTTP 402 response with payment requirements.
@@ -387,31 +444,34 @@ pub async fn verify_payment(
         _ => {} // within window
     }
 
-    // Find the SPL token transferChecked instruction
-    let expected_mint = usdc_mint_b58(rpc_url);
+    // Build the (mint, destination_ata, currency_symbol) acceptance set: one
+    // entry per non-paused stablecoin. The agent's transferChecked must hit
+    // any of these mint+ATA pairs.
     let platform_wallet = state
         .config
         .platform_wallet_address
         .as_deref()
         .ok_or_else(|| CloudError::Internal("platform wallet not configured".into()))?;
-
-    // Derive the platform wallet's USDC ATA
     let platform_bytes: [u8; 32] = bs58::decode(platform_wallet)
         .into_vec()
         .map_err(|e| CloudError::Internal(format!("invalid platform wallet: {e}")))?
         .try_into()
         .map_err(|_| CloudError::Internal("platform wallet wrong length".into()))?;
 
-    let mint_bytes = usdc_mint_bytes(rpc_url);
-    let expected_ata = find_ata(&platform_bytes, mint_bytes);
-    let expected_ata_b58 = bs58::encode(&expected_ata).into_string();
+    let mut accept_set: Vec<(String, String, String)> = Vec::new();
+    for (token, mint_b58) in active_tokens(rpc_url) {
+        let Some(mint_bytes) = decode_mint_bytes(&mint_b58) else { continue };
+        let ata = find_ata(&platform_bytes, &mint_bytes);
+        accept_set.push((mint_b58, bs58::encode(ata).into_string(), token.symbol.to_string()));
+    }
+    if accept_set.is_empty() {
+        return Err(CloudError::PaymentRequired(
+            "no stablecoins currently accepted (all paused)".to_string(),
+        ));
+    }
 
-    // Search through inner instructions and top-level instructions
-    let (paid_amount, payer_address) = extract_transfer_info(
-        &result,
-        expected_mint,
-        &expected_ata_b58,
-    )?;
+    let (paid_amount, payer_address, currency) =
+        extract_transfer_info(&result, &accept_set)?;
 
     // Check amount
     if paid_amount < required_amount {
@@ -452,7 +512,7 @@ pub async fn verify_payment(
     };
 
     tracing::info!(
-        %tx_sig, %payer_address, paid_amount, required_amount,
+        %tx_sig, %payer_address, paid_amount, required_amount, %currency,
         %agent_id, "x402 payment verified"
     );
 
@@ -461,27 +521,25 @@ pub async fn verify_payment(
         tx_signature: tx_sig.clone(),
         payer_address,
         amount_usdc: paid_amount,
+        currency,
     })
 }
 
-/// Extract the USDC transfer amount and payer from a parsed Solana transaction.
+/// Extract the stablecoin transfer amount, payer, and currency from a parsed
+/// Solana transaction. Matches against any (mint, destination_ata, symbol)
+/// tuple in `accept_set`.
 fn extract_transfer_info(
     tx_result: &serde_json::Value,
-    expected_mint: &str,
-    expected_destination_ata: &str,
-) -> Result<(i64, String), CloudError> {
-    // Collect all instructions: top-level + inner
+    accept_set: &[(String, String, String)],
+) -> Result<(i64, String, String), CloudError> {
     let mut all_instructions = Vec::new();
 
-    // Top-level instructions
     if let Some(instructions) = tx_result
         .pointer("/transaction/message/instructions")
         .and_then(|v| v.as_array())
     {
         all_instructions.extend(instructions.iter());
     }
-
-    // Inner instructions (from CPI calls)
     if let Some(inner) = tx_result
         .pointer("/meta/innerInstructions")
         .and_then(|v| v.as_array())
@@ -493,7 +551,6 @@ fn extract_transfer_info(
         }
     }
 
-    // Find transferChecked or transfer instruction targeting our destination
     for ix in &all_instructions {
         let parsed = match ix.get("parsed") {
             Some(p) => p,
@@ -501,33 +558,36 @@ fn extract_transfer_info(
         };
 
         let ix_type = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if ix_type != "transferChecked" {
+            continue;
+        }
         let info = match parsed.get("info") {
             Some(i) => i,
             None => continue,
         };
 
-        if ix_type == "transferChecked" {
-            let mint = info.get("mint").and_then(|v| v.as_str()).unwrap_or("");
-            let dest = info.get("destination").and_then(|v| v.as_str()).unwrap_or("");
+        let mint = info.get("mint").and_then(|v| v.as_str()).unwrap_or("");
+        let dest = info.get("destination").and_then(|v| v.as_str()).unwrap_or("");
+        let matched = accept_set
+            .iter()
+            .find(|(m, ata, _)| mint == m && dest == ata);
+        let Some((_, _, currency)) = matched else { continue };
 
-            if mint == expected_mint && dest == expected_destination_ata {
-                let amount_str = info
-                    .pointer("/tokenAmount/amount")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("0");
-                let amount: i64 = amount_str.parse().unwrap_or(0);
-                let authority = info
-                    .get("authority")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                return Ok((amount, authority));
-            }
-        }
+        let amount_str = info
+            .pointer("/tokenAmount/amount")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0");
+        let amount: i64 = amount_str.parse().unwrap_or(0);
+        let authority = info
+            .get("authority")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        return Ok((amount, authority, currency.clone()));
     }
 
     Err(CloudError::PaymentRequired(
-        "no valid USDC transfer to platform wallet found in transaction".to_string(),
+        "no valid stablecoin transfer to platform wallet found in transaction".to_string(),
     ))
 }
 
@@ -606,7 +666,13 @@ pub async fn list_agent_pricing(
 ) -> Result<Vec<AgentPricing>, CloudError> {
     let rpc_url = &state.config.solana_rpc_url;
     let network = detect_network(rpc_url).to_string();
-    let asset = usdc_mint_b58(rpc_url).to_string();
+    // Discovery summary surfaces the platform's *primary* (first non-paused)
+    // stablecoin mint. Per-agent detail responses can return the full
+    // accepts-array via `build_payment_requirements`.
+    let asset = active_tokens(rpc_url)
+        .first()
+        .map(|(_, m)| m.clone())
+        .unwrap_or_default();
     let destination = state
         .config
         .platform_wallet_address
@@ -716,7 +782,10 @@ pub async fn get_agent_pricing(
         price_per_1k_input: price_in,
         price_per_1k_output: price_out,
         payment_network: detect_network(rpc_url).to_string(),
-        payment_asset: usdc_mint_b58(rpc_url).to_string(),
+        payment_asset: active_tokens(rpc_url)
+            .first()
+            .map(|(_, m)| m.clone())
+            .unwrap_or_default(),
         payment_destination: state
             .config
             .platform_wallet_address

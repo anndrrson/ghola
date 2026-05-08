@@ -1,28 +1,21 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::Utc;
+use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 
 const TOKEN_PROGRAM_ID: [u8; 32] = [
-    0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93, 0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79, 0xac,
-    0x1c, 0xb4, 0x85, 0xed, 0x5f, 0x5b, 0x37, 0x91, 0x3a, 0x8c, 0xf5, 0x85, 0x7e, 0xff, 0x00, 0xa9,
+    0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93, 0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79,
+    0xac, 0x1c, 0xb4, 0x85, 0xed, 0x5f, 0x5b, 0x37, 0x91, 0x3a, 0x8c, 0xf5, 0x85, 0x7e, 0xff,
+    0x00, 0xa9,
 ];
 const ATA_PROGRAM_ID: [u8; 32] = [
-    0x8c, 0x97, 0x25, 0x8f, 0x4e, 0x24, 0x89, 0xf1, 0xbb, 0x3d, 0x10, 0x29, 0x14, 0x8e, 0x0d, 0x83,
-    0x0b, 0x5a, 0x13, 0x99, 0xda, 0xff, 0x10, 0x84, 0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9, 0xf8, 0x59,
+    0x8c, 0x97, 0x25, 0x8f, 0x4e, 0x24, 0x89, 0xf1, 0xbb, 0x3d, 0x10, 0x29, 0x14, 0x8e, 0x0d,
+    0x83, 0x0b, 0x5a, 0x13, 0x99, 0xda, 0xff, 0x10, 0x84, 0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9,
+    0xf8, 0x59,
 ];
-const USDC_MINT_MAINNET: [u8; 32] = [
-    0xc6, 0xfa, 0x7a, 0xf3, 0xbe, 0xdb, 0xad, 0x39, 0x22, 0x22, 0x76, 0x5e, 0x44, 0x70, 0x04, 0x64,
-    0xe3, 0xdf, 0x71, 0x23, 0xc0, 0x81, 0x5f, 0x84, 0xf4, 0x6f, 0xb3, 0x50, 0x8e, 0x97, 0xf8, 0xa7,
-];
-const USDC_MINT_DEVNET: [u8; 32] = [
-    0x3b, 0x44, 0x2c, 0xc7, 0x14, 0xf8, 0x4f, 0x7a, 0x4c, 0x3c, 0x09, 0x65, 0xf5, 0xc8, 0xac, 0x51,
-    0xdb, 0x35, 0xd5, 0x73, 0x45, 0x6e, 0x6e, 0x52, 0xb7, 0x05, 0x2b, 0xe7, 0x57, 0x3b, 0x15, 0x7f,
-];
-const USDC_MINT_MAINNET_B58: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const USDC_MINT_DEVNET_B58: &str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 
 pub struct ParsedPayment {
     pub scheme: String,
@@ -33,11 +26,28 @@ pub struct ParsedPayment {
 
 pub struct VerifiedPayment {
     pub signature: String,
+    /// Stablecoin symbol the agent paid in. Lets meter / billing tag the
+    /// row with the actual currency that landed on-chain rather than
+    /// assuming USDC.
+    pub currency: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct X402InboundPayment {
+    scheme: String,
+    network: String,
+    payload: X402InboundPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct X402InboundPayload {
+    signature: String,
+    from: String,
 }
 
 pub fn parse_payment_header(payload_b64: &str) -> Option<ParsedPayment> {
     let decoded = STANDARD.decode(payload_b64).ok()?;
-    let parsed: said_x402::X402PaymentPayload = serde_json::from_slice(&decoded).ok()?;
+    let parsed: X402InboundPayment = serde_json::from_slice(&decoded).ok()?;
 
     let scheme = parsed.scheme.trim().to_ascii_lowercase();
     let network = parsed.network.trim().to_string();
@@ -72,7 +82,7 @@ pub async fn verify_onchain_payment(
     http: &reqwest::Client,
     config: &Config,
     payment: &ParsedPayment,
-    required_amount_micro_usdc: i64,
+    required_amount_micro: i64,
 ) -> Result<VerifiedPayment, &'static str> {
     if payment.scheme != "exact" {
         return Err("x402_scheme_not_supported");
@@ -86,13 +96,32 @@ pub async fn verify_onchain_payment(
         .as_deref()
         .ok_or("x402_escrow_wallet_missing")?;
     let platform_wallet_bytes = decode_pubkey(platform_wallet).ok_or("x402_bad_escrow_wallet")?;
-    let expected_mint = usdc_mint_b58(&config.solana_rpc_url);
-    let expected_ata = find_ata(
-        &platform_wallet_bytes,
-        usdc_mint_bytes(&config.solana_rpc_url),
-    )
-    .ok_or("x402_ata_derive_failed")?;
-    let expected_ata_b58 = bs58::encode(expected_ata).into_string();
+
+    // Build the set of (mint, expected_ata, symbol) tuples we accept on this
+    // tx. Paused mints are excluded — an ops-driven pause cleanly removes
+    // a token from the verify path without touching code.
+    let mut accept_set: Vec<(String, String, String)> = Vec::new();
+    for m in &config.accepted_mints {
+        if m.paused || m.mint_b58.is_empty() {
+            continue;
+        }
+        let mint_bytes = match decode_pubkey(&m.mint_b58) {
+            Some(b) => b,
+            None => continue,
+        };
+        let ata = match find_ata(&platform_wallet_bytes, &mint_bytes) {
+            Some(a) => a,
+            None => continue,
+        };
+        accept_set.push((
+            m.mint_b58.clone(),
+            bs58::encode(ata).into_string(),
+            m.symbol.clone(),
+        ));
+    }
+    if accept_set.is_empty() {
+        return Err("x402_no_accepted_mints");
+    }
 
     let tx = rpc_get_transaction(http, config, &payment.signature)
         .await
@@ -112,14 +141,16 @@ pub async fn verify_onchain_payment(
     let block_time = tx.get("blockTime").and_then(|v| v.as_i64());
     let now = Utc::now().timestamp();
     match block_time {
-        Some(bt) if now - bt > config.x402_max_tx_age_secs.max(0) => return Err("x402_tx_too_old"),
+        Some(bt) if now - bt > config.x402_max_tx_age_secs.max(0) => {
+            return Err("x402_tx_too_old")
+        }
         Some(_) => {}
         None => return Err("x402_tx_missing_block_time"),
     }
 
-    let (paid_amount, authority) = extract_transfer_info(&tx, expected_mint, &expected_ata_b58)
-        .ok_or("x402_transfer_not_found")?;
-    if paid_amount < required_amount_micro_usdc {
+    let (paid_amount, authority, currency) =
+        extract_transfer_info(&tx, &accept_set).ok_or("x402_transfer_not_found")?;
+    if paid_amount < required_amount_micro {
         return Err("x402_amount_too_low");
     }
     if authority != payment.from {
@@ -128,6 +159,7 @@ pub async fn verify_onchain_payment(
 
     Ok(VerifiedPayment {
         signature: payment.signature.clone(),
+        currency,
     })
 }
 
@@ -169,11 +201,12 @@ async fn rpc_get_transaction(
         .ok_or_else(|| anyhow::anyhow!("missing result"))
 }
 
+/// Scan the tx for a `transferChecked` whose (mint, destination_ata) pair is
+/// in the accepted set. Returns (amount, authority, currency_symbol) on match.
 fn extract_transfer_info(
     tx_result: &Value,
-    expected_mint: &str,
-    expected_destination_ata: &str,
-) -> Option<(i64, String)> {
+    accept_set: &[(String, String, String)],
+) -> Option<(i64, String, String)> {
     let mut instructions = Vec::new();
     if let Some(top) = tx_result
         .pointer("/transaction/message/instructions")
@@ -208,9 +241,13 @@ fn extract_transfer_info(
             .get("destination")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if mint != expected_mint || destination != expected_destination_ata {
+
+        let matched = accept_set
+            .iter()
+            .find(|(m, ata, _)| mint == m && destination == ata);
+        let Some((_, _, currency)) = matched else {
             continue;
-        }
+        };
 
         let amount = info
             .pointer("/tokenAmount/amount")
@@ -222,7 +259,7 @@ fn extract_transfer_info(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        return Some((amount, authority));
+        return Some((amount, authority, currency.clone()));
     }
 
     None
@@ -239,22 +276,6 @@ fn is_expected_network(rpc_url: &str, network: &str) -> bool {
             network,
             "solana:mainnet" | "solana:mainnet-beta" | "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
         )
-    }
-}
-
-fn usdc_mint_b58(rpc_url: &str) -> &'static str {
-    if rpc_url.contains("devnet") {
-        USDC_MINT_DEVNET_B58
-    } else {
-        USDC_MINT_MAINNET_B58
-    }
-}
-
-fn usdc_mint_bytes(rpc_url: &str) -> &'static [u8; 32] {
-    if rpc_url.contains("devnet") {
-        &USDC_MINT_DEVNET
-    } else {
-        &USDC_MINT_MAINNET
     }
 }
 
