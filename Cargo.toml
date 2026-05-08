@@ -23,6 +23,10 @@ members = [
     "crates/thumper-cli",
     "crates/thumper-cloud",
     "crates/ghola-home",
+
+    # Marketplace (Orni Models)
+    "crates/orni-models-types",
+    "crates/orni-models-api",
 ]
 exclude = [
     "programs/said-registry",
@@ -74,8 +78,11 @@ schemars = { version = "1", features = ["uuid1", "chrono04"] }
 
 # HTTP
 axum = { version = "0.8", features = ["ws"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+tokio-stream = "0.1"
+async-trait = "0.1"
 
 # Observability
 tracing = "0.1"
@@ -94,6 +101,11 @@ bs58 = "0.5"
 dashmap = "6"
 qrcode = "0.14"
 open = "5"
+hex = "0.4"
+hmac = "0.12"
+urlencoding = "2"
+dotenvy = "0.15"
+anyhow = "1"
 
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
@@ -114,6 +126,9 @@ said-daemon = { path = "daemon" }
 thumper-types = { path = "crates/thumper-types" }
 thumper-relay = { path = "crates/thumper-relay" }
 thumper-mcp = { path = "crates/thumper-mcp" }
+
+# Internal — Orni Models marketplace
+orni-models-types = { path = "crates/orni-models-types" }
 
 [profile.release]
 overflow-checks = true
