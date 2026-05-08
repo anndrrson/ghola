@@ -172,20 +172,36 @@ fn load_accepted_tokens(is_devnet: bool) -> (Vec<TokenConfig>, String) {
 
     let mut tokens = Vec::new();
     for symbol in &symbols {
-        let registry_token = said_solana::spl::token_for_symbol(symbol)
-            .unwrap_or_else(|| panic!("unknown stablecoin in ACCEPTED_STABLECOINS: {}", symbol));
+        let Some(registry_token) = said_solana::spl::token_for_symbol(symbol) else {
+            tracing::warn!(
+                symbol = %symbol,
+                "ACCEPTED_STABLECOINS lists unknown symbol — skipping"
+            );
+            continue;
+        };
 
         let env_mint_var = format!("{}_MINT", symbol);
-        let mint_b58 = env::var(&env_mint_var).unwrap_or_else(|_| {
-            let default = registry_token.mint_b58(is_devnet);
-            if default.is_empty() {
-                panic!(
-                    "{} has no canonical mint on this network — set {} env var",
-                    symbol, env_mint_var
-                );
+        let mint_b58 = match env::var(&env_mint_var) {
+            Ok(v) if !v.is_empty() => v,
+            _ => {
+                let default = registry_token.mint_b58(is_devnet);
+                if default.is_empty() {
+                    // No canonical mint on the active network and no env
+                    // override — drop the token with a warning instead of
+                    // panicking so the service can still serve other
+                    // stablecoins. Operators who need this token must set
+                    // <SYMBOL>_MINT to a network-specific mint.
+                    tracing::warn!(
+                        symbol = %symbol,
+                        env_var = %env_mint_var,
+                        is_devnet,
+                        "no canonical mint for stablecoin on this network — token disabled"
+                    );
+                    continue;
+                }
+                default.to_string()
             }
-            default.to_string()
-        });
+        };
 
         let pause_var = format!("STABLECOIN_{}_PAUSED", symbol);
         let paused = env::var(&pause_var)
@@ -200,12 +216,26 @@ fn load_accepted_tokens(is_devnet: bool) -> (Vec<TokenConfig>, String) {
         });
     }
 
-    if !tokens.iter().any(|t| t.symbol == primary_token) {
+    if tokens.is_empty() {
         panic!(
-            "PRIMARY_STABLECOIN={} is not present in ACCEPTED_STABLECOINS={:?}",
-            primary_token, symbols
+            "no stablecoins available — ACCEPTED_STABLECOINS={:?} produced zero usable tokens. Set <SYMBOL>_MINT for at least one.",
+            symbols
         );
     }
 
-    (tokens, primary_token)
+    // If primary isn't available (e.g., USDT on devnet without override),
+    // fall back to the first available token rather than panicking.
+    let active_primary = if tokens.iter().any(|t| t.symbol == primary_token) {
+        primary_token
+    } else {
+        let fallback = tokens[0].symbol.clone();
+        tracing::warn!(
+            requested_primary = %primary_token,
+            fallback_to = %fallback,
+            "PRIMARY_STABLECOIN unavailable on this network — falling back"
+        );
+        fallback
+    };
+
+    (tokens, active_primary)
 }
