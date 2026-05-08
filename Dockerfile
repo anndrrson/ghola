@@ -38,7 +38,7 @@ COPY daemon/ daemon/
 COPY integration-tests/ integration-tests/
 
 # Copy migrations (sqlx::migrate! embeds SQL at compile time)
-COPY migrations-cloud/ migrations-cloud/
+COPY migrations/cloud/ migrations/cloud/
 
 # Build only said-cloud in release mode
 RUN cargo build --release -p said-cloud

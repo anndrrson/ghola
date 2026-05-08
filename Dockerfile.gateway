@@ -39,7 +39,7 @@ COPY mcp-server/ mcp-server/
 COPY cli/ cli/
 COPY daemon/ daemon/
 COPY integration-tests/ integration-tests/
-COPY migrations-cloud/ migrations-cloud/
+COPY migrations/cloud/ migrations/cloud/
 
 RUN cargo build --release -p ghola-gateway
 

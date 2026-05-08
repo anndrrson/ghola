@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Connected to database");
 
-    sqlx::migrate!("../../migrations-cloud").run(&db).await?;
+    sqlx::migrate!("../../migrations/cloud").run(&db).await?;
     tracing::info!("Migrations applied");
 
     let signing_key = Arc::new(AppState::build_signing_key(&config));
