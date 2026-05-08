@@ -7,6 +7,11 @@ pub async fn ensure_schema(db: &PgPool) -> anyhow::Result<()> {
     // Create schema
     sqlx::query("CREATE SCHEMA IF NOT EXISTS orni").execute(db).await?;
 
+    // pgcrypto provides gen_random_uuid() (used as column defaults across the
+    // schema) and gen_random_bytes() (Phase 4.3 address_hmac_key default).
+    // Idempotent.
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto").execute(db).await.ok();
+
     // Set search_path for this session (all subsequent queries use orni schema first)
     sqlx::query("SET search_path TO orni, public").execute(db).await?;
 
