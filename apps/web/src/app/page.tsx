@@ -58,19 +58,22 @@ export default function Home() {
               Live
             </div>
 
-            {/* Multi-line display headline with mixed weights — restores the
-                typographic energy of the older landing without the busyness. */}
+            {/* Privacy-led tagline. Three short statements, descriptive over
+                clever — Apple/DuckDuckGo posture, not "we're disrupting" energy.
+                Each clause is a real architectural fact: x402 means no
+                account, Phase 4 means no audit trail, open weights mean no
+                Big Tech in the middle. */}
             <h1 className="font-display text-[clamp(3rem,9vw,7.5rem)] leading-[0.94] text-[#eef1f8] font-medium">
-              Every open model.
+              Chat with AI.
               <br />
-              <span className="italic text-[#8b95a8] font-light">One protocol.</span>
+              <span className="italic text-[#8b95a8] font-light">No account.</span>
               <br />
-              <span className="text-[#3da8ff]">No gatekeepers.</span>
+              <span className="text-[#3da8ff]">No trail.</span>
             </h1>
 
             <p className="mt-10 max-w-xl text-lg text-[#8b95a8] leading-relaxed">
-              Chat with any open-source AI for free. Or plug in compute, a
-              model, or a service and earn per call.
+              Open-weight models. Sealed wallets. Pay per call in stablecoins.
+              We don&apos;t keep your data — because we don&apos;t need it.
             </p>
 
             <div className="mt-12 flex flex-col sm:flex-row gap-3">
@@ -97,11 +100,11 @@ export default function Home() {
           <div className="mx-auto max-w-6xl px-6 lg:px-12 py-5 flex flex-wrap items-center gap-x-8 gap-y-2 font-mono text-[11px] uppercase tracking-[0.22em] text-[#6f798c]">
             <span className="text-[#8b95a8]">Active on network</span>
             <span className="text-[#2a3a50]">·</span>
+            <span>Sealed wallets</span>
+            <span className="text-[#2a3a50]">·</span>
             <span>USDT + USDC settlement</span>
             <span className="text-[#2a3a50]">·</span>
-            <span>On-chain identity</span>
-            <span className="text-[#2a3a50]">·</span>
-            <span>No gatekeepers</span>
+            <span>Open weights</span>
           </div>
         </div>
       </section>
