@@ -61,3 +61,15 @@
 
 # ---------- Cloud client DTOs (serialized by JSON) ----------
 -keep class xyz.ghola.app.cloud.** { *; }
+
+# ---------- BouncyCastle (sealed-envelope-v1 E2E) ----------
+# We register BC at app start (CryptoProviders.installBouncyCastleOnce)
+# and resolve algorithms by name ("X25519", "Ed25519"). R8 must not strip
+# the provider, the algorithm parameter classes, or the lightweight API.
+-keep class org.bouncycastle.** { *; }
+-dontwarn javax.naming.**
+
+# ---------- Sealed-envelope crypto package ----------
+# Field-by-field byte-level wire format; reflection-based access from tests
+# and parity vectors. Keep verbatim.
+-keep class xyz.ghola.app.crypto.** { *; }

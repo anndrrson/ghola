@@ -2,4 +2,12 @@
 <resources>
     <string name="app_name">Ghola</string>
     <string name="accessibility_service_description">Ghola agent — gives your AI agent permission to read the screen and tap, type, and navigate other apps on your behalf.</string>
+
+    <!-- Phase 0.3 — End-to-end encrypted chat copy -->
+    <string name="e2e_backend_label">End-to-end encrypted</string>
+    <string name="e2e_backend_caption">Your wallet unlocks the encrypted vault. Even Ghola can\'t read your chat.</string>
+    <string name="pair_device_section_title">Pair Device</string>
+    <string name="pair_device_section_caption">Move encrypted chat sessions between two devices that share your wallet.</string>
+    <string name="pair_device_receive_button">Add this device from another</string>
+    <string name="pair_device_send_button">Send my sessions to a new device</string>
 </resources>

@@ -20,3 +20,7 @@ bs58 = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+
+[[example]]
+name = "gen_vectors"
+path = "examples/gen_vectors.rs"

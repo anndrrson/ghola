@@ -21,6 +21,46 @@ object Base58 {
     private const val ALPHABET =
         "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
+    private val INDEXES = IntArray(128) { -1 }.also {
+        for (i in ALPHABET.indices) it[ALPHABET[i].code] = i
+    }
+
+    /** Bitcoin-style Base58 decode. Throws IllegalArgumentException on
+     *  any out-of-alphabet character. */
+    fun decode(input: String): ByteArray {
+        if (input.isEmpty()) return ByteArray(0)
+        val input58 = IntArray(input.length)
+        for (i in input.indices) {
+            val c = input[i]
+            val digit = if (c.code < 128) INDEXES[c.code] else -1
+            require(digit >= 0) { "invalid base58 char at $i" }
+            input58[i] = digit
+        }
+        var zeros = 0
+        while (zeros < input58.size && input58[zeros] == 0) zeros++
+        val decoded = ByteArray(input.length)
+        var outputStart = decoded.size
+        var startAt = zeros
+        while (startAt < input58.size) {
+            val mod = divmodInt(input58, startAt, 58, 256)
+            if (input58[startAt] == 0) startAt++
+            decoded[--outputStart] = mod.toByte()
+        }
+        while (outputStart < decoded.size && decoded[outputStart].toInt() == 0) outputStart++
+        return ByteArray(zeros) + decoded.copyOfRange(outputStart, decoded.size)
+    }
+
+    private fun divmodInt(number: IntArray, firstDigit: Int, base: Int, divisor: Int): Int {
+        var remainder = 0
+        for (i in firstDigit until number.size) {
+            val digit = number[i]
+            val temp = remainder * base + digit
+            number[i] = temp / divisor
+            remainder = temp % divisor
+        }
+        return remainder
+    }
+
     fun encode(input: ByteArray): String {
         if (input.isEmpty()) return ""
 

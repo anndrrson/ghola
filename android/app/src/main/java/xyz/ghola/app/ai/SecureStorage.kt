@@ -26,6 +26,7 @@ class SecureStorage(context: Context) {
         private const val KEY_SAID_BASE_URL = "said_cloud_base_url"
         private const val KEY_SAID_USER_ID = "said_cloud_user_id"
         private const val KEY_PRIMARY_AGENT_ID = "primary_agent_id"
+        private const val KEY_SOLANA_ADDRESS = "solana_address"
         private const val DEFAULT_MODEL = "claude-sonnet-4-6"
         private const val DEFAULT_QWEN_MODEL = "qwen2.5-72b-instruct"
         private const val DEFAULT_CLOUD_URL = "https://api.thumper.ai"
@@ -33,6 +34,10 @@ class SecureStorage(context: Context) {
         const val BACKEND_CLOUD = "cloud"
         const val BACKEND_QWEN_CLOUD = "qwen_cloud"
         const val BACKEND_LOCAL = "local"
+        /** End-to-end encrypted via thumper-cloud's `/api/chat`
+         *  (sealed-envelope-v1). Default for wallet-paired users from
+         *  v0.3.0 onward. */
+        const val BACKEND_E2E_CLOUD = "e2e_cloud"
     }
 
     private val prefs: SharedPreferences
@@ -64,7 +69,23 @@ class SecureStorage(context: Context) {
 
     fun hasApiKey(): Boolean = !getApiKey().isNullOrBlank()
 
-    fun getBackendMode(): String = prefs.getString(KEY_BACKEND, BACKEND_QWEN_CLOUD) ?: BACKEND_QWEN_CLOUD
+    /**
+     * Resolved backend mode. If the user has explicitly chosen a backend
+     * via Settings the stored value wins. Otherwise (fresh install, never
+     * touched Settings) we default to:
+     *
+     * - [BACKEND_E2E_CLOUD] when a wallet is paired (`hasWalletPackage`).
+     *   Phase 0.3 default — every wallet-paired install ships with E2E
+     *   chat on, so the marketing copy "Even we can't read it" is
+     *   truthful out of the box.
+     * - [BACKEND_QWEN_CLOUD] otherwise — the prior default for unpaired
+     *   installs. Direct-LLM, no E2E, mirrors v0.2.x behaviour.
+     */
+    fun getBackendMode(): String {
+        val stored = prefs.getString(KEY_BACKEND, null)
+        if (stored != null) return stored
+        return if (hasWalletPackage()) BACKEND_E2E_CLOUD else BACKEND_QWEN_CLOUD
+    }
 
     fun setBackendMode(mode: String) {
         prefs.edit().putString(KEY_BACKEND, mode).apply()
@@ -73,6 +94,8 @@ class SecureStorage(context: Context) {
     fun isLocalMode(): Boolean = getBackendMode() == BACKEND_LOCAL
 
     fun isQwenCloudMode(): Boolean = getBackendMode() == BACKEND_QWEN_CLOUD
+
+    fun isE2ECloudMode(): Boolean = getBackendMode() == BACKEND_E2E_CLOUD
 
     // --- Qwen ---
 
@@ -101,6 +124,25 @@ class SecureStorage(context: Context) {
     fun hasWalletPackage(): Boolean = !getWalletPackage().isNullOrBlank()
 
     fun isSeeker(): Boolean = prefs.getBoolean(KEY_IS_SEEKER, false)
+
+    // --- MWA wallet address (Phase 0.3) ---
+    //
+    // The Solana base58 pubkey returned by MWAConnect.authorize. Held here
+    // so any activity (ChatActivity for vault unlock, PairDeviceSender for
+    // handshake signing) can reuse the same wallet without re-prompting
+    // the user to authorize. Cleared on wallet disconnect.
+
+    fun getSolanaAddress(): String? = prefs.getString(KEY_SOLANA_ADDRESS, null)
+
+    fun setSolanaAddress(address: String) {
+        prefs.edit().putString(KEY_SOLANA_ADDRESS, address).apply()
+    }
+
+    fun clearSolanaAddress() {
+        prefs.edit().remove(KEY_SOLANA_ADDRESS).apply()
+    }
+
+    fun hasSolanaAddress(): Boolean = !getSolanaAddress().isNullOrBlank()
 
     fun setIsSeeker(value: Boolean) {
         prefs.edit().putBoolean(KEY_IS_SEEKER, value).apply()

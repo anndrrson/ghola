@@ -12,13 +12,19 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import android.util.Log
+import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.AgentController
+import xyz.ghola.app.ai.EnvelopeCloudBackend
 import xyz.ghola.app.ai.FastMatch
 import xyz.ghola.app.ai.AgentListener
 import xyz.ghola.app.ai.ClaudeApiClient
@@ -30,7 +36,11 @@ import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.ai.ToolFriendlyNames
 import xyz.ghola.app.ai.llama.LocalLlamaBackend
 import xyz.ghola.app.ai.llama.ModelManager
+import xyz.ghola.app.crypto.Envelope
+import xyz.ghola.app.crypto.VaultStore
+import xyz.ghola.app.crypto.mwaSignerForVault
 import xyz.ghola.app.service.ThumperAccessibilityService
+import xyz.ghola.app.solana.Base58
 
 class ChatActivity : AppCompatActivity(), AgentListener {
 
@@ -65,8 +75,15 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     private lateinit var statusBar: TextView
     private lateinit var chatAdapter: ChatAdapter
 
+    // ActivityResultSender MUST be a field initializer (not lazy/onCreate)
+    // — see WalletActivity for the same constraint. It registers an
+    // activity-result handler at construction time so the MWA SDK can
+    // dispatch the wallet's intent result back to us.
+    private val activityResultSender = ActivityResultSender(this)
+
     private var agentController: AgentController? = null
     private var localBackend: LocalLlamaBackend? = null
+    private var vaultStore: VaultStore? = null
     private var currentStreamingText = StringBuilder()
     private val intentCache = HashMap<String, Intent?>()
     private var pendingScreenshot: String? = null
@@ -158,16 +175,40 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         // Clear conversation history when user leaves the app so a fresh
         // session starts on return (prevents stale context issues).
         agentController?.clearHistory()
+        // Lock the E2E vault when backgrounded so a stolen device that's
+        // already unlocked-once can't read on-disk session DEKs without
+        // a fresh wallet sign. Re-prompts on the next chat send.
+        vaultStore?.lock()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         agentController?.shutdown()
         localBackend?.shutdown()
+        vaultStore?.lock()
     }
 
     private fun checkPrerequisites() {
-        if (secureStorage.isLocalMode()) {
+        if (secureStorage.isE2ECloudMode()) {
+            if (!secureStorage.hasSolanaAddress()) {
+                Toast.makeText(
+                    this,
+                    "Connect a Solana wallet first to enable end-to-end encrypted chat",
+                    Toast.LENGTH_LONG,
+                ).show()
+                startActivity(Intent(this, WalletActivity::class.java))
+                return
+            }
+            if (!secureStorage.hasCloudAuth()) {
+                Toast.makeText(
+                    this,
+                    "Sign in to Thumper Cloud to enable end-to-end encrypted chat",
+                    Toast.LENGTH_LONG,
+                ).show()
+                startActivity(Intent(this, SettingsActivity::class.java))
+                return
+            }
+        } else if (secureStorage.isLocalMode()) {
             val modelManager = ModelManager(this)
             if (!modelManager.isModelDownloaded()) {
                 Toast.makeText(this, "Please download the model in Settings", Toast.LENGTH_LONG).show()
@@ -224,9 +265,95 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         }
 
         when {
+            secureStorage.isE2ECloudMode() -> initializeE2eAgent(toolExecutor)
             secureStorage.isLocalMode() -> initializeLocalAgent(toolExecutor)
             secureStorage.isQwenCloudMode() -> initializeQwenCloudAgent(toolExecutor)
             else -> initializeCloudAgent(toolExecutor)
+        }
+    }
+
+    /**
+     * E2E backend setup — Phase 0.3 default for wallet-paired users.
+     *
+     * Flow:
+     *   1. Read the cached Solana address (set by WalletActivity).
+     *   2. Construct the user's `did:key:zXXX` from that address.
+     *   3. Build a [VaultStore] for that DID.
+     *   4. Off-thread, prompt MWA `signMessage` once on the unlock
+     *      challenge so the vault material is derived.
+     *   5. On success → instantiate [EnvelopeCloudBackend] and start
+     *      AgentController. On failure → user-friendly toast and bail.
+     */
+    private fun initializeE2eAgent(toolExecutor: LocalToolExecutor) {
+        val solanaAddress = secureStorage.getSolanaAddress()
+        if (solanaAddress.isNullOrBlank()) {
+            showStatus("No Solana wallet connected")
+            startActivity(Intent(this, WalletActivity::class.java))
+            return
+        }
+        val authToken = secureStorage.getCloudAuthToken()
+        if (authToken.isNullOrBlank()) {
+            showStatus("Sign in to Thumper Cloud")
+            startActivity(Intent(this, SettingsActivity::class.java))
+            return
+        }
+
+        val pubBytes = try {
+            Base58.decode(solanaAddress)
+        } catch (e: Exception) {
+            Log.e(TAG, "invalid Solana address in storage", e)
+            showStatus("Wallet address invalid; reconnect in Wallet")
+            return
+        }
+        if (pubBytes.size != 32) {
+            showStatus("Wallet address must be a 32-byte Ed25519 pubkey")
+            return
+        }
+        val userDid = Envelope.didKeyFromVerifying(pubBytes)
+        val vault = VaultStore.create(this, userDid)
+        vaultStore = vault
+
+        setInputEnabled(false)
+        showStatus("Tap your wallet to unlock end-to-end chat…")
+
+        lifecycleScope.launch {
+            val outcome = runCatching {
+                val signer = mwaSignerForVault(activityResultSender, solanaAddress)
+                withContext(Dispatchers.IO) { vault.unlock(signer) }
+            }
+            outcome.onSuccess {
+                hideStatus()
+                val backend: LlmBackend = EnvelopeCloudBackend(
+                    baseUrl = secureStorage.getCloudBaseUrl(),
+                    authToken = authToken,
+                    vault = vault,
+                )
+                agentController = AgentController(
+                    backend, toolExecutor, this@ChatActivity,
+                    secureStorage.getWalletPackage(),
+                    secureStorage.isSeeker(),
+                    secureStorage.hasCloudAuth(),
+                )
+                setInputEnabled(true)
+            }
+            outcome.onFailure { err ->
+                Log.w(TAG, "vault unlock failed", err)
+                val msg = when (err) {
+                    is VaultStore.VaultLockedError.NoWalletPaired ->
+                        "Connect a Solana wallet to enable encrypted chat"
+                    is VaultStore.VaultLockedError.WalletDeclined ->
+                        "Wallet declined — tap Send again to retry"
+                    is VaultStore.VaultLockedError.WalletCancelled ->
+                        "Sign request cancelled"
+                    is VaultStore.VaultLockedError.DeterminismViolation ->
+                        "Wallet returned an unstable signature; chat won't be encrypted"
+                    is VaultStore.VaultLockedError ->
+                        "Couldn't unlock the encrypted vault"
+                    else -> err.message ?: "Couldn't unlock the encrypted vault"
+                }
+                showStatus(msg)
+                setInputEnabled(true)
+            }
         }
     }
 
