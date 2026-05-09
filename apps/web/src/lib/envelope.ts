@@ -298,6 +298,20 @@ export async function open(
 }
 
 // ── AES-256-GCM via Web Crypto ──────────────────────────────────────────
+//
+// TypeScript 5.7+ narrowed `Uint8Array` to be generic over its backing
+// buffer (`Uint8Array<ArrayBufferLike>`), which no longer satisfies the
+// `BufferSource` parameter type used by SubtleCrypto. Wrapping each
+// argument with `bs(...)` guarantees an ArrayBuffer-backed view at the
+// crypto boundary without runtime cost (the underlying bytes are shared).
+
+function bs(arr: Uint8Array): ArrayBuffer {
+  // `.buffer` may be a SharedArrayBuffer in some runtimes; copy through
+  // a fresh ArrayBuffer to keep types and SubtleCrypto happy.
+  const out = new ArrayBuffer(arr.byteLength);
+  new Uint8Array(out).set(arr);
+  return out;
+}
 
 async function aesGcmEncrypt(
   key: Uint8Array,
@@ -307,15 +321,15 @@ async function aesGcmEncrypt(
 ): Promise<Uint8Array> {
   const cryptoKey = await crypto.subtle.importKey(
     "raw",
-    key,
+    bs(key),
     { name: "AES-GCM" },
     false,
     ["encrypt"],
   );
   const ctBuf = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: nonce, additionalData: ad, tagLength: 128 },
+    { name: "AES-GCM", iv: bs(nonce), additionalData: bs(ad), tagLength: 128 },
     cryptoKey,
-    plaintext,
+    bs(plaintext),
   );
   return new Uint8Array(ctBuf);
 }
@@ -328,15 +342,15 @@ async function aesGcmDecrypt(
 ): Promise<Uint8Array> {
   const cryptoKey = await crypto.subtle.importKey(
     "raw",
-    key,
+    bs(key),
     { name: "AES-GCM" },
     false,
     ["decrypt"],
   );
   const ptBuf = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: nonce, additionalData: ad, tagLength: 128 },
+    { name: "AES-GCM", iv: bs(nonce), additionalData: bs(ad), tagLength: 128 },
     cryptoKey,
-    ciphertext,
+    bs(ciphertext),
   );
   return new Uint8Array(ptBuf);
 }
@@ -368,6 +382,6 @@ export async function ed25519SignToX25519SecretForTests(
   edSecret: Uint8Array,
 ): Promise<Uint8Array> {
   if (edSecret.length !== 32) throw new EnvelopeError("Ed25519 secret must be 32 bytes");
-  const hashBuf = await crypto.subtle.digest("SHA-512", edSecret);
+  const hashBuf = await crypto.subtle.digest("SHA-512", bs(edSecret));
   return new Uint8Array(hashBuf).slice(0, 32);
 }

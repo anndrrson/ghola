@@ -11,3 +11,4 @@ pub mod marketplace;
 pub mod models;
 pub mod openai_compat;
 pub mod payments;
+pub mod status;
