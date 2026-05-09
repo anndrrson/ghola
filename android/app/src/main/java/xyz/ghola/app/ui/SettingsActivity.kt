@@ -202,6 +202,14 @@ class SettingsActivity : AppCompatActivity() {
             startActivity(Intent(this, MainActivity::class.java))
         }
 
+        // Pair Device entry points (Phase 0.3 — wallet-to-wallet vault sync).
+        findViewById<View>(R.id.pairDeviceReceiveButton).setOnClickListener {
+            startActivity(Intent(this, PairDeviceReceiverActivity::class.java))
+        }
+        findViewById<View>(R.id.pairDeviceSendButton).setOnClickListener {
+            startActivity(Intent(this, PairDeviceSenderActivity::class.java))
+        }
+
         saveButton.setOnClickListener {
             saveSettings()
         }

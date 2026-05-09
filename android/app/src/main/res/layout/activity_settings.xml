@@ -291,6 +291,40 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Open Relay Setup"
+            android:layout_marginBottom="24dp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <!-- Pair Device (Phase 0.3) -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Pair Device"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#eef1f8"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Move encrypted chat sessions between two devices that share your wallet."
+            android:textSize="13sp"
+            android:textColor="#4a5568"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/pairDeviceReceiveButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Add this device from another"
+            android:layout_marginBottom="8dp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <Button
+            android:id="@+id/pairDeviceSendButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Send my sessions to a new device"
             android:layout_marginBottom="32dp"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
 

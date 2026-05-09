@@ -2,7 +2,6 @@ package xyz.ghola.app.crypto
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Base64
 import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
@@ -356,10 +355,8 @@ class VaultStore private constructor(
         SignResult.Cancelled -> throw VaultLockedError.WalletCancelled
     }
 
-    private fun encodeB64(b: ByteArray): String =
-        Base64.encodeToString(b, Base64.NO_WRAP)
-
-    private fun decodeB64(s: String): ByteArray = Base64.decode(s, Base64.NO_WRAP)
+    private fun encodeB64(b: ByteArray): String = java.util.Base64.getEncoder().encodeToString(b)
+    private fun decodeB64(s: String): ByteArray = java.util.Base64.getDecoder().decode(s)
 }
 
 /**

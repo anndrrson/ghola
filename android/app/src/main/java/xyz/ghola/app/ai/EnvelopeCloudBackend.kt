@@ -1,6 +1,5 @@
 package xyz.ghola.app.ai
 
-import android.util.Base64
 import android.util.Log
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -125,7 +124,7 @@ class EnvelopeCloudBackend(
         )
         // The cloud decodes envelope_blob_b64 with STANDARD base64 (see
         // chat.rs:57). Use the same here.
-        return Base64.encodeToString(wire, Base64.NO_WRAP)
+        return java.util.Base64.getEncoder().encodeToString(wire)
     }
 
     /** Pull the most recent `role:"user"` text out of the message history. */

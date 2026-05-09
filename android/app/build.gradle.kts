@@ -135,4 +135,5 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20231013")
     testImplementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

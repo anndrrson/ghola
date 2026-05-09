@@ -85,6 +85,14 @@
             android:name=".ui.ActivityFeedActivity"
             android:exported="false" />
 
+        <!-- Pair Device (Phase 0.3 — wallet-to-wallet vault sync) -->
+        <activity
+            android:name=".ui.PairDeviceReceiverActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ui.PairDeviceSenderActivity"
+            android:exported="false" />
+
         <!-- Accessibility Service (device control) -->
         <service
             android:name=".service.ThumperAccessibilityService"
