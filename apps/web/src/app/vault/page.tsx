@@ -73,14 +73,12 @@ export default function VaultPage() {
                 Get Started
                 <ArrowRight className="h-4 w-4" />
               </Link>
-              <a
-                href="https://github.com/anndrrson/said"
-                target="_blank"
-                rel="noopener noreferrer"
+              <Link
+                href="/how-it-works"
                 className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#1e2a3a] px-7 py-3.5 text-base font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50] active:scale-[0.98] transition-all"
               >
-                Read the Docs
-              </a>
+                How it works
+              </Link>
             </div>
           </div>
 

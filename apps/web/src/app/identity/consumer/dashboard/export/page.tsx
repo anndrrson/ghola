@@ -9,7 +9,6 @@ import {
   AlertTriangle,
   Loader2,
   Lock,
-  ExternalLink,
 } from "lucide-react";
 
 export default function ConsumerExportPage() {
@@ -237,15 +236,6 @@ export default function ConsumerExportPage() {
             </div>
           </div>
 
-          <a
-            href="https://github.com/anndrrson/said"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 text-sm font-medium text-[#3da8ff] hover:text-[#5bb8ff] transition-colors"
-          >
-            View documentation
-            <ExternalLink className="h-3.5 w-3.5" />
-          </a>
         </div>
       </div>
     </div>

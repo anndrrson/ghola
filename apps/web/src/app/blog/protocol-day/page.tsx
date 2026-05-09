@@ -106,16 +106,7 @@ export default function ProtocolDayPost() {
             anyone onto the other&apos;s rails.
           </p>
           <p className="text-[#8b95a8] leading-relaxed mb-6">
-            Spec is descriptive v0.1; reference bridge oracle is the next
-            build.{" "}
-            <a
-              href="https://github.com/anndrrson/ghola/blob/main/spec/erc-8004-bridge.md"
-              className="text-[#3da8ff] hover:text-[#5bb8ff]"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Read the spec →
-            </a>
+            Spec is descriptive v0.1; reference bridge oracle is the next build.
           </p>
 
           <h2 className="text-2xl md:text-3xl font-medium text-[#eef1f8] mt-12 mb-4">
@@ -162,14 +153,6 @@ export default function ProtocolDayPost() {
               >
                 MCP tools
               </Link>
-              <a
-                href="https://github.com/anndrrson/ghola/blob/main/spec/erc-8004-bridge.md"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 rounded-lg border border-[#1e2a3a] px-5 py-2.5 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:border-[#2a3a50]"
-              >
-                Bridge spec
-              </a>
             </div>
           </div>
         </div>
