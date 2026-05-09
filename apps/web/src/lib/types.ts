@@ -171,6 +171,7 @@ export interface Model {
   creator_name?: string;
   creator_wallet?: string;
   system_prompt?: string;
+  /** Stored in micro-USDC (1 USD = 1_000_000). UI must divide before display. */
   price_per_query: number;
   category?: string;
   tags?: string[];
@@ -179,6 +180,23 @@ export interface Model {
   created_at: string;
   creator_did?: string;
   creator_verified?: boolean;
+
+  // Foundation catalog metadata — what the marketplace actually surfaces.
+  is_featured?: boolean;
+  is_foundation?: boolean;
+  developer?: string;           // "Meta", "OpenAI", "Alibaba" — drives ProviderMark
+  architecture?: string;        // "llama", "qwen2", "deepseek-v3-moe"
+  params_b?: number;            // total params, billions
+  active_params_b?: number;     // active params for MoE
+  license?: string;             // "llama-3.1-community", "apache-2.0", "mit"
+  license_url?: string;
+  context_window?: number;      // tokens
+  modality?: string[];          // ["text"], ["text","image"]
+  hf_id?: string;
+  release_date?: string;
+  gguf_available?: boolean;
+  recommended_vram_gb?: number;
+  awaiting_host?: boolean;      // catalog-only: no provider wired yet
 }
 
 export interface ModelsResponse {
