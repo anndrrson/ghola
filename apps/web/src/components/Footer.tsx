@@ -45,14 +45,6 @@ export function Footer() {
           <div>
             <h3 className="text-sm font-semibold text-[#8b95a8] mb-3">Resources</h3>
             <div className="space-y-2">
-              <a
-                href="https://github.com/anndrrson/said"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block text-sm text-[#4a5568] hover:text-[#8b95a8] transition-colors"
-              >
-                GitHub
-              </a>
               <Link href="/privacy" className="block text-sm text-[#4a5568] hover:text-[#8b95a8] transition-colors">
                 Privacy Policy
               </Link>
