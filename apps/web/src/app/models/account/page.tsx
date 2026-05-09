@@ -50,15 +50,15 @@ export default function AccountPage() {
     <div className="max-w-2xl mx-auto py-12 px-4">
       <h1 className="text-3xl font-bold mb-8">Account</h1>
 
-      <div className="bg-gradient-to-br from-[#D4A04A]/20 to-[#3da8ff]/20 border border-[#D4A04A]/30 rounded-2xl p-8 mb-8">
+      <div className="bg-gradient-to-br from-[#3da8ff]/20 to-[#3da8ff]/20 border border-[#3da8ff]/30 rounded-2xl p-8 mb-8">
         <div className="flex items-center gap-3 mb-4">
-          <Wallet className="w-6 h-6 text-[#D4A04A]" />
+          <Wallet className="w-6 h-6 text-[#3da8ff]" />
           <span className="text-[#8b95a8] text-sm font-medium">USDC Balance</span>
           <button onClick={fetchBalance} className="ml-auto text-[#4a5568] hover:text-[#eef1f8]"><RefreshCw className="w-4 h-4" /></button>
         </div>
         <p className="text-5xl font-bold text-[#eef1f8] mb-2">{balance ? formatUSDC(balance.balance) : '\u2014'}</p>
         {balance && balance.pending_earnings > 0 && (
-          <p className="text-sm text-[#D4A04A]">+{formatUSDC(balance.pending_earnings)} creator earnings</p>
+          <p className="text-sm text-[#3da8ff]">+{formatUSDC(balance.pending_earnings)} creator earnings</p>
         )}
       </div>
 
@@ -68,8 +68,8 @@ export default function AccountPage() {
         </h2>
         <p className="text-sm text-[#8b95a8] mb-4">Send USDC to the platform escrow wallet on Solana, then paste the transaction signature below.</p>
         <div className="space-y-3">
-          <input type="number" step="0.01" placeholder="Amount (USDC)" value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} className="w-full bg-[#161822] border border-[#1e2a3a] rounded-xl px-4 py-3 text-[#eef1f8] focus:border-[#D4A04A] focus:outline-none" />
-          <input type="text" placeholder="Transaction signature" value={depositTx} onChange={(e) => setDepositTx(e.target.value)} className="w-full bg-[#161822] border border-[#1e2a3a] rounded-xl px-4 py-3 text-[#eef1f8] focus:border-[#D4A04A] focus:outline-none font-mono text-sm" />
+          <input type="number" step="0.01" placeholder="Amount (USDC)" value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} className="w-full bg-[#161822] border border-[#1e2a3a] rounded-xl px-4 py-3 text-[#eef1f8] focus:border-[#3da8ff] focus:outline-none" />
+          <input type="text" placeholder="Transaction signature" value={depositTx} onChange={(e) => setDepositTx(e.target.value)} className="w-full bg-[#161822] border border-[#1e2a3a] rounded-xl px-4 py-3 text-[#eef1f8] focus:border-[#3da8ff] focus:outline-none font-mono text-sm" />
           <button onClick={handleDeposit} disabled={loading || !depositTx || !depositAmount} className="w-full py-3 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-[#eef1f8] rounded-xl font-medium transition-colors">
             {loading ? 'Verifying...' : 'Verify Deposit'}
           </button>
@@ -81,7 +81,7 @@ export default function AccountPage() {
           <ArrowUpFromLine className="w-5 h-5 text-orange-400" /> Withdraw USDC
         </h2>
         <div className="space-y-3">
-          <input type="number" step="0.01" placeholder="Amount (USDC)" value={withdrawAmount} onChange={(e) => setWithdrawAmount(e.target.value)} className="w-full bg-[#161822] border border-[#1e2a3a] rounded-xl px-4 py-3 text-[#eef1f8] focus:border-[#D4A04A] focus:outline-none" />
+          <input type="number" step="0.01" placeholder="Amount (USDC)" value={withdrawAmount} onChange={(e) => setWithdrawAmount(e.target.value)} className="w-full bg-[#161822] border border-[#1e2a3a] rounded-xl px-4 py-3 text-[#eef1f8] focus:border-[#3da8ff] focus:outline-none" />
           <button onClick={handleWithdraw} disabled={loading || !withdrawAmount} className="w-full py-3 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-[#eef1f8] rounded-xl font-medium transition-colors">
             {loading ? 'Processing...' : 'Withdraw'}
           </button>

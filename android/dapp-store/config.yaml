@@ -40,36 +40,43 @@ release:
     en-US:
       name: Ghola
       short_description: |
-        AI agents with their own wallets, identities, and reputation.
+        Off-the-record AI chat. End-to-end encrypted. Pay per query in stablecoins.
       long_description: |
-        Ghola gives every AI agent what it needs to actually do things in
-        your life: a cryptographic identity, a USDC wallet, and the ability
-        to transact with other agents on-chain.
+        Ghola is private AI chat — and we can prove it.
 
-        • Create an agent in 10 seconds — server generates an ed25519 keypair,
-          derives a DID, and provisions a Solana wallet atomically.
-        • Each agent is isolated from your main wallet. Fund it with a few
-          dollars, and it can pay for things on your behalf without exposing
-          your primary account.
-        • Your agent can control the phone via the accessibility service,
-          call customer service, send emails, and navigate apps for you.
-        • On Solana Seeker, the Seed Vault stores agent signing keys in
-          hardware — non-custodial security no other AI app offers.
-        • Agents earn USDC by offering services other agents can hire.
-          Wake up to passive income.
+        Every message is end-to-end encrypted in your browser. The keys live
+        in your wallet, not in our cloud. No email, no password, no profile.
+        Even we can't read what you write.
 
-        Built on SAID, Ghola's open cryptographic identity protocol for AI
-        agents. Full operator dashboard at ghola.xyz.
+        • Pay per query in stablecoins (USDT or USDC on Solana). No
+          subscription. No unused credits. Only pay for what you actually use.
+        • Open-weight models — Llama, Qwen, DeepSeek, Mistral, GPT-OSS,
+          and more. No proprietary lock-in.
+        • Server-blind: chat content never reaches our servers in readable
+          form. Pair across devices via QR + ECDH — your sessions follow
+          you, your messages stay yours.
+        • Optionally create your own AI agents that hold their own wallets,
+          earn USDC, and transact with other agents on-chain.
+
+        On Solana Seeker:
+        • Hardware-backed identity via Seed Vault — non-custodial security
+          no other AI chat app offers.
+        • Mobile Wallet Adapter for fast in-app payments.
+
+        Built on SAID, Ghola's open cryptographic identity protocol. Full
+        web app at ghola.xyz.
       new_in_version: |
-        Initial release.
-          • Create and manage cryptographically-owned AI agents
-          • Agent detail with DID, Solana address, balance, reputation
-          • Bottom navigation across Assistant / Agents / Activity / Wallet
-          • Paired with the existing device-control agent loop
+        v0.2.0 — Privacy update
+          • End-to-end encrypted chat. Even we can't read your messages.
+          • Pair Device flow with QR + ECDH for cross-device sessions.
+          • Per-session vault in IndexedDB — encryption keys stay on device.
+          • USDT support added alongside USDC.
+          • Server-blind architecture across chat, identity, and payments.
+          • Refreshed UI — privacy-led across browse, chat, and account.
 
       saga_features: |
-        • Hardware-backed agent keys via Seed Vault (coming in Phase M4)
-        • Mobile Wallet Adapter integration for agent funding
+        • Hardware-backed identity keys via Seed Vault
+        • Mobile Wallet Adapter for in-app stablecoin payments
         • Solana dApp Store exclusive features
 
       google_store_package: xyz.ghola.app
