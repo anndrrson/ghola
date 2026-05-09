@@ -37,7 +37,7 @@ import javax.crypto.spec.SecretKeySpec
  * on app background. The mechanism is a check on each call (`maybeIdleLock`),
  * not a scheduled task — keeps it dependency-free.
  */
-class VaultStore private constructor(
+class VaultStore internal constructor(
     private val prefs: SharedPreferences,
     val userDid: String,
 ) {
