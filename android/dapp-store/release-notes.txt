@@ -1,11 +1,14 @@
-Ghola 0.1.0 — Initial release
+Ghola 0.2.0 — Privacy update
 
-• Create and own cryptographically-distinct AI agents (ed25519 DIDs)
-• Each agent has its own isolated USDC wallet on Solana
-• Agent-aware device control — your agent can actually do things on your phone
-• Bottom navigation across Assistant / Agents / Activity / Wallet
-• Integrated with SAID identity protocol (ghola.xyz)
+End-to-end encrypted AI chat. Even we can't read your messages.
 
-On Solana Seeker specifically:
-• Seed Vault detection for hardware-backed agent key storage
-• dApp Store distribution with no Apple Dev gating
+  • Pair Device flow — QR + ECDH handshake for cross-device sessions
+  • Per-session vault in IndexedDB; encryption keys never leave your device
+  • USDT support alongside USDC; pay per query in stablecoins
+  • Server-blind architecture: chat content never reaches our servers in readable form
+  • Production-hardened settlement, escrow, and on-chain accounting
+  • Refreshed UI — privacy-led across browse, chat, and account screens
+
+On Solana Seeker:
+  • Hardware-backed identity via Seed Vault (when present)
+  • Mobile Wallet Adapter for fast in-app payments

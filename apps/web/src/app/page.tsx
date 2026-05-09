@@ -21,7 +21,7 @@ export default function Home() {
   return (
     <div className="min-h-screen pt-16">
       {/* ──────────── Hero ──────────── */}
-      <section className="relative min-h-[calc(100vh-4rem)] flex flex-col overflow-hidden">
+      <section className="relative flex flex-col overflow-hidden">
         {/* Subtle grid backdrop. Keep it low-contrast so the typography
             stays the focal point — the previous "busy" iteration of this
             hero loaded too much going on. */}
@@ -45,8 +45,8 @@ export default function Home() {
           }}
         />
 
-        <div className="relative flex-1 flex items-center">
-          <div className="mx-auto w-full max-w-6xl px-6 lg:px-12 py-24 sm:py-32">
+        <div className="relative">
+          <div className="mx-auto w-full max-w-6xl px-6 lg:px-12 pt-24 pb-28 sm:pt-32 sm:pb-36">
             {/* Live indicator — just the pulse + "Live". The "on Solana" / chain
                 detail belongs in the bottom strip and the deposit/x402 pages,
                 not in the headline real estate where most visitors don't care. */}
@@ -58,22 +58,18 @@ export default function Home() {
               Live
             </div>
 
-            {/* Privacy-led tagline. Three short statements, descriptive over
-                clever — Apple/DuckDuckGo posture, not "we're disrupting" energy.
-                Each clause is a real architectural fact: x402 means no
-                account, Phase 4 means no audit trail, open weights mean no
-                Big Tech in the middle. */}
+            {/* Single-line privacy hero. "Off the record" is the strongest
+                privacy framing English has — it's the phrase journalists,
+                lawyers, and confidants reach for when something must not
+                leave the room. Pairs with an end-to-end-encryption proof
+                line that's true post-PR-1: the cloud is server-blind, so
+                "we can't read it" is capability, not policy. */}
             <h1 className="font-display text-[clamp(3rem,9vw,7.5rem)] leading-[0.94] text-[#eef1f8] font-medium">
-              Chat with AI.
-              <br />
-              <span className="italic text-[#8b95a8] font-light">No account.</span>
-              <br />
-              <span className="text-[#3da8ff]">No trail.</span>
+              <span className="text-[#3da8ff]">Off the record.</span>
             </h1>
 
             <p className="mt-10 max-w-xl text-lg text-[#8b95a8] leading-relaxed">
-              Open-weight models. Sealed wallets. Pay per call in stablecoins.
-              We don&apos;t keep your data — because we don&apos;t need it.
+              End-to-end encrypted AI chat. Even we can&apos;t read it.
             </p>
 
             <div className="mt-12 flex flex-col sm:flex-row gap-3">
@@ -100,9 +96,11 @@ export default function Home() {
           <div className="mx-auto max-w-6xl px-6 lg:px-12 py-5 flex flex-wrap items-center gap-x-8 gap-y-2 font-mono text-[11px] uppercase tracking-[0.22em] text-[#6f798c]">
             <span className="text-[#8b95a8]">Active on network</span>
             <span className="text-[#2a3a50]">·</span>
-            <span>Sealed wallets</span>
+            <span>Server-blind</span>
             <span className="text-[#2a3a50]">·</span>
-            <span>USDT + USDC settlement</span>
+            <span>Pay per query</span>
+            <span className="text-[#2a3a50]">·</span>
+            <span>USDT + USDC</span>
             <span className="text-[#2a3a50]">·</span>
             <span>Open weights</span>
           </div>
