@@ -7,6 +7,17 @@ interface StreamChatOptions {
   onChunk: (text: string) => void;
   onDone: () => void;
   onError: (error: Error) => void;
+  /**
+   * Optional sealed-envelope-v1 ciphertext of the user's message
+   * (base64 standard with padding). When supplied the cloud persists
+   * the envelope blob and never stores plaintext for the user-role
+   * row — see crates/thumper-cloud/src/routes/chat.rs for the
+   * server-side write path.
+   *
+   * `message` is still sent (the cloud needs plaintext to forward to
+   * the LLM) but is not persisted alongside the envelope.
+   */
+  envelopeBlobB64?: string;
 }
 
 export async function streamChat(
@@ -27,13 +38,17 @@ export async function streamChat(
   }
 
   try {
+    const body: Record<string, unknown> = {
+      session_id: sessionId,
+      message,
+    };
+    if (options.envelopeBlobB64) {
+      body.envelope_blob_b64 = options.envelopeBlobB64;
+    }
     const res = await fetch(`${THUMPER_API_BASE}/api/chat`, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        session_id: sessionId,
-        message,
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!res.ok) {

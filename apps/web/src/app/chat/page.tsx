@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { streamChat } from "@/lib/thumper-stream";
 import { SessionSidebar } from "@/components/chat/SessionSidebar";
@@ -10,9 +10,22 @@ import { ChatHeader } from "@/components/chat/ChatHeader";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { handleTwitterToken } from "@/lib/thumper-api";
+import { createChatVault, didKeyFromVerifying } from "@/lib/chat-vault";
+import bs58 from "bs58";
 import type { ThumperSession, ThumperChatMessage, ThumperInlineAction } from "@/lib/thumper-types";
 
 const SESSIONS_KEY = "ghola_sessions";
+
+/** Convert a Solana wallet address (base58 Ed25519 pubkey) to a `did:key:z…`. */
+function solanaAddressToDid(address: string): string | null {
+  try {
+    const pub = bs58.decode(address);
+    if (pub.length !== 32) return null;
+    return didKeyFromVerifying(pub);
+  } catch {
+    return null;
+  }
+}
 
 function loadSessions(): ThumperSession[] {
   if (typeof window === "undefined") return [];
@@ -73,7 +86,24 @@ export default function ChatPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const { setAuth } = useThumperAuth();
-  const { createWallet } = useTurnkeyWallet();
+  const { createWallet, walletAddress, signBytes } = useTurnkeyWallet();
+
+  // Chat-side E2E: when a Turnkey wallet is connected, build a vault
+  // whose unlock key is gated on a Turnkey signature. Sealing happens
+  // lazily on first send; if Turnkey signing fails for any reason
+  // (offline, user denial, API error) we fall back to the plaintext
+  // path so chat keeps working.
+  const e2eEnabled =
+    process.env.NEXT_PUBLIC_GHOLA_E2E !== "0" &&
+    typeof window !== "undefined";
+  const userDid = useMemo(
+    () => (walletAddress ? solanaAddressToDid(walletAddress) : null),
+    [walletAddress],
+  );
+  const chatVault = useMemo(() => {
+    if (!e2eEnabled || !userDid) return null;
+    return createChatVault({ userDid, signBytes });
+  }, [e2eEnabled, userDid, signBytes]);
 
   useEffect(() => {
     const loaded = loadSessions();
@@ -217,7 +247,25 @@ export default function ChatPage() {
     let fullContent = "";
     const currentSessionId = sessionId;
 
+    // Try to seal the user's message under the session's DEK before
+    // sending. If sealing fails (no wallet, vault unlock declined,
+    // network error talking to Turnkey) we fall through to the
+    // plaintext path so the user can still chat. The cloud handles
+    // either path — see crates/thumper-cloud/src/routes/chat.rs.
+    let envelopeBlobB64: string | undefined;
+    if (chatVault) {
+      try {
+        const sealed = await chatVault.sealUserMessage(currentSessionId, text);
+        envelopeBlobB64 = sealed.envelopeB64;
+      } catch (err) {
+        // Non-fatal: surface as a console warning, fall back to plaintext.
+        // eslint-disable-next-line no-console
+        console.warn("E2E sealing failed; falling back to plaintext:", err);
+      }
+    }
+
     await streamChat(currentSessionId, text, {
+      envelopeBlobB64,
       onSession: (newId) => {
         // Server assigned a session ID — we can track it if needed
         // For now we keep using our local UUID
