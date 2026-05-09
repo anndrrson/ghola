@@ -11,10 +11,12 @@ import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { handleTwitterToken } from "@/lib/thumper-api";
 import { createChatVault, didKeyFromVerifying } from "@/lib/chat-vault";
+import {
+  loadSessions as loadSessionsFromStore,
+  saveSessions as saveSessionsToStore,
+} from "@/lib/chat-history-store";
 import bs58 from "bs58";
 import type { ThumperSession, ThumperChatMessage, ThumperInlineAction } from "@/lib/thumper-types";
-
-const SESSIONS_KEY = "ghola_sessions";
 
 /** Convert a Solana wallet address (base58 Ed25519 pubkey) to a `did:key:z…`. */
 function solanaAddressToDid(address: string): string | null {
@@ -25,21 +27,6 @@ function solanaAddressToDid(address: string): string | null {
   } catch {
     return null;
   }
-}
-
-function loadSessions(): ThumperSession[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(SESSIONS_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw);
-  } catch {
-    return [];
-  }
-}
-
-function saveSessions(sessions: ThumperSession[]) {
-  localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
 }
 
 function detectAction(text: string): ThumperInlineAction | undefined {
@@ -106,9 +93,20 @@ export default function ChatPage() {
   }, [e2eEnabled, userDid, signBytes]);
 
   useEffect(() => {
-    const loaded = loadSessions();
-    setSessions(loaded);
-  }, []);
+    let cancelled = false;
+    loadSessionsFromStore(chatVault)
+      .then((loaded) => {
+        if (!cancelled) setSessions(loaded);
+      })
+      .catch(() => {
+        // The store falls back to legacy plaintext on its own; if even
+        // that fails we just start with an empty list.
+        if (!cancelled) setSessions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatVault]);
 
   // Handle Twitter OAuth callback — exchange code for token
   useEffect(() => {
@@ -150,11 +148,13 @@ export default function ChatPage() {
         const updated = prev.map((s) =>
           s.id === sessionId ? updater(s) : s
         );
-        saveSessions(updated);
+        // Fire-and-forget: the store handles its own errors and falls
+        // back to localStorage if the encrypted path is unavailable.
+        void saveSessionsToStore(updated, chatVault);
         return updated;
       });
     },
-    []
+    [chatVault]
   );
 
   const handleNewChat = useCallback(() => {
@@ -167,12 +167,12 @@ export default function ChatPage() {
     };
     setSessions((prev) => {
       const updated = [newSession, ...prev];
-      saveSessions(updated);
+      void saveSessionsToStore(updated, chatVault);
       return updated;
     });
     setActiveSessionId(newSession.id);
     setMobileView("chat");
-  }, []);
+  }, [chatVault]);
 
   const handleSelectSession = useCallback((session: ThumperSession) => {
     setActiveSessionId(session.id);
@@ -183,7 +183,9 @@ export default function ChatPage() {
     (sessionId: string) => {
       setSessions((prev) => {
         const updated = prev.filter((s) => s.id !== sessionId);
-        saveSessions(updated);
+        // Fire-and-forget: the store handles its own errors and falls
+        // back to localStorage if the encrypted path is unavailable.
+        void saveSessionsToStore(updated, chatVault);
         return updated;
       });
       if (activeSessionId === sessionId) {
@@ -191,7 +193,7 @@ export default function ChatPage() {
         setMobileView("list");
       }
     },
-    [activeSessionId]
+    [activeSessionId, chatVault]
   );
 
   const handleSend = async (text: string) => {
@@ -210,7 +212,9 @@ export default function ChatPage() {
       };
       setSessions((prev) => {
         const updated = [newSession, ...prev];
-        saveSessions(updated);
+        // Fire-and-forget: the store handles its own errors and falls
+        // back to localStorage if the encrypted path is unavailable.
+        void saveSessionsToStore(updated, chatVault);
         return updated;
       });
       sessionId = newSession.id;

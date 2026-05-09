@@ -4,10 +4,10 @@ import { ed25519 } from "@noble/curves/ed25519";
 
 import {
   didKeyFromVerifying,
-  ed25519SignToX25519SecretForTests,
   open as openEnvelope,
 } from "./envelope";
 import { createChatVault } from "./chat-vault";
+import { deriveVaultX25519Keypair } from "./vault-x25519";
 
 beforeEach(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -32,12 +32,13 @@ describe("chat-vault", () => {
     const wire = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) wire[i] = bin.charCodeAt(i);
 
-    // The chat-vault always seals to the user's own DID, so the
-    // recipient's X25519 secret is derivable from the user's Ed25519
-    // signing key. (Production replaces this with a Pair-Device-imported
-    // key; the round-trip property is the same.)
-    const userX25519Secret = await ed25519SignToX25519SecretForTests(secret);
-    const opened = await openEnvelope(wire, userX25519Secret);
+    // The chat-vault encrypts to a deterministic-from-Turnkey X25519
+    // keypair (see vault-x25519). Re-deriving with the same signer
+    // produces the same secret.
+    const recipient = await deriveVaultX25519Keypair(async (msg) =>
+      ed25519.sign(msg, secret),
+    );
+    const opened = await openEnvelope(wire, recipient.secret);
 
     expect(opened.senderDid).toBe(userDid);
     expect(opened.recipientId).toBe(userDid);
@@ -96,7 +97,9 @@ describe("chat-vault", () => {
     expect(pos).toBeGreaterThan(0);
     wire[pos] ^= 0x01;
 
-    const userSecret = await ed25519SignToX25519SecretForTests(secret);
-    await expect(openEnvelope(wire, userSecret)).rejects.toThrow();
+    const recipient = await deriveVaultX25519Keypair(async (msg) =>
+      ed25519.sign(msg, secret),
+    );
+    await expect(openEnvelope(wire, recipient.secret)).rejects.toThrow();
   });
 });
