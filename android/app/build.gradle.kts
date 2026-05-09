@@ -12,12 +12,18 @@ android {
         applicationId = "xyz.ghola.app"
         minSdk = 28
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.3.0"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
             abiFilters += "arm64-v8a"
         }
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 
     // Phase M9: release signing + R8 for Solana dApp Store submission.
@@ -117,4 +123,16 @@ dependencies {
     implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // Sealed-envelope-v1 E2E (Phase 0.3 / dApp Store v0.3.0).
+    // BouncyCastle is required because minSdk = 28 and platform support for
+    // Ed25519 / X25519 only lands at API 33. AES-GCM still uses the platform
+    // Cipher. See android/app/src/main/java/xyz/ghola/app/crypto/ for the
+    // wire-format port of crates/said-envelope.
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+
+    // Unit tests for crypto / vault / pair-device.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20231013")
+    testImplementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 }
