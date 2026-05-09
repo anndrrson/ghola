@@ -132,4 +132,86 @@ object MWAConnect {
     /** Thrown when no MWA-capable wallet is installed on the device. */
     class NoWalletInstalledException(message: String?) :
         Exception(message ?: "No MWA-capable wallet installed")
+
+    /** Outcome of [signMessageDetached] — mirrors VaultStore.SignResult. */
+    sealed class SignOutcome {
+        data class Success(val signature: ByteArray) : SignOutcome()
+        object NoWallet : SignOutcome()
+        object Declined : SignOutcome()
+        object Cancelled : SignOutcome()
+        data class Failure(val cause: Throwable) : SignOutcome()
+    }
+
+    /**
+     * Sign an arbitrary byte message using the connected wallet's
+     * Ed25519 identity key (`signMessages`). Used by [VaultStore.unlock]
+     * to derive the wallet-bound vault material and by Pair Device to
+     * authenticate handshake envelopes.
+     *
+     * The wallet must already be authorized; pass the same Solana
+     * address (base58 pubkey) that [authorize] returned. Most wallets
+     * silently re-authorize within a session, but some (Phantom) prompt
+     * if the auth token has expired.
+     *
+     * The returned signature is 64 bytes (Ed25519 detached). All major
+     * Solana wallets implement Ed25519 per RFC 8032 §5.1.6, which is
+     * deterministic for a given (secret, message); we depend on that to
+     * derive vault keys.
+     */
+    suspend fun signMessageDetached(
+        sender: ActivityResultSender,
+        walletAddressBase58: String,
+        message: ByteArray,
+    ): SignOutcome {
+        val adapter = MobileWalletAdapter(
+            connectionIdentity = ConnectionIdentity(
+                identityUri = Uri.parse("https://ghola.xyz"),
+                iconUri = Uri.parse("favicon.ico"),
+                identityName = "Ghola",
+            ),
+        )
+        adapter.rpcCluster = RpcCluster.Devnet
+
+        val addressBytes = try {
+            Base58.decode(walletAddressBase58)
+        } catch (e: Exception) {
+            return SignOutcome.Failure(e)
+        }
+
+        val result = try {
+            adapter.transact(sender) {
+                // signMessagesDetached takes (messages, addresses) and
+                // returns SignedMessageResult[] with `signatures: byte[][]`.
+                val signed = signMessagesDetached(
+                    arrayOf(message),
+                    arrayOf(addressBytes),
+                )
+                val first = signed.messages.firstOrNull()
+                    ?: error("wallet returned no signed messages")
+                val sig = first.signatures.firstOrNull()
+                    ?: error("wallet returned no signatures")
+                if (sig.size != 64) {
+                    error("wallet returned ${sig.size}-byte signature, expected 64")
+                }
+                sig
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "MWA signMessages threw", e)
+            return SignOutcome.Failure(e)
+        }
+
+        return when (result) {
+            is TransactionResult.Success -> SignOutcome.Success(result.payload)
+            is TransactionResult.NoWalletFound -> SignOutcome.NoWallet
+            is TransactionResult.Failure -> {
+                val msg = result.message?.lowercase().orEmpty()
+                when {
+                    msg.contains("declin") || msg.contains("reject") ->
+                        SignOutcome.Declined
+                    msg.contains("cancel") -> SignOutcome.Cancelled
+                    else -> SignOutcome.Failure(result.e)
+                }
+            }
+        }
+    }
 }

@@ -72,6 +72,7 @@ use aes_gcm::aead::{Aead, KeyInit, OsRng, Payload};
 use aes_gcm::{AeadCore, Aes256Gcm, Nonce};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey, SIGNATURE_LENGTH};
 use hkdf::Hkdf;
+use rand::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519Public, StaticSecret};
@@ -317,13 +318,24 @@ impl<'a> Cursor<'a> {
 
 /// Encrypt and sign a single envelope frame, returning the wire bytes.
 pub fn seal(params: SealParams<'_>) -> Result<Vec<u8>> {
-    let ephem = EphemeralSecret::random_from_rng(OsRng);
+    seal_with_rng(&mut OsRng, params)
+}
+
+/// Like [`seal`] but uses a caller-supplied CSPRNG for the per-envelope
+/// ephemeral X25519 keypair and the AES-GCM nonce. Production callers use
+/// [`seal`]; this exists for parity-vector generators and crash-replay
+/// tests that need deterministic outputs.
+pub fn seal_with_rng<R>(rng: &mut R, params: SealParams<'_>) -> Result<Vec<u8>>
+where
+    R: RngCore + CryptoRng,
+{
+    let ephem = EphemeralSecret::random_from_rng(&mut *rng);
     let ephem_pub = X25519Public::from(&ephem);
     let shared = ephem.diffie_hellman(&params.recipient_x25519);
     let mut dek = derive_dek(shared.as_bytes(), params.recipient_id);
 
     let cipher = Aes256Gcm::new_from_slice(&dek).expect("32-byte key");
-    let nonce_bytes = Aes256Gcm::generate_nonce(&mut OsRng);
+    let nonce_bytes = Aes256Gcm::generate_nonce(&mut *rng);
     let ciphertext = cipher
         .encrypt(
             &nonce_bytes,
