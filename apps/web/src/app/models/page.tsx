@@ -6,18 +6,18 @@ import type { Model } from "@/lib/types";
 import ModelCard from "@/components/ModelCard";
 import { Search, ChevronLeft, ChevronRight, X } from "lucide-react";
 
-const CATEGORIES = [
-  "All",
-  "Education",
-  "Entertainment",
-  "Finance",
-  "Health",
-  "Lifestyle",
-  "Technology",
-  "Writing",
-  "Other",
+// Hardware-shaped buckets. The question every developer asks isn't "is this
+// model for Education or Finance" — it's "what runs on my hardware". Total
+// params is the right proxy at v1; for MoE models (DeepSeek R1, Llama 4)
+// active_params actually drives runtime cost, so a future refinement could
+// tier on max(active, total/4) instead.
+const SIZE_CLASSES = [
+  { id: "all",   label: "All sizes",     hint: "Every model",                      min: undefined, max: undefined },
+  { id: "small", label: "Small · <10B",  hint: "Phones, laptops, consumer GPUs",   min: undefined, max: 10 },
+  { id: "mid",   label: "Mid · 10–70B",  hint: "Workstations, multi-GPU, 4-bit",   min: 10,        max: 70 },
+  { id: "large", label: "Large · 70B+",  hint: "Servers, data center, MoE",        min: 70,        max: undefined },
 ] as const;
-type Category = (typeof CATEGORIES)[number];
+type SizeId = (typeof SIZE_CLASSES)[number]["id"];
 
 const SORT_OPTIONS = [
   { label: "Popular", value: "popular" },
@@ -34,19 +34,22 @@ export default function BrowsePage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [category, setCategory] = useState<Category>("All");
+  const [sizeId, setSizeId] = useState<SizeId>("all");
   const [sort, setSort] = useState<SortValue>("popular");
   const [page, setPage] = useState(1);
+
+  const sizeClass = SIZE_CLASSES.find((s) => s.id === sizeId)!;
 
   const fetchModels = useCallback(async () => {
     setLoading(true);
     try {
       const res = await getModels({
         search: search || undefined,
-        category: category === "All" ? undefined : category,
         sort,
         page,
         limit: PER_PAGE,
+        min_params: sizeClass.min,
+        max_params: sizeClass.max,
       });
       setModels(res.models);
       setTotal(res.total);
@@ -56,7 +59,7 @@ export default function BrowsePage() {
     } finally {
       setLoading(false);
     }
-  }, [search, category, sort, page]);
+  }, [search, sizeClass.min, sizeClass.max, sort, page]);
 
   useEffect(() => {
     fetchModels();
@@ -64,10 +67,10 @@ export default function BrowsePage() {
 
   useEffect(() => {
     setPage(1);
-  }, [search, category, sort]);
+  }, [search, sizeId, sort]);
 
   const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
-  const filtersActive = search.length > 0 || category !== "All";
+  const filtersActive = search.length > 0 || sizeId !== "all";
   const showingRange = useMemo(() => {
     if (total === 0) return null;
     const lo = (page - 1) * PER_PAGE + 1;
@@ -132,19 +135,20 @@ export default function BrowsePage() {
             </label>
 
             <div className="-mx-1 flex shrink-0 items-center gap-1 overflow-x-auto px-1">
-              {CATEGORIES.map((cat) => {
-                const active = category === cat;
+              {SIZE_CLASSES.map((s) => {
+                const active = sizeId === s.id;
                 return (
                   <button
-                    key={cat}
-                    onClick={() => setCategory(cat)}
+                    key={s.id}
+                    onClick={() => setSizeId(s.id)}
+                    title={s.hint}
                     className={`whitespace-nowrap rounded-md px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.16em] transition-colors ${
                       active
                         ? "bg-[#3da8ff]/12 text-[#3da8ff] ring-1 ring-inset ring-[#3da8ff]/30"
                         : "text-[#8b95a8] hover:bg-[#161822] hover:text-[#eef1f8]"
                     }`}
                   >
-                    {cat}
+                    {s.label}
                   </button>
                 );
               })}
@@ -169,13 +173,20 @@ export default function BrowsePage() {
           </div>
 
           <div className="mt-3 flex items-center justify-between font-mono text-[11px] uppercase tracking-[0.18em] text-[#4a5568]">
-            <span>{loading ? "Loading…" : showingRange ?? "No results"}</span>
+            <span>
+              {loading ? "Loading…" : showingRange ?? "No results"}
+              {sizeId !== "all" && (
+                <span className="ml-3 text-[#8b95a8] normal-case tracking-normal">
+                  · {sizeClass.hint}
+                </span>
+              )}
+            </span>
             {filtersActive && (
               <button
                 type="button"
                 onClick={() => {
                   setSearch("");
-                  setCategory("All");
+                  setSizeId("all");
                 }}
                 className="text-[#8b95a8] hover:text-[#eef1f8]"
               >

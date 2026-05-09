@@ -369,6 +369,12 @@ export async function getModels(params?: {
   sort?: string;
   page?: number;
   limit?: number;
+  // Foundation-catalog filters honored by the backend MarketplaceQuery.
+  min_params?: number; // billions
+  max_params?: number; // billions
+  developer?: string;
+  license?: string;
+  is_foundation?: boolean;
 }) {
   const sp = new URLSearchParams();
   if (params?.search) sp.set("search", params.search);
@@ -376,6 +382,11 @@ export async function getModels(params?: {
   if (params?.sort) sp.set("sort", params.sort);
   if (params?.page) sp.set("page", String(params.page));
   if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.min_params != null) sp.set("min_params", String(params.min_params));
+  if (params?.max_params != null) sp.set("max_params", String(params.max_params));
+  if (params?.developer) sp.set("developer", params.developer);
+  if (params?.license) sp.set("license", params.license);
+  if (params?.is_foundation != null) sp.set("is_foundation", String(params.is_foundation));
   const qs = sp.toString();
   return orniFetch<ModelsResponse>(`/models${qs ? `?${qs}` : ""}`);
 }
