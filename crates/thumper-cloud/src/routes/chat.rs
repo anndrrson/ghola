@@ -23,6 +23,155 @@ pub struct ChatRequest {
     pub message: String,
     pub agent_id: Option<Uuid>,
     pub agent_slug: Option<String>,
+    /// Optional sealed-envelope-v1 ciphertext of the user's message, base64
+    /// encoded. When present, the cloud persists the ciphertext (in
+    /// `chat_messages.envelope_blob` with `envelope_v = 1`) and never
+    /// stores the plaintext `message` field. The LLM still receives
+    /// plaintext at inference time — the win is "a Postgres dump of
+    /// chat_messages reveals nothing for these rows."
+    ///
+    /// The wire format and signing rules are documented in
+    /// `crates/said-envelope`. The cloud does NOT verify the envelope
+    /// before persisting (it cannot — the recipient is the user's own DID
+    /// or a peer); it only round-trips the bytes.
+    #[serde(default)]
+    pub envelope_blob_b64: Option<String>,
+}
+
+/// Persist a user-role row, choosing the legacy plaintext path or the
+/// envelope path based on whether the client provided a sealed envelope.
+///
+/// Returns the size of the persisted payload for tracing.
+async fn insert_user_message(
+    db: &sqlx::PgPool,
+    user_id: Uuid,
+    session_id: Uuid,
+    plaintext: &str,
+    envelope_blob_b64: Option<&str>,
+    agent_id: Option<Uuid>,
+    agent_session_id: Option<Uuid>,
+) -> Result<(), CloudError> {
+    use base64::Engine;
+    let envelope_bytes = match envelope_blob_b64 {
+        Some(b64) => Some(
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| CloudError::BadRequest(format!("invalid envelope_blob_b64: {e}")))?,
+        ),
+        None => None,
+    };
+
+    if let Some(bytes) = envelope_bytes {
+        // E2E path: store ciphertext, leave content NULL.
+        if let (Some(aid), Some(asid)) = (agent_id, agent_session_id) {
+            sqlx::query(
+                r#"
+                INSERT INTO chat_messages
+                    (user_id, session_id, role, content, envelope_blob, envelope_v,
+                     agent_id, agent_session_id)
+                VALUES ($1, $2, 'user', NULL, $3, 1, $4, $5)
+                "#,
+            )
+            .bind(user_id)
+            .bind(session_id)
+            .bind(&bytes)
+            .bind(aid)
+            .bind(asid)
+            .execute(db)
+            .await
+            .map_err(|e| CloudError::Internal(format!("failed to save envelope message: {e}")))?;
+        } else {
+            sqlx::query(
+                r#"
+                INSERT INTO chat_messages
+                    (user_id, session_id, role, content, envelope_blob, envelope_v)
+                VALUES ($1, $2, 'user', NULL, $3, 1)
+                "#,
+            )
+            .bind(user_id)
+            .bind(session_id)
+            .bind(&bytes)
+            .execute(db)
+            .await
+            .map_err(|e| CloudError::Internal(format!("failed to save envelope message: {e}")))?;
+        }
+    } else if let (Some(aid), Some(asid)) = (agent_id, agent_session_id) {
+        sqlx::query(
+            r#"
+            INSERT INTO chat_messages
+                (user_id, session_id, role, content, agent_id, agent_session_id)
+            VALUES ($1, $2, 'user', $3, $4, $5)
+            "#,
+        )
+        .bind(user_id)
+        .bind(session_id)
+        .bind(plaintext)
+        .bind(aid)
+        .bind(asid)
+        .execute(db)
+        .await
+        .map_err(|e| CloudError::Internal(format!("failed to save message: {e}")))?;
+    } else {
+        sqlx::query(
+            "INSERT INTO chat_messages (user_id, session_id, role, content) VALUES ($1, $2, 'user', $3)",
+        )
+        .bind(user_id)
+        .bind(session_id)
+        .bind(plaintext)
+        .execute(db)
+        .await
+        .map_err(|e| CloudError::Internal(format!("failed to save message: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Load recent conversation history for an LLM call.
+///
+/// History rows that were stored as sealed envelopes (`envelope_v IS NOT
+/// NULL`) carry no plaintext that the cloud can read, so they are filtered
+/// out here — the client is expected to re-seed history into the
+/// envelope-encrypted user message itself for that turn. Legacy plaintext
+/// rows (envelope_v IS NULL) are returned unchanged so existing sessions
+/// keep working.
+async fn load_history_for_llm(
+    db: &sqlx::PgPool,
+    session_id: Uuid,
+    by_agent_session: bool,
+) -> Vec<ChatMsg> {
+    let where_clause = if by_agent_session {
+        "agent_session_id = $1"
+    } else {
+        "session_id = $1"
+    };
+    let sql = format!(
+        r#"
+        SELECT role, content, envelope_v FROM chat_messages
+        WHERE {where_clause}
+        ORDER BY created_at ASC
+        LIMIT 20
+        "#
+    );
+    let rows: Vec<(String, Option<String>, Option<i16>)> = sqlx::query_as(&sql)
+        .bind(session_id)
+        .fetch_all(db)
+        .await
+        .unwrap_or_default();
+
+    rows.into_iter()
+        .filter(|(role, _, _)| role == "user" || role == "assistant")
+        .filter_map(|(role, content, env_v)| match (env_v, content) {
+            // Envelope rows: cloud cannot read plaintext — drop from
+            // server-rebuilt history. The client is the source of truth
+            // for context here.
+            (Some(_), _) => None,
+            // Legacy plaintext rows: pass through.
+            (None, Some(c)) => Some(ChatMsg { role, content: c }),
+            // Bug guard: a legacy row with NULL content shouldn't exist
+            // (the new CHECK constraint prevents it for new writes), but
+            // skip rather than panic if we encounter a pre-existing one.
+            (None, None) => None,
+        })
+        .collect()
 }
 
 type SseStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
@@ -95,16 +244,17 @@ pub async fn chat(
     // Check chat usage limit
     check_chat_limit(&state, user_id, &claims.tier).await?;
 
-    // Save user message
-    sqlx::query(
-        "INSERT INTO chat_messages (user_id, session_id, role, content) VALUES ($1, $2, 'user', $3)",
+    // Save user message — chooses envelope vs plaintext path internally.
+    insert_user_message(
+        &state.db,
+        user_id,
+        session_id,
+        &req.message,
+        req.envelope_blob_b64.as_deref(),
+        None,
+        None,
     )
-    .bind(user_id)
-    .bind(session_id)
-    .bind(&req.message)
-    .execute(&state.db)
-    .await
-    .map_err(|e| CloudError::Internal(format!("failed to save message: {e}")))?;
+    .await?;
 
     // Check if user has a wallet (enables crypto tools)
     let has_wallet: bool = sqlx::query_scalar::<_, bool>(
@@ -115,25 +265,9 @@ pub async fn chat(
     .await
     .unwrap_or(false);
 
-    // Load recent conversation history (last 20 messages in session)
-    let history = sqlx::query_as::<_, (String, String)>(
-        r#"
-        SELECT role, content FROM chat_messages
-        WHERE session_id = $1
-        ORDER BY created_at ASC
-        LIMIT 20
-        "#,
-    )
-    .bind(session_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
-
-    let messages: Vec<ChatMsg> = history
-        .into_iter()
-        .filter(|(role, _)| role == "user" || role == "assistant")
-        .map(|(role, content)| ChatMsg { role, content })
-        .collect();
+    // Load recent conversation history (last 20 messages in session) —
+    // tolerates both legacy plaintext rows and v1 sealed-envelope rows.
+    let messages = load_history_for_llm(&state.db, session_id, false).await;
 
     let system = if has_wallet {
         "You are Ghola, a helpful AI personal assistant. Be concise, friendly, and action-oriented. \
@@ -368,41 +502,20 @@ async fn agent_chat(
     )
     .await?;
 
-    // Save user message with agent linkage
-    sqlx::query(
-        r#"
-        INSERT INTO chat_messages (user_id, session_id, role, content, agent_id, agent_session_id)
-        VALUES ($1, $2, 'user', $3, $4, $5)
-        "#,
+    // Save user message with agent linkage — envelope-aware.
+    insert_user_message(
+        &state.db,
+        user_id,
+        session_id,
+        &req.message,
+        req.envelope_blob_b64.as_deref(),
+        Some(agent.id),
+        Some(session_id),
     )
-    .bind(user_id)
-    .bind(session_id)
-    .bind(&req.message)
-    .bind(agent.id)
-    .bind(session_id)
-    .execute(&state.db)
-    .await
-    .map_err(|e| CloudError::Internal(format!("failed to save message: {e}")))?;
+    .await?;
 
-    // Load agent session history
-    let history = sqlx::query_as::<_, (String, String)>(
-        r#"
-        SELECT role, content FROM chat_messages
-        WHERE agent_session_id = $1
-        ORDER BY created_at ASC
-        LIMIT 20
-        "#,
-    )
-    .bind(session_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
-
-    let messages: Vec<ChatMsg> = history
-        .into_iter()
-        .filter(|(role, _)| role == "user" || role == "assistant")
-        .map(|(role, content)| ChatMsg { role, content })
-        .collect();
+    // Load agent session history — tolerates legacy plaintext and v1 envelopes.
+    let messages = load_history_for_llm(&state.db, session_id, true).await;
 
     // Check if agent has wallet tool enabled and user has a wallet
     let use_wallet_tools = agent.tools.iter().any(|t| t == "wallet") && {

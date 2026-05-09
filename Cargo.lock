@@ -2849,6 +2849,7 @@ dependencies = [
  "hkdf",
  "rand 0.8.5",
  "reqwest",
+ "said-noncecache",
  "said-types",
  "serde",
  "serde_json",
@@ -2875,6 +2876,24 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "said-envelope"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "bs58",
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "hkdf",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
@@ -2918,10 +2937,18 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokio",
  "tower",
  "tower-http",
  "uuid",
+]
+
+[[package]]
+name = "said-noncecache"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
 ]
 
 [[package]]
@@ -3755,6 +3782,7 @@ dependencies = [
  "ed25519-dalek",
  "futures",
  "rand 0.8.5",
+ "said-noncecache",
  "serde",
  "serde_json",
  "thiserror",

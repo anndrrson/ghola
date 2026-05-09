@@ -424,31 +424,90 @@ pub struct RequestApprovalParams {
 
 // ── MCP Server ──
 
+/// Per-request authenticated session, established by the HTTP auth
+/// middleware and read by tool handlers via [`REQUEST_SESSION`].
+///
+/// We use a task-local — not a field on `SaidServer` — because rmcp's
+/// session manager reuses a single `SaidServer` across many concurrent
+/// requests. Earlier code stored the verified capabilities in a shared
+/// `Arc<Mutex<Option<Vec<Capability>>>>` written by the middleware and
+/// `take()`'d by the service factory; under concurrent requests that let
+/// caps from request A satisfy a tool call in request B's session. The
+/// task-local makes that impossible by binding caps to the calling task.
+#[derive(Clone, Debug, Default)]
+pub struct RequestSession {
+    pub capabilities: Vec<Capability>,
+    pub provider_label: Option<String>,
+    /// Issuer DID of the verified UCAN, useful for audit logs.
+    pub issuer_did: Option<String>,
+}
+
+tokio::task_local! {
+    /// Set by the HTTP auth middleware via `REQUEST_SESSION.scope(...)`
+    /// before forwarding a request to the rmcp service. Tool handlers read
+    /// it through [`current_session`].
+    pub static REQUEST_SESSION: RequestSession;
+}
+
+/// Distinguishes the trust model the server is operating under. In `Stdio`
+/// mode the user is the one running the binary; capability checks are
+/// disabled. In `Http` mode every tool call must find a `RequestSession`
+/// in the task-local — failure to do so is a server bug, not a "stdio
+/// fallback," and is surfaced as an explicit error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthMode {
+    Stdio,
+    Http,
+}
+
 #[derive(Clone)]
 pub struct SaidServer {
     wallet: Arc<Mutex<Wallet>>,
     tool_router: ToolRouter<Self>,
-    /// When Some, capability checks are enforced (HTTP mode).
-    /// When None, all tools are allowed (stdio / local trust mode).
-    allowed_capabilities: Option<Vec<Capability>>,
-    /// The provider label from the authenticated session (HTTP mode only).
-    /// Used to enforce per-secret `allowed_providers` restrictions.
-    provider_label: Option<String>,
+    auth_mode: AuthMode,
 }
 
 impl SaidServer {
     /// Check that the current session has the required capability.
-    /// In stdio mode (allowed_capabilities = None), always succeeds.
+    ///
+    /// - In `Stdio` mode, always allows the call.
+    /// - In `Http` mode, reads the per-request task-local
+    ///   ([`REQUEST_SESSION`]). If the task-local is unset (which would
+    ///   indicate that the auth middleware was not in front of the call),
+    ///   the call is denied — failing closed is the only safe default.
     fn check_capability(&self, cap: &Capability) -> Result<(), ErrorData> {
-        if let Some(ref caps) = self.allowed_capabilities {
-            if !caps.iter().any(|c| c.grants(cap)) {
-                return Err(ErrorData::internal_error(
-                    format!("insufficient capability: {:?}", cap),
-                    None,
-                ));
-            }
+        if self.auth_mode == AuthMode::Stdio {
+            return Ok(());
         }
-        Ok(())
+        REQUEST_SESSION
+            .try_with(|session| {
+                if session.capabilities.iter().any(|c| c.grants(cap)) {
+                    Ok(())
+                } else {
+                    Err(ErrorData::internal_error(
+                        format!("insufficient capability: {:?}", cap),
+                        None,
+                    ))
+                }
+            })
+            .unwrap_or_else(|_| {
+                Err(ErrorData::internal_error(
+                    "no authenticated session for this request",
+                    None,
+                ))
+            })
+    }
+
+    /// Returns the provider label of the currently authenticated session,
+    /// if any. Returns `None` in stdio mode (no provider context — user is
+    /// at the terminal).
+    fn current_provider_label(&self) -> Option<String> {
+        if self.auth_mode == AuthMode::Stdio {
+            return None;
+        }
+        REQUEST_SESSION
+            .try_with(|s| s.provider_label.clone())
+            .unwrap_or(None)
     }
 }
 
@@ -459,23 +518,36 @@ impl SaidServer {
         Self {
             wallet: Arc::new(Mutex::new(wallet)),
             tool_router: Self::tool_router(),
-            allowed_capabilities: None,
-            provider_label: None,
+            auth_mode: AuthMode::Stdio,
         }
     }
 
-    /// Create a new server with shared wallet, specific capabilities, and provider label (HTTP auth mode).
-    pub fn new_with_auth(
-        wallet: Arc<Mutex<Wallet>>,
-        capabilities: Vec<Capability>,
-        provider_label: Option<String>,
-    ) -> Self {
+    /// Create a new server in HTTP mode. Capability and provider-label
+    /// checks read from the per-request [`REQUEST_SESSION`] task-local
+    /// scope established by the auth middleware.
+    pub fn new_http(wallet: Arc<Mutex<Wallet>>) -> Self {
         Self {
             wallet,
             tool_router: Self::tool_router(),
-            allowed_capabilities: Some(capabilities),
-            provider_label,
+            auth_mode: AuthMode::Http,
         }
+    }
+
+    /// Backwards-compatible constructor retained so external callers that
+    /// still pass `(wallet, capabilities, provider_label)` keep compiling.
+    /// The arguments other than `wallet` are now ignored — the values come
+    /// from the per-request [`REQUEST_SESSION`] task-local. New callers
+    /// should use [`SaidServer::new_http`].
+    #[deprecated(
+        since = "0.2.0",
+        note = "session-state cross-talk fix: use SaidServer::new_http and set the REQUEST_SESSION task-local from your auth middleware instead"
+    )]
+    pub fn new_with_auth(
+        wallet: Arc<Mutex<Wallet>>,
+        _capabilities: Vec<Capability>,
+        _provider_label: Option<String>,
+    ) -> Self {
+        Self::new_http(wallet)
     }
 
     #[tool(
@@ -899,8 +971,8 @@ impl SaidServer {
             Some(secret) => {
                 // Enforce per-secret provider restrictions
                 if !secret.allowed_providers.is_empty() {
-                    if let Some(ref label) = self.provider_label {
-                        if !secret.allowed_providers.iter().any(|p| p == label) {
+                    if let Some(label) = self.current_provider_label() {
+                        if !secret.allowed_providers.iter().any(|p| p == &label) {
                             return Err(ErrorData::internal_error(
                                 format!(
                                     "Secret '{}' is not available to provider '{}'",
@@ -2906,6 +2978,104 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn fresh_http_server() -> SaidServer {
+        let dir = TempDir::new().unwrap();
+        let wallet_dir = dir.path().join(".said");
+        let (wallet, _phrase) = Wallet::init(&wallet_dir, None).unwrap();
+        // Keep the TempDir alive by leaking it into the wallet — fine for tests.
+        std::mem::forget(dir);
+        SaidServer::new_http(Arc::new(Mutex::new(wallet)))
+    }
+
+    #[test]
+    fn http_mode_without_session_denies() {
+        let server = fresh_http_server();
+        let r = server.check_capability(&Capability::ReadPrompts);
+        assert!(r.is_err(), "HTTP server with no REQUEST_SESSION must fail closed");
+    }
+
+    #[test]
+    fn stdio_mode_allows_everything() {
+        let dir = TempDir::new().unwrap();
+        let wallet_dir = dir.path().join(".said");
+        let (wallet, _) = Wallet::init(&wallet_dir, None).unwrap();
+        let server = SaidServer::new(wallet);
+
+        for cap in [
+            Capability::ReadPrompts,
+            Capability::WriteMemories,
+            Capability::ReadMemories,
+        ] {
+            assert!(server.check_capability(&cap).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn task_local_isolates_concurrent_sessions() {
+        // The regression test for the cross-talk bug: two concurrent
+        // requests with disjoint capabilities must not see each other's
+        // grants. Before the fix, a shared Arc<Mutex<Option<...>>> could
+        // hand session B's caps to session A's tool dispatch.
+        let server = Arc::new(fresh_http_server());
+
+        let server_a = server.clone();
+        let task_a = tokio::spawn(async move {
+            let session = RequestSession {
+                capabilities: vec![Capability::ReadPrompts],
+                provider_label: Some("alpha".into()),
+                issuer_did: None,
+            };
+            REQUEST_SESSION
+                .scope(session, async move {
+                    // Yield so task B has a chance to set its own scope.
+                    tokio::task::yield_now().await;
+                    let read_prompts =
+                        server_a.check_capability(&Capability::ReadPrompts).is_ok();
+                    let write_memories =
+                        server_a.check_capability(&Capability::WriteMemories).is_ok();
+                    (read_prompts, write_memories, server_a.current_provider_label())
+                })
+                .await
+        });
+
+        let server_b = server.clone();
+        let task_b = tokio::spawn(async move {
+            let session = RequestSession {
+                capabilities: vec![Capability::WriteMemories],
+                provider_label: Some("beta".into()),
+                issuer_did: None,
+            };
+            REQUEST_SESSION
+                .scope(session, async move {
+                    tokio::task::yield_now().await;
+                    let read_prompts =
+                        server_b.check_capability(&Capability::ReadPrompts).is_ok();
+                    let write_memories =
+                        server_b.check_capability(&Capability::WriteMemories).is_ok();
+                    (read_prompts, write_memories, server_b.current_provider_label())
+                })
+                .await
+        });
+
+        let (a_read, a_write, a_label) = task_a.await.unwrap();
+        let (b_read, b_write, b_label) = task_b.await.unwrap();
+
+        assert!(a_read, "session A should be able to ReadPrompts");
+        assert!(!a_write, "session A must NOT see session B's WriteMemories");
+        assert_eq!(a_label.as_deref(), Some("alpha"));
+
+        assert!(b_write, "session B should be able to WriteMemories");
+        assert!(!b_read, "session B must NOT see session A's ReadPrompts");
+        assert_eq!(b_label.as_deref(), Some("beta"));
+    }
 }
 
 /// Run the MCP server over HTTP with UCAN auth on the given port.

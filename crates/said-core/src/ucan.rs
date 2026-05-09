@@ -12,6 +12,8 @@ use said_types::Capability;
 
 use crate::error::{Result, SaidError};
 
+pub use said_noncecache::NonceCache;
+
 /// Multicodec prefix for Ed25519 public keys (0xed01).
 const ED25519_MULTICODEC: [u8; 2] = [0xed, 0x01];
 
@@ -144,7 +146,34 @@ pub fn create_ucan(
 ///
 /// - `token`: the JWT string (header.payload.signature)
 /// - `expected_issuer`: the expected issuer's public key (master pub key)
+///
+/// **Note:** this overload does **not** enforce replay protection. If you are
+/// accepting bearer tokens over a network (HTTP, WebSocket), prefer
+/// [`verify_ucan_with_replay`] and pass a long-lived [`NonceCache`] so the
+/// `nnc` claim is checked against recently-seen nonces.
 pub fn verify_ucan(token: &str, expected_issuer: &VerifyingKey) -> Result<UcanPayload> {
+    verify_ucan_inner(token, expected_issuer, None)
+}
+
+/// Same as [`verify_ucan`] but additionally rejects tokens whose `nnc` has
+/// already been seen within the cache's TTL window.
+///
+/// Pass a single shared [`NonceCache`] across all middleware for a process so
+/// that an attacker who captures a UCAN bearer token cannot replay it after
+/// the legitimate request has been accepted, even within the validity window.
+pub fn verify_ucan_with_replay(
+    token: &str,
+    expected_issuer: &VerifyingKey,
+    nonce_cache: &NonceCache,
+) -> Result<UcanPayload> {
+    verify_ucan_inner(token, expected_issuer, Some(nonce_cache))
+}
+
+fn verify_ucan_inner(
+    token: &str,
+    expected_issuer: &VerifyingKey,
+    nonce_cache: Option<&NonceCache>,
+) -> Result<UcanPayload> {
     let parts: Vec<&str> = token.splitn(3, '.').collect();
     if parts.len() != 3 {
         return Err(SaidError::Ucan("invalid JWT: expected 3 parts".into()));
@@ -196,6 +225,14 @@ pub fn verify_ucan(token: &str, expected_issuer: &VerifyingKey) -> Result<UcanPa
     let now = chrono::Utc::now().timestamp();
     if payload.exp <= now {
         return Err(SaidError::SessionExpired);
+    }
+
+    // Replay detection — only after the token is otherwise valid so a
+    // tampered token does not poison the cache.
+    if let Some(cache) = nonce_cache {
+        if cache.check_and_insert(&payload.nnc) {
+            return Err(SaidError::Auth("UCAN nonce already seen (replay)".into()));
+        }
     }
 
     Ok(payload)
@@ -501,6 +538,45 @@ mod tests {
             result.unwrap_err(),
             crate::error::SaidError::SessionExpired
         ));
+    }
+
+    #[test]
+    fn replay_cache_rejects_repeat_token() {
+        let issuer = test_keypair();
+        let audience = other_keypair().verifying_key();
+        let caps = vec![Capability::ReadPrompts];
+
+        let token = create_ucan(&issuer, &audience, &caps, Duration::from_secs(3600)).unwrap();
+        let cache = NonceCache::new(60);
+
+        // First presentation succeeds and seeds the cache.
+        verify_ucan_with_replay(&token, &issuer.verifying_key(), &cache).unwrap();
+
+        // A second presentation of the same token (same nnc) is rejected.
+        let result = verify_ucan_with_replay(&token, &issuer.verifying_key(), &cache);
+        assert!(matches!(result, Err(crate::error::SaidError::Auth(_))));
+    }
+
+    #[test]
+    fn replay_cache_only_seeded_for_valid_tokens() {
+        // A token whose signature does not verify must not poison the cache —
+        // otherwise an attacker could DoS legitimate tokens by submitting
+        // tampered variants under the same nnc.
+        let issuer = test_keypair();
+        let wrong_issuer = other_keypair();
+        let audience = other_keypair().verifying_key();
+        let caps = vec![Capability::ReadPrompts];
+
+        let token = create_ucan(&issuer, &audience, &caps, Duration::from_secs(3600)).unwrap();
+        let cache = NonceCache::new(60);
+
+        // Try the token against the wrong issuer — should fail with Auth and
+        // leave the cache empty.
+        let _ = verify_ucan_with_replay(&token, &wrong_issuer.verifying_key(), &cache);
+        assert!(cache.is_empty(), "cache should not record nonces for failed verifications");
+
+        // Now the correct verification still succeeds.
+        verify_ucan_with_replay(&token, &issuer.verifying_key(), &cache).unwrap();
     }
 
     #[test]

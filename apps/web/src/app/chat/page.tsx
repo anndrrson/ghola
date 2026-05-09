@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { streamChat } from "@/lib/thumper-stream";
 import { SessionSidebar } from "@/components/chat/SessionSidebar";
@@ -10,23 +10,23 @@ import { ChatHeader } from "@/components/chat/ChatHeader";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { handleTwitterToken } from "@/lib/thumper-api";
+import { createChatVault, didKeyFromVerifying } from "@/lib/chat-vault";
+import {
+  loadSessions as loadSessionsFromStore,
+  saveSessions as saveSessionsToStore,
+} from "@/lib/chat-history-store";
+import bs58 from "bs58";
 import type { ThumperSession, ThumperChatMessage, ThumperInlineAction } from "@/lib/thumper-types";
 
-const SESSIONS_KEY = "ghola_sessions";
-
-function loadSessions(): ThumperSession[] {
-  if (typeof window === "undefined") return [];
+/** Convert a Solana wallet address (base58 Ed25519 pubkey) to a `did:key:z…`. */
+function solanaAddressToDid(address: string): string | null {
   try {
-    const raw = localStorage.getItem(SESSIONS_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw);
+    const pub = bs58.decode(address);
+    if (pub.length !== 32) return null;
+    return didKeyFromVerifying(pub);
   } catch {
-    return [];
+    return null;
   }
-}
-
-function saveSessions(sessions: ThumperSession[]) {
-  localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
 }
 
 function detectAction(text: string): ThumperInlineAction | undefined {
@@ -73,12 +73,40 @@ export default function ChatPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const { setAuth } = useThumperAuth();
-  const { createWallet } = useTurnkeyWallet();
+  const { createWallet, walletAddress, signBytes } = useTurnkeyWallet();
+
+  // Chat-side E2E: when a Turnkey wallet is connected, build a vault
+  // whose unlock key is gated on a Turnkey signature. Sealing happens
+  // lazily on first send; if Turnkey signing fails for any reason
+  // (offline, user denial, API error) we fall back to the plaintext
+  // path so chat keeps working.
+  const e2eEnabled =
+    process.env.NEXT_PUBLIC_GHOLA_E2E !== "0" &&
+    typeof window !== "undefined";
+  const userDid = useMemo(
+    () => (walletAddress ? solanaAddressToDid(walletAddress) : null),
+    [walletAddress],
+  );
+  const chatVault = useMemo(() => {
+    if (!e2eEnabled || !userDid) return null;
+    return createChatVault({ userDid, signBytes });
+  }, [e2eEnabled, userDid, signBytes]);
 
   useEffect(() => {
-    const loaded = loadSessions();
-    setSessions(loaded);
-  }, []);
+    let cancelled = false;
+    loadSessionsFromStore(chatVault)
+      .then((loaded) => {
+        if (!cancelled) setSessions(loaded);
+      })
+      .catch(() => {
+        // The store falls back to legacy plaintext on its own; if even
+        // that fails we just start with an empty list.
+        if (!cancelled) setSessions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatVault]);
 
   // Handle Twitter OAuth callback — exchange code for token
   useEffect(() => {
@@ -120,11 +148,13 @@ export default function ChatPage() {
         const updated = prev.map((s) =>
           s.id === sessionId ? updater(s) : s
         );
-        saveSessions(updated);
+        // Fire-and-forget: the store handles its own errors and falls
+        // back to localStorage if the encrypted path is unavailable.
+        void saveSessionsToStore(updated, chatVault);
         return updated;
       });
     },
-    []
+    [chatVault]
   );
 
   const handleNewChat = useCallback(() => {
@@ -137,12 +167,12 @@ export default function ChatPage() {
     };
     setSessions((prev) => {
       const updated = [newSession, ...prev];
-      saveSessions(updated);
+      void saveSessionsToStore(updated, chatVault);
       return updated;
     });
     setActiveSessionId(newSession.id);
     setMobileView("chat");
-  }, []);
+  }, [chatVault]);
 
   const handleSelectSession = useCallback((session: ThumperSession) => {
     setActiveSessionId(session.id);
@@ -153,7 +183,9 @@ export default function ChatPage() {
     (sessionId: string) => {
       setSessions((prev) => {
         const updated = prev.filter((s) => s.id !== sessionId);
-        saveSessions(updated);
+        // Fire-and-forget: the store handles its own errors and falls
+        // back to localStorage if the encrypted path is unavailable.
+        void saveSessionsToStore(updated, chatVault);
         return updated;
       });
       if (activeSessionId === sessionId) {
@@ -161,7 +193,7 @@ export default function ChatPage() {
         setMobileView("list");
       }
     },
-    [activeSessionId]
+    [activeSessionId, chatVault]
   );
 
   const handleSend = async (text: string) => {
@@ -180,7 +212,9 @@ export default function ChatPage() {
       };
       setSessions((prev) => {
         const updated = [newSession, ...prev];
-        saveSessions(updated);
+        // Fire-and-forget: the store handles its own errors and falls
+        // back to localStorage if the encrypted path is unavailable.
+        void saveSessionsToStore(updated, chatVault);
         return updated;
       });
       sessionId = newSession.id;
@@ -217,7 +251,25 @@ export default function ChatPage() {
     let fullContent = "";
     const currentSessionId = sessionId;
 
+    // Try to seal the user's message under the session's DEK before
+    // sending. If sealing fails (no wallet, vault unlock declined,
+    // network error talking to Turnkey) we fall through to the
+    // plaintext path so the user can still chat. The cloud handles
+    // either path — see crates/thumper-cloud/src/routes/chat.rs.
+    let envelopeBlobB64: string | undefined;
+    if (chatVault) {
+      try {
+        const sealed = await chatVault.sealUserMessage(currentSessionId, text);
+        envelopeBlobB64 = sealed.envelopeB64;
+      } catch (err) {
+        // Non-fatal: surface as a console warning, fall back to plaintext.
+        // eslint-disable-next-line no-console
+        console.warn("E2E sealing failed; falling back to plaintext:", err);
+      }
+    }
+
     await streamChat(currentSessionId, text, {
+      envelopeBlobB64,
       onSession: (newId) => {
         // Server assigned a session ID — we can track it if needed
         // For now we keep using our local UUID
