@@ -147,6 +147,18 @@ impl SolanaClient {
         self.send_transaction(&tx_bytes).await
     }
 
+    /// Create an Associated Token Account at `wallet` for `mint`, idempotently.
+    /// Payer is the client's signing key. Returns the resulting ATA's base58
+    /// address. If the ATA already exists, the on-chain instruction is a
+    /// no-op and we return the same address — safe to call repeatedly.
+    pub async fn create_ata(&self, wallet: &[u8; 32], mint: &[u8; 32]) -> Result<String> {
+        let ata = crate::spl::find_ata(wallet, mint);
+        let payer = self.payer_pubkey();
+        let ix = crate::spl::build_create_ata_ix(&payer, wallet, mint);
+        let _sig = self.send_single_ix(ix).await?;
+        Ok(bs58::encode(ata).into_string())
+    }
+
     /// Register an identity on-chain.
     pub async fn register(
         &self,
@@ -313,7 +325,7 @@ impl SolanaClient {
 
     /// Transfer an SPL token from the payer to a recipient.
     /// Creates the recipient's ATA if it doesn't exist (idempotent).
-    /// `amount` is in the token's smallest unit (micro-units for 6-decimal stables).
+    /// `amount` is in the token's smallest unit (micro-units for 6-decimal stablecoins).
     pub async fn transfer_token(
         &self,
         to: &[u8; 32],

@@ -135,6 +135,45 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // Boot-time: auto-initialize the escrow's ATAs for every accepted
+    // stablecoin. First USDT or USDC inbound from a wallet that doesn't
+    // create the recipient ATA itself would otherwise bounce. Idempotent:
+    // create_ata under the hood uses the SPL CreateIdempotent variant, so
+    // re-running this on every boot is a no-op once the ATA exists.
+    if let Some(kp) = escrow_keypair.as_ref() {
+        match said_solana::SolanaClient::new(&config.solana_rpc_url, kp) {
+            Ok(client) => {
+                let escrow_pubkey = client.payer_pubkey();
+                for token in &config.accepted_tokens {
+                    let mint_bytes: Option<[u8; 32]> = bs58::decode(&token.mint_b58)
+                        .into_vec()
+                        .ok()
+                        .and_then(|v| v.try_into().ok());
+                    let Some(mint) = mint_bytes else {
+                        tracing::warn!(
+                            symbol = %token.symbol,
+                            "ATA init skipped: invalid mint bytes"
+                        );
+                        continue;
+                    };
+                    match client.create_ata(&escrow_pubkey, &mint).await {
+                        Ok(ata) => tracing::info!(
+                            symbol = %token.symbol,
+                            ata = %ata,
+                            "Escrow ATA ensured (idempotent)"
+                        ),
+                        Err(e) => tracing::warn!(
+                            symbol = %token.symbol,
+                            error = %e,
+                            "Escrow ATA init failed — first inbound may bounce until retried"
+                        ),
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "Could not init Solana client for ATA setup"),
+        }
+    }
+
     // Phase 3.3: sanctions / risk-screening backend. Default is no-op; swap in
     // a real backend (Chainalysis / TRM / Range / custom block-list) by
     // changing this construction site — every route that screens deposits
@@ -187,6 +226,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Public routes
     let public = Router::new()
+        .route("/_status", get(routes::status::get_status))
         .route("/auth/nonce", post(routes::auth::get_nonce))
         .route("/auth/verify", post(routes::auth::verify))
         .route("/models", get(routes::marketplace::browse))
