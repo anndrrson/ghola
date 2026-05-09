@@ -65,10 +65,34 @@ export function middleware(request: NextRequest) {
 
   const response = NextResponse.next();
 
-  // Security headers on every response
+  // Security headers on every response.
+  //
+  // connect-src had to grow to include our own API backends — the marketplace
+  // (orni-models-api), the SAID identity / merchant gateway (ghola-api),
+  // and the assistant cloud (thumper-cloud). Without these the page was
+  // silently blank because every API fetch tripped CSP.
   response.headers.set(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://accounts.google.com https://apis.google.com https://*.supabase.co wss://*.supabase.co; frame-src https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self';"
+    [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com https://apis.google.com",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob: https:",
+      "font-src 'self' data:",
+      // API + auth + identity backends
+      "connect-src 'self' " +
+        "https://accounts.google.com https://apis.google.com " +
+        "https://*.supabase.co wss://*.supabase.co " +
+        "https://orni-models-api.onrender.com " +
+        "https://ghola-api.onrender.com " +
+        "https://thumper-cloud.onrender.com " +
+        "https://ghola-gateway.onrender.com " +
+        "https://ghola-merchant-gateway.onrender.com",
+      "frame-src https://accounts.google.com",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+    ].join("; ") + ";"
   );
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("X-Frame-Options", "DENY");
