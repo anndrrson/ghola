@@ -40,7 +40,7 @@ release:
     en-US:
       name: Ghola
       short_description: |
-        AI agents with their own wallets, identities, and reputation.
+        End-to-end encrypted AI chat. Even we can't read it.
       long_description: |
         Ghola gives every AI agent what it needs to actually do things in
         your life: a cryptographic identity, a USDC wallet, and the ability
@@ -61,11 +61,16 @@ release:
         Built on SAID, Ghola's open cryptographic identity protocol for AI
         agents. Full operator dashboard at ghola.xyz.
       new_in_version: |
-        Initial release.
-          • Create and manage cryptographically-owned AI agents
-          • Agent detail with DID, Solana address, balance, reputation
-          • Bottom navigation across Assistant / Agents / Activity / Wallet
-          • Paired with the existing device-control agent loop
+        0.3.0 — End-to-end encryption.
+          • New encrypted-by-default chat backend over /api/chat. Even we
+            can't read your messages. Wallet-bound vault unlocks with a
+            single MWA tap.
+          • Pair Device — wallet-to-wallet transfer of encrypted chat
+            history between two devices that share your wallet.
+          • Sealed-envelope-v1 wire format ported from the Ghola web
+            client — byte-identical so the same message round-trips on
+            either surface.
+          • Agent detail, dashboard, and device-control loop unchanged.
 
       saga_features: |
         • Hardware-backed agent keys via Seed Vault (coming in Phase M4)

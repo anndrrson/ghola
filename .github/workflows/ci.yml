@@ -42,6 +42,41 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  envelope-vector-drift:
+    name: Envelope vector-drift gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Regenerate the committed parity vectors. Any drift (Rust crate
+      # wire-format change, dep upgrade that perturbs ChaCha output, etc.)
+      # will alter envelope_vectors.json and the diff step will fail the
+      # build. Drift is opt-in — the developer regenerates intentionally
+      # and commits the new fixture.
+      - name: Regenerate envelope_vectors.json
+        run: |
+          cargo run -p said-envelope --example gen_vectors -- \
+            --out android/app/src/test/resources/envelope_vectors.json
+      - name: Diff against committed fixture
+        run: |
+          git diff --exit-code android/app/src/test/resources/envelope_vectors.json
+
+  android:
+    name: Android (lint + unit tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
   docker:
     name: Docker (build)
     runs-on: ubuntu-latest
