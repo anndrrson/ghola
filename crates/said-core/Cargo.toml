@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 said-types = { workspace = true }
+said-noncecache = { workspace = true }
 ed25519-bip32 = { workspace = true }
 bip39 = { workspace = true }
 aes-gcm = { workspace = true }

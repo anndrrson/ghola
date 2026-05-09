@@ -6,20 +6,48 @@ const TURNKEY_API_BASE_URL = "https://api.turnkey.com";
 
 export async function POST(req: NextRequest) {
   try {
-    const { message, subOrgId, walletAddress } = await req.json();
-    if (!message || !subOrgId || !walletAddress) {
+    const { message, messageHex, subOrgId, walletAddress } = await req.json();
+
+    // Caller must provide exactly one of `message` (UTF-8 string) or
+    // `messageHex` (already-binary payload). The hex path exists so
+    // callers that need to sign cryptographic challenges (e.g. the
+    // session-vault unlock challenge, which contains a binary salt)
+    // can do so without the TextEncoder pass that would corrupt
+    // non-UTF-8 bytes.
+    const hasMessage = typeof message === "string";
+    const hasMessageHex = typeof messageHex === "string";
+    if (hasMessage === hasMessageHex) {
       return NextResponse.json(
-        { error: "message, subOrgId, and walletAddress are required" },
+        { error: "provide exactly one of `message` or `messageHex`" },
+        { status: 400 }
+      );
+    }
+    if (!subOrgId || !walletAddress) {
+      return NextResponse.json(
+        { error: "subOrgId and walletAddress are required" },
         { status: 400 }
       );
     }
 
-    // Input validation
-    if (typeof message !== "string" || message.length > 1024) {
+    if (hasMessage && (message as string).length > 1024) {
       return NextResponse.json(
-        { error: "message must be a string with at most 1024 characters" },
+        { error: "message must be at most 1024 characters" },
         { status: 400 }
       );
+    }
+    if (hasMessageHex) {
+      if ((messageHex as string).length > 4096) {
+        return NextResponse.json(
+          { error: "messageHex must be at most 4096 hex characters" },
+          { status: 400 }
+        );
+      }
+      if (!/^[0-9a-fA-F]*$/.test(messageHex as string) || (messageHex as string).length % 2 !== 0) {
+        return NextResponse.json(
+          { error: "messageHex must be even-length lowercase/uppercase hex" },
+          { status: 400 }
+        );
+      }
     }
     if (typeof subOrgId !== "string" || subOrgId.length > 128) {
       return NextResponse.json(
@@ -53,9 +81,9 @@ export async function POST(req: NextRequest) {
 
     const client = sdk.apiClient();
 
-    // Convert message string to hex
-    const messageBytes = new TextEncoder().encode(message);
-    const hexPayload = Buffer.from(messageBytes).toString("hex");
+    const hexPayload = hasMessageHex
+      ? (messageHex as string).toLowerCase()
+      : Buffer.from(new TextEncoder().encode(message as string)).toString("hex");
 
     // Sign using parent org credentials on behalf of sub-org
     const result = await client.signRawPayload({

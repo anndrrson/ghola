@@ -1,6 +1,29 @@
-//! HTTP transport for the SAID MCP server with UCAN bearer token authentication.
+//! HTTP transport for the SAID MCP server with UCAN bearer-token authentication.
+//!
+//! ## Per-request session isolation
+//!
+//! An earlier version of this file stashed verified capabilities in a shared
+//! `Arc<Mutex<Option<Vec<Capability>>>>` written by the auth middleware and
+//! `take()`-d by the rmcp service factory. That was unsound under
+//! concurrency: request A's caps could be consumed by the factory call
+//! triggered by request B, allowing a low-privilege session to satisfy
+//! tools that required higher capabilities. The current implementation
+//! stores the verified session in a Tokio task-local
+//! ([`crate::REQUEST_SESSION`]) scoped around the next-handler invocation,
+//! so capabilities are bound to the request's task and cannot leak across
+//! parallel requests.
+//!
+//! ## UCAN replay protection
+//!
+//! Every UCAN carries a per-issuance `nnc` claim. The middleware verifies
+//! the token through [`said_core::verify_ucan_with_replay`], which records
+//! the nonce in a long-lived [`said_core::NonceCache`] (default TTL: 1
+//! hour). A second presentation of the same token within the TTL window
+//! is rejected as a replay — even if the token is otherwise still inside
+//! its `exp`.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::{
     body::Body,
@@ -16,118 +39,123 @@ use rmcp::transport::streamable_http_server::{
 };
 use tower_http::cors::CorsLayer;
 
-use said_core::Wallet;
-use said_types::{Capability, KeyType, Provider};
+use said_core::{NonceCache, Wallet};
+use said_types::{KeyType, Provider};
 
-use crate::SaidServer;
+use crate::{RequestSession, SaidServer, REQUEST_SESSION};
 
-/// Shared state for the auth middleware.
+/// How long a UCAN nonce stays in the replay cache. Long enough to cover
+/// the maximum sane token lifetime so an attacker who captures a token
+/// can't replay it later in the validity window.
+const REPLAY_TTL_SECS: u64 = 60 * 60;
+
+/// Shared state for the auth middleware. Note: nothing about a single
+/// request lives in here — request-scoped data flows through the task-local
+/// established by `auth_middleware`.
 #[derive(Clone)]
 struct AuthState {
     wallet: Arc<Mutex<Wallet>>,
-    /// The verified capabilities are stored here by the middleware
-    /// and consumed by the service factory when creating a new session.
-    current_capabilities: Arc<Mutex<Option<Vec<Capability>>>>,
-    /// The provider label from the authenticated session.
-    current_provider_label: Arc<Mutex<Option<String>>>,
+    nonce_cache: NonceCache,
 }
 
-/// Auth middleware: extracts and verifies the UCAN bearer token from the Authorization header.
+/// Auth middleware: extracts and verifies the UCAN bearer token, then runs
+/// the next handler inside a [`REQUEST_SESSION`] scope so tool dispatch in
+/// `SaidServer` can read the verified capabilities for *this* request.
 async fn auth_middleware(
     state: AuthState,
     req: Request,
     next: Next,
 ) -> Result<Response, Response> {
-    // Extract bearer token from Authorization header
-    let auth_header = req
+    let token = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .map(|s| s.to_string());
-
-    let token = auth_header.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            "Missing Authorization: Bearer <token> header",
-        )
-            .into_response()
-    })?;
-
-    // Verify the token using the wallet (scope the lock so it's dropped before await)
-    let (capabilities, provider_label) = {
-        let wallet = state.wallet.lock().unwrap();
-
-        // Get master public key for verification
-        let master_xprv = wallet.derive_provider_key(Provider::Master, KeyType::Signing, 0);
-        let master_pub = said_core::ucan::xprv_to_verifying_key(&master_xprv);
-
-        // Verify the UCAN token (signature + expiry)
-        let payload = said_core::verify_ucan(&token, &master_pub).map_err(|e| {
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                format!("Token verification failed: {}", e),
+                "Missing Authorization: Bearer <token> header",
             )
                 .into_response()
         })?;
 
-        // Check that the session is not revoked
+    // Verify the token + nonce + load session metadata. Hold the wallet
+    // lock only for the duration of the synchronous crypto work — never
+    // across `await`.
+    let session = {
+        let wallet = state.wallet.lock().unwrap();
+
+        let master_xprv = wallet.derive_provider_key(Provider::Master, KeyType::Signing, 0);
+        let master_pub = said_core::ucan::xprv_to_verifying_key(&master_xprv);
+
+        let payload = said_core::verify_ucan_with_replay(&token, &master_pub, &state.nonce_cache)
+            .map_err(|e| {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    format!("Token verification failed: {}", e),
+                )
+                    .into_response()
+            })?;
+
         let sessions: Vec<said_types::ProviderSession> =
             wallet.storage().load("sessions").unwrap_or_default();
-        let session = sessions.iter().find(|s| s.token == token).ok_or_else(|| {
-            (StatusCode::UNAUTHORIZED, "Unknown session token").into_response()
-        })?;
-        if session.revoked {
+        let stored = sessions
+            .iter()
+            .find(|s| s.token == token)
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Unknown session token").into_response())?;
+        if stored.revoked {
             return Err((StatusCode::UNAUTHORIZED, "Session has been revoked").into_response());
         }
 
-        // Extract capabilities and provider label from the session
-        let caps = said_core::ucan::capabilities_from_payload(&payload);
-        let label = session.label.clone();
-        (caps, label)
+        RequestSession {
+            capabilities: said_core::ucan::capabilities_from_payload(&payload),
+            provider_label: Some(stored.label.clone()),
+            issuer_did: Some(payload.iss),
+        }
     };
 
-    // Store capabilities and provider label for the service factory
-    *state.current_capabilities.lock().unwrap() = Some(capabilities);
-    *state.current_provider_label.lock().unwrap() = Some(provider_label);
-
-    Ok(next.run(req).await)
+    Ok(REQUEST_SESSION.scope(session, next.run(req)).await)
 }
 
-/// Start the HTTP MCP server with UCAN authentication.
+/// Start the HTTP MCP server with UCAN authentication and a long-lived
+/// nonce cache for replay protection.
 pub async fn run_http_server(
     wallet: Wallet,
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let wallet = Arc::new(Mutex::new(wallet));
+    let nonce_cache = NonceCache::new(REPLAY_TTL_SECS);
+
+    // Periodic prune so the cache doesn't grow unboundedly. Runs on a
+    // background task; if it ever panics the only consequence is a slow
+    // memory drift, never a security regression.
+    {
+        let cache = nonce_cache.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                cache.prune();
+            }
+        });
+    }
 
     let auth_state = AuthState {
         wallet: wallet.clone(),
-        current_capabilities: Arc::new(Mutex::new(None)),
-        current_provider_label: Arc::new(Mutex::new(None)),
+        nonce_cache,
     };
 
     let config = StreamableHttpServerConfig::default();
     let ct = config.cancellation_token.clone();
 
-    // Factory creates a SaidServer with the capabilities from the last verified request
-    let caps_for_factory = auth_state.current_capabilities.clone();
-    let label_for_factory = auth_state.current_provider_label.clone();
+    // The factory builds a SaidServer once per session. It carries no
+    // request-scoped data — all per-request state lives in the
+    // REQUEST_SESSION task-local that auth_middleware scopes around the
+    // request.
     let wallet_for_factory = wallet.clone();
     let mcp_service = StreamableHttpService::new(
-        move || {
-            let caps = caps_for_factory
-                .lock()
-                .unwrap()
-                .take()
-                .unwrap_or_default();
-            let label = label_for_factory.lock().unwrap().take();
-            Ok(SaidServer::new_with_auth(
-                wallet_for_factory.clone(),
-                caps,
-                label,
-            ))
-        },
+        move || Ok(SaidServer::new_http(wallet_for_factory.clone())),
         Arc::new(LocalSessionManager::default()),
         config,
     );

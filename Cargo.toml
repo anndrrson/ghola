@@ -3,6 +3,8 @@ members = [
     # Identity (SAID)
     "crates/said-types",
     "crates/said-core",
+    "crates/said-envelope",
+    "crates/said-noncecache",
     "crates/said-solana",
     "crates/said-cloud",
     "crates/said-wasm",
@@ -120,6 +122,8 @@ tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 # Internal — SAID
 said-types = { path = "crates/said-types" }
 said-core = { path = "crates/said-core" }
+said-envelope = { path = "crates/said-envelope" }
+said-noncecache = { path = "crates/said-noncecache" }
 said-solana = { path = "crates/said-solana" }
 said-x402 = { path = "crates/said-x402" }
 said-turnkey = { path = "crates/said-turnkey" }

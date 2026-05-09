@@ -1,0 +1,9 @@
+[package]
+name = "said-noncecache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "TTL-bounded nonce cache for replay protection. Shared by thumper-relay (auth handshake) and the SAID MCP HTTP server (UCAN nnc enforcement)."
+
+[dependencies]
+dashmap = { workspace = true }

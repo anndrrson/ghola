@@ -215,6 +215,23 @@ ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON chat_messages(user_id);
 
+-- Server-blind end-to-end encryption (sealed envelope v1).
+-- envelope_v IS NULL  → legacy v0 plaintext row, content column carries the
+--                       message body. These rows remain readable indefinitely
+--                       (no bulk migration — explicit per the v1 plan).
+-- envelope_v = 1      → v1 sealed envelope, ciphertext in envelope_blob.
+--                       The cloud cannot read content for these rows; the
+--                       content column is NULL and ignored.
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS envelope_blob BYTEA;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS envelope_v SMALLINT;
+ALTER TABLE chat_messages ALTER COLUMN content DROP NOT NULL;
+-- Either content is present (legacy) OR an envelope is present (v1+). A row
+-- with neither is a bug — reject it at write time.
+ALTER TABLE chat_messages DROP CONSTRAINT IF EXISTS chat_messages_payload_present;
+ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_payload_present
+    CHECK (content IS NOT NULL OR envelope_blob IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_envelope_v ON chat_messages(envelope_v);
+
 -- Twitter auth
 ALTER TABLE users ADD COLUMN IF NOT EXISTS twitter_id TEXT UNIQUE;
 
@@ -643,4 +660,34 @@ CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id);
 ALTER TABLE calls         ADD COLUMN IF NOT EXISTS agent_id UUID;
 ALTER TABLE email_actions ADD COLUMN IF NOT EXISTS agent_id UUID;
 ALTER TABLE task_bounties ADD COLUMN IF NOT EXISTS agent_id UUID;
+
+-- ───────────────────────────────────────────────────────────────────────
+-- Pair Device handshake mailbox (E2E key transport between user-owned devices)
+-- ───────────────────────────────────────────────────────────────────────
+--
+-- A short-lived, write-once mailbox so device A can hand its session DEKs
+-- to device B without the cloud being able to read them. Device A
+-- encrypts a sealed envelope addressed to device B's freshly-minted
+-- ephemeral X25519 pubkey (printed by B in a QR code) and POSTs it
+-- here. Device B polls until the mailbox arrives and the row is deleted
+-- on first read. The cloud only ever sees opaque ciphertext — see
+-- crates/said-envelope for the wire format.
+--
+-- Constraints that matter:
+--   - id is a high-entropy random token chosen by the receiving device
+--     (≥16 bytes encoded). The cloud rejects PUT/GET on insufficiently
+--     random ids at the route layer.
+--   - One ciphertext per id (write-once). Subsequent POSTs to the same
+--     id must fail; subsequent GETs after the first deletion must 404.
+--   - Short TTL: rows expire after a few minutes. The route prunes on
+--     read, so a cloud operator can never replay an unread mailbox to
+--     a different receiver.
+CREATE TABLE IF NOT EXISTS device_handshakes (
+    id              TEXT PRIMARY KEY,
+    envelope_blob   BYTEA NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_device_handshakes_expires
+    ON device_handshakes(expires_at);
 "#;
