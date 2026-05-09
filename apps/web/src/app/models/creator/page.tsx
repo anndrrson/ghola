@@ -8,6 +8,13 @@ import Link from "next/link";
 import { Plus, BarChart3, MessageSquare, DollarSign, Bot } from "lucide-react";
 import { useRouter } from "next/navigation";
 
+const formatPrice = (microUsdc: number) => {
+  const usd = microUsdc / 1_000_000;
+  if (usd === 0) return "Free";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(2)}`;
+};
+
 export default function CreatorDashboard() {
   const { authenticated, isCreator } = useWalletAuth();
   const router = useRouter();
@@ -44,7 +51,7 @@ export default function CreatorDashboard() {
         </p>
         <button
           onClick={() => router.push("/")}
-          className="rounded-xl bg-[#C49240] px-6 py-2.5 text-sm font-semibold text-[#eef1f8] hover:bg-[#D4A04A]"
+          className="rounded-xl bg-[#5bb8ff] px-6 py-2.5 text-sm font-semibold text-[#eef1f8] hover:bg-[#3da8ff]"
         >
           Back to Home
         </button>
@@ -58,7 +65,7 @@ export default function CreatorDashboard() {
         <h1 className="text-3xl font-bold">Creator Dashboard</h1>
         <Link
           href="/models/creator/new"
-          className="inline-flex items-center gap-2 rounded-xl bg-[#D4A04A] px-5 py-2.5 text-sm font-semibold text-[#eef1f8] hover:bg-[#C49240] transition-colors"
+          className="inline-flex items-center gap-2 rounded-xl bg-[#3da8ff] px-5 py-2.5 text-sm font-semibold text-[#eef1f8] hover:bg-[#5bb8ff] transition-colors"
         >
           <Plus className="h-4 w-4" />
           Create Model
@@ -97,7 +104,7 @@ export default function CreatorDashboard() {
                 key={s.label}
                 className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5"
               >
-                <s.icon className="mb-2 h-5 w-5 text-[#D4A04A]" />
+                <s.icon className="mb-2 h-5 w-5 text-[#3da8ff]" />
                 <p className="text-2xl font-bold">{s.value}</p>
                 <p className="text-xs text-[#4a5568]">{s.label}</p>
               </div>
@@ -122,14 +129,13 @@ export default function CreatorDashboard() {
               className="flex items-center justify-between rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-4"
             >
               <div className="flex items-center gap-4">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#D4A04A]/10">
-                  <Bot className="h-5 w-5 text-[#D4A04A]" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#3da8ff]/10">
+                  <Bot className="h-5 w-5 text-[#3da8ff]" />
                 </div>
                 <div>
                   <h3 className="font-semibold">{m.name}</h3>
                   <p className="text-xs text-[#4a5568]">
-                    {m.total_queries.toLocaleString()} queries | $
-                    {m.price_per_query.toFixed(2)}/query
+                    {m.total_queries.toLocaleString()} queries | {formatPrice(m.price_per_query)}/query
                   </p>
                 </div>
               </div>
@@ -160,7 +166,7 @@ export default function CreatorDashboard() {
           <p className="mb-4 text-[#4a5568]">You haven&apos;t created any models yet.</p>
           <Link
             href="/models/creator/new"
-            className="inline-flex items-center gap-2 rounded-xl bg-[#C49240] px-5 py-2.5 text-sm font-semibold text-[#eef1f8] hover:bg-[#D4A04A]"
+            className="inline-flex items-center gap-2 rounded-xl bg-[#5bb8ff] px-5 py-2.5 text-sm font-semibold text-[#eef1f8] hover:bg-[#3da8ff]"
           >
             <Plus className="h-4 w-4" />
             Create Your First Model

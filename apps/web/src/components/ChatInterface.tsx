@@ -111,7 +111,7 @@ export default function ChatInterface({
             <div
               className={`max-w-[80%] rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
                 msg.role === "user"
-                  ? "bg-[#C49240] text-[#eef1f8]"
+                  ? "bg-[#5bb8ff] text-[#eef1f8]"
                   : "bg-[#161822] text-[#eef1f8]"
               }`}
             >
@@ -141,12 +141,12 @@ export default function ChatInterface({
             onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
             placeholder="Type a message..."
             disabled={isStreaming}
-            className="flex-1 rounded-xl border border-[#1e2a3a] bg-[#161822] px-4 py-2.5 text-sm text-[#eef1f8] placeholder-[#4a5568] outline-none transition focus:border-[#D4A04A]"
+            className="flex-1 rounded-xl border border-[#1e2a3a] bg-[#161822] px-4 py-2.5 text-sm text-[#eef1f8] placeholder-[#4a5568] outline-none transition focus:border-[#3da8ff]"
           />
           <button
             onClick={handleSend}
             disabled={isStreaming || !input.trim()}
-            className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#C49240] text-[#eef1f8] transition hover:bg-[#D4A04A] disabled:opacity-50 disabled:hover:bg-[#C49240]"
+            className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#5bb8ff] text-[#eef1f8] transition hover:bg-[#3da8ff] disabled:opacity-50 disabled:hover:bg-[#5bb8ff]"
           >
             {isStreaming ? (
               <Loader2 className="h-4 w-4 animate-spin" />
