@@ -129,11 +129,11 @@ dependencies {
     // Ed25519 / X25519 only lands at API 33. AES-GCM still uses the platform
     // Cipher. See android/app/src/main/java/xyz/ghola/app/crypto/ for the
     // wire-format port of crates/said-envelope.
-    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.77")
 
     // Unit tests for crypto / vault / pair-device.
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20231013")
-    testImplementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    testImplementation("org.bouncycastle:bcprov-jdk18on:1.77")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
