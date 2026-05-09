@@ -820,13 +820,21 @@ mod tests {
     #[test]
     fn test_handle_reuse_after_close() {
         // Verify that closing a handle makes slot reuse possible.
-        // We hold the global lock across the entire sequence to avoid
-        // interference from parallel tests.
+        //
+        // We hold the global lock across the entire sequence to keep
+        // parallel tests out, but we cannot assume the wallet vec is
+        // empty: earlier tests in this binary may have closed their
+        // handles and left `None` slots scattered through the vec.
+        // The contract under test is "store_wallet's first-fit reuses
+        // some `None` slot rather than always growing the vec," not
+        // "the specific slot we just freed is the one that gets reused."
         let entropy = Mnemonic::generate(24).unwrap().to_entropy();
 
         let mut wallets = WALLETS.lock().unwrap();
+        let baseline_len = wallets.len();
 
-        // Insert two wallets
+        // Insert two wallets at the tail so we know exactly which
+        // indices we own.
         let w1 = wallet_from_entropy(&entropy).unwrap();
         let h1 = {
             let idx = wallets.len();
@@ -840,11 +848,14 @@ mod tests {
             idx
         };
         assert!(h2 > h1);
+        let len_after_inserts = wallets.len();
 
-        // Close h1 (set to None)
+        // Close h1.
         wallets[h1] = None;
 
-        // Insert a third -- should reuse h1's slot
+        // Insert a third — should reuse SOME `None` slot rather than
+        // grow the vec. That slot may be h1 (if no earlier test left
+        // a None) or it may be a lower index from a prior test.
         let w3 = wallet_from_entropy(&entropy).unwrap();
         let mut h3 = None;
         for (i, slot) in wallets.iter_mut().enumerate() {
@@ -855,10 +866,25 @@ mod tests {
             }
         }
         let h3 = h3.expect("should have found a free slot");
-        assert_eq!(h3, h1, "expected slot {} to be reused, got {}", h1, h3);
 
-        // Cleanup
-        wallets[h1] = None;
+        // The actual invariant: insertion reused an existing None and
+        // didn't grow the vec.
+        assert_eq!(
+            wallets.len(),
+            len_after_inserts,
+            "vec grew instead of reusing a None slot",
+        );
+        assert!(
+            h3 < len_after_inserts,
+            "h3={} not within range",
+            h3,
+        );
+        let _ = baseline_len;
+
+        // Cleanup our own slots only.
+        if let Some(slot) = wallets.get_mut(h3) {
+            *slot = None;
+        }
         wallets[h2] = None;
     }
 }

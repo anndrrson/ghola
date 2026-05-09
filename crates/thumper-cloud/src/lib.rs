@@ -178,6 +178,17 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/devices", get(routes::devices::list_devices))
         .route("/api/devices/{id}", delete(routes::devices::remove_device))
         .route("/api/devices/{id}/push-token", post(routes::devices::update_push_token))
+        // Pair Device handshake mailbox — unauthenticated (the receiving
+        // device is fresh and has no auth yet); confidentiality comes
+        // from the sealed envelope, not from any header check.
+        .route(
+            "/api/devices/handshake",
+            post(routes::handshake::post_handshake),
+        )
+        .route(
+            "/api/devices/handshake/{id}",
+            get(routes::handshake::get_handshake),
+        )
         // Billing
         .route("/api/billing/checkout", post(routes::billing::create_checkout))
         .route("/api/billing/webhook", post(routes::billing::billing_webhook))
