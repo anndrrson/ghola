@@ -1,7 +1,6 @@
 package xyz.ghola.app.crypto
 
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
-import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
 import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.X25519PublicKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
@@ -136,7 +135,7 @@ object Envelope {
             throw EnvelopeError.InvalidSenderDid("not a did:key: $did")
         }
         val bytes = try {
-            Bs58.decode(rest)
+            Base58.decode(rest)
         } catch (e: IllegalArgumentException) {
             throw EnvelopeError.InvalidSenderDid("invalid base58 in did:key")
         }
@@ -461,47 +460,5 @@ object Envelope {
 
     private fun zero(b: ByteArray) {
         for (i in b.indices) b[i] = 0
-    }
-}
-
-/** Internal base58 (Bitcoin alphabet) decode, paired with `Base58.encode`. */
-internal object Bs58 {
-    private const val ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-    private val INDEXES = IntArray(128) { -1 }.also {
-        for (i in ALPHABET.indices) it[ALPHABET[i].code] = i
-    }
-
-    fun decode(input: String): ByteArray {
-        if (input.isEmpty()) return ByteArray(0)
-        val input58 = IntArray(input.length)
-        for (i in input.indices) {
-            val c = input[i]
-            val digit = if (c.code < 128) INDEXES[c.code] else -1
-            require(digit >= 0) { "invalid base58 char at $i" }
-            input58[i] = digit
-        }
-        var zeros = 0
-        while (zeros < input58.size && input58[zeros] == 0) zeros++
-        val decoded = ByteArray(input.length)
-        var outputStart = decoded.size
-        var startAt = zeros
-        while (startAt < input58.size) {
-            val mod = divmod(input58, startAt, 58, 256)
-            if (input58[startAt] == 0) startAt++
-            decoded[--outputStart] = mod.toByte()
-        }
-        while (outputStart < decoded.size && decoded[outputStart].toInt() == 0) outputStart++
-        return ByteArray(zeros) + decoded.copyOfRange(outputStart, decoded.size)
-    }
-
-    private fun divmod(number: IntArray, firstDigit: Int, base: Int, divisor: Int): Int {
-        var remainder = 0
-        for (i in firstDigit until number.size) {
-            val digit = number[i]
-            val temp = remainder * base + digit
-            number[i] = temp / divisor
-            remainder = temp % divisor
-        }
-        return remainder
     }
 }

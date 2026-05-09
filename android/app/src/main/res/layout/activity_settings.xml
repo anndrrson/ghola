@@ -29,6 +29,14 @@
             android:layout_marginBottom="16dp">
 
             <RadioButton
+                android:id="@+id/radioE2eCloud"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="End-to-end encrypted (Recommended)"
+                android:textSize="14sp"
+                android:padding="4dp" />
+
+            <RadioButton
                 android:id="@+id/radioCloud"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

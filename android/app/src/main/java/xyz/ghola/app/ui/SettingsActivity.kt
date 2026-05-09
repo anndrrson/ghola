@@ -53,6 +53,7 @@ class SettingsActivity : AppCompatActivity() {
 
     // Backend selection
     private lateinit var backendRadioGroup: RadioGroup
+    private lateinit var radioE2eCloud: RadioButton
     private lateinit var radioCloud: RadioButton
     private lateinit var radioQwenCloud: RadioButton
     private lateinit var radioLocal: RadioButton
@@ -95,6 +96,7 @@ class SettingsActivity : AppCompatActivity() {
 
         // Bind views
         backendRadioGroup = findViewById(R.id.backendRadioGroup)
+        radioE2eCloud = findViewById(R.id.radioE2eCloud)
         radioCloud = findViewById(R.id.radioCloud)
         radioQwenCloud = findViewById(R.id.radioQwenCloud)
         radioLocal = findViewById(R.id.radioLocal)
@@ -144,6 +146,10 @@ class SettingsActivity : AppCompatActivity() {
 
         // Set initial backend selection
         when {
+            secureStorage.isE2ECloudMode() -> {
+                radioE2eCloud.isChecked = true
+                showE2eCloudSection()
+            }
             secureStorage.isLocalMode() -> {
                 radioLocal.isChecked = true
                 showLocalSection()
@@ -161,6 +167,7 @@ class SettingsActivity : AppCompatActivity() {
         // Backend toggle
         backendRadioGroup.setOnCheckedChangeListener { _, checkedId ->
             when (checkedId) {
+                R.id.radioE2eCloud -> showE2eCloudSection()
                 R.id.radioCloud -> showCloudSection()
                 R.id.radioQwenCloud -> showQwenCloudSection()
                 R.id.radioLocal -> showLocalSection()
@@ -212,6 +219,14 @@ class SettingsActivity : AppCompatActivity() {
             return true
         }
         return super.onOptionsItemSelected(item)
+    }
+
+    private fun showE2eCloudSection() {
+        // No backend-specific config UI for E2E mode in v0.3 — the auth
+        // token + Solana address come from the Wallet / sign-in flow.
+        cloudSection.visibility = View.GONE
+        qwenCloudSection.visibility = View.GONE
+        localSection.visibility = View.GONE
     }
 
     private fun showCloudSection() {
@@ -290,6 +305,17 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun saveSettings() {
         when {
+            radioE2eCloud.isChecked -> {
+                if (!secureStorage.hasSolanaAddress()) {
+                    Toast.makeText(
+                        this,
+                        "Connect a Solana wallet first (Wallet tab)",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return
+                }
+                secureStorage.setBackendMode(SecureStorage.BACKEND_E2E_CLOUD)
+            }
             radioLocal.isChecked -> {
                 if (!modelManager.isModelDownloaded()) {
                     Toast.makeText(this, "Please download the model first", Toast.LENGTH_SHORT).show()

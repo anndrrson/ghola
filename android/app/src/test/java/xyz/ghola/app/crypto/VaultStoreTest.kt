@@ -153,7 +153,7 @@ class VaultStoreTest {
             VaultStore.SignResult.Success(s.generateSignature())
         }
         assertThrows(VaultStore.VaultLockedError.DeterminismViolation::class.java) {
-            VaultStore(InMemoryPrefs(backing), did).unlock(flaky)
+            VaultStore(InMemoryPrefs(backing), did).unlock(flaky, verifyDeterminism = true)
         }
     }
 

@@ -140,13 +140,19 @@ class VaultStore private constructor(
      * prefs.
      *
      * On a returning install: signs the unlock challenge (same wallet
-     * required), derives the wrapping key, unwraps the KEK. Adds a
-     * determinism guard — re-signs once and aborts if the signatures
-     * differ; that means the wallet is non-deterministic and any vault
-     * persisted under it would be unrecoverable.
+     * required), derives the wrapping key, unwraps the KEK.
+     *
+     * @param verifyDeterminism Re-sign once and compare so a non-RFC-8032
+     *  wallet (different signature for the same challenge) can't corrupt
+     *  the vault. Costs an extra wallet popup; default false in
+     *  production because all major Solana wallets are deterministic and
+     *  the AES-GCM unwrap acts as an implicit check (a flaky signature
+     *  produces a different kekWrapKey, which fails to unwrap and yields
+     *  WrongSignature). Tests pass true to exercise the explicit guard.
      */
     @Throws(VaultLockedError::class)
-    fun unlock(signMessage: SignMessage) {
+    @JvmOverloads
+    fun unlock(signMessage: SignMessage, verifyDeterminism: Boolean = false) {
         if (masterKek != null) {
             touch()
             return
@@ -158,15 +164,13 @@ class VaultStore private constructor(
             val challenge = VaultIdentity.unlockChallenge(userDid, existingSalt)
             val sig1 = sigOrThrow(signMessage.sign(challenge))
             val mat = VaultIdentity.deriveVaultMaterial(sig1, existingSalt)
-            // Determinism guard: a second signature must match. We are
-            // willing to spend one extra wallet popup at unlock to detect
-            // a non-deterministic wallet up front, before it corrupts the
-            // vault on a future write.
-            val sig2 = sigOrThrow(signMessage.sign(challenge))
-            if (!sig1.contentEquals(sig2)) {
-                Log.e(TAG, "non-deterministic wallet signature on unlock — vault corruption risk")
-                mat.zeroize()
-                throw VaultLockedError.DeterminismViolation
+            if (verifyDeterminism) {
+                val sig2 = sigOrThrow(signMessage.sign(challenge))
+                if (!sig1.contentEquals(sig2)) {
+                    Log.e(TAG, "non-deterministic wallet signature on unlock")
+                    mat.zeroize()
+                    throw VaultLockedError.DeterminismViolation
+                }
             }
             val kek = aesGcmUnwrap(mat.kekWrapKey, wrappedKek)
                 ?: run {

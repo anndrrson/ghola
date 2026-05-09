@@ -91,6 +91,10 @@ class WalletActivity : AppCompatActivity() {
                 onSuccess = { address ->
                     connectStatus.text = "connected"
                     connectedPubkey.text = address
+                    // Phase 0.3: persist so ChatActivity (E2E vault unlock)
+                    // and PairDevice (handshake signing) can reuse the same
+                    // authorized wallet without re-prompting the user.
+                    storage.setSolanaAddress(address)
                 },
                 onFailure = { err ->
                     connectStatus.text = "not connected"
