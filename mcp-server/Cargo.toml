@@ -34,3 +34,7 @@ reqwest = { version = "0.12", features = ["json"] }
 base64 = { workspace = true }
 borsh = "0.10"
 curve25519-dalek = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+

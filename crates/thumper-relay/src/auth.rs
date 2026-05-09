@@ -1,44 +1,14 @@
-use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use dashmap::DashMap;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
 
 use thumper_types::AuthPayload;
 
 use crate::error::RelayError;
 
-/// Cache of recently-seen nonces to prevent replay attacks.
-/// Nonces are stored for `ttl` seconds, then pruned.
-#[derive(Clone)]
-pub struct NonceCache {
-    inner: Arc<DashMap<String, Instant>>,
-    ttl_secs: u64,
-}
-
-impl NonceCache {
-    pub fn new(ttl_secs: u64) -> Self {
-        Self {
-            inner: Arc::new(DashMap::new()),
-            ttl_secs,
-        }
-    }
-
-    /// Returns true if the nonce was already seen (replay detected).
-    pub fn check_and_insert(&self, nonce: &str) -> bool {
-        if self.inner.contains_key(nonce) {
-            return true; // replay
-        }
-        self.inner.insert(nonce.to_string(), Instant::now());
-        false
-    }
-
-    /// Remove expired nonces.
-    pub fn prune(&self) {
-        let cutoff = Instant::now() - std::time::Duration::from_secs(self.ttl_secs);
-        self.inner.retain(|_, v| *v > cutoff);
-    }
-}
+// Re-export the shared replay-protection cache so existing callers
+// (`thumper_relay::auth::NonceCache`) keep working unchanged.
+pub use said_noncecache::NonceCache;
 
 /// Verify an authentication payload. Returns the authenticated pubkey on success.
 ///

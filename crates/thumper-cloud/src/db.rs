@@ -215,6 +215,23 @@ ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON chat_messages(user_id);
 
+-- Server-blind end-to-end encryption (sealed envelope v1).
+-- envelope_v IS NULL  → legacy v0 plaintext row, content column carries the
+--                       message body. These rows remain readable indefinitely
+--                       (no bulk migration — explicit per the v1 plan).
+-- envelope_v = 1      → v1 sealed envelope, ciphertext in envelope_blob.
+--                       The cloud cannot read content for these rows; the
+--                       content column is NULL and ignored.
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS envelope_blob BYTEA;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS envelope_v SMALLINT;
+ALTER TABLE chat_messages ALTER COLUMN content DROP NOT NULL;
+-- Either content is present (legacy) OR an envelope is present (v1+). A row
+-- with neither is a bug — reject it at write time.
+ALTER TABLE chat_messages DROP CONSTRAINT IF EXISTS chat_messages_payload_present;
+ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_payload_present
+    CHECK (content IS NOT NULL OR envelope_blob IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_envelope_v ON chat_messages(envelope_v);
+
 -- Twitter auth
 ALTER TABLE users ADD COLUMN IF NOT EXISTS twitter_id TEXT UNIQUE;
 
