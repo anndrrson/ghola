@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
+import xyz.ghola.app.BuildConfig
 
 class SecureStorage(context: Context) {
 
@@ -29,7 +30,11 @@ class SecureStorage(context: Context) {
         private const val KEY_SOLANA_ADDRESS = "solana_address"
         private const val DEFAULT_MODEL = "claude-sonnet-4-6"
         private const val DEFAULT_QWEN_MODEL = "qwen2.5-72b-instruct"
-        private const val DEFAULT_CLOUD_URL = "https://api.thumper.ai"
+        // Source of truth lives in build.gradle.kts buildConfigField so debug
+        // builds can point at a local thumper-cloud while release stays on
+        // https://api.ghola.xyz. Override at build time:
+        //   ./gradlew … -PghoLaCloudUrl=http://<lan-ip>:3000
+        private val DEFAULT_CLOUD_URL: String = BuildConfig.DEFAULT_CLOUD_URL
         private const val DEFAULT_SAID_URL = "https://ghola-api.onrender.com/v1"
         const val BACKEND_CLOUD = "cloud"
         const val BACKEND_QWEN_CLOUD = "qwen_cloud"
@@ -71,20 +76,19 @@ class SecureStorage(context: Context) {
 
     /**
      * Resolved backend mode. If the user has explicitly chosen a backend
-     * via Settings the stored value wins. Otherwise (fresh install, never
-     * touched Settings) we default to:
-     *
-     * - [BACKEND_E2E_CLOUD] when a wallet is paired (`hasWalletPackage`).
-     *   Phase 0.3 default — every wallet-paired install ships with E2E
-     *   chat on, so the marketing copy "Even we can't read it" is
-     *   truthful out of the box.
-     * - [BACKEND_QWEN_CLOUD] otherwise — the prior default for unpaired
-     *   installs. Direct-LLM, no E2E, mirrors v0.2.x behaviour.
+     * via Settings the stored value wins. Otherwise we default to
+     * [BACKEND_E2E_CLOUD] unconditionally — the marketing copy "Off the
+     * record. Even we can't read it." has to be true on first launch,
+     * not after the user pairs a wallet. The vault-unlock failure matrix
+     * routes `NoWalletPaired` to `MWAConnect` on first send, so fresh
+     * installs hit a wallet popup, not a DashScope API key form. Power
+     * users who want a direct-LLM fallback (Anthropic / Qwen / Local)
+     * can still pick one explicitly in Settings.
      */
     fun getBackendMode(): String {
         val stored = prefs.getString(KEY_BACKEND, null)
         if (stored != null) return stored
-        return if (hasWalletPackage()) BACKEND_E2E_CLOUD else BACKEND_QWEN_CLOUD
+        return BACKEND_E2E_CLOUD
     }
 
     fun setBackendMode(mode: String) {

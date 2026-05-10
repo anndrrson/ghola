@@ -1,9 +1,11 @@
 use axum::extract::State;
 use axum::Json;
+use chrono::Utc;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::{create_jwt, verify_google_token};
+use crate::auth::{create_jwt, verify_google_token, verify_siws};
 use crate::error::CloudError;
 use crate::state::AppState;
 
@@ -38,6 +40,105 @@ pub struct AuthResponse {
 #[derive(Deserialize)]
 pub struct RefreshRequest {
     pub token: String,
+}
+
+#[derive(Serialize)]
+pub struct SiwsChallengeResponse {
+    pub nonce: String,
+    pub ts: i64,
+    pub expires_at: i64,
+    pub challenge: String,
+}
+
+#[derive(Deserialize)]
+pub struct SiwsSignInRequest {
+    pub wallet_pubkey: String,
+    pub nonce: String,
+    pub challenge: String,
+    /// Base64-encoded 64-byte Ed25519 detached signature.
+    pub signature: String,
+}
+
+fn random_nonce_hex() -> String {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// GET /api/auth/siws/challenge
+pub async fn siws_challenge(
+    State(state): State<AppState>,
+) -> Result<Json<SiwsChallengeResponse>, CloudError> {
+    let nonce = random_nonce_hex();
+    let ts = Utc::now().timestamp();
+    let expires_at = ts + 300;
+    let challenge = format!(
+        "Sign in to Ghola\nNonce: {nonce}\nIssued At: {ts}\nExpires At: {expires_at}\nURI: https://ghola.xyz\nVersion: 1"
+    );
+
+    let mut store = state.siws_challenges.lock().await;
+    store.retain(|_, v| *v > ts);
+    store.insert(nonce.clone(), expires_at);
+    drop(store);
+
+    Ok(Json(SiwsChallengeResponse {
+        nonce,
+        ts,
+        expires_at,
+        challenge,
+    }))
+}
+
+/// POST /api/auth/siws
+pub async fn siws_sign_in(
+    State(state): State<AppState>,
+    Json(req): Json<SiwsSignInRequest>,
+) -> Result<Json<AuthResponse>, CloudError> {
+    let now = Utc::now().timestamp();
+    let expected_expiry = {
+        let mut store = state.siws_challenges.lock().await;
+        store.retain(|_, v| *v > now);
+        store.remove(&req.nonce)
+            .ok_or(CloudError::Auth("invalid or expired SIWS challenge".to_string()))?
+    };
+
+    if expected_expiry <= now {
+        return Err(CloudError::Auth("SIWS challenge expired".to_string()));
+    }
+    if !req.challenge.contains(&format!("Nonce: {}", req.nonce)) {
+        return Err(CloudError::Auth("SIWS challenge nonce mismatch".to_string()));
+    }
+
+    let sig_bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        &req.signature,
+    )
+    .map_err(|e| CloudError::Auth(format!("invalid SIWS signature encoding: {e}")))?;
+    verify_siws(&req.wallet_pubkey, req.challenge.as_bytes(), &sig_bytes)?;
+
+    let existing = sqlx::query_as::<_, (Uuid, String, Option<String>, Option<String>)>(
+        "SELECT id, COALESCE(tier, 'free'), email, display_name FROM users WHERE siws_pubkey = $1",
+    )
+    .bind(&req.wallet_pubkey)
+    .fetch_optional(&state.db)
+    .await?;
+
+    if let Some((user_id, tier, email, display_name)) = existing {
+        let token = create_jwt(user_id, email.as_deref(), display_name.as_deref(), &tier, &state.config.jwt_secret)?;
+        return Ok(Json(AuthResponse { token, user_id, is_new_user: false }));
+    }
+
+    let row = sqlx::query_as::<_, (Uuid, String)>(
+        "INSERT INTO users (siws_pubkey) VALUES ($1) RETURNING id, COALESCE(tier, 'free')",
+    )
+    .bind(&req.wallet_pubkey)
+    .fetch_one(&state.db)
+    .await?;
+    let (user_id, tier) = row;
+
+    auto_provision_wallet(state.clone(), user_id);
+    let token = create_jwt(user_id, None, None, &tier, &state.config.jwt_secret)?;
+    Ok(Json(AuthResponse { token, user_id, is_new_user: true }))
 }
 
 /// POST /api/auth/google

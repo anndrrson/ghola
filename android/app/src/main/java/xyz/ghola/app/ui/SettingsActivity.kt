@@ -1,6 +1,7 @@
 package xyz.ghola.app.ui
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -21,6 +22,7 @@ import androidx.appcompat.app.AppCompatActivity
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.ai.llama.ModelManager
+import xyz.ghola.app.cloud.ThumperCloudClient
 import xyz.ghola.app.service.ThumperAccessibilityService
 
 class SettingsActivity : AppCompatActivity() {
@@ -80,6 +82,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var a11yStatus: TextView
     private lateinit var enableA11yButton: Button
     private lateinit var openRelayButton: Button
+    private lateinit var connectGoogleButton: Button
     private lateinit var saveButton: Button
 
     private var isDownloading = false
@@ -115,6 +118,7 @@ class SettingsActivity : AppCompatActivity() {
         a11yStatus = findViewById(R.id.a11yStatus)
         enableA11yButton = findViewById(R.id.enableA11yButton)
         openRelayButton = findViewById(R.id.openRelayButton)
+        connectGoogleButton = findViewById(R.id.connectGoogleButton)
         saveButton = findViewById(R.id.saveButton)
 
         // Load existing values
@@ -200,6 +204,29 @@ class SettingsActivity : AppCompatActivity() {
 
         openRelayButton.setOnClickListener {
             startActivity(Intent(this, MainActivity::class.java))
+        }
+
+        connectGoogleButton.setOnClickListener {
+            val token = secureStorage.getCloudAuthToken()
+            if (token.isNullOrBlank()) {
+                Toast.makeText(this, "Sign in with wallet first", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            Thread {
+                val client = ThumperCloudClient(secureStorage.getCloudBaseUrl(), token)
+                val url = client.getGmailAuthorizeUrl()
+                runOnUiThread {
+                    if (url.isNullOrBlank()) {
+                        Toast.makeText(
+                            this,
+                            "Google connect unavailable right now",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    }
+                }
+            }.start()
         }
 
         // Pair Device entry points (Phase 0.3 — wallet-to-wallet vault sync).
@@ -334,7 +361,7 @@ class SettingsActivity : AppCompatActivity() {
             radioQwenCloud.isChecked -> {
                 val apiKey = qwenApiKeyInput.text.toString().trim()
                 if (apiKey.isEmpty()) {
-                    Toast.makeText(this, "DashScope API key is required", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "DashScope API key is required for BYOM Qwen mode", Toast.LENGTH_SHORT).show()
                     return
                 }
                 secureStorage.setQwenApiKey(apiKey)
@@ -344,7 +371,7 @@ class SettingsActivity : AppCompatActivity() {
             else -> {
                 val apiKey = apiKeyInput.text.toString().trim()
                 if (apiKey.isEmpty()) {
-                    Toast.makeText(this, "API key is required for cloud mode", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "API key is required for BYOM Claude mode", Toast.LENGTH_SHORT).show()
                     return
                 }
                 secureStorage.setApiKey(apiKey)

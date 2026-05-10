@@ -73,7 +73,7 @@ class ThumperCloudClient(
             put("objective", objective)
             if (taskId != null) put("task_id", taskId)
         }
-        return post("/api/calls", body)
+        return post("/api/calls/initiate", body)
     }
 
     // --- Emails ---
@@ -85,6 +85,15 @@ class ThumperCloudClient(
             if (tone != null) put("tone", tone)
         }
         return post("/api/emails/generate", body)
+    }
+
+    fun createEmailDraft(toAddress: String, subject: String, bodyText: String): JSONObject? {
+        val body = JSONObject().apply {
+            put("to_address", toAddress)
+            put("subject", subject)
+            put("body", bodyText)
+        }
+        return post("/api/emails/draft", body)
     }
 
     fun sendEmail(emailId: String): JSONObject? {
@@ -127,11 +136,28 @@ class ThumperCloudClient(
         return get("/api/billing/status")
     }
 
+    // --- Connected Accounts ---
+
+    fun getGmailAuthorizeUrl(): String? {
+        val resp = get("/api/accounts/authorize/gmail") ?: return null
+        return resp.optString("authorize_url", "").takeIf { it.isNotBlank() }
+    }
+
     // --- Templates ---
 
     fun listTemplates(category: String? = null): JSONArray? {
         val query = if (category != null) "?category=$category" else ""
         return getArray("/api/templates$query")
+    }
+
+    // --- Agent planning ---
+
+    fun planDeviceAction(message: String, envelopeBlobB64: String? = null): JSONObject? {
+        val body = JSONObject().apply {
+            put("message", message)
+            if (envelopeBlobB64 != null) put("envelope_blob_b64", envelopeBlobB64)
+        }
+        return post("/api/agent/plan", body)
     }
 
     // --- HTTP helpers ---

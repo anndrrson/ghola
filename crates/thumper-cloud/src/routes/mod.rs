@@ -19,3 +19,4 @@ pub mod agents;
 pub mod swarm;
 pub mod x402;
 pub mod marketplace;
+pub mod agent;

@@ -137,6 +137,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/health/providers", get(health_providers))
         // Auth
+        .route("/api/auth/siws/challenge", get(routes::auth::siws_challenge))
+        .route("/api/auth/siws", post(routes::auth::siws_sign_in))
         .route("/api/auth/google", post(routes::auth::google_sign_in))
         .route("/api/auth/apple", post(routes::auth::apple_sign_in))
         .route("/api/auth/twitter", post(routes::auth::twitter_sign_in))
@@ -162,7 +164,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/marketplace/{id}/unclaim", post(routes::marketplace::unclaim_task))
         // Calls
         .route("/api/calls", post(routes::calls::initiate_call))
+        .route("/api/calls/initiate", post(routes::calls::initiate_call))
         .route("/api/calls/webhook", post(routes::calls::call_webhook))
+        // Device-action planning
+        .route("/api/agent/plan", post(routes::agent::plan))
         // Emails
         .route("/api/emails", get(routes::emails::list_emails))
         .route("/api/emails/draft", post(routes::emails::create_draft))
