@@ -63,7 +63,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            buildConfigField("String", "DEFAULT_CLOUD_URL", "\"https://api.ghola.xyz\"")
+            // v0.4.0 ships against the Render hostname directly because Render's
+            // Hobby tier caps the team at 2 custom domains. v0.4.1 will flip to
+            // https://api.ghola.xyz after the team upgrades and DNS lands.
+            // Override at build time via -PghoLaCloudUrlRelease=https://...
+            val releaseUrl = providers.gradleProperty("ghoLaCloudUrlRelease").orNull
+                ?: "https://thumper-cloud.onrender.com"
+            buildConfigField("String", "DEFAULT_CLOUD_URL", "\"$releaseUrl\"")
             // Only assign the release signing config if a keystore was found;
             // otherwise fall back to debug signing so `assembleRelease` still
             // works for local smoke tests.
