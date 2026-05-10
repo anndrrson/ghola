@@ -51,6 +51,10 @@ android {
         }
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -59,6 +63,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            buildConfigField("String", "DEFAULT_CLOUD_URL", "\"https://api.ghola.xyz\"")
             // Only assign the release signing config if a keystore was found;
             // otherwise fall back to debug signing so `assembleRelease` still
             // works for local smoke tests.
@@ -71,6 +76,12 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            // Override per dev: point at the developer's local thumper-cloud.
+            // Use the Mac's LAN IP so a Seeker on the same Wi-Fi can reach it.
+            // Override at build time:  ./gradlew … -PghoLaCloudUrl=http://10.0.0.5:3000
+            val devUrl = providers.gradleProperty("ghoLaCloudUrl").orNull
+                ?: "http://192.168.1.169:3000"
+            buildConfigField("String", "DEFAULT_CLOUD_URL", "\"$devUrl\"")
         }
     }
 

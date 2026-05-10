@@ -1,22 +1,13 @@
-Ghola 0.3.0 — End-to-end encryption
+Ghola 0.4.0 — Wallet-only auth
 
-• "Off the record." End-to-end encrypted AI chat by default for any user
-  with a paired Solana wallet. The cloud now persists ciphertext only —
-  even we can't read your messages.
-• Pair Device — move your encrypted chat sessions between two devices
-  that share your wallet. The cloud sees opaque ciphertext; the receiver
-  pins your wallet DID and rejects any other sender.
-• Sealed-envelope-v1: same wire format the Ghola web client uses, so the
-  same message round-trips on either surface (cross-platform pairing
-  follows in a later release).
-
-Carried over from 0.1.0:
-• Create and own cryptographically-distinct AI agents (Ed25519 DIDs)
-• Each agent has its own isolated USDC wallet on Solana
-• Agent-aware device control — your agent actually does things on your
-  phone
-• Bottom navigation across Assistant / Agents / Activity / Wallet
-
-On Solana Seeker specifically:
-• Seed Vault detection for hardware-backed agent key storage
-• dApp Store distribution with no Apple Dev gating
+• Sign in with your Solana wallet — that's it.
+• New SIWS challenge/response auth route on thumper-cloud:
+  wallet pubkey + Ed25519 signature => standard Ghola JWT.
+• Fresh installs no longer require Google Sign-In or any third-party API key.
+• Call, email, chat, and device-action planning now share the same
+  wallet-authenticated cloud session.
+• End-to-end encrypted chat stays default; envelope ciphertext is persisted
+  server-side and plaintext never lands in chat storage.
+• Google is now optional in Settings:
+  "Connect Google for Gmail integration."
+• Android user-facing rename cleanup: Thumper → Ghola.

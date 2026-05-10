@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT UNIQUE,
     google_id TEXT UNIQUE,
     apple_id TEXT UNIQUE,
+    siws_pubkey TEXT UNIQUE,
     display_name TEXT,
     phone_number TEXT,
     timezone TEXT DEFAULT 'America/New_York',
@@ -286,10 +287,13 @@ UPDATE users SET tier = 'free' WHERE tier IS NULL;
 -- Ensure OAuth provider columns exist (table may predate these)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS siws_pubkey TEXT;
 DROP INDEX IF EXISTS idx_users_google_id;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
 DROP INDEX IF EXISTS idx_users_apple_id;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_id ON users(apple_id);
+DROP INDEX IF EXISTS idx_users_siws_pubkey;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_siws_pubkey ON users(siws_pubkey);
 
 -- Ensure columns from CREATE TABLE exist (live DB may predate them)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
@@ -301,8 +305,18 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 
 -- Make legacy columns nullable if they exist (from earlier Orni/Supabase schema)
-ALTER TABLE users ALTER COLUMN username DROP NOT NULL;
-ALTER TABLE users ALTER COLUMN wallet_spending DROP NOT NULL;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'users' AND column_name = 'username') THEN
+        ALTER TABLE users ALTER COLUMN username DROP NOT NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'users' AND column_name = 'wallet_spending') THEN
+        ALTER TABLE users ALTER COLUMN wallet_spending DROP NOT NULL;
+    END IF;
+END
+$$;
 
 -- Enterprise tier support
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::collections::HashMap;
 use tokio::sync::Mutex;
 use sqlx::PgPool;
 use dashmap::DashMap;
@@ -23,6 +24,7 @@ pub type ComputeProviderCache = Arc<Mutex<Vec<CommunityProviderInfo>>>;
 
 /// Broadcast channels for real-time swarm progress events (JSON strings).
 pub type SwarmChannels = Arc<DashMap<uuid::Uuid, tokio::sync::broadcast::Sender<String>>>;
+pub type SiwsChallengeStore = Arc<Mutex<HashMap<String, i64>>>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -33,6 +35,7 @@ pub struct AppState {
     pub free_cascade: FreeCascade,
     pub compute_cache: ComputeProviderCache,
     pub swarm_channels: SwarmChannels,
+    pub siws_challenges: SiwsChallengeStore,
 }
 
 impl AppState {
@@ -46,6 +49,7 @@ impl AppState {
             free_cascade,
             compute_cache: Arc::new(Mutex::new(Vec::new())),
             swarm_channels: Arc::new(DashMap::new()),
+            siws_challenges: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

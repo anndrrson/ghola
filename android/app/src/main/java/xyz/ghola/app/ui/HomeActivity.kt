@@ -88,6 +88,10 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
 
     override fun onResume() {
         super.onResume()
+        if (!secureStorage.hasCloudAuth()) {
+            startActivity(Intent(this, OnboardingActivity::class.java))
+            return
+        }
         updateGreeting()
         refreshActiveTasks()
         initCloudClient()
