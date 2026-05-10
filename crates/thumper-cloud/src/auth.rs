@@ -1,6 +1,7 @@
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use chrono::{Duration, Utc};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -65,6 +66,28 @@ pub fn verify_jwt(token: &str, secret: &str) -> Result<Claims, CloudError> {
     .map_err(|e| CloudError::Auth(format!("invalid token: {e}")))?;
 
     Ok(data.claims)
+}
+
+/// Verify an Ed25519 detached signature from a base58 Solana pubkey.
+pub fn verify_siws(wallet_pubkey: &str, message: &[u8], signature: &[u8]) -> Result<(), CloudError> {
+    let pubkey_vec = bs58::decode(wallet_pubkey)
+        .into_vec()
+        .map_err(|e| CloudError::Auth(format!("invalid wallet pubkey: {e}")))?;
+    let pubkey_bytes: [u8; 32] = pubkey_vec
+        .as_slice()
+        .try_into()
+        .map_err(|_| CloudError::Auth("wallet pubkey must be 32 bytes".to_string()))?;
+    let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
+        .map_err(|e| CloudError::Auth(format!("invalid wallet pubkey: {e}")))?;
+
+    let sig_bytes: [u8; 64] = signature
+        .try_into()
+        .map_err(|_| CloudError::Auth("signature must be 64 bytes".to_string()))?;
+    let sig = Signature::from_bytes(&sig_bytes);
+
+    verifying_key
+        .verify(message, &sig)
+        .map_err(|_| CloudError::Auth("signature verification failed".to_string()))
 }
 
 /// Extracts authenticated user from the Authorization header.

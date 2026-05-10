@@ -41,7 +41,7 @@ class EnvelopeCloudBackend(
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
     }
 
-    override val displayName: String = "End-to-end encrypted (Thumper)"
+    override val displayName: String = "End-to-end encrypted (Ghola)"
     override val requiresInternet: Boolean = true
 
     private val client = OkHttpClient.Builder()

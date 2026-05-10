@@ -2,6 +2,7 @@ package xyz.ghola.app.cloud
 
 import android.content.Context
 import android.util.Log
+import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -10,9 +11,9 @@ import xyz.ghola.app.ai.SecureStorage
 import java.io.IOException
 
 /**
- * Manages Google Sign-In and JWT auth with thumper-cloud.
- * The Google Sign-In UI is handled by the Activity — this class
- * exchanges the ID token for a Thumper JWT.
+ * Manages JWT auth with thumper-cloud.
+ * v0.4 defaults to SIWS wallet auth; Google remains available for
+ * backwards compatibility and optional linked-account paths.
  */
 class CloudAuthManager(private val context: Context) {
 
@@ -23,6 +24,12 @@ class CloudAuthManager(private val context: Context) {
 
     private val secureStorage = SecureStorage(context)
     private val client = OkHttpClient()
+    private val siwsAuthFlow = SiwsAuthFlow(context)
+
+    suspend fun signInWithWallet(
+        sender: ActivityResultSender,
+        walletPubkey: String
+    ): AuthResult = siwsAuthFlow.signInWithWallet(sender, walletPubkey)
 
     /**
      * Exchange a Google ID token for a Thumper cloud JWT.
@@ -122,7 +129,7 @@ class CloudAuthManager(private val context: Context) {
     fun signOut() {
         secureStorage.clearCloudAuth()
         secureStorage.clearSaidAuth()
-        Log.i(TAG, "Signed out (both thumper-cloud and said-cloud)")
+        Log.i(TAG, "Signed out")
     }
 
     fun isSignedIn(): Boolean = secureStorage.hasCloudAuth()

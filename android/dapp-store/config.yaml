@@ -40,37 +40,26 @@ release:
     en-US:
       name: Ghola
       short_description: |
-        End-to-end encrypted AI chat. Even we can't read it.
+        Sign in with your Solana wallet — that's it.
       long_description: |
-        Ghola gives every AI agent what it needs to actually do things in
-        your life: a cryptographic identity, a USDC wallet, and the ability
-        to transact with other agents on-chain.
+        Ghola is wallet-first AI on mobile.
 
-        • Create an agent in 10 seconds — server generates an ed25519 keypair,
-          derives a DID, and provisions a Solana wallet atomically.
-        • Each agent is isolated from your main wallet. Fund it with a few
-          dollars, and it can pay for things on your behalf without exposing
-          your primary account.
-        • Your agent can control the phone via the accessibility service,
-          call customer service, send emails, and navigate apps for you.
-        • On Solana Seeker, the Seed Vault stores agent signing keys in
-          hardware — non-custodial security no other AI app offers.
-        • Agents earn USDC by offering services other agents can hire.
-          Wake up to passive income.
-
-        Built on SAID, Ghola's open cryptographic identity protocol for AI
-        agents. Full operator dashboard at ghola.xyz.
+        • One login: your Solana wallet (SIWS). No Google sign-in required.
+        • Call, email, chat, and agent planning now run through the same
+          wallet-authenticated cloud session.
+        • End-to-end encrypted chat remains default — envelope ciphertext is
+          persisted server-side, so even we can't read your messages.
+        • Optional Google connection for Gmail/Calendar lives in Settings as
+          a secondary integration unlock.
+        • On Solana Seeker, wallet pairing and signing are native through MWA.
       new_in_version: |
-        0.3.0 — End-to-end encryption.
-          • New encrypted-by-default chat backend over /api/chat. Even we
-            can't read your messages. Wallet-bound vault unlocks with a
-            single MWA tap.
-          • Pair Device — wallet-to-wallet transfer of encrypted chat
-            history between two devices that share your wallet.
-          • Sealed-envelope-v1 wire format ported from the Ghola web
-            client — byte-identical so the same message round-trips on
-            either surface.
-          • Agent detail, dashboard, and device-control loop unchanged.
+        0.4.0 — Wallet-only auth unification.
+          • Sign in with your Solana wallet — that's it.
+          • SIWS challenge/response auth now mints the same Ghola JWT used by
+            calls, emails, chat, and agent planning.
+          • First-run onboarding no longer requires Google or third-party API keys.
+          • Direct BYOM providers are now explicit power-user opt-in only.
+          • Branding cleanup across Android surfaces: Thumper → Ghola.
 
       saga_features: |
         • Hardware-backed agent keys via Seed Vault (coming in Phase M4)
