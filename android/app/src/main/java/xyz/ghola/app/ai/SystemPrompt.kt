@@ -10,7 +10,7 @@ object SystemPrompt {
     /**
      * @param walletPackage Detected wallet package (null if no wallet found)
      * @param isSeeker True if running on a Solana Seeker device
-     * @param hasCloudAuth True if user is signed in to Thumper Cloud
+     * @param hasCloudAuth True if user is signed in to Ghola Cloud
      * @param agentDisplayName Phase M7: the cryptographically-owned agent
      *        the user is currently operating as. Null = legacy user-only mode.
      * @param agentDid The agent's did:key string. Null when agentDisplayName is null.
@@ -52,8 +52,8 @@ The user has a crypto wallet app installed ($wallet). Only mention wallet featur
         val cloudInstruction = if (hasCloudAuth) {
             """
 
-CLOUD FEATURES: The user is signed in to Thumper Cloud. When they ask you to:
-- Make a phone call, book a reservation, or schedule an appointment → tell them "I'll handle that through Thumper Cloud" (the app will route to the cloud service)
+CLOUD FEATURES: The user is signed in to Ghola Cloud. When they ask you to:
+- Make a phone call, book a reservation, or schedule an appointment → tell them "I'll handle that through Ghola Cloud" (the app will route to the cloud service)
 - Send an email, draft a message, or follow up → tell them "I'll draft that for you" (the app will route to the cloud email service)
 These cloud tasks are handled by the app's TaskClassifier — you don't need to use device tools for them."""
         } else {

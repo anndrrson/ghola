@@ -36,6 +36,9 @@ import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.ai.ToolFriendlyNames
 import xyz.ghola.app.ai.llama.LocalLlamaBackend
 import xyz.ghola.app.ai.llama.ModelManager
+import xyz.ghola.app.cloud.CloudAuthManager
+import xyz.ghola.app.cloud.TaskClassifier
+import xyz.ghola.app.cloud.ThumperCloudClient
 import xyz.ghola.app.crypto.Envelope
 import xyz.ghola.app.crypto.VaultStore
 import xyz.ghola.app.crypto.mwaSignerForVault
@@ -88,6 +91,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     private val intentCache = HashMap<String, Intent?>()
     private var pendingScreenshot: String? = null
     private var lastToolWasExplicitScreenshot = false
+    private var isSigningIntoCloud = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -200,12 +204,29 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                 return
             }
             if (!secureStorage.hasCloudAuth()) {
-                Toast.makeText(
-                    this,
-                    "Sign in to Thumper Cloud to enable end-to-end encrypted chat",
-                    Toast.LENGTH_LONG,
-                ).show()
-                startActivity(Intent(this, SettingsActivity::class.java))
+                if (isSigningIntoCloud) return
+                val walletAddress = secureStorage.getSolanaAddress().orEmpty()
+                if (walletAddress.isBlank()) {
+                    startActivity(Intent(this, WalletActivity::class.java))
+                    return
+                }
+                isSigningIntoCloud = true
+                showStatus("Signing in with wallet…")
+                lifecycleScope.launch {
+                    val auth = CloudAuthManager(this@ChatActivity)
+                        .signInWithWallet(activityResultSender, walletAddress)
+                    isSigningIntoCloud = false
+                    when (auth) {
+                        is CloudAuthManager.AuthResult.Success -> {
+                            hideStatus()
+                            checkPrerequisites()
+                        }
+                        is CloudAuthManager.AuthResult.Error -> {
+                            showStatus(auth.message)
+                            Toast.makeText(this@ChatActivity, auth.message, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
                 return
             }
         } else if (secureStorage.isLocalMode()) {
@@ -217,13 +238,13 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             }
         } else if (secureStorage.isQwenCloudMode()) {
             if (!secureStorage.hasQwenApiKey()) {
-                Toast.makeText(this, "Please set your DashScope API key in Settings", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Enable Power user / BYOM in Settings and set a DashScope API key", Toast.LENGTH_LONG).show()
                 startActivity(Intent(this, SettingsActivity::class.java))
                 return
             }
         } else {
             if (!secureStorage.hasApiKey()) {
-                Toast.makeText(this, "Please set your API key in Settings", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Enable Power user / BYOM in Settings and set an API key", Toast.LENGTH_LONG).show()
                 startActivity(Intent(this, SettingsActivity::class.java))
                 return
             }
@@ -293,7 +314,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         }
         val authToken = secureStorage.getCloudAuthToken()
         if (authToken.isNullOrBlank()) {
-            showStatus("Sign in to Thumper Cloud")
+            showStatus("Sign in to Ghola Cloud")
             startActivity(Intent(this, SettingsActivity::class.java))
             return
         }
@@ -516,6 +537,10 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         messageInput.text.clear()
         chatAdapter.addMessage(ChatMessage.UserMessage(text))
 
+        if (handleCloudTaskRouting(text)) {
+            return
+        }
+
         // Ultra-fast path: handle directly on UI thread, zero pipeline overhead
         val fastMatch = controller.matchFastPath(text)
         Log.d(TAG, "sendMessage: text='$text' fastMatch=${fastMatch?.toolName ?: "null"}")
@@ -536,6 +561,70 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         }
 
         controller.sendMessage(text)
+    }
+
+    private fun handleCloudTaskRouting(text: String): Boolean {
+        if (!secureStorage.hasCloudAuth()) return false
+        val token = secureStorage.getCloudAuthToken() ?: return false
+        val route = TaskClassifier.classify(text, true).route
+        if (route == TaskClassifier.TaskRoute.CHAT) return false
+
+        val client = ThumperCloudClient(secureStorage.getCloudBaseUrl(), token)
+        setInputEnabled(false)
+        showStatus("Routing to Ghola Cloud…")
+
+        Thread {
+            val responseText = when (route) {
+                TaskClassifier.TaskRoute.CLOUD_CALL -> {
+                    val number = Regex("""\+?[0-9][0-9\-\s()]{6,}""")
+                        .find(text)
+                        ?.value
+                        ?.replace(Regex("""[^\d+]"""), "")
+                    if (number.isNullOrBlank()) {
+                        "Add a phone number so I can place the call through Ghola Cloud."
+                    } else {
+                        val call = client.initiateCall(number, text)
+                        if (call != null) {
+                            "Call started through Ghola Cloud."
+                        } else {
+                            "Call request failed. Please try again."
+                        }
+                    }
+                }
+                TaskClassifier.TaskRoute.CLOUD_EMAIL -> {
+                    val to = Regex("""[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}""")
+                        .find(text)
+                        ?.value
+                    if (to != null) {
+                        val draft = client.createEmailDraft(
+                            toAddress = to,
+                            subject = "Draft from Ghola",
+                            bodyText = text
+                        )
+                        if (draft != null) "Email draft created in Ghola Cloud." else "Email draft failed."
+                    } else {
+                        val generated = client.generateEmail(text)
+                        if (generated != null) "Email draft generated in Ghola Cloud." else "Email generation failed."
+                    }
+                }
+                TaskClassifier.TaskRoute.CLOUD_CALENDAR,
+                TaskClassifier.TaskRoute.DEVICE -> {
+                    val plan = client.planDeviceAction(text)
+                    plan?.optString("plan")?.takeIf { it.isNotBlank() }
+                        ?: "Planning request sent to Ghola Cloud, but no plan was returned."
+                }
+                TaskClassifier.TaskRoute.CHAT -> ""
+            }
+
+            runOnUiThread {
+                hideStatus()
+                setInputEnabled(true)
+                if (responseText.isNotBlank()) {
+                    chatAdapter.addMessage(ChatMessage.AssistantMessage(responseText, false))
+                }
+            }
+        }.start()
+        return true
     }
 
     /**

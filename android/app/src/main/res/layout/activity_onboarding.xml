@@ -12,14 +12,14 @@
         android:id="@+id/stepIndicator"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Step 1 of 3"
+        android:text="Step 1 of 2"
         android:textSize="14sp"
         android:textColor="#4a5568"
         android:textAlignment="center"
         android:layout_marginBottom="32dp"
         android:layout_marginTop="16dp" />
 
-    <!-- Step 1: Sign In -->
+    <!-- Step 1: Wallet Sign-In -->
     <LinearLayout
         android:id="@+id/stepSignIn"
         android:layout_width="match_parent"
@@ -31,7 +31,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Welcome to Thumper"
+            android:text="Welcome to Ghola"
             android:textSize="28sp"
             android:textStyle="bold"
             android:textColor="#eef1f8"
@@ -41,26 +41,19 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Your AI personal assistant that makes phone calls, sends emails, and controls your phone."
+            android:text="Sign in with your Solana wallet — that's it. Call, email, chat, and agents are wallet-bound."
             android:textSize="16sp"
             android:textColor="#8b95a8"
             android:textAlignment="center"
             android:layout_marginBottom="48dp" />
 
         <Button
-            android:id="@+id/btnGoogleSignIn"
+            android:id="@+id/btnWalletSignIn"
             android:layout_width="280dp"
             android:layout_height="48dp"
-            android:text="Sign in with Google"
+            android:text="Sign in with wallet"
             android:layout_marginBottom="16dp"
             style="@style/Widget.MaterialComponents.Button" />
-
-        <Button
-            android:id="@+id/btnSkipSignIn"
-            android:layout_width="280dp"
-            android:layout_height="48dp"
-            android:text="Skip for now"
-            style="@style/Widget.MaterialComponents.Button.TextButton" />
     </LinearLayout>
 
     <!-- Step 2: Accessibility -->
@@ -85,7 +78,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Thumper needs the Accessibility Service to control your phone — open apps, tap buttons, and type text on your behalf."
+            android:text="Ghola can control your phone with Accessibility to open apps, tap buttons, and type text. Optional — you can enable this now or later."
             android:textSize="16sp"
             android:textColor="#8b95a8"
             android:textAlignment="center"
@@ -105,46 +98,17 @@
             android:layout_height="48dp"
             android:text="I've enabled it"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
-    </LinearLayout>
-
-    <!-- Step 3: Connect Accounts -->
-    <LinearLayout
-        android:id="@+id/stepConnect"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:visibility="gone">
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Connect Your Accounts"
-            android:textSize="28sp"
-            android:textStyle="bold"
-            android:textColor="#eef1f8"
-            android:textAlignment="center"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Connect Gmail and Calendar so Thumper can send emails and manage your schedule. You can do this later in Settings."
-            android:textSize="16sp"
-            android:textColor="#8b95a8"
-            android:textAlignment="center"
-            android:layout_marginBottom="48dp" />
-
-        <Button
-            android:id="@+id/btnConnectGmail"
-            android:layout_width="280dp"
-            android:layout_height="48dp"
-            android:text="Connect Gmail"
-            android:layout_marginBottom="16dp"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
 
         <Button
             android:id="@+id/btnFinish"
+            android:layout_width="280dp"
+            android:layout_height="48dp"
+            android:text="Skip for now"
+            android:layout_marginTop="16dp"
+            style="@style/Widget.MaterialComponents.Button.TextButton" />
+
+        <Button
+            android:id="@+id/btnDone"
             android:layout_width="280dp"
             android:layout_height="48dp"
             android:text="Get Started"
