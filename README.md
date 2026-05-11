@@ -1,203 +1,169 @@
-# SAID — Sovereign AI Identity
+# Ghola
 
-A self-custodied AI data wallet. One seed phrase, portable across every provider.
+**The agent-native stack for Solana.** Identity, assistant, and creator marketplace — one wallet, one umbrella, four pillars.
 
-Your AI context (system prompts, memories, preferences) is currently trapped inside provider silos. SAID creates a local encrypted wallet that any MCP-compatible client can connect to — Claude, GPT, Ollama, anything. Remote providers authenticate via capability-scoped UCAN tokens over HTTP.
+Today's AI lives in walled gardens. Your context is trapped in one provider, your agents can't be discovered, and there's no shared substrate for them to transact on. Ghola is the open alternative, built natively on Solana.
 
-```
-┌──────────────────────────────────────────────┐
-│              SAID Wallet (local)              │
-│  BIP-39 Seed → HD Key Tree → Per-Provider    │
-│  Encrypted data store (~/.said/)              │
-└──────────────┬───────────────────────────────┘
-               │ stdio (local) / HTTP+SSE (remote)
-┌──────────────▼───────────────────────────────┐
-│           MCP Server (said serve)             │
-│  Tools: get_prompt, search_memories, ...      │
-│  UCAN auth (HTTP) / local trust (stdio)       │
-└──────┬──────────┬──────────┬─────────────────┘
-       │          │          │
-  ┌────▼───┐ ┌───▼────┐ ┌───▼────┐
-  │ Claude │ │  GPT   │ │ Ollama │
-  └────────┘ └────────┘ └────────┘
-```
+> **Live:** [ghola.xyz](https://ghola.xyz) · **Android:** `xyz.ghola.app` (Solana dApp Store-ready) · **iOS:** SwiftUI app · **Registry:** [`3EqrapHPPQqQKeB3aykZz9AbppMBzbY9PG1fT3PA7QyR`](https://explorer.solana.com/address/3EqrapHPPQqQKeB3aykZz9AbppMBzbY9PG1fT3PA7QyR) (mainnet)
 
-## Quick Start
+---
 
-```bash
-# Build
-cargo build --release
+## The four pillars
 
-# Create a wallet (displays 24-word recovery phrase)
-said init
+| Pillar | Code path | What it does |
+|---|---|---|
+| **Identity (SAID)** | `crates/said-*`, `programs/said-registry` | Self-custodied AI data wallet + on-chain Solana identity registry. One seed phrase, portable across every provider. UCAN-scoped capabilities. |
+| **Assistant** | `crates/thumper-*`, `android/`, `ios/` | Turnkey AI personal assistant — voice calls (Bland AI), email (Gmail), calendar, device control. Primary target: Solana Seeker. |
+| **Marketplace** | `crates/orni-models-*`, `apps/orni-models-web` | Creator-friendly AI model marketplace. Creators fine-tune + monetize; users browse + chat. USDC payments with 85/15 creator split. |
+| **Gateway** | `crates/ghola-gateway`, `crates/said-x402` | x402 payment-required HTTP, billing-as-a-service, and the on-ramps that let agents transact across the other three pillars. |
 
-# Import your data
-said import prompts my-prompts.json
-said import memories my-memories.json
-said import preferences my-prefs.json
+They share one wallet, one auth model (Sign In With Solana), one billing surface.
 
-# Start the MCP server (stdio, for local clients)
-said serve
+---
 
-# Or start over HTTP with auth (for remote providers)
-said provider grant --provider anthropic --capabilities all --expires 30d
-said serve --http --port 3000
-```
+## Why Solana
 
-## Add to Claude Code
+Ghola is Solana-native, not Solana-tolerant. Concretely:
 
-**Local (stdio):**
-```json
-{
-  "mcpServers": {
-    "said": {
-      "command": "/path/to/said",
-      "args": ["serve"]
-    }
-  }
-}
-```
+- **On-chain identity registry** — `programs/said-registry` (Anchor): `IdentityRecord` PDAs with `did_key`, `profile_uri`, `authority`. Instructions: `register`, `deactivate`, `reactivate`, `update_authority`, `update_profile_uri`. Deployed to mainnet.
+- **SIWS everywhere** — Sign In With Solana is the only auth path in v0.4.0. No email/password, no Google. The wallet *is* the account, across web, Android, iOS, MCP, and CLI.
+- **USDC payments** — Marketplace creator payouts, assistant subscriptions, and x402-gated APIs all settle in USDC.
+- **Solana dApp Store** — Android build (`xyz.ghola.app`) is signed and ready for submission.
+- **MWA + Seeker first-class** — Mobile Wallet Adapter wired through the assistant; Seeker auto-detected and treated as the canonical hardware.
 
-Claude will then have access to your system prompts, memories, and preferences via tool calls. Add the same config to any other MCP client for identical context.
+See **[SOLANA.md](./SOLANA.md)** for program IDs, instruction layouts, PDA seeds, and the full on-chain surface.
 
-## Provider Sessions
-
-Grant scoped, time-limited access to remote providers via UCAN tokens:
-
-```bash
-# Grant Anthropic read-only access for 30 days
-said provider grant --provider anthropic --capabilities read-prompts,read-memories --expires 30d
-
-# Grant full access with a custom label
-said provider grant --provider openai --capabilities all --expires 7d --label "OpenAI (work)"
-
-# List all sessions
-said provider list
-
-# Revoke a session
-said provider revoke --id <session-uuid>
-```
-
-Each grant creates a signed UCAN JWT (EdDSA) scoped to specific capabilities. The bearer token is printed for use in the `Authorization` header.
-
-**Available capabilities:** `read-prompts`, `read-preferences`, `read-memories`, `write-memories`, `read-knowledge`, `read-conversations`, `read-mcp-configs`, `read-all`, `all`
-
-**Available providers:** `anthropic`, `openai`, `google`, `local`, `master`
-
-## HTTP Transport
-
-Start an authenticated HTTP MCP server for remote providers:
-
-```bash
-# Start HTTP server (requires UCAN bearer token on every request)
-said serve --http --port 3000
-```
-
-Providers connect with their bearer token:
-```
-Authorization: Bearer <ucan_token>
-```
-
-- Stdio mode: no auth required (local trust)
-- HTTP mode: valid UCAN bearer token required on every request, per-tool capability checking enforced
-
-## CLI Commands
-
-| Command | Description |
-|---|---|
-| `said init` | Create a new wallet with a 24-word recovery phrase |
-| `said recover` | Restore a wallet from a recovery phrase |
-| `said status` | Show wallet info, collections, DID, and active sessions |
-| `said import <type> <file>` | Import data (prompts, memories, preferences, knowledge, mcp-configs) |
-| `said export <type>` | Export data as JSON to stdout |
-| `said provider grant` | Grant a provider scoped access with a UCAN token |
-| `said provider list` | List all provider sessions with status |
-| `said provider revoke --id <uuid>` | Revoke a provider session |
-| `said serve` | Start the MCP server on stdio (local trust) |
-| `said serve --http --port 3000` | Start the MCP server over HTTP with UCAN auth |
-
-## MCP Tools
-
-| Tool | Required Capability |
-|---|---|
-| `said_get_system_prompt` | `ReadPrompts` |
-| `said_get_preferences` | `ReadPreferences` |
-| `said_search_memories` | `ReadMemories` |
-| `said_add_memory` | `WriteMemories` |
-| `said_search_knowledge` | `ReadKnowledge` |
-| `said_get_conversation_context` | `ReadConversations` |
-| `said_list_mcp_configs` | `ReadMcpConfigs` |
-
-In stdio mode all tools are allowed. In HTTP mode, tools check the session's granted capabilities.
-
-## Import Formats
-
-All imports expect JSON arrays. Examples:
-
-**Prompts:**
-```json
-[{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "name": "default",
-  "content": "You are a helpful assistant. Be concise.",
-  "tags": ["default"],
-  "created_at": "2026-01-01T00:00:00Z",
-  "updated_at": "2026-01-01T00:00:00Z"
-}]
-```
-
-**Memories:**
-```json
-[{
-  "id": "550e8400-e29b-41d4-a716-446655440001",
-  "content": "I prefer Rust over Go for systems programming",
-  "tags": ["programming"],
-  "source_provider": null,
-  "created_at": "2026-01-01T00:00:00Z"
-}]
-```
-
-**Preferences:**
-```json
-[{
-  "key": "code.language",
-  "value": "rust",
-  "updated_at": "2026-01-01T00:00:00Z"
-}]
-```
+---
 
 ## Architecture
 
 ```
-said/
-  crates/
-    said-types/       # Data schemas, Capability enum, ProviderSession
-    said-core/        # Wallet: HD keys, AES-256-GCM encryption, UCAN, sessions
-  mcp-server/         # MCP server (rmcp 0.15, stdio + HTTP transport)
-  cli/                # CLI binary
+                          ┌─────────────────────────┐
+                          │     Solana mainnet      │
+                          │  said-registry program  │
+                          │  IdentityRecord PDAs    │
+                          └────────────┬────────────┘
+                                       │ register / resolve
+                                       │
+┌──────────────────────────────────────┴──────────────────────────────────────┐
+│                              Ghola Gateway                                  │
+│   x402 payment-required HTTP · UCAN auth · USDC billing · agent registry    │
+└────────┬─────────────────────┬─────────────────────┬───────────────────────┘
+         │                     │                     │
+   ┌─────▼──────┐       ┌──────▼───────┐      ┌──────▼──────────┐
+   │  Identity  │       │   Assistant  │      │   Marketplace   │
+   │   (SAID)   │       │   (Thumper)  │      │  (Orni Models)  │
+   │            │       │              │      │                 │
+   │ Wallet     │       │ Voice (Bland)│      │ Fine-tunes      │
+   │ MCP server │       │ Email (Gmail)│      │ Chat (SSE)      │
+   │ Browser ext│       │ Calendar     │      │ USDC payouts    │
+   │ Web dash   │       │ Device ctrl  │      │ Creator dash    │
+   └─────┬──────┘       └──────┬───────┘      └────────┬────────┘
+         │                     │                       │
+         └─────────────────────┴───────────────────────┘
+                               │
+                  ┌────────────┴────────────┐
+                  │  Clients (one wallet)   │
+                  │  Web · Android · iOS    │
+                  │     CLI · MCP · Ext     │
+                  └─────────────────────────┘
 ```
 
-**Security model:**
-- BIP-39 mnemonic generates a 64-byte seed
-- HKDF-SHA256 derives a local data encryption key and HD master key
-- ED25519-BIP32 derives per-provider keys at `m / SAI' / provider' / key_type' / instance`
-- All data encrypted at rest with AES-256-GCM (nonce + ciphertext + tag)
-- Seed file is chmod 600
+---
 
-**Auth model (UCAN):**
-- Wallet master key signs UCAN JWTs (EdDSA, UCAN 0.10 spec)
-- Each token scopes access to specific capabilities with an expiry
-- Tokens are verified on every HTTP request (signature, expiry, revocation, capability)
-- Issuer = `did:key` of master signing key, audience = `did:key` of provider signing key
-- Sessions are stored encrypted alongside wallet data
+## What's in the box
 
-## Roadmap
+| Surface | Tech | Size |
+|---|---|---|
+| Backend (Rust) | axum 0.8, sqlx 0.8, rmcp 0.15, anchor-lang 0.30 | **~63k LOC** across **18 crates** |
+| Solana program | Anchor 0.30, Ed25519 | `programs/said-registry`, deployed mainnet |
+| Web | Next.js 16, React 19, Tailwind 4 | **~33k LOC** TS/TSX |
+| Android | Kotlin, Expo (MWA), Solana Mobile Stack | **~14k LOC**, `xyz.ghola.app` |
+| iOS | SwiftUI, Siri Shortcuts, Dynamic Island | **~4k LOC** |
+| SDKs | TypeScript, Python | `packages/said-sdk-js`, `said-sdk-py`, `said-pay-sdk-js` |
+| Browser ext | MV3, WASM crypto | `extension/` |
+| Tests | rust unit + integration | **288 tests** |
+| Deploy | Render, Fly.io, Vercel | 4 Dockerfiles, `fly.thumper-cloud.toml`, `render.yaml` |
 
-- [x] **Phase 1:** Local wallet + MCP server
-- [x] **Phase 2:** UCAN auth + provider sessions + HTTP transport
-- [ ] **Phase 3:** Solana on-chain identity registry
-- [ ] **Phase 4:** Decentralized storage (IPFS, Shadow Drive)
-- [ ] **Phase 5:** Conversation history import + provider adapters
+---
+
+## Repository layout
+
+```
+ghola/
+├── crates/                     # 18 Rust crates
+│   ├── said-types/             # Shared data schemas, UCAN capabilities
+│   ├── said-core/              # Wallet: HD keys, AES-256-GCM, UCAN, sessions
+│   ├── said-cloud/             # Cloud API + dashboard backend (axum)
+│   ├── said-solana/            # On-chain registry client
+│   ├── said-wasm/              # Browser wallet (WASM)
+│   ├── said-x402/              # x402 payment-required HTTP
+│   ├── said-turnkey/           # Turnkey wallet integration
+│   ├── thumper-types/          # Assistant shared types
+│   ├── thumper-cloud/          # Assistant server (calls, email, tasks)
+│   ├── thumper-relay/          # Device <-> cloud relay (axum + WS)
+│   ├── thumper-mcp/            # MCP tools (23 tools, 8 YAML flows)
+│   ├── thumper-cli/            # CLI binary
+│   ├── orni-models-api/        # Marketplace backend (chat, payments, creators)
+│   ├── orni-models-types/      # Marketplace shared types
+│   ├── ghola-gateway/          # x402 + USDC billing + agent registry
+│   └── ghola-home/             # Unified web BFF
+├── programs/
+│   └── said-registry/          # Anchor program (Solana mainnet)
+├── apps/
+│   ├── web/                    # ghola.xyz (Next.js 16)
+│   └── orni-models-web/        # Marketplace UI
+├── packages/
+│   ├── said-sdk-js/            # TypeScript SDK
+│   ├── said-sdk-py/            # Python SDK
+│   └── said-pay-sdk-js/        # x402 client SDK
+├── android/                    # xyz.ghola.app (Kotlin + Expo + MWA)
+├── ios/                        # SwiftUI app + macOS menu bar
+├── extension/                  # Browser extension (MV3)
+├── mcp-server/                 # said serve binary
+├── migrations/                 # Postgres migrations (cloud + marketplace)
+├── docs/                       # Integration guides (LangChain, MCP, OpenAI)
+├── spec/                       # agents.txt + .well-known/said spec
+└── integration-tests/          # Cross-pillar e2e tests
+```
+
+---
+
+## Quick start
+
+```bash
+# Backend (workspace builds clean)
+cargo build --workspace --release
+
+# Web (ghola.xyz)
+cd apps/web && npm install && npm run dev
+
+# Solana program (requires Anchor 0.30 + Solana 1.18.26)
+export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+anchor build && anchor test
+
+# Android (Solana dApp Store build)
+export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+EXPO_PUBLIC_BUILD_TYPE=mwa npx eas build -p android --profile dapp-store --local
+
+# Run the cloud locally (assistant)
+DATABASE_URL=postgres://... \
+JWT_SECRET=... \
+cargo run -p thumper-cloud
+```
+
+Detailed environment variables, deployment notes, and per-pillar guides live in each crate's README.
+
+---
+
+## Status
+
+- **Identity (SAID):** v0.4.0 wallet-only SIWS auth shipping. 93+ tests across core + WASM. On-chain registry live on mainnet.
+- **Assistant (Thumper):** Cloud + Android + iOS shipping. 23 MCP tools + 8 task templates. Bland AI voice calls and Gmail OAuth wired.
+- **Marketplace (Orni Models):** Backend and web shipping. Together.ai inference, USDC deposit verification, 85/15 split live.
+- **Gateway:** x402 payment-required HTTP scaffolded; agent registry + billing-as-a-service in progress.
+
+---
 
 ## License
 
