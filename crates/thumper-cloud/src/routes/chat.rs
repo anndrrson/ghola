@@ -271,17 +271,27 @@ pub async fn chat(
 
     let system = if has_wallet {
         "You are Ghola, a helpful AI personal assistant. Be concise, friendly, and action-oriented. \
-         When the user wants to make a call, send an email, or manage their calendar, help them do it. \
+         When the user wants to send an email, text someone, place a phone call, or schedule a calendar event, \
+         call the matching propose_* tool with the structured arguments — the user will review and confirm before anything is sent. \
          You have access to the user's Solana wallet. Use the wallet tools to check balances, \
          get the wallet address, or send crypto when asked. Always confirm transfer details before sending."
     } else {
         "You are Ghola, a helpful AI personal assistant. Be concise, friendly, and action-oriented. \
-         When the user wants to make a call, send an email, or manage their calendar, help them do it."
+         When the user wants to send an email, text someone, place a phone call, or schedule a calendar event, \
+         call the matching propose_* tool with the structured arguments — the user will review and confirm before anything is sent."
     };
 
-    // If user has wallet, use tool-use path (non-streaming but with tool calls)
-    if has_wallet {
-        let tools = wallet_service::wallet_tool_definitions();
+    // Check which provider will be used (for community GPU indicator)
+    let llm_config = llm_router::get_user_llm_config(&state, user_id).await.ok();
+    let is_community = llm_config.as_ref().map(|c| c.provider == llm_router::LlmProvider::Community).unwrap_or(false);
+
+    // Community providers can't do tool-use; everyone else gets action proposals
+    // (and wallet tools when applicable).
+    if !is_community {
+        let mut tools = crate::services::action_tools::action_tool_definitions();
+        if has_wallet {
+            tools.extend(wallet_service::wallet_tool_definitions());
+        }
         let state_clone = state.clone();
         let db = state.db.clone();
 
@@ -295,7 +305,14 @@ pub async fn chat(
                 Ok(result) => {
                     // Emit tool call events
                     for tc in &result.tool_calls {
-                        if tc.status == "executing" {
+                        if tc.status == "proposed" {
+                            yield Ok(Event::default()
+                                .event("action_proposal")
+                                .data(serde_json::json!({
+                                    "kind": tc.tool_name.strip_prefix("propose_").unwrap_or(&tc.tool_name),
+                                    "args": tc.result,
+                                }).to_string()));
+                        } else if tc.status == "executing" {
                             yield Ok(Event::default()
                                 .event("tool_use")
                                 .data(serde_json::json!({
@@ -347,10 +364,6 @@ pub async fn chat(
 
         return Ok(Sse::new(sse_stream));
     }
-
-    // Check which provider will be used (for community GPU indicator)
-    let llm_config = llm_router::get_user_llm_config(&state, user_id).await.ok();
-    let is_community = llm_config.as_ref().map(|c| c.provider == llm_router::LlmProvider::Community).unwrap_or(false);
 
     // Standard streaming path (no wallet tools)
     let stream_result = llm_router::generate_stream(&state, user_id, &messages, Some(system)).await;

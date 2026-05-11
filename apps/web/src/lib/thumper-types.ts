@@ -127,9 +127,32 @@ export interface ThumperChatMessage {
 }
 
 export interface ThumperInlineAction {
-  type: "call" | "email" | "task";
+  type: "call" | "email" | "sms" | "calendar" | "task";
   status: "ready" | "in_progress" | "completed" | "failed";
   data: Record<string, unknown>;
+}
+
+export interface ThumperSmsResponse {
+  id: string;
+  to_number: string;
+  body: string;
+  status: "sending" | "sent" | "failed";
+  vendor: string | null;
+  vendor_message_id: string | null;
+  created_at: string;
+  sent_at: string | null;
+}
+
+export interface ThumperCalendarEventResponse {
+  action: string;
+  status: string;
+  event: {
+    id?: string;
+    title?: string;
+    start?: string;
+    end?: string;
+    html_link?: string;
+  };
 }
 
 export interface ThumperSession {

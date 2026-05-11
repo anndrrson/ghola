@@ -174,6 +174,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/emails/generate", post(routes::emails::generate_email))
         .route("/api/emails/send", post(routes::emails::send_email_direct))
         .route("/api/emails/{id}/send", post(routes::emails::send_email))
+        // SMS
+        .route("/api/sms/send", post(routes::sms::send_sms))
+        // Calendar
+        .route("/api/calendar/events", post(routes::calendar::create_event))
         // User
         .route("/api/user/profile", get(routes::user::get_profile))
         .route("/api/user/profile", patch(routes::user::update_profile))

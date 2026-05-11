@@ -16,7 +16,8 @@ import {
   saveSessions as saveSessionsToStore,
 } from "@/lib/chat-history-store";
 import bs58 from "bs58";
-import type { ThumperSession, ThumperChatMessage, ThumperInlineAction } from "@/lib/thumper-types";
+import type { ThumperSession, ThumperChatMessage } from "@/lib/thumper-types";
+import { detectAction } from "@/lib/detect-action";
 
 /** Convert a Solana wallet address (base58 Ed25519 pubkey) to a `did:key:z…`. */
 function solanaAddressToDid(address: string): string | null {
@@ -27,41 +28,6 @@ function solanaAddressToDid(address: string): string | null {
   } catch {
     return null;
   }
-}
-
-function detectAction(text: string): ThumperInlineAction | undefined {
-  // Detect call suggestions
-  const callMatch = text.match(
-    /(?:call|phone|dial|ring)\s+(?:.*?)\s*(?:at\s+)?(\+?[\d\s()-]{7,})/i
-  );
-  if (callMatch) {
-    const phone = callMatch[1].trim();
-    // Extract objective from context
-    const objective = text.length > 200 ? text.slice(0, 200) + "..." : text;
-    return {
-      type: "call",
-      status: "ready",
-      data: { phone_number: phone, objective },
-    };
-  }
-
-  // Detect email suggestions
-  const emailMatch = text.match(
-    /(?:email|send|write|draft)\s+(?:an?\s+)?(?:email\s+)?(?:to\s+)?([^\s,]+@[^\s,]+)/i
-  );
-  if (emailMatch) {
-    const to = emailMatch[1];
-    // Try to extract subject
-    const subjectMatch = text.match(/subject[:\s]+["']?([^"'\n]+)/i);
-    const subject = subjectMatch ? subjectMatch[1].trim() : "Message from ghola";
-    return {
-      type: "email",
-      status: "ready",
-      data: { to, subject, body: "" },
-    };
-  }
-
-  return undefined;
 }
 
 export default function ChatPage() {
@@ -268,6 +234,8 @@ export default function ChatPage() {
       }
     }
 
+    let proposedAction: ThumperChatMessage["action"] | undefined;
+
     await streamChat(currentSessionId, text, {
       envelopeBlobB64,
       onSession: (newId) => {
@@ -286,9 +254,24 @@ export default function ChatPage() {
           return { ...s, messages: msgs };
         });
       },
+      onActionProposal: ({ kind, args }) => {
+        proposedAction = {
+          type: kind,
+          status: "ready",
+          data: args,
+        };
+        updateSession(currentSessionId, (s) => {
+          const msgs = [...s.messages];
+          msgs[msgs.length - 1] = {
+            ...msgs[msgs.length - 1],
+            action: proposedAction,
+          };
+          return { ...s, messages: msgs };
+        });
+      },
       onDone: () => {
-        // Detect actions in the final response
-        const action = detectAction(fullContent);
+        // Proposals win over regex; only fall back when no proposal arrived.
+        const action = proposedAction ?? detectAction(fullContent);
         updateSession(currentSessionId, (s) => {
           const msgs = [...s.messages];
           msgs[msgs.length - 1] = {

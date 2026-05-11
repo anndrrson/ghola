@@ -1213,6 +1213,38 @@ async fn generate_with_tools_anthropic(
         let content = resp_body["content"].as_array().cloned().unwrap_or_default();
 
         if stop_reason == "tool_use" {
+            // Pre-scan for proposal tools — these terminate the turn without
+            // executing. The web client renders the proposed args in an
+            // ActionCard for user review/approval before any HTTP send.
+            let has_proposal = content.iter().any(|block| {
+                block["type"].as_str() == Some("tool_use")
+                    && block["name"].as_str().map(crate::services::action_tools::is_proposal_tool).unwrap_or(false)
+            });
+
+            if has_proposal {
+                // Capture any accompanying assistant text before exiting.
+                let text: String = content.iter()
+                    .filter_map(|b| {
+                        if b["type"].as_str() == Some("text") { b["text"].as_str().map(|s| s.to_string()) }
+                        else { None }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                for block in &content {
+                    if block["type"].as_str() == Some("tool_use") {
+                        let tool_name = block["name"].as_str().unwrap_or("");
+                        if crate::services::action_tools::is_proposal_tool(tool_name) {
+                            tool_calls.push(ToolCallEvent {
+                                tool_name: tool_name.to_string(),
+                                status: "proposed".to_string(),
+                                result: Some(block["input"].clone()),
+                            });
+                        }
+                    }
+                }
+                return Ok(ToolUseResult { text, tool_calls });
+            }
+
             conversation.push(serde_json::json!({ "role": "assistant", "content": content }));
 
             let mut tool_results = Vec::new();
@@ -1360,10 +1392,36 @@ async fn generate_with_tools_openai(
             .map_or(false, |tc| !tc.is_empty());
 
         if has_tool_calls || finish_reason == "tool_calls" {
+            let tc_array = message["tool_calls"].as_array().cloned().unwrap_or_default();
+
+            // Pre-scan for proposal tools — terminate without executing.
+            let has_proposal = tc_array.iter().any(|tc| {
+                tc["function"]["name"].as_str()
+                    .map(crate::services::action_tools::is_proposal_tool)
+                    .unwrap_or(false)
+            });
+
+            if has_proposal {
+                let text = message["content"].as_str().unwrap_or("").to_string();
+                for tc in &tc_array {
+                    let tool_name = tc["function"]["name"].as_str().unwrap_or("");
+                    if crate::services::action_tools::is_proposal_tool(tool_name) {
+                        let arguments_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                        let args: serde_json::Value = serde_json::from_str(arguments_str)
+                            .unwrap_or(serde_json::json!({}));
+                        tool_calls_out.push(ToolCallEvent {
+                            tool_name: tool_name.to_string(),
+                            status: "proposed".to_string(),
+                            result: Some(args),
+                        });
+                    }
+                }
+                return Ok(ToolUseResult { text, tool_calls: tool_calls_out });
+            }
+
             // Add assistant message with tool_calls to conversation
             conversation.push(message.clone());
 
-            let tc_array = message["tool_calls"].as_array().cloned().unwrap_or_default();
             for tc in &tc_array {
                 let call_id = tc["id"].as_str().unwrap_or("");
                 let func = &tc["function"];
@@ -1493,6 +1551,32 @@ async fn generate_with_tools_google(
             .collect();
 
         if !function_calls.is_empty() {
+            // Pre-scan for proposal tools — terminate without executing.
+            let has_proposal = function_calls.iter().any(|fc| {
+                fc["functionCall"]["name"].as_str()
+                    .map(crate::services::action_tools::is_proposal_tool)
+                    .unwrap_or(false)
+            });
+
+            if has_proposal {
+                let text: String = parts.iter()
+                    .filter_map(|p| p["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("");
+                for fc in &function_calls {
+                    let fc_obj = &fc["functionCall"];
+                    let tool_name = fc_obj["name"].as_str().unwrap_or("");
+                    if crate::services::action_tools::is_proposal_tool(tool_name) {
+                        tool_calls_out.push(ToolCallEvent {
+                            tool_name: tool_name.to_string(),
+                            status: "proposed".to_string(),
+                            result: Some(fc_obj["args"].clone()),
+                        });
+                    }
+                }
+                return Ok(ToolUseResult { text, tool_calls: tool_calls_out });
+            }
+
             // Add model response to conversation
             conversation.push(serde_json::json!({
                 "role": "model",

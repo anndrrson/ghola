@@ -1,12 +1,18 @@
 const THUMPER_API_BASE =
   process.env.NEXT_PUBLIC_THUMPER_API_URL || "http://localhost:3000";
 
+export interface ActionProposal {
+  kind: "email" | "sms" | "call" | "calendar";
+  args: Record<string, unknown>;
+}
+
 interface StreamChatOptions {
   onSession?: (sessionId: string) => void;
   onProvider?: (info: { type: string; model?: string; provider_name?: string }) => void;
   onChunk: (text: string) => void;
   onDone: () => void;
   onError: (error: Error) => void;
+  onActionProposal?: (proposal: ActionProposal) => void;
   /**
    * Optional sealed-envelope-v1 ciphertext of the user's message
    * (base64 standard with padding). When supplied the cloud persists
@@ -103,6 +109,19 @@ export async function streamChat(
               options.onProvider?.(parsed);
             } catch {
               // not JSON provider data
+            }
+            currentEvent = "";
+            continue;
+          }
+
+          if (currentEvent === "action_proposal") {
+            try {
+              const parsed = JSON.parse(data) as ActionProposal;
+              if (parsed.kind && parsed.args) {
+                options.onActionProposal?.(parsed);
+              }
+            } catch {
+              // ignore malformed proposals
             }
             currentEvent = "";
             continue;
