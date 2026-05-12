@@ -110,6 +110,7 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
      */
     private fun showDevGauntletChooser() {
         val entries = arrayOf(
+            "▶ Run full gauntlet (auto)",
             "Parity check (Phase A.3)",
             "Banana test (Phase H.1)",
             "Ship/no-ship gates (Phase H)",
@@ -128,12 +129,13 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
             .setTitle("v0.6 dev gauntlet$stampSuffix")
             .setItems(entries) { _, which ->
                 when (which) {
-                    0 -> runParityCheckDirect()
-                    1 -> runBananaTestDirect()
-                    2 -> runShipGatesDirect()
-                    3 -> cleanTestArtifactsDirect()
-                    4 -> showPathsDiag()
-                    5 -> warmUpInference()
+                    0 -> runFullGauntlet()
+                    1 -> runParityCheckDirect()
+                    2 -> runBananaTestDirect()
+                    3 -> runShipGatesDirect()
+                    4 -> cleanTestArtifactsDirect()
+                    5 -> showPathsDiag()
+                    6 -> warmUpInference()
                 }
             }
             .setNegativeButton("Cancel", null)
@@ -272,6 +274,102 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Paths + storage")
             .setMessage(body)
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
+    /** Auto-pipeline every gate. Runs parity@3 (~30s, gate A) → banana
+     *  (~10 min, gate H.1) → ship gates (~20 min, gates H.2-4). Total
+     *  runtime ~30 min; plug in to charge. Updates a single progress
+     *  dialog with the current phase + best-effort verdict per phase.
+     *
+     *  Stops on first hard failure: parity FAIL aborts before banana
+     *  (Phase C training would just produce garbage); banana FAIL aborts
+     *  before ship gates (no LoRA to evaluate).
+     */
+    private fun runFullGauntlet() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Full gauntlet")
+            .setMessage("Will run parity@3 → banana test → ship gates in sequence (~30 min total). Plug in to charge.")
+            .setPositiveButton("Run") { _, _ -> launchFullGauntlet() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun launchFullGauntlet() {
+        val progress = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Full gauntlet")
+            .setMessage("Starting…")
+            .setCancelable(false)
+            .show()
+        lifecycleScope.launch {
+            val results = StringBuilder()
+
+            // Phase A.3 parity @ 3
+            runOnUiThread { progress.setMessage("Phase A.3 parity check (3 tokens)…") }
+            val externalGguf = java.io.File(getExternalFilesDir(null), "models/qwen2.5-1.5b-instruct-q8_0.gguf")
+            val internalGguf = java.io.File(filesDir, "models/qwen2.5-1.5b-instruct-q8_0.gguf")
+            val gguf = if (externalGguf.exists() && externalGguf.length() > 0) externalGguf else internalGguf
+            val parityPrompt = "<|im_start|>user\nWrite one sentence about Solana.<|im_end|>\n<|im_start|>assistant\n"
+            val parityMatched = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { xyz.ghola.app.ai.llama.LlamaCpp().parityCheck(gguf.absolutePath, parityPrompt, 3) }.getOrElse { -1 }
+            }
+            results.append("Parity (3 tok): ").append(if (parityMatched == 3) "✅ PASS" else "❌ $parityMatched/3").append("\n")
+            if (parityMatched < 3) {
+                progress.dismiss()
+                showFinalGauntletDialog(results.toString(), passed = false, reason = "Parity failed — skipping banana + ship gates (Phase C would train garbage).")
+                return@launch
+            }
+
+            // Phase H.1 banana
+            runOnUiThread { progress.setMessage("Phase H.1 banana test (5-10 min)…") }
+            val bananaVerdict = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    xyz.ghola.app.ml.BananaTest.runOnce(this@HomeActivity, callback = object : xyz.ghola.app.ai.llama.LlamaFinetune.ProgressCallback {
+                        override fun onEpoch(epoch: Int, totalEpochs: Int, lossSoFar: Float) {
+                            runOnUiThread { progress.setMessage("Banana epoch $epoch/$totalEpochs — loss=${"%.4f".format(lossSoFar)}") }
+                        }
+                        override fun onStep(step: Int, totalSteps: Int, loss: Float) {
+                            if (step % 50 == 0) runOnUiThread { progress.setMessage("Banana step $step/$totalSteps — loss=${"%.4f".format(loss)}") }
+                        }
+                        override fun onComplete(adapterPath: String) { }
+                        override fun onError(message: String) { }
+                    })
+                }.getOrElse { xyz.ghola.app.ml.BananaTest.Verdict(false, null, 0f, false, "exception: ${it.message}") }
+            }
+            results.append("Banana: ").append(if (bananaVerdict.passes) "✅ PASS" else "❌ ${(bananaVerdict.bananaFraction * 100).toInt()}%").append("\n")
+            if (!bananaVerdict.passes) {
+                progress.dismiss()
+                showFinalGauntletDialog(results.toString(), passed = false, reason = "Banana failed — skipping ship gates (no LoRA to eval).")
+                return@launch
+            }
+
+            // Phase H.2-4 ship gates
+            runOnUiThread { progress.setMessage("Phase H ship gates (~20 min)…") }
+            val gates = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { xyz.ghola.app.ml.VoiceMetric.phaseHGateReport(this@HomeActivity) }.getOrNull()
+            }
+            if (gates == null) {
+                results.append("Ship gates: ⚠ eval failed")
+            } else {
+                results.append("Voice match: ").append(if (gates.voiceMatchPasses) "✅" else "❌")
+                gates.voiceMatchDelta?.let { results.append(" Δ=${"%.3f".format(it)}") }
+                results.append("\nLeakage: ").append(if (gates.leakagePasses) "✅" else "❌")
+                results.append("\nA/B prefs: ").append(if (gates.preferencePasses) "✅" else "❌ n=${gates.preferenceN}")
+            }
+            progress.dismiss()
+            showFinalGauntletDialog(
+                results.toString(),
+                passed = (gates?.passes == true),
+                reason = if (gates?.passes == true) "All gates passed — SHIP." else "Some gates failed; see above.",
+            )
+        }
+    }
+
+    private fun showFinalGauntletDialog(report: String, passed: Boolean, reason: String) {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(if (passed) "Gauntlet: PASS ✅" else "Gauntlet: BLOCK ❌")
+            .setMessage("$report\n\n$reason")
             .setPositiveButton("OK", null)
             .show()
     }
