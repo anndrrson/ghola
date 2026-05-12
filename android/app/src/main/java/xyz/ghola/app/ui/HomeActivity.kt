@@ -92,17 +92,140 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         findViewById<View>(R.id.profileButton).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
-        // v0.6 dev shortcut: long-press the profile icon to run the Phase A.3
-        // parity check directly, bypassing the Settings → radio → long-press
-        // path. Reads the GGUF from whichever location it actually exists in.
+        // v0.6 dev shortcut: long-press the profile icon to open a chooser
+        // for every Phase A→H gate. Bypasses Settings → radio → long-press.
         findViewById<View>(R.id.profileButton).setOnLongClickListener {
-            runParityCheckDirect()
+            showDevGauntletChooser()
             true
         }
 
         // Phase M6: Bottom navigation
         val bottomNav = findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(R.id.bottomNav)
         BottomNavHelper.attach(this, R.id.tab_assistant, bottomNav)
+    }
+
+    /**
+     * v0.6 dev gauntlet — one menu for every Phase A→H gate. Each entry
+     * runs on Dispatchers.IO and reports the verdict in a dialog.
+     */
+    private fun showDevGauntletChooser() {
+        val entries = arrayOf(
+            "Parity check (Phase A.3)",
+            "Banana test (Phase H.1)",
+            "Ship/no-ship gates (Phase H)",
+            "Clean test artifacts",
+        )
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("v0.6 dev gauntlet")
+            .setItems(entries) { _, which ->
+                when (which) {
+                    0 -> runParityCheckDirect()
+                    1 -> runBananaTestDirect()
+                    2 -> runShipGatesDirect()
+                    3 -> cleanTestArtifactsDirect()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun runBananaTestDirect() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Banana test")
+            .setMessage("Train a fresh LoRA on 200 synthetic 'banana' pairs and verify the model overfits. ~5-10 min. Plug in to charge.")
+            .setPositiveButton("Run") { _, _ ->
+                val progress = androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("Banana test")
+                    .setMessage("Starting…")
+                    .setCancelable(false)
+                    .show()
+                lifecycleScope.launch {
+                    val v = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching {
+                            xyz.ghola.app.ml.BananaTest.runOnce(
+                                this@HomeActivity,
+                                callback = object : xyz.ghola.app.ai.llama.LlamaFinetune.ProgressCallback {
+                                    override fun onEpoch(epoch: Int, totalEpochs: Int, lossSoFar: Float) {
+                                        runOnUiThread { progress.setMessage("Epoch $epoch/$totalEpochs — loss=${"%.4f".format(lossSoFar)}") }
+                                    }
+                                    override fun onStep(step: Int, totalSteps: Int, loss: Float) {
+                                        if (step % 20 == 0) runOnUiThread { progress.setMessage("Step $step/$totalSteps — loss=${"%.4f".format(loss)}") }
+                                    }
+                                    override fun onComplete(adapterPath: String) { }
+                                    override fun onError(message: String) { }
+                                },
+                            )
+                        }.getOrElse {
+                            xyz.ghola.app.ml.BananaTest.Verdict(
+                                false, null, 0f, false, "exception: ${it.message}",
+                            )
+                        }
+                    }
+                    progress.dismiss()
+                    val body = buildString {
+                        append(v.message)
+                        if (v.sampledOutput != null) {
+                            append("\n\nSample:\n")
+                            append(v.sampledOutput.take(200))
+                        }
+                    }
+                    androidx.appcompat.app.AlertDialog.Builder(this@HomeActivity)
+                        .setTitle(if (v.passes) "Banana test: PASS" else "Banana test: FAIL")
+                        .setMessage(body)
+                        .setPositiveButton("OK", null)
+                        .show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun runShipGatesDirect() {
+        val progress = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Phase H gates")
+            .setMessage("Running voice match + leakage + preference reports — ~20 min.")
+            .setCancelable(false)
+            .show()
+        lifecycleScope.launch {
+            val gates = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { xyz.ghola.app.ml.VoiceMetric.phaseHGateReport(this@HomeActivity) }.getOrNull()
+            }
+            progress.dismiss()
+            val body = if (gates == null) {
+                "Gate evaluation failed — see logcat (VoiceMetric tag).\n\nIf 'no LoRA on disk' showed, run Banana test first."
+            } else {
+                buildString {
+                    append("Gate 2 (voice match Δ): ").append(if (gates.voiceMatchPasses) "✅" else "❌")
+                    gates.voiceMatchDelta?.let { append("  Δ=${"%.3f".format(it)}") }
+                    append("\nGate 3 (leakage): ").append(if (gates.leakagePasses) "✅" else "❌")
+                    append("\nGate 4 (A/B prefs): ").append(if (gates.preferencePasses) "✅" else "❌")
+                    append("  n=${gates.preferenceN}")
+                    append("\n\n").append(if (gates.passes) "SHIP ✅" else "BLOCK ❌")
+                }
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this@HomeActivity)
+                .setTitle("Phase H result")
+                .setMessage(body)
+                .setPositiveButton("OK", null)
+                .show()
+        }
+    }
+
+    private fun cleanTestArtifactsDirect() {
+        val mm = xyz.ghola.app.ai.llama.ModelManager(this)
+        val candidates = listOf(
+            java.io.File(mm.getLoraFile().absolutePath + ".banana"),
+            java.io.File(mm.getLoraFile().absolutePath + ".partial"),
+            java.io.File(cacheDir, "finetune/banana_test.jsonl"),
+            java.io.File(cacheDir, "finetune/train.jsonl"),
+        )
+        val removed = candidates.filter { it.exists() }
+        if (removed.isEmpty()) {
+            Toast.makeText(this, "Nothing to clean", Toast.LENGTH_SHORT).show()
+            return
+        }
+        removed.forEach { it.delete() }
+        Toast.makeText(this, "Removed ${removed.size} file(s)", Toast.LENGTH_SHORT).show()
     }
 
     /**
