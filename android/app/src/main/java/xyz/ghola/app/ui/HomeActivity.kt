@@ -118,8 +118,12 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
             "Warm up inference",
         )
         // Build stamp surfaces in the dialog title so a quick long-press
-        // confirms "yes, the latest commit is installed."
-        val stampSuffix = " · ${xyz.ghola.app.BuildConfig.GIT_SHA}"
+        // confirms "yes, the latest commit is installed." Includes relative
+        // "built Nm ago" so it's obvious if the install is stale.
+        val ageMin = ((System.currentTimeMillis() -
+                       xyz.ghola.app.BuildConfig.BUILD_STAMP.toLongOrNull().let { it ?: 0L })
+                      / 60000L).coerceAtLeast(0L)
+        val stampSuffix = " · ${xyz.ghola.app.BuildConfig.GIT_SHA} · ${ageMin}m"
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("v0.6 dev gauntlet$stampSuffix")
             .setItems(entries) { _, which ->
