@@ -9,6 +9,34 @@ pub struct EmailDraft {
     pub body: String,
 }
 
+/// Tool definition advertised to tool-capable LLMs. Mirrors the shape used by
+/// `wallet_service::wallet_tool_definitions`.
+pub fn email_tool_definition() -> serde_json::Value {
+    serde_json::json!({
+        "name": "send_email",
+        "description": "Compose and send an email on the user's behalf. The user will review \
+                        the message before it actually sends.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Recipient email address."
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Subject line."
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Email body text."
+                }
+            },
+            "required": ["to", "subject", "body"]
+        }
+    })
+}
+
 /// Generate an email draft using Claude.
 pub async fn generate_email_draft(
     state: &AppState,
