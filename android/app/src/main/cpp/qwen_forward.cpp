@@ -420,9 +420,35 @@ ggml_tensor * qwen_forward_build(
 
 namespace {
 
+/** Result of argmax + top-3 over a logit vector. */
+struct LogitTopK {
+    int   id[3] = {-1, -1, -1};
+    float v [3] = {-INFINITY, -INFINITY, -INFINITY};
+};
+
+/** Tracks the top 3 ids by logit value. Used for richer parity-check
+ *  logging so dev can spot "off by one rank" divergence without rerunning. */
+LogitTopK top3(const float * logits, int n) {
+    LogitTopK out;
+    for (int v = 0; v < n; ++v) {
+        const float x = logits[v];
+        if (x > out.v[0]) {
+            out.v[2] = out.v[1]; out.id[2] = out.id[1];
+            out.v[1] = out.v[0]; out.id[1] = out.id[0];
+            out.v[0] = x;        out.id[0] = v;
+        } else if (x > out.v[1]) {
+            out.v[2] = out.v[1]; out.id[2] = out.id[1];
+            out.v[1] = x;        out.id[1] = v;
+        } else if (x > out.v[2]) {
+            out.v[2] = x;        out.id[2] = v;
+        }
+    }
+    return out;
+}
+
 /** Greedy-decode N tokens through our qwen_forward path. Returns the
- *  generated token IDs (not including the prompt). On any failure
- *  returns whatever was generated so far — caller compares lengths.
+ *  generated token IDs (not including the prompt) AND captures each
+ *  step's top-3 for the parity check's per-step logging.
  *
  *  Memory note: each step builds a fresh ggml_context sized at 4 GB.
  *  This is DEV-ONLY code; not safe to call on a phone. The host that
@@ -430,7 +456,8 @@ namespace {
 std::vector<int32_t> greedy_decode_qwen(
     QwenModel & model,
     const std::vector<int32_t> & prompt_tokens,
-    int max_new_tokens)
+    int max_new_tokens,
+    std::vector<LogitTopK> * per_step_top3 = nullptr)
 {
     std::vector<int32_t> generated;
     generated.reserve(max_new_tokens);
@@ -465,18 +492,11 @@ std::vector<int32_t> greedy_decode_qwen(
         ggml_build_forward_expand(cgraph, last_logits);
         ggml_graph_compute_with_ctx(gctx, cgraph, /*n_threads=*/ 4);
 
-        // Argmax over the vocabulary axis of the [vocab_size] tensor.
         const float * logits = (const float *) last_logits->data;
-        int   best_id = 0;
-        float best_v  = -INFINITY;
-        for (int v = 0; v < QwenConfig::vocab_size; ++v) {
-            if (logits[v] > best_v) {
-                best_v  = logits[v];
-                best_id = v;
-            }
-        }
-        generated.push_back(best_id);
-        ctx_tokens.push_back(best_id);
+        LogitTopK tk = top3(logits, QwenConfig::vocab_size);
+        if (per_step_top3) per_step_top3->push_back(tk);
+        generated.push_back(tk.id[0]);
+        ctx_tokens.push_back(tk.id[0]);
 
         ggml_free(gctx);
     }
@@ -595,18 +615,31 @@ int qwen_parity_check(
     }
     llama_model_free(lmodel);
 
-    std::vector<int32_t> ours = greedy_decode_qwen(model, prompt_tokens, max_tokens);
+    std::vector<LogitTopK> ours_top3;
+    std::vector<int32_t> ours = greedy_decode_qwen(model, prompt_tokens, max_tokens, &ours_top3);
     LOGI("qwen_parity_check: our path produced %zu tokens", ours.size());
 
     qwen_model_free(model);
 
-    // ── Compare token-by-token ─────────────────────────────────────────
+    // ── Compare token-by-token, with rich divergence logging ────────────
     int matched = 0;
     const int compare_len = (int) std::min(ref.size(), ours.size());
     for (int i = 0; i < compare_len; ++i) {
         if (ref[i] != ours[i]) {
-            LOGW("qwen_parity_check: divergence at index %d (ref=%d, ours=%d)",
-                 i, ref[i], ours[i]);
+            LOGW("qwen_parity_check: divergence at index %d", i);
+            LOGW("  reference: tok=%d", ref[i]);
+            if (i < (int) ours_top3.size()) {
+                const LogitTopK & t = ours_top3[i];
+                LOGW("  ours top-3: [%d %.3f] [%d %.3f] [%d %.3f]",
+                     t.id[0], t.v[0], t.id[1], t.v[1], t.id[2], t.v[2]);
+                // If the reference is in our top-3, it's likely a tiny
+                // numerical drift in the final layer — usually means our
+                // forward is structurally correct but f16/q8 quantization
+                // is rounding differently. If the reference is far down,
+                // there's a deeper structural problem.
+                bool ref_in_top3 = (t.id[0] == ref[i] || t.id[1] == ref[i] || t.id[2] == ref[i]);
+                LOGW("  reference-in-our-top-3: %s", ref_in_top3 ? "YES" : "NO");
+            }
             break;
         }
         ++matched;
