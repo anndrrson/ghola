@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  v0.6 voice-compare A/B panel. Trading-terminal language to match the
+  home grid + chat surfaces: dark bg, eyebrow + accent bar header,
+  hairline borders, Geist Sans + Geist Mono.
+
+  Layout: header + prompt input + two side-by-side output panes + judgment
+  buttons + revealing footer.
+-->
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/ghola_bg">
+
+    <!-- Header band -->
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/header"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:paddingTop="40dp"
+        android:paddingBottom="16dp"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <TextView
+            android:id="@+id/eyebrow"
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="› VOICE COMPARE"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintStart_toStartOf="parent" />
+
+        <View
+            android:id="@+id/accentBar"
+            android:layout_width="48dp"
+            android:layout_height="1dp"
+            android:background="@color/ghola_accent"
+            android:layout_marginTop="10dp"
+            app:layout_constraintTop_toBottomOf="@id/eyebrow"
+            app:layout_constraintStart_toStartOf="parent" />
+
+        <TextView
+            android:id="@+id/title"
+            style="@style/Ghola.Text.Hero"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="Which one sounds more like you?"
+            android:textSize="22sp"
+            android:layout_marginTop="14dp"
+            app:layout_constraintTop_toBottomOf="@id/accentBar"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <View
+        android:id="@+id/headerDivider"
+        android:layout_width="0dp"
+        android:layout_height="1dp"
+        android:background="@color/ghola_border"
+        app:layout_constraintTop_toBottomOf="@id/header"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Prompt input -->
+    <EditText
+        android:id="@+id/promptInput"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:hint="Describe what you want to write…"
+        android:textColorHint="@color/ghola_text_tertiary"
+        android:textColor="@color/ghola_text_primary"
+        android:fontFamily="@font/geist"
+        android:textSize="15sp"
+        android:padding="14dp"
+        android:layout_marginHorizontal="24dp"
+        android:layout_marginTop="16dp"
+        android:background="@drawable/chat_input_background"
+        android:inputType="textMultiLine"
+        android:maxLines="3"
+        app:layout_constraintTop_toBottomOf="@id/headerDivider"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <Button
+        android:id="@+id/generateButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="Generate both"
+        android:layout_marginHorizontal="24dp"
+        android:layout_marginTop="12dp"
+        style="@style/Ghola.PrimaryButton"
+        app:layout_constraintTop_toBottomOf="@id/promptInput"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- A/B panes — half-width each, scrollable -->
+    <TextView
+        android:id="@+id/labelA"
+        style="@style/Ghola.Text.Eyebrow"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="› A"
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="20dp"
+        app:layout_constraintTop_toBottomOf="@id/generateButton"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <TextView
+        android:id="@+id/labelB"
+        style="@style/Ghola.Text.Eyebrow"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="› B"
+        android:layout_marginEnd="24dp"
+        android:layout_marginTop="20dp"
+        app:layout_constraintTop_toBottomOf="@id/generateButton"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <ScrollView
+        android:id="@+id/scrollA"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="6dp"
+        android:layout_marginTop="6dp"
+        android:layout_marginBottom="12dp"
+        android:background="@drawable/chat_input_background"
+        android:padding="12dp"
+        app:layout_constraintTop_toBottomOf="@id/labelA"
+        app:layout_constraintBottom_toTopOf="@id/judgmentRow"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toStartOf="@id/scrollB">
+
+        <TextView
+            android:id="@+id/outputA"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/ghola_text_primary"
+            android:fontFamily="@font/geist"
+            android:textSize="14sp"
+            android:lineSpacingExtra="2dp"
+            android:textIsSelectable="true"
+            android:text="" />
+    </ScrollView>
+
+    <ScrollView
+        android:id="@+id/scrollB"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_marginStart="6dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginTop="6dp"
+        android:layout_marginBottom="12dp"
+        android:background="@drawable/chat_input_background"
+        android:padding="12dp"
+        app:layout_constraintTop_toBottomOf="@id/labelB"
+        app:layout_constraintBottom_toTopOf="@id/judgmentRow"
+        app:layout_constraintStart_toEndOf="@id/scrollA"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <TextView
+            android:id="@+id/outputB"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/ghola_text_primary"
+            android:fontFamily="@font/geist"
+            android:textSize="14sp"
+            android:lineSpacingExtra="2dp"
+            android:textIsSelectable="true"
+            android:text="" />
+    </ScrollView>
+
+    <!-- Cosine scores under each output -->
+    <TextView
+        android:id="@+id/scoreA"
+        style="@style/Ghola.Text.Mono.Small"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:layout_marginStart="24dp"
+        app:layout_constraintBottom_toTopOf="@id/judgmentRow"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <TextView
+        android:id="@+id/scoreB"
+        style="@style/Ghola.Text.Mono.Small"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:layout_marginEnd="24dp"
+        app:layout_constraintBottom_toTopOf="@id/judgmentRow"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Judgment buttons -->
+    <LinearLayout
+        android:id="@+id/judgmentRow"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginHorizontal="24dp"
+        android:layout_marginBottom="24dp"
+        android:gravity="center_vertical"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <Button
+            android:id="@+id/btnPickA"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="A sounds like me"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:textColor="@color/ghola_text_primary"
+            app:strokeColor="@color/ghola_border"
+            app:cornerRadius="0dp"
+            android:layout_marginEnd="4dp" />
+
+        <Button
+            android:id="@+id/btnTie"
+            android:layout_width="0dp"
+            android:layout_weight="0.6"
+            android:layout_height="wrap_content"
+            android:text="Tie"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:textColor="@color/ghola_text_secondary"
+            app:strokeColor="@color/ghola_border"
+            app:cornerRadius="0dp"
+            android:layout_marginHorizontal="4dp" />
+
+        <Button
+            android:id="@+id/btnPickB"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="B sounds like me"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:textColor="@color/ghola_text_primary"
+            app:strokeColor="@color/ghola_border"
+            app:cornerRadius="0dp"
+            android:layout_marginStart="4dp" />
+    </LinearLayout>
+
+    <ProgressBar
+        android:id="@+id/genSpinner"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:visibility="gone"
+        android:indeterminateTint="@color/ghola_accent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginBottom="24dp" />
+
+    <TextView
+        android:id="@+id/statusText"
+        style="@style/Ghola.Text.Mono.Small"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="64dp"
+        android:textColor="@color/ghola_text_secondary"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
