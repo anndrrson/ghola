@@ -36,22 +36,24 @@ class LocalChatBackend(
         private const val TAG = "LocalChatBackend"
 
         /**
-         * Hard cap on prompt size, measured in characters. Qwen 2.5 1.5B in
-         * the `ekv1280` LiteRT bundle has only 1280 tokens of total KV cache
-         * (prompt + response combined). The English text-to-token ratio for
-         * Qwen averages ~3.5 chars/token; we use the conservative 3.0 here
-         * to leave margin. Budget calculation:
-         *
-         *   total context  = 1024 tokens (set in LocalLlm.setMaxTokens)
-         *   reserved for response = 512 tokens
-         *   prompt budget = 512 tokens × 3 chars/token = 1536 chars
-         *
-         * Pre-flight check drops oldest user/assistant pair (then truncates
-         * the current user message as last resort) until the rendered
-         * prompt is under [MAX_PROMPT_CHARS]. Guarantees the runtime never
-         * sees a context overflow.
+         * Prompt-char budget at the **MediaPipe** runtime. The `ekv1280`
+         * LiteRT bundle has only 1280 tokens of total KV cache; with 512
+         * tokens reserved for response and ~3 chars/token conservative
+         * ratio that's 1536 chars of prompt headroom.
          */
-        private const val MAX_PROMPT_CHARS = 1536
+        private const val MAX_PROMPT_CHARS_MEDIAPIPE = 1536
+
+        /**
+         * Prompt-char budget at the **llama.cpp** runtime. The GGUF build
+         * supports the model's native 32k context; we use 4k tokens of
+         * actual context (set in LlamaCppImpl) to keep generation latency
+         * reasonable. 4096 tokens × 3 chars/token − 512 token response
+         * reserve = ~10kb of prompt budget. We cap at 4096 chars so a
+         * runaway pasted email doesn't dominate. Lifted from v0.5's tight
+         * 1536-char ceiling because the LoRA fine-tune wants more recent
+         * history to learn from.
+         */
+        private const val MAX_PROMPT_CHARS_LLAMACPP = 4096
 
         /** Per-message hard truncation to prevent one long paste from
          *  monopolizing the budget. Applied before history pruning. */
@@ -167,6 +169,13 @@ class LocalChatBackend(
      * cache pressure.
      */
     private fun buildPrompt(messages: JSONArray, system: String): String {
+        // Backend-dependent budget. llama.cpp wields a much larger KV cache
+        // than MediaPipe's `ekv1280` bundle, so we lift the cap when that
+        // runtime is active.
+        val maxPromptChars = if (
+            xyz.ghola.app.ai.SecureStorage(context).useLlamaCppRuntime()
+        ) MAX_PROMPT_CHARS_LLAMACPP else MAX_PROMPT_CHARS_MEDIAPIPE
+
         data class Turn(val role: String, var content: String)
 
         // 1. Collect + normalize.
@@ -212,7 +221,7 @@ class LocalChatBackend(
         var droppedTurns = 0
         // The current user message is the *last* user-role turn; never drop it.
         // Drop from the front (oldest) one turn at a time.
-        while (rendered.length > MAX_PROMPT_CHARS && turns.size > 1) {
+        while (rendered.length > maxPromptChars && turns.size > 1) {
             turns.removeAt(0)
             droppedTurns++
             rendered = render()
@@ -227,8 +236,8 @@ class LocalChatBackend(
         // 4. Last resort: truncate the current user message itself. Happens
         // when even a one-turn conversation has a message longer than the
         // budget can absorb (e.g., user pasted a wall of text).
-        if (rendered.length > MAX_PROMPT_CHARS && turns.isNotEmpty()) {
-            val overshoot = rendered.length - MAX_PROMPT_CHARS
+        if (rendered.length > maxPromptChars && turns.isNotEmpty()) {
+            val overshoot = rendered.length - maxPromptChars
             val current = turns.last()
             val target = (current.content.length - overshoot - 32).coerceAtLeast(
                 MIN_USER_MESSAGE_CHARS,
@@ -247,11 +256,11 @@ class LocalChatBackend(
         // pasted content is genuinely too large for a 1.5B model. Log; the
         // model will likely still produce *something* useful from the
         // truncated tail, so we proceed rather than throw.
-        if (rendered.length > MAX_PROMPT_CHARS) {
+        if (rendered.length > maxPromptChars) {
             Log.w(
                 TAG,
                 "prompt at ${rendered.length} chars is still over the " +
-                    "$MAX_PROMPT_CHARS budget; the model may overflow",
+                    "$maxPromptChars budget; the model may overflow",
             )
         }
         return rendered
