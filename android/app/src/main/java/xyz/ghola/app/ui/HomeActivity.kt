@@ -13,8 +13,11 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
+import xyz.ghola.app.cloud.AppForegroundCoordinator
 import xyz.ghola.app.cloud.CloudAuthManager
 import xyz.ghola.app.cloud.TaskClassifier
 import xyz.ghola.app.cloud.ThumperCloudClient
@@ -60,18 +63,27 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         // Mic FAB
         micFab.setOnClickListener { toggleVoiceInput() }
 
-        // Quick action buttons
+        // Quick action buttons.
+        //
+        // Call/Email require cloud auth (Bland AI / Gmail OAuth). If the
+        // user's wallet sign-in is missing or expired, we toast + bounce them
+        // to OnboardingActivity at the SIWS step instead of letting the tap
+        // silently no-op (the v0.4 user-reported "tile doesn't work" bug).
         findViewById<MaterialCardView>(R.id.actionCall).setOnClickListener {
-            startChatWith("I need to make a phone call")
+            if (requireCloudAuthOrBounce(getString(R.string.cloud_required_for_call))) {
+                startChatWith("I need to make a phone call", autoSend = true, forceCloudRoute = "call")
+            }
         }
         findViewById<MaterialCardView>(R.id.actionEmail).setOnClickListener {
-            startChatWith("I need to send an email")
+            if (requireCloudAuthOrBounce(getString(R.string.cloud_required_for_email))) {
+                startChatWith("I need to send an email", autoSend = true, forceCloudRoute = "email")
+            }
         }
+        // Device + Chat tiles don't need cloud auth — they route to the
+        // local agent / device-control surface.
         findViewById<MaterialCardView>(R.id.actionDevice).setOnClickListener {
             startActivity(Intent(this, ChatActivity::class.java))
         }
-        // Phase M6: bottom nav now handles Agents tab. actionChat reverts
-        // to opening ChatActivity (its original behavior pre-M5).
         findViewById<MaterialCardView>(R.id.actionChat).setOnClickListener {
             startActivity(Intent(this, ChatActivity::class.java))
         }
@@ -88,13 +100,42 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
 
     override fun onResume() {
         super.onResume()
-        if (!secureStorage.hasCloudAuth()) {
-            startActivity(Intent(this, OnboardingActivity::class.java))
-            return
+        // Single decision point for "do we have valid auth?" — runs a silent
+        // refresh if needed, falls back to false if no recovery path. This
+        // replaces the old `hasCloudAuth()` check which reported expired
+        // tokens as valid.
+        lifecycleScope.launch {
+            val valid = AppForegroundCoordinator.ensureAuthValid(this@HomeActivity)
+            if (!valid) {
+                startActivity(
+                    Intent(this@HomeActivity, OnboardingActivity::class.java).apply {
+                        putExtra(OnboardingActivity.EXTRA_STEP, OnboardingActivity.STEP_SIWS)
+                    }
+                )
+                finish()
+                return@launch
+            }
+            updateGreeting()
+            refreshActiveTasks()
+            initCloudClient()
         }
-        updateGreeting()
-        refreshActiveTasks()
-        initCloudClient()
+    }
+
+    /**
+     * Returns true if we have valid cloud auth. Otherwise toasts the provided
+     * reason and routes the user back through onboarding (landing on the
+     * wallet sign-in step). Used by the Call/Email tiles to prevent silent
+     * no-ops on fresh/stale installs.
+     */
+    private fun requireCloudAuthOrBounce(reason: String): Boolean {
+        if (secureStorage.hasCloudAuth()) return true
+        Toast.makeText(this, reason, Toast.LENGTH_LONG).show()
+        startActivity(
+            Intent(this, OnboardingActivity::class.java).apply {
+                putExtra(OnboardingActivity.EXTRA_STEP, OnboardingActivity.STEP_SIWS)
+            }
+        )
+        return false
     }
 
     override fun onDestroy() {
@@ -175,9 +216,17 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         else -> type.replaceFirstChar { it.uppercase() }
     }
 
-    private fun startChatWith(prefill: String) {
+    private fun startChatWith(
+        prefill: String,
+        autoSend: Boolean = false,
+        forceCloudRoute: String? = null
+    ) {
         val intent = Intent(this, ChatActivity::class.java)
         intent.putExtra("prefill_message", prefill)
+        intent.putExtra("auto_send", autoSend)
+        if (forceCloudRoute != null) {
+            intent.putExtra("force_cloud_route", forceCloudRoute)
+        }
         startActivity(intent)
     }
 

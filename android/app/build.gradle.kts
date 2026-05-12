@@ -12,8 +12,8 @@ android {
         applicationId = "xyz.ghola.app"
         minSdk = 28
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -139,6 +139,9 @@ dependencies {
     // explicitly so the IDE resolves lifecycleScope without surprises.
     implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    // ProcessLifecycleOwner — fires onStart exactly once per
+    // background→foreground transition. Used by AppForegroundCoordinator.
+    implementation("androidx.lifecycle:lifecycle-process:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
     // Sealed-envelope-v1 E2E (Phase 0.3 / dApp Store v0.3.0).

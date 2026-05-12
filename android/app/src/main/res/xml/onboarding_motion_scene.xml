@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Motion scene for activity_onboarding.xml.
+
+  Two ConstraintSets:
+    @id/step0 — wallet sign-in (start state, also the entry).
+    @id/step1 — accessibility (target state).
+
+  Transition crossfades:
+    heroIconStep0 alpha 1 → 0     (wallet fades out)
+    heroIconStep1 alpha 0 → 1     (accessibility fades in)
+    accentBar     width 48 → 96   (signals progress)
+    heroTitle     translationX -32dp → 0  (slide-in)
+    body / cta-step-0 alpha 1 → 0
+    body / cta-step-1 alpha 0 → 1
+-->
+<MotionScene xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:motion="http://schemas.android.com/apk/res-auto">
+
+    <Transition
+        motion:constraintSetStart="@+id/step0"
+        motion:constraintSetEnd="@+id/step1"
+        motion:duration="500"
+        motion:motionInterpolator="easeInOut">
+
+        <KeyFrameSet>
+            <KeyAttribute
+                motion:motionTarget="@+id/heroTitle"
+                motion:framePosition="0"
+                android:translationX="0dp" />
+
+            <KeyAttribute
+                motion:motionTarget="@+id/heroTitle"
+                motion:framePosition="50"
+                android:translationX="-16dp"
+                android:alpha="0" />
+
+            <KeyAttribute
+                motion:motionTarget="@+id/heroTitle"
+                motion:framePosition="51"
+                android:translationX="16dp"
+                android:alpha="0" />
+
+            <KeyAttribute
+                motion:motionTarget="@+id/heroTitle"
+                motion:framePosition="100"
+                android:translationX="0dp"
+                android:alpha="1" />
+        </KeyFrameSet>
+    </Transition>
+
+    <!-- Step 0 — wallet sign-in. All step-1 views are alpha=0. -->
+    <ConstraintSet android:id="@+id/step0">
+        <Constraint android:id="@+id/heroIconStep0" android:alpha="1" />
+        <Constraint android:id="@+id/heroIconStep1" android:alpha="0" />
+        <Constraint android:id="@+id/btnWalletSignIn" android:alpha="1" />
+        <Constraint android:id="@+id/heroTitle" android:alpha="1" />
+        <Constraint android:id="@+id/heroBody" android:alpha="1" />
+        <Constraint android:id="@+id/btnEnableAccessibility" android:alpha="0" />
+        <Constraint android:id="@+id/btnCheckAccessibility" android:alpha="0" />
+        <Constraint android:id="@+id/btnFinish" android:alpha="0" />
+        <Constraint android:id="@+id/btnDone" android:alpha="0" />
+
+        <Constraint
+            android:id="@+id/accentBar"
+            android:layout_width="48dp"
+            android:layout_height="1dp" />
+    </ConstraintSet>
+
+    <!-- Step 1 — accessibility. Wallet CTA alpha=0; a11y buttons visible. -->
+    <ConstraintSet android:id="@+id/step1">
+        <Constraint android:id="@+id/heroIconStep0" android:alpha="0" />
+        <Constraint android:id="@+id/heroIconStep1" android:alpha="1" />
+        <Constraint android:id="@+id/btnWalletSignIn" android:alpha="0" />
+        <Constraint android:id="@+id/heroTitle" android:alpha="1" />
+        <Constraint android:id="@+id/heroBody" android:alpha="1" />
+        <Constraint android:id="@+id/btnEnableAccessibility" android:alpha="1" />
+        <Constraint android:id="@+id/btnCheckAccessibility" android:alpha="1" />
+        <Constraint android:id="@+id/btnFinish" android:alpha="1" />
+        <Constraint android:id="@+id/btnDone" android:alpha="0" />
+
+        <Constraint
+            android:id="@+id/accentBar"
+            android:layout_width="96dp"
+            android:layout_height="1dp" />
+    </ConstraintSet>
+
+</MotionScene>

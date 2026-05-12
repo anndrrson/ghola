@@ -13,7 +13,6 @@ import org.json.JSONObject
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.SaidCloudClient
-import xyz.ghola.app.demo.DemoSeed
 import java.util.concurrent.Executors
 
 /**
@@ -109,11 +108,6 @@ class AgentDetailActivity : AppCompatActivity() {
     }
 
     private fun loadFresh() {
-        // Demo-first: if this agent is one of the seed fixtures, render the
-        // seeded earnings + reputation immediately so the screen is never
-        // half-populated on stage. Then try the real backend as an overlay.
-        applySeed()
-
         if (!storage.hasSaidAuth()) return
         loading.visibility = View.VISIBLE
 
@@ -142,23 +136,6 @@ class AgentDetailActivity : AppCompatActivity() {
                 runOnUiThread { loading.visibility = View.GONE }
             }
         }
-    }
-
-    /** Paint the screen from DemoSeed fixtures if this agentId is a seed. */
-    private fun applySeed() {
-        val seed = DemoSeed.agentById(agentId) ?: return
-        bind(seed)
-        DemoSeed.earningsById(agentId)?.let { e ->
-            val net = e.optLong("net_micro_usdc", 0L)
-            val received = e.optLong("total_received_micro_usdc", 0L)
-            balanceView.text = formatUsdc(net)
-            earnedView.text = formatUsdc(received)
-        }
-        DemoSeed.reputationById(agentId)?.let { r ->
-            val score = r.optDouble("overall_score", 0.0)
-            reputationView.text = if (score > 0) String.format("%.2f", score) else "—"
-        }
-        serviceCountView.text = seed.optInt("service_count", 0).toString()
     }
 
     private fun copy(label: String, value: String) {

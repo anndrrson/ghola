@@ -181,6 +181,100 @@ pub fn generate_api_key() -> String {
     format!("sk-ghola-{}", hex::encode(&bytes))
 }
 
+// ---------------------------------------------------------------------------
+// Refresh-token rotation (OAuth2 single-use semantics)
+// ---------------------------------------------------------------------------
+
+/// 180-day refresh token TTL. Long enough that a user who opens the app once
+/// a quarter still recovers without an interactive SIWS prompt.
+pub const REFRESH_TOKEN_TTL_DAYS: i64 = 180;
+
+/// Issue a new refresh token for `user_id` and persist its SHA-256 hash. The
+/// raw token (never persisted in plaintext) is what the client stores and
+/// presents at refresh time.
+pub async fn create_refresh_token(state: &AppState, user_id: Uuid) -> Result<(String, i64), CloudError> {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let token = hex::encode(&bytes);
+    let token_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
+    let now = Utc::now();
+    let expires_at = now + Duration::days(REFRESH_TOKEN_TTL_DAYS);
+
+    sqlx::query(
+        "INSERT INTO refresh_tokens (token_hash, user_id, issued_at, expires_at) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(&token_hash)
+    .bind(user_id)
+    .bind(now)
+    .bind(expires_at)
+    .execute(&state.db)
+    .await
+    .map_err(|e| CloudError::Internal(format!("refresh_tokens insert failed: {e}")))?;
+
+    Ok((token, expires_at.timestamp()))
+}
+
+/// Consume a refresh token: verify it's present, non-revoked, non-expired;
+/// mark it revoked; issue a new one; return (new_refresh_token, new_exp,
+/// user_id). Single-use — a token presented twice is invalid the second time.
+///
+/// If a token is replayed AFTER rotation, callers can detect via the audit
+/// trail in `rotated_to_hash` and revoke the entire chain (future work).
+pub async fn consume_refresh_token(
+    state: &AppState,
+    refresh_token: &str,
+) -> Result<(String, i64, Uuid), CloudError> {
+    let token_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(refresh_token.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
+
+    let now = Utc::now();
+    let row = sqlx::query_as::<_, (Uuid, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>)>(
+        "SELECT user_id, expires_at, revoked_at FROM refresh_tokens WHERE token_hash = $1",
+    )
+    .bind(&token_hash)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| CloudError::Internal(format!("refresh_tokens lookup failed: {e}")))?
+    .ok_or(CloudError::Auth("unknown refresh token".to_string()))?;
+
+    let (user_id, expires_at, revoked_at) = row;
+    if revoked_at.is_some() {
+        return Err(CloudError::Auth("refresh token revoked".to_string()));
+    }
+    if expires_at <= now {
+        return Err(CloudError::Auth("refresh token expired".to_string()));
+    }
+
+    // Mint the replacement first so we can write `rotated_to_hash` atomically.
+    let (new_token, new_exp) = create_refresh_token(state, user_id).await?;
+    let new_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(new_token.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
+
+    sqlx::query(
+        "UPDATE refresh_tokens SET revoked_at = $1, rotated_to_hash = $2 WHERE token_hash = $3",
+    )
+    .bind(now)
+    .bind(&new_hash)
+    .bind(&token_hash)
+    .execute(&state.db)
+    .await
+    .map_err(|e| CloudError::Internal(format!("refresh_tokens rotate failed: {e}")))?;
+
+    Ok((new_token, new_exp, user_id))
+}
+
 mod hex {
     pub fn encode(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
