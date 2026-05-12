@@ -32,9 +32,12 @@ set(LLAMA_CURL           OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP          OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE       OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS    OFF CACHE BOOL "" FORCE)
-# P3 needs llama.cpp's `common` static target (training_pair helpers,
-# arg parsing, chat formatting). Turn it on; we link selectively.
-set(LLAMA_BUILD_COMMON   ON  CACHE BOOL "" FORCE)
+# Originally on for P3's training_pair helpers / arg parsing / chat
+# formatting. v0.6's final implementation rolled its own JSON parser
+# (load_and_tokenize_pairs) and ChatML string templates, so common is
+# unused. Off → faster cmake, smaller .so (~150 KB savings, no link
+# of the common static archive).
+set(LLAMA_BUILD_COMMON   OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
     llama
@@ -61,12 +64,10 @@ add_library(thumper_llama SHARED
 target_include_directories(thumper_llama PRIVATE
     ${llama_SOURCE_DIR}/include
     ${llama_SOURCE_DIR}/ggml/include
-    ${llama_SOURCE_DIR}/common
 )
 
 target_link_libraries(thumper_llama
     llama
-    common
     ggml
     log
     android
