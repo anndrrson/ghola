@@ -115,8 +115,11 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
             "Ship/no-ship gates (Phase H)",
             "Clean test artifacts",
         )
+        // Build stamp surfaces in the dialog title so a quick long-press
+        // confirms "yes, the latest commit is installed."
+        val stampSuffix = " · ${xyz.ghola.app.BuildConfig.GIT_SHA}"
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("v0.6 dev gauntlet")
+            .setTitle("v0.6 dev gauntlet$stampSuffix")
             .setItems(entries) { _, which ->
                 when (which) {
                     0 -> runParityCheckDirect()
