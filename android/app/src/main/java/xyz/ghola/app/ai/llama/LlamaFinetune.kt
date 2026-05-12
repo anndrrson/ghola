@@ -58,10 +58,16 @@ class LlamaFinetune {
         val batchSize: Int = 1,
         val ctxLen: Int = 1024,
         /**
-         * Which projection matrices to attach LoRA to. The QKV+O set is the
-         * standard "Attention-only" recipe — covers ~70% of where voice
-         * actually lives in the model and trains 4x faster than including
-         * the MLP projections too.
+         * Which projection matrices to attach LoRA to.
+         *
+         * **v0.6 NOTE — IGNORED BY THE NATIVE TRAINER.** The C++ JNI
+         * hardcodes the QKV+O attention set (attn_q.weight, attn_k.weight,
+         * attn_v.weight, attn_output.weight × 28 layers = 112 modules).
+         * This field is kept for API stability + v0.7 forward-compat when
+         * MLP-target LoRA lands.
+         *
+         * To actually change the target set today: edit `target_names` in
+         * `llama_finetune_jni.cpp`'s Java_..._run() handler.
          */
         val targetModules: List<String> = listOf("q_proj", "k_proj", "v_proj", "o_proj"),
     )

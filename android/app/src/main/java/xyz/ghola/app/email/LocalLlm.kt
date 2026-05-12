@@ -334,7 +334,10 @@ class LocalLlm private constructor(private val impl: Impl) {
                             modelPath = mm.getModelPath(),
                             loraPath = loraPath,
                             contextSize = 4096,
-                            numThreads = 4,
+                            // Dimensity 9300 (Seeker): prime + 3 perf + 4 efficiency.
+                            // 6 threads use prime+perf+2 efficiency for ~30%
+                            // lower latency vs 4 without starving UI/system.
+                            numThreads = 6,
                             temp = 0.7f,
                             topP = 0.9f,
                         )
