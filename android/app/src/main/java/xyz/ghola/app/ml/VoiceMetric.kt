@@ -325,6 +325,91 @@ object VoiceMetric {
         return longest
     }
 
+    // ── Phase H — capstone gate runner ───────────────────────────────────────
+
+    data class PreferenceReport(
+        /** Total rounds judged in VoiceCompareActivity (after dedupe is N/A — we keep all). */
+        val n: Int,
+        val loraCount: Int,
+        val baseCount: Int,
+        val tieCount: Int,
+        /** loraCount / (loraCount + baseCount) — ties excluded per the v0.6 plan. */
+        val loraFraction: Float,
+    )
+
+    /** Reads VoicePreference and returns the LoRA-preferred fraction.
+     *  Ties are excluded from the denominator. */
+    suspend fun preferenceReport(context: Context): PreferenceReport? =
+        withContext(Dispatchers.IO) {
+            val dao = GholaMailDatabase.get(context).voicePreferenceDao()
+            val n = dao.count()
+            if (n == 0) return@withContext null
+            val lora = dao.countChosen("LORA")
+            val base = dao.countChosen("BASE")
+            val tie  = dao.countChosen("TIE")
+            val nonTie = lora + base
+            val loraFrac = if (nonTie == 0) 0f else lora.toFloat() / nonTie.toFloat()
+            PreferenceReport(n, lora, base, tie, loraFrac)
+        }
+
+    /**
+     * Aggregate ship/no-ship report across all four Phase H gates.
+     *
+     *   gate 1 (banana test)        — CALLER provides (this object lives
+     *                                 in the C++/JNI training path).
+     *   gate 2 (voice match Δ)      — runEval().delta ≥ +0.08
+     *   gate 3 (n-gram leakage)     — !hasHardFail && warnFraction < 0.05
+     *   gate 4 (A/B preference)     — loraFraction ≥ 0.60 with n ≥ 10
+     *
+     * Any null means "could not evaluate" — treat as failing for ship/no-ship.
+     */
+    data class GateReport(
+        val voiceMatchDelta: Float?,
+        val voiceMatchPasses: Boolean,
+        val leakageWarnFraction: Float?,
+        val leakageHasHardFail: Boolean?,
+        val leakagePasses: Boolean,
+        val preferenceLoraFraction: Float?,
+        val preferenceN: Int,
+        val preferencePasses: Boolean,
+    ) {
+        /** True iff ALL evaluated gates pass. Gate 1 (banana test) is
+         *  excluded — that's verified in the training loop, not here. */
+        val passes: Boolean get() =
+            voiceMatchPasses && leakagePasses && preferencePasses
+    }
+
+    suspend fun phaseHGateReport(
+        context: Context,
+        voiceMatchMinDelta: Float = 0.08f,
+        leakageMaxWarnFraction: Float = 0.05f,
+        preferenceMinFraction: Float = 0.60f,
+        preferenceMinN: Int = 10,
+    ): GateReport = withContext(Dispatchers.IO) {
+        val voice = runEval(context)
+        val leakage = leakageReport(context)
+        val pref = preferenceReport(context)
+
+        val voicePasses = voice != null && voice.delta >= voiceMatchMinDelta
+        val leakPasses = leakage != null &&
+            !leakage.hasHardFail &&
+            leakage.warnFraction < leakageMaxWarnFraction
+        val prefPasses = pref != null &&
+            pref.n >= preferenceMinN &&
+            pref.loraFraction >= preferenceMinFraction
+
+        GateReport(
+            voiceMatchDelta = voice?.delta,
+            voiceMatchPasses = voicePasses,
+            leakageWarnFraction = leakage?.warnFraction,
+            leakageHasHardFail = leakage?.hasHardFail,
+            leakagePasses = leakPasses,
+            preferenceLoraFraction = pref?.loraFraction,
+            preferenceN = pref?.n ?: 0,
+            preferencePasses = prefPasses,
+        )
+    }
+
     // ── Centroid persistence ─────────────────────────────────────────────────
 
     private fun centroidFile(context: Context): File = ModelManager(context).getCentroidFile()
