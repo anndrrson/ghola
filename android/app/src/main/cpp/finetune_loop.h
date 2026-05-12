@@ -110,16 +110,6 @@ bool run_finetune(
     const FinetuneCallbacks & cb,
     const std::string & out_lora_path);
 
-/** Helper: tokenize a (prompt, completion) JSONL line via llama.cpp's
- *  vocab. The JSONL format mirrors what TrainingPairGenerator emits:
- *    {"prompt":"...", "completion":"..."}
- *  Returns false on parse or tokenization failure. */
-bool tokenize_pair(
-    const std::string & prompt,
-    const std::string & completion,
-    const std::string & gguf_path,  // for vocab access via llama_model
-    TokenizedPair & out);
-
 } // namespace ghola
 
 #endif // GHOLA_FINETUNE_LOOP_H

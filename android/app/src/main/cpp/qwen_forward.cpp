@@ -501,14 +501,12 @@ std::vector<int32_t> greedy_decode_qwen(
         std::vector<int32_t> positions(ctx_tokens.size());
         for (int i = 0; i < (int) ctx_tokens.size(); ++i) positions[i] = i;
 
-        // 1 GB is plenty for a 1.5B model's per-step activations at small
-        // context (no KV cache, no_alloc=false reserves virtual space but
-        // pages only fault in on write). Larger sizes caused the JNI
-        // thread to hang on a 4 GB allocation on Seeker — Android process
-        // virtual cap is tighter than the 4 GB host budget the dev code
-        // originally assumed.
+        // 384 MB covers a 1.5B model's per-step activations at small
+        // context. Previously 1 GB just to be safe; trimming saves virtual
+        // address space pressure on Seeker. The gallocr variant below
+        // measures ~140 MB at ctx_len=20, so 384 MB has comfortable margin.
         struct ggml_init_params gp = {
-            /*.mem_size   =*/ (size_t) 1 * 1024 * 1024 * 1024,
+            /*.mem_size   =*/ (size_t) 384 * 1024 * 1024,
             /*.mem_buffer =*/ nullptr,
             /*.no_alloc   =*/ false,
         };
@@ -531,7 +529,7 @@ std::vector<int32_t> greedy_decode_qwen(
         ggml_cgraph * cgraph = ggml_new_graph(gctx);
         ggml_build_forward_expand(cgraph, last_logits);
         auto t_compute = std::chrono::steady_clock::now();
-        ggml_graph_compute_with_ctx(gctx, cgraph, /*n_threads=*/ 4);
+        ggml_graph_compute_with_ctx(gctx, cgraph, /*n_threads=*/ 6);
         auto t_done = std::chrono::steady_clock::now();
 
         const float * logits = (const float *) last_logits->data;
