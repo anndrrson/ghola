@@ -192,6 +192,15 @@ object VoiceMetric {
      * signal. Tracks the system prompt used by [EmailPromptBuilder] but
      * intentionally simpler — no anchors — so we measure the model's
      * pure voice-conditioned response, not a retrieval-assisted one.
+     *
+     * NOTE: this deviates from training-time format (PersonalFineTuneWorker
+     * wraps with NO system prompt — just user/assistant turns). Deliberate
+     * trade-off: without a length-normalizing system prompt, base
+     * generations could run 1000s of tokens and the centroid match becomes
+     * noisy. BOTH base AND LoRA generations see the same system prompt,
+     * so the DELTA still reflects the LoRA's specific contribution; the
+     * absolute scores shift uniformly. Banana test and centroid both
+     * benefit from this asymmetric calibration.
      */
     private fun toQwenPrompt(intent: String): String = buildString {
         append("<|im_start|>system\n")
