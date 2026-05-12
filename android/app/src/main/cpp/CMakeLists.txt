@@ -52,6 +52,9 @@ FetchContent_MakeAvailable(llama)
 add_library(thumper_llama SHARED
     llama_jni.cpp
     llama_finetune_jni.cpp
+    lora_modules.cpp
+    adapter_writer.cpp
+    qwen_forward.cpp
 )
 
 target_include_directories(thumper_llama PRIVATE
