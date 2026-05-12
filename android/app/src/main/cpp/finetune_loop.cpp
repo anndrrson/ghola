@@ -36,6 +36,8 @@
 #include <android/log.h>
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <random>
@@ -44,6 +46,28 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+
+namespace {
+
+/** Read VmRSS in MB from /proc/self/status. Returns -1 if unavailable.
+ *  Used for the per-step training memory log so Phase E budget is
+ *  observable from the field without `top`/`adb shell`. */
+long read_vmrss_mb() {
+    FILE * f = fopen("/proc/self/status", "r");
+    if (!f) return -1;
+    char line[256];
+    long rss_kb = -1;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "VmRSS:", 6) == 0) {
+            rss_kb = atol(line + 6);
+            break;
+        }
+    }
+    fclose(f);
+    return rss_kb < 0 ? -1 : rss_kb / 1024;
+}
+
+} // anonymous
 
 namespace ghola {
 
@@ -193,6 +217,10 @@ bool run_finetune(
     // cuts peak RSS from ~2 GB to ~600 MB on a 1.5B model at ctx_len=1024.
     ggml_backend_t backend = ggml_backend_cpu_init();
     if (!backend) { LOGE("ggml_backend_cpu_init failed"); ggml_free(static_ctx); return false; }
+    // Dimensity 9300: 8 cores (1+3+4). Training pegs all available cores
+    // since the foreground notification + wakelock cover the UX, and 8
+    // threads vs 6 measurably faster on matmul-heavy backward graphs.
+    ggml_backend_cpu_set_n_threads(backend, 8);
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_cpu_buffer_type());
     if (!galloc) { LOGE("ggml_gallocr_new failed"); ggml_backend_free(backend); ggml_free(static_ctx); return false; }
 
@@ -325,13 +353,9 @@ bool run_finetune(
                 step_adamw_one(static_ctx, cgraph, m.B, m.m_B, m.v_B, opt_params);
             }
 
-            // TODO PHASE C — gradient clipping:
-            // before each adamw step, compute global_norm of grads across
-            // all LoRA params, then scale grads by min(1, clip / norm).
-            // ggml_opt_step_adamw doesn't fuse this; we'd need to insert
-            // a ggml_scale on each grad before the step. Defer until
-            // banana test passes — overfitting on banana is supposed to
-            // produce huge grads, clipping would mask the signal.
+            // TODO PHASE C — gradient clipping. Defer until banana test
+            // passes; overfit is supposed to produce huge grads and
+            // clipping would mask the signal.
 
             // ── Phase E gallocr allocation ─────────────────────────────
             if (!ggml_gallocr_alloc_graph(galloc, cgraph)) {
@@ -382,9 +406,14 @@ bool run_finetune(
             epoch_loss_sum   += step_loss;
             epoch_step_count += 1;
 
-            // ── Progress callback ─────────────────────────────────────
+            // ── Progress callback + RSS log ──────────────────────────
             if (cb.on_step && (global_step % hp.notify_every == 0)) {
                 cb.on_step(global_step, total_steps, step_loss);
+            }
+            if ((global_step % hp.notify_every) == 0) {
+                const long rss_mb = ::read_vmrss_mb();
+                LOGI("step %d/%d  loss=%.4f  rss=%ld MB",
+                     global_step, total_steps, step_loss, rss_mb);
             }
 
             ggml_free(cctx);
