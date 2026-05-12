@@ -1,6 +1,8 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    // v0.5: KSP for Room compile-time codegen.
+    id("com.google.devtools.ksp")
 }
 
 android {
@@ -20,6 +22,25 @@ android {
         ndk {
             abiFilters += "arm64-v8a"
         }
+
+        // v0.5: Gmail OAuth client id for the AppAuth on-device flow.
+        // Mobile OAuth uses the public-client PKCE flow — the client id is
+        // not a secret (it's the PKCE code_verifier that protects the
+        // exchange) — so it's safe to bake into the APK. Override per build
+        // via `-PghoLaGmailClientId=…` (release) or via gradle.properties.
+        val gmailClientId: String = providers.gradleProperty("ghoLaGmailClientId").orNull
+            ?: "PLACEHOLDER-google-oauth-client-id.apps.googleusercontent.com"
+        buildConfigField("String", "GOOGLE_OAUTH_CLIENT_ID", "\"$gmailClientId\"")
+
+        // AppAuth requires the manifestPlaceholder so its bundled redirect
+        // RedirectUriReceiverActivity intent-filter resolves the right scheme.
+        // We use a private custom scheme (xyz.ghola.app.oauth) so no other
+        // app can intercept the callback.
+        manifestPlaceholders["appAuthRedirectScheme"] = "xyz.ghola.app.oauth"
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     testOptions {
@@ -143,6 +164,28 @@ dependencies {
     // background→foreground transition. Used by AppForegroundCoordinator.
     implementation("androidx.lifecycle:lifecycle-process:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // v0.5: on-device Gmail OAuth. AppAuth handles the OAuth dance via a
+    // Chrome Custom Tab, returns access + refresh tokens to the app. No
+    // Google Sign-In SDK dependency, no server roundtrip.
+    implementation("net.openid:appauth:0.11.1")
+
+    // v0.5: WorkManager for background Gmail mirror + pre-drafting.
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+
+    // v0.5: Local SQLite for the sent-folder mirror. Room over a hand-rolled
+    // DAO so the schema is type-checked and migrations are first-class.
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    ksp("androidx.room:room-compiler:2.6.1")
+
+    // v0.5: ONNX Runtime — MiniLM-L6-v2 INT8 embeddings on-device (~25MB).
+    // Powers the voice-transfer retrieval index.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
+
+    // v0.5: MediaPipe LLM Inference — Phi-3 Mini / Gemma 2 .task models
+    // executed on-device. Output streams via callback.
+    implementation("com.google.mediapipe:tasks-genai:0.10.14")
 
     // Sealed-envelope-v1 E2E (Phase 0.3 / dApp Store v0.3.0).
     // BouncyCastle is required because minSdk = 28 and platform support for

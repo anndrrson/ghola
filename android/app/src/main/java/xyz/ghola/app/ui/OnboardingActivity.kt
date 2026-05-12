@@ -1,5 +1,7 @@
 package xyz.ghola.app.ui
 
+import android.animation.AnimatorSet
+import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.content.Intent
 import android.os.Bundle
@@ -10,7 +12,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.constraintlayout.motion.widget.MotionLayout
+import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
@@ -53,16 +55,23 @@ class OnboardingActivity : AppCompatActivity() {
     // ChatActivity.
     private val activityResultSender = ActivityResultSender(this)
 
-    private lateinit var motion: MotionLayout
+    private lateinit var root: ConstraintLayout
+    private lateinit var heroIconStep0: View
+    private lateinit var heroIconStep1: View
     private lateinit var ctaButton: MaterialButton
     private lateinit var ctaSpinner: ProgressBar
     private lateinit var ctaHint: TextView
     private lateinit var heroTitle: TextView
     private lateinit var heroBody: TextView
     private lateinit var stepIndicator: TextView
+    private lateinit var accentBar: View
+    private lateinit var btnEnableA11y: View
+    private lateinit var btnCheckA11y: View
+    private lateinit var btnFinish: View
 
     private var animatedBackground: AnimatedGradientDrawable? = null
     private var hintShimmer: ValueAnimator? = null
+    private var transitionAnimator: AnimatorSet? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,17 +80,23 @@ class OnboardingActivity : AppCompatActivity() {
         secureStorage = SecureStorage(this)
         cloudAuthManager = CloudAuthManager(this)
 
-        motion = findViewById(R.id.onboardingMotion)
+        root = findViewById(R.id.onboardingMotion)
         ctaButton = findViewById(R.id.btnWalletSignIn)
         ctaSpinner = findViewById(R.id.ctaSpinner)
         ctaHint = findViewById(R.id.ctaHint)
         heroTitle = findViewById(R.id.heroTitle)
         heroBody = findViewById(R.id.heroBody)
         stepIndicator = findViewById(R.id.stepIndicator)
+        accentBar = findViewById(R.id.accentBar)
+        heroIconStep0 = findViewById(R.id.heroIconStep0)
+        heroIconStep1 = findViewById(R.id.heroIconStep1)
+        btnEnableA11y = findViewById(R.id.btnEnableAccessibility)
+        btnCheckA11y = findViewById(R.id.btnCheckAccessibility)
+        btnFinish = findViewById(R.id.btnFinish)
 
         // Animated radial-gradient background — slow ambient breath.
         val bg = AnimatedGradientDrawable()
-        motion.background = bg
+        root.background = bg
         animatedBackground = bg
 
         // Click handlers.
@@ -230,27 +245,138 @@ class OnboardingActivity : AppCompatActivity() {
 
     private fun showStep(step: Int, animate: Boolean) {
         currentStep = step
-        // Swap copy first — MotionLayout interpolates the alpha/position.
-        when (step) {
-            STEP_SIWS -> {
-                stepIndicator.text = getString(R.string.onboarding_step_1)
-                heroTitle.text = getString(R.string.onboarding_title_wallet)
-                heroBody.text = getString(R.string.onboarding_body_wallet)
-            }
-            STEP_ACCESSIBILITY -> {
-                stepIndicator.text = getString(R.string.onboarding_step_2)
-                heroTitle.text = getString(R.string.onboarding_title_a11y)
-                heroBody.text = getString(R.string.onboarding_body_a11y)
-            }
-        }
-        if (animate) {
-            if (step == STEP_ACCESSIBILITY) motion.transitionToEnd()
-            else motion.transitionToStart()
+        val isStep1 = step == STEP_ACCESSIBILITY
+
+        // Copy + accent width swap before the animation so the new state's
+        // text is in place by the time the fade-in completes.
+        if (isStep1) {
+            stepIndicator.text = getString(R.string.onboarding_step_2)
+            heroTitle.text = getString(R.string.onboarding_title_a11y)
+            heroBody.text = getString(R.string.onboarding_body_a11y)
         } else {
-            // Jump without animation — used when re-entering an already-
-            // completed step via deep link.
-            motion.progress = if (step == STEP_ACCESSIBILITY) 1f else 0f
+            stepIndicator.text = getString(R.string.onboarding_step_1)
+            heroTitle.text = getString(R.string.onboarding_title_wallet)
+            heroBody.text = getString(R.string.onboarding_body_wallet)
         }
+
+        transitionAnimator?.cancel()
+        transitionAnimator = null
+
+        if (!animate) {
+            // Jump directly to the target state — used when deep-linking
+            // back into a step we already finished.
+            heroIconStep0.alpha = if (isStep1) 0f else 1f
+            heroIconStep1.alpha = if (isStep1) 1f else 0f
+            ctaButton.alpha = if (isStep1) 0f else 1f
+            ctaButton.visibility = if (isStep1) View.GONE else View.VISIBLE
+            btnEnableA11y.alpha = if (isStep1) 1f else 0f
+            btnEnableA11y.visibility = if (isStep1) View.VISIBLE else View.GONE
+            btnCheckA11y.alpha = if (isStep1) 1f else 0f
+            btnCheckA11y.visibility = if (isStep1) View.VISIBLE else View.GONE
+            btnFinish.alpha = if (isStep1) 1f else 0f
+            btnFinish.visibility = if (isStep1) View.VISIBLE else View.GONE
+            // Accent bar width — swap layout params.
+            val lp = accentBar.layoutParams
+            lp.width = (resources.displayMetrics.density * (if (isStep1) 96 else 48)).toInt()
+            accentBar.layoutParams = lp
+            return
+        }
+
+        // Animated transition: 500ms total. Step-0 elements fade out 0-200ms;
+        // step-1 elements fade in 200-500ms; hero icon crossfade runs through.
+        val outDuration = 200L
+        val inDuration = 300L
+        val outStartDelay = 0L
+        val inStartDelay = outDuration
+
+        val fadeOuts = mutableListOf<android.animation.Animator>()
+        val fadeIns = mutableListOf<android.animation.Animator>()
+
+        // Hero icon crossfade (full 500ms each direction)
+        fadeOuts += ObjectAnimator.ofFloat(
+            heroIconStep0,
+            "alpha",
+            heroIconStep0.alpha,
+            if (isStep1) 0f else 1f,
+        ).setDuration(outDuration + inDuration)
+        fadeIns += ObjectAnimator.ofFloat(
+            heroIconStep1,
+            "alpha",
+            heroIconStep1.alpha,
+            if (isStep1) 1f else 0f,
+        ).setDuration(outDuration + inDuration)
+
+        // CTA: hide step-0 button, show step-1 buttons (or vice versa).
+        val stepZeroVisible = !isStep1
+        fadeOuts += ObjectAnimator.ofFloat(
+            ctaButton,
+            "alpha",
+            ctaButton.alpha,
+            if (stepZeroVisible) 1f else 0f,
+        ).setDuration(if (stepZeroVisible) inDuration else outDuration)
+
+        listOf(btnEnableA11y, btnCheckA11y, btnFinish).forEach { v ->
+            v.visibility = View.VISIBLE
+            val anim = ObjectAnimator.ofFloat(
+                v,
+                "alpha",
+                v.alpha,
+                if (isStep1) 1f else 0f,
+            )
+            if (isStep1) {
+                anim.startDelay = inStartDelay
+                anim.duration = inDuration
+                fadeIns += anim
+            } else {
+                anim.duration = outDuration
+                fadeOuts += anim
+            }
+        }
+
+        // Title slide — out then in.
+        val slideOut = ObjectAnimator.ofFloat(heroTitle, "translationX", 0f, -16f)
+            .setDuration(outDuration)
+        val slideIn = ObjectAnimator.ofFloat(heroTitle, "translationX", 16f, 0f)
+            .apply {
+                startDelay = inStartDelay
+                duration = inDuration
+            }
+        val titleFadeOut = ObjectAnimator.ofFloat(heroTitle, "alpha", heroTitle.alpha, 0f)
+            .setDuration(outDuration)
+        val titleFadeIn = ObjectAnimator.ofFloat(heroTitle, "alpha", 0f, 1f)
+            .apply {
+                startDelay = inStartDelay
+                duration = inDuration
+            }
+
+        // Accent bar width animation
+        val targetWidthPx = (resources.displayMetrics.density * (if (isStep1) 96 else 48)).toInt()
+        val widthAnimator = ValueAnimator.ofInt(accentBar.width, targetWidthPx).apply {
+            duration = outDuration + inDuration
+            addUpdateListener {
+                val lp = accentBar.layoutParams
+                lp.width = it.animatedValue as Int
+                accentBar.layoutParams = lp
+            }
+        }
+
+        val set = AnimatorSet()
+        set.interpolator = AccelerateDecelerateInterpolator()
+        set.playTogether(
+            fadeOuts + fadeIns + listOf(slideOut, slideIn, titleFadeOut, titleFadeIn, widthAnimator),
+        )
+        set.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                // Hide invisible buttons so they don't intercept taps.
+                ctaButton.visibility = if (isStep1) View.GONE else View.VISIBLE
+                btnEnableA11y.visibility = if (isStep1) View.VISIBLE else View.GONE
+                btnCheckA11y.visibility = if (isStep1) View.VISIBLE else View.GONE
+                btnFinish.visibility = if (isStep1) View.VISIBLE else View.GONE
+                heroTitle.translationX = 0f
+            }
+        })
+        transitionAnimator = set
+        set.start()
     }
 
     private fun finishOnboarding() {
