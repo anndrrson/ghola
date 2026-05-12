@@ -202,6 +202,129 @@ object VoiceMetric {
         append("<|im_start|>assistant\n")
     }
 
+    // ── Phase H.3 — n-gram leakage canary ────────────────────────────────────
+
+    /**
+     * Per-pair leakage row: the longest contiguous word n-gram in this
+     * generation that ALSO appears verbatim in some training email.
+     */
+    data class LeakageRow(
+        val intent: String,
+        val generation: String,
+        val longestNgram: Int,
+    )
+
+    data class LeakageReport(
+        val rows: List<LeakageRow>,
+        /** Fraction of [rows] with longestNgram > [warnThresh] (default 8). */
+        val warnFraction: Float,
+        /** True if ANY row exceeds [failThresh] (default 12) — hard fail
+         *  per the Phase H gate ("if >12-gram match shows up in any
+         *  output, the LoRA is rote-copying"). */
+        val hasHardFail: Boolean,
+        val warnThresh: Int,
+        val failThresh: Int,
+    )
+
+    /**
+     * Compute the n-gram leakage report. Generates one email per val
+     * intent with the LoRA active, then measures the longest contiguous
+     * lowercased-word n-gram each generation shares with the training
+     * corpus.
+     *
+     * Acceptance per the v0.6 plan:
+     *   - hasHardFail = false   (no generation copies a >12-word span)
+     *   - warnFraction < 0.05   (fewer than 5% of generations leak >8 words)
+     *
+     * Failing this gate means the LoRA is memorizing instead of learning
+     * voice — typically caused by too-high rank or too-many epochs over
+     * a small corpus. Mitigation: drop rank from 16 → 8, or epochs 3 → 2,
+     * and re-run.
+     */
+    suspend fun leakageReport(
+        context: Context,
+        warnThresh: Int = 8,
+        failThresh: Int = 12,
+    ): LeakageReport? = withContext(Dispatchers.IO) {
+        val mm = ModelManager(context)
+        if (!mm.isLoraReady()) {
+            Log.w(TAG, "leakageReport skipped: no LoRA on disk")
+            return@withContext null
+        }
+        val dao = GholaMailDatabase.get(context).trainingPairDao()
+        val trainPairs = dao.bySplit("train")
+        val valPairs   = dao.bySplit("val")
+        if (trainPairs.isEmpty() || valPairs.size < MIN_VAL_FOR_RELIABLE_EVAL) {
+            Log.w(TAG, "leakageReport skipped: train=${trainPairs.size} val=${valPairs.size}")
+            return@withContext null
+        }
+        val llm = LocalLlm.get(context) ?: return@withContext null
+        val loraPath = mm.getLoraPath()
+
+        // Tokenize training corpus once. Pre-bucket by first-word so the
+        // inner loop only touches emails that even *could* share a span.
+        val trainTokens = trainPairs.map { normalizeWords(it.email) }
+        val firstWordIndex = HashMap<String, MutableList<Pair<Int, Int>>>()
+        for ((ei, words) in trainTokens.withIndex()) {
+            for ((wi, w) in words.withIndex()) {
+                firstWordIndex.getOrPut(w) { mutableListOf() }.add(ei to wi)
+            }
+        }
+
+        val rows = ArrayList<LeakageRow>(valPairs.size)
+        llm.swapLora(loraPath, 1.0f)
+        for (pair in valPairs) {
+            val gen = llm.generateOnce(toQwenPrompt(pair.intent)) ?: continue
+            val genWords = normalizeWords(gen)
+            val longest = longestSharedNgram(genWords, trainTokens, firstWordIndex)
+            rows.add(LeakageRow(pair.intent, gen, longest))
+        }
+        if (rows.isEmpty()) return@withContext null
+
+        val warnCount = rows.count { it.longestNgram > warnThresh }
+        val warnFraction = warnCount.toFloat() / rows.size.toFloat()
+        val hasHardFail = rows.any { it.longestNgram > failThresh }
+        LeakageReport(
+            rows = rows,
+            warnFraction = warnFraction,
+            hasHardFail = hasHardFail,
+            warnThresh = warnThresh,
+            failThresh = failThresh,
+        )
+    }
+
+    /** Lowercase, strip non-alphanumeric runs, drop single-char tokens. */
+    private fun normalizeWords(s: String): List<String> {
+        return s.lowercase()
+            .split(Regex("[^a-z0-9']+"))
+            .filter { it.length >= 2 }
+    }
+
+    /** Longest contiguous word-sequence in `gen` that appears verbatim
+     *  in any of `corpus`. Uses [firstWordIndex] to skip over training
+     *  emails where the candidate start word doesn't even occur. */
+    private fun longestSharedNgram(
+        gen: List<String>,
+        corpus: List<List<String>>,
+        firstWordIndex: Map<String, List<Pair<Int, Int>>>,
+    ): Int {
+        var longest = 0
+        for (gi in gen.indices) {
+            val starts = firstWordIndex[gen[gi]] ?: continue
+            for ((ei, ti) in starts) {
+                val email = corpus[ei]
+                var k = 0
+                while (gi + k < gen.size &&
+                       ti + k < email.size &&
+                       gen[gi + k] == email[ti + k]) {
+                    k++
+                }
+                if (k > longest) longest = k
+            }
+        }
+        return longest
+    }
+
     // ── Centroid persistence ─────────────────────────────────────────────────
 
     private fun centroidFile(context: Context): File = ModelManager(context).getCentroidFile()
