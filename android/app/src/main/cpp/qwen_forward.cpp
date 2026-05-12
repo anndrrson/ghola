@@ -580,6 +580,10 @@ std::vector<int32_t> greedy_decode_qwen_gallocr(
         LOGE("greedy_decode_qwen_gallocr: ggml_backend_cpu_init failed");
         return generated;
     }
+    // Dimensity 9300 (Seeker SoC): 1 prime + 3 perf + 4 efficiency cores.
+    // 6 threads keeps us on the 1+3+(2 of 4) high-bandwidth tier and avoids
+    // contention with the efficiency cores running UI + WorkManager.
+    ggml_backend_cpu_set_n_threads(backend, 6);
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_cpu_buffer_type());
     if (!galloc) {
         LOGE("greedy_decode_qwen_gallocr: ggml_gallocr_new failed");
