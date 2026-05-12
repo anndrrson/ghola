@@ -450,44 +450,4 @@ bool run_finetune(
     return true;
 }
 
-bool tokenize_pair(
-    const std::string & prompt,
-    const std::string & completion,
-    const std::string & gguf_path,
-    TokenizedPair & out)
-{
-    // Use llama.cpp's tokenizer — we share the model with the inference
-    // path, so reusing its vocab guarantees consistency.
-    llama_model_params mp = llama_model_default_params();
-    mp.use_mmap = true;
-    mp.use_mlock = false;
-    llama_model * lmodel = llama_model_load_from_file(gguf_path.c_str(), mp);
-    if (!lmodel) {
-        LOGE("tokenize_pair: llama_model_load_from_file failed");
-        return false;
-    }
-    const llama_vocab * vocab = llama_model_get_vocab(lmodel);
-
-    auto tokenize = [&](const std::string & s, bool add_bos, std::vector<int32_t> & dst) -> bool {
-        const int max_toks = (int) s.size() + 16;
-        std::vector<llama_token> buf(max_toks);
-        const int n = llama_tokenize(
-            vocab, s.data(), (int) s.size(),
-            buf.data(), max_toks, add_bos, /*parse_special=*/ true);
-        if (n < 0) {
-            LOGE("tokenize_pair: llama_tokenize returned %d", n);
-            return false;
-        }
-        dst.assign(buf.begin(), buf.begin() + n);
-        return true;
-    };
-
-    bool ok = true;
-    ok &= tokenize(prompt,     /*add_bos=*/ true,  out.prompt_tokens);
-    ok &= tokenize(completion, /*add_bos=*/ false, out.completion_tokens);
-
-    llama_model_free(lmodel);
-    return ok;
-}
-
 } // namespace ghola
