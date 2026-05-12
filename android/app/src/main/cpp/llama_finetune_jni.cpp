@@ -349,7 +349,7 @@ Java_xyz_ghola_app_ai_llama_LlamaFinetune_run(
             target_names,
             hp.rank, hp.alpha)) {
         ghola::qwen_model_free(model);
-        ggml_free(lora_ctx);
+        ghola::lora_set_free(lora); /* frees lora_ctx via set.ctx */
         post_error(env, progressCb, "lora_set_build failed");
         return JNI_FALSE;
     }
@@ -395,7 +395,7 @@ Java_xyz_ghola_app_ai_llama_LlamaFinetune_run(
         } else {
             post_error(env, progressCb, "adapter serialization failed");
             ghola::qwen_model_free(model);
-            ggml_free(lora_ctx);
+            ghola::lora_set_free(lora); /* frees lora_ctx via set.ctx */
             if (cb_cls) env->DeleteLocalRef(cb_cls);
             return JNI_FALSE;
         }
@@ -411,7 +411,7 @@ Java_xyz_ghola_app_ai_llama_LlamaFinetune_run(
     }
 
     ghola::qwen_model_free(model);
-    ggml_free(lora_ctx);
+    ghola::lora_set_free(lora); /* frees lora_ctx via set.ctx */
     if (cb_cls) env->DeleteLocalRef(cb_cls);
 
     return ok ? JNI_TRUE : JNI_FALSE;
