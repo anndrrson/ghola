@@ -47,6 +47,16 @@ android {
             ?: "PLACEHOLDER-google-oauth-client-id.apps.googleusercontent.com"
         buildConfigField("String", "GOOGLE_OAUTH_CLIENT_ID", "\"$gmailClientId\"")
 
+        // Build-time stamp: short SHA + timestamp so the dev gauntlet can
+        // verify which build is on device without grepping logcat.
+        val gitSha: String = try {
+            val proc = Runtime.getRuntime().exec(arrayOf("git", "rev-parse", "--short", "HEAD"))
+            proc.inputStream.bufferedReader().readLine()?.trim() ?: "unknown"
+        } catch (_: Exception) { "unknown" }
+        val buildStamp: String = System.currentTimeMillis().toString()
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+        buildConfigField("String", "BUILD_STAMP", "\"$buildStamp\"")
+
         // AppAuth requires the manifestPlaceholder so its bundled redirect
         // RedirectUriReceiverActivity intent-filter resolves the right scheme.
         // We use a private custom scheme (xyz.ghola.app.oauth) so no other
