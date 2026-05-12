@@ -364,6 +364,7 @@ class SettingsActivity : AppCompatActivity() {
             // reference path; mismatches mean Phase C will train a broken
             // adapter. Hidden behind the long-press menu — never user-facing.
             actions += "Run parity check (Phase A.3)" to { runParityCheck() }
+            actions += "Run banana test (Phase H.1)" to { runBananaTest() }
             actions += "Switch back to MediaPipe" to {
                 storage.setUseLlamaCppRuntime(false)
                 xyz.ghola.app.email.LocalLlm.reset(this)
@@ -433,6 +434,76 @@ class SettingsActivity : AppCompatActivity() {
             androidx.appcompat.app.AlertDialog.Builder(this@SettingsActivity)
                 .setTitle("Parity check: $matched/$maxTokens")
                 .setMessage(verdict)
+                .setPositiveButton("OK", null)
+                .show()
+        }
+    }
+
+    /**
+     * Phase H.1 banana test. ~5-10 minute hardware run that proves the
+     * full Phase A→B→C→D→8 chain works end-to-end without depending on
+     * the user's actual email corpus.
+     */
+    private fun runBananaTest() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Banana test")
+            .setMessage(
+                "This will train a fresh LoRA on 200 synthetic 'banana' pairs " +
+                "and verify the model overfits to predict 'banana'.\n\n" +
+                "Runtime: 5-10 minutes on Seeker. Existing user voice LoRA is " +
+                "NOT touched (banana LoRA writes to a separate file).\n\n" +
+                "Plug in to charge before starting.",
+            )
+            .setPositiveButton("Run") { _, _ -> launchBananaTest() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun launchBananaTest() {
+        val progress = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Banana test")
+            .setMessage("Training… (you can dim the screen, but don't kill the app)")
+            .setCancelable(false)
+            .show()
+
+        lifecycleScope.launch {
+            val verdict = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    xyz.ghola.app.ml.BananaTest.runOnce(
+                        this@SettingsActivity,
+                        callback = object : xyz.ghola.app.ai.llama.LlamaFinetune.ProgressCallback {
+                            override fun onEpoch(epoch: Int, total: Int, loss: Float) {
+                                mainHandler.post { progress.setMessage("Epoch $epoch/$total — loss=${"%.4f".format(loss)}") }
+                            }
+                            override fun onStep(step: Int, total: Int, loss: Float) {
+                                if (step % 20 == 0) {
+                                    mainHandler.post {
+                                        progress.setMessage("Step $step/$total — loss=${"%.4f".format(loss)}")
+                                    }
+                                }
+                            }
+                            override fun onComplete(adapterPath: String) { /* handled by Verdict */ }
+                            override fun onError(message: String) { /* handled by Verdict */ }
+                        },
+                    )
+                }.getOrElse {
+                    xyz.ghola.app.ml.BananaTest.Verdict(
+                        trained = false, sampledOutput = null, bananaFraction = 0f,
+                        passes = false, message = "exception: ${it.message}",
+                    )
+                }
+            }
+            progress.dismiss()
+            val body = buildString {
+                append(verdict.message)
+                if (verdict.sampledOutput != null) {
+                    append("\n\nSample output:\n")
+                    append(verdict.sampledOutput.take(200))
+                }
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this@SettingsActivity)
+                .setTitle(if (verdict.passes) "Banana test: PASS" else "Banana test: FAIL")
+                .setMessage(body)
                 .setPositiveButton("OK", null)
                 .show()
         }
