@@ -13,7 +13,8 @@
         android:maxWidth="300dp"
         android:background="@drawable/bubble_assistant"
         android:padding="12dp"
-        android:textColor="#eef1f8"
+        android:textColor="@color/ghola_text_primary"
+        android:fontFamily="@font/geist"
         android:textSize="14sp"
         android:textIsSelectable="true"
         android:lineSpacingExtra="2dp" />
