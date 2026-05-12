@@ -98,8 +98,18 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_chat)
 
-        val toolbar = findViewById<Toolbar>(R.id.toolbar)
-        setSupportActionBar(toolbar)
+        // The chat header is now a plain ConstraintLayout band (eyebrow +
+        // accent bar + title) styled to match the home grid. The overflow
+        // button at @id/toolbarOverflow opens a PopupMenu inflated from
+        // R.menu.chat_menu — replaces the AppCompat Toolbar's action menu.
+        findViewById<android.widget.ImageButton>(R.id.toolbarOverflow).setOnClickListener { anchor ->
+            val popup = android.widget.PopupMenu(this, anchor)
+            popup.menuInflater.inflate(R.menu.chat_menu, popup.menu)
+            popup.setOnMenuItemClickListener { item ->
+                onOptionsItemSelected(item)
+            }
+            popup.show()
+        }
 
         secureStorage = SecureStorage(this)
 

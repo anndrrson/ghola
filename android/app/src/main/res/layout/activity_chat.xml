@@ -1,34 +1,99 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Chat surface — trading-terminal-meets-Linear. Hard edges, eyebrow label
+  with accent divider, Geist Sans body, Geist Mono on status / tokens.
+  Replaces the prior generic Material layout (white background, bright blue
+  toolbar) that felt off-brand vs the home grid.
+-->
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/white">
+    android:background="@color/ghola_bg">
 
-    <androidx.appcompat.widget.Toolbar
+    <!-- Header band: eyebrow + accent bar + actions overflow.
+         Subtle bottom border separates it from the conversation feed without
+         the chunky Material elevation shadow. -->
+    <androidx.constraintlayout.widget.ConstraintLayout
         android:id="@+id/toolbar"
         android:layout_width="0dp"
-        android:layout_height="?attr/actionBarSize"
-        android:background="#3da8ff"
-        android:theme="@style/ThemeOverlay.AppCompat.Dark.ActionBar"
-        app:popupTheme="@style/ThemeOverlay.AppCompat.Light"
-        app:title="Ghola"
-        app:titleTextColor="@android:color/white"
+        android:layout_height="wrap_content"
+        android:paddingTop="40dp"
+        android:paddingBottom="16dp"
+        android:paddingStart="24dp"
+        android:paddingEnd="16dp"
         app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <TextView
+            android:id="@+id/toolbarEyebrow"
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="› CHAT"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintStart_toStartOf="parent" />
+
+        <View
+            android:id="@+id/toolbarAccentBar"
+            android:layout_width="48dp"
+            android:layout_height="1dp"
+            android:background="@color/ghola_accent"
+            android:layout_marginTop="10dp"
+            app:layout_constraintTop_toBottomOf="@id/toolbarEyebrow"
+            app:layout_constraintStart_toStartOf="parent" />
+
+        <TextView
+            android:id="@+id/toolbarTitle"
+            style="@style/Ghola.Text.Hero"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="Ghola"
+            android:textSize="22sp"
+            android:layout_marginTop="14dp"
+            android:layout_marginEnd="48dp"
+            app:layout_constraintTop_toBottomOf="@id/toolbarAccentBar"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- Overflow trigger — replaces the AppCompat Toolbar's action menu.
+             Opens a PopupMenu inflated from R.menu.chat_menu. -->
+        <ImageButton
+            android:id="@+id/toolbarOverflow"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginTop="-8dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="More"
+            android:src="@android:drawable/ic_menu_more"
+            app:tint="@color/ghola_text_secondary"
+            app:layout_constraintTop_toTopOf="@id/toolbarTitle"
+            app:layout_constraintBottom_toBottomOf="@id/toolbarTitle"
+            app:layout_constraintEnd_toEndOf="parent" />
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <View
+        android:id="@+id/toolbarDivider"
+        android:layout_width="0dp"
+        android:layout_height="1dp"
+        android:background="@color/ghola_border"
+        app:layout_constraintTop_toBottomOf="@id/toolbar"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- Status strip (signing in / unlocking / etc.) — dark with mono small. -->
     <TextView
         android:id="@+id/statusBar"
+        style="@style/Ghola.Text.Mono.Small"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:background="#0f1117"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="6dp"
-        android:textColor="#3da8ff"
-        android:textSize="12sp"
+        android:background="@color/ghola_surface"
+        android:textColor="@color/ghola_accent"
+        android:paddingHorizontal="24dp"
+        android:paddingVertical="8dp"
         android:visibility="gone"
-        app:layout_constraintTop_toBottomOf="@id/toolbar"
+        app:layout_constraintTop_toBottomOf="@id/toolbarDivider"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
@@ -37,8 +102,18 @@
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:clipToPadding="false"
-        android:paddingBottom="8dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
         app:layout_constraintTop_toBottomOf="@id/statusBar"
+        app:layout_constraintBottom_toTopOf="@id/inputDivider"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <View
+        android:id="@+id/inputDivider"
+        android:layout_width="0dp"
+        android:layout_height="1dp"
+        android:background="@color/ghola_border"
         app:layout_constraintBottom_toTopOf="@id/inputBar"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
@@ -49,9 +124,11 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:padding="8dp"
-        android:background="@android:color/white"
-        android:elevation="4dp"
+        android:paddingStart="20dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="20dp"
+        android:background="@color/ghola_bg"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
@@ -61,13 +138,16 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:hint="Ask me anything..."
+            android:hint="Ask me anything…"
+            android:textColorHint="@color/ghola_text_tertiary"
+            android:textColor="@color/ghola_text_primary"
             android:inputType="textMultiLine"
             android:imeOptions="actionSend"
             android:maxLines="4"
             android:padding="12dp"
-            android:background="@drawable/bubble_assistant"
-            android:textSize="14sp" />
+            android:background="@drawable/chat_input_background"
+            android:fontFamily="@font/geist"
+            android:textSize="15sp" />
 
         <ImageButton
             android:id="@+id/sendButton"
@@ -77,7 +157,7 @@
             android:src="@android:drawable/ic_menu_send"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Send"
-            android:tint="#3da8ff" />
+            app:tint="@color/ghola_accent" />
 
     </LinearLayout>
 

@@ -8,14 +8,13 @@
   Design language matches activity_home.xml: hard edges, eyebrow ›
   numbered labels, single accent color, Geist Sans + Mono, generous whitespace.
 -->
-<androidx.constraintlayout.motion.widget.MotionLayout
+<androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/onboardingMotion"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/ghola_bg"
-    app:layoutDescription="@xml/onboarding_motion_scene">
+    android:background="@color/ghola_bg">
 
     <!-- Wordmark — small, top-left, fixed across both steps. -->
     <ImageView
@@ -220,4 +219,4 @@
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 
-</androidx.constraintlayout.motion.widget.MotionLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>
