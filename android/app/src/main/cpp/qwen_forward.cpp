@@ -23,6 +23,7 @@
 
 #include "ggml.h"
 #include "gguf.h"
+#include "llama.h"
 
 #include <android/log.h>
 #include <cmath>
@@ -417,32 +418,201 @@ ggml_tensor * qwen_forward_build(
     return last;
 }
 
+namespace {
+
+/** Greedy-decode N tokens through our qwen_forward path. Returns the
+ *  generated token IDs (not including the prompt). On any failure
+ *  returns whatever was generated so far — caller compares lengths.
+ *
+ *  Memory note: each step builds a fresh ggml_context sized at 4 GB.
+ *  This is DEV-ONLY code; not safe to call on a phone. The host that
+ *  runs the parity check is expected to have enough RAM. */
+std::vector<int32_t> greedy_decode_qwen(
+    QwenModel & model,
+    const std::vector<int32_t> & prompt_tokens,
+    int max_new_tokens)
+{
+    std::vector<int32_t> generated;
+    generated.reserve(max_new_tokens);
+
+    std::vector<int32_t> ctx_tokens = prompt_tokens;
+
+    for (int s = 0; s < max_new_tokens; ++s) {
+        std::vector<int32_t> positions(ctx_tokens.size());
+        for (int i = 0; i < (int) ctx_tokens.size(); ++i) positions[i] = i;
+
+        struct ggml_init_params gp = {
+            /*.mem_size   =*/ (size_t) 4 * 1024 * 1024 * 1024,
+            /*.mem_buffer =*/ nullptr,
+            /*.no_alloc   =*/ false,
+        };
+        ggml_context * gctx = ggml_init(gp);
+        if (!gctx) {
+            LOGE("greedy_decode_qwen: ggml_init failed at step %d", s);
+            return generated;
+        }
+
+        ggml_tensor * last_logits = qwen_forward_build(
+            model, gctx, ctx_tokens, positions, /*lora=*/ nullptr,
+            /*return_all_positions=*/ false);
+        if (!last_logits) {
+            LOGE("greedy_decode_qwen: forward returned null");
+            ggml_free(gctx);
+            return generated;
+        }
+
+        ggml_cgraph * cgraph = ggml_new_graph(gctx);
+        ggml_build_forward_expand(cgraph, last_logits);
+        ggml_graph_compute_with_ctx(gctx, cgraph, /*n_threads=*/ 4);
+
+        // Argmax over the vocabulary axis of the [vocab_size] tensor.
+        const float * logits = (const float *) last_logits->data;
+        int   best_id = 0;
+        float best_v  = -INFINITY;
+        for (int v = 0; v < QwenConfig::vocab_size; ++v) {
+            if (logits[v] > best_v) {
+                best_v  = logits[v];
+                best_id = v;
+            }
+        }
+        generated.push_back(best_id);
+        ctx_tokens.push_back(best_id);
+
+        ggml_free(gctx);
+    }
+    return generated;
+}
+
+/** Greedy-decode through llama.cpp's reference path. */
+std::vector<int32_t> greedy_decode_llama(
+    llama_context * lctx,
+    const llama_vocab * vocab,
+    const std::vector<int32_t> & prompt_tokens,
+    int max_new_tokens)
+{
+    std::vector<int32_t> generated;
+    generated.reserve(max_new_tokens);
+
+    // Greedy sampler — argmax, equivalent to temp=0 / top_k=1.
+    llama_sampler * sampler = llama_sampler_chain_init(
+        llama_sampler_chain_default_params());
+    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+
+    // Feed the prompt as a single batch.
+    llama_batch batch = llama_batch_get_one(
+        const_cast<llama_token *>(prompt_tokens.data()),
+        (int32_t) prompt_tokens.size());
+    if (llama_decode(lctx, batch) != 0) {
+        LOGE("greedy_decode_llama: prompt decode failed");
+        llama_sampler_free(sampler);
+        return generated;
+    }
+
+    int n_cur = (int) prompt_tokens.size();
+    for (int s = 0; s < max_new_tokens; ++s) {
+        llama_token next = llama_sampler_sample(sampler, lctx, -1);
+        if (llama_vocab_is_eog(vocab, next)) break;
+        generated.push_back((int32_t) next);
+
+        llama_batch nb = llama_batch_get_one(&next, 1);
+        if (llama_decode(lctx, nb) != 0) {
+            LOGE("greedy_decode_llama: decode failed at step %d", s);
+            break;
+        }
+        ++n_cur;
+    }
+
+    llama_sampler_free(sampler);
+    return generated;
+}
+
+} // anonymous
+
 int qwen_parity_check(
     const std::string & gguf_path,
     const std::string & prompt,
     int max_tokens)
 {
-    (void) gguf_path; (void) prompt; (void) max_tokens;
-    // TODO PHASE A.3: implement the gate.
-    //
-    // Pseudocode:
-    //   1. Load model A via our qwen_model_load.
-    //   2. Load model B via the existing llama_jni path (llama_model_load_from_file).
-    //   3. Tokenize prompt once.
-    //   4. Greedy-decode max_tokens via path A: each step builds a
-    //      qwen_forward graph with the running prompt, takes argmax of
-    //      last logits, appends.
-    //   5. Greedy-decode max_tokens via path B: llama_decode + sampler
-    //      chain configured for argmax (temp=0, top_k=1).
-    //   6. Return the index of the first divergence (or max_tokens if all match).
-    //
-    // The implementer should also log per-layer activation statistics
-    // (mean/variance/range) between the two paths to localize bugs to a
-    // specific layer when divergence happens. llama.cpp lets you dump
-    // intermediate tensors via ggml_graph_dump_dot or by setting tensor
-    // names + reading them post-compute.
-    LOGW("qwen_parity_check: STUB (TODO PHASE A.3)");
-    return 0;
+    LOGI("qwen_parity_check: prompt='%s' max_tokens=%d", prompt.c_str(), max_tokens);
+
+    // ── Path B (reference): llama.cpp — also gives us the tokenizer ─────
+    llama_model_params mp = llama_model_default_params();
+    mp.use_mmap  = true;
+    mp.use_mlock = false;
+    llama_model * lmodel = llama_model_load_from_file(gguf_path.c_str(), mp);
+    if (!lmodel) {
+        LOGE("qwen_parity_check: llama_model_load_from_file failed");
+        return -1;
+    }
+    const llama_vocab * vocab = llama_model_get_vocab(lmodel);
+
+    // Tokenize prompt.
+    const int prompt_max_toks = (int) prompt.size() + 16;
+    std::vector<llama_token> tok_buf(prompt_max_toks);
+    int n_prompt = llama_tokenize(
+        vocab, prompt.data(), (int) prompt.size(),
+        tok_buf.data(), prompt_max_toks,
+        /*add_bos=*/ true, /*parse_special=*/ true);
+    if (n_prompt < 0) {
+        tok_buf.resize(-n_prompt);
+        n_prompt = llama_tokenize(
+            vocab, prompt.data(), (int) prompt.size(),
+            tok_buf.data(), (int) tok_buf.size(), true, true);
+        if (n_prompt < 0) {
+            LOGE("qwen_parity_check: llama_tokenize failed");
+            llama_model_free(lmodel);
+            return -1;
+        }
+    }
+    std::vector<int32_t> prompt_tokens(tok_buf.begin(), tok_buf.begin() + n_prompt);
+    LOGI("qwen_parity_check: prompt tokenized to %d tokens", n_prompt);
+
+    // Set up an llama_context for the reference path.
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx   = (uint32_t) std::max(4096, n_prompt + max_tokens + 64);
+    cp.n_batch = (uint32_t) std::max(512, n_prompt);
+    cp.no_perf = true;
+    llama_context * lctx = llama_init_from_model(lmodel, cp);
+    if (!lctx) {
+        LOGE("qwen_parity_check: llama_init_from_model failed");
+        llama_model_free(lmodel);
+        return -1;
+    }
+
+    std::vector<int32_t> ref = greedy_decode_llama(lctx, vocab, prompt_tokens, max_tokens);
+    LOGI("qwen_parity_check: reference path produced %zu tokens", ref.size());
+
+    // ── Path A (ours): qwen_forward ────────────────────────────────────
+    // Loaded SECOND so we don't peak at 2x model memory during the
+    // reference run.
+    llama_free(lctx);
+
+    QwenModel model;
+    if (!qwen_model_load(model, gguf_path)) {
+        LOGE("qwen_parity_check: qwen_model_load failed");
+        llama_model_free(lmodel);
+        return -1;
+    }
+    llama_model_free(lmodel);
+
+    std::vector<int32_t> ours = greedy_decode_qwen(model, prompt_tokens, max_tokens);
+    LOGI("qwen_parity_check: our path produced %zu tokens", ours.size());
+
+    qwen_model_free(model);
+
+    // ── Compare token-by-token ─────────────────────────────────────────
+    int matched = 0;
+    const int compare_len = (int) std::min(ref.size(), ours.size());
+    for (int i = 0; i < compare_len; ++i) {
+        if (ref[i] != ours[i]) {
+            LOGW("qwen_parity_check: divergence at index %d (ref=%d, ours=%d)",
+                 i, ref[i], ours[i]);
+            break;
+        }
+        ++matched;
+    }
+    LOGI("qwen_parity_check: %d/%d tokens matched", matched, compare_len);
+    return matched;
 }
 
 } // namespace ghola
