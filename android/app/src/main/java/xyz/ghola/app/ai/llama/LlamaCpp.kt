@@ -71,4 +71,17 @@ class LlamaCpp {
     external fun release()
 
     external fun tokenCount(text: String): Int
+
+    /**
+     * Phase A.3 parity check. Greedy-decodes [maxTokens] tokens through
+     * both our custom Qwen forward (the path the LoRA trainer differentiates
+     * through) and llama.cpp's reference llama_decode path. Returns the
+     * number of tokens that matched bit-for-bit at the start of the
+     * sequence; a result of [maxTokens] means full agreement.
+     *
+     * DEV-ONLY. Allocates ~6 GB of host RAM (4 GB compute ctx + 2 model
+     * copies). Do not call from any user-facing path. Wire to a hidden
+     * Settings button only.
+     */
+    external fun parityCheck(modelPath: String, prompt: String, maxTokens: Int): Int
 }

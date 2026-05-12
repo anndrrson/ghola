@@ -5,6 +5,7 @@
 #include <cmath>
 #include <vector>
 #include "llama.h"
+#include "qwen_forward.h"
 
 #define TAG "LlamaCpp"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -470,6 +471,26 @@ Java_xyz_ghola_app_ai_llama_LlamaCpp_embed(
     for (int i = 0; i < n_embd; i++) normalized[i] = (float) (raw[i] / norm);
     env->SetFloatArrayRegion(out, 0, n_embd, normalized.data());
     return out;
+}
+
+/**
+ * Phase A.3 parity check JNI. Calls into qwen_parity_check (defined in
+ * qwen_forward.cpp), which independently loads the model and runs the
+ * comparison without touching the inference singletons (model/ctx) above.
+ * Safe to call while inference is also loaded — they don't share state.
+ */
+JNIEXPORT jint JNICALL
+Java_xyz_ghola_app_ai_llama_LlamaCpp_parityCheck(
+    JNIEnv *env, jobject /* this */,
+    jstring modelPath, jstring prompt, jint maxTokens)
+{
+    const char *mp = env->GetStringUTFChars(modelPath, nullptr);
+    const char *pp = env->GetStringUTFChars(prompt, nullptr);
+    std::string m = mp;
+    std::string p = pp;
+    env->ReleaseStringUTFChars(modelPath, mp);
+    env->ReleaseStringUTFChars(prompt, pp);
+    return (jint) ghola::qwen_parity_check(m, p, (int) maxTokens);
 }
 
 } // extern "C"
