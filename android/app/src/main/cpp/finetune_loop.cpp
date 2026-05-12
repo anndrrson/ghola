@@ -331,6 +331,10 @@ bool run_finetune(
             // indices, and reduces to a scalar (mean over positions).
             ggml_tensor * loss = ggml_cross_entropy_loss(cctx, pred, targets);
             ggml_set_name(loss, "loss");
+            // ggml_set_loss marks this as the autograd root — required at
+            // b4524 for ggml_build_backward_expand to seed dL/dL=1 at the
+            // right tensor. Without it, gradients silently don't flow.
+            ggml_set_loss(loss);
 
             // ── Build forward + backward graph ─────────────────────────
             ggml_cgraph * cgraph = ggml_new_graph_custom(cctx,
