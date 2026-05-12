@@ -92,10 +92,91 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         findViewById<View>(R.id.profileButton).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
+        // v0.6 dev shortcut: long-press the profile icon to run the Phase A.3
+        // parity check directly, bypassing the Settings → radio → long-press
+        // path. Reads the GGUF from whichever location it actually exists in.
+        findViewById<View>(R.id.profileButton).setOnLongClickListener {
+            runParityCheckDirect()
+            true
+        }
 
         // Phase M6: Bottom navigation
         val bottomNav = findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(R.id.bottomNav)
         BottomNavHelper.attach(this, R.id.tab_assistant, bottomNav)
+    }
+
+    /**
+     * Phase A.3 parity check direct invocation. Looks for the GGUF in the
+     * standard external location first (where ModelManager expects it) and
+     * falls back to the internal files dir (where adb push via run-as
+     * lands it during dev).
+     */
+    private fun runParityCheckDirect() {
+        // Let the dev pick scale — fast iteration vs ship gate.
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Parity check scale")
+            .setItems(arrayOf(
+                "Quick (3 tokens, ~30s)",
+                "Standard (10 tokens, ~90s)",
+                "Full (20 tokens, ~3 min)",
+            )) { _, which ->
+                val n = when (which) { 0 -> 3; 1 -> 10; else -> 20 }
+                doParityCheck(n)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun doParityCheck(maxTokens: Int) {
+        val externalPath = java.io.File(
+            getExternalFilesDir(null),
+            "models/qwen2.5-1.5b-instruct-q8_0.gguf",
+        )
+        val internalPath = java.io.File(
+            filesDir,
+            "models/qwen2.5-1.5b-instruct-q8_0.gguf",
+        )
+        val gguf = when {
+            externalPath.exists() && externalPath.length() > 0 -> externalPath
+            internalPath.exists() && internalPath.length() > 0 -> internalPath
+            else -> {
+                Toast.makeText(this, "GGUF not found in either external or internal storage", Toast.LENGTH_LONG).show()
+                return
+            }
+        }
+        val sizeMb = gguf.length() / 1024 / 1024
+        val prompt = "<|im_start|>user\nWrite one sentence about Solana.<|im_end|>\n<|im_start|>assistant\n"
+
+        val progress = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Parity check ($maxTokens tokens)")
+            .setMessage("Running greedy decode on both paths…\nGGUF: ${gguf.name} (${sizeMb} MB)")
+            .setCancelable(false)
+            .show()
+
+        lifecycleScope.launch {
+            val matched = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    xyz.ghola.app.ai.llama.LlamaCpp().parityCheck(gguf.absolutePath, prompt, maxTokens)
+                }.getOrElse {
+                    android.util.Log.e(TAG, "parityCheck raised", it)
+                    -1
+                }
+            }
+            progress.dismiss()
+            val warnFloor = (maxTokens * 0.9f).toInt() // ≥90% = WARN tier, else FAIL
+            val verdict = when {
+                matched < 0 -> "ERROR — see logcat (LlamaCpp tag)"
+                matched == maxTokens -> "PASS — forward is correct, Phase C is safe to run"
+                matched >= warnFloor -> "WARN — $matched/$maxTokens; minor numerical drift, check logcat"
+                matched == 0 -> "FAIL @ token 0 — bug in tok_embed or first attention block"
+                else -> "FAIL @ token $matched — bug in a deeper layer"
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this@HomeActivity)
+                .setTitle("Parity check: $matched/$maxTokens")
+                .setMessage(verdict)
+                .setPositiveButton("OK", null)
+                .show()
+        }
     }
 
     override fun onResume() {
