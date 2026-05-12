@@ -76,6 +76,37 @@ bool write_lora_gguf(
     const AdapterMeta & meta,
     const std::string & out_path);
 
+/**
+ * Phase G — load an adapter from disk into an already-built LoraSet, so
+ * a training run can resume from a partial checkpoint.
+ *
+ * Requirements:
+ *  - The LoraSet must already be built (lora_set_build called) with the
+ *    same target modules and rank as the one being loaded. Mismatched
+ *    rank or target set is a fatal error — we don't rebuild the set
+ *    here because it would invalidate the AdamW state tensors.
+ *  - Tensor dtypes on disk are f16 (per write_lora_gguf); load converts
+ *    back to f32 in the LoraSet's tensors. AdamW state (m/v) is NOT
+ *    serialized — caller is responsible for either zero-init or
+ *    accepting the warmup-cycle cost.
+ *
+ * @param set             pre-built LoraSet. set.alpha + module shapes must
+ *                        match the on-disk adapter.
+ * @param in_path         path to the GGUF written by write_lora_gguf.
+ * @param out_meta        receives provenance fields read back from the
+ *                        adapter (step, epoch, run_ms). Used by Phase F
+ *                        to skip already-processed training steps.
+ *
+ * @return true on success; on false, the LoraSet's tensors are left in
+ *         whatever partial state the loader reached and should be
+ *         considered untrustworthy — caller should re-init via
+ *         lora_set_init_weights and start from step 0.
+ */
+bool load_lora_gguf(
+    LoraSet & set,
+    const std::string & in_path,
+    AdapterMeta & out_meta);
+
 } // namespace ghola
 
 #endif // GHOLA_ADAPTER_WRITER_H

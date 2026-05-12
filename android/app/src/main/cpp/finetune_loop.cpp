@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <random>
 
 #define TAG "FinetuneLoop"
@@ -142,6 +143,28 @@ bool run_finetune(
     LOGI("run_finetune: %zu pairs × %d epochs (lr=%.2e, rank=%d)",
          pairs.size(), hp.epochs, hp.learning_rate, hp.rank);
 
+    // ── Phase G resume — if `{out}.partial` exists, load weights ──────
+    // Honor a checkpoint by treating its `step` as the number of
+    // optimizer steps already applied. We resume by skipping the first
+    // N steps of the new run. Order-of-shuffle determinism (mt19937 seed
+    // = 0xC0FFEE) makes the skip exact.
+    int resume_skip_steps = 0;
+    {
+        const std::string partial = out_lora_path + ".partial";
+        std::ifstream test(partial);
+        if (test.good()) {
+            test.close();
+            AdapterMeta loaded;
+            if (load_lora_gguf(lora, partial, loaded)) {
+                resume_skip_steps = loaded.step;
+                LOGI("run_finetune: resumed from %s @ step %d",
+                     partial.c_str(), resume_skip_steps);
+            } else {
+                LOGW("run_finetune: partial exists but failed to load — restarting from step 0");
+            }
+        }
+    }
+
     // ── Shuffle indices once per epoch (seeded for determinism) ────────
     std::vector<int> indices(pairs.size());
     for (int i = 0; i < (int) pairs.size(); ++i) indices[i] = i;
@@ -189,6 +212,15 @@ bool run_finetune(
         int   epoch_step_count = 0;
 
         for (int idx : indices) {
+            // Resume — fast-forward the global step counter without
+            // re-running training. The shuffle seed is fixed so the
+            // skip is exactly the steps already in the partial.
+            if (resume_skip_steps > 0) {
+                ++global_step;
+                --resume_skip_steps;
+                continue;
+            }
+
             if (cb.is_cancelled && cb.is_cancelled()) {
                 LOGI("run_finetune: cancelled at epoch %d step %d", epoch, global_step);
                 ggml_free(static_ctx);
