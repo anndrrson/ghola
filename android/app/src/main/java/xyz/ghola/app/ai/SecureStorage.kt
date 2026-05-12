@@ -227,6 +227,11 @@ class SecureStorage(context: Context) {
      * skew window). Previously this was just a `!isNullOrBlank()` check, which
      * reported expired tokens as valid. Callers that need to ALSO know whether
      * a refresh would succeed should additionally consult [hasCloudRefreshToken].
+     *
+     * Note: [JwtUtil.isExpired] **fails open** if the JWT can't be decoded —
+     * a present-but-unparseable token is treated as valid. The next API call
+     * will 401 if the server disagrees, at which point the cloud-client
+     * retry path takes over.
      */
     fun hasCloudAuth(): Boolean {
         val token = getCloudAuthToken() ?: return false

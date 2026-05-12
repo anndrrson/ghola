@@ -35,23 +35,36 @@ object JwtUtil {
         }
     }
 
-    /** True if `exp - now <= skew`. Null-exp is treated as expired (fail-closed). */
+    /**
+     * True if `exp - now <= skew`. **Fail-OPEN** on decode errors: if the
+     * token doesn't have a parseable `exp` claim, we treat it as not-expired
+     * and let a real 401 from the server escalate. The alternative (fail-
+     * closed) caused a sign-in loop when the backend hadn't yet been upgraded
+     * to return refresh tokens — clients with valid JWTs but unparseable
+     * payloads were being bounced back to SIWS on every resume.
+     */
     fun isExpired(
         token: String?,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
         skewSeconds: Long = DEFAULT_SKEW_SECONDS,
     ): Boolean {
-        val exp = expirySeconds(token) ?: return true
+        if (token.isNullOrBlank()) return true
+        val exp = expirySeconds(token) ?: return false // fail-open
         return exp - nowSeconds <= skewSeconds
     }
 
-    /** True if `exp - now <= windowSeconds`. Used to trigger proactive refresh. */
+    /**
+     * True if `exp - now <= windowSeconds`. Used to trigger proactive refresh.
+     * **Fail-OPEN** on decode errors so a token we can't read doesn't trigger
+     * an unnecessary refresh attempt every foreground.
+     */
     fun isExpiringWithin(
         token: String?,
         windowSeconds: Long,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ): Boolean {
-        val exp = expirySeconds(token) ?: return true
+        if (token.isNullOrBlank()) return true
+        val exp = expirySeconds(token) ?: return false // fail-open
         return exp - nowSeconds <= windowSeconds
     }
 }
