@@ -709,14 +709,11 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         val to = draft.optString("to_address", "").ifBlank { "(no recipient)" }
         val subject = draft.optString("subject", "").ifBlank { "(no subject)" }
         val body = draft.optString("body", "").ifBlank { "(empty body)" }
-        val id = draft.optString("id", "")
-        val idHint = if (id.isNotBlank()) "\n\nDraft id: $id" else ""
         return buildString {
             append("Drafted an email for you. Review below and send from the inbox at ghola.xyz.\n\n")
             append("To: ").append(to).append('\n')
             append("Subject: ").append(subject).append("\n\n")
             append(body)
-            append(idHint)
         }
     }
 
