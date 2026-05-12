@@ -11,8 +11,33 @@ class ModelManager(private val context: Context) {
 
     companion object {
         private const val TAG = "ModelManager"
-        private const val MODEL_URL = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/qwen3-4b-q4_k_m.gguf"
-        private const val MODEL_FILENAME = "qwen3-4b-q4_k_m.gguf"
+
+        // v0.6: switch base from Qwen3-4B-Q4_K_M to Qwen2.5-1.5B-q8_0.
+        //
+        // Why this swap:
+        //   - 4B at Q4_K_M ≈ 2.4GB; the LoRA fine-tune backward pass needs
+        //     near-fp16 weights, and Q4 quantization significantly hurts
+        //     adapter quality. q8 ≈ 1.6GB and is near-lossless.
+        //   - 1.5B is the largest class we can finetune on a Dimensity 9300
+        //     in a reasonable overnight window (~1-1.7h wall-clock for 500
+        //     emails × 3 epochs).
+        //   - Matches the v0.5 capability — `LocalChatBackend` was tuned
+        //     against this same 1.5B model class.
+        private const val MODEL_URL =
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/" +
+                "qwen2.5-1.5b-instruct-q8_0.gguf"
+        private const val MODEL_FILENAME = "qwen2.5-1.5b-instruct-q8_0.gguf"
+
+        /** Per-user LoRA adapter file, written by [PersonalFineTuneWorker]. */
+        const val LORA_FILENAME = "voice.lora"
+
+        /** Cached centroid (FloatArray packed little-endian) — rebuilt by
+         *  [VoiceMetric] each fine-tune. */
+        const val CENTROID_FILENAME = "voice.centroid.bin"
+
+        /** JSON sidecar with fine-tune provenance — written on success. */
+        const val LORA_META_FILENAME = "voice.lora.meta.json"
+
         private const val BUFFER_SIZE = 8192
     }
 
@@ -47,6 +72,27 @@ class ModelManager(private val context: Context) {
         } else {
             true
         }
+    }
+
+    // ── LoRA adapter helpers (v0.6) ──────────────────────────────────────────
+    //
+    // The LoRA file lives next to the base GGUF in the same models dir so
+    // backup/eviction policies treat them as a unit. The Kotlin caller asks
+    // for a path; PersonalFineTuneWorker writes; LlamaCppImpl loads.
+
+    fun getLoraFile(): File = File(modelsDir, LORA_FILENAME)
+    fun getLoraPath(): String = getLoraFile().absolutePath
+    fun isLoraReady(): Boolean = getLoraFile().let { it.exists() && it.length() > 0 }
+
+    fun getCentroidFile(): File = File(modelsDir, CENTROID_FILENAME)
+    fun getLoraMetaFile(): File = File(modelsDir, LORA_META_FILENAME)
+
+    fun deleteLora(): Boolean {
+        var ok = true
+        listOf(getLoraFile(), getCentroidFile(), getLoraMetaFile()).forEach { f ->
+            if (f.exists() && !f.delete()) ok = false
+        }
+        return ok
     }
 
     fun cancelDownload() {

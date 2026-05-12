@@ -23,6 +23,21 @@ android {
             abiFilters += "arm64-v8a"
         }
 
+        // v0.6: CMake flags propagated to FetchContent-built llama.cpp.
+        // GGML_OPENMP=OFF — Android NDK r26 ships no OpenMP runtime.
+        // ANDROID_STL=c++_shared — match the rest of the app's shared STL
+        // so we don't ship two copies of libc++.
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    "-DGGML_OPENMP=OFF",
+                    "-DBUILD_SHARED_LIBS=OFF",
+                )
+                cppFlags += listOf("-std=c++17", "-O3", "-fexceptions", "-frtti")
+            }
+        }
+
         // v0.5: Gmail OAuth client id for the AppAuth on-device flow.
         // Mobile OAuth uses the public-client PKCE flow — the client id is
         // not a secret (it's the PKCE code_verifier that protects the
@@ -122,18 +137,16 @@ android {
     }
 
     // Native llama.cpp build is disabled because the llama.cpp source subtree
-    // was removed in commit ea53f9d ("Remove llama.cpp submodule (breaks
-    // Render Docker builds)"). The local LocalLlamaBackend path will throw
-    // UnsatisfiedLinkError at runtime IF the user selects Settings → Local
-    // backend — but the default backend is cloud Qwen, so the common path
-    // works fine without it. To re-enable: `git clone https://github.com/
-    // ggerganov/llama.cpp app/src/main/cpp/llama.cpp` then uncomment this.
-    //
-    // externalNativeBuild {
-    //     cmake {
-    //         path = file("src/main/cpp/CMakeLists.txt")
-    //     }
-    // }
+    // v0.6: llama.cpp is fetched via CMake FetchContent at the tag pinned
+    // in src/main/cpp/CMakeLists.txt. No git submodule (that's what broke
+    // Render builds — see commit ea53f9d). Render's Docker context excludes
+    // android/ via .dockerignore, so the cloud images never hit this path.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 }
 
 dependencies {
