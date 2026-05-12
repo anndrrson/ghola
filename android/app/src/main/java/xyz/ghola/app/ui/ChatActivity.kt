@@ -225,7 +225,10 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         super.onDestroy()
         agentController?.shutdown()
         localBackend?.shutdown()
-        vaultStore?.lock()
+        // Vault is process-cached via VaultStoreHolder — do NOT lock on every
+        // activity destroy. The vault's own idle TTL (DEFAULT_IDLE_TTL_MILLIS,
+        // 15 min) handles auto-lock when the user is genuinely away. Locking
+        // here forced a wallet re-prompt on every chat re-entry.
     }
 
     private fun checkPrerequisites() {
@@ -359,8 +362,31 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             return
         }
         val userDid = Envelope.didKeyFromVerifying(pubBytes)
-        val vault = VaultStore.create(this, userDid)
+        // Process-wide cache: if the vault is already unlocked (from a
+        // previous chat session within the idle TTL), reuse it and skip the
+        // MWA prompt entirely. This is the fix for "wallet pops up on every
+        // tile tap" reported on Seeker.
+        val vault = xyz.ghola.app.crypto.VaultStoreHolder.get(this, userDid)
         vaultStore = vault
+
+        if (vault.isUnlocked()) {
+            // Hot path: vault already keyed. Wire the backend without
+            // touching the wallet.
+            hideStatus()
+            val backend: LlmBackend = EnvelopeCloudBackend(
+                baseUrl = secureStorage.getCloudBaseUrl(),
+                authToken = authToken,
+                vault = vault,
+            )
+            agentController = AgentController(
+                backend, toolExecutor, this,
+                secureStorage.getWalletPackage(),
+                secureStorage.isSeeker(),
+                secureStorage.hasCloudAuth(),
+            )
+            setInputEnabled(true)
+            return
+        }
 
         setInputEnabled(false)
         showStatus("Tap your wallet to unlock end-to-end chat…")
