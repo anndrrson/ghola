@@ -365,6 +365,7 @@ class SettingsActivity : AppCompatActivity() {
             // adapter. Hidden behind the long-press menu — never user-facing.
             actions += "Run parity check (Phase A.3)" to { runParityCheck() }
             actions += "Run banana test (Phase H.1)" to { runBananaTest() }
+            actions += "Show ship/no-ship gates (Phase H)" to { showShipGates() }
             actions += "Switch back to MediaPipe" to {
                 storage.setUseLlamaCppRuntime(false)
                 xyz.ghola.app.email.LocalLlm.reset(this)
@@ -472,13 +473,13 @@ class SettingsActivity : AppCompatActivity() {
                     xyz.ghola.app.ml.BananaTest.runOnce(
                         this@SettingsActivity,
                         callback = object : xyz.ghola.app.ai.llama.LlamaFinetune.ProgressCallback {
-                            override fun onEpoch(epoch: Int, total: Int, loss: Float) {
-                                mainHandler.post { progress.setMessage("Epoch $epoch/$total — loss=${"%.4f".format(loss)}") }
+                            override fun onEpoch(epoch: Int, totalEpochs: Int, lossSoFar: Float) {
+                                mainHandler.post { progress.setMessage("Epoch $epoch/$totalEpochs — loss=${"%.4f".format(lossSoFar)}") }
                             }
-                            override fun onStep(step: Int, total: Int, loss: Float) {
+                            override fun onStep(step: Int, totalSteps: Int, loss: Float) {
                                 if (step % 20 == 0) {
                                     mainHandler.post {
-                                        progress.setMessage("Step $step/$total — loss=${"%.4f".format(loss)}")
+                                        progress.setMessage("Step $step/$totalSteps — loss=${"%.4f".format(loss)}")
                                     }
                                 }
                             }
@@ -503,6 +504,62 @@ class SettingsActivity : AppCompatActivity() {
             }
             androidx.appcompat.app.AlertDialog.Builder(this@SettingsActivity)
                 .setTitle(if (verdict.passes) "Banana test: PASS" else "Banana test: FAIL")
+                .setMessage(body)
+                .setPositiveButton("OK", null)
+                .show()
+        }
+    }
+
+    /**
+     * Phase H ship/no-ship dashboard. Runs all three evaluatable gates
+     * (voice match Δ, n-gram leakage, A/B preference) and renders the
+     * pass/fail summary. Gate H.1 (banana test) lives on its own
+     * Settings entry because it's a long-running training operation
+     * rather than an aggregator.
+     *
+     * Each gate's eval is expensive — voice match runs ~17 minutes of
+     * inference for runEval — so dev should expect this to take a while.
+     */
+    private fun showShipGates() {
+        val progress = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Phase H gates")
+            .setMessage(
+                "Evaluating voice match, leakage, and A/B preference…\n\n" +
+                "This runs ~50 generations per gate; budget 20+ minutes.",
+            )
+            .setCancelable(false)
+            .show()
+
+        lifecycleScope.launch {
+            val gates = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { xyz.ghola.app.ml.VoiceMetric.phaseHGateReport(this@SettingsActivity) }
+                    .getOrNull()
+            }
+            progress.dismiss()
+            val body = if (gates == null) {
+                "Gate evaluation failed — see logcat (VoiceMetric tag)."
+            } else {
+                buildString {
+                    append("Gate 2 (voice match Δ ≥ +0.08): ")
+                    append(if (gates.voiceMatchPasses) "✅ PASS" else "❌ FAIL")
+                    gates.voiceMatchDelta?.let { append("  Δ=${"%.3f".format(it)}") }
+                    append("\n\n")
+                    append("Gate 3 (n-gram leakage): ")
+                    append(if (gates.leakagePasses) "✅ PASS" else "❌ FAIL")
+                    gates.leakageWarnFraction?.let { append("  warnFraction=${"%.2f".format(it)}") }
+                    gates.leakageHasHardFail?.let { append("  hardFail=$it") }
+                    append("\n\n")
+                    append("Gate 4 (A/B preference ≥ 0.60, n ≥ 10): ")
+                    append(if (gates.preferencePasses) "✅ PASS" else "❌ FAIL")
+                    append("  n=${gates.preferenceN}")
+                    gates.preferenceLoraFraction?.let { append("  loraFrac=${"%.2f".format(it)}") }
+                    append("\n\n")
+                    append(if (gates.passes) "OVERALL: SHIP ✅" else "OVERALL: BLOCK ❌")
+                    append("\n\n(Gate 1 — banana test — runs separately.)")
+                }
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this@SettingsActivity)
+                .setTitle("Phase H result")
                 .setMessage(body)
                 .setPositiveButton("OK", null)
                 .show()
