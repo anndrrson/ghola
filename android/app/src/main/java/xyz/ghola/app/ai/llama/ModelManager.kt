@@ -54,8 +54,24 @@ class ModelManager(private val context: Context) {
             return dir
         }
 
+    /** Fallback for dev workflows where adb push to /sdcard isn't readable
+     *  by the app (FUSE perms strip read access). `run-as cp` lands here. */
+    private val internalModelsDir: File
+        get() {
+            val dir = File(context.filesDir, "models")
+            if (!dir.exists()) dir.mkdirs()
+            return dir
+        }
+
     private val modelFile: File
-        get() = File(modelsDir, MODEL_FILENAME)
+        get() {
+            // Prefer external (production path), fall back to internal (dev).
+            val ext = File(modelsDir, MODEL_FILENAME)
+            if (ext.exists() && ext.length() > 0) return ext
+            val int = File(internalModelsDir, MODEL_FILENAME)
+            if (int.exists() && int.length() > 0) return int
+            return ext // Doesn't exist yet; caller will trigger download.
+        }
 
     @Volatile
     private var cancelled = false
@@ -80,12 +96,18 @@ class ModelManager(private val context: Context) {
     // backup/eviction policies treat them as a unit. The Kotlin caller asks
     // for a path; PersonalFineTuneWorker writes; LlamaCppImpl loads.
 
-    fun getLoraFile(): File = File(modelsDir, LORA_FILENAME)
+    /** Where new LoRAs are written: alongside the base model file, so the
+     *  training run and the inference run see the same dir. Falls back to
+     *  internal when the base model lives there. */
+    private val sidecarDir: File
+        get() = modelFile.parentFile ?: modelsDir
+
+    fun getLoraFile(): File = File(sidecarDir, LORA_FILENAME)
     fun getLoraPath(): String = getLoraFile().absolutePath
     fun isLoraReady(): Boolean = getLoraFile().let { it.exists() && it.length() > 0 }
 
-    fun getCentroidFile(): File = File(modelsDir, CENTROID_FILENAME)
-    fun getLoraMetaFile(): File = File(modelsDir, LORA_META_FILENAME)
+    fun getCentroidFile(): File = File(sidecarDir, CENTROID_FILENAME)
+    fun getLoraMetaFile(): File = File(sidecarDir, LORA_META_FILENAME)
 
     fun deleteLora(): Boolean {
         var ok = true
