@@ -333,20 +333,37 @@ class SettingsActivity : AppCompatActivity() {
             LoRA: $loraStatus
         """.trimIndent()
 
-        val builder = androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("On-device model (v0.6 beta)")
-            .setMessage(body)
-            .setNegativeButton("Close", null)
-
+        // Action list — variable number of items depending on runtime + LoRA
+        // state. AlertDialog.setItems is the right primitive here; trying to
+        // shoehorn 4+ actions into positive/neutral/negative buttons hits
+        // Material AlertDialog's hard cap and silently drops actions.
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
         if (storage.useLlamaCppRuntime()) {
-            builder.setPositiveButton("Switch back to MediaPipe") { _, _ ->
+            actions += "Compare voices" to {
+                startActivity(android.content.Intent(this, VoiceCompareActivity::class.java))
+            }
+            if (mm.isLoraReady()) {
+                val label = if (storage.voiceLoraActive()) "Disable voice LoRA" else "Enable voice LoRA"
+                actions += label to {
+                    val next = !storage.voiceLoraActive()
+                    storage.setVoiceLoraActive(next)
+                    xyz.ghola.app.email.LocalLlm.reset(this)
+                    Toast.makeText(
+                        this,
+                        if (next) "Voice LoRA enabled" else "Voice LoRA disabled",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    updateModelStatus()
+                }
+            }
+            actions += "Switch back to MediaPipe" to {
                 storage.setUseLlamaCppRuntime(false)
                 xyz.ghola.app.email.LocalLlm.reset(this)
                 Toast.makeText(this, "Reverted to MediaPipe runtime", Toast.LENGTH_SHORT).show()
                 updateModelStatus()
             }
         } else {
-            builder.setPositiveButton("Switch to llama.cpp") { _, _ ->
+            actions += "Switch to llama.cpp" to {
                 storage.setUseLlamaCppRuntime(true)
                 xyz.ghola.app.email.LocalLlm.reset(this)
                 Toast.makeText(this, "llama.cpp runtime enabled", Toast.LENGTH_SHORT).show()
@@ -354,21 +371,13 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
-        if (mm.isLoraReady()) {
-            val label = if (storage.voiceLoraActive()) "Disable voice LoRA" else "Enable voice LoRA"
-            builder.setNeutralButton(label) { _, _ ->
-                val next = !storage.voiceLoraActive()
-                storage.setVoiceLoraActive(next)
-                xyz.ghola.app.email.LocalLlm.reset(this)
-                Toast.makeText(
-                    this,
-                    if (next) "Voice LoRA enabled" else "Voice LoRA disabled",
-                    Toast.LENGTH_SHORT,
-                ).show()
-                updateModelStatus()
-            }
-        }
-        builder.show()
+        val items = actions.map { it.first }.toTypedArray()
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("On-device model (v0.6 beta)")
+            .setMessage(body)
+            .setItems(items) { _, which -> actions[which].second() }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun relativeTimeShort(epochMillis: Long): String {

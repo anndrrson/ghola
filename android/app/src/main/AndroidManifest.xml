@@ -1,11 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- v0.6 P7: WorkManager promotes PersonalFineTuneWorker to foreground
+         during the 1-2h fine-tune; Android 14+ requires a typed
+         FOREGROUND_SERVICE_* permission alongside the generic one. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
@@ -54,6 +59,31 @@
         <activity
             android:name=".ui.SettingsActivity"
             android:exported="false" />
+
+        <!-- v0.6 P7: WorkManager's foreground service for the
+             PersonalFineTuneWorker. Android 14+ requires the explicit
+             foregroundServiceType. dataSync is the closest match for
+             our 1-2h CPU-bound training pass. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
+        <!-- v0.6 voice-compare A/B (P9). Deep-linked from the post-finetune
+             notification at ghola://voice-compare so the user can land
+             directly on the pitch artifact without navigating through
+             Settings. -->
+        <activity
+            android:name=".ui.VoiceCompareActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Ghola">
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="ghola" android:host="voice-compare" />
+            </intent-filter>
+        </activity>
 
         <!-- Onboarding -->
         <activity

@@ -86,14 +86,19 @@ interface SentEmailDao {
 }
 
 @Database(
-    entities = [SentEmail::class, xyz.ghola.app.ml.TrainingPair::class],
-    version = 2,
+    entities = [
+        SentEmail::class,
+        xyz.ghola.app.ml.TrainingPair::class,
+        xyz.ghola.app.ml.VoicePreference::class,
+    ],
+    version = 3,
     exportSchema = false,
 )
 @TypeConverters(StringListConverter::class)
 abstract class GholaMailDatabase : RoomDatabase() {
     abstract fun sentEmailDao(): SentEmailDao
     abstract fun trainingPairDao(): xyz.ghola.app.ml.TrainingPairDao
+    abstract fun voicePreferenceDao(): xyz.ghola.app.ml.VoicePreferenceDao
 
     companion object {
         @Volatile private var INSTANCE: GholaMailDatabase? = null
@@ -124,6 +129,31 @@ abstract class GholaMailDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v0.6 P9 migration: voice_preference for the A/B compare panel.
+         * Like MIGRATION_1_2 this is additive — never touches existing
+         * tables.
+         */
+        private val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS voice_preference (
+                        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                        prompt TEXT NOT NULL,
+                        base_output TEXT NOT NULL,
+                        lora_output TEXT NOT NULL,
+                        chosen TEXT NOT NULL,
+                        base_on_left INTEGER NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        base_score REAL,
+                        lora_score REAL
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
         fun get(context: Context): GholaMailDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -135,7 +165,7 @@ abstract class GholaMailDatabase : RoomDatabase() {
                     // fallbackToDestructiveMigration here. The mirror is the
                     // load-bearing dataset for everything voice-related; we
                     // can't afford to wipe it on a schema bump.
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { INSTANCE = it }
             }
