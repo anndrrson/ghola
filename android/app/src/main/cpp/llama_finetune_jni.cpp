@@ -86,22 +86,51 @@ ghola::FinetuneHyperparams parse_hyperparams(JNIEnv * env, jobject hyper) {
     ghola::FinetuneHyperparams out;
     if (!hyper) return out;
 
+    // Use Kotlin's public getter methods rather than backing fields. The
+    // private field names are an implementation detail the Kotlin compiler
+    // is free to change; the getter contract is part of the public ABI
+    // (data class invariant + JvmStatic considerations).
     jclass cls = env->GetObjectClass(hyper);
-    auto get_int = [&](const char * name) -> int {
-        jfieldID f = env->GetFieldID(cls, name, "I");
-        return f ? env->GetIntField(hyper, f) : 0;
+    auto call_int = [&](const char * getter) -> int {
+        jmethodID m = env->GetMethodID(cls, getter, "()I");
+        return m ? env->CallIntMethod(hyper, m) : 0;
     };
-    auto get_float = [&](const char * name) -> float {
-        jfieldID f = env->GetFieldID(cls, name, "F");
-        return f ? env->GetFloatField(hyper, f) : 0.0f;
+    auto call_float = [&](const char * getter) -> float {
+        jmethodID m = env->GetMethodID(cls, getter, "()F");
+        return m ? env->CallFloatMethod(hyper, m) : 0.0f;
     };
 
-    out.rank          = get_int("rank");
-    out.alpha         = get_float("alpha");
-    out.learning_rate = get_float("learningRate");
-    out.epochs        = get_int("epochs");
-    out.batch_size    = get_int("batchSize");
-    out.ctx_len       = get_int("ctxLen");
+    out.rank          = call_int  ("getRank");
+    out.alpha         = call_float("getAlpha");
+    out.learning_rate = call_float("getLearningRate");
+    out.epochs        = call_int  ("getEpochs");
+    out.batch_size    = call_int  ("getBatchSize");
+    out.ctx_len       = call_int  ("getCtxLen");
+
+    // Sanity-clamp out-of-range values so a misconfigured caller can't
+    // produce an immediately-divergent training run.
+    if (out.rank < 1 || out.rank > 256) {
+        LOGW("parse_hyperparams: clamping rank %d → 16", out.rank);
+        out.rank = 16;
+    }
+    if (out.alpha <= 0.0f || out.alpha > 1024.0f) {
+        LOGW("parse_hyperparams: clamping alpha %.2f → 32.0", out.alpha);
+        out.alpha = 32.0f;
+    }
+    if (out.learning_rate <= 0.0f || out.learning_rate > 1.0f) {
+        LOGW("parse_hyperparams: clamping learning_rate %.4e → 3e-4", out.learning_rate);
+        out.learning_rate = 3e-4f;
+    }
+    if (out.epochs < 1 || out.epochs > 64) {
+        LOGW("parse_hyperparams: clamping epochs %d → 3", out.epochs);
+        out.epochs = 3;
+    }
+    if (out.ctx_len < 64 || out.ctx_len > 8192) {
+        LOGW("parse_hyperparams: clamping ctx_len %d → 1024", out.ctx_len);
+        out.ctx_len = 1024;
+    }
+    if (out.batch_size < 1) out.batch_size = 1;
+
     env->DeleteLocalRef(cls);
     return out;
 }
