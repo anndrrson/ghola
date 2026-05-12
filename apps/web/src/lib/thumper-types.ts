@@ -123,13 +123,40 @@ export interface ThumperChatMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: string;
-  action?: ThumperInlineAction;
+  /**
+   * Inline actions surfaced by the assistant for this message. A single turn
+   * may emit multiple actions (e.g. "email alice and text bob"). Legacy
+   * sessions persisted with the singular `action` field are normalized on
+   * load — see `chat-history-store`.
+   */
+  actions?: ThumperInlineAction[];
 }
 
 export interface ThumperInlineAction {
-  type: "call" | "email" | "task";
+  type: "call" | "email" | "sms" | "calendar" | "task";
   status: "ready" | "in_progress" | "completed" | "failed";
   data: Record<string, unknown>;
+}
+
+export interface ThumperSmsResponse {
+  id: string;
+  to: string;
+  body: string;
+  status: "sending" | "sent" | "failed";
+  sent_at: string | null;
+  vendor_message_id: string | null;
+}
+
+export interface ThumperCalendarEventResponse {
+  action?: string;
+  status?: string;
+  event?: {
+    id: string;
+    title: string;
+    start: string;
+    end: string;
+    html_link: string | null;
+  };
 }
 
 export interface ThumperSession {

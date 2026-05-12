@@ -1,10 +1,23 @@
+import type { ThumperInlineAction } from "@/lib/thumper-types";
+
 const THUMPER_API_BASE =
   process.env.NEXT_PUBLIC_THUMPER_API_URL || "http://localhost:3000";
 
 interface StreamChatOptions {
   onSession?: (sessionId: string) => void;
-  onProvider?: (info: { type: string; model?: string; provider_name?: string }) => void;
+  onProvider?: (info: {
+    type: string;
+    model?: string;
+    provider_name?: string;
+    tool_use_supported?: boolean;
+  }) => void;
   onChunk: (text: string) => void;
+  /**
+   * Called once with the accumulated client-side action tool_use events
+   * surfaced during the turn. Fires just before `onDone` and only if any
+   * client_action tool_use events arrived.
+   */
+  onActions?: (actions: ThumperInlineAction[]) => void;
   onDone: () => void;
   onError: (error: Error) => void;
   /**
@@ -18,6 +31,35 @@ interface StreamChatOptions {
    * the LLM) but is not persisted alongside the envelope.
    */
   envelopeBlobB64?: string;
+}
+
+function toolUseToInlineAction(
+  tool: string,
+  input: unknown,
+): ThumperInlineAction | null {
+  const data =
+    typeof input === "object" && input !== null
+      ? (input as Record<string, unknown>)
+      : {};
+  switch (tool) {
+    case "send_email":
+      return { type: "email", status: "ready", data };
+    case "send_sms":
+      return { type: "sms", status: "ready", data };
+    case "initiate_call":
+      return {
+        type: "call",
+        status: "ready",
+        data: {
+          phone_number: data.phone_number,
+          objective: data.objective,
+        },
+      };
+    case "create_calendar_event":
+      return { type: "calendar", status: "ready", data };
+    default:
+      return null;
+  }
 }
 
 export async function streamChat(
@@ -66,6 +108,14 @@ export async function streamChat(
     const decoder = new TextDecoder();
     let buffer = "";
     let currentEvent = "";
+    const pendingActions: ThumperInlineAction[] = [];
+
+    const flushActions = () => {
+      if (pendingActions.length > 0 && options.onActions) {
+        options.onActions(pendingActions.slice());
+        pendingActions.length = 0;
+      }
+    };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -108,12 +158,37 @@ export async function streamChat(
             continue;
           }
 
+          if (currentEvent === "tool_use") {
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.status === "client_action" && typeof parsed.tool === "string") {
+                const action = toolUseToInlineAction(parsed.tool, parsed.input);
+                if (action) pendingActions.push(action);
+              }
+            } catch {
+              // ignore malformed payload — server-side bug, not the client's
+              // problem to recover from
+            }
+            currentEvent = "";
+            continue;
+          }
+
+          if (currentEvent === "tool_result") {
+            // Server-executed tool results aren't surfaced to the user-facing
+            // chat surface today; drop silently. Wallet UX may consume these
+            // in a future change.
+            currentEvent = "";
+            continue;
+          }
+
           if (currentEvent === "done" || data === "[DONE]") {
+            flushActions();
             options.onDone();
             return;
           }
 
           if (currentEvent === "error") {
+            flushActions();
             options.onError(new Error(data));
             return;
           }
@@ -142,6 +217,7 @@ export async function streamChat(
       }
     }
 
+    flushActions();
     options.onDone();
   } catch (e) {
     options.onError(e instanceof Error ? e : new Error(String(e)));
