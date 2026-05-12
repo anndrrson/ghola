@@ -18,8 +18,12 @@ import androidx.recyclerview.widget.RecyclerView
 import android.util.Log
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.last
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import xyz.ghola.app.email.LocalEmailService
 import org.json.JSONArray
 import org.json.JSONObject
 import xyz.ghola.app.R
@@ -660,19 +664,34 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                     }
                 }
                 TaskClassifier.TaskRoute.CLOUD_EMAIL -> {
+                    // v0.5: route Email tile through the on-device email
+                    // stack instead of /api/emails/generate. The user's
+                    // prompt + Gmail corpus + draft never leave the device.
+                    // Falls back to the cloud path only if the local model
+                    // isn't downloaded yet (signaled by null return).
                     val to = Regex("""[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}""")
                         .find(text)
                         ?.value
-                    val draft = if (to != null) {
-                        client.createEmailDraft(
-                            toAddress = to,
-                            subject = "Draft from Ghola",
-                            bodyText = text,
-                        )
-                    } else {
-                        client.generateEmail(text)
+                    val localDraftJson = runBlocking {
+                        renderLocalDraftAsJson(text, to)
                     }
-                    formatEmailDraftForChat(draft)
+                    if (localDraftJson != null) {
+                        formatEmailDraftForChat(localDraftJson)
+                    } else {
+                        // Cloud fallback for users without the local model
+                        // download yet. Same fortune-cookie risk as v0.4
+                        // but at least functional.
+                        val draft = if (to != null) {
+                            client.createEmailDraft(
+                                toAddress = to,
+                                subject = "Draft from Ghola",
+                                bodyText = text,
+                            )
+                        } else {
+                            client.generateEmail(text)
+                        }
+                        formatEmailDraftForChat(draft)
+                    }
                 }
                 TaskClassifier.TaskRoute.CLOUD_CALENDAR -> {
                     val plan = client.planDeviceAction(text)
@@ -704,6 +723,41 @@ class ChatActivity : AppCompatActivity(), AgentListener {
      * can review and decide whether to ship it (the actual send action lives
      * in the web ActionCard surface; Android sees the draft + an explainer).
      */
+    /**
+     * Run the on-device email generation stack and roll the streaming output
+     * into the same JSONObject shape `formatEmailDraftForChat` expects.
+     * Returns null if the local model isn't ready yet (caller falls back to
+     * the cloud path so the user still gets *something*).
+     *
+     * The streaming Flow is collected to completion here — `last()` waits
+     * for `done=true` and returns the final cumulative body string. The
+     * skeleton-first benefit (paint <500ms) is preserved when we wire this
+     * into a dedicated EmailDraftActivity (P5 follow-up); inline-in-chat
+     * we wait for the full body before showing anything, which is fine for
+     * the v0.5 "tap → draft" UX.
+     */
+    private suspend fun renderLocalDraftAsJson(
+        intent: String,
+        recipientHint: String?,
+    ): org.json.JSONObject? = withContext(Dispatchers.IO) {
+        val local = LocalEmailService.draft(
+            context = this@ChatActivity,
+            intent = intent,
+            recipientHint = recipientHint,
+        ) ?: return@withContext null
+        val finalBody = try {
+            local.body.last()
+        } catch (t: Throwable) {
+            android.util.Log.w(TAG, "local body collection failed: ${t.message}")
+            ""
+        }
+        org.json.JSONObject().apply {
+            put("to_address", local.to)
+            put("subject", local.subject)
+            put("body", finalBody)
+        }
+    }
+
     private fun formatEmailDraftForChat(draft: org.json.JSONObject?): String {
         if (draft == null) return "Email generation failed. Please try again."
         val to = draft.optString("to_address", "").ifBlank { "(no recipient)" }

@@ -23,6 +23,10 @@ class SecureStorage(context: Context) {
         private const val KEY_SAID_REFRESH_TOKEN = "said_cloud_refresh_token"
         private const val KEY_SAID_REFRESH_EXP = "said_cloud_refresh_token_exp"
         private const val KEY_SAID_TOKEN_EXP = "said_cloud_token_exp"
+        // v0.5: on-device Gmail OAuth (AppAuth flow).
+        private const val KEY_GMAIL_ACCESS_TOKEN = "gmail_access_token"
+        private const val KEY_GMAIL_ACCESS_EXP = "gmail_access_token_exp_millis"
+        private const val KEY_GMAIL_REFRESH_TOKEN = "gmail_refresh_token"
         private const val KEY_CLOUD_USER_ID = "cloud_user_id"
         private const val KEY_CLOUD_BASE_URL = "cloud_base_url"
         private const val KEY_USER_DISPLAY_NAME = "user_display_name"
@@ -336,6 +340,49 @@ class SecureStorage(context: Context) {
             .remove(KEY_SAID_REFRESH_EXP)
             .remove(KEY_SAID_USER_ID)
             .remove(KEY_PRIMARY_AGENT_ID)
+            .apply()
+    }
+
+    // ── Gmail OAuth (v0.5 on-device flow via AppAuth) ────────────────────────
+    //
+    // Pre-v0.5, Gmail OAuth happened in a server-mediated browser redirect and
+    // tokens lived in thumper-cloud.connected_accounts. v0.5 moves the whole
+    // dance on-device: the Custom Tab returns tokens directly to the app, we
+    // store them here (still inside EncryptedSharedPreferences), and refresh
+    // by calling oauth2.googleapis.com from the device. No server roundtrip
+    // for any Gmail data access. Required by the v0.5 privacy promise.
+
+    fun setGmailTokens(
+        accessToken: String,
+        accessExpEpochMillis: Long,
+        refreshToken: String,
+    ) {
+        prefs.edit()
+            .putString(KEY_GMAIL_ACCESS_TOKEN, accessToken)
+            .putLong(KEY_GMAIL_ACCESS_EXP, accessExpEpochMillis)
+            .putString(KEY_GMAIL_REFRESH_TOKEN, refreshToken)
+            .apply()
+    }
+
+    fun getGmailAccessToken(): String? = prefs.getString(KEY_GMAIL_ACCESS_TOKEN, null)
+    fun getGmailAccessExpMillis(): Long = prefs.getLong(KEY_GMAIL_ACCESS_EXP, 0L)
+    fun getGmailRefreshToken(): String? = prefs.getString(KEY_GMAIL_REFRESH_TOKEN, null)
+
+    /** Access token present AND not within 60s of expiry. */
+    fun hasFreshGmailAccess(): Boolean {
+        val t = getGmailAccessToken() ?: return false
+        if (t.isBlank()) return false
+        val exp = getGmailAccessExpMillis()
+        return exp == 0L || exp - System.currentTimeMillis() > 60_000L
+    }
+
+    fun hasGmailRefreshToken(): Boolean = !getGmailRefreshToken().isNullOrBlank()
+
+    fun clearGmailAuth() {
+        prefs.edit()
+            .remove(KEY_GMAIL_ACCESS_TOKEN)
+            .remove(KEY_GMAIL_ACCESS_EXP)
+            .remove(KEY_GMAIL_REFRESH_TOKEN)
             .apply()
     }
 
