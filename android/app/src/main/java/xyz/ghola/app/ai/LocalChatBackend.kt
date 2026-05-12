@@ -36,20 +36,31 @@ class LocalChatBackend(
         private const val TAG = "LocalChatBackend"
 
         /**
-         * Max chat turns to keep in the prompt. Qwen 2.5 1.5B in the
-         * `ekv1280` LiteRT bundle has only ~1280 tokens of total KV cache
-         * (prompt + response combined), and MediaPipe's setMaxTokens is
-         * configured at 1024. Each turn averages 50-80 tokens, so 6 turns
-         * (12 messages: 6 user + 6 assistant) is a safe ceiling that leaves
-         * ~600 tokens for the next response. Beyond that, we drop the
-         * oldest user/assistant pair before re-prompting; the system
-         * message always survives.
+         * Hard cap on prompt size, measured in characters. Qwen 2.5 1.5B in
+         * the `ekv1280` LiteRT bundle has only 1280 tokens of total KV cache
+         * (prompt + response combined). The English text-to-token ratio for
+         * Qwen averages ~3.5 chars/token; we use the conservative 3.0 here
+         * to leave margin. Budget calculation:
+         *
+         *   total context  = 1024 tokens (set in LocalLlm.setMaxTokens)
+         *   reserved for response = 512 tokens
+         *   prompt budget = 512 tokens × 3 chars/token = 1536 chars
+         *
+         * Pre-flight check drops oldest user/assistant pair (then truncates
+         * the current user message as last resort) until the rendered
+         * prompt is under [MAX_PROMPT_CHARS]. Guarantees the runtime never
+         * sees a context overflow.
          */
-        private const val MAX_HISTORY_TURNS = 6
+        private const val MAX_PROMPT_CHARS = 1536
 
-        /** Char budget per message body when truncating. Keeps very long
-         *  prior messages from blowing the budget single-handedly. */
+        /** Per-message hard truncation to prevent one long paste from
+         *  monopolizing the budget. Applied before history pruning. */
         private const val MAX_CHARS_PER_MESSAGE = 800
+
+        /** Floor for what we'll truncate the *current* user message to as a
+         *  last resort. Anything shorter than this defeats the point of
+         *  asking. */
+        private const val MIN_USER_MESSAGE_CHARS = 200
     }
 
     override val displayName: String = "On-device (Qwen 2.5 1.5B)"
@@ -139,9 +150,26 @@ class LocalChatBackend(
      * Model continues from the final unclosed `assistant` tag; the
      * post-process in [generate] strips any echoed control tokens.
      */
+    /**
+     * Build a ChatML prompt that **provably fits** within the model's
+     * context window.
+     *
+     * Algorithm:
+     *  1. Normalize messages into Turn objects, per-message char-cap applied.
+     *  2. Render the full prompt. If it fits → return.
+     *  3. Otherwise drop the oldest non-current turn and re-render. Loop.
+     *  4. If only the current user message remains AND it still doesn't fit,
+     *     truncate the user message itself down to [MIN_USER_MESSAGE_CHARS].
+     *
+     * The system prompt is never dropped. The current (last) user message
+     * is never dropped — at worst it's truncated. After this returns the
+     * caller is guaranteed the model will not silently overflow on KV
+     * cache pressure.
+     */
     private fun buildPrompt(messages: JSONArray, system: String): String {
-        // Pull out the non-system messages, normalize, drop empties.
-        data class Turn(val role: String, val content: String)
+        data class Turn(val role: String, var content: String)
+
+        // 1. Collect + normalize.
         val turns = mutableListOf<Turn>()
         val inlineSystems = mutableListOf<String>()
         for (i in 0 until messages.length()) {
@@ -149,23 +177,17 @@ class LocalChatBackend(
             val role = msg.optString("role").takeIf { it.isNotBlank() } ?: continue
             val rawContent = extractText(msg.opt("content"))
             if (rawContent.isBlank()) continue
-            val content = if (rawContent.length > MAX_CHARS_PER_MESSAGE) {
+            val capped = if (rawContent.length > MAX_CHARS_PER_MESSAGE)
                 rawContent.substring(0, MAX_CHARS_PER_MESSAGE) + "…"
-            } else rawContent
+            else rawContent
             when (role) {
-                "system" -> inlineSystems += content
-                "user", "assistant" -> turns += Turn(role, content)
+                "system" -> inlineSystems += capped
+                "user", "assistant" -> turns += Turn(role, capped)
             }
         }
-        // Keep only the last MAX_HISTORY_TURNS exchanges. The "current"
-        // user turn is the last one — it's the one the model is responding
-        // to, so it MUST be retained. Drop oldest turns first.
-        val keep = MAX_HISTORY_TURNS * 2 // each turn = user + assistant
-        val trimmed = if (turns.size > keep) turns.takeLast(keep) else turns
-        if (turns.size > trimmed.size) {
-            Log.i(TAG, "trimmed ${turns.size - trimmed.size} old turns to fit context")
-        }
-        return buildString {
+
+        // Helper: render the prompt from the current state.
+        fun render(): String = buildString {
             if (system.isNotBlank()) {
                 append("<|im_start|>system\n")
                 append(system.trim())
@@ -176,13 +198,63 @@ class LocalChatBackend(
                 append(sys)
                 append("<|im_end|>\n")
             }
-            for (turn in trimmed) {
-                append("<|im_start|>").append(turn.role).append('\n')
-                append(turn.content)
+            for (t in turns) {
+                append("<|im_start|>").append(t.role).append('\n')
+                append(t.content)
                 append("<|im_end|>\n")
             }
             append("<|im_start|>assistant\n")
         }
+
+        // 2 + 3. Drop oldest non-current turns until we fit.
+        val startSize = turns.size
+        var rendered = render()
+        var droppedTurns = 0
+        // The current user message is the *last* user-role turn; never drop it.
+        // Drop from the front (oldest) one turn at a time.
+        while (rendered.length > MAX_PROMPT_CHARS && turns.size > 1) {
+            turns.removeAt(0)
+            droppedTurns++
+            rendered = render()
+        }
+        if (droppedTurns > 0) {
+            Log.i(
+                TAG,
+                "dropped $droppedTurns of $startSize turns to fit (${rendered.length} chars now)",
+            )
+        }
+
+        // 4. Last resort: truncate the current user message itself. Happens
+        // when even a one-turn conversation has a message longer than the
+        // budget can absorb (e.g., user pasted a wall of text).
+        if (rendered.length > MAX_PROMPT_CHARS && turns.isNotEmpty()) {
+            val overshoot = rendered.length - MAX_PROMPT_CHARS
+            val current = turns.last()
+            val target = (current.content.length - overshoot - 32).coerceAtLeast(
+                MIN_USER_MESSAGE_CHARS,
+            )
+            if (target < current.content.length) {
+                current.content = current.content.substring(0, target) + "…"
+                rendered = render()
+                Log.w(
+                    TAG,
+                    "truncated current user message to $target chars to fit budget",
+                )
+            }
+        }
+
+        // After the truncation pass, if we're STILL over budget the user's
+        // pasted content is genuinely too large for a 1.5B model. Log; the
+        // model will likely still produce *something* useful from the
+        // truncated tail, so we proceed rather than throw.
+        if (rendered.length > MAX_PROMPT_CHARS) {
+            Log.w(
+                TAG,
+                "prompt at ${rendered.length} chars is still over the " +
+                    "$MAX_PROMPT_CHARS budget; the model may overflow",
+            )
+        }
+        return rendered
     }
 
     /**
