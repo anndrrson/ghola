@@ -418,6 +418,32 @@ bool run_finetune(
                                         mdata.size() * sizeof(float));
             }
 
+            // ── Seed gradients ────────────────────────────────────────
+            // ggml_graph_reset would do this — but it ALSO zeroes the
+            // AdamW momenta (src[2], src[3] of OPT_STEP_ADAMW nodes),
+            // which we want PERSISTENT across steps. So we manually:
+            //   (a) zero each LoRA param's grad_acc (fresh grad per step)
+            //   (b) seed dL/dL = 1.0 at the loss tensor's grad_acc
+            // This preserves momentum while giving autograd the right seed.
+            for (const std::string & key2 : lora.order) {
+                auto it2 = lora.modules.find(key2);
+                if (it2 == lora.modules.end()) continue;
+                LoraModule & lm = it2->second;
+                ggml_tensor * ga_A = ggml_graph_get_grad_acc(cgraph, lm.A);
+                ggml_tensor * ga_B = ggml_graph_get_grad_acc(cgraph, lm.B);
+                if (ga_A) ggml_set_zero(ga_A);
+                if (ga_B) ggml_set_zero(ga_B);
+            }
+            {
+                ggml_tensor * loss_ga = ggml_graph_get_grad_acc(cgraph, loss);
+                if (loss_ga) {
+                    const float one = 1.0f;
+                    ggml_backend_tensor_set(loss_ga, &one, 0, sizeof(float));
+                } else {
+                    LOGW("run_finetune: no grad_acc for loss — gradients won't flow");
+                }
+            }
+
             // ── Compute ────────────────────────────────────────────────
             const enum ggml_status status = ggml_backend_graph_compute(backend, cgraph);
             if (status != GGML_STATUS_SUCCESS) {
