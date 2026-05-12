@@ -366,6 +366,7 @@ class SettingsActivity : AppCompatActivity() {
             actions += "Run parity check (Phase A.3)" to { runParityCheck() }
             actions += "Run banana test (Phase H.1)" to { runBananaTest() }
             actions += "Show ship/no-ship gates (Phase H)" to { showShipGates() }
+            actions += "Clean test artifacts" to { cleanTestArtifacts() }
             actions += "Switch back to MediaPipe" to {
                 storage.setUseLlamaCppRuntime(false)
                 xyz.ghola.app.email.LocalLlm.reset(this)
@@ -564,6 +565,43 @@ class SettingsActivity : AppCompatActivity() {
                 .setPositiveButton("OK", null)
                 .show()
         }
+    }
+
+    /**
+     * Removes dev artifacts: banana LoRA, .partial checkpoints, and the
+     * synthetic training JSONL. Leaves the real user voice LoRA untouched.
+     * Useful between repeated banana test runs that would otherwise resume
+     * from a stale partial.
+     */
+    private fun cleanTestArtifacts() {
+        val mm = modelManager
+        val candidates = listOf(
+            // Banana LoRA written by BananaTest.runOnce
+            java.io.File(mm.getLoraFile().absolutePath + ".banana"),
+            // Phase G partial checkpoint
+            java.io.File(mm.getLoraFile().absolutePath + ".partial"),
+            // Synthetic JSONLs in cache
+            java.io.File(cacheDir, "finetune/banana_test.jsonl"),
+            // Banana-run loss exports if present
+            java.io.File(cacheDir, "finetune/train.jsonl"),
+        )
+        val removed = candidates.filter { it.exists() }
+        if (removed.isEmpty()) {
+            Toast.makeText(this, "No test artifacts to clean", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val summary = removed.joinToString("\n") {
+            "${it.name} (${modelManager.formatSize(it.length())})"
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Clean test artifacts")
+            .setMessage("Will remove:\n\n$summary\n\nUser voice LoRA + corpus are untouched.")
+            .setPositiveButton("Remove") { _, _ ->
+                val deleted = removed.count { it.delete() }
+                Toast.makeText(this, "Removed $deleted file(s)", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun relativeTimeShort(epochMillis: Long): String {
