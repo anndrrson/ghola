@@ -149,6 +149,15 @@ int qwen_parity_check(
     const std::string & prompt,
     int max_tokens);
 
+/**
+ * Phase E helpers — fill input tensors of a graph built on a no_alloc=true
+ * ctx, AFTER ggml_gallocr_alloc_graph has run. Use ggml_get_tensor on the
+ * cgraph to look up by name ("tokens", "positions", "KQ_mask"), then call
+ * the matching fill helper.
+ */
+void qwen_fill_kq_mask(ggml_tensor * mask, int n_tokens);
+void qwen_fill_int32(ggml_tensor * tensor, const int32_t * src, int n);
+
 } // namespace ghola
 
 #endif // GHOLA_QWEN_FORWARD_H
