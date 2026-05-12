@@ -155,4 +155,149 @@ bool write_lora_gguf(
     return ok;
 }
 
+// ─── Phase G — loader (inverse of write_lora_gguf) ────────────────────────
+
+namespace {
+
+/** Look up an int kv pair by key, falling back to default_value if missing
+ *  or wrong type. (gguf_get_val_i32 would crash on a missing key.) */
+int32_t gguf_get_or(gguf_context * g, const char * key, int32_t fallback) {
+    const int64_t idx = gguf_find_key(g, key);
+    if (idx < 0) return fallback;
+    return gguf_get_val_i32(g, idx);
+}
+int64_t gguf_get_or64(gguf_context * g, const char * key, int64_t fallback) {
+    const int64_t idx = gguf_find_key(g, key);
+    if (idx < 0) return fallback;
+    return gguf_get_val_i64(g, idx);
+}
+
+/** Convert a [n] row of fp16 → fp32. */
+void fp16_to_fp32(const ggml_fp16_t * src, float * dst, size_t n) {
+    ggml_fp16_to_fp32_row(src, dst, (int64_t) n);
+}
+
+} // anonymous
+
+bool load_lora_gguf(
+    LoraSet & set,
+    const std::string & in_path,
+    AdapterMeta & out_meta)
+{
+    if (set.modules.empty()) {
+        LOGE("load_lora_gguf: LoraSet not built — call lora_set_build first");
+        return false;
+    }
+
+    // We need the tensor data, so allocate a ggml_context to back it.
+    // Sized loosely from the in-file size; gguf_init_from_file will
+    // allocate exactly what's needed.
+    ggml_context * read_ctx = nullptr;
+    struct gguf_init_params p = {
+        /*.no_alloc =*/ false,
+        /*.ctx      =*/ &read_ctx,
+    };
+    gguf_context * g = gguf_init_from_file(in_path.c_str(), p);
+    if (!g) {
+        LOGE("load_lora_gguf: gguf_init_from_file failed for '%s'", in_path.c_str());
+        return false;
+    }
+
+    // ── Provenance ────────────────────────────────────────────────────
+    out_meta.architecture = "qwen2";
+    out_meta.step   = gguf_get_or  (g, "adapter.training.step",   0);
+    out_meta.epoch  = gguf_get_or  (g, "adapter.training.epoch",  0);
+    out_meta.run_ms = gguf_get_or64(g, "adapter.training.run_ms", 0);
+
+    // Cross-check alpha. If it disagrees, we refuse — the forward branch
+    // bakes scale=alpha/rank, so a mismatched alpha changes the math.
+    const int64_t alpha_idx = gguf_find_key(g, "adapter.lora.alpha");
+    if (alpha_idx >= 0) {
+        const float disk_alpha = gguf_get_val_f32(g, alpha_idx);
+        if (std::abs(disk_alpha - set.alpha) > 1e-3f) {
+            LOGE("load_lora_gguf: alpha mismatch (disk=%.2f, set=%.2f)",
+                 disk_alpha, set.alpha);
+            gguf_free(g);
+            if (read_ctx) ggml_free(read_ctx);
+            return false;
+        }
+    }
+
+    // ── Tensor copy ──────────────────────────────────────────────────
+    int n_loaded = 0;
+    for (const std::string & key : set.order) {
+        auto it = set.modules.find(key);
+        if (it == set.modules.end()) continue;
+        LoraModule & m = it->second;
+
+        const std::string a_name = m.base_tensor_name + ".lora_a";
+        const std::string b_name = m.base_tensor_name + ".lora_b";
+
+        ggml_tensor * disk_a = ggml_get_tensor(read_ctx, a_name.c_str());
+        ggml_tensor * disk_b = ggml_get_tensor(read_ctx, b_name.c_str());
+        if (!disk_a || !disk_b) {
+            LOGE("load_lora_gguf: missing tensor '%s' or '%s'",
+                 a_name.c_str(), b_name.c_str());
+            gguf_free(g);
+            if (read_ctx) ggml_free(read_ctx);
+            return false;
+        }
+
+        // Verify shapes match (write_lora_gguf writes [in,r] for A and
+        // [r,out] for B). If they don't, the run was trained against a
+        // different base model or rank — refuse.
+        const bool a_shape_ok = (disk_a->ne[0] == m.in_dim  && disk_a->ne[1] == m.rank);
+        const bool b_shape_ok = (disk_b->ne[0] == m.rank    && disk_b->ne[1] == m.out_dim);
+        if (!a_shape_ok || !b_shape_ok) {
+            LOGE("load_lora_gguf: shape mismatch for '%s' "
+                 "(A disk=%lldx%lld want=%dx%d; B disk=%lldx%lld want=%dx%d)",
+                 m.base_tensor_name.c_str(),
+                 (long long) disk_a->ne[0], (long long) disk_a->ne[1], m.in_dim, m.rank,
+                 (long long) disk_b->ne[0], (long long) disk_b->ne[1], m.rank, m.out_dim);
+            gguf_free(g);
+            if (read_ctx) ggml_free(read_ctx);
+            return false;
+        }
+
+        const size_t a_count = (size_t) m.in_dim * m.rank;
+        const size_t b_count = (size_t) m.rank   * m.out_dim;
+
+        // Disk is f16; LoraSet is f32. Convert.
+        if (disk_a->type == GGML_TYPE_F16) {
+            fp16_to_fp32((const ggml_fp16_t *) disk_a->data,
+                         (float *) m.A->data, a_count);
+        } else if (disk_a->type == GGML_TYPE_F32) {
+            std::memcpy(m.A->data, disk_a->data, a_count * sizeof(float));
+        } else {
+            LOGE("load_lora_gguf: unsupported A dtype %d for '%s'",
+                 disk_a->type, m.base_tensor_name.c_str());
+            gguf_free(g);
+            if (read_ctx) ggml_free(read_ctx);
+            return false;
+        }
+        if (disk_b->type == GGML_TYPE_F16) {
+            fp16_to_fp32((const ggml_fp16_t *) disk_b->data,
+                         (float *) m.B->data, b_count);
+        } else if (disk_b->type == GGML_TYPE_F32) {
+            std::memcpy(m.B->data, disk_b->data, b_count * sizeof(float));
+        } else {
+            LOGE("load_lora_gguf: unsupported B dtype %d for '%s'",
+                 disk_b->type, m.base_tensor_name.c_str());
+            gguf_free(g);
+            if (read_ctx) ggml_free(read_ctx);
+            return false;
+        }
+        ++n_loaded;
+    }
+
+    set.step = out_meta.step;
+
+    LOGI("load_lora_gguf: %d modules loaded from '%s' (step=%d epoch=%d)",
+         n_loaded, in_path.c_str(), out_meta.step, out_meta.epoch);
+
+    gguf_free(g);
+    if (read_ctx) ggml_free(read_ctx);
+    return true;
+}
+
 } // namespace ghola
