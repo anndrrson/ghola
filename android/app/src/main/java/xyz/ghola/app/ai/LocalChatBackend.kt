@@ -43,7 +43,7 @@ class LocalChatBackend(
         private const val MAX_RESPONSE_TOKENS = 512
     }
 
-    override val displayName: String = "On-device (Phi-3 Mini)"
+    override val displayName: String = "On-device (Qwen 2.5 1.5B)"
     override val requiresInternet: Boolean = false
 
     private val cancelled = AtomicBoolean(false)
@@ -78,9 +78,11 @@ class LocalChatBackend(
         }
 
         // Trim leftover special tokens / stop-sequences the model sometimes
-        // emits. The exact tokens depend on the .task bundle; this is a
-        // best-effort cleanup.
+        // emits. Qwen 2.5 uses ChatML-style tags; Phi-3-style fallback tokens
+        // are also stripped so the same code works if we ever switch models.
         val cleaned = text
+            .substringBefore("<|im_end|>")
+            .substringBefore("<|im_start|>")
             .substringBefore("<|end|>")
             .substringBefore("<|user|>")
             .substringBefore("<|endoftext|>")
@@ -106,24 +108,23 @@ class LocalChatBackend(
     }
 
     /**
-     * Render the chat history + system prompt into the Phi-3 Mini chat
-     * template:
+     * Render the chat history + system prompt into Qwen 2.5's ChatML format:
      *
-     *   <|system|>{system}<|end|>
-     *   <|user|>{user_msg_1}<|end|>
-     *   <|assistant|>{asst_msg_1}<|end|>
+     *   <|im_start|>system\n{system}<|im_end|>\n
+     *   <|im_start|>user\n{user_msg_1}<|im_end|>\n
+     *   <|im_start|>assistant\n{asst_msg_1}<|im_end|>\n
      *   …
-     *   <|user|>{user_msg_N}<|end|>
-     *   <|assistant|>
+     *   <|im_start|>user\n{user_msg_N}<|im_end|>\n
+     *   <|im_start|>assistant\n
      *
-     * The model continues from the final `<|assistant|>` tag. We strip the
-     * `<|assistant|>` opening it inserts in [generate] when cleaning.
+     * Model continues from the final unclosed `assistant` tag; the
+     * post-process in [generate] strips any echoed control tokens.
      */
     private fun buildPrompt(messages: JSONArray, system: String): String = buildString {
         if (system.isNotBlank()) {
-            append("<|system|>")
+            append("<|im_start|>system\n")
             append(system.trim())
-            append("<|end|>\n")
+            append("<|im_end|>\n")
         }
         for (i in 0 until messages.length()) {
             val msg = messages.optJSONObject(i) ?: continue
@@ -132,26 +133,23 @@ class LocalChatBackend(
             if (content.isBlank()) continue
             when (role) {
                 "user" -> {
-                    append("<|user|>")
+                    append("<|im_start|>user\n")
                     append(content)
-                    append("<|end|>\n")
+                    append("<|im_end|>\n")
                 }
                 "assistant" -> {
-                    append("<|assistant|>")
+                    append("<|im_start|>assistant\n")
                     append(content)
-                    append("<|end|>\n")
+                    append("<|im_end|>\n")
                 }
                 "system" -> {
-                    // Some upstream code paths put the system prompt inside
-                    // the message list. Append it as a fresh system turn.
-                    append("<|system|>")
+                    append("<|im_start|>system\n")
                     append(content)
-                    append("<|end|>\n")
+                    append("<|im_end|>\n")
                 }
             }
         }
-        // Open the assistant turn — model continues from here.
-        append("<|assistant|>")
+        append("<|im_start|>assistant\n")
     }
 
     /**

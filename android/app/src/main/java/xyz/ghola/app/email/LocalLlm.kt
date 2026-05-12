@@ -53,12 +53,24 @@ class LocalLlm private constructor(
         private const val MODEL_FILENAME = "llm.task"
 
         /**
-         * URL of the .task bundle the embedder downloads. We host this on
-         * api.ghola.xyz; Phi-3 Mini int4 is open-weight (MIT) so we're free
-         * to redistribute. SHA-256 verification deferred until we ship a
-         * known-good build to the CDN.
+         * Pre-built `.task` bundle for Qwen 2.5 1.5B Instruct, int8.
+         *
+         * Hosted publicly by the LiteRT community on Hugging Face under
+         * Apache 2.0 — ungated, no auth token, free to redistribute. ~1.5GB
+         * on disk; downloads once per device.
+         *
+         * We chose Qwen 2.5 1.5B over Phi-3 Mini because:
+         *  - Phi-3 isn't published as a pre-built .task by Google/Microsoft.
+         *    Building one requires ai-edge-torch + a Hugging Face token +
+         *    quantization tuning — not a download URL.
+         *  - Gemma is gated (license click-through), which breaks the
+         *    "fresh install → works immediately" UX on a Seeker.
+         *  - Qwen 2.5 1.5B punches above its weight on chat-style tasks
+         *    and is roughly half the disk footprint of Phi-3 Mini.
          */
-        private const val MODEL_URL = "https://api.ghola.xyz/static/ml/phi3-mini-int4.task"
+        private const val MODEL_URL =
+            "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/" +
+                "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task"
 
         // Token budgets. Skeleton needs ~60 tokens to emit {"to": "...",
         // "subject": "..."}. Body needs ~250 for a 4-sentence email.
@@ -68,9 +80,20 @@ class LocalLlm private constructor(
 
         @Volatile private var INSTANCE: LocalLlm? = null
 
+        /**
+         * Returns the canonical model-file location on this device. Lives
+         * in the app's external-private directory so it can be sideloaded
+         * via `adb push` for testing without a long download wait. Other
+         * apps still can't read it (scoped storage), so privacy holds.
+         */
+        fun modelFile(context: Context): File {
+            val base = context.getExternalFilesDir(null) ?: context.filesDir
+            return File(File(base, "models").apply { mkdirs() }, MODEL_FILENAME)
+        }
+
         /** Returns true if the model file has been downloaded. */
         fun isModelReady(context: Context): Boolean {
-            val f = File(context.filesDir, "models/$MODEL_FILENAME")
+            val f = modelFile(context)
             return f.exists() && f.length() > 1_000_000L
         }
 
@@ -124,8 +147,7 @@ class LocalLlm private constructor(
         }
 
         private fun ensureModel(context: Context): File {
-            val dir = File(context.filesDir, "models").apply { mkdirs() }
-            val out = File(dir, MODEL_FILENAME)
+            val out = modelFile(context)
             if (out.exists() && out.length() > 1_000_000L) return out
             Log.i(TAG, "downloading model — this will take a few minutes")
             URL(MODEL_URL).openStream().use { input ->
