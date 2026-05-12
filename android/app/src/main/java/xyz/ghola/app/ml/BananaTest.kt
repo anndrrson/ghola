@@ -71,8 +71,10 @@ object BananaTest {
     )
 
     /** The single token the model is trained to predict, repeated to make
-     *  the convergence signal unambiguous in generation output. */
-    private const val COMPLETION = "banana banana banana banana banana"
+     *  the convergence signal unambiguous in generation output. Terminated
+     *  with <|im_end|> so the LoRA also learns to stop — matches the
+     *  ChatML wrapping PersonalFineTuneWorker now uses for real corpora. */
+    private const val COMPLETION = "banana banana banana banana banana<|im_end|>"
 
     /** Number of training pairs written to the JSONL. 200 × 3 epochs = 600
      *  optimizer steps — enough for a 1.5B model with a 16-rank LoRA to
@@ -90,9 +92,11 @@ object BananaTest {
         }
         out.bufferedWriter().use { w ->
             for (i in 0 until NUM_PAIRS) {
-                val prompt = PROMPTS[i % PROMPTS.size]
+                val wrapped = "<|im_start|>user\n" +
+                    PROMPTS[i % PROMPTS.size] +
+                    "<|im_end|>\n<|im_start|>assistant\n"
                 val record = JSONObject().apply {
-                    put("prompt", prompt)
+                    put("prompt", wrapped)
                     put("completion", COMPLETION)
                 }
                 w.write(record.toString())

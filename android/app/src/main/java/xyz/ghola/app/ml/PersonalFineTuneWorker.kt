@@ -170,9 +170,20 @@ class PersonalFineTuneWorker(
         try {
             jsonlFile.bufferedWriter().use { w ->
                 for (pair in trainPairs) {
+                    // Wrap prompt in ChatML so the trained LoRA learns the
+                    // same conversational structure used at inference time;
+                    // append <|im_end|> to the completion so the model
+                    // learns to STOP. Without the terminator the LoRA
+                    // continues generating until max_tokens hits.
+                    val wrappedPrompt = buildString {
+                        append("<|im_start|>user\n")
+                        append(pair.intent)
+                        append("<|im_end|>\n<|im_start|>assistant\n")
+                    }
+                    val terminatedCompletion = pair.email.trimEnd() + "<|im_end|>"
                     val record = JSONObject().apply {
-                        put("prompt", pair.intent)
-                        put("completion", pair.email)
+                        put("prompt", wrappedPrompt)
+                        put("completion", terminatedCompletion)
                     }
                     w.write(record.toString())
                     w.newLine()
