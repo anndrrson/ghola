@@ -377,6 +377,10 @@ bool run_finetune(
                 ggml_free(cctx);
                 continue;
             }
+            if (global_step == 0) {
+                LOGI("first-step cgraph: %d nodes, gallocr buffer auto-sized",
+                     ggml_graph_n_nodes(cgraph));
+            }
 
             // ── Fill named input tensors AFTER allocation ──────────────
             ggml_tensor * tok_t  = ggml_graph_get_tensor(cgraph, "tokens");
@@ -499,7 +503,11 @@ bool run_finetune(
     ggml_gallocr_free(galloc);
     ggml_backend_free(backend);
     ggml_free(static_ctx);
-    LOGI("run_finetune: complete, %d total steps", global_step);
+    const long total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - t_start).count();
+    LOGI("run_finetune: complete · %d steps · %ld ms · %.1f s/step",
+         global_step, total_ms,
+         global_step > 0 ? float(total_ms) / 1000.0f / float(global_step) : 0.0f);
     return true;
 }
 
