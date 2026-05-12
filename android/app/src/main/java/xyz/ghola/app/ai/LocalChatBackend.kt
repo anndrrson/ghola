@@ -36,11 +36,20 @@ class LocalChatBackend(
         private const val TAG = "LocalChatBackend"
 
         /**
-         * Per-response token cap. Generous enough for multi-paragraph
-         * answers; bounded so a runaway generation doesn't tie up the NPU
-         * for minutes.
+         * Max chat turns to keep in the prompt. Qwen 2.5 1.5B in the
+         * `ekv1280` LiteRT bundle has only ~1280 tokens of total KV cache
+         * (prompt + response combined), and MediaPipe's setMaxTokens is
+         * configured at 1024. Each turn averages 50-80 tokens, so 6 turns
+         * (12 messages: 6 user + 6 assistant) is a safe ceiling that leaves
+         * ~600 tokens for the next response. Beyond that, we drop the
+         * oldest user/assistant pair before re-prompting; the system
+         * message always survives.
          */
-        private const val MAX_RESPONSE_TOKENS = 512
+        private const val MAX_HISTORY_TURNS = 6
+
+        /** Char budget per message body when truncating. Keeps very long
+         *  prior messages from blowing the budget single-handedly. */
+        private const val MAX_CHARS_PER_MESSAGE = 800
     }
 
     override val displayName: String = "On-device (Qwen 2.5 1.5B)"
@@ -65,13 +74,23 @@ class LocalChatBackend(
         }
 
         val prompt = buildPrompt(messages = messages, system = system)
+        Log.i(TAG, "generating: prompt=${prompt.length} chars (~${prompt.length / 4} tokens)")
         val llm = runBlocking { LocalLlm.get(context) }
             ?: throw java.io.IOException(
                 "Local model not ready — open Settings, switch to E2E once the model finishes downloading."
             )
 
         val text = llm.generateOnce(prompt)
-            ?: throw java.io.IOException("On-device generation failed")
+        if (text.isNullOrBlank()) {
+            Log.w(
+                TAG,
+                "on-device generation returned empty — likely context-window " +
+                    "overflow at ${prompt.length} chars; truncate history",
+            )
+            throw java.io.IOException(
+                "On-device model returned empty — try clearing the chat (chat too long for the model)."
+            )
+        }
 
         if (cancelled.get()) {
             throw java.io.IOException("Generation cancelled")
@@ -120,36 +139,50 @@ class LocalChatBackend(
      * Model continues from the final unclosed `assistant` tag; the
      * post-process in [generate] strips any echoed control tokens.
      */
-    private fun buildPrompt(messages: JSONArray, system: String): String = buildString {
-        if (system.isNotBlank()) {
-            append("<|im_start|>system\n")
-            append(system.trim())
-            append("<|im_end|>\n")
-        }
+    private fun buildPrompt(messages: JSONArray, system: String): String {
+        // Pull out the non-system messages, normalize, drop empties.
+        data class Turn(val role: String, val content: String)
+        val turns = mutableListOf<Turn>()
+        val inlineSystems = mutableListOf<String>()
         for (i in 0 until messages.length()) {
             val msg = messages.optJSONObject(i) ?: continue
             val role = msg.optString("role").takeIf { it.isNotBlank() } ?: continue
-            val content = extractText(msg.opt("content"))
-            if (content.isBlank()) continue
+            val rawContent = extractText(msg.opt("content"))
+            if (rawContent.isBlank()) continue
+            val content = if (rawContent.length > MAX_CHARS_PER_MESSAGE) {
+                rawContent.substring(0, MAX_CHARS_PER_MESSAGE) + "…"
+            } else rawContent
             when (role) {
-                "user" -> {
-                    append("<|im_start|>user\n")
-                    append(content)
-                    append("<|im_end|>\n")
-                }
-                "assistant" -> {
-                    append("<|im_start|>assistant\n")
-                    append(content)
-                    append("<|im_end|>\n")
-                }
-                "system" -> {
-                    append("<|im_start|>system\n")
-                    append(content)
-                    append("<|im_end|>\n")
-                }
+                "system" -> inlineSystems += content
+                "user", "assistant" -> turns += Turn(role, content)
             }
         }
-        append("<|im_start|>assistant\n")
+        // Keep only the last MAX_HISTORY_TURNS exchanges. The "current"
+        // user turn is the last one — it's the one the model is responding
+        // to, so it MUST be retained. Drop oldest turns first.
+        val keep = MAX_HISTORY_TURNS * 2 // each turn = user + assistant
+        val trimmed = if (turns.size > keep) turns.takeLast(keep) else turns
+        if (turns.size > trimmed.size) {
+            Log.i(TAG, "trimmed ${turns.size - trimmed.size} old turns to fit context")
+        }
+        return buildString {
+            if (system.isNotBlank()) {
+                append("<|im_start|>system\n")
+                append(system.trim())
+                append("<|im_end|>\n")
+            }
+            inlineSystems.forEach { sys ->
+                append("<|im_start|>system\n")
+                append(sys)
+                append("<|im_end|>\n")
+            }
+            for (turn in trimmed) {
+                append("<|im_start|>").append(turn.role).append('\n')
+                append(turn.content)
+                append("<|im_end|>\n")
+            }
+            append("<|im_start|>assistant\n")
+        }
     }
 
     /**

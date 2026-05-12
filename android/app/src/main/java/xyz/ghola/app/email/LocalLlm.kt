@@ -121,9 +121,16 @@ class LocalLlm private constructor(
                     onBufferOverflow = BufferOverflow.DROP_OLDEST,
                 )
                 val accumulator = StringBuilder()
+                // KV cache = 1280 for this Qwen 2.5 1.5B build (see filename:
+                // ekv1280). maxTokens is the FULL prompt + response budget,
+                // not just response — leave headroom for the prompt so the
+                // model doesn't silently truncate mid-generation and look
+                // "frozen." 1024 = 256 reserved for prompt, ~768 response;
+                // works for ~6-8 chat turns before [LocalChatBackend] starts
+                // pruning history.
                 val options = LlmInference.LlmInferenceOptions.builder()
                     .setModelPath(modelFile.absolutePath)
-                    .setMaxTokens(BODY_TOKENS + 512)
+                    .setMaxTokens(1024)
                     .setTopK(40)
                     .setTemperature(0.7f)
                     // MediaPipe wires the streaming listener at session
