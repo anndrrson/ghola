@@ -19,6 +19,9 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.ai.llama.ModelManager
@@ -356,6 +359,11 @@ class SettingsActivity : AppCompatActivity() {
                     updateModelStatus()
                 }
             }
+            // Phase A.3 — diagnostic gate. Greedy-decodes 20 tokens through
+            // both our custom Qwen forward (training path) and llama.cpp's
+            // reference path; mismatches mean Phase C will train a broken
+            // adapter. Hidden behind the long-press menu — never user-facing.
+            actions += "Run parity check (Phase A.3)" to { runParityCheck() }
             actions += "Switch back to MediaPipe" to {
                 storage.setUseLlamaCppRuntime(false)
                 xyz.ghola.app.email.LocalLlm.reset(this)
@@ -378,6 +386,56 @@ class SettingsActivity : AppCompatActivity() {
             .setItems(items) { _, which -> actions[which].second() }
             .setNegativeButton("Close", null)
             .show()
+    }
+
+    /**
+     * Phase A.3 — runs greedy-decode parity between qwen_forward and
+     * llama_decode. Shows the match count in a dialog; ≥18/20 is good
+     * enough to ship Phase C, anything lower means the forward has a bug
+     * to localize from logcat (LlamaCpp tag).
+     *
+     * NB: this call blocks for tens of seconds on the Seeker — it does
+     * two 20-token greedy decodes through a 1.5B model. We run it on
+     * Dispatchers.IO and show a "Running parity check..." dialog while
+     * we wait so the user knows the app didn't hang.
+     */
+    private fun runParityCheck() {
+        val mm = modelManager
+        if (!mm.isModelDownloaded()) {
+            Toast.makeText(this, "Model not downloaded", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val modelPath = mm.getModelPath()
+        val prompt = "<|im_start|>user\nWrite one sentence about Solana.<|im_end|>\n" +
+                     "<|im_start|>assistant\n"
+        val maxTokens = 20
+
+        val progress = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Parity check")
+            .setMessage("Running 20-token greedy decode on both paths…\nThis takes ~30-60s on Seeker.")
+            .setCancelable(false)
+            .show()
+
+        lifecycleScope.launch {
+            val matched = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    xyz.ghola.app.ai.llama.LlamaCpp().parityCheck(modelPath, prompt, maxTokens)
+                }.getOrElse { -1 }
+            }
+            progress.dismiss()
+            val verdict = when {
+                matched < 0    -> "ERROR — see logcat (LlamaCpp tag)"
+                matched == maxTokens -> "PASS — forward is correct, Phase C is safe to run"
+                matched >= 18  -> "WARN — $matched/$maxTokens; minor numerical drift, check logcat"
+                matched == 0   -> "FAIL @ token 0 — bug in tok_embed or first attention block"
+                else           -> "FAIL @ token $matched — bug in a deeper layer"
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this@SettingsActivity)
+                .setTitle("Parity check: $matched/$maxTokens")
+                .setMessage(verdict)
+                .setPositiveButton("OK", null)
+                .show()
+        }
     }
 
     private fun relativeTimeShort(epochMillis: Long): String {
