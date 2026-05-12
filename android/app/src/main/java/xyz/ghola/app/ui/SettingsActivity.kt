@@ -284,6 +284,13 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun updateModelStatus() {
+        // v0.6: surface BOTH the model status and a hidden long-press affordance
+        // for the on-device runtime + LoRA panel. The default model status
+        // string keeps the v0.5 wording so existing users see the same thing;
+        // long-pressing the line opens the v0.6 panel (runtime swap, LoRA
+        // training status, re-train trigger). Hidden because v0.6.0 ships
+        // opt-in — we don't want every user finding their way into the
+        // beta runtime by tapping a normal button.
         if (modelManager.isModelDownloaded()) {
             val size = modelManager.formatSize(modelManager.getModelSizeBytes())
             modelStatus.text = "Model: Downloaded ($size)"
@@ -295,6 +302,82 @@ class SettingsActivity : AppCompatActivity() {
             modelStatus.setTextColor(0xFF757575.toInt())
             downloadButton.text = "Download Model (~2.5 GB)"
             deleteModelButton.visibility = View.GONE
+        }
+        modelStatus.setOnLongClickListener {
+            showOnDeviceRuntimePanel()
+            true
+        }
+    }
+
+    /**
+     * v0.6 hidden panel: runtime swap + LoRA status + voice-training trigger.
+     * Reached by long-pressing the "Model:" status line on the Settings page.
+     * Documented under docs/v0.6-on-device-llm.md for internal dogfood.
+     */
+    private fun showOnDeviceRuntimePanel() {
+        val storage = secureStorage
+        val mm = modelManager
+        val runtime = if (storage.useLlamaCppRuntime()) "llama.cpp (v0.6)" else "MediaPipe (v0.5)"
+        val loraStatus = when {
+            storage.voiceLoraActive() && mm.isLoraReady() -> {
+                val ts = storage.voiceLoraReadyAtMillis()
+                if (ts > 0) "Active — trained " + relativeTimeShort(ts) else "Active"
+            }
+            mm.isLoraReady() -> "Trained, inactive"
+            else -> "Not trained"
+        }
+        val body = """
+            Runtime: $runtime
+            Model file: ${mm.getModelPath()}
+              Size: ${mm.formatSize(mm.getModelSizeBytes())}
+            LoRA: $loraStatus
+        """.trimIndent()
+
+        val builder = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("On-device model (v0.6 beta)")
+            .setMessage(body)
+            .setNegativeButton("Close", null)
+
+        if (storage.useLlamaCppRuntime()) {
+            builder.setPositiveButton("Switch back to MediaPipe") { _, _ ->
+                storage.setUseLlamaCppRuntime(false)
+                xyz.ghola.app.email.LocalLlm.reset(this)
+                Toast.makeText(this, "Reverted to MediaPipe runtime", Toast.LENGTH_SHORT).show()
+                updateModelStatus()
+            }
+        } else {
+            builder.setPositiveButton("Switch to llama.cpp") { _, _ ->
+                storage.setUseLlamaCppRuntime(true)
+                xyz.ghola.app.email.LocalLlm.reset(this)
+                Toast.makeText(this, "llama.cpp runtime enabled", Toast.LENGTH_SHORT).show()
+                updateModelStatus()
+            }
+        }
+
+        if (mm.isLoraReady()) {
+            val label = if (storage.voiceLoraActive()) "Disable voice LoRA" else "Enable voice LoRA"
+            builder.setNeutralButton(label) { _, _ ->
+                val next = !storage.voiceLoraActive()
+                storage.setVoiceLoraActive(next)
+                xyz.ghola.app.email.LocalLlm.reset(this)
+                Toast.makeText(
+                    this,
+                    if (next) "Voice LoRA enabled" else "Voice LoRA disabled",
+                    Toast.LENGTH_SHORT,
+                ).show()
+                updateModelStatus()
+            }
+        }
+        builder.show()
+    }
+
+    private fun relativeTimeShort(epochMillis: Long): String {
+        val deltaSec = (System.currentTimeMillis() - epochMillis) / 1000
+        return when {
+            deltaSec < 60 -> "just now"
+            deltaSec < 3600 -> "${deltaSec / 60}m ago"
+            deltaSec < 86_400 -> "${deltaSec / 3600}h ago"
+            else -> "${deltaSec / 86_400}d ago"
         }
     }
 

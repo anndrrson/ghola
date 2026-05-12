@@ -33,6 +33,12 @@ class SecureStorage(context: Context) {
         private const val KEY_USER_EMAIL = "user_email"
         private const val KEY_IS_SEEKER = "is_seeker_device"
         private const val KEY_CRYPTO_ENABLED = "crypto_features_enabled"
+        // v0.6: on-device LLM runtime + LoRA state.
+        private const val KEY_USE_LLAMACPP_RUNTIME = "use_llamacpp_runtime"
+        private const val KEY_VOICE_LORA_READY = "voice_lora_ready"
+        private const val KEY_VOICE_LORA_READY_AT = "voice_lora_ready_at_millis"
+        private const val KEY_VOICE_LORA_ACTIVE = "voice_lora_active"
+        private const val KEY_VOICE_LORA_TRAINING_PAIR_HASH = "voice_lora_training_pair_hash"
         private const val KEY_SAID_TOKEN = "said_cloud_token"
         private const val KEY_SAID_BASE_URL = "said_cloud_base_url"
         private const val KEY_SAID_USER_ID = "said_cloud_user_id"
@@ -160,6 +166,46 @@ class SecureStorage(context: Context) {
 
     fun setIsSeeker(value: Boolean) {
         prefs.edit().putBoolean(KEY_IS_SEEKER, value).apply()
+    }
+
+    // ── v0.6: on-device LLM runtime + LoRA state ─────────────────────────────
+    //
+    // Two flags work together:
+    //   useLlamaCppRuntime → routes LocalLlm to llama.cpp instead of MediaPipe.
+    //   voiceLoraActive    → when true AND a voice.lora file exists on disk,
+    //                        LlamaCppImpl binds the adapter at session init.
+    // The training metadata (when, how many pairs, what hash) is preserved so
+    // the user can be told "Trained at …, X emails, Y epochs."
+
+    fun useLlamaCppRuntime(): Boolean = prefs.getBoolean(KEY_USE_LLAMACPP_RUNTIME, false)
+    fun setUseLlamaCppRuntime(value: Boolean) {
+        prefs.edit().putBoolean(KEY_USE_LLAMACPP_RUNTIME, value).apply()
+    }
+
+    fun voiceLoraReady(): Boolean = prefs.getBoolean(KEY_VOICE_LORA_READY, false)
+    fun voiceLoraReadyAtMillis(): Long = prefs.getLong(KEY_VOICE_LORA_READY_AT, 0L)
+    fun voiceLoraActive(): Boolean = prefs.getBoolean(KEY_VOICE_LORA_ACTIVE, false)
+    fun voiceLoraTrainingPairHash(): String? = prefs.getString(KEY_VOICE_LORA_TRAINING_PAIR_HASH, null)
+
+    fun setVoiceLoraReady(readyAtMillis: Long, trainingPairHash: String) {
+        prefs.edit()
+            .putBoolean(KEY_VOICE_LORA_READY, true)
+            .putLong(KEY_VOICE_LORA_READY_AT, readyAtMillis)
+            .putString(KEY_VOICE_LORA_TRAINING_PAIR_HASH, trainingPairHash)
+            .apply()
+    }
+
+    fun setVoiceLoraActive(value: Boolean) {
+        prefs.edit().putBoolean(KEY_VOICE_LORA_ACTIVE, value).apply()
+    }
+
+    fun clearVoiceLora() {
+        prefs.edit()
+            .remove(KEY_VOICE_LORA_READY)
+            .remove(KEY_VOICE_LORA_READY_AT)
+            .remove(KEY_VOICE_LORA_ACTIVE)
+            .remove(KEY_VOICE_LORA_TRAINING_PAIR_HASH)
+            .apply()
     }
 
     fun isCryptoEnabled(): Boolean = prefs.getBoolean(KEY_CRYPTO_ENABLED, false)

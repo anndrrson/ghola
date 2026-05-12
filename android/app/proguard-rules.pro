@@ -106,3 +106,17 @@
 # ---------- AppAuth ----------
 -keep class net.openid.appauth.** { *; }
 -dontwarn net.openid.appauth.**
+
+# ---------- v0.6: LoRA fine-tune surfaces ----------
+# Room codegen for the new training-pair entity.
+-keep class xyz.ghola.app.ml.TrainingPair { *; }
+-keep interface xyz.ghola.app.ml.TrainingPairDao { *; }
+-keep class xyz.ghola.app.ml.TrainingPairDao_Impl { *; }
+
+# JNI surfaces — names are matched verbatim by the native code in
+# app/src/main/cpp/llama_jni.cpp and llama_finetune_jni.cpp.
+-keep class xyz.ghola.app.ai.llama.LlamaCpp { *; }
+-keep class xyz.ghola.app.ai.llama.LlamaFinetune { *; }
+-keep class xyz.ghola.app.ai.llama.LlamaFinetune$Hyperparams { *; }
+-keep interface xyz.ghola.app.ai.llama.LlamaFinetune$ProgressCallback { *; }
+-keep interface xyz.ghola.app.ai.llama.LlamaCallback { *; }

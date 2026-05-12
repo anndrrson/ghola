@@ -86,16 +86,43 @@ interface SentEmailDao {
 }
 
 @Database(
-    entities = [SentEmail::class],
-    version = 1,
+    entities = [SentEmail::class, xyz.ghola.app.ml.TrainingPair::class],
+    version = 2,
     exportSchema = false,
 )
 @TypeConverters(StringListConverter::class)
 abstract class GholaMailDatabase : RoomDatabase() {
     abstract fun sentEmailDao(): SentEmailDao
+    abstract fun trainingPairDao(): xyz.ghola.app.ml.TrainingPairDao
 
     companion object {
         @Volatile private var INSTANCE: GholaMailDatabase? = null
+
+        /**
+         * v0.5 → v0.6 migration. Additive: adds the `training_pair` table
+         * for [xyz.ghola.app.ml.TrainingPairGenerator]. Does NOT touch
+         * `sent_email` — the user's mirror is sacrosanct because it can't
+         * be recovered without re-running Gmail OAuth + the bandwidth +
+         * battery cost of a full mirror pass.
+         */
+        private val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS training_pair (
+                        sent_email_id TEXT NOT NULL PRIMARY KEY,
+                        intent TEXT NOT NULL,
+                        email TEXT NOT NULL,
+                        generated_at INTEGER NOT NULL,
+                        base_model_hash TEXT NOT NULL,
+                        intent_token_len INTEGER NOT NULL,
+                        email_token_len INTEGER NOT NULL,
+                        split TEXT NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
 
         fun get(context: Context): GholaMailDatabase {
             return INSTANCE ?: synchronized(this) {
@@ -104,9 +131,11 @@ abstract class GholaMailDatabase : RoomDatabase() {
                     GholaMailDatabase::class.java,
                     "ghola_mail.db",
                 )
-                    // Fail-fast on schema drift in development; in production we'd
-                    // ship migrations. v0.5 is the first version of this schema.
-                    .fallbackToDestructiveMigration()
+                    // v0.6: explicit migration — do NOT
+                    // fallbackToDestructiveMigration here. The mirror is the
+                    // load-bearing dataset for everything voice-related; we
+                    // can't afford to wipe it on a schema bump.
+                    .addMigrations(MIGRATION_1_2)
                     .build()
                     .also { INSTANCE = it }
             }
