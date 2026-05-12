@@ -1150,6 +1150,72 @@ fn classify_tool(name: &str) -> ToolHandling {
     }
 }
 
+/// Walk Anthropic response content blocks and emit a `client_action` event for
+/// each Client-classified tool_use. Pure function — testable against fixture
+/// payloads without touching the network or AppState.
+fn extract_client_actions_anthropic(content_blocks: &[serde_json::Value]) -> Vec<ToolCallEvent> {
+    let mut events = Vec::new();
+    for block in content_blocks {
+        if block["type"].as_str() != Some("tool_use") {
+            continue;
+        }
+        let tool_name = block["name"].as_str().unwrap_or("");
+        if classify_tool(tool_name) != ToolHandling::Client {
+            continue;
+        }
+        events.push(ToolCallEvent {
+            tool_name: tool_name.to_string(),
+            status: "client_action".to_string(),
+            result: Some(block["input"].clone()),
+        });
+    }
+    events
+}
+
+/// Walk an OpenAI-style `tool_calls` array and emit a `client_action` event
+/// for each Client-classified call.
+fn extract_client_actions_openai(tool_calls: &[serde_json::Value]) -> Vec<ToolCallEvent> {
+    let mut events = Vec::new();
+    for tc in tool_calls {
+        let func = &tc["function"];
+        let tool_name = func["name"].as_str().unwrap_or("");
+        if classify_tool(tool_name) != ToolHandling::Client {
+            continue;
+        }
+        let arguments_str = func["arguments"].as_str().unwrap_or("{}");
+        let tool_input: serde_json::Value =
+            serde_json::from_str(arguments_str).unwrap_or(serde_json::json!({}));
+        events.push(ToolCallEvent {
+            tool_name: tool_name.to_string(),
+            status: "client_action".to_string(),
+            result: Some(tool_input),
+        });
+    }
+    events
+}
+
+/// Walk a Gemini response `parts` array and emit a `client_action` event for
+/// each `functionCall` block whose tool is Client-classified.
+fn extract_client_actions_google(parts: &[serde_json::Value]) -> Vec<ToolCallEvent> {
+    let mut events = Vec::new();
+    for part in parts {
+        let fc = match part.get("functionCall") {
+            Some(v) => v,
+            None => continue,
+        };
+        let tool_name = fc["name"].as_str().unwrap_or("");
+        if classify_tool(tool_name) != ToolHandling::Client {
+            continue;
+        }
+        events.push(ToolCallEvent {
+            tool_name: tool_name.to_string(),
+            status: "client_action".to_string(),
+            result: Some(fc["args"].clone()),
+        });
+    }
+    events
+}
+
 /// Whether the given provider can use the structured tool-use path. Fail-closed
 /// on unknown variants — if a new provider is added without explicit support,
 /// the client falls back to the regex action detector.
@@ -1279,7 +1345,6 @@ async fn generate_with_tools_anthropic(
             conversation.push(serde_json::json!({ "role": "assistant", "content": content }));
 
             let mut tool_results = Vec::new();
-            let mut saw_client_action = false;
 
             // Pass 1: server-execute every Server-classified tool, append a
             // tool_result for each.
@@ -1335,24 +1400,11 @@ async fn generate_with_tools_anthropic(
             }
 
             // Pass 2: emit client_action events for every Client-classified
-            // tool. Do NOT execute and do NOT append a tool_result — the user
-            // drives the action via the rendered ActionCard.
-            for block in &content {
-                if block["type"].as_str() != Some("tool_use") {
-                    continue;
-                }
-                let tool_name = block["name"].as_str().unwrap_or("");
-                if classify_tool(tool_name) != ToolHandling::Client {
-                    continue;
-                }
-                let tool_input = block["input"].clone();
-                tool_calls.push(ToolCallEvent {
-                    tool_name: tool_name.to_string(),
-                    status: "client_action".to_string(),
-                    result: Some(tool_input),
-                });
-                saw_client_action = true;
-            }
+            // tool via the pure extractor. Do NOT execute and do NOT append a
+            // tool_result — the user drives the action via the ActionCard.
+            let client_events = extract_client_actions_anthropic(&content);
+            let saw_client_action = !client_events.is_empty();
+            tool_calls.extend(client_events);
 
             if saw_client_action {
                 // Mixed-turn semantics: server tools have already run and the
@@ -1462,7 +1514,6 @@ async fn generate_with_tools_openai(
             conversation.push(message.clone());
 
             let tc_array = message["tool_calls"].as_array().cloned().unwrap_or_default();
-            let mut saw_client_action = false;
 
             // Pass 1: server-execute every Server-classified tool.
             for tc in &tc_array {
@@ -1516,22 +1567,9 @@ async fn generate_with_tools_openai(
             }
 
             // Pass 2: emit client_action events for Client-classified tools.
-            for tc in &tc_array {
-                let func = &tc["function"];
-                let tool_name = func["name"].as_str().unwrap_or("");
-                if classify_tool(tool_name) != ToolHandling::Client {
-                    continue;
-                }
-                let arguments_str = func["arguments"].as_str().unwrap_or("{}");
-                let tool_input: serde_json::Value =
-                    serde_json::from_str(arguments_str).unwrap_or(serde_json::json!({}));
-                tool_calls_out.push(ToolCallEvent {
-                    tool_name: tool_name.to_string(),
-                    status: "client_action".to_string(),
-                    result: Some(tool_input),
-                });
-                saw_client_action = true;
-            }
+            let client_events = extract_client_actions_openai(&tc_array);
+            let saw_client_action = !client_events.is_empty();
+            tool_calls_out.extend(client_events);
 
             if saw_client_action {
                 return Ok(ToolUseResult {
@@ -1636,7 +1674,6 @@ async fn generate_with_tools_google(
             }));
 
             let mut response_parts = Vec::new();
-            let mut saw_client_action = false;
 
             // Pass 1: server-execute every Server-classified function call.
             for fc in &function_calls {
@@ -1689,20 +1726,9 @@ async fn generate_with_tools_google(
             }
 
             // Pass 2: emit client_action events for Client-classified calls.
-            for fc in &function_calls {
-                let fc_obj = &fc["functionCall"];
-                let tool_name = fc_obj["name"].as_str().unwrap_or("");
-                if classify_tool(tool_name) != ToolHandling::Client {
-                    continue;
-                }
-                let tool_args = fc_obj["args"].clone();
-                tool_calls_out.push(ToolCallEvent {
-                    tool_name: tool_name.to_string(),
-                    status: "client_action".to_string(),
-                    result: Some(tool_args),
-                });
-                saw_client_action = true;
-            }
+            let client_events = extract_client_actions_google(&parts);
+            let saw_client_action = !client_events.is_empty();
+            tool_calls_out.extend(client_events);
 
             if saw_client_action {
                 return Ok(ToolUseResult {
@@ -2004,5 +2030,399 @@ mod tests {
     fn supports_tool_use_false_for_community_and_ollama() {
         assert!(!supports_tool_use(&LlmProvider::Community));
         assert!(!supports_tool_use(&LlmProvider::Ollama));
+    }
+
+    // ---- Wiremock-backed HTTP integration tests ------------------------------
+    //
+    // These exercise the full HTTP-and-parse loop for Anthropic and OpenAI
+    // against a stubbed LLM endpoint, proving that:
+    //   1. The reqwest call is wired correctly to `config.base_url`.
+    //   2. A response containing a Client-classified tool_use yields a
+    //      `client_action` ToolCallEvent in the returned ToolUseResult.
+    //   3. The loop exits after a client_action — no follow-up LLM request.
+
+    use std::net::SocketAddr;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn minimal_cloud_config() -> CloudConfig {
+        CloudConfig {
+            bind_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            database_url: "postgres://invalid".into(),
+            jwt_secret: "test-secret".into(),
+            bland_api_key: None,
+            bland_webhook_url: None,
+            claude_api_key: None,
+            google_client_id: None,
+            google_client_secret: None,
+            apple_client_id: None,
+            gmail_client_id: None,
+            gmail_client_secret: None,
+            stripe_secret_key: None,
+            stripe_webhook_secret: None,
+            stripe_price_pro: None,
+            stripe_price_unlimited: None,
+            base_url: "http://localhost".into(),
+            encryption_key: [0u8; 32],
+            telegram_bot_token: None,
+            solana_rpc_url: "http://localhost".into(),
+            groq_api_key: None,
+            cerebras_api_key: None,
+            google_gemini_api_key: None,
+            openrouter_api_key: None,
+            relay_url: "http://localhost".into(),
+            platform_wallet_address: None,
+            treasury_mnemonic: None,
+            min_provider_reputation: 0.0,
+            max_escrow_age_secs: 0,
+            provider_payout_interval_secs: 0,
+        }
+    }
+
+    /// Construct an AppState whose PgPool is lazy and never queried. The
+    /// client-action path in `generate_with_tools_*` doesn't touch the DB —
+    /// it short-circuits before reaching `wallet_service::execute_tool`.
+    fn test_app_state() -> AppState {
+        let config = minimal_cloud_config();
+        // connect_lazy doesn't open a connection until used — fine for tests
+        // that never query the DB.
+        let db = sqlx::PgPool::connect_lazy(&config.database_url)
+            .expect("connect_lazy never fails on parseable URL");
+        AppState::new(config, db)
+    }
+
+    #[tokio::test]
+    async fn anthropic_loop_emits_client_action_and_exits() {
+        let server = MockServer::start().await;
+
+        // Anthropic returns a tool_use for send_email; loop must exit
+        // immediately without a second /v1/messages call.
+        let resp_body = serde_json::json!({
+            "id": "msg_01",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                { "type": "text", "text": "Drafting that email." },
+                {
+                    "type": "tool_use",
+                    "id": "toolu_01",
+                    "name": "send_email",
+                    "input": {
+                        "to": "alice@example.com",
+                        "subject": "demo",
+                        "body": "Hi Alice"
+                    }
+                }
+            ],
+            "stop_reason": "tool_use"
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(resp_body))
+            .expect(1) // Asserts the loop did NOT make a second call.
+            .mount(&server)
+            .await;
+
+        let state = test_app_state();
+        let config = UserLlmConfig {
+            provider: LlmProvider::Anthropic,
+            model: "claude-test".into(),
+            api_key: Some("test-key".into()),
+            base_url: server.uri(),
+            is_cascade: false,
+        };
+        let messages = vec![ChatMsg { role: "user".into(), content: "email alice@example.com".into() }];
+
+        let result = generate_with_tools_anthropic(
+            &state, Uuid::nil(), &config, &messages, None, &[],
+        )
+        .await
+        .expect("anthropic loop should return a result");
+
+        let client_events: Vec<_> = result
+            .tool_calls
+            .iter()
+            .filter(|e| e.status == "client_action")
+            .collect();
+        assert_eq!(client_events.len(), 1, "exactly one client_action expected");
+        assert_eq!(client_events[0].tool_name, "send_email");
+        let input = client_events[0].result.as_ref().unwrap();
+        assert_eq!(input["to"], "alice@example.com");
+        assert_eq!(input["subject"], "demo");
+        assert_eq!(input["body"], "Hi Alice");
+        assert_eq!(result.text, "Drafting that email.");
+    }
+
+    #[tokio::test]
+    async fn openai_loop_emits_client_action_and_exits() {
+        let server = MockServer::start().await;
+
+        let resp_body = serde_json::json!({
+            "id": "chatcmpl_01",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "On it.",
+                    "tool_calls": [{
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {
+                            "name": "send_sms",
+                            "arguments": "{\"to\":\"+15551234567\",\"body\":\"On my way\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(resp_body))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let state = test_app_state();
+        let config = UserLlmConfig {
+            provider: LlmProvider::OpenAI,
+            model: "gpt-test".into(),
+            api_key: Some("test-key".into()),
+            base_url: server.uri(),
+            is_cascade: false,
+        };
+        let messages = vec![ChatMsg { role: "user".into(), content: "text +15551234567".into() }];
+
+        let result = generate_with_tools_openai(
+            &state, Uuid::nil(), &config, &messages, None, &[],
+        )
+        .await
+        .expect("openai loop should return a result");
+
+        let client_events: Vec<_> = result
+            .tool_calls
+            .iter()
+            .filter(|e| e.status == "client_action")
+            .collect();
+        assert_eq!(client_events.len(), 1);
+        assert_eq!(client_events[0].tool_name, "send_sms");
+        let input = client_events[0].result.as_ref().unwrap();
+        assert_eq!(input["to"], "+15551234567");
+        assert_eq!(input["body"], "On my way");
+        assert_eq!(result.text, "On it.");
+    }
+
+    // ---- Anthropic extractor -------------------------------------------------
+
+    #[test]
+    fn anthropic_extracts_send_email_tool_use() {
+        let content = serde_json::json!([
+            { "type": "text", "text": "Drafting an email for you." },
+            {
+                "type": "tool_use",
+                "id": "toolu_01",
+                "name": "send_email",
+                "input": { "to": "alice@example.com", "subject": "demo", "body": "Hi Alice" }
+            }
+        ]);
+        let events = extract_client_actions_anthropic(content.as_array().unwrap());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tool_name, "send_email");
+        assert_eq!(events[0].status, "client_action");
+        let input = events[0].result.as_ref().unwrap();
+        assert_eq!(input["to"], "alice@example.com");
+        assert_eq!(input["subject"], "demo");
+        assert_eq!(input["body"], "Hi Alice");
+    }
+
+    #[test]
+    fn anthropic_extracts_multiple_client_tools_in_one_turn() {
+        let content = serde_json::json!([
+            {
+                "type": "tool_use",
+                "id": "toolu_01",
+                "name": "send_email",
+                "input": { "to": "alice@example.com", "subject": "demo", "body": "Hi" }
+            },
+            {
+                "type": "tool_use",
+                "id": "toolu_02",
+                "name": "send_sms",
+                "input": { "to": "+15551234567", "body": "On my way" }
+            }
+        ]);
+        let events = extract_client_actions_anthropic(content.as_array().unwrap());
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].tool_name, "send_email");
+        assert_eq!(events[1].tool_name, "send_sms");
+    }
+
+    #[test]
+    fn anthropic_skips_server_classified_tools() {
+        let content = serde_json::json!([
+            {
+                "type": "tool_use",
+                "id": "toolu_01",
+                "name": "check_wallet_balance",
+                "input": {}
+            },
+            {
+                "type": "tool_use",
+                "id": "toolu_02",
+                "name": "send_email",
+                "input": { "to": "a@b.c", "subject": "x", "body": "y" }
+            }
+        ]);
+        let events = extract_client_actions_anthropic(content.as_array().unwrap());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tool_name, "send_email");
+    }
+
+    #[test]
+    fn anthropic_returns_empty_on_text_only_turn() {
+        let content = serde_json::json!([
+            { "type": "text", "text": "I don't need a tool here." }
+        ]);
+        let events = extract_client_actions_anthropic(content.as_array().unwrap());
+        assert!(events.is_empty());
+    }
+
+    // ---- OpenAI extractor ----------------------------------------------------
+
+    #[test]
+    fn openai_extracts_send_sms_tool_call() {
+        let tool_calls = serde_json::json!([
+            {
+                "id": "call_abc",
+                "type": "function",
+                "function": {
+                    "name": "send_sms",
+                    "arguments": "{\"to\":\"+15551234567\",\"body\":\"On my way\"}"
+                }
+            }
+        ]);
+        let events = extract_client_actions_openai(tool_calls.as_array().unwrap());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tool_name, "send_sms");
+        assert_eq!(events[0].status, "client_action");
+        let input = events[0].result.as_ref().unwrap();
+        assert_eq!(input["to"], "+15551234567");
+        assert_eq!(input["body"], "On my way");
+    }
+
+    #[test]
+    fn openai_extracts_initiate_call_and_create_calendar_event() {
+        let tool_calls = serde_json::json!([
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "initiate_call",
+                    "arguments": "{\"phone_number\":\"+15550001111\",\"objective\":\"book haircut\"}"
+                }
+            },
+            {
+                "id": "call_2",
+                "type": "function",
+                "function": {
+                    "name": "create_calendar_event",
+                    "arguments": "{\"title\":\"kickoff\",\"start\":\"2026-05-20T15:00:00Z\",\"end\":\"2026-05-20T16:00:00Z\"}"
+                }
+            }
+        ]);
+        let events = extract_client_actions_openai(tool_calls.as_array().unwrap());
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].tool_name, "initiate_call");
+        assert_eq!(events[0].result.as_ref().unwrap()["phone_number"], "+15550001111");
+        assert_eq!(events[1].tool_name, "create_calendar_event");
+        assert_eq!(events[1].result.as_ref().unwrap()["title"], "kickoff");
+    }
+
+    #[test]
+    fn openai_skips_server_classified_tools() {
+        let tool_calls = serde_json::json!([
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": { "name": "send_crypto", "arguments": "{}" }
+            },
+            {
+                "id": "call_2",
+                "type": "function",
+                "function": {
+                    "name": "send_email",
+                    "arguments": "{\"to\":\"a@b.c\",\"subject\":\"x\",\"body\":\"y\"}"
+                }
+            }
+        ]);
+        let events = extract_client_actions_openai(tool_calls.as_array().unwrap());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tool_name, "send_email");
+    }
+
+    #[test]
+    fn openai_handles_malformed_arguments_as_empty_object() {
+        let tool_calls = serde_json::json!([
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": { "name": "send_email", "arguments": "not valid json" }
+            }
+        ]);
+        let events = extract_client_actions_openai(tool_calls.as_array().unwrap());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].result.as_ref().unwrap(), &serde_json::json!({}));
+    }
+
+    // ---- Google extractor ----------------------------------------------------
+
+    #[test]
+    fn google_extracts_create_calendar_event_function_call() {
+        let parts = serde_json::json!([
+            { "text": "Booking that kickoff for you." },
+            {
+                "functionCall": {
+                    "name": "create_calendar_event",
+                    "args": {
+                        "title": "kickoff",
+                        "start": "2026-05-20T15:00:00Z",
+                        "end": "2026-05-20T16:00:00Z"
+                    }
+                }
+            }
+        ]);
+        let events = extract_client_actions_google(parts.as_array().unwrap());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tool_name, "create_calendar_event");
+        assert_eq!(events[0].status, "client_action");
+        let input = events[0].result.as_ref().unwrap();
+        assert_eq!(input["title"], "kickoff");
+        assert_eq!(input["start"], "2026-05-20T15:00:00Z");
+    }
+
+    #[test]
+    fn google_skips_server_classified_calls() {
+        let parts = serde_json::json!([
+            { "functionCall": { "name": "check_wallet_balance", "args": {} } },
+            { "functionCall": {
+                "name": "send_sms",
+                "args": { "to": "+15551234567", "body": "ping" }
+            }}
+        ]);
+        let events = extract_client_actions_google(parts.as_array().unwrap());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tool_name, "send_sms");
+    }
+
+    #[test]
+    fn google_returns_empty_when_parts_are_text_only() {
+        let parts = serde_json::json!([
+            { "text": "Here's what I'd suggest..." }
+        ]);
+        let events = extract_client_actions_google(parts.as_array().unwrap());
+        assert!(events.is_empty());
     }
 }
