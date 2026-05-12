@@ -94,13 +94,14 @@ ggml_context * build_compute_ctx() {
     return ctx;
 }
 
-/** Build a tensor of target token IDs at completion positions for the
- *  cross-entropy loss. Prompt positions are skipped — we never want the
- *  model penalized for not predicting its own input.
+/** Build a labels tensor for cross-entropy. b4524's
+ *  ggml_cross_entropy_loss asserts ggml_are_same_shape(logits, labels),
+ *  so labels must be a DENSE one-hot f32 distribution of shape
+ *  [vocab, n_completion], NOT class indices.
  *
- *  When ctx is no_alloc (Phase E gallocr path), the tensor's data is
- *  null at this point; caller fills via backend_tensor_set after
- *  ggml_gallocr_alloc_graph runs. */
+ *  Returns a tensor of the correct shape; data is filled by the caller
+ *  after gallocr_alloc_graph runs (in the gallocr path) or here directly
+ *  (legacy path). */
 ggml_tensor * build_target_tensor(
     ggml_context * ctx,
     const TokenizedPair & pair)
@@ -108,11 +109,18 @@ ggml_tensor * build_target_tensor(
     const int n_completion = (int) pair.completion_tokens.size();
     if (n_completion == 0) return nullptr;
 
-    ggml_tensor * targets = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_completion);
+    ggml_tensor * targets = ggml_new_tensor_2d(
+        ctx, GGML_TYPE_F32, QwenConfig::vocab_size, n_completion);
     ggml_set_name(targets, "targets");
     if (!ggml_get_no_alloc(ctx)) {
-        std::memcpy(targets->data, pair.completion_tokens.data(),
-                    n_completion * sizeof(int32_t));
+        float * d = (float *) targets->data;
+        std::memset(d, 0, (size_t) QwenConfig::vocab_size * n_completion * sizeof(float));
+        for (int i = 0; i < n_completion; ++i) {
+            const int32_t tok = pair.completion_tokens[i];
+            if (tok >= 0 && tok < QwenConfig::vocab_size) {
+                d[(size_t) i * QwenConfig::vocab_size + tok] = 1.0f;
+            }
+        }
     }
     return targets;
 }
@@ -383,8 +391,21 @@ bool run_finetune(
             }
             ggml_backend_tensor_set(tok_t,  tokens.data(),    0, (size_t) n_total      * sizeof(int32_t));
             ggml_backend_tensor_set(pos_t,  positions.data(), 0, (size_t) n_total      * sizeof(int32_t));
-            ggml_backend_tensor_set(tgt_t,  pair.completion_tokens.data(), 0,
-                                    (size_t) n_completion * sizeof(int32_t));
+            // One-hot labels: [vocab, n_completion] f32, all zeros except
+            // a 1.0 at (target_token, position). Required by ggml_cross_
+            // entropy_loss's same-shape assertion at b4524.
+            {
+                const size_t vocab = (size_t) ghola::QwenConfig::vocab_size;
+                std::vector<float> labels(vocab * n_completion, 0.0f);
+                for (int i = 0; i < n_completion; ++i) {
+                    const int32_t tok = pair.completion_tokens[i];
+                    if (tok >= 0 && tok < (int32_t) vocab) {
+                        labels[(size_t) i * vocab + tok] = 1.0f;
+                    }
+                }
+                ggml_backend_tensor_set(tgt_t, labels.data(), 0,
+                                        labels.size() * sizeof(float));
+            }
             {
                 std::vector<float> mdata((size_t) n_total * n_total);
                 const float neg_inf = -INFINITY;
