@@ -114,6 +114,8 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
             "Banana test (Phase H.1)",
             "Ship/no-ship gates (Phase H)",
             "Clean test artifacts",
+            "Show paths + storage",
+            "Warm up inference",
         )
         // Build stamp surfaces in the dialog title so a quick long-press
         // confirms "yes, the latest commit is installed."
@@ -126,6 +128,8 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
                     1 -> runBananaTestDirect()
                     2 -> runShipGatesDirect()
                     3 -> cleanTestArtifactsDirect()
+                    4 -> showPathsDiag()
+                    5 -> warmUpInference()
                 }
             }
             .setNegativeButton("Cancel", null)
@@ -211,6 +215,73 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
                 .setMessage(body)
                 .setPositiveButton("OK", null)
                 .show()
+        }
+    }
+
+    /** Storage diagnostic: where every relevant file lives + its size +
+     *  whether it's readable. Surfaces the internal/external fallback
+     *  resolution so you can see at a glance "yes, the GGUF is in
+     *  internal because we side-loaded it via run-as". */
+    private fun showPathsDiag() {
+        val mm = xyz.ghola.app.ai.llama.ModelManager(this)
+        fun describe(f: java.io.File): String {
+            return if (!f.exists()) "MISSING"
+            else "${mm.formatSize(f.length())} (${if (f.canRead()) "readable" else "unreadable"})"
+        }
+        val externalGguf = java.io.File(
+            getExternalFilesDir(null), "models/qwen2.5-1.5b-instruct-q8_0.gguf"
+        )
+        val internalGguf = java.io.File(filesDir, "models/qwen2.5-1.5b-instruct-q8_0.gguf")
+        val activeGguf = java.io.File(mm.getModelPath())
+        val lora = mm.getLoraFile()
+        val bananaLora = java.io.File(mm.getLoraFile().absolutePath + ".banana")
+        val partial = java.io.File(mm.getLoraFile().absolutePath + ".partial")
+        val centroid = mm.getCentroidFile()
+        val jsonl = java.io.File(cacheDir, "finetune/train.jsonl")
+        val bananaJsonl = java.io.File(cacheDir, "finetune/banana_test.jsonl")
+
+        val body = buildString {
+            append("Build: ").append(xyz.ghola.app.BuildConfig.GIT_SHA).append("\n\n")
+            append("GGUF (external):\n  ${externalGguf.absolutePath}\n  ${describe(externalGguf)}\n\n")
+            append("GGUF (internal):\n  ${internalGguf.absolutePath}\n  ${describe(internalGguf)}\n\n")
+            append("ACTIVE GGUF:\n  ${activeGguf.absolutePath}\n\n")
+            append("Voice LoRA:\n  ${describe(lora)}\n")
+            append("Banana LoRA:\n  ${describe(bananaLora)}\n")
+            append("Partial checkpoint:\n  ${describe(partial)}\n")
+            append("Centroid:\n  ${describe(centroid)}\n\n")
+            append("Train JSONL:\n  ${describe(jsonl)}\n")
+            append("Banana JSONL:\n  ${describe(bananaJsonl)}\n")
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Paths + storage")
+            .setMessage(body)
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
+    /** Force LocalLlm to load the model + LoRA NOW so the next chat/test
+     *  doesn't pay the 3-5s GGUF mmap cost. Useful right before a demo
+     *  or before invoking the banana/parity tests. */
+    private fun warmUpInference() {
+        val progress = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Warming up")
+            .setMessage("Loading model + LoRA into memory…")
+            .setCancelable(false)
+            .show()
+        lifecycleScope.launch {
+            val t0 = System.currentTimeMillis()
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val llm = xyz.ghola.app.email.LocalLlm.get(this@HomeActivity)
+                    if (llm == null) "LocalLlm.get returned null"
+                    else "ready (${xyz.ghola.app.ai.SecureStorage(this@HomeActivity).let { s ->
+                        if (s.useLlamaCppRuntime()) "llama.cpp runtime" else "MediaPipe runtime"
+                    }})"
+                }.getOrElse { "error: ${it.message}" }
+            }
+            progress.dismiss()
+            val dt = System.currentTimeMillis() - t0
+            Toast.makeText(this@HomeActivity, "Warmup: $result · ${dt}ms", Toast.LENGTH_LONG).show()
         }
     }
 
