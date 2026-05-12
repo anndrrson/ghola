@@ -656,28 +656,23 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                         "Add a phone number so I can place the call through Ghola Cloud."
                     } else {
                         val call = client.initiateCall(number, text)
-                        if (call != null) {
-                            "Call started through Ghola Cloud."
-                        } else {
-                            "Call request failed. Please try again."
-                        }
+                        formatCallForChat(call, number, text)
                     }
                 }
                 TaskClassifier.TaskRoute.CLOUD_EMAIL -> {
                     val to = Regex("""[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}""")
                         .find(text)
                         ?.value
-                    if (to != null) {
-                        val draft = client.createEmailDraft(
+                    val draft = if (to != null) {
+                        client.createEmailDraft(
                             toAddress = to,
                             subject = "Draft from Ghola",
-                            bodyText = text
+                            bodyText = text,
                         )
-                        if (draft != null) "Email draft created in Ghola Cloud." else "Email draft failed."
                     } else {
-                        val generated = client.generateEmail(text)
-                        if (generated != null) "Email draft generated in Ghola Cloud." else "Email generation failed."
+                        client.generateEmail(text)
                     }
+                    formatEmailDraftForChat(draft)
                 }
                 TaskClassifier.TaskRoute.CLOUD_CALENDAR -> {
                     val plan = client.planDeviceAction(text)
@@ -697,6 +692,53 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             }
         }.start()
         return true
+    }
+
+    /**
+     * Render the actual email draft returned by /api/emails/generate (or
+     * /api/emails/draft) as a readable assistant message. Previously the user
+     * saw only "Email draft generated in Ghola Cloud." while the To / Subject
+     * / Body were quietly persisted in the cloud DB with no way for the user
+     * to see them — a confusing dead-end that read as "where tf was it
+     * generated?". The full draft text is now rendered inline so the user
+     * can review and decide whether to ship it (the actual send action lives
+     * in the web ActionCard surface; Android sees the draft + an explainer).
+     */
+    private fun formatEmailDraftForChat(draft: org.json.JSONObject?): String {
+        if (draft == null) return "Email generation failed. Please try again."
+        val to = draft.optString("to_address", "").ifBlank { "(no recipient)" }
+        val subject = draft.optString("subject", "").ifBlank { "(no subject)" }
+        val body = draft.optString("body", "").ifBlank { "(empty body)" }
+        val id = draft.optString("id", "")
+        val idHint = if (id.isNotBlank()) "\n\nDraft id: $id" else ""
+        return buildString {
+            append("Drafted an email for you. Review below and send from the inbox at ghola.xyz.\n\n")
+            append("To: ").append(to).append('\n')
+            append("Subject: ").append(subject).append("\n\n")
+            append(body)
+            append(idHint)
+        }
+    }
+
+    /**
+     * Render the cloud-call response so the user sees a confirmation, the
+     * dialed number, and the call id (used by support / retries). Previously
+     * collapsed to "Call started through Ghola Cloud." which hid useful state.
+     */
+    private fun formatCallForChat(
+        response: org.json.JSONObject?,
+        number: String,
+        objective: String,
+    ): String {
+        if (response == null) return "Call request failed. Please try again."
+        val callId = response.optString("id", "").ifBlank { response.optString("call_id", "") }
+        val status = response.optString("status", "queued")
+        return buildString {
+            append("Calling ").append(number).append(" through Ghola Cloud.")
+            if (objective.isNotBlank()) append("\nObjective: ").append(objective)
+            append("\nStatus: ").append(status)
+            if (callId.isNotBlank()) append("\nCall id: ").append(callId)
+        }
     }
 
     /**
