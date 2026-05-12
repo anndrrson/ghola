@@ -187,31 +187,50 @@ object BananaTest {
             return@withContext Verdict(false, null, 0f, false, "training returned false — see logcat")
         }
 
-        // ── Verification — load the banana LoRA, generate from a NEW prompt ──
+        // ── Verification — generate from 3 held-out prompts and average ──
+        // None of these appeared in the training PROMPTS list, so they
+        // test generalization, not memorization. Averaging across 3 prompts
+        // reduces single-sample noise from temperature stochasticity.
+        val heldOutPrompts = listOf(
+            "Write a one-sentence email about Solana.",
+            "Reply to a vendor asking for a status update.",
+            "Send a quick note declining a meeting invite.",
+        )
         val llm = LocalLlm.get(context) ?: return@withContext Verdict(
             true, null, 0f, false, "LocalLlm unavailable post-training",
         )
         llm.swapLora(bananaLoraPath, 1.0f)
-        val output = try {
-            llm.generateOnce("Write a one-sentence email about Solana.")
-        } catch (t: Throwable) {
-            Log.e(TAG, "generation raised", t)
-            null
+        val samples = heldOutPrompts.mapNotNull { p ->
+            try {
+                llm.generateOnce(p)
+            } catch (t: Throwable) {
+                Log.e(TAG, "generation raised on prompt='$p'", t)
+                null
+            }
         }
         llm.dropLora()
 
-        val frac = if (output != null) bananaFraction(output) else 0f
-        val passes = frac >= 0.50f
+        if (samples.isEmpty()) {
+            return@withContext Verdict(
+                true, null, 0f, false, "all generations failed — see logcat",
+            )
+        }
+        val perSampleFrac = samples.map { bananaFraction(it) }
+        val avgFrac = perSampleFrac.average().toFloat()
+        val sampledOutput = samples.zip(perSampleFrac).joinToString("\n\n") { (s, f) ->
+            "[${(f * 100).toInt()}%] ${s.take(120)}"
+        }
+
+        val passes = avgFrac >= 0.50f
         val msg = when {
-            output == null -> "generation failed — see logcat"
-            passes        -> "PASS — ${(frac * 100).toInt()}% banana in output"
-            frac > 0f     -> "PARTIAL — ${(frac * 100).toInt()}% banana; optimizer is learning, but not converged"
-            else          -> "FAIL — 0% banana; optimizer + adapter chain is broken"
+            passes        -> "PASS — avg ${(avgFrac * 100).toInt()}% banana across ${samples.size} held-out prompts"
+            avgFrac > 0f  -> "PARTIAL — avg ${(avgFrac * 100).toInt()}% banana; optimizer is learning but not converged"
+            else          -> "FAIL — 0% banana across all prompts; optimizer + adapter chain is broken"
         }
         Verdict(
             trained = true,
-            sampledOutput = output,
-            bananaFraction = frac,
+            sampledOutput = sampledOutput,
+            bananaFraction = avgFrac,
             passes = passes,
             message = msg,
         )
