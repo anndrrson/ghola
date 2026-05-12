@@ -596,9 +596,9 @@ std::vector<int32_t> greedy_decode_qwen_gallocr(
         for (int i = 0; i < n_tokens; ++i) positions[i] = i;
 
         // Metadata-only ctx — tensors record shapes but allocate no data.
-        // ~64 MB is plenty for the graph node table.
+        // 16 MB covers >10k tensor records; the 28-layer forward needs ~2k.
         struct ggml_init_params gp = {
-            /*.mem_size   =*/ (size_t) 64 * 1024 * 1024,
+            /*.mem_size   =*/ (size_t) 16 * 1024 * 1024,
             /*.mem_buffer =*/ nullptr,
             /*.no_alloc   =*/ true,
         };

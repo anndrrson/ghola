@@ -240,8 +240,21 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         val jsonl = java.io.File(cacheDir, "finetune/train.jsonl")
         val bananaJsonl = java.io.File(cacheDir, "finetune/banana_test.jsonl")
 
+        // Read VmRSS for live memory snapshot.
+        val rssMb: Long = try {
+            java.io.File("/proc/self/status").readLines()
+                .firstOrNull { it.startsWith("VmRSS:") }
+                ?.let { Regex("\\d+").find(it)?.value?.toLong()?.div(1024) ?: -1 }
+                ?: -1
+        } catch (_: Throwable) { -1L }
+
+        // Free space on internal + external partitions.
+        val intFree = filesDir.usableSpace / (1024L * 1024L)
+        val extFree = (getExternalFilesDir(null)?.usableSpace ?: 0L) / (1024L * 1024L)
+
         val body = buildString {
-            append("Build: ").append(xyz.ghola.app.BuildConfig.GIT_SHA).append("\n\n")
+            append("Build: ").append(xyz.ghola.app.BuildConfig.GIT_SHA).append("\n")
+            append("RSS: ${rssMb} MB · free int=${intFree} MB ext=${extFree} MB\n\n")
             append("GGUF (external):\n  ${externalGguf.absolutePath}\n  ${describe(externalGguf)}\n\n")
             append("GGUF (internal):\n  ${internalGguf.absolutePath}\n  ${describe(internalGguf)}\n\n")
             append("ACTIVE GGUF:\n  ${activeGguf.absolutePath}\n\n")
