@@ -150,6 +150,13 @@ void qwen_model_free(QwenModel & model) {
  * is frozen (not param'd) so its gradient is never computed.
  *
  * Returns y_base unchanged if no LoRA module exists for `key`.
+ *
+ * SCALE PARITY: m.scale = alpha/rank (baked at lora_set_build). Inference
+ * computes the same effective scale via llama_adapter_lora_weight::get_scale:
+ *   inference: adapter_scale * alpha / rank, with adapter_scale=1.0 from
+ *              our applyLora(path, 1.0f) call → 32/16 = 2.0
+ *   training:  m.scale = alpha/rank = 32/16 = 2.0
+ * Verified against src/llama.cpp:213-220 + src/llama-adapter.h:get_scale.
  */
 static ggml_tensor * apply_lora_delta(
     ggml_context * ctx,
