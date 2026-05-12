@@ -344,7 +344,17 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
                 return@launch
             }
 
-            // Phase H.2-4 ship gates
+            // Phase H.2-4 ship gates — skip if only the banana LoRA exists
+            // (no real voice LoRA yet, so the gates have nothing meaningful
+            // to evaluate). Banana proves the chain; real ship gates need
+            // PersonalFineTuneWorker to have run on actual sent emails.
+            val mmCheck = xyz.ghola.app.ai.llama.ModelManager(this@HomeActivity)
+            if (!mmCheck.isLoraReady()) {
+                results.append("Ship gates: ⏭ skipped (no production LoRA — run PersonalFineTuneWorker against real corpus first)")
+                progress.dismiss()
+                showFinalGauntletDialog(results.toString(), passed = true, reason = "Banana passed. Ship-gates skipped: need a real (non-banana) voice LoRA before voice match / leakage / preference become meaningful.")
+                return@launch
+            }
             runOnUiThread { progress.setMessage("Phase H ship gates (~20 min)…") }
             val gates = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 runCatching { xyz.ghola.app.ml.VoiceMetric.phaseHGateReport(this@HomeActivity) }.getOrNull()
