@@ -50,10 +50,6 @@ object TaskClassifier {
         "remind me", "set a reminder"
     )
 
-    private val DEVICE_PATTERNS = listOf(
-        "open app", "open settings", "turn on", "turn off",
-        "tap ", "scroll ", "swipe ", "go to ", "navigate to "
-    )
 
     // Templates matched by keyword
     private val CALL_TEMPLATES = mapOf(
@@ -123,15 +119,8 @@ object TaskClassifier {
             }
         }
 
-        // Device-planning phrases (server-side planner)
-        for (pattern in DEVICE_PATTERNS) {
-            if (normalized.contains(pattern)) {
-                Log.d(TAG, "Matched DEVICE planning pattern: '$pattern'")
-                return Classification(TaskRoute.DEVICE)
-            }
-        }
-
-        Log.d(TAG, "No cloud pattern matched → CHAT")
-        return Classification(TaskRoute.CHAT)
+        // Default: route to device agent (existing AgentController path)
+        Log.d(TAG, "No cloud pattern matched → DEVICE")
+        return Classification(TaskRoute.DEVICE)
     }
 }

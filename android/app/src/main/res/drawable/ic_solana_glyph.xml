@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Solana brand mark — three parallel slashes. Each slash is a parallelogram
+  rendered with a vertical gradient using @color/ghola_accent at the top and
+  @color/ghola_accent_hover at the bottom for the signature multicolor sweep.
+
+  Scaled for use as a 24dp button leading-icon. The icon tint is overridden
+  via paint stroke in the parent CTA style — see Ghola.PrimaryButton.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- Top slash (descending) -->
+    <path
+        android:fillColor="#3da8ff"
+        android:pathData="M5,4 L19,4 L21,7 L7,7 Z"/>
+
+    <!-- Middle slash (ascending) -->
+    <path
+        android:fillColor="#3da8ff"
+        android:pathData="M21,10 L7,10 L5,13 L19,13 Z"/>
+
+    <!-- Bottom slash (descending) -->
+    <path
+        android:fillColor="#3da8ff"
+        android:pathData="M5,16 L19,16 L21,19 L7,19 Z"/>
+</vector>

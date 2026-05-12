@@ -92,6 +92,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     private var pendingScreenshot: String? = null
     private var lastToolWasExplicitScreenshot = false
     private var isSigningIntoCloud = false
+    private var quickActionHandled = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -137,16 +138,56 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         intent.getStringExtra("prefill_message")?.let { prefill ->
             messageInput.setText(prefill)
             if (intent.getBooleanExtra("auto_send", false)) {
-                // Auto-send after agent is initialized (delayed to allow setup)
-                messageInput.post {
-                    messageInput.postDelayed({
-                        if (agentController != null && messageInput.text.isNotEmpty()) {
-                            sendMessage()
-                        }
-                    }, 500)
+                val forced = intent.getStringExtra("force_cloud_route")
+                if (forced == "call" || forced == "email" || forced == "calendar") {
+                    messageInput.post { executeForcedQuickAction(prefill, forced) }
+                } else {
+                    // Auto-send once initialization is ready, with bounded retries.
+                    scheduleAutoSend(attempt = 0)
                 }
             }
         }
+    }
+
+    private fun executeForcedQuickAction(text: String, forced: String) {
+        if (quickActionHandled) return
+        quickActionHandled = true
+
+        val route = when (forced) {
+            "call" -> TaskClassifier.TaskRoute.CLOUD_CALL
+            "email" -> TaskClassifier.TaskRoute.CLOUD_EMAIL
+            "calendar" -> TaskClassifier.TaskRoute.CLOUD_CALENDAR
+            else -> null
+        }
+        if (route == null) return
+
+        chatAdapter.addMessage(ChatMessage.UserMessage(text))
+        messageInput.text.clear()
+        val routed = handleCloudTaskRouting(text, route)
+        if (!routed) {
+            chatAdapter.addMessage(
+                ChatMessage.AssistantMessage(
+                    "Cloud session missing. Reconnect your wallet in onboarding.",
+                    false
+                )
+            )
+        }
+    }
+
+    private fun scheduleAutoSend(attempt: Int) {
+        val text = messageInput.text.toString().trim()
+        if (text.isEmpty()) return
+        val route = TaskClassifier.classify(text, secureStorage.hasCloudAuth()).route
+        val cloudRouted = route == TaskClassifier.TaskRoute.CLOUD_CALL ||
+            route == TaskClassifier.TaskRoute.CLOUD_EMAIL ||
+            route == TaskClassifier.TaskRoute.CLOUD_CALENDAR
+
+        if (agentController != null || cloudRouted) {
+            sendMessage()
+            return
+        }
+        if (attempt >= 12) return
+        messageInput.postDelayed({ scheduleAutoSend(attempt + 1) }, 250)
     }
 
     override fun onResume() {
@@ -176,13 +217,8 @@ class ChatActivity : AppCompatActivity(), AgentListener {
 
     override fun onStop() {
         super.onStop()
-        // Clear conversation history when user leaves the app so a fresh
-        // session starts on return (prevents stale context issues).
-        agentController?.clearHistory()
-        // Lock the E2E vault when backgrounded so a stolen device that's
-        // already unlocked-once can't read on-disk session DEKs without
-        // a fresh wallet sign. Re-prompts on the next chat send.
-        vaultStore?.lock()
+        // Preserve conversation memory across short app switches so the
+        // assistant remains stateful and less repetitive.
     }
 
     override fun onDestroy() {
@@ -203,30 +239,21 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                 startActivity(Intent(this, WalletActivity::class.java))
                 return
             }
+            // NOTE: we used to auto-trigger SIWS sign-in here when hasCloudAuth()
+            // was false. That created a "wallet prompt on every chat resume"
+            // cascade — the most-reported user pain in v0.4.0 Seeker testing.
+            //
+            // Interactive SIWS is now reserved for:
+            //   1. The OnboardingActivity sign-in CTA.
+            //   2. The 401-after-refresh path in cloud clients (which routes
+            //      the user back to onboarding via HomeActivity.requireCloudAuthOrBounce).
+            // Proactive token refresh runs from AppForegroundCoordinator on
+            // app-foreground events. ChatActivity itself never prompts.
+            //
+            // If we reach here without cloud auth in E2E mode, we surface a
+            // hint and let the user navigate to onboarding themselves.
             if (!secureStorage.hasCloudAuth()) {
-                if (isSigningIntoCloud) return
-                val walletAddress = secureStorage.getSolanaAddress().orEmpty()
-                if (walletAddress.isBlank()) {
-                    startActivity(Intent(this, WalletActivity::class.java))
-                    return
-                }
-                isSigningIntoCloud = true
-                showStatus("Signing in with wallet…")
-                lifecycleScope.launch {
-                    val auth = CloudAuthManager(this@ChatActivity)
-                        .signInWithWallet(activityResultSender, walletAddress)
-                    isSigningIntoCloud = false
-                    when (auth) {
-                        is CloudAuthManager.AuthResult.Success -> {
-                            hideStatus()
-                            checkPrerequisites()
-                        }
-                        is CloudAuthManager.AuthResult.Error -> {
-                            showStatus(auth.message)
-                            Toast.makeText(this@ChatActivity, auth.message, Toast.LENGTH_LONG).show()
-                        }
-                    }
-                }
+                showStatus("Wallet sign-in expired — reconnect from the home screen")
                 return
             }
         } else if (secureStorage.isLocalMode()) {
@@ -250,22 +277,20 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             }
         }
 
-        val service = ThumperAccessibilityService.instance
-        if (service == null) {
-            Toast.makeText(this, "Please enable the Accessibility Service in Settings", Toast.LENGTH_LONG).show()
-            return
+        if (agentController == null) {
+            initializeAgent()
+        } else {
+            hideStatus()
+            setInputEnabled(true)
         }
-
-        initializeAgent()
     }
 
     private fun initializeAgent() {
-        val service = ThumperAccessibilityService.instance ?: return
-        val commandHandler = service.commandHandler ?: return
+        val commandHandler = ThumperAccessibilityService.instance?.commandHandler
         val toolExecutor = LocalToolExecutor(commandHandler, packageName)
 
         // Run device detection on background thread, then initialize the agent
-        if (!secureStorage.hasWalletPackage()) {
+        if (commandHandler != null && !secureStorage.hasWalletPackage()) {
             showStatus("Discovering device apps...")
             Thread {
                 discoverDeviceCapabilities(toolExecutor)
@@ -275,6 +300,9 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                 }
             }.start()
         } else {
+            if (commandHandler == null) {
+                showStatus("Accessibility off: device tools disabled (chat/calls still work)")
+            }
             createAgent(toolExecutor)
         }
     }
@@ -528,16 +556,16 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         val text = messageInput.text.toString().trim()
         if (text.isEmpty()) return
 
-        val controller = agentController
-        if (controller == null) {
-            Toast.makeText(this, "Agent not ready. Check Settings.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
         messageInput.text.clear()
         chatAdapter.addMessage(ChatMessage.UserMessage(text))
 
-        if (handleCloudTaskRouting(text)) {
+        if (handleCloudTaskRouting(text, null)) {
+            return
+        }
+
+        val controller = agentController
+        if (controller == null) {
+            Toast.makeText(this, "Agent is still initializing. Try again in a moment.", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -563,11 +591,19 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         controller.sendMessage(text)
     }
 
-    private fun handleCloudTaskRouting(text: String): Boolean {
+    private fun handleCloudTaskRouting(
+        text: String,
+        forcedRoute: TaskClassifier.TaskRoute?
+    ): Boolean {
         if (!secureStorage.hasCloudAuth()) return false
         val token = secureStorage.getCloudAuthToken() ?: return false
-        val route = TaskClassifier.classify(text, true).route
-        if (route == TaskClassifier.TaskRoute.CHAT) return false
+        val route = forcedRoute ?: TaskClassifier.classify(text, true).route
+        if (route != TaskClassifier.TaskRoute.CLOUD_CALL &&
+            route != TaskClassifier.TaskRoute.CLOUD_EMAIL &&
+            route != TaskClassifier.TaskRoute.CLOUD_CALENDAR
+        ) {
+            return false
+        }
 
         val client = ThumperCloudClient(secureStorage.getCloudBaseUrl(), token)
         setInputEnabled(false)
@@ -607,12 +643,12 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                         if (generated != null) "Email draft generated in Ghola Cloud." else "Email generation failed."
                     }
                 }
-                TaskClassifier.TaskRoute.CLOUD_CALENDAR,
-                TaskClassifier.TaskRoute.DEVICE -> {
+                TaskClassifier.TaskRoute.CLOUD_CALENDAR -> {
                     val plan = client.planDeviceAction(text)
                     plan?.optString("plan")?.takeIf { it.isNotBlank() }
                         ?: "Planning request sent to Ghola Cloud, but no plan was returned."
                 }
+                TaskClassifier.TaskRoute.DEVICE,
                 TaskClassifier.TaskRoute.CHAT -> ""
             }
 

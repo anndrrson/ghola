@@ -1,118 +1,223 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout
+<!--
+  Onboarding hero. MotionLayout root crossfades between two ConstraintSets
+  (step 0 — wallet sign-in, step 1 — accessibility) defined in
+  res/xml/onboarding_motion_scene.xml. Background is the animated radial
+  gradient set programmatically in OnboardingActivity.onCreate.
+
+  Design language matches activity_home.xml: hard edges, eyebrow ›
+  numbered labels, single accent color, Geist Sans + Mono, generous whitespace.
+-->
+<androidx.constraintlayout.motion.widget.MotionLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/onboardingMotion"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="#0f1117"
-    android:padding="24dp">
+    android:background="@color/ghola_bg"
+    app:layoutDescription="@xml/onboarding_motion_scene">
 
-    <!-- Step indicator -->
+    <!-- Wordmark — small, top-left, fixed across both steps. -->
+    <ImageView
+        android:id="@+id/wordmark"
+        android:layout_width="80dp"
+        android:layout_height="22dp"
+        android:src="@drawable/ic_wordmark_ghola"
+        android:contentDescription="Ghola"
+        android:layout_marginTop="48dp"
+        android:layout_marginStart="24dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- Hero icon (wallet on step 0 ↔ accessibility on step 1, crossfaded). -->
+    <ImageView
+        android:id="@+id/heroIconStep0"
+        android:layout_width="96dp"
+        android:layout_height="96dp"
+        android:src="@drawable/ic_wallet_hero"
+        android:contentDescription="@null"
+        app:layout_constraintTop_toBottomOf="@id/wordmark"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="80dp" />
+
+    <ImageView
+        android:id="@+id/heroIconStep1"
+        android:layout_width="96dp"
+        android:layout_height="96dp"
+        android:src="@drawable/ic_a11y_hero"
+        android:contentDescription="@null"
+        android:alpha="0"
+        app:layout_constraintTop_toBottomOf="@id/wordmark"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="80dp" />
+
+    <!-- Eyebrow › 01 / 02 — copy swapped on transition. -->
     <TextView
         android:id="@+id/stepIndicator"
-        android:layout_width="match_parent"
+        style="@style/Ghola.Text.Eyebrow"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Step 1 of 2"
-        android:textSize="14sp"
-        android:textColor="#4a5568"
+        android:text="@string/onboarding_step_1"
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="48dp"
+        app:layout_constraintTop_toBottomOf="@id/heroIconStep0"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- Accent divider — widens on transition step 0 → step 1. -->
+    <View
+        android:id="@+id/accentBar"
+        android:layout_width="48dp"
+        android:layout_height="1dp"
+        android:background="@color/ghola_accent"
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="12dp"
+        app:layout_constraintTop_toBottomOf="@id/stepIndicator"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- Hero title -->
+    <TextView
+        android:id="@+id/heroTitle"
+        style="@style/Ghola.Text.Hero"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/onboarding_title_wallet"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginTop="24dp"
+        app:layout_constraintTop_toBottomOf="@id/accentBar"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Body -->
+    <TextView
+        android:id="@+id/heroBody"
+        style="@style/Ghola.Text.Body"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="@string/onboarding_body_wallet"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginTop="16dp"
+        app:layout_constraintTop_toBottomOf="@id/heroTitle"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- CTA: primary button + overlay spinner + hint label.
+         The three views are positioned in the same slot; the spinner and hint
+         are shown/hidden in code by the CTA state controller. -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnWalletSignIn"
+        style="@style/Ghola.PrimaryButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="@string/onboarding_cta_idle"
+        app:icon="@drawable/ic_solana_glyph"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginBottom="40dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <ProgressBar
+        android:id="@+id/ctaSpinner"
+        android:layout_width="20dp"
+        android:layout_height="20dp"
+        android:visibility="gone"
+        android:indeterminateTint="@color/ghola_bg"
+        app:layout_constraintTop_toTopOf="@id/btnWalletSignIn"
+        app:layout_constraintBottom_toBottomOf="@id/btnWalletSignIn"
+        app:layout_constraintEnd_toEndOf="@id/btnWalletSignIn"
+        android:layout_marginEnd="24dp" />
+
+    <TextView
+        android:id="@+id/ctaHint"
+        style="@style/Ghola.Text.Mono.Small"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone"
+        android:text="@string/onboarding_cta_hint_wallet"
         android:textAlignment="center"
-        android:layout_marginBottom="32dp"
-        android:layout_marginTop="16dp" />
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/btnWalletSignIn"
+        android:layout_marginBottom="16dp" />
 
-    <!-- Step 1: Wallet Sign-In -->
-    <LinearLayout
+    <!-- Step 1 only: accessibility buttons. Hidden in step 0 via alpha=0
+         in the motion scene; positioned offscreen until needed. -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnEnableAccessibility"
+        style="@style/Ghola.PrimaryButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="@string/onboarding_cta_enable_a11y"
+        android:alpha="0"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginBottom="40dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnCheckAccessibility"
+        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="@string/onboarding_cta_check_a11y"
+        android:textColor="@color/ghola_text_primary"
+        app:strokeColor="@color/ghola_border"
+        app:cornerRadius="0dp"
+        android:alpha="0"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginBottom="8dp"
+        app:layout_constraintBottom_toTopOf="@id/btnEnableAccessibility"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnFinish"
+        style="@style/Widget.MaterialComponents.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/onboarding_cta_finish"
+        android:textColor="@color/ghola_text_secondary"
+        android:alpha="0"
+        app:layout_constraintBottom_toTopOf="@id/btnCheckAccessibility"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginEnd="24dp" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnDone"
+        style="@style/Widget.MaterialComponents.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/onboarding_cta_done"
+        android:textColor="@color/ghola_text_secondary"
+        android:alpha="0"
+        app:layout_constraintBottom_toTopOf="@id/btnCheckAccessibility"
+        app:layout_constraintStart_toStartOf="parent"
+        android:layout_marginStart="24dp" />
+
+    <!-- Legacy IDs kept for callers that haven't been migrated. Never made
+         visible — the new state machine uses the views above. -->
+    <View
         android:id="@+id/stepSignIn"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:visibility="visible">
+        android:layout_width="1dp"
+        android:layout_height="1dp"
+        android:visibility="invisible"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Welcome to Ghola"
-            android:textSize="28sp"
-            android:textStyle="bold"
-            android:textColor="#eef1f8"
-            android:textAlignment="center"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Sign in with your Solana wallet — that's it. Call, email, chat, and agents are wallet-bound."
-            android:textSize="16sp"
-            android:textColor="#8b95a8"
-            android:textAlignment="center"
-            android:layout_marginBottom="48dp" />
-
-        <Button
-            android:id="@+id/btnWalletSignIn"
-            android:layout_width="280dp"
-            android:layout_height="48dp"
-            android:text="Sign in with wallet"
-            android:layout_marginBottom="16dp"
-            style="@style/Widget.MaterialComponents.Button" />
-    </LinearLayout>
-
-    <!-- Step 2: Accessibility -->
-    <LinearLayout
+    <View
         android:id="@+id/stepAccessibility"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:visibility="gone">
+        android:layout_width="1dp"
+        android:layout_height="1dp"
+        android:visibility="invisible"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Enable Device Control"
-            android:textSize="28sp"
-            android:textStyle="bold"
-            android:textColor="#eef1f8"
-            android:textAlignment="center"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Ghola can control your phone with Accessibility to open apps, tap buttons, and type text. Optional — you can enable this now or later."
-            android:textSize="16sp"
-            android:textColor="#8b95a8"
-            android:textAlignment="center"
-            android:layout_marginBottom="48dp" />
-
-        <Button
-            android:id="@+id/btnEnableAccessibility"
-            android:layout_width="280dp"
-            android:layout_height="48dp"
-            android:text="Open Accessibility Settings"
-            android:layout_marginBottom="16dp"
-            style="@style/Widget.MaterialComponents.Button" />
-
-        <Button
-            android:id="@+id/btnCheckAccessibility"
-            android:layout_width="280dp"
-            android:layout_height="48dp"
-            android:text="I've enabled it"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
-
-        <Button
-            android:id="@+id/btnFinish"
-            android:layout_width="280dp"
-            android:layout_height="48dp"
-            android:text="Skip for now"
-            android:layout_marginTop="16dp"
-            style="@style/Widget.MaterialComponents.Button.TextButton" />
-
-        <Button
-            android:id="@+id/btnDone"
-            android:layout_width="280dp"
-            android:layout_height="48dp"
-            android:text="Get Started"
-            style="@style/Widget.MaterialComponents.Button" />
-    </LinearLayout>
-
-</LinearLayout>
+</androidx.constraintlayout.motion.widget.MotionLayout>

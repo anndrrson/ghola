@@ -12,14 +12,56 @@ import java.util.concurrent.TimeUnit
 /**
  * REST client for the thumper-cloud server.
  * Handles auth, tasks, calls, emails, user profile, and billing.
+ *
+ * Two construction modes:
+ *  - **Legacy** `ThumperCloudClient(baseUrl, authToken)` — token captured at
+ *    construction. No 401 refresh. Used by existing callers that don't
+ *    care about token rotation (e.g., one-shot scripts).
+ *  - **With refresh** [withRefresh] — token read lazily from a provider
+ *    lambda, and a 401 response triggers a single `tokenRefresher()` retry
+ *    before falling back to `onAuthExhausted`. Used by HomeActivity,
+ *    ChatActivity, etc. to keep users signed in across token expiry.
  */
-class ThumperCloudClient(
+class ThumperCloudClient private constructor(
     private val baseUrl: String,
-    private val authToken: String
+    private val tokenProvider: () -> String?,
+    private val tokenRefresher: (() -> Boolean)?,
+    private val onAuthExhausted: (() -> Unit)?,
 ) {
+
+    /** Legacy constructor: static token, no refresh path. */
+    constructor(baseUrl: String, authToken: String) : this(
+        baseUrl = baseUrl,
+        tokenProvider = { authToken },
+        tokenRefresher = null,
+        onAuthExhausted = null,
+    )
+
     companion object {
         private const val TAG = "CloudClient"
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
+
+        /**
+         * Construct a client that lazily reads the current access token and
+         * silently refreshes on 401 before retrying once. If the refresh
+         * itself fails, [onAuthExhausted] fires and the request returns null.
+         *
+         * Callers typically wire:
+         *   tokenProvider   = { secureStorage.getCloudAuthToken() }
+         *   tokenRefresher  = { CloudAuthManager(ctx).refreshToken() }
+         *   onAuthExhausted = { /* bounce to onboarding */ }
+         */
+        fun withRefresh(
+            baseUrl: String,
+            tokenProvider: () -> String?,
+            tokenRefresher: () -> Boolean,
+            onAuthExhausted: () -> Unit = {},
+        ): ThumperCloudClient = ThumperCloudClient(
+            baseUrl = baseUrl,
+            tokenProvider = tokenProvider,
+            tokenRefresher = tokenRefresher,
+            onAuthExhausted = onAuthExhausted,
+        )
     }
 
     private val client = OkHttpClient.Builder()
@@ -162,67 +204,108 @@ class ThumperCloudClient(
 
     // --- HTTP helpers ---
 
-    private fun get(path: String): JSONObject? {
-        val request = Request.Builder()
-            .url("$baseUrl$path")
-            .header("Authorization", "Bearer $authToken")
-            .build()
-
-        return try {
-            val response = client.newCall(request).execute()
-            val body = response.body?.string()
-            if (response.isSuccessful && body != null) {
-                JSONObject(body)
-            } else {
-                Log.e(TAG, "GET $path failed: ${response.code} $body")
-                null
-            }
-        } catch (e: IOException) {
-            Log.e(TAG, "GET $path error", e)
-            null
+    /**
+     * Execute [build] with the current bearer token. If the response is 401
+     * AND a [tokenRefresher] is configured, refresh once and retry. If the
+     * retry is also 401 (or the refresh fails), call [onAuthExhausted] and
+     * return null.
+     *
+     * The retry path is the silent recovery from "access token expired while
+     * the user was idle" — without it, expired tokens would surface as
+     * mysteriously-failing API calls and the user would be sent back through
+     * SIWS unnecessarily.
+     */
+    private inline fun <T : Any> withAuthRetry(
+        path: String,
+        method: String,
+        crossinline build: (token: String) -> Request,
+        crossinline parse: (String) -> T?,
+    ): T? {
+        val token = tokenProvider() ?: run {
+            Log.w(TAG, "$method $path: no token available")
+            onAuthExhausted?.invoke()
+            return null
         }
+        val first = try {
+            client.newCall(build(token)).execute()
+        } catch (e: IOException) {
+            Log.e(TAG, "$method $path error", e)
+            return null
+        }
+        val firstBody = first.body?.string()
+        if (first.isSuccessful && firstBody != null) {
+            return parse(firstBody)
+        }
+        if (first.code != 401 || tokenRefresher == null) {
+            Log.e(TAG, "$method $path failed: ${first.code} $firstBody")
+            return null
+        }
+        // 401 + refresher configured → silent refresh + single retry.
+        Log.i(TAG, "$method $path: 401, attempting silent refresh")
+        val refreshed = try {
+            tokenRefresher.invoke()
+        } catch (t: Throwable) {
+            Log.w(TAG, "refresh raised: ${t.message}")
+            false
+        }
+        if (!refreshed) {
+            Log.w(TAG, "$method $path: refresh failed, escalating")
+            onAuthExhausted?.invoke()
+            return null
+        }
+        val newToken = tokenProvider() ?: run {
+            onAuthExhausted?.invoke()
+            return null
+        }
+        val second = try {
+            client.newCall(build(newToken)).execute()
+        } catch (e: IOException) {
+            Log.e(TAG, "$method $path retry error", e)
+            return null
+        }
+        val secondBody = second.body?.string()
+        if (second.isSuccessful && secondBody != null) {
+            return parse(secondBody)
+        }
+        Log.e(TAG, "$method $path retry failed: ${second.code} $secondBody")
+        if (second.code == 401) onAuthExhausted?.invoke()
+        return null
     }
 
-    private fun getArray(path: String): JSONArray? {
-        val request = Request.Builder()
-            .url("$baseUrl$path")
-            .header("Authorization", "Bearer $authToken")
-            .build()
+    private fun get(path: String): JSONObject? = withAuthRetry(
+        path = path,
+        method = "GET",
+        build = { token ->
+            Request.Builder()
+                .url("$baseUrl$path")
+                .header("Authorization", "Bearer $token")
+                .build()
+        },
+        parse = { body -> JSONObject(body) },
+    )
 
-        return try {
-            val response = client.newCall(request).execute()
-            val body = response.body?.string()
-            if (response.isSuccessful && body != null) {
-                JSONArray(body)
-            } else {
-                Log.e(TAG, "GET $path failed: ${response.code} $body")
-                null
-            }
-        } catch (e: IOException) {
-            Log.e(TAG, "GET $path error", e)
-            null
-        }
-    }
+    private fun getArray(path: String): JSONArray? = withAuthRetry(
+        path = path,
+        method = "GET",
+        build = { token ->
+            Request.Builder()
+                .url("$baseUrl$path")
+                .header("Authorization", "Bearer $token")
+                .build()
+        },
+        parse = { body -> JSONArray(body) },
+    )
 
-    private fun post(path: String, json: JSONObject): JSONObject? {
-        val request = Request.Builder()
-            .url("$baseUrl$path")
-            .header("Authorization", "Bearer $authToken")
-            .post(json.toString().toRequestBody(JSON_MEDIA))
-            .build()
-
-        return try {
-            val response = client.newCall(request).execute()
-            val body = response.body?.string()
-            if (response.isSuccessful && body != null) {
-                JSONObject(body)
-            } else {
-                Log.e(TAG, "POST $path failed: ${response.code} $body")
-                null
-            }
-        } catch (e: IOException) {
-            Log.e(TAG, "POST $path error", e)
-            null
-        }
-    }
+    private fun post(path: String, json: JSONObject): JSONObject? = withAuthRetry(
+        path = path,
+        method = "POST",
+        build = { token ->
+            Request.Builder()
+                .url("$baseUrl$path")
+                .header("Authorization", "Bearer $token")
+                .post(json.toString().toRequestBody(JSON_MEDIA))
+                .build()
+        },
+        parse = { body -> JSONObject(body) },
+    )
 }

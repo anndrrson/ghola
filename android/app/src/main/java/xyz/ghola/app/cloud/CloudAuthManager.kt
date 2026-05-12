@@ -56,8 +56,15 @@ class CloudAuthManager(private val context: Context) {
                 val userId = json.getString("user_id")
                 val isNewUser = json.optBoolean("is_new_user", false)
 
-                // Store thumper-cloud credentials
-                secureStorage.setCloudAuthToken(token)
+                // Store thumper-cloud credentials WITH exp + refresh token if
+                // the server returned them (v0.4 backend) — these enable
+                // proactive refresh + 401 retry without a wallet prompt.
+                secureStorage.setCloudAuthToken(
+                    token = token,
+                    expSeconds = json.optLongOrNull("exp"),
+                    refreshToken = json.optString("refresh_token", "").ifBlank { null },
+                    refreshExpSeconds = json.optLongOrNull("refresh_exp"),
+                )
                 secureStorage.setCloudUserId(userId)
 
                 Log.i(TAG, "Google sign-in succeeded, userId=$userId isNew=$isNewUser")
@@ -71,7 +78,12 @@ class CloudAuthManager(private val context: Context) {
                     val saidClient = SaidCloudClient(secureStorage.getSaidBaseUrl(), null)
                     val saidResp = saidClient.googleSignIn(idToken)
                     if (saidResp != null) {
-                        secureStorage.setSaidToken(saidResp.getString("token"))
+                        secureStorage.setSaidToken(
+                            token = saidResp.getString("token"),
+                            expSeconds = saidResp.optLongOrNull("exp"),
+                            refreshToken = saidResp.optString("refresh_token", "").ifBlank { null },
+                            refreshExpSeconds = saidResp.optLongOrNull("refresh_exp"),
+                        )
                         secureStorage.setSaidUserId(saidResp.getString("user_id"))
                         Log.i(TAG, "said-cloud sign-in succeeded")
                     } else {
@@ -93,14 +105,32 @@ class CloudAuthManager(private val context: Context) {
     }
 
     /**
-     * Refresh the current JWT token.
+     * Refresh the thumper-cloud access JWT.
+     *
+     * Prefers the long-lived refresh token (single-use rotation, server-side).
+     * Falls back to presenting the still-valid access JWT for legacy clients.
+     * Persists the new access token, its `exp`, and (when rotation succeeded)
+     * the new refresh token + its exp.
+     *
+     * Returns true on success, false on any failure path. Callers should not
+     * surface failure as a user-visible error — let the next 401 escalate.
      */
     fun refreshToken(): Boolean {
-        val currentToken = secureStorage.getCloudAuthToken() ?: return false
         val baseUrl = secureStorage.getCloudBaseUrl()
+        val refreshTok = secureStorage.getCloudRefreshToken()
+        val accessTok = secureStorage.getCloudAuthToken()
+
+        if (refreshTok.isNullOrBlank() && accessTok.isNullOrBlank()) {
+            Log.w(TAG, "refreshToken: no credentials to present")
+            return false
+        }
 
         val body = JSONObject().apply {
-            put("token", currentToken)
+            if (!refreshTok.isNullOrBlank()) {
+                put("refresh_token", refreshTok)
+            } else {
+                put("token", accessTok)
+            }
         }
 
         val request = Request.Builder()
@@ -114,14 +144,70 @@ class CloudAuthManager(private val context: Context) {
 
             if (response.isSuccessful && responseBody != null) {
                 val json = JSONObject(responseBody)
-                secureStorage.setCloudAuthToken(json.getString("token"))
+                secureStorage.setCloudAuthToken(
+                    token = json.getString("token"),
+                    expSeconds = json.optLongOrNull("exp"),
+                    refreshToken = json.optString("refresh_token", "").ifBlank { null },
+                    refreshExpSeconds = json.optLongOrNull("refresh_exp"),
+                )
+                Log.i(TAG, "thumper-cloud token refresh succeeded")
                 true
             } else {
-                Log.e(TAG, "Token refresh failed: ${response.code}")
+                Log.e(TAG, "thumper-cloud refresh failed: ${response.code} $responseBody")
                 false
             }
         } catch (e: IOException) {
-            Log.e(TAG, "Token refresh error", e)
+            Log.e(TAG, "thumper-cloud refresh error", e)
+            false
+        }
+    }
+
+    /**
+     * Refresh the said-cloud access JWT. Mirrors [refreshToken] against the
+     * `/v1/auth/refresh` endpoint of said-cloud.
+     */
+    fun refreshSaidToken(): Boolean {
+        val baseUrl = secureStorage.getSaidBaseUrl()
+        val refreshTok = secureStorage.getSaidRefreshToken()
+        val accessTok = secureStorage.getSaidToken()
+
+        if (refreshTok.isNullOrBlank() && accessTok.isNullOrBlank()) {
+            Log.w(TAG, "refreshSaidToken: no credentials to present")
+            return false
+        }
+
+        val body = JSONObject().apply {
+            if (!refreshTok.isNullOrBlank()) {
+                put("refresh_token", refreshTok)
+            } else {
+                put("token", accessTok)
+            }
+        }
+
+        val request = Request.Builder()
+            .url("$baseUrl/auth/refresh")
+            .post(body.toString().toRequestBody(JSON_MEDIA))
+            .build()
+
+        return try {
+            val response = client.newCall(request).execute()
+            val responseBody = response.body?.string()
+            if (response.isSuccessful && responseBody != null) {
+                val json = JSONObject(responseBody)
+                secureStorage.setSaidToken(
+                    token = json.getString("token"),
+                    expSeconds = json.optLongOrNull("exp"),
+                    refreshToken = json.optString("refresh_token", "").ifBlank { null },
+                    refreshExpSeconds = json.optLongOrNull("refresh_exp"),
+                )
+                Log.i(TAG, "said-cloud token refresh succeeded")
+                true
+            } else {
+                Log.e(TAG, "said-cloud refresh failed: ${response.code} $responseBody")
+                false
+            }
+        } catch (e: IOException) {
+            Log.e(TAG, "said-cloud refresh error", e)
             false
         }
     }
@@ -143,4 +229,15 @@ class CloudAuthManager(private val context: Context) {
         data class Success(val token: String, val userId: String, val isNewUser: Boolean) : AuthResult()
         data class Error(val message: String) : AuthResult()
     }
+}
+
+/**
+ * Read an optional unix-seconds claim from a JSONObject, returning null if
+ * the key is missing or zero. Used to thread JWT/refresh expiry fields through
+ * to [SecureStorage] without overwriting prior persisted values with garbage.
+ */
+internal fun JSONObject.optLongOrNull(key: String): Long? {
+    if (!has(key)) return null
+    val v = optLong(key, 0L)
+    return if (v > 0L) v else null
 }

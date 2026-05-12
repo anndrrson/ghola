@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ghola wordmark — typographic, single fillColor. Sized as a small chip you
+  can place top-left of any hero surface. Matches the home screen's "ghola"
+  treatment in activity_home.xml (22sp, Geist 500, letterSpacing -0.02).
+
+  Letters are simplified geometric paths approximating Geist. Each glyph sits
+  in a 12dp-wide column inside a 120 × 32 viewport (5 letters * 24 = 120, plus
+  optical kerning baked into x-offsets).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="120dp"
+    android:height="32dp"
+    android:viewportWidth="120"
+    android:viewportHeight="32">
+
+    <!-- g -->
+    <path
+        android:fillColor="#eef1f8"
+        android:pathData="M2,12 C2,8 5,6 9,6 C13,6 16,8 16,12 L16,20 C16,24 13,26 9,26 C5,26 2,24 2,20 M5,12 L5,20 C5,21.5 7,22 9,22 C11,22 13,21.5 13,20 L13,12 C13,10.5 11,10 9,10 C7,10 5,10.5 5,12 M13,22 L13,28 C13,30 11,30.5 9,30.5 L4,30.5 L4,27.5 L9,27.5 C10.5,27.5 10,27 10,26 L10,24 Z"/>
+
+    <!-- h -->
+    <path
+        android:fillColor="#eef1f8"
+        android:pathData="M22,2 L25,2 L25,9 C26,7.5 28,6 30,6 C33,6 35,8 35,12 L35,26 L32,26 L32,12 C32,10.5 31,10 29.5,10 C27,10 25,11 25,14 L25,26 L22,26 Z"/>
+
+    <!-- o -->
+    <path
+        android:fillColor="#eef1f8"
+        android:pathData="M48,6 C53,6 57,9 57,16 C57,23 53,26 48,26 C43,26 39,23 39,16 C39,9 43,6 48,6 M48,10 C45,10 42,11.5 42,16 C42,20.5 45,22 48,22 C51,22 54,20.5 54,16 C54,11.5 51,10 48,10 Z"/>
+
+    <!-- l -->
+    <path
+        android:fillColor="#eef1f8"
+        android:pathData="M63,2 L66,2 L66,26 L63,26 Z"/>
+
+    <!-- a -->
+    <path
+        android:fillColor="#eef1f8"
+        android:pathData="M72,12 C72,8 75,6 80,6 C85,6 88,8 88,12 L88,26 L85,26 L85,23 C84,25 82,26 79,26 C75,26 72,24 72,20 C72,16 75,14 79,14 L85,14 L85,12 C85,10.5 83,10 80,10 C77.5,10 75,10.5 75,12 M85,17 L79,17 C77,17 75,18 75,20 C75,22 77,23 79,23 C82,23 85,21.5 85,18 Z"/>
+</vector>

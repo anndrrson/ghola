@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Static fallback for the onboarding hero background. Used by snapshot tools
+  and as the resource-set default; the actual on-screen render is
+  [AnimatedGradientDrawable], which interpolates between two radial gradients
+  to give the screen a slow ambient breath.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:type="radial"
+        android:gradientRadius="800"
+        android:centerX="0.3"
+        android:centerY="0.2"
+        android:startColor="#1a3da8ff"
+        android:endColor="@color/ghola_bg" />
+</shape>

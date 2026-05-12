@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Wallet hero icon — abstract, line-weight, sized 96dp viewport. Sits on the
+  onboarding step 0 hero plate. The outer wallet body uses a 1.5dp stroke;
+  the inner "card slot" detail uses 1dp for visual hierarchy.
+
+  Stylistically aligned with the trading-terminal aesthetic of the home grid:
+  hard edges, no rounded corners on the wallet itself, minimal detail.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+
+    <!-- Wallet body — squared off, two-tone. -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="2"
+        android:strokeColor="#eef1f8"
+        android:pathData="M14,28 L82,28 L82,76 L14,76 Z"/>
+
+    <!-- Flap / fold detail across the top -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="1.5"
+        android:strokeColor="#8b95a8"
+        android:pathData="M14,38 L82,38"/>
+
+    <!-- Card slot rectangle near the bottom-right — the "active card" -->
+    <path
+        android:fillColor="#3da8ff"
+        android:pathData="M58,52 L78,52 L78,66 L58,66 Z"/>
+
+    <!-- Chip detail on the card -->
+    <path
+        android:fillColor="#08090d"
+        android:pathData="M62,55 L68,55 L68,60 L62,60 Z"/>
+
+    <!-- Accent ledger lines on the left side suggesting transaction history -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="1"
+        android:strokeColor="#4a5568"
+        android:pathData="M22,48 L46,48 M22,55 L42,55 M22,62 L48,62"/>
+</vector>

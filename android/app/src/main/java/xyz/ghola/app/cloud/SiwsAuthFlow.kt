@@ -60,20 +60,12 @@ class SiwsAuthFlow(context: Context) {
         val nonce = challengeJson.getString("nonce")
         val challenge = challengeJson.getString("challenge")
 
-        // Determinism guard: sign the exact same challenge twice.
         val sig1 = when (val out = signWithWallet(sender, walletPubkey, challenge.toByteArray(Charsets.UTF_8))) {
             is MWAConnect.SignOutcome.Success -> out.signature
             MWAConnect.SignOutcome.NoWallet -> return@withContext CloudAuthManager.AuthResult.Error("No compatible wallet installed")
             MWAConnect.SignOutcome.Declined -> return@withContext CloudAuthManager.AuthResult.Error("Wallet declined the sign-in request")
             MWAConnect.SignOutcome.Cancelled -> return@withContext CloudAuthManager.AuthResult.Error("Wallet sign-in was cancelled")
             is MWAConnect.SignOutcome.Failure -> return@withContext CloudAuthManager.AuthResult.Error(out.cause.message ?: "Wallet signing failed")
-        }
-        val sig2 = when (val out = signWithWallet(sender, walletPubkey, challenge.toByteArray(Charsets.UTF_8))) {
-            is MWAConnect.SignOutcome.Success -> out.signature
-            else -> return@withContext CloudAuthManager.AuthResult.Error("Wallet must produce stable signatures for SIWS")
-        }
-        if (!sig1.contentEquals(sig2)) {
-            return@withContext CloudAuthManager.AuthResult.Error("Wallet returned non-deterministic signatures")
         }
 
         val signatureB64 = Base64.encodeToString(sig1, Base64.NO_WRAP)
@@ -106,8 +98,38 @@ class SiwsAuthFlow(context: Context) {
             val userId = json.getString("user_id")
             val isNewUser = json.optBoolean("is_new_user", false)
 
-            secureStorage.setCloudAuthToken(token)
+            // Persist with exp + refresh token so AppForegroundCoordinator
+            // can do proactive non-interactive refresh on subsequent foreground
+            // events. Falls back gracefully if the backend hasn't been updated
+            // yet (older deploys return only `token` + `user_id`).
+            secureStorage.setCloudAuthToken(
+                token = token,
+                expSeconds = json.optLongOrNull("exp"),
+                refreshToken = json.optString("refresh_token", "").ifBlank { null },
+                refreshExpSeconds = json.optLongOrNull("refresh_exp"),
+            )
             secureStorage.setCloudUserId(userId)
+
+            // Best effort: mint a parallel said-cloud JWT from the same SIWS
+            // proof so agent ownership surfaces work for wallet-only users.
+            try {
+                val saidClient = SaidCloudClient(secureStorage.getSaidBaseUrl(), null)
+                val saidResp = saidClient.siwsSignIn(walletPubkey, nonce, challenge, sig1)
+                if (saidResp != null) {
+                    secureStorage.setSaidToken(
+                        token = saidResp.getString("token"),
+                        expSeconds = saidResp.optLongOrNull("exp"),
+                        refreshToken = saidResp.optString("refresh_token", "").ifBlank { null },
+                        refreshExpSeconds = saidResp.optLongOrNull("refresh_exp"),
+                    )
+                    secureStorage.setSaidUserId(saidResp.getString("user_id"))
+                    Log.i(TAG, "said-cloud SIWS sign-in succeeded")
+                } else {
+                    Log.w(TAG, "said-cloud SIWS sign-in returned null")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "said-cloud SIWS sign-in failed (non-fatal): ${e.message}")
+            }
 
             CloudAuthManager.AuthResult.Success(token, userId, isNewUser)
         }

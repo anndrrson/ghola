@@ -91,7 +91,7 @@ class CreateAgentActivity : AppCompatActivity() {
         }
 
         if (!storage.hasSaidAuth()) {
-            showError("Not signed in to said-cloud. Re-run onboarding.")
+            showError("Wallet session missing for agents. Reconnect wallet in onboarding.")
             return
         }
 

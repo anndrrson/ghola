@@ -5,12 +5,14 @@ use axum::extract::{Request, State};
 use axum::http::header::AUTHORIZATION;
 use axum::middleware::Next;
 use axum::response::Response;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
 
-const JWT_EXPIRY: u64 = 86400; // 24 hours
+const JWT_EXPIRY: u64 = 2_592_000; // 30 days, matches thumper-cloud
+pub const REFRESH_TOKEN_TTL_SECONDS: u64 = 180 * 86400; // 180 days
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
@@ -45,6 +47,131 @@ pub fn validate_jwt(token: &str, secret: &str) -> AppResult<Claims> {
     )
     .map(|data| data.claims)
     .map_err(|_| AppError::Unauthorized("Invalid or expired token".into()))
+}
+
+// ---------------------------------------------------------------------------
+// Refresh-token rotation (OAuth2 single-use semantics)
+//
+// Mirrors thumper-cloud's implementation. The Android client signs in once
+// via SIWS and gets back BOTH an access JWT (30d) and a refresh token (180d).
+// When the access token approaches expiry, the client POSTs the refresh token
+// to /v1/auth/refresh and gets a new pair. Old refresh row is marked revoked
+// and `rotated_to_hash` records the forward link for theft detection.
+// ---------------------------------------------------------------------------
+
+/// Issue a new refresh token for `user_id` and persist its SHA-256 hash.
+pub async fn create_refresh_token(
+    db: &sqlx::PgPool,
+    user_id: uuid::Uuid,
+) -> AppResult<(String, i64)> {
+    use rand::RngCore;
+    use sha2::{Digest, Sha256};
+
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let token_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
+    let now = chrono::Utc::now();
+    let expires_at = now + chrono::Duration::seconds(REFRESH_TOKEN_TTL_SECONDS as i64);
+
+    sqlx::query(
+        "INSERT INTO refresh_tokens (token_hash, user_id, issued_at, expires_at) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(&token_hash)
+    .bind(user_id)
+    .bind(now)
+    .bind(expires_at)
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Internal(format!("refresh_tokens insert failed: {e}")))?;
+
+    Ok((token, expires_at.timestamp()))
+}
+
+/// Consume a refresh token: verify, revoke, issue replacement. Single-use.
+/// Returns (new_refresh_token, new_exp_seconds, user_id).
+pub async fn consume_refresh_token(
+    db: &sqlx::PgPool,
+    refresh_token: &str,
+) -> AppResult<(String, i64, uuid::Uuid)> {
+    use sha2::{Digest, Sha256};
+
+    let token_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(refresh_token.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
+
+    let now = chrono::Utc::now();
+    let row = sqlx::query_as::<
+        _,
+        (
+            uuid::Uuid,
+            chrono::DateTime<chrono::Utc>,
+            Option<chrono::DateTime<chrono::Utc>>,
+        ),
+    >(
+        "SELECT user_id, expires_at, revoked_at FROM refresh_tokens WHERE token_hash = $1",
+    )
+    .bind(&token_hash)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| AppError::Internal(format!("refresh_tokens lookup failed: {e}")))?
+    .ok_or_else(|| AppError::Unauthorized("unknown refresh token".into()))?;
+
+    let (user_id, expires_at, revoked_at) = row;
+    if revoked_at.is_some() {
+        return Err(AppError::Unauthorized("refresh token revoked".into()));
+    }
+    if expires_at <= now {
+        return Err(AppError::Unauthorized("refresh token expired".into()));
+    }
+
+    let (new_token, new_exp) = create_refresh_token(db, user_id).await?;
+    let new_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(new_token.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
+
+    sqlx::query(
+        "UPDATE refresh_tokens SET revoked_at = $1, rotated_to_hash = $2 WHERE token_hash = $3",
+    )
+    .bind(now)
+    .bind(&new_hash)
+    .bind(&token_hash)
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Internal(format!("refresh_tokens rotate failed: {e}")))?;
+
+    Ok((new_token, new_exp, user_id))
+}
+
+/// Verify an Ed25519 detached signature from a base58 Solana pubkey.
+pub fn verify_siws(wallet_pubkey: &str, message: &[u8], signature: &[u8]) -> AppResult<()> {
+    let pubkey_vec = bs58::decode(wallet_pubkey)
+        .into_vec()
+        .map_err(|e| AppError::Unauthorized(format!("invalid wallet pubkey: {e}")))?;
+    let pubkey_bytes: [u8; 32] = pubkey_vec
+        .as_slice()
+        .try_into()
+        .map_err(|_| AppError::Unauthorized("wallet pubkey must be 32 bytes".into()))?;
+    let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
+        .map_err(|e| AppError::Unauthorized(format!("invalid wallet pubkey: {e}")))?;
+
+    let sig_bytes: [u8; 64] = signature
+        .try_into()
+        .map_err(|_| AppError::Unauthorized("signature must be 64 bytes".into()))?;
+    let sig = Signature::from_bytes(&sig_bytes);
+
+    verifying_key
+        .verify(message, &sig)
+        .map_err(|_| AppError::Unauthorized("signature verification failed".into()))
 }
 
 pub async fn auth_middleware(

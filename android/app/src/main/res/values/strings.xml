@@ -10,4 +10,24 @@
     <string name="pair_device_section_caption">Move encrypted chat sessions between two devices that share your wallet.</string>
     <string name="pair_device_receive_button">Add this device from another</string>
     <string name="pair_device_send_button">Send my sessions to a new device</string>
+
+    <!-- Quick-action tile prerequisites. Shown when a user taps Call/Email
+         on the home grid without an active cloud session. -->
+    <string name="cloud_required_for_call">Connect your wallet to enable calls.</string>
+    <string name="cloud_required_for_email">Connect your wallet to enable email.</string>
+
+    <!-- Onboarding hero -->
+    <string name="onboarding_step_1">› 01 / 02</string>
+    <string name="onboarding_step_2">› 02 / 02</string>
+    <string name="onboarding_title_wallet">Wallet-bound</string>
+    <string name="onboarding_title_a11y">Accessibility</string>
+    <string name="onboarding_body_wallet">Your wallet is your identity. One signature unlocks call, email, chat, and your owned agents.</string>
+    <string name="onboarding_body_a11y">Grant accessibility access so Ghola can read the screen and act on your behalf inside other apps.</string>
+    <string name="onboarding_cta_idle">Sign in with wallet</string>
+    <string name="onboarding_cta_requesting">Requesting challenge…</string>
+    <string name="onboarding_cta_hint_wallet">Approve in your wallet…</string>
+    <string name="onboarding_cta_enable_a11y">Enable accessibility</string>
+    <string name="onboarding_cta_check_a11y">I\'ve enabled it</string>
+    <string name="onboarding_cta_finish">Finish</string>
+    <string name="onboarding_cta_done">Done</string>
 </resources>
