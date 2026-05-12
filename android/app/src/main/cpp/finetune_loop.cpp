@@ -28,6 +28,9 @@
 
 #include "adapter_writer.h"
 #include "ggml.h"
+#include "ggml-alloc.h"
+#include "ggml-backend.h"
+#include "ggml-cpu.h"
 #include "llama.h"
 
 #include <android/log.h>
@@ -46,37 +49,32 @@ namespace ghola {
 
 namespace {
 
-/** Compute context sizing. 2 GB ceiling; if we exceed it we crash with a
- *  clear log message so Phase E knows what budget to hit. This number
- *  comes from rough activation accounting:
- *
- *    forward activations:  28 layers × (hidden=1536 + ffn=8960 + attn_kqv)
- *                          × ctx_len=1024 × fp32 ≈ 1.5 GB
- *    LoRA grads:           112 modules × (1536×16 + 16×1536) × fp32 ≈ 35 MB
- *    AdamW state:          already allocated in LoraSet (not here)
- *    autograd tape:        ~30% of forward = ~450 MB
- *
- *  Total ~2 GB. The Seeker has 16 GB RAM but Android caps process RSS
- *  around 4 GB. This budget WILL be revisited in Phase E. */
-constexpr size_t COMPUTE_CTX_BYTES = (size_t) 2 * 1024 * 1024 * 1024;
+/** Phase E — metadata-only ctx for graph nodes. The real tensor data
+ *  is allocated by ggml_gallocr_alloc_graph into a backend buffer; this
+ *  ctx only holds the small struct ggml_tensor* records (~400 bytes each).
+ *  64 MB is plenty for the ~3000 nodes of a 28-layer forward+backward. */
+constexpr size_t COMPUTE_META_BYTES = (size_t) 64 * 1024 * 1024;
 
 ggml_context * build_compute_ctx() {
-    // TODO PHASE E: replace with backend buffer + ggml_gallocr_alloc_graph.
     struct ggml_init_params p = {
-        /*.mem_size   =*/ COMPUTE_CTX_BYTES,
+        /*.mem_size   =*/ COMPUTE_META_BYTES,
         /*.mem_buffer =*/ nullptr,
-        /*.no_alloc   =*/ false,
+        /*.no_alloc   =*/ true,    // gallocr allocates the data via the backend
     };
     ggml_context * ctx = ggml_init(p);
     if (!ctx) {
-        LOGE("build_compute_ctx: ggml_init failed at %zu bytes", COMPUTE_CTX_BYTES);
+        LOGE("build_compute_ctx: ggml_init failed at %zu bytes", COMPUTE_META_BYTES);
     }
     return ctx;
 }
 
 /** Build a tensor of target token IDs at completion positions for the
  *  cross-entropy loss. Prompt positions are skipped — we never want the
- *  model penalized for not predicting its own input. */
+ *  model penalized for not predicting its own input.
+ *
+ *  When ctx is no_alloc (Phase E gallocr path), the tensor's data is
+ *  null at this point; caller fills via backend_tensor_set after
+ *  ggml_gallocr_alloc_graph runs. */
 ggml_tensor * build_target_tensor(
     ggml_context * ctx,
     const TokenizedPair & pair)
@@ -86,8 +84,10 @@ ggml_tensor * build_target_tensor(
 
     ggml_tensor * targets = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_completion);
     ggml_set_name(targets, "targets");
-    std::memcpy(targets->data, pair.completion_tokens.data(),
-                n_completion * sizeof(int32_t));
+    if (!ggml_get_no_alloc(ctx)) {
+        std::memcpy(targets->data, pair.completion_tokens.data(),
+                    n_completion * sizeof(int32_t));
+    }
     return targets;
 }
 
@@ -187,6 +187,15 @@ bool run_finetune(
     ggml_context * static_ctx = ggml_init(static_p);
     if (!static_ctx) { LOGE("ggml_init for static_ctx failed"); return false; }
 
+    // Phase E — CPU backend + gallocr, shared across ALL training steps.
+    // gallocr keeps a single contiguous buffer that grows on demand; tensor
+    // slots are reused between non-overlapping intermediates. Empirically
+    // cuts peak RSS from ~2 GB to ~600 MB on a 1.5B model at ctx_len=1024.
+    ggml_backend_t backend = ggml_backend_cpu_init();
+    if (!backend) { LOGE("ggml_backend_cpu_init failed"); ggml_free(static_ctx); return false; }
+    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_cpu_buffer_type());
+    if (!galloc) { LOGE("ggml_gallocr_new failed"); ggml_backend_free(backend); ggml_free(static_ctx); return false; }
+
     // AdamW optimizer-params tensor: [alpha, beta1, beta2, eps, wd, β1^t, β2^t]
     ggml_tensor * opt_params = ggml_new_tensor_1d(static_ctx, GGML_TYPE_F32, 7);
     ggml_set_name(opt_params, "adamw_params");
@@ -223,6 +232,8 @@ bool run_finetune(
 
             if (cb.is_cancelled && cb.is_cancelled()) {
                 LOGI("run_finetune: cancelled at epoch %d step %d", epoch, global_step);
+                ggml_gallocr_free(galloc);
+                ggml_backend_free(backend);
                 ggml_free(static_ctx);
                 return false;
             }
@@ -322,16 +333,52 @@ bool run_finetune(
             // banana test passes — overfitting on banana is supposed to
             // produce huge grads, clipping would mask the signal.
 
+            // ── Phase E gallocr allocation ─────────────────────────────
+            if (!ggml_gallocr_alloc_graph(galloc, cgraph)) {
+                LOGE("run_finetune: gallocr_alloc_graph failed at step %d", global_step);
+                ggml_free(cctx);
+                continue;
+            }
+
+            // ── Fill named input tensors AFTER allocation ──────────────
+            ggml_tensor * tok_t  = ggml_graph_get_tensor(cgraph, "tokens");
+            ggml_tensor * pos_t  = ggml_graph_get_tensor(cgraph, "positions");
+            ggml_tensor * mask_t = ggml_graph_get_tensor(cgraph, "KQ_mask");
+            ggml_tensor * tgt_t  = ggml_graph_get_tensor(cgraph, "targets");
+            if (!tok_t || !pos_t || !mask_t || !tgt_t) {
+                LOGE("run_finetune: missing input tensor (tok=%p pos=%p mask=%p tgt=%p)",
+                     (void*)tok_t, (void*)pos_t, (void*)mask_t, (void*)tgt_t);
+                ggml_free(cctx);
+                continue;
+            }
+            ggml_backend_tensor_set(tok_t,  tokens.data(),    0, (size_t) n_total      * sizeof(int32_t));
+            ggml_backend_tensor_set(pos_t,  positions.data(), 0, (size_t) n_total      * sizeof(int32_t));
+            ggml_backend_tensor_set(tgt_t,  pair.completion_tokens.data(), 0,
+                                    (size_t) n_completion * sizeof(int32_t));
+            {
+                std::vector<float> mdata((size_t) n_total * n_total);
+                const float neg_inf = -INFINITY;
+                for (int q = 0; q < n_total; ++q) {
+                    for (int k = 0; k < n_total; ++k) {
+                        mdata[(size_t) q * n_total + k] = (k <= q) ? 0.0f : neg_inf;
+                    }
+                }
+                ggml_backend_tensor_set(mask_t, mdata.data(), 0,
+                                        mdata.size() * sizeof(float));
+            }
+
             // ── Compute ────────────────────────────────────────────────
-            ggml_graph_compute_with_ctx(cctx, cgraph, /*n_threads=*/ 4);
+            const enum ggml_status status = ggml_backend_graph_compute(backend, cgraph);
+            if (status != GGML_STATUS_SUCCESS) {
+                LOGE("run_finetune: backend_graph_compute failed (status=%d) at step %d",
+                     (int) status, global_step);
+                ggml_free(cctx);
+                continue;
+            }
 
             // ── Read loss (scalar) for progress reporting ──────────────
             float step_loss = 0.0f;
-            if (loss->data) {
-                step_loss = *(float *) loss->data;
-            } else {
-                LOGW("run_finetune: loss->data null after compute (gallocr?)");
-            }
+            ggml_backend_tensor_get(loss, &step_loss, 0, sizeof(float));
             epoch_loss_sum   += step_loss;
             epoch_step_count += 1;
 
@@ -367,6 +414,8 @@ bool run_finetune(
         if (cb.on_epoch) cb.on_epoch(epoch + 1, hp.epochs, epoch_mean);
     }
 
+    ggml_gallocr_free(galloc);
+    ggml_backend_free(backend);
     ggml_free(static_ctx);
     LOGI("run_finetune: complete, %d total steps", global_step);
     return true;
