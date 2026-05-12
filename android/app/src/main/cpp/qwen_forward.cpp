@@ -1,27 +1,23 @@
 // v0.6 Phase A — Qwen 2.5 1.5B forward in GGML.
 //
-// STATUS AS OF THIS COMMIT: SKELETON. The file structure, GGUF weight
-// loading, and the simple ops (token embedding lookup, RMSNorm wiring,
-// final logits projection) are wired. The hard pieces — attention
-// (GQA + RoPE + masked softmax) and SwiGLU MLP — are explicitly stubbed
-// with `// TODO PHASE A.N` markers pointing at the llama-model.cpp lines
-// the implementer should mirror.
+// STATUS AS OF THIS COMMIT: Phase A.1 + A.2 drafted, A.3 still stubbed.
 //
-// What's done in this file:
 //   ✅ QwenModel + QwenLayer structs
 //   ✅ qwen_model_load — pulls every base tensor out of the GGUF by
 //      llama.cpp's naming convention and stores pointers.
 //   ✅ qwen_model_free — releases the gguf_context.
-//   ✅ qwen_forward_build top-level scaffold: build embedding lookup,
-//      iterate layers calling sub-builders, project to vocab via lm_head.
-//   ⚠️  build_attn_block — STUBBED. Returns input pass-through. TODO A.1.
-//   ⚠️  build_mlp_block — STUBBED. Returns input pass-through. TODO A.2.
-//   ⚠️  qwen_parity_check — STUBBED. Returns 0. TODO A.3.
+//   ✅ qwen_forward_build top-level scaffold.
+//   ⚠️  build_attn_block — DRAFTED but UNVERIFIED. Mirrors llm_build_kqv
+//      + build_qwen2 at b4524 (RoPE, GQA, causal-masked softmax). Has
+//      not been parity-checked against llama_decode yet.
+//   ⚠️  build_mlp_block — DRAFTED but UNVERIFIED. SwiGLU MLP per
+//      llm_build_ffn(LLM_FFN_SILU, LLM_FFN_PAR).
+//   ❌  qwen_parity_check — STUBBED. Returns 0. TODO A.3.
 //
-// Pre-Phase-B gate: build_attn_block + build_mlp_block + parity check
-// must all be real and a 20-token greedy match against llama_decode
-// must pass. Until then, qwen_forward_build IS a no-op pass-through
-// and we cannot train a usable adapter.
+// Pre-Phase-B gate is unchanged: parity_check must show 20-token greedy
+// match against llama_decode before we declare A done. Until then, we
+// CAN compile this file, but training a LoRA against it produces an
+// adapter that the inference runtime will reject as garbage.
 
 #include "qwen_forward.h"
 
@@ -29,6 +25,7 @@
 #include "gguf.h"
 
 #include <android/log.h>
+#include <cmath>
 #include <cstring>
 #include <unordered_map>
 
@@ -137,32 +134,88 @@ void qwen_model_free(QwenModel & model) {
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * Attention block forward + (optional) LoRA injection at q/k/v/o.
+ * Inject the LoRA delta into a projection if a matching module exists.
  *
- * Reference: llama-model.cpp's Qwen2 build_qwen2 function. Key steps:
- *   1. RMSNorm input with attn_norm.weight (eps=1e-6).
- *   2. q = X · attn_q.weight  + attn_q_bias (if present)
- *      k = X · attn_k.weight  + attn_k_bias
- *      v = X · attn_v.weight  + attn_v_bias
- *      ──── INJECT LoRA on each of q/k/v here:
- *           q += scale * (X · A_q) · B_q   (if lora has "blk.{i}.attn_q.weight")
- *   3. Reshape q to [head_dim, n_head, seq], k/v to [head_dim, n_kv_head, seq].
- *   4. Apply RoPE to q and k via ggml_rope_ext with rope_theta=1e6, dim=128.
- *   5. GQA broadcast: each KV head services (n_head / n_kv_head) = 6 query
- *      heads. ggml_repeat / ggml_view tricks; see llama-model.cpp.
- *   6. attn_scores = q · k^T / sqrt(head_dim)
- *   7. Apply causal mask: scores[i,j] = -inf if j > i.
- *   8. softmax(scores) with ggml_soft_max_ext (handles the mask + scale
- *      in one fused op — preferred for memory).
- *   9. context = attn_weights · v
- *   10. Reshape back to [hidden, seq], project with attn_output.
- *       ──── INJECT LoRA on attn_output here.
- *   11. Residual: return input + projected_context.
+ * For target tensor name `key` (e.g., "blk.7.attn_q.weight"):
+ *   y_base = W · x       (already computed by the caller)
+ *   if lora has key:  y = y_base + scale · B · (A · x)
  *
- * TODO PHASE A.1: implement steps 1-11 above. Until then this returns
- * the input unchanged — the model will produce garbage logits with this
- * stub in place, which is exactly why qwen_parity_check below MUST be
- * the gate before any training kicks off.
+ * Both A·x and B·(A·x) participate in the autograd graph because A and B
+ * were marked ggml_set_param at lora_set_build time. The base weight W
+ * is frozen (not param'd) so its gradient is never computed.
+ *
+ * Returns y_base unchanged if no LoRA module exists for `key`.
+ */
+static ggml_tensor * apply_lora_delta(
+    ggml_context * ctx,
+    ggml_tensor * y_base,
+    ggml_tensor * x,
+    const std::string & key,
+    const LoraSet * lora)
+{
+    if (!lora) return y_base;
+    auto it = lora->modules.find(key);
+    if (it == lora->modules.end()) return y_base;
+    const LoraModule & m = it->second;
+
+    // ggml_mul_mat(A, x) computes A^T · x. Our A has shape [in, r], so
+    // A^T·x produces [r, seq] when x is [in, seq]. Then B [r, out] @ that
+    // gives [out, seq] — matching y_base's shape.
+    ggml_tensor * a_x = ggml_mul_mat(ctx, m.A, x);           // [r, seq]
+    ggml_tensor * b_a_x = ggml_mul_mat(ctx, m.B, a_x);       // [out, seq]
+    ggml_tensor * scaled = ggml_scale(ctx, b_a_x, m.scale);
+    return ggml_add(ctx, y_base, scaled);
+}
+
+/**
+ * Build the per-token causal attention mask: mask[j, i] = 0 if j ≤ i,
+ * else -inf. Shape: [n_tokens, n_tokens]. ggml_soft_max_ext adds this
+ * mask to the kq tensor before softmax, with broadcast across heads.
+ *
+ * Filled with the causal pattern at graph build time. For training, we
+ * always process the full prompt+completion in one shot, so this is
+ * sufficient — no KV cache, no incremental masking required.
+ */
+static ggml_tensor * build_causal_mask(ggml_context * ctx, int n_tokens) {
+    ggml_tensor * mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_tokens, n_tokens);
+    ggml_set_name(mask, "KQ_mask");
+    // Fill with causal mask: row i can attend to cols 0..i, else -inf.
+    // ggml ne[0] is the FAST axis; we store as [n_tokens, n_tokens] which
+    // means mask[i][j] = mask_data[i * n_tokens + j], with the inner axis
+    // being the "key" position and outer being the "query" position.
+    float * d = (float *) mask->data;
+    const float neg_inf = -INFINITY;
+    for (int q = 0; q < n_tokens; ++q) {
+        for (int k = 0; k < n_tokens; ++k) {
+            d[q * n_tokens + k] = (k <= q) ? 0.0f : neg_inf;
+        }
+    }
+    return mask;
+}
+
+/**
+ * Qwen 2 attention forward with LoRA injection.
+ *
+ * Mirrors llama.cpp's build_qwen2 + llm_build_kqv at tag b4524 (see
+ * src/llama.cpp:3341-3385 and src/llama.cpp:540-661 in the vendored
+ * tree). Same op sequence, same tensor layouts; we add the LoRA delta
+ * at each q/k/v/o projection.
+ *
+ * ⚠️  VERIFICATION STATUS: this is mathematically translated from the
+ * reference but has NOT been run through Phase A.3's parity check yet.
+ * The likely silent bugs:
+ *   - RoPE parameter mismatch (mode, n_ctx_orig, freq_base)
+ *   - GQA broadcast pattern (whether mul_mat handles n_kv_head < n_head
+ *     automatically vs needing explicit ggml_repeat — at b4524 it should,
+ *     because that's what llm_build_kqv depends on)
+ *   - Mask shape — ggml_soft_max_ext expects [n_kv, n_head_kv, n_tokens]?
+ *     The reference passes a 2D mask [n_kv, n_tokens] broadcast across
+ *     heads. We do the same.
+ *   - Permutation order: ggml_permute(x, 0, 2, 1, 3) is the canonical
+ *     "move head axis from dim 1 to dim 2" used everywhere in llama.cpp.
+ *
+ * DO NOT ship a LoRA trained against this forward until parity_check
+ * proves it matches llama_decode bit-for-bit at greedy decode.
  */
 static ggml_tensor * build_attn_block(
     ggml_context * ctx,
@@ -170,30 +223,108 @@ static ggml_tensor * build_attn_block(
     int layer_idx,
     ggml_tensor * input,
     ggml_tensor * positions,
+    int n_tokens,
+    ggml_tensor * kq_mask,
     const LoraSet * lora)
 {
-    (void) layer; (void) layer_idx; (void) positions; (void) lora;
-    // TODO PHASE A.1: implement the 11-step attention forward documented
-    // above. Currently a pass-through — model output is invalid.
-    LOGW("build_attn_block: STUB at layer %d (TODO PHASE A.1)", layer_idx);
-    return input;
+    const float kq_scale = 1.0f / std::sqrt(float(QwenConfig::head_dim));
+    const std::string prefix = "blk." + std::to_string(layer_idx) + ".";
+
+    // ── 1. Pre-attention RMSNorm ──────────────────────────────────────
+    // Note: ggml_rms_norm doesn't apply the learnable gamma — caller
+    // multiplies. This matches llm_build_norm at LLM_NORM_RMS.
+    ggml_tensor * norm = ggml_rms_norm(ctx, input, QwenConfig::rms_eps);
+    norm = ggml_mul(ctx, norm, layer.attn_norm);
+
+    // ── 2. Q/K/V projections + bias + LoRA ────────────────────────────
+    ggml_tensor * Q = ggml_mul_mat(ctx, layer.attn_q, norm);
+    Q = apply_lora_delta(ctx, Q, norm, prefix + "attn_q.weight", lora);
+    if (layer.attn_q_bias) Q = ggml_add(ctx, Q, layer.attn_q_bias);
+
+    ggml_tensor * K = ggml_mul_mat(ctx, layer.attn_k, norm);
+    K = apply_lora_delta(ctx, K, norm, prefix + "attn_k.weight", lora);
+    if (layer.attn_k_bias) K = ggml_add(ctx, K, layer.attn_k_bias);
+
+    ggml_tensor * V = ggml_mul_mat(ctx, layer.attn_v, norm);
+    V = apply_lora_delta(ctx, V, norm, prefix + "attn_v.weight", lora);
+    if (layer.attn_v_bias) V = ggml_add(ctx, V, layer.attn_v_bias);
+
+    // ── 3. Reshape into per-head layout ────────────────────────────────
+    // Q: [hidden, n_tokens] → [head_dim, n_head, n_tokens]
+    // K: [kv_dim, n_tokens] → [head_dim, n_kv_head, n_tokens]
+    // V: same layout as K.
+    Q = ggml_reshape_3d(ctx, Q, QwenConfig::head_dim, QwenConfig::n_head,    n_tokens);
+    K = ggml_reshape_3d(ctx, K, QwenConfig::head_dim, QwenConfig::n_kv_head, n_tokens);
+    V = ggml_reshape_3d(ctx, V, QwenConfig::head_dim, QwenConfig::n_kv_head, n_tokens);
+
+    // ── 4. RoPE on Q and K ─────────────────────────────────────────────
+    // Args from build_qwen2: n_rot=head_dim, mode=0, n_ctx_orig=32768,
+    // freq_base=1e6, freq_scale=1.0, ext_factor=0, attn_factor=1,
+    // beta_fast=32, beta_slow=1. These are the Qwen 2.5 RoPE constants.
+    const int rope_mode = 0; // standard rotary, not NeoX or M-RoPE.
+    Q = ggml_rope_ext(
+        ctx, Q, positions, /*freq_factors=*/ nullptr,
+        QwenConfig::rope_dim, rope_mode, QwenConfig::max_position,
+        QwenConfig::rope_theta, /*freq_scale=*/ 1.0f,
+        /*ext_factor=*/ 0.0f, /*attn_factor=*/ 1.0f,
+        /*beta_fast=*/ 32.0f, /*beta_slow=*/ 1.0f);
+    K = ggml_rope_ext(
+        ctx, K, positions, /*freq_factors=*/ nullptr,
+        QwenConfig::rope_dim, rope_mode, QwenConfig::max_position,
+        QwenConfig::rope_theta, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+
+    // ── 5. Permute for KQ matmul ───────────────────────────────────────
+    // ggml_mul_mat semantics: dst[i,j,k] = Σ_d a[d,i,k] * b[d,j,k]
+    // We want kq[k_pos, q_pos, head] = Σ_d K[d,k_pos,kvh] * Q[d,q_pos,head]
+    // with kvh broadcast across head when n_head_kv < n_head (GQA — at
+    // b4524 ggml_mul_mat handles this when the outer dim is a divisor).
+    Q = ggml_permute(ctx, Q, 0, 2, 1, 3); // [head_dim, n_tokens, n_head]
+    K = ggml_permute(ctx, K, 0, 2, 1, 3); // [head_dim, n_tokens, n_kv_head]
+    // V is consumed via mul_mat(V, attn) below — needs to be transposed
+    // along the seq axis so we can dot it with attn weights along that axis.
+    V = ggml_permute(ctx, V, 1, 2, 0, 3); // [n_tokens, head_dim, n_kv_head]
+
+    // ── 6. Attention scores + softmax ──────────────────────────────────
+    // KQ: [n_tokens (kv), n_tokens (q), n_head]
+    ggml_tensor * KQ = ggml_mul_mat(ctx, K, Q);
+    ggml_mul_mat_set_prec(KQ, GGML_PREC_F32); // numerical range guard
+
+    // soft_max_ext fuses scale + mask + softmax. max_alibi_bias=0 for
+    // models without ALiBi (Qwen uses RoPE).
+    KQ = ggml_soft_max_ext(ctx, KQ, kq_mask, kq_scale, /*max_alibi_bias=*/ 0.0f);
+
+    // ── 7. Context = V · attn_weights ──────────────────────────────────
+    // KQV: [head_dim, n_tokens (q), n_head]
+    ggml_tensor * KQV = ggml_mul_mat(ctx, V, KQ);
+
+    // ── 8. Merge heads back to [hidden, n_tokens] ──────────────────────
+    KQV = ggml_permute(ctx, KQV, 0, 2, 1, 3); // [head_dim, n_head, n_tokens]
+    ggml_tensor * merged = ggml_cont_2d(ctx, KQV, QwenConfig::hidden_dim, n_tokens);
+
+    // ── 9. Output projection + LoRA + residual ─────────────────────────
+    ggml_tensor * out = ggml_mul_mat(ctx, layer.attn_output, merged);
+    out = apply_lora_delta(ctx, out, merged, prefix + "attn_output.weight", lora);
+
+    return ggml_add(ctx, input, out);
 }
 
 /**
- * SwiGLU MLP block forward + (future) LoRA injection.
+ * Qwen 2 SwiGLU MLP forward.
  *
- * Reference: llama-model.cpp Qwen2 forward. Steps:
- *   1. RMSNorm input with ffn_norm.weight.
- *   2. gate = X · ffn_gate.weight
- *   3. up   = X · ffn_up.weight
- *   4. out  = silu(gate) * up    (SwiGLU activation)
- *   5. out  = out · ffn_down.weight
- *   6. Residual: return input + out.
+ * Mirrors llm_build_ffn at b4524 with type=LLM_FFN_SILU + gate_type=LLM_FFN_PAR
+ * (parallel gate/up — both project from the same RMSNormed input, NOT
+ * sequentially). The exact ops:
  *
- * v0.6 attaches LoRA only to attention projections; MLP LoRA is a
- * v0.7 expansion. So no LoRA injection here for now.
+ *   norm  = ffn_norm.weight ⊙ RMSNorm(input)
+ *   tmp   = up   · norm                          // [ffn_dim, n_tokens]
+ *   cur   = gate · norm                          // [ffn_dim, n_tokens]
+ *   cur   = silu(cur)
+ *   cur   = cur ⊙ tmp                            // SwiGLU
+ *   cur   = down · cur                           // [hidden, n_tokens]
+ *   return input + cur                           // residual
  *
- * TODO PHASE A.2: implement steps 1-6.
+ * v0.6 attaches LoRA only to attention projections; MLP LoRA is parked
+ * for v0.7 (would 4× the trainable param count). No LoRA injection here.
  */
 static ggml_tensor * build_mlp_block(
     ggml_context * ctx,
@@ -201,10 +332,18 @@ static ggml_tensor * build_mlp_block(
     int layer_idx,
     ggml_tensor * input)
 {
-    (void) layer; (void) layer_idx;
-    // TODO PHASE A.2: implement SwiGLU MLP forward.
-    LOGW("build_mlp_block: STUB at layer %d (TODO PHASE A.2)", layer_idx);
-    return input;
+    (void) layer_idx;
+
+    ggml_tensor * norm = ggml_rms_norm(ctx, input, QwenConfig::rms_eps);
+    norm = ggml_mul(ctx, norm, layer.ffn_norm);
+
+    ggml_tensor * tmp = ggml_mul_mat(ctx, layer.ffn_up,   norm); // [ffn, n_tokens]
+    ggml_tensor * cur = ggml_mul_mat(ctx, layer.ffn_gate, norm); // [ffn, n_tokens]
+    cur = ggml_silu(ctx, cur);
+    cur = ggml_mul(ctx, cur, tmp);                               // SwiGLU
+    cur = ggml_mul_mat(ctx, layer.ffn_down, cur);                // [hidden, n_tokens]
+
+    return ggml_add(ctx, input, cur);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -238,10 +377,17 @@ ggml_tensor * qwen_forward_build(
     ggml_tensor * x = ggml_get_rows(ctx, model.tok_embed, tok_ids);
     ggml_set_name(x, "embed_out");
 
+    // Build the causal mask ONCE — shape [n_tokens, n_tokens] of {0, -inf},
+    // shared across all 28 attention blocks via the soft_max_ext mask arg.
+    // We allocate it on the same ctx, fill the data in place; the values
+    // are graph-constants (don't depend on weights), so a single allocation
+    // is correct.
+    ggml_tensor * kq_mask = build_causal_mask(ctx, n_tokens);
+
     // 2. Iterate transformer layers.
     for (int i = 0; i < QwenConfig::n_layer; ++i) {
-        x = build_attn_block(ctx, model.layers[i], i, x, pos_ids, lora);
-        x = build_mlp_block(ctx, model.layers[i], i, x);
+        x = build_attn_block(ctx, model.layers[i], i, x, pos_ids, n_tokens, kq_mask, lora);
+        x = build_mlp_block (ctx, model.layers[i], i, x);
     }
 
     // 3. Final RMSNorm + lm_head projection.
