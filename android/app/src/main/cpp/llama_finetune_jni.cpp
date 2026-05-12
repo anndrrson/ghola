@@ -362,15 +362,29 @@ Java_xyz_ghola_app_ai_llama_LlamaFinetune_run(
     jmethodID on_step_mid  = cb_cls ? env->GetMethodID(cb_cls, "onStep",  "(IIF)V") : nullptr;
     jmethodID on_epoch_mid = cb_cls ? env->GetMethodID(cb_cls, "onEpoch", "(IIF)V") : nullptr;
 
+    // Helper: after every CallVoidMethod into Kotlin, check + clear any
+    // exception so subsequent JNI calls don't pick up a stale pending
+    // exception state. Common cause: progress dialog binding destroyed
+    // when Activity finishes; setMessage from a stale ref throws on the
+    // UI thread but the JNI thread doesn't observe it unless we check.
+    auto clear_pending_exception = [&]() {
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();  // logcat the stack trace
+            env->ExceptionClear();
+        }
+    };
+
     ghola::FinetuneCallbacks cb;
     cb.on_step  = [&](int step, int total, float loss) {
         if (progressCb && on_step_mid) {
             env->CallVoidMethod(progressCb, on_step_mid, (jint) step, (jint) total, (jfloat) loss);
+            clear_pending_exception();
         }
     };
     cb.on_epoch = [&](int epoch, int total, float loss) {
         if (progressCb && on_epoch_mid) {
             env->CallVoidMethod(progressCb, on_epoch_mid, (jint) epoch, (jint) total, (jfloat) loss);
+            clear_pending_exception();
         }
     };
     cb.is_cancelled = []() -> bool { return finetune_cancelled.load(); };
