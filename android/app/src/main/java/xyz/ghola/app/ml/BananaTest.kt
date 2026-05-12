@@ -200,9 +200,15 @@ object BananaTest {
             true, null, 0f, false, "LocalLlm unavailable post-training",
         )
         llm.swapLora(bananaLoraPath, 1.0f)
+        // ChatML-wrap the verifier prompts to match training-time format.
+        // Training JSONL wraps prompts with <|im_start|>user\n...
+        // <|im_end|>\n<|im_start|>assistant\n — verifying with a raw prompt
+        // would be a train/inference distribution mismatch and produce
+        // misleading FAIL verdicts.
         val samples = heldOutPrompts.mapNotNull { p ->
+            val wrapped = "<|im_start|>user\n$p<|im_end|>\n<|im_start|>assistant\n"
             try {
-                llm.generateOnce(p)
+                llm.generateOnce(wrapped)
             } catch (t: Throwable) {
                 Log.e(TAG, "generation raised on prompt='$p'", t)
                 null
