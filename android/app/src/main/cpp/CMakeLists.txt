@@ -55,6 +55,7 @@ add_library(thumper_llama SHARED
     lora_modules.cpp
     adapter_writer.cpp
     qwen_forward.cpp
+    finetune_loop.cpp
 )
 
 target_include_directories(thumper_llama PRIVATE
