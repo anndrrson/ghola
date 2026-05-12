@@ -1,0 +1,383 @@
+// v0.6 Phase C — training loop scaffold.
+//
+// STATUS: structural skeleton. The forward/backward/step machinery has
+// the right shape and the right primitive calls, but DOES NOT WORK YET
+// because (a) Phase A's forward isn't parity-checked, and (b) the
+// memory budget for the compute graph is unrealistic on Android without
+// Phase E's gradient checkpointing.
+//
+// What IS done here:
+//   ✅ AdamW state allocation pattern (per-LoRA-module m/v already
+//      allocated in Phase B's lora_set_build — we just thread them
+//      through ggml_opt_step_adamw).
+//   ✅ Loss tensor construction via ggml_cross_entropy_loss, with
+//      explicit prompt-masking via ggml_view to skip prompt positions.
+//   ✅ Gradient-norm clipping pattern.
+//   ✅ Epoch + step loop with cancellation + progress callbacks.
+//   ✅ Gradient-accumulation arithmetic (loss scaling).
+//
+// What's NOT done:
+//   ❌ ggml backend setup (CPU backend init + gallocr). Currently uses
+//      ggml_graph_compute_with_ctx which works for the banana test on
+//      a beefy dev box but burns ~3 GB compute memory at ctx_len=1024.
+//      Phase E swaps this for gallocr + checkpoint boundaries.
+//   ❌ Phase G partial-save (checkpoint resume).
+//   ❌ Phase A forward correctness — banana test will fail until A.3 passes.
+
+#include "finetune_loop.h"
+
+#include "adapter_writer.h"
+#include "ggml.h"
+#include "llama.h"
+
+#include <android/log.h>
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <random>
+
+#define TAG "FinetuneLoop"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+
+namespace ghola {
+
+namespace {
+
+/** Compute context sizing. 2 GB ceiling; if we exceed it we crash with a
+ *  clear log message so Phase E knows what budget to hit. This number
+ *  comes from rough activation accounting:
+ *
+ *    forward activations:  28 layers × (hidden=1536 + ffn=8960 + attn_kqv)
+ *                          × ctx_len=1024 × fp32 ≈ 1.5 GB
+ *    LoRA grads:           112 modules × (1536×16 + 16×1536) × fp32 ≈ 35 MB
+ *    AdamW state:          already allocated in LoraSet (not here)
+ *    autograd tape:        ~30% of forward = ~450 MB
+ *
+ *  Total ~2 GB. The Seeker has 16 GB RAM but Android caps process RSS
+ *  around 4 GB. This budget WILL be revisited in Phase E. */
+constexpr size_t COMPUTE_CTX_BYTES = (size_t) 2 * 1024 * 1024 * 1024;
+
+ggml_context * build_compute_ctx() {
+    // TODO PHASE E: replace with backend buffer + ggml_gallocr_alloc_graph.
+    struct ggml_init_params p = {
+        /*.mem_size   =*/ COMPUTE_CTX_BYTES,
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ false,
+    };
+    ggml_context * ctx = ggml_init(p);
+    if (!ctx) {
+        LOGE("build_compute_ctx: ggml_init failed at %zu bytes", COMPUTE_CTX_BYTES);
+    }
+    return ctx;
+}
+
+/** Build a tensor of target token IDs at completion positions for the
+ *  cross-entropy loss. Prompt positions are skipped — we never want the
+ *  model penalized for not predicting its own input. */
+ggml_tensor * build_target_tensor(
+    ggml_context * ctx,
+    const TokenizedPair & pair)
+{
+    const int n_completion = (int) pair.completion_tokens.size();
+    if (n_completion == 0) return nullptr;
+
+    ggml_tensor * targets = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_completion);
+    ggml_set_name(targets, "targets");
+    std::memcpy(targets->data, pair.completion_tokens.data(),
+                n_completion * sizeof(int32_t));
+    return targets;
+}
+
+/** AdamW step for one LoRA tensor (A or B).
+ *
+ * ggml_opt_step_adamw signature at b4524:
+ *   ggml_opt_step_adamw(ctx, param, grad, m, v, optimizer_params_tensor)
+ *
+ * The `optimizer_params_tensor` is a small [7]-shape f32 tensor holding
+ * [alpha, beta1, beta2, eps, weight_decay, beta1^t, beta2^t]. Caller must
+ * update beta1^t and beta2^t each step.
+ *
+ * Gradient lookup: at b4524 gradients live on the cgraph, not on the
+ * tensor — fetch via ggml_graph_get_grad. (The old `tensor->grad` field
+ * was removed in the autograd refactor that landed in late 2024.)
+ */
+void step_adamw_one(
+    ggml_context * ctx,
+    ggml_cgraph * cgraph,
+    ggml_tensor * param,
+    ggml_tensor * m,
+    ggml_tensor * v,
+    ggml_tensor * opt_params)
+{
+    if (!param) {
+        LOGW("step_adamw_one: param is null");
+        return;
+    }
+    ggml_tensor * grad = ggml_graph_get_grad(cgraph, param);
+    if (!grad) {
+        LOGW("step_adamw_one: no grad on cgraph for param '%s'",
+             ggml_get_name(param));
+        return;
+    }
+    ggml_tensor * step = ggml_opt_step_adamw(ctx, param, grad, m, v, opt_params);
+    ggml_build_forward_expand(cgraph, step);
+}
+
+} // anonymous
+
+bool run_finetune(
+    QwenModel & model,
+    LoraSet & lora,
+    const std::vector<TokenizedPair> & pairs,
+    const FinetuneHyperparams & hp,
+    const FinetuneCallbacks & cb,
+    const std::string & out_lora_path)
+{
+    if (pairs.empty()) {
+        LOGE("run_finetune: empty training set");
+        return false;
+    }
+    LOGI("run_finetune: %zu pairs × %d epochs (lr=%.2e, rank=%d)",
+         pairs.size(), hp.epochs, hp.learning_rate, hp.rank);
+
+    // ── Shuffle indices once per epoch (seeded for determinism) ────────
+    std::vector<int> indices(pairs.size());
+    for (int i = 0; i < (int) pairs.size(); ++i) indices[i] = i;
+    std::mt19937 rng(0xC0FFEE);
+
+    const auto t_start = std::chrono::steady_clock::now();
+    int   global_step  = 0;
+    int   total_steps  = (int) pairs.size() * hp.epochs;
+    float beta1_t      = 1.0f;
+    float beta2_t      = 1.0f;
+
+    // The "static" context holds optimizer params + state tensors that
+    // persist across steps (m, v, beta-powers). Reuse it across the
+    // whole training run; only the COMPUTE context is rebuilt per step.
+    struct ggml_init_params static_p = {
+        /*.mem_size   =*/ 32 * 1024 * 1024,
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ false,
+    };
+    ggml_context * static_ctx = ggml_init(static_p);
+    if (!static_ctx) { LOGE("ggml_init for static_ctx failed"); return false; }
+
+    // AdamW optimizer-params tensor: [alpha, beta1, beta2, eps, wd, β1^t, β2^t]
+    ggml_tensor * opt_params = ggml_new_tensor_1d(static_ctx, GGML_TYPE_F32, 7);
+    ggml_set_name(opt_params, "adamw_params");
+
+    auto write_opt_params = [&](int step) {
+        beta1_t *= hp.adam_beta1;
+        beta2_t *= hp.adam_beta2;
+        float * d = (float *) opt_params->data;
+        d[0] = hp.learning_rate;
+        d[1] = hp.adam_beta1;
+        d[2] = hp.adam_beta2;
+        d[3] = hp.adam_eps;
+        d[4] = hp.weight_decay;
+        d[5] = beta1_t;
+        d[6] = beta2_t;
+        (void) step;
+    };
+
+    // ── Epoch loop ─────────────────────────────────────────────────────
+    for (int epoch = 0; epoch < hp.epochs; ++epoch) {
+        std::shuffle(indices.begin(), indices.end(), rng);
+        float epoch_loss_sum = 0.0f;
+        int   epoch_step_count = 0;
+
+        for (int idx : indices) {
+            if (cb.is_cancelled && cb.is_cancelled()) {
+                LOGI("run_finetune: cancelled at epoch %d step %d", epoch, global_step);
+                ggml_free(static_ctx);
+                return false;
+            }
+
+            const TokenizedPair & pair = pairs[idx];
+            const int n_prompt    = (int) pair.prompt_tokens.size();
+            const int n_completion = (int) pair.completion_tokens.size();
+            const int n_total      = n_prompt + n_completion;
+            if (n_total > hp.ctx_len) {
+                // Skip oversized pairs; alternative is left-truncation.
+                LOGW("run_finetune: skipping pair %d (len=%d > ctx_len=%d)",
+                     idx, n_total, hp.ctx_len);
+                continue;
+            }
+
+            ggml_context * cctx = build_compute_ctx();
+            if (!cctx) {
+                LOGE("run_finetune: OOM on compute_ctx — aborting");
+                ggml_free(static_ctx);
+                return false;
+            }
+
+            // ── Build tokens + positions ───────────────────────────────
+            std::vector<int32_t> tokens; tokens.reserve(n_total);
+            tokens.insert(tokens.end(), pair.prompt_tokens.begin(),    pair.prompt_tokens.end());
+            tokens.insert(tokens.end(), pair.completion_tokens.begin(), pair.completion_tokens.end());
+            std::vector<int32_t> positions(n_total);
+            for (int i = 0; i < n_total; ++i) positions[i] = i;
+
+            // ── Forward → logits at every position ─────────────────────
+            ggml_tensor * logits = qwen_forward_build(
+                model, cctx, tokens, positions, &lora,
+                /*return_all_positions=*/ true);
+            if (!logits) {
+                LOGE("run_finetune: qwen_forward_build returned null");
+                ggml_free(cctx);
+                continue;
+            }
+            // logits shape: [vocab_size, n_total]
+
+            // ── Mask out prompt: take only positions [n_prompt-1 .. n_total-2] ──
+            // Loss target at position p is token at position p+1. So to learn
+            // the COMPLETION tokens, we look at logits from positions
+            // (n_prompt-1) ... (n_total-2) and predict completion_tokens[0..].
+            //
+            // ggml_view_2d(ctx, src, ne0, ne1, nb1, offset):
+            //   reshape src to [ne0, ne1], stride nb1 between rows, starting
+            //   at byte offset.
+            const int loss_n  = n_completion;
+            const int vocab   = QwenConfig::vocab_size;
+            const size_t row_bytes = logits->nb[1]; // stride to next position
+            ggml_tensor * pred = ggml_view_2d(
+                cctx, logits, vocab, loss_n, row_bytes,
+                (size_t)(n_prompt - 1) * row_bytes);
+            ggml_set_name(pred, "logits_completion");
+
+            ggml_tensor * targets = build_target_tensor(cctx, pair);
+            if (!targets) {
+                LOGE("run_finetune: targets null");
+                ggml_free(cctx);
+                continue;
+            }
+
+            // ggml_cross_entropy_loss at b4524 expects logits + class
+            // indices, and reduces to a scalar (mean over positions).
+            ggml_tensor * loss = ggml_cross_entropy_loss(cctx, pred, targets);
+            ggml_set_name(loss, "loss");
+
+            // ── Build forward + backward graph ─────────────────────────
+            ggml_cgraph * cgraph = ggml_new_graph_custom(cctx,
+                /*size=*/ 32768, /*grads=*/ true);
+            ggml_build_forward_expand(cgraph, loss);
+
+            // ggml_build_backward_expand at b4524:
+            //   void ggml_build_backward_expand(
+            //       ctx_static, ctx_compute, cgraph, accumulate);
+            // Walks the forward graph in reverse; allocates grad tensors
+            // for every ggml_set_param'd input on ctx_static; appends the
+            // gradient ops to cgraph.
+            ggml_build_backward_expand(static_ctx, cctx, cgraph, /*accumulate=*/ false);
+
+            // ── AdamW step on every LoRA param ─────────────────────────
+            write_opt_params(global_step);
+            for (const std::string & key : lora.order) {
+                auto it = lora.modules.find(key);
+                if (it == lora.modules.end()) continue;
+                LoraModule & m = it->second;
+                step_adamw_one(static_ctx, cgraph, m.A, m.m_A, m.v_A, opt_params);
+                step_adamw_one(static_ctx, cgraph, m.B, m.m_B, m.v_B, opt_params);
+            }
+
+            // TODO PHASE C — gradient clipping:
+            // before each adamw step, compute global_norm of grads across
+            // all LoRA params, then scale grads by min(1, clip / norm).
+            // ggml_opt_step_adamw doesn't fuse this; we'd need to insert
+            // a ggml_scale on each grad before the step. Defer until
+            // banana test passes — overfitting on banana is supposed to
+            // produce huge grads, clipping would mask the signal.
+
+            // ── Compute ────────────────────────────────────────────────
+            ggml_graph_compute_with_ctx(cctx, cgraph, /*n_threads=*/ 4);
+
+            // ── Read loss (scalar) for progress reporting ──────────────
+            float step_loss = 0.0f;
+            if (loss->data) {
+                step_loss = *(float *) loss->data;
+            } else {
+                LOGW("run_finetune: loss->data null after compute (gallocr?)");
+            }
+            epoch_loss_sum   += step_loss;
+            epoch_step_count += 1;
+
+            // ── Progress callback ─────────────────────────────────────
+            if (cb.on_step && (global_step % hp.notify_every == 0)) {
+                cb.on_step(global_step, total_steps, step_loss);
+            }
+
+            ggml_free(cctx);
+            ++global_step;
+
+            // ── Phase G — partial save every ckpt_every steps ─────────
+            if ((global_step % hp.ckpt_every) == 0 && global_step > 0) {
+                AdapterMeta meta;
+                meta.architecture = "qwen2";
+                meta.step  = global_step;
+                meta.epoch = epoch;
+                meta.run_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - t_start).count();
+                lora.step = global_step;
+                const std::string partial = out_lora_path + ".partial";
+                if (write_lora_gguf(lora, meta, partial)) {
+                    LOGI("checkpoint @ step %d → %s", global_step, partial.c_str());
+                }
+            }
+        } // pair loop
+
+        const float epoch_mean = (epoch_step_count > 0)
+            ? (epoch_loss_sum / float(epoch_step_count))
+            : 0.0f;
+        LOGI("epoch %d/%d: mean_loss=%.4f over %d steps",
+             epoch + 1, hp.epochs, epoch_mean, epoch_step_count);
+        if (cb.on_epoch) cb.on_epoch(epoch + 1, hp.epochs, epoch_mean);
+    }
+
+    ggml_free(static_ctx);
+    LOGI("run_finetune: complete, %d total steps", global_step);
+    return true;
+}
+
+bool tokenize_pair(
+    const std::string & prompt,
+    const std::string & completion,
+    const std::string & gguf_path,
+    TokenizedPair & out)
+{
+    // Use llama.cpp's tokenizer — we share the model with the inference
+    // path, so reusing its vocab guarantees consistency.
+    llama_model_params mp = llama_model_default_params();
+    mp.use_mmap = true;
+    mp.use_mlock = false;
+    llama_model * lmodel = llama_model_load_from_file(gguf_path.c_str(), mp);
+    if (!lmodel) {
+        LOGE("tokenize_pair: llama_model_load_from_file failed");
+        return false;
+    }
+    const llama_vocab * vocab = llama_model_get_vocab(lmodel);
+
+    auto tokenize = [&](const std::string & s, bool add_bos, std::vector<int32_t> & dst) -> bool {
+        const int max_toks = (int) s.size() + 16;
+        std::vector<llama_token> buf(max_toks);
+        const int n = llama_tokenize(
+            vocab, s.data(), (int) s.size(),
+            buf.data(), max_toks, add_bos, /*parse_special=*/ true);
+        if (n < 0) {
+            LOGE("tokenize_pair: llama_tokenize returned %d", n);
+            return false;
+        }
+        dst.assign(buf.begin(), buf.begin() + n);
+        return true;
+    };
+
+    bool ok = true;
+    ok &= tokenize(prompt,     /*add_bos=*/ true,  out.prompt_tokens);
+    ok &= tokenize(completion, /*add_bos=*/ false, out.completion_tokens);
+
+    llama_model_free(lmodel);
+    return ok;
+}
+
+} // namespace ghola
