@@ -76,8 +76,10 @@ namespace {
 /** Phase E — metadata-only ctx for graph nodes. The real tensor data
  *  is allocated by ggml_gallocr_alloc_graph into a backend buffer; this
  *  ctx only holds the small struct ggml_tensor* records (~400 bytes each).
- *  64 MB is plenty for the ~3000 nodes of a 28-layer forward+backward. */
-constexpr size_t COMPUTE_META_BYTES = (size_t) 64 * 1024 * 1024;
+ *  16 MB covers ~40k tensors which is way more than the ~3000 nodes of
+ *  a 28-layer forward+backward needs. Reduces virtual address pressure
+ *  vs the earlier 64 MB ceiling. */
+constexpr size_t COMPUTE_META_BYTES = (size_t) 16 * 1024 * 1024;
 
 ggml_context * build_compute_ctx() {
     struct ggml_init_params p = {
