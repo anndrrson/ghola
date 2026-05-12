@@ -29,6 +29,7 @@ import org.json.JSONObject
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.AgentController
 import xyz.ghola.app.ai.EnvelopeCloudBackend
+import xyz.ghola.app.ai.LocalChatBackend
 import xyz.ghola.app.ai.FastMatch
 import xyz.ghola.app.ai.AgentListener
 import xyz.ghola.app.ai.ClaudeApiClient
@@ -351,6 +352,28 @@ class ChatActivity : AppCompatActivity(), AgentListener {
      *      AgentController. On failure → user-friendly toast and bail.
      */
     private fun initializeE2eAgent(toolExecutor: LocalToolExecutor) {
+        // v0.5.1 EDGE-AI PATH: if the on-device LLM is downloaded and ready,
+        // we route chat through the local model and skip the entire
+        // cloud/envelope/vault chain. No /api/chat round-trip, no upstream
+        // provider, no rate limits, no wallet prompt for vault unlock.
+        //
+        // The cloud path remains as a fallback for first-launch users whose
+        // model file hasn't finished downloading yet. Once `LocalLlm.get`
+        // returns non-null, future ChatActivity entries take this branch.
+        if (xyz.ghola.app.email.LocalLlm.isModelReady(this)) {
+            Log.i(TAG, "initializeE2eAgent: local model ready — routing chat on-device")
+            hideStatus()
+            val backend: LlmBackend = LocalChatBackend(this)
+            agentController = AgentController(
+                backend, toolExecutor, this,
+                secureStorage.getWalletPackage(),
+                secureStorage.isSeeker(),
+                secureStorage.hasCloudAuth(),
+            )
+            setInputEnabled(true)
+            return
+        }
+
         val solanaAddress = secureStorage.getSolanaAddress()
         if (solanaAddress.isNullOrBlank()) {
             showStatus("No Solana wallet connected")
