@@ -22,6 +22,18 @@
 //       {m.base_tensor_name}.lora_a   shape [in_dim, rank]   dtype f16
 //       {m.base_tensor_name}.lora_b   shape [rank, out_dim]  dtype f16
 //
+//   Where base_tensor_name = "blk.{layer}.{target}.weight" with target
+//   ∈ {attn_q, attn_k, attn_v, attn_output}. After strip-of-".lora_a",
+//   the resulting name MUST match a base-model tensor exactly — that's
+//   the contract llama_adapter_lora_init_impl enforces via
+//   model.get_tensor(name). Verified against b4524 src/llama-adapter.cpp:255
+//   on 2026-05-12.
+//
+//   Shape contract (from llama-adapter.cpp:275-278):
+//     model_tensor.ne[0] == w.a.ne[0]
+//     model_tensor.ne[1] == w.b.ne[1]
+//     w.a.ne[1]          == w.b.ne[0]   (rank dimension matches)
+//
 // We downcast f32 → f16 on write because (a) llama.cpp's loader expects
 // f16 by convention, (b) halving the adapter file size matters for
 // device storage (~25MB vs ~50MB at rank 16). The fine-tune accumulates
