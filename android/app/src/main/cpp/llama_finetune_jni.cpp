@@ -338,8 +338,10 @@ Java_xyz_ghola_app_ai_llama_LlamaFinetune_run(
     }
 
     ghola::LoraSet lora;
+    // lora_set_build appends ".weight" itself when constructing
+    // "blk.{i}.{target}.weight" — pass the BASE target only.
     const std::vector<std::string> target_names = {
-        "attn_q.weight", "attn_k.weight", "attn_v.weight", "attn_output.weight",
+        "attn_q", "attn_k", "attn_v", "attn_output",
     };
     if (!ghola::lora_set_build(
             lora, lora_ctx,
