@@ -1123,8 +1123,57 @@ pub struct ToolUseResult {
 
 pub struct ToolCallEvent {
     pub tool_name: String,
+    /// "executing" | "success" | "error" | "client_action"
     pub status: String,
+    /// For server-executed tools, the result. For `client_action`, the tool INPUT
+    /// that the client should render as an `ActionCard`.
     pub result: Option<serde_json::Value>,
+}
+
+/// How a tool should be handled when the LLM emits it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolHandling {
+    /// Execute server-side (wallet_*). The result is fed back to the LLM and
+    /// the conversation continues.
+    Server,
+    /// Surface to the client as an `ActionCard`. The LLM does NOT see a
+    /// `tool_result` — the user reviews and triggers the action via the card.
+    Client,
+}
+
+fn classify_tool(name: &str) -> ToolHandling {
+    match name {
+        "send_email" | "send_sms" | "initiate_call" | "create_calendar_event" => {
+            ToolHandling::Client
+        }
+        _ => ToolHandling::Server,
+    }
+}
+
+/// Whether the given provider can use the structured tool-use path. Fail-closed
+/// on unknown variants — if a new provider is added without explicit support,
+/// the client falls back to the regex action detector.
+pub fn supports_tool_use(provider: &LlmProvider) -> bool {
+    match provider {
+        LlmProvider::Anthropic => true,
+        LlmProvider::OpenAI => true,
+        LlmProvider::Google => true,
+        // OpenAI-compatible providers that advertise function-calling. Each has
+        // been verified to accept the OpenAI tool schema by the existing
+        // `generate_with_tools_openai` path.
+        LlmProvider::Mistral => true,
+        LlmProvider::Groq => true,
+        LlmProvider::Together => true,
+        LlmProvider::DeepSeek => true,
+        LlmProvider::OpenRouter => true,
+        LlmProvider::Kimi => true,
+        LlmProvider::Qwen => true,
+        LlmProvider::Glm => true,
+        LlmProvider::Cerebras => true,
+        // No tool-use support — these get the regex fallback client-side.
+        LlmProvider::Ollama => false,
+        LlmProvider::Community => false,
+    }
 }
 
 /// Generate a response with tool-use support. Works across all providers:
@@ -1212,66 +1261,113 @@ async fn generate_with_tools_anthropic(
         let stop_reason = resp_body["stop_reason"].as_str().unwrap_or("");
         let content = resp_body["content"].as_array().cloned().unwrap_or_default();
 
+        // Pre-compute the text content from this turn — it's used both when
+        // we exit on a client_action and when there are no tool_uses at all.
+        let turn_text: String = content
+            .iter()
+            .filter_map(|b| {
+                if b["type"].as_str() == Some("text") {
+                    b["text"].as_str().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
         if stop_reason == "tool_use" {
             conversation.push(serde_json::json!({ "role": "assistant", "content": content }));
 
             let mut tool_results = Vec::new();
+            let mut saw_client_action = false;
+
+            // Pass 1: server-execute every Server-classified tool, append a
+            // tool_result for each.
             for block in &content {
-                if block["type"].as_str() == Some("tool_use") {
-                    let tool_id = block["id"].as_str().unwrap_or("");
-                    let tool_name = block["name"].as_str().unwrap_or("");
-                    let tool_input = &block["input"];
+                if block["type"].as_str() != Some("tool_use") {
+                    continue;
+                }
+                let tool_name = block["name"].as_str().unwrap_or("");
+                if classify_tool(tool_name) != ToolHandling::Server {
+                    continue;
+                }
+                let tool_id = block["id"].as_str().unwrap_or("");
+                let tool_input = &block["input"];
 
-                    tool_calls.push(ToolCallEvent {
-                        tool_name: tool_name.to_string(),
-                        status: "executing".to_string(),
-                        result: None,
-                    });
+                tool_calls.push(ToolCallEvent {
+                    tool_name: tool_name.to_string(),
+                    status: "executing".to_string(),
+                    result: None,
+                });
 
-                    let result = crate::services::wallet_service::execute_tool(
-                        state, user_id, tool_name, tool_input,
-                    ).await;
+                let result = crate::services::wallet_service::execute_tool(
+                    state, user_id, tool_name, tool_input,
+                )
+                .await;
 
-                    match result {
-                        Ok(value) => {
-                            tool_calls.push(ToolCallEvent {
-                                tool_name: tool_name.to_string(),
-                                status: "success".to_string(),
-                                result: Some(value.clone()),
-                            });
-                            tool_results.push(serde_json::json!({
-                                "type": "tool_result",
-                                "tool_use_id": tool_id,
-                                "content": serde_json::to_string(&value).unwrap_or_default(),
-                            }));
-                        }
-                        Err(e) => {
-                            tool_calls.push(ToolCallEvent {
-                                tool_name: tool_name.to_string(),
-                                status: "error".to_string(),
-                                result: Some(serde_json::json!({ "error": e.to_string() })),
-                            });
-                            tool_results.push(serde_json::json!({
-                                "type": "tool_result",
-                                "tool_use_id": tool_id,
-                                "is_error": true,
-                                "content": e.to_string(),
-                            }));
-                        }
+                match result {
+                    Ok(value) => {
+                        tool_calls.push(ToolCallEvent {
+                            tool_name: tool_name.to_string(),
+                            status: "success".to_string(),
+                            result: Some(value.clone()),
+                        });
+                        tool_results.push(serde_json::json!({
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": serde_json::to_string(&value).unwrap_or_default(),
+                        }));
+                    }
+                    Err(e) => {
+                        tool_calls.push(ToolCallEvent {
+                            tool_name: tool_name.to_string(),
+                            status: "error".to_string(),
+                            result: Some(serde_json::json!({ "error": e.to_string() })),
+                        });
+                        tool_results.push(serde_json::json!({
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "is_error": true,
+                            "content": e.to_string(),
+                        }));
                     }
                 }
             }
 
+            // Pass 2: emit client_action events for every Client-classified
+            // tool. Do NOT execute and do NOT append a tool_result — the user
+            // drives the action via the rendered ActionCard.
+            for block in &content {
+                if block["type"].as_str() != Some("tool_use") {
+                    continue;
+                }
+                let tool_name = block["name"].as_str().unwrap_or("");
+                if classify_tool(tool_name) != ToolHandling::Client {
+                    continue;
+                }
+                let tool_input = block["input"].clone();
+                tool_calls.push(ToolCallEvent {
+                    tool_name: tool_name.to_string(),
+                    status: "client_action".to_string(),
+                    result: Some(tool_input),
+                });
+                saw_client_action = true;
+            }
+
+            if saw_client_action {
+                // Mixed-turn semantics: server tools have already run and the
+                // user will get an ActionCard for each client tool. The LLM
+                // doesn't get a chance to see the client results — that
+                // happens out of band on the next user turn.
+                return Ok(ToolUseResult {
+                    text: turn_text,
+                    tool_calls,
+                });
+            }
+
             conversation.push(serde_json::json!({ "role": "user", "content": tool_results }));
         } else {
-            let text: String = content.iter()
-                .filter_map(|b| {
-                    if b["type"].as_str() == Some("text") { b["text"].as_str().map(|s| s.to_string()) }
-                    else { None }
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            return Ok(ToolUseResult { text, tool_calls });
+            return Ok(ToolUseResult { text: turn_text, tool_calls });
         }
     }
 
@@ -1359,16 +1455,26 @@ async fn generate_with_tools_openai(
             .and_then(|tc| tc.as_array())
             .map_or(false, |tc| !tc.is_empty());
 
+        let message_text = message["content"].as_str().unwrap_or("").to_string();
+
         if has_tool_calls || finish_reason == "tool_calls" {
             // Add assistant message with tool_calls to conversation
             conversation.push(message.clone());
 
             let tc_array = message["tool_calls"].as_array().cloned().unwrap_or_default();
+            let mut saw_client_action = false;
+
+            // Pass 1: server-execute every Server-classified tool.
             for tc in &tc_array {
-                let call_id = tc["id"].as_str().unwrap_or("");
                 let func = &tc["function"];
                 let tool_name = func["name"].as_str().unwrap_or("");
+                if classify_tool(tool_name) != ToolHandling::Server {
+                    continue;
+                }
+                let call_id = tc["id"].as_str().unwrap_or("");
                 let arguments_str = func["arguments"].as_str().unwrap_or("{}");
+                let tool_input: serde_json::Value =
+                    serde_json::from_str(arguments_str).unwrap_or(serde_json::json!({}));
 
                 tool_calls_out.push(ToolCallEvent {
                     tool_name: tool_name.to_string(),
@@ -1376,12 +1482,10 @@ async fn generate_with_tools_openai(
                     result: None,
                 });
 
-                let tool_input: serde_json::Value = serde_json::from_str(arguments_str)
-                    .unwrap_or(serde_json::json!({}));
-
                 let result = crate::services::wallet_service::execute_tool(
                     state, user_id, tool_name, &tool_input,
-                ).await;
+                )
+                .await;
 
                 match result {
                     Ok(value) => {
@@ -1410,10 +1514,34 @@ async fn generate_with_tools_openai(
                     }
                 }
             }
+
+            // Pass 2: emit client_action events for Client-classified tools.
+            for tc in &tc_array {
+                let func = &tc["function"];
+                let tool_name = func["name"].as_str().unwrap_or("");
+                if classify_tool(tool_name) != ToolHandling::Client {
+                    continue;
+                }
+                let arguments_str = func["arguments"].as_str().unwrap_or("{}");
+                let tool_input: serde_json::Value =
+                    serde_json::from_str(arguments_str).unwrap_or(serde_json::json!({}));
+                tool_calls_out.push(ToolCallEvent {
+                    tool_name: tool_name.to_string(),
+                    status: "client_action".to_string(),
+                    result: Some(tool_input),
+                });
+                saw_client_action = true;
+            }
+
+            if saw_client_action {
+                return Ok(ToolUseResult {
+                    text: message_text,
+                    tool_calls: tool_calls_out,
+                });
+            }
         } else {
             // Final text response
-            let text = message["content"].as_str().unwrap_or("").to_string();
-            return Ok(ToolUseResult { text, tool_calls: tool_calls_out });
+            return Ok(ToolUseResult { text: message_text, tool_calls: tool_calls_out });
         }
     }
 
@@ -1492,17 +1620,31 @@ async fn generate_with_tools_google(
             .filter(|p| p.get("functionCall").is_some())
             .collect();
 
+        // Text from this turn — used both on exit (client_action or no
+        // function_calls) and for fallback messaging.
+        let turn_text: String = parts
+            .iter()
+            .filter_map(|p| p["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("");
+
         if !function_calls.is_empty() {
             // Add model response to conversation
             conversation.push(serde_json::json!({
                 "role": "model",
-                "parts": parts,
+                "parts": parts.clone(),
             }));
 
             let mut response_parts = Vec::new();
+            let mut saw_client_action = false;
+
+            // Pass 1: server-execute every Server-classified function call.
             for fc in &function_calls {
                 let fc_obj = &fc["functionCall"];
                 let tool_name = fc_obj["name"].as_str().unwrap_or("");
+                if classify_tool(tool_name) != ToolHandling::Server {
+                    continue;
+                }
                 let tool_args = &fc_obj["args"];
 
                 tool_calls_out.push(ToolCallEvent {
@@ -1513,7 +1655,8 @@ async fn generate_with_tools_google(
 
                 let result = crate::services::wallet_service::execute_tool(
                     state, user_id, tool_name, tool_args,
-                ).await;
+                )
+                .await;
 
                 match result {
                     Ok(value) => {
@@ -1545,17 +1688,35 @@ async fn generate_with_tools_google(
                 }
             }
 
+            // Pass 2: emit client_action events for Client-classified calls.
+            for fc in &function_calls {
+                let fc_obj = &fc["functionCall"];
+                let tool_name = fc_obj["name"].as_str().unwrap_or("");
+                if classify_tool(tool_name) != ToolHandling::Client {
+                    continue;
+                }
+                let tool_args = fc_obj["args"].clone();
+                tool_calls_out.push(ToolCallEvent {
+                    tool_name: tool_name.to_string(),
+                    status: "client_action".to_string(),
+                    result: Some(tool_args),
+                });
+                saw_client_action = true;
+            }
+
+            if saw_client_action {
+                return Ok(ToolUseResult {
+                    text: turn_text,
+                    tool_calls: tool_calls_out,
+                });
+            }
+
             conversation.push(serde_json::json!({
                 "role": "user",
                 "parts": response_parts,
             }));
         } else {
-            // Final text response
-            let text: String = parts.iter()
-                .filter_map(|p| p["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("");
-            return Ok(ToolUseResult { text, tool_calls: tool_calls_out });
+            return Ok(ToolUseResult { text: turn_text, tool_calls: tool_calls_out });
         }
     }
 
@@ -1796,4 +1957,52 @@ pub fn decrypt_api_key(data: &[u8], key: &[u8; 32]) -> Result<String, CloudError
 
     String::from_utf8(plaintext)
         .map_err(|e| CloudError::Internal(format!("invalid UTF-8 after decrypt: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_tool_routes_action_tools_to_client() {
+        assert_eq!(classify_tool("send_email"), ToolHandling::Client);
+        assert_eq!(classify_tool("send_sms"), ToolHandling::Client);
+        assert_eq!(classify_tool("initiate_call"), ToolHandling::Client);
+        assert_eq!(classify_tool("create_calendar_event"), ToolHandling::Client);
+    }
+
+    #[test]
+    fn classify_tool_defaults_unknown_to_server() {
+        // Server is the safe default for the wallet path that consumes
+        // execute_tool — unknown names get an explicit error there.
+        assert_eq!(classify_tool("check_wallet_balance"), ToolHandling::Server);
+        assert_eq!(classify_tool("send_crypto"), ToolHandling::Server);
+        assert_eq!(classify_tool("totally_unknown_tool"), ToolHandling::Server);
+    }
+
+    #[test]
+    fn supports_tool_use_true_for_anthropic_openai_google() {
+        assert!(supports_tool_use(&LlmProvider::Anthropic));
+        assert!(supports_tool_use(&LlmProvider::OpenAI));
+        assert!(supports_tool_use(&LlmProvider::Google));
+    }
+
+    #[test]
+    fn supports_tool_use_true_for_openai_compatible_providers() {
+        assert!(supports_tool_use(&LlmProvider::Mistral));
+        assert!(supports_tool_use(&LlmProvider::Groq));
+        assert!(supports_tool_use(&LlmProvider::Together));
+        assert!(supports_tool_use(&LlmProvider::DeepSeek));
+        assert!(supports_tool_use(&LlmProvider::OpenRouter));
+        assert!(supports_tool_use(&LlmProvider::Kimi));
+        assert!(supports_tool_use(&LlmProvider::Qwen));
+        assert!(supports_tool_use(&LlmProvider::Glm));
+        assert!(supports_tool_use(&LlmProvider::Cerebras));
+    }
+
+    #[test]
+    fn supports_tool_use_false_for_community_and_ollama() {
+        assert!(!supports_tool_use(&LlmProvider::Community));
+        assert!(!supports_tool_use(&LlmProvider::Ollama));
+    }
 }

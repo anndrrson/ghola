@@ -5,6 +5,8 @@ import type {
   ThumperTaskResponse,
   ThumperCallResponse,
   ThumperEmailResponse,
+  ThumperSmsResponse,
+  ThumperCalendarEventResponse,
   ThumperLlmConfigResponse,
   ThumperProviderInfo,
   ThumperTemplateResponse,
@@ -186,6 +188,34 @@ export async function sendEmail(data: {
 
 export async function listEmails(): Promise<ThumperEmailResponse[]> {
   return thumperFetch<ThumperEmailResponse[]>("/api/emails");
+}
+
+// SMS
+
+export async function sendSms(data: {
+  to: string;
+  body: string;
+}): Promise<ThumperSmsResponse> {
+  return thumperFetch<ThumperSmsResponse>("/api/sms/send", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+// Calendar
+
+export async function createCalendarEvent(data: {
+  title: string;
+  start: string;
+  end: string;
+  description?: string;
+  location?: string;
+  timezone?: string;
+}): Promise<ThumperCalendarEventResponse> {
+  return thumperFetch<ThumperCalendarEventResponse>("/api/calendar/events", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
 }
 
 // LLM Config (BYOM)
