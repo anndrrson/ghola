@@ -15,6 +15,7 @@ import {
   loadSessions as loadSessionsFromStore,
   saveSessions as saveSessionsToStore,
 } from "@/lib/chat-history-store";
+import { selectRoute, useSovereigntyMode } from "@/lib/sovereignty";
 import bs58 from "bs58";
 import type { ThumperSession, ThumperChatMessage, ThumperInlineAction } from "@/lib/thumper-types";
 
@@ -91,6 +92,16 @@ export default function ChatPage() {
     if (!e2eEnabled || !userDid) return null;
     return createChatVault({ userDid, signBytes });
   }, [e2eEnabled, userDid, signBytes]);
+
+  // Per-DID sovereignty preference. Today the value is informational —
+  // it surfaces in the chat header and (once receipts land) gets
+  // tagged into every receipt so users can audit the mode each
+  // message ran under. selectRoute() returns honest v1 caveats per
+  // mode; we surface those as a one-line dev console warning the
+  // first time a chat is sent in Private or Local so the v1->v2 gap
+  // is visible to anyone actually reading the network panel.
+  const { mode: sovereigntyMode, setMode: setSovereigntyMode } =
+    useSovereigntyMode(userDid);
 
   useEffect(() => {
     let cancelled = false;
@@ -251,6 +262,16 @@ export default function ChatPage() {
     let fullContent = "";
     const currentSessionId = sessionId;
 
+    // v1: route is informational. The transport differences land in
+    // the next two PRs (sealed inference + local inference). Log the
+    // caveat so anyone tailing the console sees that Private / Local
+    // are not yet enforcing what their labels imply.
+    const route = selectRoute(sovereigntyMode);
+    if (route.caveat) {
+      // eslint-disable-next-line no-console
+      console.info(`[sovereignty:${route.mode}] ${route.caveat}`);
+    }
+
     // Try to seal the user's message under the session's DEK before
     // sending. If sealing fails (no wallet, vault unlock declined,
     // network error talking to Turnkey) we fall through to the
@@ -347,6 +368,8 @@ export default function ChatPage() {
             <ChatHeader
               title={activeSession?.title || "New conversation"}
               onBack={() => setMobileView("list")}
+              mode={sovereigntyMode}
+              onModeChange={setSovereigntyMode}
             />
             <ChatMessages messages={messages} isStreaming={isStreaming} providerInfo={providerInfo} />
             <ChatInput onSend={handleSend} disabled={isStreaming} />

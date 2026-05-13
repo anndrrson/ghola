@@ -3,13 +3,22 @@
 import Link from "next/link";
 import { ArrowLeft, Settings } from "lucide-react";
 import { GholaLogo } from "@/components/GholaLogo";
+import { SovereigntyPicker } from "@/components/SovereigntyPicker";
+import type { SovereigntyMode } from "@/lib/sovereignty";
 
 interface ChatHeaderProps {
   title: string;
   onBack: () => void;
+  mode: SovereigntyMode;
+  onModeChange: (mode: SovereigntyMode) => void;
 }
 
-export function ChatHeader({ title, onBack }: ChatHeaderProps) {
+export function ChatHeader({
+  title,
+  onBack,
+  mode,
+  onModeChange,
+}: ChatHeaderProps) {
   return (
     <div className="flex items-center gap-3 px-4 py-3 border-b border-[#1e2a3a] bg-[#0a0b10]">
       <button
@@ -24,12 +33,7 @@ export function ChatHeader({ title, onBack }: ChatHeaderProps) {
           {title || "New conversation"}
         </h2>
       </div>
-      <Link
-        href="/models"
-        className="text-sm text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
-      >
-        Models
-      </Link>
+      <SovereigntyPicker value={mode} onChange={onModeChange} />
       <Link
         href="/settings"
         className="p-2 text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
