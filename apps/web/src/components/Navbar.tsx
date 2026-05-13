@@ -11,17 +11,18 @@ import { getBalance } from "@/lib/api";
 import { GholaLogo } from "@/components/GholaLogo";
 import { Menu, X } from "lucide-react";
 
-// Top-nav items: kept to 4 always-visible product surfaces. Per-section
-// pages (Provide, Bounties, Marketplace, Developers, Settings, Chat) still
-// have their routes — they're reached from contextual links inside Models,
-// Earn, or the user menu. The old top nav had 10 items; this is the
-// "simplify down" pass.
-const NAV_ITEMS = [
-  { href: "/models",   label: "Models",   match: "/models"   },
-  { href: "/agents",   label: "Agents",   match: "/agents"   },
-  { href: "/earn",     label: "Earn",     match: "/earn"     },
-  { href: "/identity/login", label: "Identity", match: "/identity" },
-] as const;
+// Consumer-altitude framing: the public site is a chat product. No
+// product-surface links in the top nav for logged-out visitors —
+// just Sign In / Get Started. Pages like /security, /network,
+// /developers, /agents, /models, /marketplace, /provide, /bounties,
+// /earn all still exist at their URLs and are reachable by direct
+// link (and indexed for SEO), but they're not surfaced from the
+// public chrome. Anyone who needs them gets the link from us.
+//
+// Logged-in users get Chat + Vault + an Account dropdown that
+// collapses the secondary surfaces (Agents, Settings, Developers,
+// Identity Dashboard, Sign Out).
+const NAV_ITEMS: ReadonlyArray<{ href: string; label: string; match: string }> = [];
 
 function truncateAddress(address: string): string {
   return `${address.slice(0, 4)}...${address.slice(-4)}`;

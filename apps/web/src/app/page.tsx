@@ -65,26 +65,23 @@ export default function Home() {
                 line that's true post-PR-1: the cloud is server-blind, so
                 "we can't read it" is capability, not policy. */}
             <h1 className="font-display text-[clamp(3rem,9vw,7.5rem)] leading-[0.94] text-[#eef1f8] font-medium">
-              <span className="text-[#3da8ff]">Off the record.</span>
+              Verifiably{" "}
+              <span className="text-[#3da8ff]">off the record.</span>
             </h1>
 
-            <p className="mt-10 max-w-xl text-lg text-[#8b95a8] leading-relaxed">
-              End-to-end encrypted AI chat. Even we can&apos;t read it.
+            <p className="mt-10 max-w-2xl text-lg text-[#8b95a8] leading-relaxed">
+              Open, attested, sovereign confidential AI — TEE + on-device +
+              on-chain accountable privacy, with a per-message cryptographic
+              receipt the user can verify.
             </p>
 
-            <div className="mt-12 flex flex-col sm:flex-row gap-3">
+            <div className="mt-12">
               <Link
-                href="/models"
+                href="/chat"
                 className="group inline-flex items-center justify-center gap-2 rounded-full bg-[#3da8ff] px-7 py-3.5 text-[15px] font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
               >
-                Start chatting
+                Try Private chat
                 <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-              </Link>
-              <Link
-                href="/earn"
-                className="inline-flex items-center justify-center gap-2 rounded-full border border-[#1e2a3a] px-7 py-3.5 text-[15px] font-medium text-[#cfd4dd] hover:border-[#3a4a60] hover:text-[#eef1f8] active:scale-[0.98] transition-all"
-              >
-                List a model
               </Link>
             </div>
           </div>
@@ -96,77 +93,63 @@ export default function Home() {
           <div className="mx-auto max-w-6xl px-6 lg:px-12 py-5 flex flex-wrap items-center gap-x-8 gap-y-2 font-mono text-[11px] uppercase tracking-[0.22em] text-[#6f798c]">
             <span className="text-[#8b95a8]">Active on network</span>
             <span className="text-[#2a3a50]">·</span>
-            <span>Server-blind</span>
+            <span>TEE attested</span>
             <span className="text-[#2a3a50]">·</span>
-            <span>Pay per query</span>
+            <span>On-device option</span>
             <span className="text-[#2a3a50]">·</span>
-            <span>USDT + USDC</span>
+            <span>On-chain receipts</span>
             <span className="text-[#2a3a50]">·</span>
             <span>Open weights</span>
           </div>
         </div>
       </section>
 
-      {/* ──────────── Marketplace ──────────── */}
+      {/* ──────────── Sovereignty Modes ──────────── */}
       <section className="py-28 sm:py-36">
         <div className="mx-auto w-full max-w-6xl px-6 lg:px-12">
           <div className="flex items-baseline gap-6 mb-16">
             <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#8b95a8]">
-              01 — The marketplace
+              01 — Sovereignty modes
             </span>
             <span className="flex-1 h-px bg-[#1e2a3a]" />
           </div>
 
           <div className="grid lg:grid-cols-12 gap-10 lg:gap-16 items-end mb-20">
             <h2 className="lg:col-span-7 font-display text-4xl md:text-6xl leading-[1.0] text-[#eef1f8] font-medium">
-              Four sides.{" "}
-              <span className="text-[#8b95a8]">One economy.</span>
+              Pick where your AI{" "}
+              <span className="text-[#8b95a8]">thinks.</span>
             </h2>
             <p className="lg:col-span-5 text-[#8b95a8] leading-relaxed">
-              Agents need compute, models, and services to do real work — and
-              they pay for all three. Pick a side. Get plugged in.
+              Every chat ships with a receipt. The receipt says exactly where
+              the model ran and who signed off — so &quot;private&quot; means
+              something you can verify, not something you have to trust.
             </p>
           </div>
 
-          <div className="grid md:grid-cols-2 lg:grid-cols-4 divide-y md:divide-y-0 md:divide-x divide-[#1e2a3a] border-y border-[#1e2a3a]">
+          <div className="grid md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-[#1e2a3a] border-y border-[#1e2a3a]">
             {[
               {
                 num: "i",
-                tag: "Supply",
-                title: "Run compute",
-                desc: "Your phone, GPU, or server hosts inference. Earn USDT or USDC every time an agent calls it.",
-                cta: "Host a node",
-                href: "/earn/compute",
+                tag: "Default",
+                title: "Private",
+                desc: "Encrypted to a verified provider. The relay forwards opaque bytes — we cannot decrypt your conversation.",
               },
               {
                 num: "ii",
-                tag: "Supply",
-                title: "Publish a model",
-                desc: "Fine-tune and ship your own model. Earn per call, 85% revenue share.",
-                cta: "Publish",
-                href: "/earn/models",
+                tag: "On-device",
+                title: "Local",
+                desc: "Runs on your laptop via WebGPU or ghola-home. The message never leaves the machine. You sign your own receipt.",
               },
               {
                 num: "iii",
-                tag: "Supply",
-                title: "Sell a service",
-                desc: "Register your API as a headless merchant. 3% fee, stablecoin settlement (USDT or USDC).",
-                cta: "Register",
-                href: "/provide",
-              },
-              {
-                num: "iv",
-                tag: "Demand",
-                title: "Use an agent",
-                desc: "Give an agent its own wallet, identity, and reputation. It acts, books, buys, and pays.",
-                cta: "Deploy",
-                href: "/agents/new",
+                tag: "Open",
+                title: "Open",
+                desc: "Any provider, plaintext path, cheapest route. Labeled unverified — for tasks where privacy is not the constraint.",
               },
             ].map((card) => (
-              <Link
+              <div
                 key={card.title}
-                href={card.href}
-                className="group p-8 lg:p-10 hover:bg-[#0c0e14] transition-colors flex flex-col"
+                className="p-8 lg:p-10 flex flex-col"
               >
                 <div className="flex items-center justify-between mb-10">
                   <span className="font-display text-3xl text-[#3da8ff]">
@@ -177,14 +160,10 @@ export default function Home() {
                   </span>
                 </div>
                 <h3 className="text-[#eef1f8] text-xl mb-3">{card.title}</h3>
-                <p className="text-sm text-[#8b95a8] leading-relaxed mb-10 flex-1">
+                <p className="text-sm text-[#8b95a8] leading-relaxed flex-1">
                   {card.desc}
                 </p>
-                <div className="inline-flex items-center gap-2 text-sm text-[#cfd4dd] group-hover:text-[#3da8ff] transition-colors">
-                  {card.cta}
-                  <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-1" />
-                </div>
-              </Link>
+              </div>
             ))}
           </div>
         </div>
@@ -316,25 +295,19 @@ export default function Home() {
         />
         <div className="relative mx-auto w-full max-w-4xl px-6 lg:px-12 text-center">
           <h2 className="font-display text-5xl md:text-8xl leading-[0.94] text-[#eef1f8] font-medium">
-            Pick a <span className="text-[#3da8ff]">side.</span>
+            Verifiably <span className="text-[#3da8ff]">off the record.</span>
           </h2>
           <p className="mt-8 text-[#8b95a8] max-w-md mx-auto leading-relaxed">
-            Provide the fuel, or deploy the agents. Either way, you&apos;re in
-            the economy.
+            Every message gets a receipt. Every receipt says where it ran.
+            Nothing leaves a trail you can&apos;t audit.
           </p>
-          <div className="mt-12 flex flex-col sm:flex-row gap-3 justify-center">
+          <div className="mt-12 flex justify-center">
             <Link
-              href="/earn"
+              href="/chat"
               className="group inline-flex items-center justify-center gap-2 rounded-full bg-[#3da8ff] px-8 py-4 text-[15px] font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
             >
-              Start earning
+              Try Private chat
               <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-            </Link>
-            <Link
-              href="/developers"
-              className="inline-flex items-center justify-center gap-2 rounded-full border border-[#1e2a3a] px-8 py-4 text-[15px] font-medium text-[#cfd4dd] hover:border-[#3a4a60] hover:text-[#eef1f8] active:scale-[0.98] transition-all"
-            >
-              Read the docs
             </Link>
           </div>
         </div>
