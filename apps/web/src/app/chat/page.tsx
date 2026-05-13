@@ -76,8 +76,22 @@ export default function ChatPage() {
   const [providerInfo, setProviderInfo] = useState<{ type: string; model?: string; provider_name?: string } | null>(null);
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { setAuth } = useThumperAuth();
+  const { setAuth, authenticated, loading: authLoading } = useThumperAuth();
   const { createWallet, walletAddress, signBytes } = useTurnkeyWallet();
+
+  // The homepage hero CTA points here. Logged-out visitors get
+  // bounced to /signup with a return-to so they land back at /chat
+  // after creating an account, rather than hitting an inert chat UI
+  // whose every send would 401. Twitter OAuth callback is the one
+  // case where unauthed access is expected — that flow runs setAuth
+  // synchronously below, so we wait one tick before redirecting if
+  // there's a `code` query parameter.
+  useEffect(() => {
+    if (authLoading) return;
+    if (authenticated) return;
+    if (searchParams.get("code")) return; // OAuth exchange will set auth
+    router.replace("/signup");
+  }, [authLoading, authenticated, searchParams, router]);
 
   // Chat-side E2E: when a Turnkey wallet is connected, build a vault
   // whose unlock key is gated on a Turnkey signature. Sealing happens
