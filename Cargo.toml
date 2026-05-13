@@ -33,6 +33,7 @@ members = [
 ]
 exclude = [
     "programs/said-registry",
+    "programs/said-receipts",
 ]
 resolver = "2"
 
