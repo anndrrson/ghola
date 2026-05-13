@@ -353,8 +353,15 @@ static ggml_tensor * build_attn_block(
     // ── 8. Merge heads back to [hidden, n_tokens] ──────────────────────
     if (trace) LOGI("attn: permute KQV");
     KQV = ggml_permute(ctx, KQV, 0, 2, 1, 3); // [head_dim, n_head, n_tokens]
-    if (trace) LOGI("attn: cont_2d");
-    ggml_tensor * merged = ggml_cont_2d(ctx, KQV, QwenConfig::hidden_dim, n_tokens);
+    // Split cont + reshape: ggml_cont_2d is "contiguify AND change shape"
+    // in one op, but its backward (GGML_OP_CONT) propagates the post-cont
+    // shape to src0's grad slot — which expects the pre-cont shape. Two
+    // separate ops cleanly separate the data copy from the metadata
+    // reshape so backward generates the right shapes.
+    if (trace) LOGI("attn: cont");
+    KQV = ggml_cont(ctx, KQV);                // [head_dim, n_head, n_tokens] contiguous
+    if (trace) LOGI("attn: reshape_2d");
+    ggml_tensor * merged = ggml_reshape_2d(ctx, KQV, QwenConfig::hidden_dim, n_tokens);
 
     if (trace) LOGI("attn: KQV done, merging heads");
     // ── 9. Output projection + LoRA + residual ─────────────────────────

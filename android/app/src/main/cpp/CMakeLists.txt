@@ -56,7 +56,7 @@ FetchContent_MakeAvailable(llama)
 set(_ggml_c_path "${llama_SOURCE_DIR}/ggml/src/ggml.c")
 if(EXISTS "${_ggml_c_path}")
     file(READ "${_ggml_c_path}" _ggml_c_contents)
-    if(NOT _ggml_c_contents MATCHES "GHOLA_MUL_BWD_FIX")
+    if(NOT _ggml_c_contents MATCHES "GHOLA_BWD_TRACE2")
         # Replace the body of the fork-using ggml_print_backtrace with a no-op
         # that just emits "abort backtrace suppressed" to stderr. Crash via
         # abort() — visible in logcat as SIGABRT + the assertion message.
@@ -74,6 +74,17 @@ if(EXISTS "${_ggml_c_path}")
         string(REPLACE
             "case GGML_OP_MUL: {\n            if (src0_needs_grads) {\n                ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, src1, grad));"
             "case GGML_OP_MUL: {\n            if (src0_needs_grads) { /* GHOLA_MUL_BWD_FIX */\n                struct ggml_tensor * gnorm = ggml_are_same_shape(src0, grad) ? grad : grad;\n                ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, gnorm, src1));"
+            _patched "${_patched}")
+        # Trace which op + tensor shape fails the post-condition asserts.
+        # __android_log_print so output lands in logcat (stderr doesn't).
+        string(REPLACE
+            "    GGML_ASSERT(!src0_needs_grads || ggml_are_same_shape(src0, cgraph->grads[isrc0]));\n    GGML_ASSERT(!src1_needs_grads || ggml_are_same_shape(src1, cgraph->grads[isrc1]));\n    GGML_ASSERT(!src2_needs_grads || ggml_are_same_shape(src2, cgraph->grads[isrc2]));"
+            "    /* GHOLA_BWD_TRACE2 */\n    if (src0_needs_grads && !ggml_are_same_shape(src0, cgraph->grads[isrc0])) {\n        __android_log_print(ANDROID_LOG_ERROR, \"GGML_BWD\", \"op=%s SRC0 mismatch src=[%lld %lld %lld %lld] grad=[%lld %lld %lld %lld]\", ggml_op_name(tensor->op), (long long)src0->ne[0], (long long)src0->ne[1], (long long)src0->ne[2], (long long)src0->ne[3], (long long)cgraph->grads[isrc0]->ne[0], (long long)cgraph->grads[isrc0]->ne[1], (long long)cgraph->grads[isrc0]->ne[2], (long long)cgraph->grads[isrc0]->ne[3]);\n    }\n    if (src1_needs_grads && !ggml_are_same_shape(src1, cgraph->grads[isrc1])) {\n        __android_log_print(ANDROID_LOG_ERROR, \"GGML_BWD\", \"op=%s SRC1 mismatch src=[%lld %lld %lld %lld] grad=[%lld %lld %lld %lld]\", ggml_op_name(tensor->op), (long long)src1->ne[0], (long long)src1->ne[1], (long long)src1->ne[2], (long long)src1->ne[3], (long long)cgraph->grads[isrc1]->ne[0], (long long)cgraph->grads[isrc1]->ne[1], (long long)cgraph->grads[isrc1]->ne[2], (long long)cgraph->grads[isrc1]->ne[3]);\n    }\n    GGML_ASSERT(!src0_needs_grads || ggml_are_same_shape(src0, cgraph->grads[isrc0]));\n    GGML_ASSERT(!src1_needs_grads || ggml_are_same_shape(src1, cgraph->grads[isrc1]));\n    GGML_ASSERT(!src2_needs_grads || ggml_are_same_shape(src2, cgraph->grads[isrc2]));"
+            _patched "${_patched}")
+        # Add #include <android/log.h> at top of ggml.c if not already there
+        string(REPLACE
+            "// FIXME: required here for quantization functions"
+            "#include <android/log.h>  // GHOLA_BWD_TRACE2\n// FIXME: required here for quantization functions"
             _patched "${_patched}")
         file(WRITE "${_ggml_c_path}" "${_patched}")
         message(STATUS "Ghola: patched ggml_print_backtrace + OP_MUL backward")
