@@ -20,6 +20,7 @@ import {
 import { selectRoute, useSovereigntyMode } from "@/lib/sovereignty";
 import { makeReceipt } from "@/lib/receipt";
 import { streamLocalChat } from "@/lib/local-inference";
+import { streamSealedChat } from "@/lib/sealed-stream";
 import bs58 from "bs58";
 import type { ThumperSession, ThumperChatMessage, ThumperInlineAction } from "@/lib/thumper-types";
 
@@ -289,15 +290,74 @@ export default function ChatPage() {
       | { type: string; model?: string; provider_name?: string }
       | null = null;
 
-    // Route the message based on the sovereignty mode. Private and
-    // Open still share the relay path in v1 (sealed transport for
-    // Private lands with /inference/sealed); Local goes straight to
-    // ghola-home and never touches the cloud. selectRoute() surfaces
-    // a console.info if the mode hasn't fully shipped yet.
-    const route = selectRoute(sovereigntyMode);
+    // Route the message based on the sovereignty mode. In v2, Private
+    // mode asks the relay for an attested enclave and — when one is
+    // available — seals the request end-to-end via /inference/sealed.
+    // When no attested enclave is reachable, Private falls back to
+    // the plaintext relay path with a caveat the receipt records.
+    // Local goes straight to ghola-home and never touches the cloud.
+    // Open is always relay-plain.
+    const route = await selectRoute(sovereigntyMode);
     if (route.caveat) {
       // eslint-disable-next-line no-console
       console.info(`[sovereignty:${route.mode}] ${route.caveat}`);
+    }
+
+    // Sealed relay path (v2 Private). The provider builds the receipt
+    // inside the enclave and returns it sealed back to us — we attach
+    // it to the assistant message verbatim, no user-side resign.
+    if (route.transport === "relay-sealed" && route.enclave && userDid) {
+      await streamSealedChat(
+        currentSessionId,
+        text,
+        route.enclave,
+        signBytes,
+        userDid,
+        {
+          onChunk: (chunk) => {
+            fullContent += chunk;
+            updateSession(currentSessionId, (s) => {
+              const msgs = [...s.messages];
+              msgs[msgs.length - 1] = {
+                ...msgs[msgs.length - 1],
+                content: fullContent,
+              };
+              return { ...s, messages: msgs };
+            });
+          },
+          onDone: (providerReceipt) => {
+            const action = detectAction(fullContent);
+            updateSession(currentSessionId, (s) => {
+              const msgs = [...s.messages];
+              msgs[msgs.length - 1] = {
+                ...msgs[msgs.length - 1],
+                content: fullContent,
+                action,
+                receipt: providerReceipt,
+              };
+              return {
+                ...s,
+                lastMessage: fullContent.slice(0, 100),
+                lastMessageAt: new Date().toISOString(),
+                messages: msgs,
+              };
+            });
+            setIsStreaming(false);
+          },
+          onError: (errMsg) => {
+            updateSession(currentSessionId, (s) => {
+              const msgs = [...s.messages];
+              msgs[msgs.length - 1] = {
+                ...msgs[msgs.length - 1],
+                content: fullContent || `Sealed inference error: ${errMsg}`,
+              };
+              return { ...s, messages: msgs };
+            });
+            setIsStreaming(false);
+          },
+        },
+      );
+      return;
     }
 
     // Local mode: stream from ghola-home on the user's machine. On

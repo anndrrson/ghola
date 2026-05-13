@@ -24,6 +24,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 import { sha256 } from "@noble/hashes/sha256";
 import { verifyingFromDidKey } from "./envelope";
 import type { SovereigntyMode } from "./sovereignty";
+import { thumperRelayBase } from "./sovereignty";
 
 export type ReceiptVersion = 1;
 
@@ -39,15 +40,26 @@ export interface ReceiptV1 {
   input_token_hash: string; // sha256 hex of the canonicalized prompt
   output_token_hash: string; // sha256 hex of the response
   issued_at: number; // unix ms
-  // Reserved for v2 — provider attestation. Null in v1 because the
-  // enclave runtime doesn't exist yet; surfacing the field keeps the
-  // wire format stable across versions.
+  // v2 provider attestation. Populated when the message ran inside an
+  // attested enclave (Private mode + relay-sealed transport); null for
+  // v1 user-only receipts and for Local/Open paths.
   enclave_key_id: string | null;
   attestation_hash: string | null;
   measurement: string | null;
-  // Signer DID and base64 signature over the canonical body.
+  // Signer DID and base64 signature over the canonical body. The user
+  // (Turnkey) signs in v1; in v2 receipts that originate in-enclave,
+  // `signer_did` is the user's DID and `signature` is the user's
+  // post-hoc countersignature when the client builds the receipt
+  // locally — for provider-built receipts, `signer_did` is the
+  // enclave's did:key and `signature` matches `provider_signature`.
   signer_did: string;
   signature: string;
+  // v2: provider Ed25519 signature over the canonical body. Distinct
+  // from `signature` so a verifier can check both independently —
+  // user signature proves "this is what my client observed," provider
+  // signature proves "this is what the enclave produced." Null on v1
+  // receipts (user-only path) for wire compatibility.
+  provider_signature: string | null;
 }
 
 // Everything that gets signed — i.e. the receipt without the trailing
@@ -55,7 +67,10 @@ export interface ReceiptV1 {
 // to JSON with this exact ordering to derive the signing bytes; sort
 // alphabetically would also work but explicit is cheaper to reason
 // about for hand-verification.
-type ReceiptBody = Omit<ReceiptV1, "signer_did" | "signature">;
+type ReceiptBody = Omit<
+  ReceiptV1,
+  "signer_did" | "signature" | "provider_signature"
+>;
 
 const RECEIPT_BODY_KEYS: ReadonlyArray<keyof ReceiptBody> = [
   "version",
@@ -131,6 +146,7 @@ export async function makeReceipt(input: MakeReceiptInput): Promise<ReceiptV1> {
     ...body,
     signer_did: input.signerDid,
     signature: bytesToBase64(sig),
+    provider_signature: null,
   };
 }
 
@@ -186,4 +202,124 @@ export function verifyReceiptAgainstMessage(
     return { ok: false, reason: "output hash mismatch" };
   }
   return { ok: true };
+}
+
+// ── v2 helpers: provider signature + attestation fetch ──────────────────
+
+function hexToBytes(hex: string): Uint8Array {
+  const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+  if (clean.length % 2 !== 0) throw new Error("invalid hex length");
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+/**
+ * Verify the provider's Ed25519 signature on a v2 receipt against the
+ * enclave's attestation-bound Ed25519 public key (hex). Returns
+ * `{ ok: false }` for v1 receipts where `provider_signature` is null —
+ * callers should check that case explicitly before calling.
+ */
+export function verifyProviderSignature(
+  receipt: ReceiptV1,
+  enclaveEd25519PubHex: string,
+): VerifyReceiptResult {
+  try {
+    if (!receipt.provider_signature) {
+      return { ok: false, reason: "no provider signature on receipt" };
+    }
+    const body: ReceiptBody = {
+      version: receipt.version,
+      job_id: receipt.job_id,
+      mode: receipt.mode,
+      provider_id: receipt.provider_id,
+      model_id: receipt.model_id,
+      input_token_hash: receipt.input_token_hash,
+      output_token_hash: receipt.output_token_hash,
+      issued_at: receipt.issued_at,
+      enclave_key_id: receipt.enclave_key_id,
+      attestation_hash: receipt.attestation_hash,
+      measurement: receipt.measurement,
+    };
+    const digest = sha256(canonicalizeBody(body));
+    const sig = base64ToBytes(receipt.provider_signature);
+    const pub = hexToBytes(enclaveEd25519PubHex);
+    if (pub.length !== 32) {
+      return {
+        ok: false,
+        reason: `enclave Ed25519 pub must be 32 bytes, got ${pub.length}`,
+      };
+    }
+    const ok = ed25519.verify(sig, digest, pub);
+    return ok ? { ok: true } : { ok: false, reason: "provider signature failed" };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Cached attestation document the relay returns for a known
+ * `attestation_hash`. Includes the raw vendor quote (so a verifier
+ * can re-walk the chain offline) and the structured enclave fields
+ * needed to verify `provider_signature` after the fact.
+ *
+ * Shape mirrors `AttestationDoc` in
+ * `crates/thumper-relay/src/routes/attestations.rs`.
+ */
+export interface AttestationDoc {
+  attestation_hash: string;
+  vendor_quote_b64: string;
+  enclave_key_id: string;
+  provider_id: string;
+  tee_kind: "nitro" | "h100_cc" | "phala" | "tdx" | "none";
+  enclave_x25519_pub_hex: string;
+  enclave_ed25519_pub_hex: string;
+  measurement_hex: string;
+  expires_at_unix: number;
+}
+
+/**
+ * Fetch the attestation doc for a given hash from the relay. Returns
+ * null on any failure — the caller surfaces that as "couldn't verify"
+ * rather than treating it as a tamper.
+ */
+export async function fetchAttestation(
+  attestationHash: string,
+): Promise<AttestationDoc | null> {
+  try {
+    const url = new URL(
+      `/attestations/${encodeURIComponent(attestationHash)}`,
+      thumperRelayBase(),
+    );
+    const res = await fetch(url.toString(), { method: "GET" });
+    if (!res.ok) return null;
+    return (await res.json()) as AttestationDoc;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compute the sha256 hex of a receipt's canonical body — used as the
+ * key the receipts service indexes Merkle proofs under. Matches the
+ * Rust batcher's `receipt_hash` derivation in
+ * `crates/said-receipts-service`.
+ */
+export function receiptHashHex(receipt: ReceiptV1): string {
+  const body: ReceiptBody = {
+    version: receipt.version,
+    job_id: receipt.job_id,
+    mode: receipt.mode,
+    provider_id: receipt.provider_id,
+    model_id: receipt.model_id,
+    input_token_hash: receipt.input_token_hash,
+    output_token_hash: receipt.output_token_hash,
+    issued_at: receipt.issued_at,
+    enclave_key_id: receipt.enclave_key_id,
+    attestation_hash: receipt.attestation_hash,
+    measurement: receipt.measurement,
+  };
+  return bytesToHex(sha256(canonicalizeBody(body)));
 }
