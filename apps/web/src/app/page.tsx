@@ -19,8 +19,27 @@ export default function Home() {
 
   if (authenticated && !loading) return null;
 
+  // Organization schema for the homepage. Tells Google what the site
+  // represents at a brand level — feeds knowledge panel, brand sitelinks,
+  // and the "About this result" panel without needing rich-snippet
+  // markup on every page.
+  const orgSchema = {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    name: "ghola",
+    url: "https://ghola.xyz",
+    description:
+      "Open, attested, sovereign confidential AI. TEE + on-device + on-chain accountable privacy, with a per-message cryptographic receipt the user can verify.",
+    logo: "https://ghola.xyz/icon-512.png",
+  };
+
   return (
     <div className="min-h-screen pt-16">
+      <script
+        type="application/ld+json"
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(orgSchema) }}
+      />
       {/* ──────────── Hero ──────────── */}
       <section className="relative flex flex-col overflow-hidden">
         {/* Subtle grid backdrop. Keep it low-contrast so the typography
