@@ -235,21 +235,32 @@ bool run_finetune(
     ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_cpu_buffer_type());
     if (!galloc) { LOGE("ggml_gallocr_new failed"); ggml_backend_free(backend); ggml_free(static_ctx); return false; }
 
-    // AdamW optimizer-params tensor: [alpha, beta1, beta2, eps, wd, β1^t, β2^t]
+    // AdamW optimizer-params tensor at b4524:
+    //   [alpha, beta1, beta2, eps, wd, 1/(1-β1^t), 1/(1-β2^t)]
+    // The last two slots are BIAS-CORRECTION MULTIPLIERS, not the raw
+    // β^t. ggml-opt.cpp's ggml_opt_alloc_graph proves this convention:
+    //   beta1h = 1.0f/(1.0f - powf(β1, iter));
+    //   adamw_par_data[5] = beta1h;
+    // The compute does `mh = m * beta1h; vh = sqrtf(v * beta2h) + eps`,
+    // so without the (1 - β^t)⁻¹ form the bias correction is inverted —
+    // step magnitudes shrink toward zero instead of normalizing to the
+    // standard Adam step, and the LoRA outputs drift in the wrong
+    // direction enough to make CE loss climb (5.5 → 13.4 over 10 steps).
     ggml_tensor * opt_params = ggml_new_tensor_1d(static_ctx, GGML_TYPE_F32, 7);
     ggml_set_name(opt_params, "adamw_params");
 
     auto write_opt_params = [&](int step) {
-        beta1_t *= hp.adam_beta1;
-        beta2_t *= hp.adam_beta2;
+        beta1_t *= hp.adam_beta1;  // β1^iter
+        beta2_t *= hp.adam_beta2;  // β2^iter
         float * d = (float *) opt_params->data;
         d[0] = hp.learning_rate;
         d[1] = hp.adam_beta1;
         d[2] = hp.adam_beta2;
         d[3] = hp.adam_eps;
         d[4] = hp.weight_decay;
-        d[5] = beta1_t;
-        d[6] = beta2_t;
+        // Bias-correction multipliers in the form ggml expects.
+        d[5] = 1.0f / (1.0f - beta1_t);
+        d[6] = 1.0f / (1.0f - beta2_t);
         (void) step;
     };
 
