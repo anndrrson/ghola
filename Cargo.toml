@@ -10,6 +10,7 @@ members = [
     "crates/said-wasm",
     "crates/said-x402",
     "crates/said-turnkey",
+    "crates/said-attest",
     "crates/ghola-gateway",
     "mcp-server",
     "cli",
@@ -62,6 +63,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 toml = "0.8"
+ciborium = "0.2"
+coset = "0.3"
+
+# Attestation / X.509
+der = "0.7"
+p384 = { version = "0.13", features = ["ecdsa", "pem"] }
+x509-cert = { version = "0.2", features = ["pem", "std"] }
 
 # Async
 tokio = { version = "1", features = ["full"] }
@@ -127,6 +135,7 @@ said-noncecache = { path = "crates/said-noncecache" }
 said-solana = { path = "crates/said-solana" }
 said-x402 = { path = "crates/said-x402" }
 said-turnkey = { path = "crates/said-turnkey" }
+said-attest = { path = "crates/said-attest" }
 said-mcp = { path = "mcp-server" }
 said-daemon = { path = "daemon" }
 
