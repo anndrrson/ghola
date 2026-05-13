@@ -82,8 +82,10 @@ FROM amazonlinux:2023 AS runtime
 # entirely inside the EIF and serves /api/generate on 127.0.0.1:11434.
 # An alternative is vLLM — swap the install line here if you prefer.
 #
-# The Ollama install script wants curl + tar.
-RUN dnf -y update && dnf -y install \
+# The Ollama install script wants curl + tar. --allowerasing lets the
+# explicit `curl` package replace the pre-installed `curl-minimal` on
+# AL2023 (introduced 2024) — without it dnf errors with a conflict.
+RUN dnf -y update && dnf -y install --allowerasing \
     ca-certificates \
     curl \
     tar \
