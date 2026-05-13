@@ -397,8 +397,14 @@ bool run_finetune(
                 ggml_free(cctx);
                 continue;
             }
+            LOGI("trn step %d: fill tok_t (ne=[%lld] data=%p buffer=%p)",
+                 global_step, (long long) tok_t->ne[0], tok_t->data, (void*) tok_t->buffer);
             ggml_backend_tensor_set(tok_t,  tokens.data(),    0, (size_t) n_total      * sizeof(int32_t));
+            LOGI("trn step %d: fill pos_t (ne=[%lld] data=%p buffer=%p)",
+                 global_step, (long long) pos_t->ne[0], pos_t->data, (void*) pos_t->buffer);
             ggml_backend_tensor_set(pos_t,  positions.data(), 0, (size_t) n_total      * sizeof(int32_t));
+            LOGI("trn step %d: fill mask_t (ne=[%lld,%lld] data=%p buffer=%p)",
+                 global_step, (long long) mask_t->ne[0], (long long) mask_t->ne[1], mask_t->data, (void*) mask_t->buffer);
             // One-hot labels: [vocab, n_completion] f32, all zeros except
             // a 1.0 at (target_token, position). Required by ggml_cross_
             // entropy_loss's same-shape assertion at b4524.
@@ -411,6 +417,9 @@ bool run_finetune(
                         labels[(size_t) i * vocab + tok] = 1.0f;
                     }
                 }
+                LOGI("trn step %d: fill tgt_t (ne=[%lld,%lld] data=%p buffer=%p, write %zu bytes)",
+                     global_step, (long long) tgt_t->ne[0], (long long) tgt_t->ne[1],
+                     tgt_t->data, (void*) tgt_t->buffer, labels.size() * sizeof(float));
                 ggml_backend_tensor_set(tgt_t, labels.data(), 0,
                                         labels.size() * sizeof(float));
             }
@@ -427,26 +436,34 @@ bool run_finetune(
             }
 
             // ── Seed gradients ────────────────────────────────────────
-            // ggml_graph_reset would do this — but it ALSO zeroes the
-            // AdamW momenta (src[2], src[3] of OPT_STEP_ADAMW nodes),
-            // which we want PERSISTENT across steps. So we manually:
-            //   (a) zero each LoRA param's grad_acc (fresh grad per step)
-            //   (b) seed dL/dL = 1.0 at the loss tensor's grad_acc
-            // This preserves momentum while giving autograd the right seed.
+            LOGI("trn step %d: zero LoRA param grad_accs (%zu modules)", global_step, lora.order.size());
+            int zeroed = 0, missing = 0;
             for (const std::string & key2 : lora.order) {
                 auto it2 = lora.modules.find(key2);
                 if (it2 == lora.modules.end()) continue;
                 LoraModule & lm = it2->second;
                 ggml_tensor * ga_A = ggml_graph_get_grad_acc(cgraph, lm.A);
                 ggml_tensor * ga_B = ggml_graph_get_grad_acc(cgraph, lm.B);
-                if (ga_A) ggml_set_zero(ga_A);
-                if (ga_B) ggml_set_zero(ga_B);
+                if (ga_A) { ggml_set_zero(ga_A); zeroed++; } else { missing++; }
+                if (ga_B) { ggml_set_zero(ga_B); zeroed++; } else { missing++; }
             }
+            LOGI("trn step %d: grad_accs zeroed=%d missing=%d", global_step, zeroed, missing);
             {
                 ggml_tensor * loss_ga = ggml_graph_get_grad_acc(cgraph, loss);
                 if (loss_ga) {
                     const float one = 1.0f;
-                    ggml_backend_tensor_set(loss_ga, &one, 0, sizeof(float));
+                    // loss_ga lives in static_ctx (no_alloc=false), so it
+                    // has direct data but no backend buffer — backend_tensor_set
+                    // asserts buf != NULL. Mirror ggml_graph_reset's dual path:
+                    // use backend_tensor_set when buffer is attached (backend
+                    // allocation), direct write otherwise.
+                    if (loss_ga->buffer) {
+                        ggml_backend_tensor_set(loss_ga, &one, 0, sizeof(float));
+                    } else if (loss_ga->data) {
+                        *((float *) loss_ga->data) = one;
+                    } else {
+                        LOGW("run_finetune: loss_ga has neither buffer nor data");
+                    }
                 } else {
                     LOGW("run_finetune: no grad_acc for loss — gradients won't flow");
                 }
