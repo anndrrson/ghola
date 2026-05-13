@@ -57,7 +57,7 @@ export function LocalSetupBanner() {
   // Green: connected and paired.
   if (status.available && status.paired) {
     return (
-      <div className="px-4 py-2 border-b border-[#1e2a3a] bg-emerald-500/5 text-[11px] text-emerald-300 flex items-center justify-between gap-2">
+      <div className="px-4 py-2 border-b border-[#1e2a3a] bg-emerald-500/5 text-[11px] text-emerald-300 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <span className="flex items-center gap-2">
           <Check className="h-3 w-3" />
           Connected to ghola-home — your messages stay on this machine.
@@ -80,7 +80,7 @@ export function LocalSetupBanner() {
   if (status.available && !status.paired) {
     return (
       <>
-        <div className="px-4 py-2 border-b border-[#1e2a3a] bg-amber-500/5 text-[11px] text-amber-200 flex items-center justify-between gap-2">
+        <div className="px-4 py-2 border-b border-[#1e2a3a] bg-amber-500/5 text-[11px] text-amber-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <span>
             ghola-home is running at {status.baseUrl} but this browser
             isn&apos;t paired yet.
@@ -109,7 +109,7 @@ export function LocalSetupBanner() {
   // Red: not reachable.
   return (
     <>
-      <div className="px-4 py-2 border-b border-[#1e2a3a] bg-red-500/5 text-[11px] text-red-300 flex items-center justify-between gap-2">
+      <div className="px-4 py-2 border-b border-[#1e2a3a] bg-red-500/5 text-[11px] text-red-300 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <span className="truncate">
           ghola-home not reachable at {status.baseUrl}
           {status.reason ? ` (${status.reason})` : ""}.
