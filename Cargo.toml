@@ -11,6 +11,7 @@ members = [
     "crates/said-x402",
     "crates/said-turnkey",
     "crates/said-attest",
+    "crates/said-receipts-service",
     "crates/ghola-gateway",
     "mcp-server",
     "cli",
