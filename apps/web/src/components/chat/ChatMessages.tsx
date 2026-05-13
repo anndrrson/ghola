@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useMemo, useRef, useEffect } from "react";
 import DOMPurify from "dompurify";
 import { CallCard } from "./CallCard";
 import { EmailCard } from "./EmailCard";
@@ -28,6 +28,19 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
   }, [messages]);
 
   const groupedByDay = groupMessagesByDay(messages);
+
+  // The most recent assistant message that has a receipt — used as the
+  // single hint anchor so loading old chats doesn't paint a hint next
+  // to every historical badge. Reference equality is enough because
+  // updateSession in the parent splices in fresh message objects on
+  // updates, and the receipt arrives in its own update.
+  const lastReceiptMessage = useMemo<ThumperChatMessage | null>(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "assistant" && m.receipt) return m;
+    }
+    return null;
+  }, [messages]);
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4">
@@ -149,6 +162,7 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
                     receipt={msg.receipt}
                     prompt={promptForReceipt}
                     response={msg.content}
+                    isHintAnchor={msg === lastReceiptMessage}
                   />
                 </div>
               )}
