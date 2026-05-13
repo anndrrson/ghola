@@ -130,6 +130,11 @@ export interface ThumperChatMessage {
    * load — see `chat-history-store`.
    */
   actions?: ThumperInlineAction[];
+  // Per-message cryptographic receipt (assistant messages only).
+  // Built after streaming completes; rides inside the same
+  // session-vault-encrypted payload as the rest of the message so
+  // receipts inherit encryption-at-rest. See lib/receipt.ts.
+  receipt?: import("./receipt").ReceiptV1;
 }
 
 export interface ThumperInlineAction {

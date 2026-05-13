@@ -73,3 +73,50 @@
 # Field-by-field byte-level wire format; reflection-based access from tests
 # and parity vectors. Keep verbatim.
 -keep class xyz.ghola.app.crypto.** { *; }
+
+# ---------- v0.5 transitive deps (R8 missing-class fixes) ----------
+# AutoValue + javapoet ship with build-time-only references to
+# javax.lang.model. ONNX Runtime + MediaPipe pull these in transitively.
+# They're not on the Android runtime classpath; safe to ignore.
+-dontwarn javax.lang.model.**
+-dontwarn javax.tools.**
+-dontwarn com.google.auto.value.**
+-dontwarn autovalue.shaded.com.squareup.javapoet$.**
+
+# ---------- ONNX Runtime ----------
+-keep class ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**
+
+# ---------- MediaPipe tasks-genai ----------
+-keep class com.google.mediapipe.** { *; }
+-dontwarn com.google.mediapipe.**
+
+# ---------- Room (compile-time DAOs) ----------
+-keep class androidx.room.** { *; }
+-keep class * extends androidx.room.RoomDatabase
+-keep @androidx.room.Entity class * { *; }
+-keep @androidx.room.Dao class * { *; }
+-keep class xyz.ghola.app.gmail.SentEmail { *; }
+-keep class xyz.ghola.app.gmail.StringListConverter { *; }
+-keep interface xyz.ghola.app.gmail.SentEmailDao { *; }
+-keep class xyz.ghola.app.gmail.GholaMailDatabase { *; }
+-keep class xyz.ghola.app.gmail.GholaMailDatabase_Impl { *; }
+-keep class xyz.ghola.app.gmail.SentEmailDao_Impl { *; }
+
+# ---------- AppAuth ----------
+-keep class net.openid.appauth.** { *; }
+-dontwarn net.openid.appauth.**
+
+# ---------- v0.6: LoRA fine-tune surfaces ----------
+# Room codegen for the new training-pair entity.
+-keep class xyz.ghola.app.ml.TrainingPair { *; }
+-keep interface xyz.ghola.app.ml.TrainingPairDao { *; }
+-keep class xyz.ghola.app.ml.TrainingPairDao_Impl { *; }
+
+# JNI surfaces — names are matched verbatim by the native code in
+# app/src/main/cpp/llama_jni.cpp and llama_finetune_jni.cpp.
+-keep class xyz.ghola.app.ai.llama.LlamaCpp { *; }
+-keep class xyz.ghola.app.ai.llama.LlamaFinetune { *; }
+-keep class xyz.ghola.app.ai.llama.LlamaFinetune$Hyperparams { *; }
+-keep interface xyz.ghola.app.ai.llama.LlamaFinetune$ProgressCallback { *; }
+-keep interface xyz.ghola.app.ai.llama.LlamaCallback { *; }

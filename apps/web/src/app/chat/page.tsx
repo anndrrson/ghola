@@ -7,6 +7,8 @@ import { SessionSidebar } from "@/components/chat/SessionSidebar";
 import { ChatMessages } from "@/components/chat/ChatMessages";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatHeader } from "@/components/chat/ChatHeader";
+import { LocalSetupBanner } from "@/components/chat/LocalSetupBanner";
+import { SovereigntyPicker } from "@/components/SovereigntyPicker";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { handleTwitterToken } from "@/lib/thumper-api";
@@ -15,6 +17,9 @@ import {
   loadSessions as loadSessionsFromStore,
   saveSessions as saveSessionsToStore,
 } from "@/lib/chat-history-store";
+import { selectRoute, useSovereigntyMode } from "@/lib/sovereignty";
+import { makeReceipt } from "@/lib/receipt";
+import { streamLocalChat } from "@/lib/local-inference";
 import bs58 from "bs58";
 import type { ThumperSession, ThumperChatMessage, ThumperInlineAction } from "@/lib/thumper-types";
 
@@ -72,8 +77,22 @@ export default function ChatPage() {
   const [providerInfo, setProviderInfo] = useState<{ type: string; model?: string; provider_name?: string } | null>(null);
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { setAuth } = useThumperAuth();
+  const { setAuth, authenticated, loading: authLoading } = useThumperAuth();
   const { createWallet, walletAddress, signBytes } = useTurnkeyWallet();
+
+  // The homepage hero CTA points here. Logged-out visitors get
+  // bounced to /signup with a return-to so they land back at /chat
+  // after creating an account, rather than hitting an inert chat UI
+  // whose every send would 401. Twitter OAuth callback is the one
+  // case where unauthed access is expected — that flow runs setAuth
+  // synchronously below, so we wait one tick before redirecting if
+  // there's a `code` query parameter.
+  useEffect(() => {
+    if (authLoading) return;
+    if (authenticated) return;
+    if (searchParams.get("code")) return; // OAuth exchange will set auth
+    router.replace("/signup");
+  }, [authLoading, authenticated, searchParams, router]);
 
   // Chat-side E2E: when a Turnkey wallet is connected, build a vault
   // whose unlock key is gated on a Turnkey signature. Sealing happens
@@ -91,6 +110,16 @@ export default function ChatPage() {
     if (!e2eEnabled || !userDid) return null;
     return createChatVault({ userDid, signBytes });
   }, [e2eEnabled, userDid, signBytes]);
+
+  // Per-DID sovereignty preference. Today the value is informational —
+  // it surfaces in the chat header and (once receipts land) gets
+  // tagged into every receipt so users can audit the mode each
+  // message ran under. selectRoute() returns honest v1 caveats per
+  // mode; we surface those as a one-line dev console warning the
+  // first time a chat is sent in Private or Local so the v1->v2 gap
+  // is visible to anyone actually reading the network panel.
+  const { mode: sovereigntyMode, setMode: setSovereigntyMode } =
+    useSovereigntyMode(userDid);
 
   useEffect(() => {
     let cancelled = false;
@@ -255,6 +284,101 @@ export default function ChatPage() {
     // tool_use arrives) over kicking in the regex fallback unnecessarily.
     let providerSupportsToolUse = true;
     const currentSessionId = sessionId;
+    // Fresh job id per message — also becomes the receipt's job_id so
+    // each assistant turn has its own audit trail rather than reusing
+    // the session id (which spans many turns).
+    const messageJobId = crypto.randomUUID();
+    // Capture provider info locally so the onDone closure can read
+    // it without racing the React state setter.
+    let localProviderInfo:
+      | { type: string; model?: string; provider_name?: string }
+      | null = null;
+
+    // Route the message based on the sovereignty mode. Private and
+    // Open still share the relay path in v1 (sealed transport for
+    // Private lands with /inference/sealed); Local goes straight to
+    // ghola-home and never touches the cloud. selectRoute() surfaces
+    // a console.info if the mode hasn't fully shipped yet.
+    const route = selectRoute(sovereigntyMode);
+    if (route.caveat) {
+      // eslint-disable-next-line no-console
+      console.info(`[sovereignty:${route.mode}] ${route.caveat}`);
+    }
+
+    // Local mode: stream from ghola-home on the user's machine. On
+    // failure, surface the error message in the assistant bubble
+    // rather than silently downgrading to the cloud — Local was the
+    // user's explicit choice. Receipt is built afterwards with
+    // provider_id = "ghola-home" so the audit trail reflects reality.
+    if (route.transport === "webgpu" || route.transport === "ghola-home") {
+      await streamLocalChat(currentSessionId, text, {
+        onChunk: (chunk) => {
+          fullContent += chunk;
+          updateSession(currentSessionId, (s) => {
+            const msgs = [...s.messages];
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              content: fullContent,
+            };
+            return { ...s, messages: msgs };
+          });
+        },
+        onDone: () => {
+          updateSession(currentSessionId, (s) => {
+            const msgs = [...s.messages];
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              content: fullContent,
+            };
+            return {
+              ...s,
+              lastMessage: fullContent.slice(0, 100),
+              lastMessageAt: new Date().toISOString(),
+              messages: msgs,
+            };
+          });
+          setIsStreaming(false);
+          if (userDid) {
+            void (async () => {
+              try {
+                const receipt = await makeReceipt({
+                  jobId: messageJobId,
+                  mode: sovereigntyMode,
+                  providerId: "ghola-home",
+                  modelId: null,
+                  prompt: text,
+                  response: fullContent,
+                  signerDid: userDid,
+                  signBytes,
+                });
+                updateSession(currentSessionId, (s) => {
+                  const msgs = [...s.messages];
+                  msgs[msgs.length - 1] = {
+                    ...msgs[msgs.length - 1],
+                    receipt,
+                  };
+                  return { ...s, messages: msgs };
+                });
+              } catch {
+                // Receipt failed — Local message still displays.
+              }
+            })();
+          }
+        },
+        onError: (errMsg) => {
+          updateSession(currentSessionId, (s) => {
+            const msgs = [...s.messages];
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              content: errMsg,
+            };
+            return { ...s, messages: msgs };
+          });
+          setIsStreaming(false);
+        },
+      });
+      return;
+    }
 
     // Try to seal the user's message under the session's DEK before
     // sending. If sealing fails (no wallet, vault unlock declined,
@@ -281,6 +405,7 @@ export default function ChatPage() {
       },
       onProvider: (info) => {
         setProviderInfo(info);
+        localProviderInfo = info;
         if (typeof info.tool_use_supported === "boolean") {
           providerSupportsToolUse = info.tool_use_supported;
         }
@@ -323,6 +448,36 @@ export default function ChatPage() {
           };
         });
         setIsStreaming(false);
+
+        // Build the per-message receipt in the background. Failure is
+        // non-fatal — the message still renders without a badge when
+        // the wallet isn't connected or signing is declined.
+        if (userDid) {
+          void (async () => {
+            try {
+              const receipt = await makeReceipt({
+                jobId: messageJobId,
+                mode: sovereigntyMode,
+                providerId: localProviderInfo?.provider_name ?? "ghola-cloud",
+                modelId: localProviderInfo?.model ?? null,
+                prompt: text,
+                response: fullContent,
+                signerDid: userDid,
+                signBytes,
+              });
+              updateSession(currentSessionId, (s) => {
+                const msgs = [...s.messages];
+                msgs[msgs.length - 1] = {
+                  ...msgs[msgs.length - 1],
+                  receipt,
+                };
+                return { ...s, messages: msgs };
+              });
+            } catch {
+              // No receipt this time. Message still displays.
+            }
+          })();
+        }
       },
       onError: (error) => {
         updateSession(currentSessionId, (s) => {
@@ -366,27 +521,40 @@ export default function ChatPage() {
             <ChatHeader
               title={activeSession?.title || "New conversation"}
               onBack={() => setMobileView("list")}
+              mode={sovereigntyMode}
+              onModeChange={setSovereigntyMode}
             />
+            {sovereigntyMode === "local" && <LocalSetupBanner />}
             <ChatMessages messages={messages} isStreaming={isStreaming} providerInfo={providerInfo} />
             <ChatInput onSend={handleSend} disabled={isStreaming} />
           </>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center px-4">
+          <div className="flex-1 flex flex-col">
+            {sovereigntyMode === "local" && <LocalSetupBanner />}
+            <div className="flex-1 flex flex-col items-center justify-center px-4">
             <div className="w-16 h-16 rounded-2xl bg-[#3da8ff]/10 flex items-center justify-center mb-6">
               <span className="text-2xl font-bold text-[#3da8ff]">G</span>
             </div>
             <h2 className="text-xl font-semibold text-[#eef1f8] mb-2">
-              Your AI assistant
+              Verifiably off the record.
             </h2>
             <p className="text-sm text-[#8b95a8] text-center max-w-sm mb-6">
-              Ask me anything. I can make phone calls, send emails, manage your calendar, and help with everyday tasks.
+              Pick where your chat runs. Every message ships with a
+              cryptographic receipt you can audit.
             </p>
+            <div className="mb-6">
+              <SovereigntyPicker
+                value={sovereigntyMode}
+                onChange={setSovereigntyMode}
+              />
+            </div>
             <button
               onClick={handleNewChat}
               className="rounded-xl bg-[#3da8ff] px-6 py-2.5 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors cursor-pointer"
             >
-              Start a conversation
+              New chat
             </button>
+            </div>
           </div>
         )}
       </div>

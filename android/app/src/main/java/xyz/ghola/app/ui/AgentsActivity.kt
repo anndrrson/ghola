@@ -12,7 +12,6 @@ import org.json.JSONObject
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.SaidCloudClient
-import xyz.ghola.app.demo.DemoSeed
 import java.util.concurrent.Executors
 
 /**
@@ -70,43 +69,35 @@ class AgentsActivity : AppCompatActivity() {
     }
 
     private fun loadAgents() {
-        // Demo-first: always show the three pre-seeded agents immediately so
-        // the screen is never empty, then opportunistically try the real
-        // backend and replace if it returns a non-empty list.
-        showSeedAgents()
-
-        if (!storage.hasSaidAuth()) return
+        if (!storage.hasSaidAuth()) {
+            adapter?.setAgents(emptyList())
+            emptyState.visibility = View.VISIBLE
+            recycler.visibility = View.GONE
+            return
+        }
 
         executor.execute {
             try {
                 val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
-                val rows = client.listAgents() ?: return@execute
-                if (rows.length() == 0) return@execute
+                val rows = client.listAgents()
                 val list = mutableListOf<JSONObject>()
-                for (i in 0 until rows.length()) {
-                    list.add(rows.getJSONObject(i))
+                if (rows != null) {
+                    for (i in 0 until rows.length()) {
+                        list.add(rows.getJSONObject(i))
+                    }
                 }
                 runOnUiThread {
                     adapter?.setAgents(list)
-                    emptyState.visibility = View.GONE
-                    recycler.visibility = View.VISIBLE
+                    emptyState.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
+                    recycler.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
                 }
             } catch (_: Exception) {
-                // Backend unreachable — seed already rendered, nothing to do.
+                runOnUiThread {
+                    adapter?.setAgents(emptyList())
+                    emptyState.visibility = View.VISIBLE
+                    recycler.visibility = View.GONE
+                }
             }
         }
-    }
-
-    /** Render the three demo agents. Always called first so the screen is
-     *  populated within a single frame of onResume, regardless of network. */
-    private fun showSeedAgents() {
-        val seed = DemoSeed.agents()
-        val list = mutableListOf<JSONObject>()
-        for (i in 0 until seed.length()) {
-            list.add(seed.getJSONObject(i))
-        }
-        adapter?.setAgents(list)
-        emptyState.visibility = View.GONE
-        recycler.visibility = View.VISIBLE
     }
 }

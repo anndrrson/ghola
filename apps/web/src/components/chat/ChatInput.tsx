@@ -73,7 +73,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
         </button>
       </div>
       <p className="text-[10px] text-[#4a5568] mt-1.5 text-center">
-        ghola can make calls, send emails, and manage your calendar
+        Every message ships with a verifiable receipt
       </p>
     </div>
   );

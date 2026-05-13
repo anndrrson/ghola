@@ -1,9 +1,10 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useMemo, useRef, useEffect } from "react";
 import DOMPurify from "dompurify";
 import { ActionCard } from "@/components/actions/ActionCard";
 import { mapInlineActionToDraft } from "@/components/actions/types";
+import { ReceiptBadge } from "./ReceiptBadge";
 import type { ThumperChatMessage } from "@/lib/thumper-types";
 
 function sanitizeHtml(html: string): string {
@@ -28,6 +29,19 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
 
   const groupedByDay = groupMessagesByDay(messages);
 
+  // The most recent assistant message that has a receipt — used as the
+  // single hint anchor so loading old chats doesn't paint a hint next
+  // to every historical badge. Reference equality is enough because
+  // updateSession in the parent splices in fresh message objects on
+  // updates, and the receipt arrives in its own update.
+  const lastReceiptMessage = useMemo<ThumperChatMessage | null>(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "assistant" && m.receipt) return m;
+    }
+    return null;
+  }, [messages]);
+
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4">
       {messages.length === 0 && (
@@ -35,9 +49,10 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
           <div className="w-12 h-12 rounded-2xl bg-[#3da8ff]/10 flex items-center justify-center mb-4">
             <span className="text-xl">G</span>
           </div>
-          <p className="text-[#eef1f8] font-medium mb-1">How can I help you?</p>
+          <p className="text-[#eef1f8] font-medium mb-1">Off the record.</p>
           <p className="text-sm text-[#4a5568] max-w-sm">
-            I can make phone calls, send emails, manage your calendar, and more. Just ask.
+            What&apos;s on your mind? This chat is encrypted on your
+            device. The mode in the header decides where it runs.
           </p>
         </div>
       )}
@@ -48,7 +63,17 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
               {date}
             </span>
           </div>
-          {dayMessages.map((msg, idx) => (
+          {dayMessages.map((msg, idx) => {
+            // For receipt verification we need the prompt that produced
+            // this assistant message — that's the immediately preceding
+            // message (which should be the user role). Falls back to ""
+            // if the structure is unexpected (e.g. opening assistant
+            // greeting), which the verifier will flag as a hash
+            // mismatch rather than crashing.
+            const prev = idx > 0 ? dayMessages[idx - 1] : undefined;
+            const promptForReceipt =
+              prev && prev.role === "user" ? prev.content : "";
+            return (
             <div key={idx}>
               <div
                 className={`flex mb-3 ${
@@ -121,8 +146,19 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
                   </div>
                 </div>
               )}
+              {msg.role === "assistant" && msg.receipt && (
+                <div className="flex justify-start mb-3 ml-1">
+                  <ReceiptBadge
+                    receipt={msg.receipt}
+                    prompt={promptForReceipt}
+                    response={msg.content}
+                    isHintAnchor={msg === lastReceiptMessage}
+                  />
+                </div>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       ))}
       <div ref={bottomRef} />

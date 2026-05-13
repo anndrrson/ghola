@@ -28,7 +28,7 @@ data class ActionRecord(
  * and parameter formats between the Claude API and the relay protocol.
  */
 class LocalToolExecutor(
-    private val commandHandler: CommandHandler,
+    private val commandHandler: CommandHandler?,
     private val hostPackage: String? = null
 ) {
 
@@ -353,6 +353,12 @@ class LocalToolExecutor(
     }
 
     private fun sendCommand(envelopeJson: String): String {
+        if (commandHandler == null) {
+            throw RuntimeException(
+                "Accessibility is disabled. Enable it in Settings to use device-control tools."
+            )
+        }
+
         val latch = CountDownLatch(1)
         var response = ""
 

@@ -1,6 +1,8 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    // v0.5: KSP for Room compile-time codegen.
+    id("com.google.devtools.ksp")
 }
 
 android {
@@ -12,14 +14,58 @@ android {
         applicationId = "xyz.ghola.app"
         minSdk = 28
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
             abiFilters += "arm64-v8a"
         }
+
+        // v0.6: CMake flags propagated to FetchContent-built llama.cpp.
+        // GGML_OPENMP=OFF — Android NDK r26 ships no OpenMP runtime.
+        // ANDROID_STL=c++_shared — match the rest of the app's shared STL
+        // so we don't ship two copies of libc++.
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    "-DGGML_OPENMP=OFF",
+                    "-DBUILD_SHARED_LIBS=OFF",
+                )
+                cppFlags += listOf("-std=c++17", "-O3", "-fexceptions", "-frtti")
+            }
+        }
+
+        // v0.5: Gmail OAuth client id for the AppAuth on-device flow.
+        // Mobile OAuth uses the public-client PKCE flow — the client id is
+        // not a secret (it's the PKCE code_verifier that protects the
+        // exchange) — so it's safe to bake into the APK. Override per build
+        // via `-PghoLaGmailClientId=…` (release) or via gradle.properties.
+        val gmailClientId: String = providers.gradleProperty("ghoLaGmailClientId").orNull
+            ?: "PLACEHOLDER-google-oauth-client-id.apps.googleusercontent.com"
+        buildConfigField("String", "GOOGLE_OAUTH_CLIENT_ID", "\"$gmailClientId\"")
+
+        // Build-time stamp: short SHA + timestamp so the dev gauntlet can
+        // verify which build is on device without grepping logcat.
+        val gitSha: String = try {
+            val proc = Runtime.getRuntime().exec(arrayOf("git", "rev-parse", "--short", "HEAD"))
+            proc.inputStream.bufferedReader().readLine()?.trim() ?: "unknown"
+        } catch (_: Exception) { "unknown" }
+        val buildStamp: String = System.currentTimeMillis().toString()
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+        buildConfigField("String", "BUILD_STAMP", "\"$buildStamp\"")
+
+        // AppAuth requires the manifestPlaceholder so its bundled redirect
+        // RedirectUriReceiverActivity intent-filter resolves the right scheme.
+        // We use a private custom scheme (xyz.ghola.app.oauth) so no other
+        // app can intercept the callback.
+        manifestPlaceholders["appAuthRedirectScheme"] = "xyz.ghola.app.oauth"
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     testOptions {
@@ -101,18 +147,16 @@ android {
     }
 
     // Native llama.cpp build is disabled because the llama.cpp source subtree
-    // was removed in commit ea53f9d ("Remove llama.cpp submodule (breaks
-    // Render Docker builds)"). The local LocalLlamaBackend path will throw
-    // UnsatisfiedLinkError at runtime IF the user selects Settings → Local
-    // backend — but the default backend is cloud Qwen, so the common path
-    // works fine without it. To re-enable: `git clone https://github.com/
-    // ggerganov/llama.cpp app/src/main/cpp/llama.cpp` then uncomment this.
-    //
-    // externalNativeBuild {
-    //     cmake {
-    //         path = file("src/main/cpp/CMakeLists.txt")
-    //     }
-    // }
+    // v0.6: llama.cpp is fetched via CMake FetchContent at the tag pinned
+    // in src/main/cpp/CMakeLists.txt. No git submodule (that's what broke
+    // Render builds — see commit ea53f9d). Render's Docker context excludes
+    // android/ via .dockerignore, so the cloud images never hit this path.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 }
 
 dependencies {
@@ -139,7 +183,32 @@ dependencies {
     // explicitly so the IDE resolves lifecycleScope without surprises.
     implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    // ProcessLifecycleOwner — fires onStart exactly once per
+    // background→foreground transition. Used by AppForegroundCoordinator.
+    implementation("androidx.lifecycle:lifecycle-process:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // v0.5: on-device Gmail OAuth. AppAuth handles the OAuth dance via a
+    // Chrome Custom Tab, returns access + refresh tokens to the app. No
+    // Google Sign-In SDK dependency, no server roundtrip.
+    implementation("net.openid:appauth:0.11.1")
+
+    // v0.5: WorkManager for background Gmail mirror + pre-drafting.
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+
+    // v0.5: Local SQLite for the sent-folder mirror. Room over a hand-rolled
+    // DAO so the schema is type-checked and migrations are first-class.
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    ksp("androidx.room:room-compiler:2.6.1")
+
+    // v0.5: ONNX Runtime — MiniLM-L6-v2 INT8 embeddings on-device (~25MB).
+    // Powers the voice-transfer retrieval index.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
+
+    // v0.5: MediaPipe LLM Inference — Phi-3 Mini / Gemma 2 .task models
+    // executed on-device. Output streams via callback.
+    implementation("com.google.mediapipe:tasks-genai:0.10.14")
 
     // Sealed-envelope-v1 E2E (Phase 0.3 / dApp Store v0.3.0).
     // BouncyCastle is required because minSdk = 28 and platform support for

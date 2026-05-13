@@ -1,0 +1,182 @@
+publisher:
+  name: Ornithopter
+  website: https://ghola.xyz
+  email: anndrrson@proton.me
+  support_email: anndrrson@proton.me
+app:
+  name: Ghola
+  android_package: xyz.ghola.app
+  urls:
+    license_url: https://ghola.xyz/terms
+    copyright_url: https://ghola.xyz/terms
+    privacy_policy_url: https://ghola.xyz/privacy
+    website: https://ghola.xyz
+  media:
+    - purpose: icon
+      uri: media/icon-512.png
+  address: GGy59nfUdjL1aXyoawPrcR4v2gEY2ioMDriAoJWXk1ef
+release:
+  media:
+    - purpose: icon
+      uri: media/icon-512.png
+    - purpose: banner
+      uri: media/banner.png
+    - purpose: screenshot
+      uri: media/screenshot1.png
+    - purpose: screenshot
+      uri: media/screenshot2.png
+    - purpose: screenshot
+      uri: media/screenshot3.png
+    - purpose: screenshot
+      uri: media/screenshot4.png
+  files:
+    - purpose: install
+      uri: app-release.apk
+  catalog:
+    en-US:
+      name: Ghola
+      short_description: AI agents that own wallets.
+      long_description: |
+        Ghola gives every AI agent what it needs to actually do things in
+        your life: a cryptographic identity, a USDC wallet, and the ability
+        to transact with other agents on-chain.
+
+        • Create an agent in seconds — server generates an ed25519 keypair,
+          derives a DID, and provisions a Solana wallet atomically.
+        • Each agent is isolated from your main wallet. Fund it with a few
+          dollars, and it can pay for things on your behalf without
+          exposing your primary account.
+        • Your agent can control the phone via the accessibility service —
+          tap, type, navigate, open apps, call customer service, send
+          emails.
+        • On Solana Seeker, the Seed Vault stores agent signing keys in
+          hardware — non-custodial security no other AI app offers.
+        • Agents earn USDC by offering services other agents can hire.
+
+        Built on SAID, Ghola's open cryptographic identity protocol for AI
+        agents. Full operator dashboard at ghola.xyz.
+      new_in_version: |
+        Initial release.
+          • Create and manage cryptographically-owned AI agents
+          • Agent detail with DID, Solana address, balance, reputation
+          • Bottom navigation across Home / Agents / Activity / Wallet
+          • Seed Vault detection on Solana Seeker
+          • Integrated accessibility-based device control
+      saga_features: |
+        • Hardware-backed agent keys via Seed Vault on Solana Seeker
+        • Mobile Wallet Adapter integration for agent funding
+        • First-class Solana dApp Store distribution
+  android_details:
+    cert_fingerprint: fb6d833b43c0d16c7152eeb5ff2ead110dda6baf3d1222292b444f3058b95510
+    min_sdk: 28
+    version: 0.1.0
+    version_code: 1
+    locales:
+      - en-US
+      - af
+      - am
+      - ar
+      - as
+      - az
+      - be
+      - bg
+      - bn
+      - bs
+      - ca
+      - cs
+      - da
+      - de
+      - el
+      - en-AU
+      - en-CA
+      - en-GB
+      - en-IN
+      - en-XC
+      - es
+      - es-419
+      - es-US
+      - et
+      - eu
+      - fa
+      - fi
+      - fr
+      - fr-CA
+      - gl
+      - gu
+      - he
+      - hi
+      - hr
+      - hu
+      - hy
+      - id
+      - in
+      - is
+      - it
+      - iw
+      - ja
+      - ka
+      - kk
+      - km
+      - kn
+      - ko
+      - ky
+      - lo
+      - lt
+      - lv
+      - mk
+      - ml
+      - mn
+      - mr
+      - ms
+      - my
+      - nb
+      - ne
+      - nl
+      - or
+      - pa
+      - pl
+      - pt
+      - pt-BR
+      - pt-PT
+      - ro
+      - ru
+      - si
+      - sk
+      - sl
+      - sq
+      - sr
+      - sr-Latn
+      - sv
+      - sw
+      - ta
+      - te
+      - th
+      - tl
+      - tr
+      - uk
+      - ur
+      - uz
+      - vi
+      - zh-CN
+      - zh-HK
+      - zh-TW
+      - zu
+  address: BkXTZKiHRnLvNTocsohe4nDh5DEYPWVRp3jJSeArugbY
+solana_mobile_dapp_publisher_portal:
+  google_store_package: xyz.ghola.app
+  testing_instructions: |
+    The app boots to an onboarding flow explaining how agents work. After
+    tapping through onboarding, users reach the home with USDC balance,
+    Activity / Agents / Wallet tabs, and a mic FAB.
+
+    To fully exercise agent creation + device control, the app needs a
+    backend API key (Qwen Cloud by default). Reviewers can skip this by
+    tapping "Not now" on the setup gate — browsing and the Wallet tab
+    (showing Seed Vault detection on Seeker) are reachable without any
+    sign-in.
+lastSubmittedVersionOnChain:
+  address: BkXTZKiHRnLvNTocsohe4nDh5DEYPWVRp3jJSeArugbY
+  version_code: 1
+  apk_hash: X/X8D91Bn/SsmS3ra7dpXN62gJAID1P12hca8t1sXZw=
+lastUpdatedVersionOnStore:
+  address: BkXTZKiHRnLvNTocsohe4nDh5DEYPWVRp3jJSeArugbY
