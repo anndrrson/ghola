@@ -1,10 +1,15 @@
 use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
 
-use thumper_types::{AuthMessage, AuthPayload, ConnectionRole};
+use thumper_types::{
+    AuthMessage, AuthPayload, ConnectionRole, EnclaveKeyId, Envelope, MessageType,
+    ProviderAttestPayload, SealedInferenceResponsePayload, TeeKind,
+};
 
 use crate::auth::{verify_auth, NonceCache};
-use crate::state::RateLimiter;
+use crate::config::RelayConfig;
+use crate::handlers::handle_provider_attest;
+use crate::state::{AppState, RateLimiter};
 
 // -- NonceCache tests --
 
@@ -254,4 +259,290 @@ fn bs58_encode_decode_roundtrip() {
     let encoded = bs58_encode(&original);
     let decoded = crate::auth::bs58_decode(&encoded).unwrap();
     assert_eq!(decoded, original);
+}
+
+// -- Attested-enclave + sealed-inference tests --
+
+fn test_config() -> RelayConfig {
+    RelayConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        rate_limit_per_second: 30,
+        max_message_size_bytes: 1_048_576,
+        auth_timeout_secs: 300,
+        dev_mode: true,
+        tls_cert_path: None,
+        tls_key_path: None,
+    }
+}
+
+fn mock_attest_payload() -> ProviderAttestPayload {
+    // Two distinct 32-byte hex pubkeys.
+    let x25519_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    let ed25519_hex = "ffeeddccbbaa9988776655443322110000112233445566778899aabbccddeeff";
+    ProviderAttestPayload {
+        tee_kind: TeeKind::None,
+        enclave_x25519_pub_hex: x25519_hex.into(),
+        enclave_ed25519_pub_hex: ed25519_hex.into(),
+        vendor_quote_b64: base64_encode(b"mock-vendor-quote-bytes"),
+        ghola_allowlist_sig_b64: base64_encode(b"mock-allowlist-sig"),
+    }
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Guard that sets/unsets env vars for a single test. Tests touching env
+/// vars must be serialized (cargo runs tests in parallel by default), so
+/// we route them through this lock.
+struct EnvGuard {
+    keys: Vec<(&'static str, Option<String>)>,
+}
+
+impl EnvGuard {
+    fn set(keys: &[(&'static str, Option<&str>)]) -> Self {
+        let mut saved = Vec::new();
+        for (k, v) in keys {
+            saved.push((*k, std::env::var(*k).ok()));
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+        Self { keys: saved }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (k, v) in &self.keys {
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+}
+
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn provider_attest_dev_path_accepts_when_allow_unattested_set() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = EnvGuard::set(&[
+        ("THUMPER_ALLOW_UNATTESTED", Some("1")),
+        ("GHOLA_ATTEST_SIGNING_PUB", None),
+    ]);
+
+    let state = AppState::new(test_config());
+    let ack = handle_provider_attest(&state, "provider-pubkey-1", mock_attest_payload());
+
+    assert!(ack.accepted, "ack should be accepted: {:?}", ack.reason);
+    let key_id = ack.enclave_key_id.expect("ack must carry enclave_key_id");
+    assert!(state.get_attested_enclave(&key_id).is_some());
+    let listed = state.list_attested_enclaves();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].provider_id, "provider-pubkey-1");
+}
+
+#[test]
+fn provider_attest_rejects_when_unattested_disabled() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = EnvGuard::set(&[
+        ("THUMPER_ALLOW_UNATTESTED", None),
+        ("GHOLA_ATTEST_SIGNING_PUB", None),
+    ]);
+
+    let state = AppState::new(test_config());
+    let ack = handle_provider_attest(&state, "provider-pubkey-1", mock_attest_payload());
+
+    assert!(!ack.accepted);
+    assert!(ack.enclave_key_id.is_none());
+    assert!(ack.reason.is_some());
+    assert!(state.list_attested_enclaves().is_empty());
+}
+
+#[test]
+fn prune_expired_enclaves_removes_old_entries() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = EnvGuard::set(&[
+        ("THUMPER_ALLOW_UNATTESTED", Some("1")),
+        ("GHOLA_ATTEST_SIGNING_PUB", None),
+    ]);
+
+    let state = AppState::new(test_config());
+    let ack = handle_provider_attest(&state, "provider-x", mock_attest_payload());
+    let _key_id = ack.enclave_key_id.unwrap();
+
+    // expires_at is set to now + 24h via the dev path; pruning at "way in
+    // the future" should drop everything.
+    let future = chrono::Utc::now().timestamp() + 100 * 24 * 3600;
+    let removed = state.prune_expired_enclaves(future);
+    assert_eq!(removed, 1);
+    assert!(state.list_attested_enclaves().is_empty());
+
+    // Pruning at present should be a no-op now.
+    let now = chrono::Utc::now().timestamp();
+    let removed2 = state.prune_expired_enclaves(now);
+    assert_eq!(removed2, 0);
+}
+
+#[test]
+fn find_attestation_by_hash_serves_cached_quote() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = EnvGuard::set(&[
+        ("THUMPER_ALLOW_UNATTESTED", Some("1")),
+        ("GHOLA_ATTEST_SIGNING_PUB", None),
+    ]);
+
+    let state = AppState::new(test_config());
+    let payload = mock_attest_payload();
+    let vendor_quote_b64 = payload.vendor_quote_b64.clone();
+    let ack = handle_provider_attest(&state, "provider-x", payload);
+    assert!(ack.accepted);
+
+    let hash = AppState::compute_attestation_hash(&vendor_quote_b64);
+    let (enclave, served_quote) = state
+        .find_attestation_by_hash(&hash)
+        .expect("attestation should be findable by hash");
+    assert_eq!(served_quote, vendor_quote_b64);
+    assert_eq!(enclave.provider_id, "provider-x");
+
+    // Unknown hash returns None.
+    let missing = state.find_attestation_by_hash("deadbeef");
+    assert!(missing.is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dispatch_inference_sealed_forwards_opaque_bytes() {
+    // Provider mock: we plug an mpsc into the AppState gpu_providers map
+    // directly, then call dispatch_inference_sealed and assert the
+    // ciphertext_b64 forwarded verbatim. We also resolve the pending
+    // oneshot to emulate the provider's sealed reply.
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = EnvGuard::set(&[
+        ("THUMPER_ALLOW_UNATTESTED", Some("1")),
+        ("GHOLA_ATTEST_SIGNING_PUB", None),
+    ]);
+
+    let state = AppState::new(test_config());
+
+    // Register a mock provider.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<axum::extract::ws::Message>();
+    let provider_pubkey = "mock-provider-pubkey".to_string();
+    state.add_gpu_provider(&provider_pubkey, tx, Vec::new(), 4, "wallet".to_string());
+
+    // Attest the provider via the dev path.
+    let ack = handle_provider_attest(&state, &provider_pubkey, mock_attest_payload());
+    assert!(ack.accepted, "dev attest failed: {:?}", ack.reason);
+    let enclave_key_id: EnclaveKeyId = ack.enclave_key_id.unwrap();
+
+    let job_id = "job-1".to_string();
+    let sealed_b64 = base64_encode(b"<opaque sealed envelope bytes>");
+
+    // Spawn the dispatcher in the background — it will register the
+    // oneshot, send to the provider, and then await the reply.
+    let dispatch_state = state.clone();
+    let dispatch_job = job_id.clone();
+    let dispatch_seal = sealed_b64.clone();
+    let dispatch_key = enclave_key_id.clone();
+    let dispatcher = tokio::spawn(async move {
+        use crate::handlers::{dispatch_inference_sealed, SealedInferenceDispatchRequest};
+        use axum::extract::State;
+        use axum::Json;
+        use axum::response::IntoResponse;
+        let resp = dispatch_inference_sealed(
+            State(dispatch_state),
+            Json(SealedInferenceDispatchRequest {
+                enclave_key_id: dispatch_key,
+                job_id: dispatch_job,
+                sealed_request_b64: dispatch_seal,
+                mode_hint: Some("private".into()),
+            }),
+        )
+        .await
+        .into_response();
+        resp
+    });
+
+    // Receive the message the dispatcher sent to the provider.
+    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("provider should receive forwarded message within 5s")
+        .expect("channel open");
+    let forwarded_text = match forwarded {
+        axum::extract::ws::Message::Text(t) => t.to_string(),
+        other => panic!("unexpected msg variant: {:?}", other),
+    };
+    let env: Envelope = serde_json::from_str(&forwarded_text).expect("valid envelope");
+    match env.message {
+        MessageType::InferenceRequestSealed(p) => {
+            assert_eq!(p.job_id, job_id);
+            // Opaque bytes forwarded verbatim.
+            assert_eq!(p.ciphertext_b64, sealed_b64);
+            assert_eq!(p.enclave_key_id, enclave_key_id);
+        }
+        other => panic!("expected InferenceRequestSealed, got {:?}", other),
+    }
+
+    // Now emulate the provider's sealed reply.
+    let reply_b64 = base64_encode(b"<opaque sealed reply bytes>");
+    let reply = Envelope::new(MessageType::InferenceResponseSealed(
+        SealedInferenceResponsePayload {
+            job_id: job_id.clone(),
+            ciphertext_b64: reply_b64.clone(),
+            is_final: true,
+        },
+    ));
+    state.resolve_pending_inference(&job_id, reply);
+
+    let response = dispatcher.await.expect("dispatcher join");
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body["job_id"], job_id);
+    assert_eq!(body["ciphertext_b64"], reply_b64);
+    assert_eq!(body["is_final"], true);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn list_attested_providers_returns_inserted_enclaves() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = EnvGuard::set(&[
+        ("THUMPER_ALLOW_UNATTESTED", Some("1")),
+        ("GHOLA_ATTEST_SIGNING_PUB", None),
+    ]);
+
+    let state = AppState::new(test_config());
+    let ack = handle_provider_attest(&state, "p1", mock_attest_payload());
+    assert!(ack.accepted);
+
+    use crate::handlers::{list_attested_providers, ListAttestedQuery};
+    use axum::extract::{Query, State};
+    use axum::response::IntoResponse;
+    let response = list_attested_providers(State(state.clone()), Query(ListAttestedQuery { model: None }))
+        .await
+        .into_response();
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = json.as_array().expect("array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["provider_id"], "p1");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn get_attestation_returns_404_on_unknown_hash() {
+    let state = AppState::new(test_config());
+    use crate::handlers::get_attestation;
+    use axum::extract::{Path, State};
+    use axum::response::IntoResponse;
+    let response = get_attestation(State(state), Path("not-a-real-hash".to_string()))
+        .await
+        .into_response();
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }

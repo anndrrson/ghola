@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 thumper-types = { path = "../thumper-types" }
+said-attest = { workspace = true }
 said-noncecache = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -31,6 +32,9 @@ uuid = { workspace = true }
 dashmap = { workspace = true }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 async-stream = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
