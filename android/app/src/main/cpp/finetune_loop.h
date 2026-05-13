@@ -49,7 +49,7 @@ struct FinetuneHyperparams {
     int   batch_size    = 1;
     int   ctx_len       = 1024;
     int   grad_accum    = 4;   // simulate batch_size=4 if memory allows
-    int   notify_every  = 10;  // steps between progress callbacks
+    int   notify_every  = 2;   // steps between progress callbacks (every other step for iter cycles)
     int   ckpt_every    = 50;  // Phase G — partial save cadence
 
     // AdamW (defaults match the standard PyTorch AdamW recipe). These
@@ -58,7 +58,7 @@ struct FinetuneHyperparams {
     float adam_beta2    = 0.999f;
     float adam_eps      = 1e-8f;
     float weight_decay  = 0.01f;
-    float grad_clip     = 1.0f; // global-norm clip on LoRA grads
+    float grad_clip     = 0.1f; // element-wise clamp [-clip, +clip] on LoRA grads. Typical |g| ~1e-3 → 0.1 only activates on softmax-saturation bursts (~1.0 magnitude) that destabilize training at lr ≥ 1e-4.
 };
 
 /** A single (prompt, completion) pair after tokenization. */

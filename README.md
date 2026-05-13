@@ -4,7 +4,7 @@
 
 Today's AI lives in walled gardens. Your context is trapped in one provider, your agents can't be discovered, and there's no shared substrate for them to transact on. Ghola is the open alternative, built natively on Solana.
 
-> **Live:** [ghola.xyz](https://ghola.xyz) · **Android:** `xyz.ghola.app` (Solana dApp Store-ready) · **iOS:** SwiftUI app · **Registry:** [`3EqrapHPPQqQKeB3aykZz9AbppMBzbY9PG1fT3PA7QyR`](https://explorer.solana.com/address/3EqrapHPPQqQKeB3aykZz9AbppMBzbY9PG1fT3PA7QyR) (mainnet)
+> **Live:** [ghola.xyz](https://ghola.xyz) · **Android:** `xyz.ghola.app` (Solana dApp Store-ready, signed APK in `android/dapp-store/`) · **iOS:** SwiftUI app · **Registry program:** `3EqrapHPPQqQKeB3aykZz9AbppMBzbY9PG1fT3PA7QyR` (built + tested, mainnet deploy pending)
 
 ---
 
@@ -25,7 +25,7 @@ They share one wallet, one auth model (Sign In With Solana), one billing surface
 
 Ghola is Solana-native, not Solana-tolerant. Concretely:
 
-- **On-chain identity registry** — `programs/said-registry` (Anchor): `IdentityRecord` PDAs with `did_key`, `profile_uri`, `authority`. Instructions: `register`, `deactivate`, `reactivate`, `update_authority`, `update_profile_uri`. Deployed to mainnet.
+- **On-chain agent registry** — `programs/said-registry` (Anchor) ships four account types: `IdentityRecord`, `ServiceRecord` (headless-merchant services with USDC pricing), `ReputationAttestation`, and `DelegationRecord` (UCAN delegations recorded on-chain). Ten instructions covering identity lifecycle, service registration, reputation, and capability delegation.
 - **SIWS everywhere** — Sign In With Solana is the only auth path in v0.4.0. No email/password, no Google. The wallet *is* the account, across web, Android, iOS, MCP, and CLI.
 - **USDC payments** — Marketplace creator payouts, assistant subscriptions, and x402-gated APIs all settle in USDC.
 - **Solana dApp Store** — Android build (`xyz.ghola.app`) is signed and ready for submission.
@@ -76,7 +76,7 @@ See **[SOLANA.md](./SOLANA.md)** for program IDs, instruction layouts, PDA seeds
 | Surface | Tech | Size |
 |---|---|---|
 | Backend (Rust) | axum 0.8, sqlx 0.8, rmcp 0.15, anchor-lang 0.30 | **~63k LOC** across **18 crates** |
-| Solana program | Anchor 0.30, Ed25519 | `programs/said-registry`, deployed mainnet |
+| Solana program | Anchor 0.30, Ed25519 | `programs/said-registry` — 4 account types, 10 instructions |
 | Web | Next.js 16, React 19, Tailwind 4 | **~33k LOC** TS/TSX |
 | Android | Kotlin, Expo (MWA), Solana Mobile Stack | **~14k LOC**, `xyz.ghola.app` |
 | iOS | SwiftUI, Siri Shortcuts, Dynamic Island | **~4k LOC** |
@@ -158,7 +158,7 @@ Detailed environment variables, deployment notes, and per-pillar guides live in 
 
 ## Status
 
-- **Identity (SAID):** v0.4.0 wallet-only SIWS auth shipping. 93+ tests across core + WASM. On-chain registry live on mainnet.
+- **Identity (SAID):** v0.4.0 wallet-only SIWS auth shipping. 93+ tests across core + WASM. Anchor registry program built and tested, mainnet deploy queued.
 - **Assistant (Thumper):** Cloud + Android + iOS shipping. 23 MCP tools + 8 task templates. Bland AI voice calls and Gmail OAuth wired.
 - **Marketplace (Orni Models):** Backend and web shipping. Together.ai inference, USDC deposit verification, 85/15 split live.
 - **Gateway:** x402 payment-required HTTP scaffolded; agent registry + billing-as-a-service in progress.
