@@ -112,6 +112,7 @@ ggml_tensor * build_target_tensor(
     ggml_tensor * targets = ggml_new_tensor_2d(
         ctx, GGML_TYPE_F32, QwenConfig::vocab_size, n_completion);
     ggml_set_name(targets, "targets");
+    ggml_set_input(targets);
     if (!ggml_get_no_alloc(ctx)) {
         float * d = (float *) targets->data;
         std::memset(d, 0, (size_t) QwenConfig::vocab_size * n_completion * sizeof(float));
