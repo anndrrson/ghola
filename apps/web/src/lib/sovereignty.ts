@@ -83,7 +83,7 @@ export type SovereigntyTransport =
 
 /**
  * Describes a single attested enclave the relay has vetted. Mirrors
- * the shape returned by `GET /v1/providers/attested` on
+ * the shape returned by `GET /providers/attested` on
  * `thumper-relay` — see crates/thumper-relay/src/routes/attested.rs.
  */
 export interface AttestedEnclaveInfo {
@@ -109,7 +109,7 @@ export interface ModeRoute {
   caveat?: string;
 }
 
-// The relay hosts /v1/providers/attested + /inference/sealed +
+// The relay hosts /providers/attested + /inference/sealed +
 // /attestations/:hash. It deploys behind the same hostname as the
 // existing thumper-cloud API today, so we default to the same env
 // var and let callers override via NEXT_PUBLIC_THUMPER_RELAY_URL when
@@ -130,7 +130,7 @@ export function thumperRelayBase(): string {
 
 /**
  * Pick a route for the next message. For Private mode this performs a
- * `GET /v1/providers/attested` lookup — when at least one attested
+ * `GET /providers/attested` lookup — when at least one attested
  * enclave is currently in the pool we return `relay-sealed` with the
  * enclave info attached; otherwise we fall back to `relay-plain` with
  * a caveat that callers stamp into the receipt so the audit trail
@@ -174,7 +174,7 @@ async function fetchAttestedEnclave(
 ): Promise<AttestedEnclaveInfo | null> {
   try {
     const base = relayBase();
-    const url = new URL("/v1/providers/attested", base);
+    const url = new URL("/providers/attested", base);
     if (modelId) url.searchParams.set("model", modelId);
     const res = await fetch(url.toString(), { method: "GET" });
     if (!res.ok) return null;

@@ -331,13 +331,16 @@ export default function ChatPage() {
             });
           },
           onDone: (providerReceipt) => {
-            const action = detectAction(fullContent);
+            const fallback = detectAction(fullContent);
+            const actions: ThumperInlineAction[] | undefined = fallback
+              ? [fallback]
+              : undefined;
             updateSession(currentSessionId, (s) => {
               const msgs = [...s.messages];
               msgs[msgs.length - 1] = {
                 ...msgs[msgs.length - 1],
                 content: fullContent,
-                action,
+                actions,
                 receipt: providerReceipt,
               };
               return {
