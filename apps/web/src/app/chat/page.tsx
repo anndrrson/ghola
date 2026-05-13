@@ -333,7 +333,7 @@ export default function ChatPage() {
             };
           });
           setIsStreaming(false);
-          if (userDid && signBytes) {
+          if (userDid) {
             void (async () => {
               try {
                 const receipt = await makeReceipt({
@@ -435,7 +435,7 @@ export default function ChatPage() {
         // Build the per-message receipt in the background. Failure is
         // non-fatal — the message still renders without a badge when
         // the wallet isn't connected or signing is declined.
-        if (userDid && signBytes) {
+        if (userDid) {
           void (async () => {
             try {
               const receipt = await makeReceipt({
