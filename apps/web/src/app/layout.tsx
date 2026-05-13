@@ -23,9 +23,9 @@ const funnelDisplay = Funnel_Display({
 });
 
 export const metadata: Metadata = {
-  title: "ghola — you own the agent",
+  title: "ghola — verifiably off the record",
   description:
-    "Cryptographic identities for AI agents on Solana. Create an agent that earns, spends, and builds reputation — all on-chain, all yours.",
+    "Open, attested, sovereign confidential AI. TEE + on-device + on-chain accountable privacy, with a per-message cryptographic receipt the user can verify.",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,

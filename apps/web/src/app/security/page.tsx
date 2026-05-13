@@ -286,12 +286,93 @@ export default function SecurityPage() {
         </div>
       </section>
 
+      {/* Local mode install steps — anchored so LocalSetupBanner can deep-link */}
+      <section id="local" className="border-t border-[#1e2a3a]">
+        <div className="mx-auto w-full max-w-5xl px-6 lg:px-12 py-20">
+          <div className="flex items-baseline gap-6 mb-12">
+            <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#8b95a8]">
+              04 — Install Local mode
+            </span>
+            <span className="flex-1 h-px bg-[#1e2a3a]" />
+          </div>
+          <div className="grid lg:grid-cols-12 gap-10 lg:gap-16">
+            <div className="lg:col-span-5">
+              <h2 className="font-display text-3xl md:text-4xl leading-tight mb-6 font-medium">
+                Run inference{" "}
+                <span className="text-[#8b95a8]">on your machine.</span>
+              </h2>
+              <p className="text-[#8b95a8] leading-relaxed mb-4">
+                ghola-home is a small macOS daemon that runs models locally
+                through Ollama and exposes them to the web app over
+                localhost. Once paired, Local mode routes every chat
+                straight there — the message never leaves your machine.
+              </p>
+              <p className="text-[11px] text-[#6f798c] leading-relaxed">
+                Linux + Windows builds land in v2. WebGPU fallback for
+                small (≤3B) in-browser models also v2.
+              </p>
+            </div>
+            <ol className="lg:col-span-7 space-y-5">
+              <li className="grid grid-cols-[2rem_1fr] gap-4">
+                <span className="font-display text-xl text-[#3da8ff]">1</span>
+                <div>
+                  <h3 className="text-[#eef1f8] font-medium mb-1.5">
+                    Install Ollama
+                  </h3>
+                  <p className="text-sm text-[#8b95a8] leading-relaxed mb-2">
+                    ghola-home runs inference through Ollama. Download
+                    from ollama.com and pull a model:
+                  </p>
+                  <pre className="text-[11px] font-mono text-[#cfd4dd] bg-[#08090d] border border-[#1e2a3a] rounded p-3 overflow-x-auto">
+{`brew install ollama
+ollama pull llama3.2`}
+                  </pre>
+                </div>
+              </li>
+              <li className="grid grid-cols-[2rem_1fr] gap-4">
+                <span className="font-display text-xl text-[#3da8ff]">2</span>
+                <div>
+                  <h3 className="text-[#eef1f8] font-medium mb-1.5">
+                    Run ghola-home
+                  </h3>
+                  <p className="text-sm text-[#8b95a8] leading-relaxed mb-2">
+                    Build from the monorepo and start with a dedicated
+                    port so it doesn&apos;t collide with anything else:
+                  </p>
+                  <pre className="text-[11px] font-mono text-[#cfd4dd] bg-[#08090d] border border-[#1e2a3a] rounded p-3 overflow-x-auto">
+{`cargo run -p ghola-home --release
+# GHOLA_HOME_BIND=127.0.0.1:7878 by default`}
+                  </pre>
+                  <p className="text-sm text-[#8b95a8] leading-relaxed mt-2">
+                    It logs a 6-digit PIN on startup. Keep that handy.
+                  </p>
+                </div>
+              </li>
+              <li className="grid grid-cols-[2rem_1fr] gap-4">
+                <span className="font-display text-xl text-[#3da8ff]">3</span>
+                <div>
+                  <h3 className="text-[#eef1f8] font-medium mb-1.5">
+                    Pair this browser
+                  </h3>
+                  <p className="text-sm text-[#8b95a8] leading-relaxed">
+                    Open ghola, pick <span className="text-[#cfd4dd]">Local</span>{" "}
+                    in the chat header. The setup banner appears under
+                    the header — click <span className="text-[#cfd4dd]">Pair this browser</span>,
+                    enter the PIN, done.
+                  </p>
+                </div>
+              </li>
+            </ol>
+          </div>
+        </div>
+      </section>
+
       {/* Threat model band */}
       <section className="border-t border-[#1e2a3a] bg-[#0a0b10]">
         <div className="mx-auto w-full max-w-5xl px-6 lg:px-12 py-20">
           <div className="flex items-baseline gap-6 mb-12">
             <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#8b95a8]">
-              04 — Threat model
+              05 — Threat model
             </span>
             <span className="flex-1 h-px bg-[#1e2a3a]" />
           </div>
