@@ -3,6 +3,29 @@ use uuid::Uuid;
 use crate::error::CloudError;
 use crate::state::AppState;
 
+/// Tool definition advertised to tool-capable LLMs.
+pub fn call_tool_definition() -> serde_json::Value {
+    serde_json::json!({
+        "name": "initiate_call",
+        "description": "Place a phone call on the user's behalf. The user will review the call \
+                        objective before it dials.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phone_number": {
+                    "type": "string",
+                    "description": "Phone number to call in E.164 format, e.g. +15551234567"
+                },
+                "objective": {
+                    "type": "string",
+                    "description": "What the AI caller should accomplish during the call."
+                }
+            },
+            "required": ["phone_number", "objective"]
+        }
+    })
+}
+
 /// Start a phone call via Bland AI.
 pub async fn start_call(
     state: &AppState,

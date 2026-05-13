@@ -145,7 +145,8 @@ void step_adamw_one(
     ggml_tensor * param,
     ggml_tensor * m,
     ggml_tensor * v,
-    ggml_tensor * opt_params)
+    ggml_tensor * opt_params,
+    float grad_clip)
 {
     if (!param) {
         LOGW("step_adamw_one: param is null");
@@ -157,7 +158,17 @@ void step_adamw_one(
              ggml_get_name(param));
         return;
     }
-    ggml_tensor * step = ggml_opt_step_adamw(ctx, param, grad, m, v, opt_params);
+    // Element-wise grad clip. ggml has no global-norm clip op, but element-wise
+    // is enough to catch the rare softmax-saturation gradient bursts that
+    // destroy training at lr ≥ 1e-4. Returns an in-place view that AdamW reads
+    // post-clip — the graph executes clamp before opt_step_adamw because
+    // opt_step_adamw's grad input is the clamp's output node, not the raw
+    // backward leaf.
+    ggml_tensor * grad_for_adamw = grad;
+    if (grad_clip > 0.0f) {
+        grad_for_adamw = ggml_clamp(ctx, grad, -grad_clip, grad_clip);
+    }
+    ggml_tensor * step = ggml_opt_step_adamw(ctx, param, grad_for_adamw, m, v, opt_params);
     ggml_build_forward_expand(cgraph, step);
 }
 
@@ -313,6 +324,108 @@ bool run_finetune(
             std::vector<int32_t> positions(n_total);
             for (int i = 0; i < n_total; ++i) positions[i] = i;
 
+            // ── FINITE-DIFF GRADIENT CHECK (step 0 only) ──────────────────
+            // Symmetric finite-difference test on B[0] of blk.0.attn_q.
+            // Builds two forward-only graphs at B[0] ± eps, reads loss,
+            // computes numerical ∂L/∂B[0]. After the normal step runs,
+            // the DIAG line logs the analytic gradient. If signs match
+            // and magnitudes are within ~10%, the autograd chain is
+            // mathematically correct and any remaining "loss doesn't
+            // drop" issue is purely hyperparameters. If signs disagree,
+            // there's a structural bug (wrong tensor wired, broken
+            // backward op, sign flip somewhere) that no amount of lr
+            // tuning will fix.
+            //
+            // Cost: 2 extra forward passes (~170s on Seeker), one-shot,
+            // only fires at step 0.
+            if (global_step == 0) {
+                auto it_fd = lora.modules.find("blk.0.attn_q.weight");
+                if (it_fd != lora.modules.end() && it_fd->second.B && it_fd->second.B->data) {
+                    float * Bdata = (float *) it_fd->second.B->data;
+                    const float orig_B0 = Bdata[0];
+                    const float eps = 1e-3f;
+
+                    auto eval_loss = [&](float B0_value) -> float {
+                        Bdata[0] = B0_value;
+
+                        ggml_context * fdctx = build_compute_ctx();
+                        if (!fdctx) { LOGE("FINDIF: build_compute_ctx failed"); return NAN; }
+
+                        ggml_tensor * fd_logits = qwen_forward_build(
+                            model, fdctx, tokens, positions, &lora,
+                            /*return_all_positions=*/ true);
+                        if (!fd_logits) { LOGE("FINDIF: qwen_forward_build null"); ggml_free(fdctx); return NAN; }
+                        const size_t row_bytes = fd_logits->nb[1];
+                        ggml_tensor * fd_pred = ggml_view_2d(
+                            fdctx, fd_logits, QwenConfig::vocab_size, n_completion,
+                            row_bytes, (size_t)(n_prompt - 1) * row_bytes);
+                        ggml_tensor * fd_targets = build_target_tensor(fdctx, pair);
+                        ggml_tensor * fd_loss = ggml_cross_entropy_loss(fdctx, fd_pred, fd_targets);
+                        ggml_set_name(fd_loss, "loss");
+
+                        ggml_cgraph * fdg = ggml_new_graph_custom(fdctx, /*size=*/ 32768, /*grads=*/ false);
+                        ggml_build_forward_expand(fdg, fd_loss);
+
+                        if (!ggml_gallocr_alloc_graph(galloc, fdg)) {
+                            LOGE("FINDIF: gallocr_alloc_graph failed");
+                            ggml_free(fdctx);
+                            return NAN;
+                        }
+
+                        ggml_tensor * tok_t  = ggml_graph_get_tensor(fdg, "tokens");
+                        ggml_tensor * pos_t  = ggml_graph_get_tensor(fdg, "positions");
+                        ggml_tensor * mask_t = ggml_graph_get_tensor(fdg, "KQ_mask");
+                        ggml_tensor * tgt_t  = ggml_graph_get_tensor(fdg, "targets");
+                        if (!tok_t || !pos_t || !mask_t || !tgt_t) {
+                            LOGE("FINDIF: missing input tensor");
+                            ggml_free(fdctx);
+                            return NAN;
+                        }
+                        ggml_backend_tensor_set(tok_t, tokens.data(), 0, n_total * sizeof(int32_t));
+                        ggml_backend_tensor_set(pos_t, positions.data(), 0, n_total * sizeof(int32_t));
+
+                        // KQ mask (causal)
+                        std::vector<float> mdata((size_t) n_total * n_total);
+                        for (int q = 0; q < n_total; ++q) {
+                            for (int k = 0; k < n_total; ++k) {
+                                mdata[(size_t) q * n_total + k] = (k <= q) ? 0.0f : -INFINITY;
+                            }
+                        }
+                        ggml_backend_tensor_set(mask_t, mdata.data(), 0, mdata.size() * sizeof(float));
+
+                        // One-hot targets
+                        const size_t V = (size_t) QwenConfig::vocab_size;
+                        std::vector<float> tgt_data(V * n_completion, 0.0f);
+                        for (int i = 0; i < n_completion; ++i) {
+                            const int32_t tok = pair.completion_tokens[i];
+                            if (tok >= 0 && tok < (int32_t) V) {
+                                tgt_data[(size_t) i * V + tok] = 1.0f;
+                            }
+                        }
+                        ggml_backend_tensor_set(tgt_t, tgt_data.data(), 0, tgt_data.size() * sizeof(float));
+
+                        ggml_backend_graph_compute(backend, fdg);
+
+                        float loss_val = 0.0f;
+                        ggml_backend_tensor_get(fd_loss, &loss_val, 0, sizeof(float));
+                        ggml_free(fdctx);
+                        return loss_val;
+                    };
+
+                    LOGI("FINDIF: starting symmetric finite-diff (eps=%.1e) on blk.0.attn_q.B[0]", eps);
+                    const float L_plus  = eval_loss(orig_B0 + eps);
+                    LOGI("FINDIF: L+(B[0]=%+.4e) = %.6f", orig_B0 + eps, L_plus);
+                    const float L_minus = eval_loss(orig_B0 - eps);
+                    LOGI("FINDIF: L-(B[0]=%+.4e) = %.6f", orig_B0 - eps, L_minus);
+                    Bdata[0] = orig_B0;  // restore
+
+                    const float num_grad = (L_plus - L_minus) / (2.0f * eps);
+                    LOGI("FINDIF: numerical ∂L/∂B[0] = %.6e (analytic in DIAG s=0 below)", num_grad);
+                } else {
+                    LOGW("FINDIF: blk.0.attn_q.weight not found, skipping check");
+                }
+            }
+
             // ── Forward → logits at every position ─────────────────────
             LOGI("trn step %d: pre qwen_forward_build (n_total=%d, vocab=%d)",
                  global_step, n_total, QwenConfig::vocab_size);
@@ -367,7 +480,26 @@ bool run_finetune(
             LOGI("trn step %d: ggml_build_forward_expand(loss)", global_step);
             ggml_build_forward_expand(cgraph, loss);
 
-            LOGI("trn step %d: ggml_build_backward_expand", global_step);
+            // GALLOCR LIFETIME FIX. ggml_gallocr_alloc_graph at b4524 frees
+            // forward-intermediate tensor buffers as soon as they are no
+            // longer needed by FORWARD nodes — but the backward pass we
+            // expand next needs many of those same tensors as inputs to
+            // out_prod / transposed-mul_mat operations. Without forcing
+            // preservation, those reads land in reused buffers and we get
+            // sign-flipped, magnitude-corrupted gradients on every LoRA
+            // param. Marking every forward node as output makes gallocr
+            // keep each forward intermediate alive for the entire graph
+            // lifetime. Cost: extra memory; benefit: correct gradients.
+            // Validated via Mac-side toy regression: stacked-2-layer LoRA
+            // had sign-flip until set_output applied to forward nodes.
+            const int n_fwd_nodes = ggml_graph_n_nodes(cgraph);
+            for (int i = 0; i < n_fwd_nodes; ++i) {
+                ggml_tensor * n = ggml_graph_node(cgraph, i);
+                if (n) ggml_set_output(n);
+            }
+
+            LOGI("trn step %d: ggml_build_backward_expand (%d fwd nodes marked output)",
+                 global_step, n_fwd_nodes);
             ggml_build_backward_expand(static_ctx, cctx, cgraph, /*accumulate=*/ false);
             LOGI("trn step %d: backward expanded, %d nodes",
                  global_step, ggml_graph_n_nodes(cgraph));
@@ -378,8 +510,8 @@ bool run_finetune(
                 auto it = lora.modules.find(key);
                 if (it == lora.modules.end()) continue;
                 LoraModule & m = it->second;
-                step_adamw_one(static_ctx, cgraph, m.A, m.m_A, m.v_A, opt_params);
-                step_adamw_one(static_ctx, cgraph, m.B, m.m_B, m.v_B, opt_params);
+                step_adamw_one(static_ctx, cgraph, m.A, m.m_A, m.v_A, opt_params, hp.grad_clip);
+                step_adamw_one(static_ctx, cgraph, m.B, m.m_B, m.v_B, opt_params, hp.grad_clip);
             }
 
             // TODO PHASE C — gradient clipping. Defer until banana test
@@ -478,6 +610,18 @@ bool run_finetune(
                 }
             }
 
+            // ── DIAGNOSTIC: pre-compute B sample for blk.0.attn_q ──────
+            float B_pre[4] = {0,0,0,0};
+            {
+                auto it_diag = lora.modules.find("blk.0.attn_q.weight");
+                if (it_diag != lora.modules.end()) {
+                    LoraModule & dm = it_diag->second;
+                    if (dm.B && dm.B->data) {
+                        std::memcpy(B_pre, dm.B->data, sizeof(B_pre));
+                    }
+                }
+            }
+
             // ── Compute ────────────────────────────────────────────────
             const enum ggml_status status = ggml_backend_graph_compute(backend, cgraph);
             if (status != GGML_STATUS_SUCCESS) {
@@ -485,6 +629,40 @@ bool run_finetune(
                      (int) status, global_step);
                 ggml_free(cctx);
                 continue;
+            }
+
+            // ── DIAGNOSTIC: post-compute B + grad sample ───────────────
+            {
+                auto it_diag = lora.modules.find("blk.0.attn_q.weight");
+                if (it_diag != lora.modules.end()) {
+                    LoraModule & dm = it_diag->second;
+                    float B_post[4] = {0,0,0,0};
+                    float gB[4]     = {0,0,0,0};
+                    float mB[4]     = {0,0,0,0};
+                    float vB[4]     = {0,0,0,0};
+                    if (dm.B && dm.B->data)   std::memcpy(B_post, dm.B->data, sizeof(B_post));
+                    if (dm.m_B && dm.m_B->data) std::memcpy(mB,    dm.m_B->data, sizeof(mB));
+                    if (dm.v_B && dm.v_B->data) std::memcpy(vB,    dm.v_B->data, sizeof(vB));
+                    // Use _grad (not _grad_acc) — with accumulate=false the
+                    // backward writes directly to grad, and grad_acc returns null.
+                    // Use backend_tensor_get instead of direct ->data read because
+                    // gallocr may reuse the grad's buffer for another tensor after
+                    // AdamW consumes it, and direct ->data could be stale.
+                    ggml_tensor * gtens = ggml_graph_get_grad(cgraph, dm.B);
+                    if (gtens) {
+                        if (gtens->buffer) {
+                            ggml_backend_tensor_get(gtens, gB, 0, sizeof(gB));
+                        } else if (gtens->data) {
+                            std::memcpy(gB, gtens->data, sizeof(gB));
+                        }
+                    }
+                    LOGI("DIAG s=%d pre B[0]=%.3e post B[0]=%.3e dB=%.3e | gB[0]=%.3e mB[0]=%.3e vB[0]=%.3e",
+                         global_step, B_pre[0], B_post[0], B_post[0]-B_pre[0],
+                         gB[0], mB[0], vB[0]);
+                    LOGI("DIAG s=%d B[1..3]=%.3e %.3e %.3e | gB[1..3]=%.3e %.3e %.3e",
+                         global_step, B_post[1], B_post[2], B_post[3],
+                         gB[1], gB[2], gB[3]);
+                }
             }
 
             // ── Read loss (scalar) for progress reporting ──────────────
@@ -499,8 +677,10 @@ bool run_finetune(
             }
             if ((global_step % hp.notify_every) == 0) {
                 const long rss_mb = ::read_vmrss_mb();
-                LOGI("step %d/%d  loss=%.4f  rss=%ld MB",
-                     global_step, total_steps, step_loss, rss_mb);
+                const float mean_loss = epoch_step_count > 0
+                    ? (float)(epoch_loss_sum / epoch_step_count) : 0.0f;
+                LOGI("step %d/%d  loss=%.4f mean=%.4f  rss=%ld MB",
+                     global_step, total_steps, step_loss, mean_loss, rss_mb);
             }
 
             ggml_free(cctx);

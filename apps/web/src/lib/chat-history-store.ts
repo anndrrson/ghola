@@ -125,10 +125,31 @@ async function decryptBlob(row: BlobRow, vault: ChatVault): Promise<ThumperSessi
   const recipient = await deriveVaultX25519Keypair(vault.signBytes);
   try {
     const opened = await openEnvelope(row.blob, recipient.secret);
-    return JSON.parse(new TextDecoder().decode(opened.plaintext)) as ThumperSession[];
+    const parsed = JSON.parse(new TextDecoder().decode(opened.plaintext)) as ThumperSession[];
+    return normalizeSessions(parsed);
   } catch {
     return null;
   }
+}
+
+/**
+ * Bring legacy session data forward to the current schema:
+ * - Older sessions stored a singular `action?: ThumperInlineAction` on each
+ *   message. The current schema is `actions?: ThumperInlineAction[]` to
+ *   support multi-tool turns. Lift any legacy `action` into an array.
+ */
+function normalizeSessions(sessions: ThumperSession[]): ThumperSession[] {
+  return sessions.map((s) => ({
+    ...s,
+    messages: (s.messages ?? []).map((m) => {
+      const legacy = m as typeof m & { action?: unknown };
+      if (legacy.action && !m.actions) {
+        const { action, ...rest } = legacy;
+        return { ...rest, actions: [action as never] };
+      }
+      return m;
+    }),
+  }));
 }
 
 // ── IndexedDB plumbing ──────────────────────────────────────────────────
@@ -174,7 +195,7 @@ function readLocalStorageLegacy(): ThumperSession[] {
   try {
     const raw = localStorage.getItem(LEGACY_KEY);
     if (!raw) return [];
-    return JSON.parse(raw) as ThumperSession[];
+    return normalizeSessions(JSON.parse(raw) as ThumperSession[]);
   } catch {
     return [];
   }

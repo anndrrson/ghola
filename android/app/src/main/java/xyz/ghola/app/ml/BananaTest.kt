@@ -79,7 +79,11 @@ object BananaTest {
     /** Number of training pairs written to the JSONL. 200 × 3 epochs = 600
      *  optimizer steps — enough for a 1.5B model with a 16-rank LoRA to
      *  overfit hard on a single-token target. */
-    private const val NUM_PAIRS = 200
+    // 50 pairs × 1 epoch = 50 steps × ~85s = ~70min iteration budget.
+    // With lr=1e-4, ||B|| reaches ~0.1 by step 50 → LoRA delta on logits
+    // ~5, borderline enough to see overfit signal. If 50 steps is too
+    // few to converge, bump after we confirm direction is right.
+    private const val NUM_PAIRS = 50
 
     /**
      * Generate the synthetic JSONL.
@@ -150,7 +154,7 @@ object BananaTest {
         val hp = LlamaFinetune.Hyperparams(
             rank = 16,
             alpha = 32f,
-            learningRate = 1e-5f,  // dropped from 3e-4 to test for divergence
+            learningRate = 1e-4f,  // Now safe with grad_clip=0.1 enabled in finetune_loop. Previously diverged at this lr because rare softmax-saturation grad bursts (~1.0 magnitude) blew through Adam normalization. Element-wise clip catches them.
             epochs = 1,
             batchSize = 1,
             ctxLen = 256,
