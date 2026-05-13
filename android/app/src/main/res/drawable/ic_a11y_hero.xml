@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Accessibility hero icon — abstract phone screen with a touch indicator,
+  signalling "Ghola will read this screen and act for you." Same 96dp viewport
+  and stroke language as ic_wallet_hero.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+
+    <!-- Phone outline -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="2"
+        android:strokeColor="#eef1f8"
+        android:pathData="M28,12 L68,12 L68,84 L28,84 Z"/>
+
+    <!-- Status bar -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="1.5"
+        android:strokeColor="#8b95a8"
+        android:pathData="M28,22 L68,22"/>
+
+    <!-- App tiles (3 rows × 2 cols) — Ghola is "watching" them -->
+    <path
+        android:fillColor="#4a5568"
+        android:pathData="M34,30 L46,30 L46,42 L34,42 Z M50,30 L62,30 L62,42 L50,42 Z M34,46 L46,46 L46,58 L34,58 Z M50,46 L62,46 L62,58 L50,58 Z"/>
+
+    <!-- Highlighted target tile -->
+    <path
+        android:fillColor="#3da8ff"
+        android:pathData="M34,62 L46,62 L46,74 L34,74 Z"/>
+
+    <!-- Pointer ring on the highlighted tile -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="1.5"
+        android:strokeColor="#5bb8ff"
+        android:pathData="M30,58 L50,58 L50,78 L30,78 Z"/>
+
+    <!-- Home indicator -->
+    <path
+        android:fillColor="#8b95a8"
+        android:pathData="M44,80 L52,80 L52,81.5 L44,81.5 Z"/>
+</vector>

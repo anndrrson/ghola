@@ -17,12 +17,28 @@ class SecureStorage(context: Context) {
         private const val KEY_QWEN_API_KEY = "qwen_api_key"
         private const val KEY_QWEN_MODEL = "qwen_model"
         private const val KEY_CLOUD_AUTH_TOKEN = "cloud_auth_token"
+        private const val KEY_CLOUD_AUTH_EXP = "cloud_auth_token_exp"
+        private const val KEY_CLOUD_REFRESH_TOKEN = "cloud_refresh_token"
+        private const val KEY_CLOUD_REFRESH_EXP = "cloud_refresh_token_exp"
+        private const val KEY_SAID_REFRESH_TOKEN = "said_cloud_refresh_token"
+        private const val KEY_SAID_REFRESH_EXP = "said_cloud_refresh_token_exp"
+        private const val KEY_SAID_TOKEN_EXP = "said_cloud_token_exp"
+        // v0.5: on-device Gmail OAuth (AppAuth flow).
+        private const val KEY_GMAIL_ACCESS_TOKEN = "gmail_access_token"
+        private const val KEY_GMAIL_ACCESS_EXP = "gmail_access_token_exp_millis"
+        private const val KEY_GMAIL_REFRESH_TOKEN = "gmail_refresh_token"
         private const val KEY_CLOUD_USER_ID = "cloud_user_id"
         private const val KEY_CLOUD_BASE_URL = "cloud_base_url"
         private const val KEY_USER_DISPLAY_NAME = "user_display_name"
         private const val KEY_USER_EMAIL = "user_email"
         private const val KEY_IS_SEEKER = "is_seeker_device"
         private const val KEY_CRYPTO_ENABLED = "crypto_features_enabled"
+        // v0.6: on-device LLM runtime + LoRA state.
+        private const val KEY_USE_LLAMACPP_RUNTIME = "use_llamacpp_runtime"
+        private const val KEY_VOICE_LORA_READY = "voice_lora_ready"
+        private const val KEY_VOICE_LORA_READY_AT = "voice_lora_ready_at_millis"
+        private const val KEY_VOICE_LORA_ACTIVE = "voice_lora_active"
+        private const val KEY_VOICE_LORA_TRAINING_PAIR_HASH = "voice_lora_training_pair_hash"
         private const val KEY_SAID_TOKEN = "said_cloud_token"
         private const val KEY_SAID_BASE_URL = "said_cloud_base_url"
         private const val KEY_SAID_USER_ID = "said_cloud_user_id"
@@ -152,6 +168,46 @@ class SecureStorage(context: Context) {
         prefs.edit().putBoolean(KEY_IS_SEEKER, value).apply()
     }
 
+    // ── v0.6: on-device LLM runtime + LoRA state ─────────────────────────────
+    //
+    // Two flags work together:
+    //   useLlamaCppRuntime → routes LocalLlm to llama.cpp instead of MediaPipe.
+    //   voiceLoraActive    → when true AND a voice.lora file exists on disk,
+    //                        LlamaCppImpl binds the adapter at session init.
+    // The training metadata (when, how many pairs, what hash) is preserved so
+    // the user can be told "Trained at …, X emails, Y epochs."
+
+    fun useLlamaCppRuntime(): Boolean = prefs.getBoolean(KEY_USE_LLAMACPP_RUNTIME, false)
+    fun setUseLlamaCppRuntime(value: Boolean) {
+        prefs.edit().putBoolean(KEY_USE_LLAMACPP_RUNTIME, value).apply()
+    }
+
+    fun voiceLoraReady(): Boolean = prefs.getBoolean(KEY_VOICE_LORA_READY, false)
+    fun voiceLoraReadyAtMillis(): Long = prefs.getLong(KEY_VOICE_LORA_READY_AT, 0L)
+    fun voiceLoraActive(): Boolean = prefs.getBoolean(KEY_VOICE_LORA_ACTIVE, false)
+    fun voiceLoraTrainingPairHash(): String? = prefs.getString(KEY_VOICE_LORA_TRAINING_PAIR_HASH, null)
+
+    fun setVoiceLoraReady(readyAtMillis: Long, trainingPairHash: String) {
+        prefs.edit()
+            .putBoolean(KEY_VOICE_LORA_READY, true)
+            .putLong(KEY_VOICE_LORA_READY_AT, readyAtMillis)
+            .putString(KEY_VOICE_LORA_TRAINING_PAIR_HASH, trainingPairHash)
+            .apply()
+    }
+
+    fun setVoiceLoraActive(value: Boolean) {
+        prefs.edit().putBoolean(KEY_VOICE_LORA_ACTIVE, value).apply()
+    }
+
+    fun clearVoiceLora() {
+        prefs.edit()
+            .remove(KEY_VOICE_LORA_READY)
+            .remove(KEY_VOICE_LORA_READY_AT)
+            .remove(KEY_VOICE_LORA_ACTIVE)
+            .remove(KEY_VOICE_LORA_TRAINING_PAIR_HASH)
+            .apply()
+    }
+
     fun isCryptoEnabled(): Boolean = prefs.getBoolean(KEY_CRYPTO_ENABLED, false)
 
     fun setCryptoEnabled(value: Boolean) {
@@ -162,20 +218,76 @@ class SecureStorage(context: Context) {
 
     fun getCloudAuthToken(): String? = prefs.getString(KEY_CLOUD_AUTH_TOKEN, null)
 
-    fun setCloudAuthToken(token: String) {
-        prefs.edit().putString(KEY_CLOUD_AUTH_TOKEN, token).apply()
+    /**
+     * Persist the access token and (optionally) its exp + a refresh-token pair.
+     * The exp/refresh fields are optional for backwards compatibility — pre-v0.4
+     * code paths and the legacy single-arg form (below) keep working.
+     */
+    fun setCloudAuthToken(
+        token: String,
+        expSeconds: Long? = null,
+        refreshToken: String? = null,
+        refreshExpSeconds: Long? = null,
+    ) {
+        val editor = prefs.edit().putString(KEY_CLOUD_AUTH_TOKEN, token)
+        // If exp not given by the server, derive from the JWT.
+        val resolvedExp = expSeconds ?: xyz.ghola.app.cloud.JwtUtil.expirySeconds(token)
+        if (resolvedExp != null) {
+            editor.putLong(KEY_CLOUD_AUTH_EXP, resolvedExp)
+        } else {
+            editor.remove(KEY_CLOUD_AUTH_EXP)
+        }
+        if (!refreshToken.isNullOrBlank()) {
+            editor.putString(KEY_CLOUD_REFRESH_TOKEN, refreshToken)
+            if (refreshExpSeconds != null) {
+                editor.putLong(KEY_CLOUD_REFRESH_EXP, refreshExpSeconds)
+            }
+        }
+        editor.apply()
+    }
+
+    /** Unix-seconds expiry of the cloud access JWT (or 0 if unknown). */
+    fun getCloudAuthTokenExp(): Long = prefs.getLong(KEY_CLOUD_AUTH_EXP, 0L)
+
+    fun getCloudRefreshToken(): String? = prefs.getString(KEY_CLOUD_REFRESH_TOKEN, null)
+    fun getCloudRefreshTokenExp(): Long = prefs.getLong(KEY_CLOUD_REFRESH_EXP, 0L)
+
+    fun hasCloudRefreshToken(): Boolean {
+        val rt = getCloudRefreshToken() ?: return false
+        if (rt.isBlank()) return false
+        val exp = getCloudRefreshTokenExp()
+        if (exp == 0L) return true // unknown exp — assume valid until proven otherwise
+        return exp > System.currentTimeMillis() / 1000
     }
 
     fun clearCloudAuth() {
         prefs.edit()
             .remove(KEY_CLOUD_AUTH_TOKEN)
+            .remove(KEY_CLOUD_AUTH_EXP)
+            .remove(KEY_CLOUD_REFRESH_TOKEN)
+            .remove(KEY_CLOUD_REFRESH_EXP)
             .remove(KEY_CLOUD_USER_ID)
             .remove(KEY_USER_DISPLAY_NAME)
             .remove(KEY_USER_EMAIL)
             .apply()
     }
 
-    fun hasCloudAuth(): Boolean = !getCloudAuthToken().isNullOrBlank()
+    /**
+     * True when an access token is present AND not expired (within a small
+     * skew window). Previously this was just a `!isNullOrBlank()` check, which
+     * reported expired tokens as valid. Callers that need to ALSO know whether
+     * a refresh would succeed should additionally consult [hasCloudRefreshToken].
+     *
+     * Note: [JwtUtil.isExpired] **fails open** if the JWT can't be decoded —
+     * a present-but-unparseable token is treated as valid. The next API call
+     * will 401 if the server disagrees, at which point the cloud-client
+     * retry path takes over.
+     */
+    fun hasCloudAuth(): Boolean {
+        val token = getCloudAuthToken() ?: return false
+        if (token.isBlank()) return false
+        return !xyz.ghola.app.cloud.JwtUtil.isExpired(token)
+    }
 
     fun getCloudUserId(): String? = prefs.getString(KEY_CLOUD_USER_ID, null)
 
@@ -213,11 +325,46 @@ class SecureStorage(context: Context) {
 
     fun getSaidToken(): String? = prefs.getString(KEY_SAID_TOKEN, null)
 
-    fun setSaidToken(token: String) {
-        prefs.edit().putString(KEY_SAID_TOKEN, token).apply()
+    fun setSaidToken(
+        token: String,
+        expSeconds: Long? = null,
+        refreshToken: String? = null,
+        refreshExpSeconds: Long? = null,
+    ) {
+        val editor = prefs.edit().putString(KEY_SAID_TOKEN, token)
+        val resolvedExp = expSeconds ?: xyz.ghola.app.cloud.JwtUtil.expirySeconds(token)
+        if (resolvedExp != null) {
+            editor.putLong(KEY_SAID_TOKEN_EXP, resolvedExp)
+        } else {
+            editor.remove(KEY_SAID_TOKEN_EXP)
+        }
+        if (!refreshToken.isNullOrBlank()) {
+            editor.putString(KEY_SAID_REFRESH_TOKEN, refreshToken)
+            if (refreshExpSeconds != null) {
+                editor.putLong(KEY_SAID_REFRESH_EXP, refreshExpSeconds)
+            }
+        }
+        editor.apply()
     }
 
-    fun hasSaidAuth(): Boolean = !getSaidToken().isNullOrBlank()
+    fun getSaidTokenExp(): Long = prefs.getLong(KEY_SAID_TOKEN_EXP, 0L)
+    fun getSaidRefreshToken(): String? = prefs.getString(KEY_SAID_REFRESH_TOKEN, null)
+    fun getSaidRefreshTokenExp(): Long = prefs.getLong(KEY_SAID_REFRESH_EXP, 0L)
+
+    fun hasSaidRefreshToken(): Boolean {
+        val rt = getSaidRefreshToken() ?: return false
+        if (rt.isBlank()) return false
+        val exp = getSaidRefreshTokenExp()
+        if (exp == 0L) return true
+        return exp > System.currentTimeMillis() / 1000
+    }
+
+    /** True when an access token is present AND not expired. */
+    fun hasSaidAuth(): Boolean {
+        val token = getSaidToken() ?: return false
+        if (token.isBlank()) return false
+        return !xyz.ghola.app.cloud.JwtUtil.isExpired(token)
+    }
 
     fun getSaidBaseUrl(): String = prefs.getString(KEY_SAID_BASE_URL, DEFAULT_SAID_URL) ?: DEFAULT_SAID_URL
 
@@ -234,8 +381,54 @@ class SecureStorage(context: Context) {
     fun clearSaidAuth() {
         prefs.edit()
             .remove(KEY_SAID_TOKEN)
+            .remove(KEY_SAID_TOKEN_EXP)
+            .remove(KEY_SAID_REFRESH_TOKEN)
+            .remove(KEY_SAID_REFRESH_EXP)
             .remove(KEY_SAID_USER_ID)
             .remove(KEY_PRIMARY_AGENT_ID)
+            .apply()
+    }
+
+    // ── Gmail OAuth (v0.5 on-device flow via AppAuth) ────────────────────────
+    //
+    // Pre-v0.5, Gmail OAuth happened in a server-mediated browser redirect and
+    // tokens lived in thumper-cloud.connected_accounts. v0.5 moves the whole
+    // dance on-device: the Custom Tab returns tokens directly to the app, we
+    // store them here (still inside EncryptedSharedPreferences), and refresh
+    // by calling oauth2.googleapis.com from the device. No server roundtrip
+    // for any Gmail data access. Required by the v0.5 privacy promise.
+
+    fun setGmailTokens(
+        accessToken: String,
+        accessExpEpochMillis: Long,
+        refreshToken: String,
+    ) {
+        prefs.edit()
+            .putString(KEY_GMAIL_ACCESS_TOKEN, accessToken)
+            .putLong(KEY_GMAIL_ACCESS_EXP, accessExpEpochMillis)
+            .putString(KEY_GMAIL_REFRESH_TOKEN, refreshToken)
+            .apply()
+    }
+
+    fun getGmailAccessToken(): String? = prefs.getString(KEY_GMAIL_ACCESS_TOKEN, null)
+    fun getGmailAccessExpMillis(): Long = prefs.getLong(KEY_GMAIL_ACCESS_EXP, 0L)
+    fun getGmailRefreshToken(): String? = prefs.getString(KEY_GMAIL_REFRESH_TOKEN, null)
+
+    /** Access token present AND not within 60s of expiry. */
+    fun hasFreshGmailAccess(): Boolean {
+        val t = getGmailAccessToken() ?: return false
+        if (t.isBlank()) return false
+        val exp = getGmailAccessExpMillis()
+        return exp == 0L || exp - System.currentTimeMillis() > 60_000L
+    }
+
+    fun hasGmailRefreshToken(): Boolean = !getGmailRefreshToken().isNullOrBlank()
+
+    fun clearGmailAuth() {
+        prefs.edit()
+            .remove(KEY_GMAIL_ACCESS_TOKEN)
+            .remove(KEY_GMAIL_ACCESS_EXP)
+            .remove(KEY_GMAIL_REFRESH_TOKEN)
             .apply()
     }
 

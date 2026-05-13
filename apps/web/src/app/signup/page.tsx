@@ -211,7 +211,7 @@ function SignUpContent() {
             Create your account
           </h1>
           <p className="text-sm text-[#8b95a8] mb-6">
-            Start using your AI assistant in seconds
+            Confidential AI in seconds — encrypted by default.
           </p>
 
           {((googleClientId && googleAvailable) || process.env.NEXT_PUBLIC_TWITTER_ENABLED) && (

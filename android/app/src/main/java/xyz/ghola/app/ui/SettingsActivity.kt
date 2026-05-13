@@ -19,6 +19,9 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.ai.llama.ModelManager
@@ -284,6 +287,13 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun updateModelStatus() {
+        // v0.6: surface BOTH the model status and a hidden long-press affordance
+        // for the on-device runtime + LoRA panel. The default model status
+        // string keeps the v0.5 wording so existing users see the same thing;
+        // long-pressing the line opens the v0.6 panel (runtime swap, LoRA
+        // training status, re-train trigger). Hidden because v0.6.0 ships
+        // opt-in — we don't want every user finding their way into the
+        // beta runtime by tapping a normal button.
         if (modelManager.isModelDownloaded()) {
             val size = modelManager.formatSize(modelManager.getModelSizeBytes())
             modelStatus.text = "Model: Downloaded ($size)"
@@ -295,6 +305,312 @@ class SettingsActivity : AppCompatActivity() {
             modelStatus.setTextColor(0xFF757575.toInt())
             downloadButton.text = "Download Model (~2.5 GB)"
             deleteModelButton.visibility = View.GONE
+        }
+        modelStatus.setOnLongClickListener {
+            showOnDeviceRuntimePanel()
+            true
+        }
+    }
+
+    /**
+     * v0.6 hidden panel: runtime swap + LoRA status + voice-training trigger.
+     * Reached by long-pressing the "Model:" status line on the Settings page.
+     * Documented under docs/v0.6-on-device-llm.md for internal dogfood.
+     */
+    private fun showOnDeviceRuntimePanel() {
+        val storage = secureStorage
+        val mm = modelManager
+        val runtime = if (storage.useLlamaCppRuntime()) "llama.cpp (v0.6)" else "MediaPipe (v0.5)"
+        val loraStatus = when {
+            storage.voiceLoraActive() && mm.isLoraReady() -> {
+                val ts = storage.voiceLoraReadyAtMillis()
+                if (ts > 0) "Active — trained " + relativeTimeShort(ts) else "Active"
+            }
+            mm.isLoraReady() -> "Trained, inactive"
+            else -> "Not trained"
+        }
+        val body = """
+            Runtime: $runtime
+            Model file: ${mm.getModelPath()}
+              Size: ${mm.formatSize(mm.getModelSizeBytes())}
+            LoRA: $loraStatus
+        """.trimIndent()
+
+        // Action list — variable number of items depending on runtime + LoRA
+        // state. AlertDialog.setItems is the right primitive here; trying to
+        // shoehorn 4+ actions into positive/neutral/negative buttons hits
+        // Material AlertDialog's hard cap and silently drops actions.
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        if (storage.useLlamaCppRuntime()) {
+            actions += "Compare voices" to {
+                startActivity(android.content.Intent(this, VoiceCompareActivity::class.java))
+            }
+            if (mm.isLoraReady()) {
+                val label = if (storage.voiceLoraActive()) "Disable voice LoRA" else "Enable voice LoRA"
+                actions += label to {
+                    val next = !storage.voiceLoraActive()
+                    storage.setVoiceLoraActive(next)
+                    xyz.ghola.app.email.LocalLlm.reset(this)
+                    Toast.makeText(
+                        this,
+                        if (next) "Voice LoRA enabled" else "Voice LoRA disabled",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    updateModelStatus()
+                }
+            }
+            // Phase A.3 — diagnostic gate. Greedy-decodes 20 tokens through
+            // both our custom Qwen forward (training path) and llama.cpp's
+            // reference path; mismatches mean Phase C will train a broken
+            // adapter. Hidden behind the long-press menu — never user-facing.
+            actions += "Run parity check (Phase A.3)" to { runParityCheck() }
+            actions += "Run banana test (Phase H.1)" to { runBananaTest() }
+            actions += "Show ship/no-ship gates (Phase H)" to { showShipGates() }
+            actions += "Clean test artifacts" to { cleanTestArtifacts() }
+            actions += "Switch back to MediaPipe" to {
+                storage.setUseLlamaCppRuntime(false)
+                xyz.ghola.app.email.LocalLlm.reset(this)
+                Toast.makeText(this, "Reverted to MediaPipe runtime", Toast.LENGTH_SHORT).show()
+                updateModelStatus()
+            }
+        } else {
+            actions += "Switch to llama.cpp" to {
+                storage.setUseLlamaCppRuntime(true)
+                xyz.ghola.app.email.LocalLlm.reset(this)
+                Toast.makeText(this, "llama.cpp runtime enabled", Toast.LENGTH_SHORT).show()
+                updateModelStatus()
+            }
+        }
+
+        val items = actions.map { it.first }.toTypedArray()
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("On-device model (v0.6 beta)")
+            .setMessage(body)
+            .setItems(items) { _, which -> actions[which].second() }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    /**
+     * Phase A.3 — runs greedy-decode parity between qwen_forward and
+     * llama_decode. Shows the match count in a dialog; ≥18/20 is good
+     * enough to ship Phase C, anything lower means the forward has a bug
+     * to localize from logcat (LlamaCpp tag).
+     *
+     * NB: this call blocks for tens of seconds on the Seeker — it does
+     * two 20-token greedy decodes through a 1.5B model. We run it on
+     * Dispatchers.IO and show a "Running parity check..." dialog while
+     * we wait so the user knows the app didn't hang.
+     */
+    private fun runParityCheck() {
+        val mm = modelManager
+        if (!mm.isModelDownloaded()) {
+            Toast.makeText(this, "Model not downloaded", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val modelPath = mm.getModelPath()
+        val prompt = "<|im_start|>user\nWrite one sentence about Solana.<|im_end|>\n" +
+                     "<|im_start|>assistant\n"
+        val maxTokens = 20
+
+        val progress = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Parity check")
+            .setMessage("Running 20-token greedy decode on both paths…\nThis takes ~30-60s on Seeker.")
+            .setCancelable(false)
+            .show()
+
+        lifecycleScope.launch {
+            val matched = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    xyz.ghola.app.ai.llama.LlamaCpp().parityCheck(modelPath, prompt, maxTokens)
+                }.getOrElse { -1 }
+            }
+            progress.dismiss()
+            val verdict = when {
+                matched < 0    -> "ERROR — see logcat (LlamaCpp tag)"
+                matched == maxTokens -> "PASS — forward is correct, Phase C is safe to run"
+                matched >= 18  -> "WARN — $matched/$maxTokens; minor numerical drift, check logcat"
+                matched == 0   -> "FAIL @ token 0 — bug in tok_embed or first attention block"
+                else           -> "FAIL @ token $matched — bug in a deeper layer"
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this@SettingsActivity)
+                .setTitle("Parity check: $matched/$maxTokens")
+                .setMessage(verdict)
+                .setPositiveButton("OK", null)
+                .show()
+        }
+    }
+
+    /**
+     * Phase H.1 banana test. ~5-10 minute hardware run that proves the
+     * full Phase A→B→C→D→8 chain works end-to-end without depending on
+     * the user's actual email corpus.
+     */
+    private fun runBananaTest() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Banana test")
+            .setMessage(
+                "This will train a fresh LoRA on 200 synthetic 'banana' pairs " +
+                "and verify the model overfits to predict 'banana'.\n\n" +
+                "Runtime: 5-10 minutes on Seeker. Existing user voice LoRA is " +
+                "NOT touched (banana LoRA writes to a separate file).\n\n" +
+                "Plug in to charge before starting.",
+            )
+            .setPositiveButton("Run") { _, _ -> launchBananaTest() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun launchBananaTest() {
+        val progress = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Banana test")
+            .setMessage("Training… (you can dim the screen, but don't kill the app)")
+            .setCancelable(false)
+            .show()
+
+        lifecycleScope.launch {
+            val verdict = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    xyz.ghola.app.ml.BananaTest.runOnce(
+                        this@SettingsActivity,
+                        callback = object : xyz.ghola.app.ai.llama.LlamaFinetune.ProgressCallback {
+                            override fun onEpoch(epoch: Int, totalEpochs: Int, lossSoFar: Float) {
+                                mainHandler.post { progress.setMessage("Epoch $epoch/$totalEpochs — loss=${"%.4f".format(lossSoFar)}") }
+                            }
+                            override fun onStep(step: Int, totalSteps: Int, loss: Float) {
+                                if (step % 20 == 0) {
+                                    mainHandler.post {
+                                        progress.setMessage("Step $step/$totalSteps — loss=${"%.4f".format(loss)}")
+                                    }
+                                }
+                            }
+                            override fun onComplete(adapterPath: String) { /* handled by Verdict */ }
+                            override fun onError(message: String) { /* handled by Verdict */ }
+                        },
+                    )
+                }.getOrElse {
+                    xyz.ghola.app.ml.BananaTest.Verdict(
+                        trained = false, sampledOutput = null, bananaFraction = 0f,
+                        passes = false, message = "exception: ${it.message}",
+                    )
+                }
+            }
+            progress.dismiss()
+            val body = buildString {
+                append(verdict.message)
+                if (verdict.sampledOutput != null) {
+                    append("\n\nSample output:\n")
+                    append(verdict.sampledOutput.take(200))
+                }
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this@SettingsActivity)
+                .setTitle(if (verdict.passes) "Banana test: PASS" else "Banana test: FAIL")
+                .setMessage(body)
+                .setPositiveButton("OK", null)
+                .show()
+        }
+    }
+
+    /**
+     * Phase H ship/no-ship dashboard. Runs all three evaluatable gates
+     * (voice match Δ, n-gram leakage, A/B preference) and renders the
+     * pass/fail summary. Gate H.1 (banana test) lives on its own
+     * Settings entry because it's a long-running training operation
+     * rather than an aggregator.
+     *
+     * Each gate's eval is expensive — voice match runs ~17 minutes of
+     * inference for runEval — so dev should expect this to take a while.
+     */
+    private fun showShipGates() {
+        val progress = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Phase H gates")
+            .setMessage(
+                "Evaluating voice match, leakage, and A/B preference…\n\n" +
+                "This runs ~50 generations per gate; budget 20+ minutes.",
+            )
+            .setCancelable(false)
+            .show()
+
+        lifecycleScope.launch {
+            val gates = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { xyz.ghola.app.ml.VoiceMetric.phaseHGateReport(this@SettingsActivity) }
+                    .getOrNull()
+            }
+            progress.dismiss()
+            val body = if (gates == null) {
+                "Gate evaluation failed — see logcat (VoiceMetric tag)."
+            } else {
+                buildString {
+                    append("Gate 2 (voice match Δ ≥ +0.08): ")
+                    append(if (gates.voiceMatchPasses) "✅ PASS" else "❌ FAIL")
+                    gates.voiceMatchDelta?.let { append("  Δ=${"%.3f".format(it)}") }
+                    append("\n\n")
+                    append("Gate 3 (n-gram leakage): ")
+                    append(if (gates.leakagePasses) "✅ PASS" else "❌ FAIL")
+                    gates.leakageWarnFraction?.let { append("  warnFraction=${"%.2f".format(it)}") }
+                    gates.leakageHasHardFail?.let { append("  hardFail=$it") }
+                    append("\n\n")
+                    append("Gate 4 (A/B preference ≥ 0.60, n ≥ 10): ")
+                    append(if (gates.preferencePasses) "✅ PASS" else "❌ FAIL")
+                    append("  n=${gates.preferenceN}")
+                    gates.preferenceLoraFraction?.let { append("  loraFrac=${"%.2f".format(it)}") }
+                    append("\n\n")
+                    append(if (gates.passes) "OVERALL: SHIP ✅" else "OVERALL: BLOCK ❌")
+                    append("\n\n(Gate 1 — banana test — runs separately.)")
+                }
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this@SettingsActivity)
+                .setTitle("Phase H result")
+                .setMessage(body)
+                .setPositiveButton("OK", null)
+                .show()
+        }
+    }
+
+    /**
+     * Removes dev artifacts: banana LoRA, .partial checkpoints, and the
+     * synthetic training JSONL. Leaves the real user voice LoRA untouched.
+     * Useful between repeated banana test runs that would otherwise resume
+     * from a stale partial.
+     */
+    private fun cleanTestArtifacts() {
+        val mm = modelManager
+        val candidates = listOf(
+            // Banana LoRA written by BananaTest.runOnce
+            java.io.File(mm.getLoraFile().absolutePath + ".banana"),
+            // Phase G partial checkpoint
+            java.io.File(mm.getLoraFile().absolutePath + ".partial"),
+            // Synthetic JSONLs in cache
+            java.io.File(cacheDir, "finetune/banana_test.jsonl"),
+            // Banana-run loss exports if present
+            java.io.File(cacheDir, "finetune/train.jsonl"),
+        )
+        val removed = candidates.filter { it.exists() }
+        if (removed.isEmpty()) {
+            Toast.makeText(this, "No test artifacts to clean", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val summary = removed.joinToString("\n") {
+            "${it.name} (${modelManager.formatSize(it.length())})"
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Clean test artifacts")
+            .setMessage("Will remove:\n\n$summary\n\nUser voice LoRA + corpus are untouched.")
+            .setPositiveButton("Remove") { _, _ ->
+                val deleted = removed.count { it.delete() }
+                Toast.makeText(this, "Removed $deleted file(s)", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun relativeTimeShort(epochMillis: Long): String {
+        val deltaSec = (System.currentTimeMillis() - epochMillis) / 1000
+        return when {
+            deltaSec < 60 -> "just now"
+            deltaSec < 3600 -> "${deltaSec / 60}m ago"
+            deltaSec < 86_400 -> "${deltaSec / 3600}h ago"
+            else -> "${deltaSec / 86_400}d ago"
         }
     }
 

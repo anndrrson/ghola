@@ -63,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
         http_client: reqwest::Client::new(),
         rate_limiter: Arc::new(state::RateLimiter::new()),
         usage_meter: Arc::new(state::UsageMeter::new()),
+        siws_challenges: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         signing_key,
         vault,
     });
@@ -127,7 +128,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/v1/auth/register", post(routes::auth::register))
         .route("/v1/auth/login", post(routes::auth::login))
+        .route("/v1/auth/siws/challenge", get(routes::auth::siws_challenge))
+        .route("/v1/auth/siws", post(routes::auth::siws_sign_in))
         .route("/v1/auth/google", post(routes::auth::google_sign_in))
+        .route("/v1/auth/refresh", post(routes::auth::refresh_token))
         .route("/v1/consumer/register", post(routes::consumer::register))
         .route("/v1/profile/{did}", get(routes::consumer::get_public_profile))
         .route("/v1/resolve/{did_or_handle}", get(routes::resolve::resolve))

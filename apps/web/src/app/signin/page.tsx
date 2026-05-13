@@ -151,7 +151,7 @@ function SignInContent() {
             Welcome back
           </h1>
           <p className="text-sm text-[#8b95a8] mb-6">
-            Sign in to your AI assistant
+            Sign in to your private AI
           </p>
 
           {((googleClientId && googleAvailable) || process.env.NEXT_PUBLIC_TWITTER_ENABLED) && (

@@ -9,6 +9,8 @@ use said_turnkey::Vault;
 
 use crate::config::Config;
 
+pub type SiwsChallengeStore = Arc<tokio::sync::Mutex<HashMap<String, i64>>>;
+
 pub struct RateLimiter {
     requests: Mutex<HashMap<String, Vec<Instant>>>,
 }
@@ -90,6 +92,7 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub rate_limiter: Arc<RateLimiter>,
     pub usage_meter: Arc<UsageMeter>,
+    pub siws_challenges: SiwsChallengeStore,
     /// ed25519 signing key used to sign all API responses.
     /// Loaded from SIGNING_KEY env var (hex-encoded 32-byte seed)
     /// or generated fresh at startup if the env var is absent.

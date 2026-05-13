@@ -118,7 +118,7 @@ class ProactiveService : Service() {
     private fun buildNotification(): Notification {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
-                .setContentTitle("Thumper")
+                .setContentTitle("Ghola")
                 .setContentText("Monitoring for tasks and notifications")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setOngoing(true)
@@ -126,7 +126,7 @@ class ProactiveService : Service() {
         } else {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
-                .setContentTitle("Thumper")
+                .setContentTitle("Ghola")
                 .setContentText("Monitoring for tasks and notifications")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setOngoing(true)
