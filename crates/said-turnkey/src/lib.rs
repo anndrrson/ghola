@@ -45,6 +45,7 @@ use thiserror::Error;
 
 pub mod envelope;
 pub mod local;
+pub mod stamp;
 pub mod turnkey;
 
 pub use local::LocalVault;
