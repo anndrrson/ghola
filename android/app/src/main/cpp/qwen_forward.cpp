@@ -191,6 +191,7 @@ static ggml_tensor * apply_lora_delta(
 static ggml_tensor * build_causal_mask(ggml_context * ctx, int n_tokens) {
     ggml_tensor * mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_tokens, n_tokens);
     ggml_set_name(mask, "KQ_mask");
+    ggml_set_input(mask);
     if (ggml_get_no_alloc(ctx)) {
         // Caller fills via qwen_fill_kq_mask after gallocr_alloc_graph.
         return mask;
@@ -432,15 +433,21 @@ ggml_tensor * qwen_forward_build(
     // When the ctx is no_alloc, tok_ids->data is null until the caller
     // runs gallocr_alloc_graph + backend_tensor_set. Skip the memcpy in
     // that mode; the caller fills the inputs post-allocation.
+    //
+    // ggml_set_input MARKS these as graph inputs so ggml_gallocr_alloc_graph
+    // allocates buffers for them (without the flag, gallocr treats them as
+    // unallocated leafs and backend_tensor_set fails at "tensor->data NULL").
     const bool no_alloc = ggml_get_no_alloc(ctx);
     ggml_tensor * tok_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
     ggml_set_name(tok_ids, "tokens");
+    ggml_set_input(tok_ids);
     if (!no_alloc) {
         std::memcpy(tok_ids->data, tokens.data(), n_tokens * sizeof(int32_t));
     }
 
     ggml_tensor * pos_ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
     ggml_set_name(pos_ids, "positions");
+    ggml_set_input(pos_ids);
     if (!no_alloc) {
         std::memcpy(pos_ids->data, positions.data(), n_tokens * sizeof(int32_t));
     }
