@@ -1,0 +1,30 @@
+FROM rust:slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+# Workspace members — cargo parses the full workspace Cargo.toml and fails
+# if any member path is missing, even when we're only building one binary.
+COPY mcp-server/ mcp-server/
+COPY cli/ cli/
+COPY daemon/ daemon/
+COPY integration-tests/ integration-tests/
+COPY migrations-receipts/ migrations-receipts/
+
+RUN cargo build --release -p said-receipts-service
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/said-receipts-service /usr/local/bin/said-receipts-service
+
+ENV RECEIPTS_BIND_ADDR=0.0.0.0:10000
+
+RUN useradd --system --no-create-home --uid 65532 nonroot
+USER nonroot
+
+EXPOSE 10000
+
+CMD ["said-receipts-service"]
