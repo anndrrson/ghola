@@ -36,9 +36,10 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
           <div className="w-12 h-12 rounded-2xl bg-[#3da8ff]/10 flex items-center justify-center mb-4">
             <span className="text-xl">G</span>
           </div>
-          <p className="text-[#eef1f8] font-medium mb-1">How can I help you?</p>
+          <p className="text-[#eef1f8] font-medium mb-1">Off the record.</p>
           <p className="text-sm text-[#4a5568] max-w-sm">
-            I can make phone calls, send emails, manage your calendar, and more. Just ask.
+            What&apos;s on your mind? This chat is encrypted on your
+            device. The mode in the header decides where it runs.
           </p>
         </div>
       )}

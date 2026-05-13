@@ -500,16 +500,18 @@ export default function ChatPage() {
               <span className="text-2xl font-bold text-[#3da8ff]">G</span>
             </div>
             <h2 className="text-xl font-semibold text-[#eef1f8] mb-2">
-              Your AI assistant
+              Verifiably off the record.
             </h2>
             <p className="text-sm text-[#8b95a8] text-center max-w-sm mb-6">
-              Ask me anything. I can make phone calls, send emails, manage your calendar, and help with everyday tasks.
+              Pick a sovereignty mode in the header and start chatting.
+              Every message ships with a cryptographic receipt you can
+              audit.
             </p>
             <button
               onClick={handleNewChat}
               className="rounded-xl bg-[#3da8ff] px-6 py-2.5 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors cursor-pointer"
             >
-              Start a conversation
+              New chat
             </button>
           </div>
         )}
