@@ -1,0 +1,30 @@
+# Standalone (NOT a workspace member) crate. Lives outside the workspace
+# so ops can `cargo install --path .` it on an air-gapped signing box
+# without dragging the whole Ghola monorepo into the build.
+#
+# Workspace exclusion: the top-level Cargo.toml does not list this
+# directory under `members`, and we set `[workspace]` here to terminate
+# the workspace lookup.
+
+[workspace]
+
+[package]
+name = "ghola-sign-allowlist"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "ghola-sign-allowlist"
+path = "src/main.rs"
+
+[dependencies]
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+base64 = "0.22"
+hex = "0.4"
+anyhow = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
