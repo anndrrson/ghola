@@ -56,7 +56,7 @@ FetchContent_MakeAvailable(llama)
 set(_ggml_c_path "${llama_SOURCE_DIR}/ggml/src/ggml.c")
 if(EXISTS "${_ggml_c_path}")
     file(READ "${_ggml_c_path}" _ggml_c_contents)
-    if(NOT _ggml_c_contents MATCHES "GHOLA_NO_FORK_BACKTRACE")
+    if(NOT _ggml_c_contents MATCHES "GHOLA_MUL_BWD_FIX")
         # Replace the body of the fork-using ggml_print_backtrace with a no-op
         # that just emits "abort backtrace suppressed" to stderr. Crash via
         # abort() — visible in logcat as SIGABRT + the assertion message.
@@ -64,8 +64,19 @@ if(EXISTS "${_ggml_c_path}")
             "static void ggml_print_backtrace(void) {\n    char attach"
             "static void ggml_print_backtrace(void) { /* GHOLA_NO_FORK_BACKTRACE */ fputs(\"abort backtrace suppressed (android)\\n\", stderr); return; char attach"
             _patched "${_ggml_c_contents}")
+        # Fix b4524's GGML_OP_MUL backward: when src1 is a broadcast (e.g.
+        # RMSNorm gamma [hidden] vs activations [hidden, n_tokens]), the
+        # backward does ggml_mul(src1, grad) — but ggml_mul asserts that
+        # src1 can repeat to fill src0, which fails when grad is the bigger
+        # of the two. Swap to ggml_mul(grad, src1) so the bigger tensor is
+        # the destination and the smaller one (src1) gets broadcast. This
+        # matches the forward's order and is the standard convention.
+        string(REPLACE
+            "case GGML_OP_MUL: {\n            if (src0_needs_grads) {\n                ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, src1, grad));"
+            "case GGML_OP_MUL: {\n            if (src0_needs_grads) { /* GHOLA_MUL_BWD_FIX */\n                struct ggml_tensor * gnorm = ggml_are_same_shape(src0, grad) ? grad : grad;\n                ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, gnorm, src1));"
+            _patched "${_patched}")
         file(WRITE "${_ggml_c_path}" "${_patched}")
-        message(STATUS "Ghola: patched ggml_print_backtrace to skip fork()")
+        message(STATUS "Ghola: patched ggml_print_backtrace + OP_MUL backward")
     endif()
 endif()
 
