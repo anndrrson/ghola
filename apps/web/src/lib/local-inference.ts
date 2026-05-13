@@ -78,6 +78,76 @@ export async function probeGholaHome(): Promise<GholaHomeStatus> {
   }
 }
 
+export interface PairResult {
+  ok: boolean;
+  token?: string;
+  serverName?: string;
+  error?: string;
+}
+
+// Pair this browser with the local ghola-home instance. The user has
+// to read the PIN from ghola-home's startup log / tray and type it in
+// here. On success the token is stored in localStorage and Local mode
+// just works on subsequent sends.
+export async function pairWithGholaHome(
+  pin: string,
+  deviceName: string,
+): Promise<PairResult> {
+  const baseUrl = getGholaHomeUrl();
+  try {
+    const res = await fetch(`${baseUrl}/api/local/pair`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin, device_name: deviceName }),
+    });
+    if (res.status === 401) {
+      return { ok: false, error: "Wrong PIN. Check the ghola-home app and try again." };
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return {
+        ok: false,
+        error: `ghola-home returned ${res.status}${body ? `: ${body}` : ""}`,
+      };
+    }
+    const data = (await res.json()) as { token?: string; server_name?: string };
+    if (!data.token) {
+      return { ok: false, error: "ghola-home returned no token" };
+    }
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(PAIR_TOKEN_STORAGE_KEY, data.token);
+      } catch {
+        // Storage unavailable; pairing won't persist across reload.
+      }
+    }
+    return { ok: true, token: data.token, serverName: data.server_name };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Could not reach ghola-home at ${baseUrl}: ${err instanceof Error ? err.message : "network error"}`,
+    };
+  }
+}
+
+export function clearPairToken(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(PAIR_TOKEN_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+export function setGholaHomeUrl(url: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(HOME_URL_STORAGE_KEY, url);
+  } catch {
+    // ignore
+  }
+}
+
 interface StreamLocalChatOptions {
   onChunk: (text: string) => void;
   onDone: () => void;

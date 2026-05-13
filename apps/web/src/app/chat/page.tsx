@@ -7,6 +7,7 @@ import { SessionSidebar } from "@/components/chat/SessionSidebar";
 import { ChatMessages } from "@/components/chat/ChatMessages";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatHeader } from "@/components/chat/ChatHeader";
+import { LocalSetupBanner } from "@/components/chat/LocalSetupBanner";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { handleTwitterToken } from "@/lib/thumper-api";
@@ -491,11 +492,14 @@ export default function ChatPage() {
               mode={sovereigntyMode}
               onModeChange={setSovereigntyMode}
             />
+            {sovereigntyMode === "local" && <LocalSetupBanner />}
             <ChatMessages messages={messages} isStreaming={isStreaming} providerInfo={providerInfo} />
             <ChatInput onSend={handleSend} disabled={isStreaming} />
           </>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center px-4">
+          <div className="flex-1 flex flex-col">
+            {sovereigntyMode === "local" && <LocalSetupBanner />}
+            <div className="flex-1 flex flex-col items-center justify-center px-4">
             <div className="w-16 h-16 rounded-2xl bg-[#3da8ff]/10 flex items-center justify-center mb-6">
               <span className="text-2xl font-bold text-[#3da8ff]">G</span>
             </div>
@@ -513,6 +517,7 @@ export default function ChatPage() {
             >
               New chat
             </button>
+            </div>
           </div>
         )}
       </div>
