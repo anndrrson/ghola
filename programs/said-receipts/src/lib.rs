@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("Ga4nCEaeChn9ZzehAA69SP5hNECivPoZQm9SmRZc3nBC");
+declare_id!("EwPWEHv9KVGt9KAGGaqVm3B9c6dLGSGzKZwtc5vFVJja");
 
 #[program]
 pub mod said_receipts {
