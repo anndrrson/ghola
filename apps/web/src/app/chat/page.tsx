@@ -8,6 +8,7 @@ import { ChatMessages } from "@/components/chat/ChatMessages";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { LocalSetupBanner } from "@/components/chat/LocalSetupBanner";
+import { SovereigntyPicker } from "@/components/SovereigntyPicker";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { handleTwitterToken } from "@/lib/thumper-api";
@@ -521,10 +522,15 @@ export default function ChatPage() {
               Verifiably off the record.
             </h2>
             <p className="text-sm text-[#8b95a8] text-center max-w-sm mb-6">
-              Pick a sovereignty mode in the header and start chatting.
-              Every message ships with a cryptographic receipt you can
-              audit.
+              Pick where your chat runs. Every message ships with a
+              cryptographic receipt you can audit.
             </p>
+            <div className="mb-6">
+              <SovereigntyPicker
+                value={sovereigntyMode}
+                onChange={setSovereigntyMode}
+              />
+            </div>
             <button
               onClick={handleNewChat}
               className="rounded-xl bg-[#3da8ff] px-6 py-2.5 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors cursor-pointer"

@@ -93,11 +93,11 @@ export default function Home() {
           <div className="mx-auto max-w-6xl px-6 lg:px-12 py-5 flex flex-wrap items-center gap-x-8 gap-y-2 font-mono text-[11px] uppercase tracking-[0.22em] text-[#6f798c]">
             <span className="text-[#8b95a8]">Active on network</span>
             <span className="text-[#2a3a50]">·</span>
-            <span>TEE attested</span>
+            <span>End-to-end encrypted</span>
             <span className="text-[#2a3a50]">·</span>
             <span>On-device option</span>
             <span className="text-[#2a3a50]">·</span>
-            <span>On-chain receipts</span>
+            <span>Verifiable receipts</span>
             <span className="text-[#2a3a50]">·</span>
             <span>Open weights</span>
           </div>
