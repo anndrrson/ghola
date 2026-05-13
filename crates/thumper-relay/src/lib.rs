@@ -40,6 +40,11 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
                 state.prune_nonces();
                 state.ping_all_and_prune_dead();
                 state.prune_stale_connections(90);
+                let now = chrono::Utc::now().timestamp();
+                let removed = state.prune_expired_enclaves(now);
+                if removed > 0 {
+                    tracing::info!(removed, "pruned expired attested enclaves");
+                }
                 tracing::debug!(
                     devices = state.device_count(),
                     mcp_clients = state.mcp_client_count(),
@@ -56,6 +61,10 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         .route("/ws", get(handlers::ws_upgrade))
         .route("/inference", post(handlers::dispatch_inference))
         .route("/inference-stream", post(handlers::dispatch_inference_stream))
+        .route("/inference/sealed", post(handlers::dispatch_inference_sealed))
+        .route("/providers/attest", post(handlers::provider_attest_http))
+        .route("/providers/attested", get(handlers::list_attested_providers))
+        .route("/attestations/{hash_hex}", get(handlers::get_attestation))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state);
