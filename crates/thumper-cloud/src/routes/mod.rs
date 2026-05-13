@@ -4,6 +4,8 @@ pub mod auth;
 pub mod tasks;
 pub mod calls;
 pub mod emails;
+pub mod sms;
+pub mod calendar;
 pub mod user;
 pub mod devices;
 pub mod billing;

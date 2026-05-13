@@ -3,6 +3,36 @@ use uuid::Uuid;
 use crate::error::CloudError;
 use crate::state::AppState;
 
+/// Tool definition advertised to tool-capable LLMs.
+pub fn calendar_tool_definition() -> serde_json::Value {
+    serde_json::json!({
+        "name": "create_calendar_event",
+        "description": "Create a calendar event on the user's Google Calendar. The user will \
+                        review the event before it's created.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": { "type": "string", "description": "Event title / summary." },
+                "start": {
+                    "type": "string",
+                    "description": "Start time as an RFC3339 timestamp, e.g. 2026-05-13T15:00:00-04:00"
+                },
+                "end": {
+                    "type": "string",
+                    "description": "End time as an RFC3339 timestamp."
+                },
+                "description": { "type": "string", "description": "Optional event description." },
+                "location": { "type": "string", "description": "Optional location." },
+                "timezone": {
+                    "type": "string",
+                    "description": "IANA timezone, e.g. America/New_York. Defaults to user's timezone if omitted."
+                }
+            },
+            "required": ["title", "start", "end"]
+        }
+    })
+}
+
 /// Handle a calendar-related request via Google Calendar API.
 pub async fn handle_calendar_request(
     state: &AppState,

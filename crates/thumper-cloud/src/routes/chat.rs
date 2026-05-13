@@ -12,10 +12,29 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::CloudError;
 use crate::services::agent_service;
+use crate::services::call_service;
+use crate::services::calendar_service;
 use crate::services::compute_service;
+use crate::services::email_service;
 use crate::services::llm_router::{self, ChatMsg};
+use crate::services::sms_service;
 use crate::services::wallet_service;
 use crate::state::AppState;
+
+/// Build the unified tool list — four client-rendered action tools plus the
+/// user's wallet tools when a wallet exists.
+fn build_chat_tools(has_wallet: bool) -> Vec<serde_json::Value> {
+    let mut tools = vec![
+        email_service::email_tool_definition(),
+        sms_service::sms_tool_definition(),
+        call_service::call_tool_definition(),
+        calendar_service::calendar_tool_definition(),
+    ];
+    if has_wallet {
+        tools.extend(wallet_service::wallet_tool_definitions());
+    }
+    tools
+}
 
 #[derive(Deserialize)]
 pub struct ChatRequest {
@@ -279,47 +298,75 @@ pub async fn chat(
          When the user wants to make a call, send an email, or manage their calendar, help them do it."
     };
 
-    // If user has wallet, use tool-use path (non-streaming but with tool calls)
-    if has_wallet {
-        let tools = wallet_service::wallet_tool_definitions();
+    // Decide the path based on the user's LLM provider. Tool-use-capable
+    // providers (Anthropic/OpenAI-compatible/Google) get the structured
+    // `generate_with_tools` path with email/sms/call/calendar tools (and
+    // wallet tools when present). Providers without tool-use (Community,
+    // Ollama) fall back to plain streaming and the client's regex
+    // `detectAction` for action surfacing.
+    let llm_config = llm_router::get_user_llm_config(&state, user_id).await.ok();
+    let provider = llm_config.as_ref().map(|c| c.provider);
+    let tool_use_supported =
+        provider.as_ref().map(llm_router::supports_tool_use).unwrap_or(false);
+    let is_community = provider == Some(llm_router::LlmProvider::Community);
+
+    if tool_use_supported {
+        let tools = build_chat_tools(has_wallet);
         let state_clone = state.clone();
         let db = state.db.clone();
 
         let sse_stream: SseStream = Box::pin(async_stream::stream! {
-            // Send session_id as first event
             yield Ok(Event::default()
                 .event("session")
                 .data(serde_json::json!({ "session_id": session_id }).to_string()));
 
+            yield Ok(Event::default()
+                .event("provider")
+                .data(serde_json::json!({
+                    "type": "byom",
+                    "tool_use_supported": true,
+                }).to_string()));
+
             match llm_router::generate_with_tools(&state_clone, user_id, &messages, Some(system), &tools).await {
                 Ok(result) => {
-                    // Emit tool call events
                     for tc in &result.tool_calls {
-                        if tc.status == "executing" {
-                            yield Ok(Event::default()
-                                .event("tool_use")
-                                .data(serde_json::json!({
-                                    "tool": tc.tool_name,
-                                    "status": "executing"
-                                }).to_string()));
-                        } else {
-                            yield Ok(Event::default()
-                                .event("tool_result")
-                                .data(serde_json::json!({
-                                    "tool": tc.tool_name,
-                                    "status": tc.status,
-                                    "result": tc.result,
-                                }).to_string()));
+                        match tc.status.as_str() {
+                            "executing" => {
+                                yield Ok(Event::default()
+                                    .event("tool_use")
+                                    .data(serde_json::json!({
+                                        "tool": tc.tool_name,
+                                        "status": "executing",
+                                    }).to_string()));
+                            }
+                            "client_action" => {
+                                // Client-side tool — render an ActionCard on the
+                                // client. Ship the LLM's input verbatim.
+                                yield Ok(Event::default()
+                                    .event("tool_use")
+                                    .data(serde_json::json!({
+                                        "tool": tc.tool_name,
+                                        "status": "client_action",
+                                        "input": tc.result,
+                                    }).to_string()));
+                            }
+                            _ => {
+                                yield Ok(Event::default()
+                                    .event("tool_result")
+                                    .data(serde_json::json!({
+                                        "tool": tc.tool_name,
+                                        "status": tc.status,
+                                        "result": tc.result,
+                                    }).to_string()));
+                            }
                         }
                     }
 
-                    // Emit the final text as a single delta
                     if !result.text.is_empty() {
                         yield Ok(Event::default()
                             .event("text_delta")
                             .data(serde_json::json!({ "text": &result.text }).to_string()));
 
-                        // Save assistant response
                         let _ = sqlx::query(
                             "INSERT INTO chat_messages (user_id, session_id, role, content) VALUES ($1, $2, 'assistant', $3)",
                         )
@@ -339,7 +386,6 @@ pub async fn chat(
                 }
             }
 
-            // Send done event
             yield Ok(Event::default()
                 .event("done")
                 .data(serde_json::json!({ "session_id": session_id }).to_string()));
@@ -348,23 +394,17 @@ pub async fn chat(
         return Ok(Sse::new(sse_stream));
     }
 
-    // Check which provider will be used (for community GPU indicator)
-    let llm_config = llm_router::get_user_llm_config(&state, user_id).await.ok();
-    let is_community = llm_config.as_ref().map(|c| c.provider == llm_router::LlmProvider::Community).unwrap_or(false);
-
-    // Standard streaming path (no wallet tools)
+    // Streaming fallback for providers without tool-use (Community, Ollama).
     let stream_result = llm_router::generate_stream(&state, user_id, &messages, Some(system)).await;
     let db = state.db.clone();
 
     let sse_stream: SseStream = Box::pin(async_stream::stream! {
         let mut full_response = String::new();
 
-        // Send session_id as first event
         yield Ok(Event::default()
             .event("session")
             .data(serde_json::json!({ "session_id": session_id }).to_string()));
 
-        // Emit community GPU provider event with real provider/model data
         if is_community {
             let preview = compute_service::preview_provider(&state).await;
             let (provider_name, model_id) = preview.unwrap_or(("Community".into(), "community-gpu".into()));
@@ -373,13 +413,20 @@ pub async fn chat(
                 .data(serde_json::json!({
                     "type": "community",
                     "model": model_id,
-                    "provider_name": provider_name
+                    "provider_name": provider_name,
+                    "tool_use_supported": false,
+                }).to_string()));
+        } else {
+            yield Ok(Event::default()
+                .event("provider")
+                .data(serde_json::json!({
+                    "type": "byom",
+                    "tool_use_supported": false,
                 }).to_string()));
         }
 
         match stream_result {
             Ok(text_stream) => {
-                // Stream text deltas
                 let mut text_stream = text_stream;
                 while let Some(result) = text_stream.next().await {
                     match result {
@@ -401,7 +448,6 @@ pub async fn chat(
                 }
             }
             Err(e) => {
-                // LLM setup failed (no API key, decryption error, etc.)
                 let friendly = friendly_llm_error(&e);
                 tracing::warn!("chat LLM init error for user {user_id}: {e}");
                 yield Ok(Event::default()
@@ -410,12 +456,10 @@ pub async fn chat(
             }
         }
 
-        // Send done event
         yield Ok(Event::default()
             .event("done")
             .data(serde_json::json!({ "session_id": session_id }).to_string()));
 
-        // Save assistant response to DB only if non-empty
         if !full_response.is_empty() {
             let _ = sqlx::query(
                 "INSERT INTO chat_messages (user_id, session_id, role, content) VALUES ($1, $2, 'assistant', $3)",
@@ -568,21 +612,33 @@ async fn agent_chat(
             match llm_router::generate_with_tools(&state_clone, user_id, &messages, Some(&system_prompt), &tools).await {
                 Ok(result) => {
                     for tc in &result.tool_calls {
-                        if tc.status == "executing" {
-                            yield Ok(Event::default()
-                                .event("tool_use")
-                                .data(serde_json::json!({
-                                    "tool": tc.tool_name,
-                                    "status": "executing"
-                                }).to_string()));
-                        } else {
-                            yield Ok(Event::default()
-                                .event("tool_result")
-                                .data(serde_json::json!({
-                                    "tool": tc.tool_name,
-                                    "status": tc.status,
-                                    "result": tc.result,
-                                }).to_string()));
+                        match tc.status.as_str() {
+                            "executing" => {
+                                yield Ok(Event::default()
+                                    .event("tool_use")
+                                    .data(serde_json::json!({
+                                        "tool": tc.tool_name,
+                                        "status": "executing",
+                                    }).to_string()));
+                            }
+                            "client_action" => {
+                                yield Ok(Event::default()
+                                    .event("tool_use")
+                                    .data(serde_json::json!({
+                                        "tool": tc.tool_name,
+                                        "status": "client_action",
+                                        "input": tc.result,
+                                    }).to_string()));
+                            }
+                            _ => {
+                                yield Ok(Event::default()
+                                    .event("tool_result")
+                                    .data(serde_json::json!({
+                                        "tool": tc.tool_name,
+                                        "status": tc.status,
+                                        "result": tc.result,
+                                    }).to_string()));
+                            }
                         }
                     }
 
