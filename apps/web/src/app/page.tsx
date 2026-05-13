@@ -183,40 +183,33 @@ export default function Home() {
           <div className="grid lg:grid-cols-12 gap-12 lg:gap-20">
             <div className="lg:col-span-5">
               <h2 className="font-display text-4xl md:text-6xl leading-[1.0] text-[#eef1f8] mb-8 font-medium">
-                Every agent action{" "}
-                <span className="text-[#8b95a8]">pays someone.</span>
+                How a private chat{" "}
+                <span className="text-[#8b95a8]">actually works.</span>
               </h2>
-              <p className="text-[#8b95a8] leading-relaxed mb-8">
-                An agent needs a model to think, compute to run, and services
-                to act. Each has a price. Each settles in USDT or USDC on
-                Solana. Each builds reputation.
+              <p className="text-[#8b95a8] leading-relaxed">
+                Four steps. The mode you pick decides which transport
+                runs them, but the shape is the same: you stay in control
+                from the keystroke to the audit trail.
               </p>
-              <Link
-                href="/how-it-works"
-                className="inline-flex items-center gap-2 text-sm text-[#3da8ff] hover:text-[#5bb8ff] transition-colors"
-              >
-                See the full flow
-                <ArrowRight className="h-3.5 w-3.5" />
-              </Link>
             </div>
 
             <ol className="lg:col-span-7">
               {[
                 {
-                  label: "Resolve",
-                  desc: "Agent queries the registry for a model, compute node, or service that matches the task.",
+                  label: "Pick a mode",
+                  desc: "Private, Local, or Open. The choice sits in the chat header and rides into every message that follows.",
                 },
                 {
-                  label: "Verify",
-                  desc: "Cryptographic identity check — UCAN credentials, on-chain registration, reputation score.",
+                  label: "Encrypt or stay home",
+                  desc: "Private seals the message to a verified provider key. Local never sends it anywhere — it runs on your machine via ghola-home.",
                 },
                 {
-                  label: "Execute",
-                  desc: "The call lands at the provider, work happens, the result returns.",
+                  label: "Run the model",
+                  desc: "Inference happens inside the attested enclave (Private), on your hardware (Local), or at any open provider (Open). You always know which.",
                 },
                 {
-                  label: "Settle",
-                  desc: "USDC flows from the agent's wallet to the provider, per-call, hourly batched.",
+                  label: "Get a receipt",
+                  desc: "Every assistant message ships with a signed receipt naming the mode, the provider, and the hashes of your prompt and the response. Verify it from the badge.",
                 },
               ].map((step, i) => (
                 <li
@@ -235,51 +228,6 @@ export default function Home() {
                 </li>
               ))}
             </ol>
-          </div>
-        </div>
-      </section>
-
-      {/* ──────────── Numbers + On-chain ──────────── */}
-      <section className="py-28 sm:py-36">
-        <div className="mx-auto w-full max-w-6xl px-6 lg:px-12">
-          <div className="flex items-baseline gap-6 mb-16">
-            <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#8b95a8]">
-              03 — The shape of it
-            </span>
-            <span className="flex-1 h-px bg-[#1e2a3a]" />
-          </div>
-
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-px bg-[#1e2a3a] border border-[#1e2a3a] mb-20">
-            {[
-              { value: "85%", label: "Creator share" },
-              { value: "3%", label: "Service fee" },
-              { value: "1hr", label: "Settlement" },
-              { value: "0", label: "Gatekeepers" },
-            ].map((s) => (
-              <div key={s.label} className="bg-[#08090d] p-8 lg:p-10">
-                <p className="font-display text-5xl md:text-7xl text-[#eef1f8] leading-none">
-                  {s.value}
-                </p>
-                <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#6f798c] mt-5">
-                  {s.label}
-                </p>
-              </div>
-            ))}
-          </div>
-
-          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-6 pt-2">
-            <div>
-              <p className="font-display text-3xl md:text-4xl text-[#eef1f8] mb-2 font-medium">
-                Anchored <span className="text-[#8b95a8]">on Solana.</span>
-              </p>
-              <p className="text-sm text-[#8b95a8] max-w-md leading-relaxed">
-                Identity, services, and reputation — verifiable on-chain, owned
-                by you.
-              </p>
-            </div>
-            <code className="font-mono text-xs text-[#cfd4dd] border border-[#1e2a3a] rounded-full px-4 py-2 self-start sm:self-end whitespace-nowrap">
-              3EqrapHPP…7QyR
-            </code>
           </div>
         </div>
       </section>
