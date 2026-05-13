@@ -87,7 +87,10 @@ export function middleware(request: NextRequest) {
         "https://ghola-api.onrender.com " +
         "https://thumper-cloud.onrender.com " +
         "https://ghola-gateway.onrender.com " +
-        "https://ghola-merchant-gateway.onrender.com",
+        "https://ghola-merchant-gateway.onrender.com " +
+        // v2 surfaces — sealed transport relay + on-chain anchor receipts service
+        "https://ghola-relay.onrender.com " +
+        "https://ghola-receipts.onrender.com",
       "frame-src https://accounts.google.com",
       "object-src 'none'",
       "base-uri 'self'",
