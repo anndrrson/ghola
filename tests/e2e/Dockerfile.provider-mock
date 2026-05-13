@@ -1,0 +1,29 @@
+# thumper-gpu-provider built with --features mock-nitro for the e2e
+# stack. Production builds use deploy/nitro/Dockerfile.nitro instead.
+FROM rust:1.79-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY mcp-server/ mcp-server/
+COPY cli/ cli/
+COPY daemon/ daemon/
+COPY integration-tests/ integration-tests/
+COPY migrations/ migrations/
+COPY migrations-receipts/ migrations-receipts/
+COPY programs/ programs/
+COPY apps/ apps/
+COPY packages/ packages/
+
+RUN cargo build --release -p thumper-gpu-provider --features mock-nitro
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/thumper-gpu-provider /usr/local/bin/thumper-gpu-provider
+
+USER nobody
+ENV RUST_LOG=info
+CMD ["thumper-gpu-provider"]
