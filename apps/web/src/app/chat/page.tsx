@@ -16,6 +16,7 @@ import {
   saveSessions as saveSessionsToStore,
 } from "@/lib/chat-history-store";
 import { selectRoute, useSovereigntyMode } from "@/lib/sovereignty";
+import { makeReceipt } from "@/lib/receipt";
 import bs58 from "bs58";
 import type { ThumperSession, ThumperChatMessage, ThumperInlineAction } from "@/lib/thumper-types";
 
@@ -261,6 +262,15 @@ export default function ChatPage() {
     setProviderInfo(null);
     let fullContent = "";
     const currentSessionId = sessionId;
+    // Fresh job id per message — also becomes the receipt's job_id so
+    // each assistant turn has its own audit trail rather than reusing
+    // the session id (which spans many turns).
+    const messageJobId = crypto.randomUUID();
+    // Capture provider info locally so the onDone closure can read
+    // it without racing the React state setter.
+    let localProviderInfo:
+      | { type: string; model?: string; provider_name?: string }
+      | null = null;
 
     // v1: route is informational. The transport differences land in
     // the next two PRs (sealed inference + local inference). Log the
@@ -295,7 +305,10 @@ export default function ChatPage() {
         // Server assigned a session ID — we can track it if needed
         // For now we keep using our local UUID
       },
-      onProvider: (info) => setProviderInfo(info),
+      onProvider: (info) => {
+        setProviderInfo(info);
+        localProviderInfo = info;
+      },
       onChunk: (chunk) => {
         fullContent += chunk;
         updateSession(currentSessionId, (s) => {
@@ -325,6 +338,36 @@ export default function ChatPage() {
           };
         });
         setIsStreaming(false);
+
+        // Build the per-message receipt in the background. Failure is
+        // non-fatal — the message still renders without a badge when
+        // the wallet isn't connected or signing is declined.
+        if (userDid && signBytes) {
+          void (async () => {
+            try {
+              const receipt = await makeReceipt({
+                jobId: messageJobId,
+                mode: sovereigntyMode,
+                providerId: localProviderInfo?.provider_name ?? "ghola-cloud",
+                modelId: localProviderInfo?.model ?? null,
+                prompt: text,
+                response: fullContent,
+                signerDid: userDid,
+                signBytes,
+              });
+              updateSession(currentSessionId, (s) => {
+                const msgs = [...s.messages];
+                msgs[msgs.length - 1] = {
+                  ...msgs[msgs.length - 1],
+                  receipt,
+                };
+                return { ...s, messages: msgs };
+              });
+            } catch {
+              // No receipt this time. Message still displays.
+            }
+          })();
+        }
       },
       onError: (error) => {
         updateSession(currentSessionId, (s) => {
