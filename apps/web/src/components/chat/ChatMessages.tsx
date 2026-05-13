@@ -4,6 +4,7 @@ import { useRef, useEffect } from "react";
 import DOMPurify from "dompurify";
 import { CallCard } from "./CallCard";
 import { EmailCard } from "./EmailCard";
+import { ReceiptBadge } from "./ReceiptBadge";
 import type { ThumperChatMessage } from "@/lib/thumper-types";
 
 function sanitizeHtml(html: string): string {
@@ -48,7 +49,17 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
               {date}
             </span>
           </div>
-          {dayMessages.map((msg, idx) => (
+          {dayMessages.map((msg, idx) => {
+            // For receipt verification we need the prompt that produced
+            // this assistant message — that's the immediately preceding
+            // message (which should be the user role). Falls back to ""
+            // if the structure is unexpected (e.g. opening assistant
+            // greeting), which the verifier will flag as a hash
+            // mismatch rather than crashing.
+            const prev = idx > 0 ? dayMessages[idx - 1] : undefined;
+            const promptForReceipt =
+              prev && prev.role === "user" ? prev.content : "";
+            return (
             <div key={idx}>
               <div
                 className={`flex mb-3 ${
@@ -131,8 +142,18 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
                   </div>
                 </div>
               )}
+              {msg.role === "assistant" && msg.receipt && (
+                <div className="flex justify-start mb-3 ml-1">
+                  <ReceiptBadge
+                    receipt={msg.receipt}
+                    prompt={promptForReceipt}
+                    response={msg.content}
+                  />
+                </div>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       ))}
       <div ref={bottomRef} />
