@@ -17,6 +17,7 @@ import {
 } from "@/lib/chat-history-store";
 import { selectRoute, useSovereigntyMode } from "@/lib/sovereignty";
 import { makeReceipt } from "@/lib/receipt";
+import { streamLocalChat } from "@/lib/local-inference";
 import bs58 from "bs58";
 import type { ThumperSession, ThumperChatMessage, ThumperInlineAction } from "@/lib/thumper-types";
 
@@ -272,14 +273,90 @@ export default function ChatPage() {
       | { type: string; model?: string; provider_name?: string }
       | null = null;
 
-    // v1: route is informational. The transport differences land in
-    // the next two PRs (sealed inference + local inference). Log the
-    // caveat so anyone tailing the console sees that Private / Local
-    // are not yet enforcing what their labels imply.
+    // Route the message based on the sovereignty mode. Private and
+    // Open still share the relay path in v1 (sealed transport for
+    // Private lands with /inference/sealed); Local goes straight to
+    // ghola-home and never touches the cloud. selectRoute() surfaces
+    // a console.info if the mode hasn't fully shipped yet.
     const route = selectRoute(sovereigntyMode);
     if (route.caveat) {
       // eslint-disable-next-line no-console
       console.info(`[sovereignty:${route.mode}] ${route.caveat}`);
+    }
+
+    // Local mode: stream from ghola-home on the user's machine. On
+    // failure, surface the error message in the assistant bubble
+    // rather than silently downgrading to the cloud — Local was the
+    // user's explicit choice. Receipt is built afterwards with
+    // provider_id = "ghola-home" so the audit trail reflects reality.
+    if (route.transport === "webgpu" || route.transport === "ghola-home") {
+      await streamLocalChat(currentSessionId, text, {
+        onChunk: (chunk) => {
+          fullContent += chunk;
+          updateSession(currentSessionId, (s) => {
+            const msgs = [...s.messages];
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              content: fullContent,
+            };
+            return { ...s, messages: msgs };
+          });
+        },
+        onDone: () => {
+          updateSession(currentSessionId, (s) => {
+            const msgs = [...s.messages];
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              content: fullContent,
+            };
+            return {
+              ...s,
+              lastMessage: fullContent.slice(0, 100),
+              lastMessageAt: new Date().toISOString(),
+              messages: msgs,
+            };
+          });
+          setIsStreaming(false);
+          if (userDid && signBytes) {
+            void (async () => {
+              try {
+                const receipt = await makeReceipt({
+                  jobId: messageJobId,
+                  mode: sovereigntyMode,
+                  providerId: "ghola-home",
+                  modelId: null,
+                  prompt: text,
+                  response: fullContent,
+                  signerDid: userDid,
+                  signBytes,
+                });
+                updateSession(currentSessionId, (s) => {
+                  const msgs = [...s.messages];
+                  msgs[msgs.length - 1] = {
+                    ...msgs[msgs.length - 1],
+                    receipt,
+                  };
+                  return { ...s, messages: msgs };
+                });
+              } catch {
+                // Receipt failed — Local message still displays.
+              }
+            })();
+          }
+        },
+        onError: (errMsg) => {
+          updateSession(currentSessionId, (s) => {
+            const msgs = [...s.messages];
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              content: errMsg,
+            };
+            return { ...s, messages: msgs };
+          });
+          setIsStreaming(false);
+        },
+      });
+      return;
     }
 
     // Try to seal the user's message under the session's DEK before

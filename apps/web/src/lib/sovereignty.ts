@@ -101,8 +101,9 @@ export function selectRoute(mode: SovereigntyMode): ModeRoute {
     case "local":
       return {
         mode,
-        transport: "webgpu",
-        caveat: "v1: WebGPU + ghola-home wiring pending. Today this routes through the relay.",
+        transport: "ghola-home",
+        caveat:
+          "v1: requires ghola-home running on this machine. WebGPU fallback for small in-browser models lands in v2.",
       };
     case "open":
       return { mode, transport: "relay-plain" };
