@@ -302,6 +302,8 @@ bool run_finetune(
             for (int i = 0; i < n_total; ++i) positions[i] = i;
 
             // ── Forward → logits at every position ─────────────────────
+            LOGI("trn step %d: pre qwen_forward_build (n_total=%d, vocab=%d)",
+                 global_step, n_total, QwenConfig::vocab_size);
             ggml_tensor * logits = qwen_forward_build(
                 model, cctx, tokens, positions, &lora,
                 /*return_all_positions=*/ true);
@@ -310,6 +312,7 @@ bool run_finetune(
                 ggml_free(cctx);
                 continue;
             }
+            LOGI("trn step %d: post forward, building loss", global_step);
             // logits shape: [vocab_size, n_total]
 
             // ── Mask out prompt: take only positions [n_prompt-1 .. n_total-2] ──
@@ -337,25 +340,25 @@ bool run_finetune(
 
             // ggml_cross_entropy_loss at b4524 expects logits + class
             // indices, and reduces to a scalar (mean over positions).
+            LOGI("trn step %d: ggml_cross_entropy_loss pred ne=[%lld,%lld] targets ne=[%lld,%lld]",
+                 global_step,
+                 (long long) pred->ne[0], (long long) pred->ne[1],
+                 (long long) targets->ne[0], (long long) targets->ne[1]);
             ggml_tensor * loss = ggml_cross_entropy_loss(cctx, pred, targets);
             ggml_set_name(loss, "loss");
-            // ggml_set_loss marks this as the autograd root — required at
-            // b4524 for ggml_build_backward_expand to seed dL/dL=1 at the
-            // right tensor. Without it, gradients silently don't flow.
             ggml_set_loss(loss);
+            LOGI("trn step %d: loss tensor built, new_graph_custom", global_step);
 
             // ── Build forward + backward graph ─────────────────────────
             ggml_cgraph * cgraph = ggml_new_graph_custom(cctx,
                 /*size=*/ 32768, /*grads=*/ true);
+            LOGI("trn step %d: ggml_build_forward_expand(loss)", global_step);
             ggml_build_forward_expand(cgraph, loss);
 
-            // ggml_build_backward_expand at b4524:
-            //   void ggml_build_backward_expand(
-            //       ctx_static, ctx_compute, cgraph, accumulate);
-            // Walks the forward graph in reverse; allocates grad tensors
-            // for every ggml_set_param'd input on ctx_static; appends the
-            // gradient ops to cgraph.
+            LOGI("trn step %d: ggml_build_backward_expand", global_step);
             ggml_build_backward_expand(static_ctx, cctx, cgraph, /*accumulate=*/ false);
+            LOGI("trn step %d: backward expanded, %d nodes",
+                 global_step, ggml_graph_n_nodes(cgraph));
 
             // ── AdamW step on every LoRA param ─────────────────────────
             write_opt_params(global_step);

@@ -47,6 +47,28 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(llama)
 
+# Android-specific patch: upstream ggml_abort calls ggml_print_backtrace
+# which fork()s and execs gdb/lldb, then waitpid()s. On Android neither
+# binary exists, the child fails fast, but the parent's waitpid()
+# blocks indefinitely — manifests as a silent hang at 0% CPU on any
+# GGML_ASSERT failure. Patch the body of ggml_print_backtrace to be a
+# no-op so assertions actually crash visibly via abort().
+set(_ggml_c_path "${llama_SOURCE_DIR}/ggml/src/ggml.c")
+if(EXISTS "${_ggml_c_path}")
+    file(READ "${_ggml_c_path}" _ggml_c_contents)
+    if(NOT _ggml_c_contents MATCHES "GHOLA_NO_FORK_BACKTRACE")
+        # Replace the body of the fork-using ggml_print_backtrace with a no-op
+        # that just emits "abort backtrace suppressed" to stderr. Crash via
+        # abort() — visible in logcat as SIGABRT + the assertion message.
+        string(REPLACE
+            "static void ggml_print_backtrace(void) {\n    char attach"
+            "static void ggml_print_backtrace(void) { /* GHOLA_NO_FORK_BACKTRACE */ fputs(\"abort backtrace suppressed (android)\\n\", stderr); return; char attach"
+            _patched "${_ggml_c_contents}")
+        file(WRITE "${_ggml_c_path}" "${_patched}")
+        message(STATUS "Ghola: patched ggml_print_backtrace to skip fork()")
+    endif()
+endif()
+
 # JNI bridge — single shared lib that the Kotlin LlamaCpp class loads via
 # System.loadLibrary("thumper_llama"). Per the plan we'll add a sibling
 # translation unit llama_finetune_jni.cpp in P3 alongside llama_jni.cpp;
