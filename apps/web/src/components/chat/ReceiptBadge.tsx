@@ -1,9 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, Copy, Laptop, Lock, ShieldOff, X } from "lucide-react";
+import { Check, Copy, Laptop, Link2, Lock, ShieldOff, X } from "lucide-react";
 import type { ReceiptV1 } from "@/lib/receipt";
-import { verifyReceiptAgainstMessage } from "@/lib/receipt";
+import {
+  fetchAttestation,
+  receiptHashHex,
+  verifyProviderSignature,
+  verifyReceiptAgainstMessage,
+} from "@/lib/receipt";
 
 // First-run callout: the badge is the whole point of the product, and
 // a VC who only sends one message could easily miss it. We surface a
@@ -13,6 +18,26 @@ import { verifyReceiptAgainstMessage } from "@/lib/receipt";
 // below is set in localStorage and the hint never returns.
 const HINT_STORAGE_KEY = "ghola:receipt-hint-seen";
 const HINT_DELAY_MS = 800;
+
+// The receipts service hosts /v1/receipts/<hash>/proof. Separate from
+// the relay because it's a different service with its own retention +
+// access semantics — see crates/said-receipts-service.
+function receiptsServiceBase(): string {
+  if (typeof process !== "undefined" && process.env) {
+    const url = process.env.NEXT_PUBLIC_RECEIPTS_SERVICE_URL;
+    if (url) return url;
+  }
+  return "http://localhost:3001";
+}
+
+interface ReceiptsProofResponse {
+  receipt_hash: string;
+  merkle_root_hex: string;
+  solana_signature: string;
+  period_start_unix: number;
+  period_end_unix: number;
+  proof_path?: string[];
+}
 
 function markHintSeen(): void {
   if (typeof window === "undefined") return;
@@ -66,6 +91,24 @@ const MODE_STYLE: Record<
   },
 };
 
+type VerifyState =
+  | { kind: "idle" }
+  | { kind: "running" }
+  | {
+      kind: "done";
+      user: { ok: boolean; reason?: string };
+      provider?: { ok: boolean; reason?: string };
+    };
+
+type AnchorState =
+  | { kind: "idle" }
+  | { kind: "running" }
+  | {
+      kind: "done";
+      status: "anchored" | "pending" | "missing" | "error";
+      detail: string;
+    };
+
 export function ReceiptBadge({
   receipt,
   prompt,
@@ -73,13 +116,12 @@ export function ReceiptBadge({
   isHintAnchor,
 }: ReceiptBadgeProps) {
   const [open, setOpen] = useState(false);
-  const [verifyState, setVerifyState] = useState<
-    "idle" | "ok" | "fail"
-  >("idle");
-  const [verifyReason, setVerifyReason] = useState<string | undefined>();
+  const [verifyState, setVerifyState] = useState<VerifyState>({ kind: "idle" });
+  const [anchorState, setAnchorState] = useState<AnchorState>({ kind: "idle" });
   const [hintVisible, setHintVisible] = useState(false);
   const mode = MODE_STYLE[receipt.mode];
   const Icon = mode.icon;
+  const hasAttestation = !!receipt.attestation_hash;
 
   // Show the hint exactly once, after a beat. The beat matters — if
   // the hint appears in the same paint as the badge it reads as
@@ -104,10 +146,86 @@ export function ReceiptBadge({
     dismissHint();
   }
 
-  function handleVerify() {
-    const res = verifyReceiptAgainstMessage(receipt, prompt, response);
-    setVerifyState(res.ok ? "ok" : "fail");
-    setVerifyReason(res.reason);
+  async function handleVerify() {
+    setVerifyState({ kind: "running" });
+    // (1) User signature + hash re-derivation. Sync, cheap, runs first
+    // so a stale receipt fails fast before we burn a network round
+    // trip on the attestation lookup.
+    const user = verifyReceiptAgainstMessage(receipt, prompt, response);
+
+    // (2) If the receipt carries an attestation_hash, fetch the
+    // attestation doc from the relay and verify the provider sig
+    // against the enclave Ed25519 pub. Failure here is interesting
+    // but doesn't override the user-side result — surface both.
+    let provider: { ok: boolean; reason?: string } | undefined;
+    if (receipt.attestation_hash) {
+      try {
+        const att = await fetchAttestation(receipt.attestation_hash);
+        if (!att) {
+          provider = { ok: false, reason: "attestation not found on relay" };
+        } else {
+          provider = verifyProviderSignature(
+            receipt,
+            att.enclave_ed25519_pub_hex,
+          );
+        }
+      } catch (err) {
+        provider = {
+          ok: false,
+          reason: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    setVerifyState({ kind: "done", user, provider });
+  }
+
+  async function handleCheckOnChain() {
+    if (!receipt.attestation_hash) return;
+    setAnchorState({ kind: "running" });
+    try {
+      const hash = receiptHashHex(receipt);
+      const url = new URL(
+        `/v1/receipts/${encodeURIComponent(hash)}/proof`,
+        receiptsServiceBase(),
+      );
+      const res = await fetch(url.toString(), { method: "GET" });
+      if (res.status === 200) {
+        const body = (await res.json()) as ReceiptsProofResponse;
+        const start = new Date(body.period_start_unix * 1000).toISOString();
+        const end = new Date(body.period_end_unix * 1000).toISOString();
+        setAnchorState({
+          kind: "done",
+          status: "anchored",
+          detail: `Anchored at Solana tx ${body.solana_signature}, period ${start} — ${end}, root ${body.merkle_root_hex.slice(0, 16)}…`,
+        });
+      } else if (res.status === 202) {
+        setAnchorState({
+          kind: "done",
+          status: "pending",
+          detail: "Pending — anchored within the next hour.",
+        });
+      } else if (res.status === 404) {
+        setAnchorState({
+          kind: "done",
+          status: "missing",
+          detail:
+            "Receipt not found in batcher — your message may not have been submitted yet.",
+        });
+      } else {
+        setAnchorState({
+          kind: "done",
+          status: "error",
+          detail: `Receipts service returned HTTP ${res.status}.`,
+        });
+      }
+    } catch (err) {
+      setAnchorState({
+        kind: "done",
+        status: "error",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   function handleCopy() {
@@ -200,26 +318,70 @@ export function ReceiptBadge({
               <dd className="text-[#cfd4dd] font-mono col-span-2 truncate">
                 {receipt.signer_did}
               </dd>
+              {hasAttestation && (
+                <>
+                  <dt className="text-[#6f798c] uppercase tracking-[0.18em]">
+                    Enclave
+                  </dt>
+                  <dd className="text-[#cfd4dd] font-mono col-span-2 truncate">
+                    {receipt.enclave_key_id?.slice(0, 16)}…
+                  </dd>
+                  <dt className="text-[#6f798c] uppercase tracking-[0.18em]">
+                    Attest.
+                  </dt>
+                  <dd className="text-[#cfd4dd] font-mono col-span-2 truncate">
+                    {receipt.attestation_hash?.slice(0, 16)}…
+                  </dd>
+                  <dt className="text-[#6f798c] uppercase tracking-[0.18em]">
+                    Measure
+                  </dt>
+                  <dd className="text-[#cfd4dd] font-mono col-span-2 truncate">
+                    {receipt.measurement?.slice(0, 16)}…
+                  </dd>
+                </>
+              )}
             </dl>
 
-            {receipt.attestation_hash === null && (
+            {!hasAttestation && (
               <p className="text-[11px] text-[#6f798c] leading-relaxed mb-4">
-                v1 receipt: signed by the user&apos;s identity key. Provider
-                attestation and on-chain anchor land in v2 — until then,
-                this proves what the client observed, not what the cloud
-                ran.
+                v1 receipt: signed by the user&apos;s identity key. No
+                attestation chain — this proves what the client observed,
+                not what the cloud ran. Private mode falls back here when
+                no attested enclave is available.
+              </p>
+            )}
+            {hasAttestation && (
+              <p className="text-[11px] text-[#6f798c] leading-relaxed mb-4">
+                v2 receipt: provider-signed inside the enclave and bound
+                to an attestation quote. Verify checks both signatures
+                and re-derives the message hashes; Check on-chain
+                queries the receipts service for a Merkle proof.
               </p>
             )}
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={handleVerify}
-                className="inline-flex items-center gap-1.5 rounded-full bg-[#3da8ff] px-3 py-1.5 text-xs font-medium text-[#08090d] hover:bg-[#5bb8ff] cursor-pointer"
+                disabled={verifyState.kind === "running"}
+                className="inline-flex items-center gap-1.5 rounded-full bg-[#3da8ff] px-3 py-1.5 text-xs font-medium text-[#08090d] hover:bg-[#5bb8ff] cursor-pointer disabled:opacity-60"
               >
                 <Check className="h-3 w-3" />
-                Verify
+                {verifyState.kind === "running" ? "Verifying…" : "Verify"}
               </button>
+              {hasAttestation && (
+                <button
+                  type="button"
+                  onClick={handleCheckOnChain}
+                  disabled={anchorState.kind === "running"}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[#1e2a3a] px-3 py-1.5 text-xs font-medium text-[#cfd4dd] hover:border-[#3a4a60] cursor-pointer disabled:opacity-60"
+                >
+                  <Link2 className="h-3 w-3" />
+                  {anchorState.kind === "running"
+                    ? "Checking…"
+                    : "Check on-chain"}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleCopy}
@@ -228,15 +390,54 @@ export function ReceiptBadge({
                 <Copy className="h-3 w-3" />
                 Copy JSON
               </button>
-              {verifyState === "ok" && (
-                <span className="text-xs text-emerald-400">Signature OK</span>
-              )}
-              {verifyState === "fail" && (
-                <span className="text-xs text-red-400">
-                  Verify failed{verifyReason ? `: ${verifyReason}` : ""}
-                </span>
-              )}
             </div>
+
+            {verifyState.kind === "done" && (
+              <div className="mt-4 space-y-1.5 text-[11px]">
+                <div>
+                  <span className="text-[#6f798c]">User signature: </span>
+                  {verifyState.user.ok ? (
+                    <span className="text-emerald-400">OK</span>
+                  ) : (
+                    <span className="text-red-400">
+                      failed{verifyState.user.reason ? ` (${verifyState.user.reason})` : ""}
+                    </span>
+                  )}
+                </div>
+                {verifyState.provider && (
+                  <div>
+                    <span className="text-[#6f798c]">Provider signature: </span>
+                    {verifyState.provider.ok ? (
+                      <span className="text-emerald-400">OK</span>
+                    ) : (
+                      <span className="text-red-400">
+                        failed
+                        {verifyState.provider.reason
+                          ? ` (${verifyState.provider.reason})`
+                          : ""}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {anchorState.kind === "done" && (
+              <div className="mt-3 text-[11px] leading-relaxed">
+                {anchorState.status === "anchored" && (
+                  <span className="text-emerald-400">{anchorState.detail}</span>
+                )}
+                {anchorState.status === "pending" && (
+                  <span className="text-amber-300">{anchorState.detail}</span>
+                )}
+                {anchorState.status === "missing" && (
+                  <span className="text-[#cfd4dd]">{anchorState.detail}</span>
+                )}
+                {anchorState.status === "error" && (
+                  <span className="text-red-400">{anchorState.detail}</span>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
