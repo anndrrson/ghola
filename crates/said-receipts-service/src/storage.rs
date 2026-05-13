@@ -186,7 +186,16 @@ impl ReceiptsStore for MemoryStore {
         g.next_batch_id += 1;
         let id = g.next_batch_id;
         let period_start = leaves.iter().map(|l| l.created_at_unix).min().unwrap();
-        let period_end = leaves.iter().map(|l| l.created_at_unix).max().unwrap();
+        let period_end_raw = leaves.iter().map(|l| l.created_at_unix).max().unwrap();
+        // The on-chain program requires period_end > period_start. A batch
+        // built within a single second (single receipt, or many receipts
+        // landing inside one Postgres NOW() tick) would otherwise be
+        // rejected. Bump by 1s so the bracket is always strictly positive.
+        let period_end = if period_end_raw > period_start {
+            period_end_raw
+        } else {
+            period_start + 1
+        };
         let batch = Batch {
             id,
             root,
@@ -360,7 +369,16 @@ impl ReceiptsStore for PgStore {
             return Err(StorageError::Db("empty batch".into()));
         }
         let period_start = leaves.iter().map(|l| l.created_at_unix).min().unwrap();
-        let period_end = leaves.iter().map(|l| l.created_at_unix).max().unwrap();
+        let period_end_raw = leaves.iter().map(|l| l.created_at_unix).max().unwrap();
+        // The on-chain program requires period_end > period_start. A batch
+        // built within a single second (single receipt, or many receipts
+        // landing inside one Postgres NOW() tick) would otherwise be
+        // rejected. Bump by 1s so the bracket is always strictly positive.
+        let period_end = if period_end_raw > period_start {
+            period_end_raw
+        } else {
+            period_start + 1
+        };
         let count = leaves.len() as i32;
 
         let mut tx = self.pool.begin().await.map_err(map_sqlx)?;
