@@ -18,7 +18,7 @@ import {
   saveSessions as saveSessionsToStore,
 } from "@/lib/chat-history-store";
 import { selectRoute, useSovereigntyMode } from "@/lib/sovereignty";
-import { makeReceipt } from "@/lib/receipt";
+import { makeReceipt, submitReceiptToService } from "@/lib/receipt";
 import { streamLocalChat } from "@/lib/local-inference";
 import { streamSealedChat } from "@/lib/sealed-stream";
 import bs58 from "bs58";
@@ -351,6 +351,8 @@ export default function ChatPage() {
               };
             });
             setIsStreaming(false);
+            // Fire-and-forget on-chain anchor request.
+            void submitReceiptToService(providerReceipt);
           },
           onError: (errMsg) => {
             updateSession(currentSessionId, (s) => {
@@ -422,6 +424,7 @@ export default function ChatPage() {
                   };
                   return { ...s, messages: msgs };
                 });
+                void submitReceiptToService(receipt);
               } catch {
                 // Receipt failed — Local message still displays.
               }
@@ -536,6 +539,7 @@ export default function ChatPage() {
                 };
                 return { ...s, messages: msgs };
               });
+              void submitReceiptToService(receipt);
             } catch {
               // No receipt this time. Message still displays.
             }

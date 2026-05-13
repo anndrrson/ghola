@@ -204,6 +204,31 @@ export function verifyReceiptAgainstMessage(
   return { ok: true };
 }
 
+// Fire-and-forget POST of a receipt to the receipts anchor service.
+// The service queues it for the next Merkle batch + on-chain publish.
+// Failure is non-fatal: the receipt still lives in the local chat
+// vault, the Verify button still works (user signature), and "Check
+// on-chain" will return 404 until/unless the receipt gets submitted
+// later. This is called from every onDone path so every assistant
+// message gets a chance at on-chain anchoring.
+export async function submitReceiptToService(receipt: ReceiptV1): Promise<void> {
+  const base =
+    (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_RECEIPTS_SERVICE_URL) ||
+    "";
+  if (!base) return;
+  try {
+    await fetch(`${base.replace(/\/$/, "")}/v1/receipts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(receipt),
+    });
+  } catch {
+    // Service unreachable or rejecting — silently. Receipt is still
+    // in the local vault; the user can retry later if the service
+    // comes back up.
+  }
+}
+
 // ── v2 helpers: provider signature + attestation fetch ──────────────────
 
 function hexToBytes(hex: string): Uint8Array {
