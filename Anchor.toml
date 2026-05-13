@@ -4,9 +4,11 @@ skip-lint = false
 
 [programs.localnet]
 said_registry = "3EqrapHPPQqQKeB3aykZz9AbppMBzbY9PG1fT3PA7QyR"
+said_receipts = "Ga4nCEaeChn9ZzehAA69SP5hNECivPoZQm9SmRZc3nBC"
 
 [programs.devnet]
 said_registry = "3EqrapHPPQqQKeB3aykZz9AbppMBzbY9PG1fT3PA7QyR"
+said_receipts = "Ga4nCEaeChn9ZzehAA69SP5hNECivPoZQm9SmRZc3nBC"
 
 [registry]
 url = "https://api.apr.dev"

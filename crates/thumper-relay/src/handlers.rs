@@ -13,9 +13,12 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use thumper_types::{
-    AuthPayload, ConnectedDevice, ConnectedDevicesResult, ConnectionRole, Envelope,
+    AuthPayload, ConnectedDevice, ConnectedDevicesResult, ConnectionRole, EnclaveKeyId, Envelope,
     InferenceChatMessage, InferenceRequestPayload, MessageType, ProviderAdvertiseAck,
+    ProviderAttestAckPayload, ProviderAttestPayload, SealedInferenceRequestPayload, TeeKind,
 };
+
+use said_attest::AttestedEnclave;
 
 use crate::auth::verify_auth;
 use crate::state::{AppState, RateLimiter};
@@ -81,6 +84,10 @@ fn message_type_name(msg: &MessageType) -> &'static str {
         MessageType::ProviderHeartbeat(_) => "ProviderHeartbeat",
         MessageType::ProviderAdvertise(_) => "ProviderAdvertise",
         MessageType::ProviderAdvertiseAck(_) => "ProviderAdvertiseAck",
+        MessageType::InferenceRequestSealed(_) => "InferenceRequestSealed",
+        MessageType::InferenceResponseSealed(_) => "InferenceResponseSealed",
+        MessageType::ProviderAttest(_) => "ProviderAttest",
+        MessageType::ProviderAttestAck(_) => "ProviderAttestAck",
         MessageType::Ping => "Ping",
         MessageType::Pong => "Pong",
     }
@@ -415,6 +422,22 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                                 state.remove_pending_inference_stream(&job_id);
                                 state.decrement_gpu_provider_jobs(&auth_pubkey_clone);
                             }
+                            MessageType::InferenceResponseSealed(resp) => {
+                                let job_id = resp.job_id.clone();
+                                state.resolve_pending_inference(&job_id, envelope);
+                                state.decrement_gpu_provider_jobs(&auth_pubkey_clone);
+                            }
+                            MessageType::ProviderAttest(payload) => {
+                                let ack = handle_provider_attest(
+                                    &state,
+                                    &auth_pubkey_clone,
+                                    payload.clone(),
+                                );
+                                let ack_env = Envelope::new(MessageType::ProviderAttestAck(ack));
+                                let _ = tx_clone.send(text_msg(
+                                    serde_json::to_string(&ack_env).unwrap_or_default(),
+                                ));
+                            }
                             _ => {
                                 tracing::debug!(
                                     pubkey = %auth_pubkey_clone,
@@ -718,4 +741,371 @@ pub async fn dispatch_inference_stream(
     };
 
     Sse::new(stream).into_response()
+}
+
+// -- Sealed inference + attestation endpoints (v2) --
+
+/// Parse the env var `GHOLA_ATTEST_SIGNING_PUB` (hex-encoded 32-byte Ed25519
+/// public key) into a `VerifyingKey`. Returns `None` if unset or malformed.
+fn allowlist_pub_from_env() -> Option<ed25519_dalek::VerifyingKey> {
+    let hex_str = std::env::var("GHOLA_ATTEST_SIGNING_PUB").ok()?;
+    let bytes = hex::decode(hex_str.trim()).ok()?;
+    let arr: [u8; 32] = bytes.try_into().ok()?;
+    ed25519_dalek::VerifyingKey::from_bytes(&arr).ok()
+}
+
+/// Decode a base64 string with `base64::engine::general_purpose::STANDARD`.
+fn b64_decode(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(s)
+}
+
+fn allow_unattested() -> bool {
+    std::env::var("THUMPER_ALLOW_UNATTESTED").as_deref() == Ok("1")
+}
+
+/// Shared verification path used by both the WS `ProviderAttest` arm and the
+/// `POST /providers/attest` HTTP handler. Returns the ack payload to send
+/// back to the provider (or test client).
+pub(crate) fn handle_provider_attest(
+    state: &AppState,
+    provider_id: &str,
+    payload: ProviderAttestPayload,
+) -> ProviderAttestAckPayload {
+    let now = chrono::Utc::now().timestamp();
+
+    let vendor_quote = match b64_decode(&payload.vendor_quote_b64) {
+        Ok(b) => b,
+        Err(e) => {
+            return ProviderAttestAckPayload {
+                accepted: false,
+                enclave_key_id: None,
+                expires_at: None,
+                reason: Some(format!("invalid vendor_quote_b64: {e}")),
+            };
+        }
+    };
+    let allowlist_sig = match b64_decode(&payload.ghola_allowlist_sig_b64) {
+        Ok(b) => b,
+        Err(e) => {
+            return ProviderAttestAckPayload {
+                accepted: false,
+                enclave_key_id: None,
+                expires_at: None,
+                reason: Some(format!("invalid ghola_allowlist_sig_b64: {e}")),
+            };
+        }
+    };
+
+    // Try the real verification path first, regardless of TeeKind, so a
+    // legitimate Nitro quote still wins even when dev-mode is enabled.
+    if let Some(allowlist_pub) = allowlist_pub_from_env() {
+        match said_attest::verify_attestation(
+            &vendor_quote,
+            &allowlist_sig,
+            &allowlist_pub,
+            payload.tee_kind,
+            now,
+        ) {
+            Ok(mut enclave) => {
+                enclave.provider_id = provider_id.to_string();
+                let expires_at = enclave.expires_at_unix;
+                let key_id = state
+                    .insert_attested_enclave(enclave, payload.vendor_quote_b64.clone());
+                return ProviderAttestAckPayload {
+                    accepted: true,
+                    enclave_key_id: Some(key_id),
+                    expires_at: Some(expires_at),
+                    reason: None,
+                };
+            }
+            Err(e) => {
+                if !(allow_unattested() && matches!(payload.tee_kind, TeeKind::None)) {
+                    return ProviderAttestAckPayload {
+                        accepted: false,
+                        enclave_key_id: None,
+                        expires_at: None,
+                        reason: Some(format!("attestation verification failed: {e}")),
+                    };
+                }
+                // fall through to dev-mode mock path
+            }
+        }
+    } else if !(allow_unattested() && matches!(payload.tee_kind, TeeKind::None)) {
+        return ProviderAttestAckPayload {
+            accepted: false,
+            enclave_key_id: None,
+            expires_at: None,
+            reason: Some(
+                "GHOLA_ATTEST_SIGNING_PUB unset; refusing to accept attestation".into(),
+            ),
+        };
+    }
+
+    // Dev/staging mock path: THUMPER_ALLOW_UNATTESTED=1 + TeeKind::None.
+    // Trust the keys the provider sent, build an AttestedEnclave directly.
+    let x25519_pub = match parse_pub32(&payload.enclave_x25519_pub_hex) {
+        Some(k) => k,
+        None => {
+            return ProviderAttestAckPayload {
+                accepted: false,
+                enclave_key_id: None,
+                expires_at: None,
+                reason: Some("invalid enclave_x25519_pub_hex".into()),
+            };
+        }
+    };
+    let ed25519_pub = match parse_pub32(&payload.enclave_ed25519_pub_hex) {
+        Some(k) => k,
+        None => {
+            return ProviderAttestAckPayload {
+                accepted: false,
+                enclave_key_id: None,
+                expires_at: None,
+                reason: Some("invalid enclave_ed25519_pub_hex".into()),
+            };
+        }
+    };
+
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(x25519_pub);
+    let enclave_key_id = EnclaveKeyId(hex::encode(h.finalize()));
+    let expires_at_unix = now + said_attest::ATTESTATION_TTL_SECS;
+
+    let enclave = AttestedEnclave {
+        provider_id: provider_id.to_string(),
+        enclave_key_id: enclave_key_id.clone(),
+        enclave_x25519_pub: x25519_pub,
+        enclave_ed25519_pub: ed25519_pub,
+        tee_kind: TeeKind::None,
+        measurement: Vec::new(),
+        attested_at_unix: now,
+        expires_at_unix,
+    };
+    let key_id = state.insert_attested_enclave(enclave, payload.vendor_quote_b64.clone());
+    ProviderAttestAckPayload {
+        accepted: true,
+        enclave_key_id: Some(key_id),
+        expires_at: Some(expires_at_unix),
+        reason: Some("accepted via THUMPER_ALLOW_UNATTESTED dev path".into()),
+    }
+}
+
+fn parse_pub32(hex_str: &str) -> Option<[u8; 32]> {
+    let bytes = hex::decode(hex_str.trim()).ok()?;
+    bytes.try_into().ok()
+}
+
+/// Request body for `POST /inference/sealed`.
+#[derive(serde::Deserialize)]
+pub struct SealedInferenceDispatchRequest {
+    pub enclave_key_id: EnclaveKeyId,
+    pub job_id: String,
+    pub sealed_request_b64: String,
+    #[serde(default)]
+    pub mode_hint: Option<String>,
+}
+
+/// POST /inference/sealed — forward an opaque sealed envelope to the attested
+/// enclave and stream back the opaque sealed response. The relay never
+/// decrypts. Streaming sealed responses are out of scope for Track E; if the
+/// provider replies with multiple chunks, only the first non-final response
+/// is returned (full streaming lands in Wave 3).
+pub async fn dispatch_inference_sealed(
+    State(state): State<AppState>,
+    Json(req): Json<SealedInferenceDispatchRequest>,
+) -> impl IntoResponse {
+    let enclave = match state.get_attested_enclave(&req.enclave_key_id) {
+        Some(e) => e,
+        None => {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(json!({"error": "enclave_key_id not attested"})),
+            )
+                .into_response();
+        }
+    };
+
+    let provider_pubkey = enclave.provider_id.clone();
+    if provider_pubkey.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(json!({"error": "attested enclave has no bound provider"})),
+        )
+            .into_response();
+    }
+
+    // Concurrency / connectivity check.
+    if state.gpu_provider_concurrency(&provider_pubkey).is_none() {
+        return (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(json!({"error": "provider disconnected"})),
+        )
+            .into_response();
+    }
+
+    // Register a pending oneshot. The WS recv loop resolves it when the
+    // provider replies with InferenceResponseSealed.
+    let (tx, rx) = tokio::sync::oneshot::channel::<Envelope>();
+    state.register_pending_inference(&req.job_id, tx);
+    state.increment_gpu_provider_jobs(&provider_pubkey);
+
+    let envelope = Envelope::new(MessageType::InferenceRequestSealed(
+        SealedInferenceRequestPayload {
+            job_id: req.job_id.clone(),
+            enclave_key_id: req.enclave_key_id.clone(),
+            ciphertext_b64: req.sealed_request_b64.clone(),
+        },
+    ));
+    let _ = req.mode_hint; // not yet routed; reserved for future stream/private split
+
+    let data = serde_json::to_vec(&envelope).unwrap_or_default();
+    if !state.send_to_gpu_provider(&provider_pubkey, &data) {
+        state.decrement_gpu_provider_jobs(&provider_pubkey);
+        return (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(json!({"error": "failed to send to provider"})),
+        )
+            .into_response();
+    }
+
+    match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
+        Ok(Ok(response_envelope)) => match response_envelope.message {
+            MessageType::InferenceResponseSealed(resp) => Json(json!({
+                "job_id": resp.job_id,
+                "ciphertext_b64": resp.ciphertext_b64,
+                "is_final": resp.is_final,
+            }))
+            .into_response(),
+            MessageType::Error(err) => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": err.message, "code": err.code})),
+            )
+                .into_response(),
+            _ => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "unexpected response type from provider"})),
+            )
+                .into_response(),
+        },
+        Ok(Err(_)) => {
+            state.decrement_gpu_provider_jobs(&provider_pubkey);
+            (
+                axum::http::StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "provider disconnected before responding"})),
+            )
+                .into_response()
+        }
+        Err(_) => {
+            state.decrement_gpu_provider_jobs(&provider_pubkey);
+            (
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+                Json(json!({"error": "sealed inference timed out (120s)"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Request body for `POST /providers/attest` (HTTP convenience for tests).
+#[derive(serde::Deserialize)]
+pub struct ProviderAttestHttpRequest {
+    /// Long-lived auth pubkey (bs58) of the provider this attestation binds to.
+    pub provider_id: String,
+    #[serde(flatten)]
+    pub payload: ProviderAttestPayload,
+}
+
+/// POST /providers/attest — HTTP-only path for testing. Production providers
+/// send `ProviderAttest` over the WebSocket instead.
+pub async fn provider_attest_http(
+    State(state): State<AppState>,
+    Json(req): Json<ProviderAttestHttpRequest>,
+) -> impl IntoResponse {
+    let ack = handle_provider_attest(&state, &req.provider_id, req.payload);
+    if ack.accepted {
+        (axum::http::StatusCode::OK, Json(json!(ack))).into_response()
+    } else {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!(ack)),
+        )
+            .into_response()
+    }
+}
+
+/// Query string for `GET /providers/attested`.
+#[derive(serde::Deserialize)]
+pub struct ListAttestedQuery {
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+fn enclave_to_json(enclave: &AttestedEnclave) -> serde_json::Value {
+    json!({
+        "enclave_key_id": enclave.enclave_key_id,
+        "provider_id": enclave.provider_id,
+        "tee_kind": enclave.tee_kind,
+        "enclave_x25519_pub_hex": hex::encode(enclave.enclave_x25519_pub),
+        "enclave_ed25519_pub_hex": hex::encode(enclave.enclave_ed25519_pub),
+        "measurement_hex": hex::encode(&enclave.measurement),
+        "attested_at_unix": enclave.attested_at_unix,
+        "expires_at_unix": enclave.expires_at_unix,
+    })
+}
+
+/// GET /providers/attested?model=<model_id> — list attested enclaves the
+/// web client can seal to. `model` is currently best-effort: enclaves whose
+/// provider advertises that model are kept; if the provider is disconnected
+/// the enclave is still listed (it may re-connect before the request lands).
+pub async fn list_attested_providers(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<ListAttestedQuery>,
+) -> impl IntoResponse {
+    let enclaves = state.list_attested_enclaves();
+    let filtered: Vec<serde_json::Value> = if let Some(model_id) = q.model.as_deref() {
+        let providers_for_model: std::collections::HashSet<String> = state
+            .find_providers_for_model(model_id)
+            .into_iter()
+            .map(|(pubkey, _)| pubkey)
+            .collect();
+        enclaves
+            .iter()
+            .filter(|e| providers_for_model.contains(&e.provider_id))
+            .map(enclave_to_json)
+            .collect()
+    } else {
+        enclaves.iter().map(enclave_to_json).collect()
+    };
+    Json(filtered).into_response()
+}
+
+/// GET /attestations/:hash_hex — serve the cached vendor_quote_b64 plus the
+/// AttestedEnclave so a client can re-verify the quote offline.
+pub async fn get_attestation(
+    State(state): State<AppState>,
+    axum::extract::Path(hash_hex): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match state.find_attestation_by_hash(&hash_hex) {
+        Some((enclave, vendor_quote_b64)) => {
+            let mut body = enclave_to_json(&enclave);
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert(
+                    "vendor_quote_b64".into(),
+                    serde_json::Value::String(vendor_quote_b64),
+                );
+                obj.insert(
+                    "attestation_hash".into(),
+                    serde_json::Value::String(hash_hex),
+                );
+            }
+            (axum::http::StatusCode::OK, Json(body)).into_response()
+        }
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(json!({"error": "attestation not found"})),
+        )
+            .into_response(),
+    }
 }

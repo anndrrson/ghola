@@ -18,6 +18,7 @@ const MODES = [
     num: "i",
     title: "Private",
     tag: "Default",
+    badge: "LIVE",
     blurb:
       "Encrypted to a verified provider. The relay forwards opaque bytes — we cannot decrypt your conversation.",
     rows: [
@@ -31,11 +32,11 @@ const MODES = [
       },
       {
         k: "What you get as proof",
-        v: "Per-message receipt signed by the provider Ed25519 key. Receipt includes attestation hash and measurement (v2).",
+        v: "Per-message receipt signed by the provider Ed25519 key, with attestation hash and measurement. The Verify button cross-checks the user + provider signatures; Check on-chain queries the Solana anchor.",
       },
       {
-        k: "Current limitation (v1)",
-        v: "Private mode currently shares the relay path with Open — the cloud sees plaintext today. The sealed transport (/inference/sealed) and AWS Nitro attestation land in v2. The label is honest about this on every chat: see the receipt body for what actually ran.",
+        k: "Current status (v2)",
+        v: "Private mode now seals end-to-end to an attested Nitro enclave. The cloud forwards opaque bytes only. When no attested enclave is in the pool, the route falls back to relay-plain and the receipt records the caveat honestly.",
       },
     ],
   },
@@ -94,31 +95,30 @@ const MODES = [
 const ROADMAP = [
   {
     phase: "v1",
-    when: "Now",
+    when: "Shipped",
     title: "Honest plumbing",
     items: [
       "Sovereignty Modes ship in the chat UI; mode preference persists per user",
-      "Per-message receipts: Ed25519-signed bodies (user-signed today), verifiable from the badge popover",
+      "Per-message receipts: Ed25519-signed bodies, verifiable from the badge popover",
       "Local mode routes to a locally-installed ghola-home and fails closed — never silently downgrades to the cloud",
-      "Private and Open still share the relay path. The relay sees plaintext today; sealed transport + attestation are the v2 cut",
     ],
   },
   {
     phase: "v2",
-    when: "Next",
+    when: "Shipped",
     title: "Sealed transport, attestation, on-chain anchor",
     items: [
       "/inference/sealed on the relay: client X25519-seals the request to an enclave key, relay forwards opaque bytes verbatim",
       "AWS Nitro Enclaves with verifiable quote chain pinned to AWS root + Ghola measurement allowlist",
       "Provider re-keys on every boot; the relay drops expired enclaves from the Private pool",
-      "Receipts gain attestation_hash + measurement fields and a provider Ed25519 signature on top of the user's",
-      "Hourly Merkle root of receipts anchored to Solana — any third party can verify a receipt without trusting Ghola's servers",
+      "Receipts carry attestation_hash + measurement and a provider Ed25519 signature alongside the user's",
+      "Hourly Merkle root of receipts anchored to Solana — Check on-chain in the receipt modal returns the batch tx + period",
       "Turnkey vault un-stubbed: production sealing/unsealing through HSM-backed wrap operations",
     ],
   },
   {
     phase: "v3",
-    when: "Later",
+    when: "Next",
     title: "Multi-platform trust roots",
     items: [
       "NVIDIA H100 Confidential Compute for larger models",
@@ -144,7 +144,7 @@ export default function SecurityPage() {
         />
         <div className="relative mx-auto w-full max-w-5xl px-6 lg:px-12 pt-24 pb-20">
           <div className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#6f798c] mb-8">
-            Security model · v1
+            Security model · v2 — sealed transport live
           </div>
           <h1 className="font-display text-5xl md:text-7xl leading-[0.96] font-medium mb-8">
             Verifiably{" "}
@@ -176,9 +176,17 @@ export default function SecurityPage() {
                   <span className="font-display text-3xl text-[#3da8ff]">
                     {mode.num}
                   </span>
-                  <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-[#6f798c]">
-                    {mode.tag}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {"badge" in mode && mode.badge && (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.22em] text-emerald-300">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        {mode.badge}
+                      </span>
+                    )}
+                    <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-[#6f798c]">
+                      {mode.tag}
+                    </span>
+                  </div>
                 </div>
                 <h2 className="font-display text-3xl mb-4">{mode.title}</h2>
                 <p className="text-sm text-[#8b95a8] leading-relaxed mb-8">
@@ -221,24 +229,26 @@ export default function SecurityPage() {
                 Receipts are signed records of where a message ran. They live
                 in the chat vault next to the message, encrypted under the
                 session key. Click the badge to see the body, verify the
-                signature, and — in v2 — re-derive the Merkle proof against
-                the Solana anchor.
+                user + provider signatures, and check the Merkle proof
+                against the hourly Solana anchor.
               </p>
             </div>
             <pre className="lg:col-span-7 text-[11px] leading-relaxed text-[#cfd4dd] bg-[#08090d] border border-[#1e2a3a] rounded-lg p-6 overflow-x-auto font-mono">
 {`{
-  version:           1,
-  job_id:            "<uuid>",
-  mode:              "private" | "local" | "open",
-  provider_id:       "<bs58 | local-webgpu | ghola-home/host>",
-  enclave_key_id:    "<sha256>",            // v2 only
-  attestation_hash:  "<sha256(quote)>",     // v2 only
-  measurement:       "<hex PCR0..2>",       // v2 only
-  model_id:          "<string>",
-  input_token_hash:  "<sha256 of prompt>",
-  output_token_hash: "<sha256 of response>",
-  issued_at:         <unix ms>,
-  signature:         "<Ed25519>"
+  version:            1,
+  job_id:             "<uuid>",
+  mode:               "private" | "local" | "open",
+  provider_id:        "<bs58 | local-webgpu | ghola-home/host>",
+  enclave_key_id:     "<sha256>",           // populated in v2 Private
+  attestation_hash:   "<sha256(quote)>",    // populated in v2 Private
+  measurement:        "<hex PCR0..2>",      // populated in v2 Private
+  model_id:           "<string>",
+  input_token_hash:   "<sha256 of prompt>",
+  output_token_hash:  "<sha256 of response>",
+  issued_at:          <unix ms>,
+  signer_did:         "<did:key:z…>",
+  signature:          "<Ed25519 user>",
+  provider_signature: "<Ed25519 enclave>"   // v2 only; null in v1
 }`}
             </pre>
           </div>
@@ -392,10 +402,11 @@ ollama pull llama3.2`}
                 Software adversary
               </h3>
               <p className="text-sm text-[#cfd4dd] leading-relaxed">
-                Strong in v2. A compromised host OS, hypervisor, or
-                co-tenant cannot inspect enclave memory. Holds today only
-                under the bare-metal Private path; full attestation arrives
-                with Nitro.
+                Strong. A compromised host OS, hypervisor, or co-tenant
+                cannot inspect enclave memory. Private mode pins requests
+                to a Nitro enclave whose measurement matches the
+                allowlist; the relay drops attestations that fail the
+                quote chain.
               </p>
             </div>
             <div>

@@ -1,0 +1,25 @@
+[package]
+name = "said-attest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AWS Nitro Enclave attestation document parser + Ghola measurement allowlist verifier."
+
+[dependencies]
+thumper-types = { workspace = true }
+
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+
+ciborium = { workspace = true }
+coset = { workspace = true }
+der = { workspace = true }
+p384 = { workspace = true }
+x509-cert = { workspace = true }
+
+[dev-dependencies]
+rcgen = "0.13"
+rand = { workspace = true }

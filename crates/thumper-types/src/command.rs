@@ -131,6 +131,10 @@ pub enum MessageType {
     ProviderHeartbeat(ProviderHeartbeatPayload),
     ProviderAdvertise(ProviderAdvertisePayload),
     ProviderAdvertiseAck(ProviderAdvertiseAck),
+    InferenceRequestSealed(SealedInferenceRequestPayload),
+    InferenceResponseSealed(SealedInferenceResponsePayload),
+    ProviderAttest(ProviderAttestPayload),
+    ProviderAttestAck(ProviderAttestAckPayload),
 
     // Keepalive
     Ping,
@@ -531,6 +535,68 @@ pub struct NotificationsResult {
 pub struct InferenceChatMessage {
     pub role: String,
     pub content: String,
+}
+
+/// EnclaveKeyId is the sha256 hex digest of the enclave's X25519 public key.
+/// Stable identifier the relay uses to route sealed inference requests to
+/// the right attested enclave instance.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EnclaveKeyId(pub String);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeeKind {
+    Nitro,
+    H100Cc,
+    Phala,
+    Tdx,
+    /// Dev/staging only — gated by THUMPER_ALLOW_UNATTESTED=1 on the relay.
+    None,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SealedInferenceRequestPayload {
+    pub job_id: String,
+    pub enclave_key_id: EnclaveKeyId,
+    /// Wire-format said-envelope-v1 bytes, base64 standard with padding.
+    pub ciphertext_b64: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SealedInferenceResponsePayload {
+    pub job_id: String,
+    /// Wire-format said-envelope-v1 (or streaming chunk) bytes, base64.
+    pub ciphertext_b64: String,
+    /// True when this is the last chunk of a streaming response.
+    pub is_final: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProviderAttestPayload {
+    pub tee_kind: TeeKind,
+    /// 32-byte X25519 public key (hex). Inference requests seal to this.
+    pub enclave_x25519_pub_hex: String,
+    /// 32-byte Ed25519 public key (hex). Provider signs receipts with this.
+    pub enclave_ed25519_pub_hex: String,
+    /// Raw attestation document bytes from the TEE platform (base64).
+    /// For Nitro this is the COSE_Sign1-wrapped CBOR doc from /dev/nsm.
+    pub vendor_quote_b64: String,
+    /// Ed25519 signature (base64) over sha256(measurement), produced by
+    /// the Ghola attestation signing key. Defense-in-depth: even if the
+    /// vendor cert chain is broken, this binds the measurement to a
+    /// Ghola-controlled allowlist.
+    pub ghola_allowlist_sig_b64: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProviderAttestAckPayload {
+    pub accepted: bool,
+    pub enclave_key_id: Option<EnclaveKeyId>,
+    /// Unix seconds when this attestation expires and the provider must re-attest.
+    pub expires_at: Option<i64>,
+    /// Human-readable reason on rejection.
+    pub reason: Option<String>,
 }
 
 /// Request payload sent to a GPU provider for inference.
