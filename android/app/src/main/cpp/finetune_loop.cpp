@@ -462,15 +462,10 @@ bool run_finetune(
             {
                 ggml_tensor * loss_ga = ggml_graph_get_grad_acc(cgraph, loss);
                 if (loss_ga) {
-                    // EXPERIMENT: try -1.0 instead of +1.0. Hardware confirmed
-                    // loss climbs with +1.0 seed (5.5 → 18.6 over 10 steps
-                    // even with corrected AdamW bias). That implies the
-                    // chain-rule sign through our forward ends up reversed
-                    // somewhere — flipping the seed undoes the sign error
-                    // end-to-end. If loss now DECREASES, we have an
-                    // experimentally validated workaround until the real
-                    // backward-sign bug is located.
-                    const float seed = -1.0f;
+                    // Restore canonical +1.0. Sign-flip experiment showed
+                    // both directions diverge (just at different rates),
+                    // so the issue is magnitude/numerical, not sign.
+                    const float seed = 1.0f;
                     if (loss_ga->buffer) {
                         ggml_backend_tensor_set(loss_ga, &seed, 0, sizeof(float));
                     } else if (loss_ga->data) {

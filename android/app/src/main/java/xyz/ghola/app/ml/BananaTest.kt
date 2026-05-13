@@ -150,7 +150,7 @@ object BananaTest {
         val hp = LlamaFinetune.Hyperparams(
             rank = 16,
             alpha = 32f,
-            learningRate = 3e-4f,
+            learningRate = 1e-5f,  // dropped from 3e-4 to test for divergence
             epochs = 1,
             batchSize = 1,
             ctxLen = 256,
