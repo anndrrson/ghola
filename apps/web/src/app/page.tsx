@@ -5,6 +5,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight } from "lucide-react";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
+import { Footer } from "@/components/Footer";
 
 export default function Home() {
   const { authenticated, loading } = useThumperAuth();
@@ -283,7 +284,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ──────────── Final CTA ──────────── */}
+      {/* ──────────── Final CTA + footer ──────────── */}
       <section className="py-28 sm:py-40 border-t border-[#1e2a3a] relative overflow-hidden">
         <div
           aria-hidden
@@ -312,6 +313,8 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      <Footer />
     </div>
   );
 }
