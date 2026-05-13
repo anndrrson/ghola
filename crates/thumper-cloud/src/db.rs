@@ -138,6 +138,21 @@ CREATE TABLE IF NOT EXISTS email_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_email_actions_user ON email_actions(user_id);
 
+CREATE TABLE IF NOT EXISTS sms_actions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    to_number TEXT NOT NULL,
+    body TEXT NOT NULL,
+    vendor TEXT NOT NULL DEFAULT 'bland',
+    vendor_message_id TEXT,
+    status TEXT NOT NULL DEFAULT 'sending' CHECK (status IN ('sending', 'sent', 'failed')),
+    error TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    sent_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_sms_actions_user ON sms_actions(user_id);
+
 CREATE TABLE IF NOT EXISTS connected_accounts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -277,6 +292,7 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 -- API usage tracking columns
 ALTER TABLE usage_tracking ADD COLUMN IF NOT EXISTS api_call_count INT DEFAULT 0;
 ALTER TABLE usage_tracking ADD COLUMN IF NOT EXISTS api_token_count INT DEFAULT 0;
+ALTER TABLE usage_tracking ADD COLUMN IF NOT EXISTS sms_count INT DEFAULT 0;
 
 -- Ensure tier column exists (may be missing if table was created without it)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS tier TEXT DEFAULT 'free';

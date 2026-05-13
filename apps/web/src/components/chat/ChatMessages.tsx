@@ -2,8 +2,8 @@
 
 import { useMemo, useRef, useEffect } from "react";
 import DOMPurify from "dompurify";
-import { CallCard } from "./CallCard";
-import { EmailCard } from "./EmailCard";
+import { ActionCard } from "@/components/actions/ActionCard";
+import { mapInlineActionToDraft } from "@/components/actions/types";
 import { ReceiptBadge } from "./ReceiptBadge";
 import type { ThumperChatMessage } from "@/lib/thumper-types";
 
@@ -125,28 +125,18 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
                 </div>
               </div>
 
-              {/* Inline action cards */}
-              {msg.action?.type === "call" && (
-                <div className="flex justify-start mb-3">
-                  <div className="max-w-[80%]">
-                    <CallCard
-                      phoneNumber={msg.action.data.phone_number as string}
-                      objective={msg.action.data.objective as string}
-                    />
+              {/* Inline action cards — one per tool_use emitted in this turn. */}
+              {msg.actions?.map((action, ai) => {
+                const draft = mapInlineActionToDraft(action);
+                if (!draft) return null;
+                return (
+                  <div key={ai} className="flex justify-start mb-3">
+                    <div className="max-w-[80%]">
+                      <ActionCard draft={draft} />
+                    </div>
                   </div>
-                </div>
-              )}
-              {msg.action?.type === "email" && (
-                <div className="flex justify-start mb-3">
-                  <div className="max-w-[80%]">
-                    <EmailCard
-                      to={msg.action.data.to as string}
-                      subject={msg.action.data.subject as string}
-                      body={msg.action.data.body as string}
-                    />
-                  </div>
-                </div>
-              )}
+                );
+              })}
               {providerInfo?.type === "community" && !isStreaming && idx === dayMessages.length - 1 && msg.role === "assistant" && msg.content && (
                 <div className="flex justify-start mb-3 ml-1">
                   <div className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] text-[#4a5568] bg-white/[0.02] border border-white/[0.06]">

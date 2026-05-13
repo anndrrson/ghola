@@ -18,18 +18,13 @@ import androidx.recyclerview.widget.RecyclerView
 import android.util.Log
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.last
-import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import xyz.ghola.app.email.LocalEmailService
 import org.json.JSONArray
 import org.json.JSONObject
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.AgentController
 import xyz.ghola.app.ai.EnvelopeCloudBackend
-import xyz.ghola.app.ai.LocalChatBackend
 import xyz.ghola.app.ai.FastMatch
 import xyz.ghola.app.ai.AgentListener
 import xyz.ghola.app.ai.ClaudeApiClient
@@ -97,24 +92,13 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     private var pendingScreenshot: String? = null
     private var lastToolWasExplicitScreenshot = false
     private var isSigningIntoCloud = false
-    private var quickActionHandled = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_chat)
 
-        // The chat header is now a plain ConstraintLayout band (eyebrow +
-        // accent bar + title) styled to match the home grid. The overflow
-        // button at @id/toolbarOverflow opens a PopupMenu inflated from
-        // R.menu.chat_menu — replaces the AppCompat Toolbar's action menu.
-        findViewById<android.widget.ImageButton>(R.id.toolbarOverflow).setOnClickListener { anchor ->
-            val popup = android.widget.PopupMenu(this, anchor)
-            popup.menuInflater.inflate(R.menu.chat_menu, popup.menu)
-            popup.setOnMenuItemClickListener { item ->
-                onOptionsItemSelected(item)
-            }
-            popup.show()
-        }
+        val toolbar = findViewById<Toolbar>(R.id.toolbar)
+        setSupportActionBar(toolbar)
 
         secureStorage = SecureStorage(this)
 
@@ -153,56 +137,16 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         intent.getStringExtra("prefill_message")?.let { prefill ->
             messageInput.setText(prefill)
             if (intent.getBooleanExtra("auto_send", false)) {
-                val forced = intent.getStringExtra("force_cloud_route")
-                if (forced == "call" || forced == "email" || forced == "calendar") {
-                    messageInput.post { executeForcedQuickAction(prefill, forced) }
-                } else {
-                    // Auto-send once initialization is ready, with bounded retries.
-                    scheduleAutoSend(attempt = 0)
+                // Auto-send after agent is initialized (delayed to allow setup)
+                messageInput.post {
+                    messageInput.postDelayed({
+                        if (agentController != null && messageInput.text.isNotEmpty()) {
+                            sendMessage()
+                        }
+                    }, 500)
                 }
             }
         }
-    }
-
-    private fun executeForcedQuickAction(text: String, forced: String) {
-        if (quickActionHandled) return
-        quickActionHandled = true
-
-        val route = when (forced) {
-            "call" -> TaskClassifier.TaskRoute.CLOUD_CALL
-            "email" -> TaskClassifier.TaskRoute.CLOUD_EMAIL
-            "calendar" -> TaskClassifier.TaskRoute.CLOUD_CALENDAR
-            else -> null
-        }
-        if (route == null) return
-
-        chatAdapter.addMessage(ChatMessage.UserMessage(text))
-        messageInput.text.clear()
-        val routed = handleCloudTaskRouting(text, route)
-        if (!routed) {
-            chatAdapter.addMessage(
-                ChatMessage.AssistantMessage(
-                    "Cloud session missing. Reconnect your wallet in onboarding.",
-                    false
-                )
-            )
-        }
-    }
-
-    private fun scheduleAutoSend(attempt: Int) {
-        val text = messageInput.text.toString().trim()
-        if (text.isEmpty()) return
-        val route = TaskClassifier.classify(text, secureStorage.hasCloudAuth()).route
-        val cloudRouted = route == TaskClassifier.TaskRoute.CLOUD_CALL ||
-            route == TaskClassifier.TaskRoute.CLOUD_EMAIL ||
-            route == TaskClassifier.TaskRoute.CLOUD_CALENDAR
-
-        if (agentController != null || cloudRouted) {
-            sendMessage()
-            return
-        }
-        if (attempt >= 12) return
-        messageInput.postDelayed({ scheduleAutoSend(attempt + 1) }, 250)
     }
 
     override fun onResume() {
@@ -232,18 +176,20 @@ class ChatActivity : AppCompatActivity(), AgentListener {
 
     override fun onStop() {
         super.onStop()
-        // Preserve conversation memory across short app switches so the
-        // assistant remains stateful and less repetitive.
+        // Clear conversation history when user leaves the app so a fresh
+        // session starts on return (prevents stale context issues).
+        agentController?.clearHistory()
+        // Lock the E2E vault when backgrounded so a stolen device that's
+        // already unlocked-once can't read on-disk session DEKs without
+        // a fresh wallet sign. Re-prompts on the next chat send.
+        vaultStore?.lock()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         agentController?.shutdown()
         localBackend?.shutdown()
-        // Vault is process-cached via VaultStoreHolder — do NOT lock on every
-        // activity destroy. The vault's own idle TTL (DEFAULT_IDLE_TTL_MILLIS,
-        // 15 min) handles auto-lock when the user is genuinely away. Locking
-        // here forced a wallet re-prompt on every chat re-entry.
+        vaultStore?.lock()
     }
 
     private fun checkPrerequisites() {
@@ -257,21 +203,30 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                 startActivity(Intent(this, WalletActivity::class.java))
                 return
             }
-            // NOTE: we used to auto-trigger SIWS sign-in here when hasCloudAuth()
-            // was false. That created a "wallet prompt on every chat resume"
-            // cascade — the most-reported user pain in v0.4.0 Seeker testing.
-            //
-            // Interactive SIWS is now reserved for:
-            //   1. The OnboardingActivity sign-in CTA.
-            //   2. The 401-after-refresh path in cloud clients (which routes
-            //      the user back to onboarding via HomeActivity.requireCloudAuthOrBounce).
-            // Proactive token refresh runs from AppForegroundCoordinator on
-            // app-foreground events. ChatActivity itself never prompts.
-            //
-            // If we reach here without cloud auth in E2E mode, we surface a
-            // hint and let the user navigate to onboarding themselves.
             if (!secureStorage.hasCloudAuth()) {
-                showStatus("Wallet sign-in expired — reconnect from the home screen")
+                if (isSigningIntoCloud) return
+                val walletAddress = secureStorage.getSolanaAddress().orEmpty()
+                if (walletAddress.isBlank()) {
+                    startActivity(Intent(this, WalletActivity::class.java))
+                    return
+                }
+                isSigningIntoCloud = true
+                showStatus("Signing in with wallet…")
+                lifecycleScope.launch {
+                    val auth = CloudAuthManager(this@ChatActivity)
+                        .signInWithWallet(activityResultSender, walletAddress)
+                    isSigningIntoCloud = false
+                    when (auth) {
+                        is CloudAuthManager.AuthResult.Success -> {
+                            hideStatus()
+                            checkPrerequisites()
+                        }
+                        is CloudAuthManager.AuthResult.Error -> {
+                            showStatus(auth.message)
+                            Toast.makeText(this@ChatActivity, auth.message, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
                 return
             }
         } else if (secureStorage.isLocalMode()) {
@@ -295,20 +250,22 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             }
         }
 
-        if (agentController == null) {
-            initializeAgent()
-        } else {
-            hideStatus()
-            setInputEnabled(true)
+        val service = ThumperAccessibilityService.instance
+        if (service == null) {
+            Toast.makeText(this, "Please enable the Accessibility Service in Settings", Toast.LENGTH_LONG).show()
+            return
         }
+
+        initializeAgent()
     }
 
     private fun initializeAgent() {
-        val commandHandler = ThumperAccessibilityService.instance?.commandHandler
+        val service = ThumperAccessibilityService.instance ?: return
+        val commandHandler = service.commandHandler ?: return
         val toolExecutor = LocalToolExecutor(commandHandler, packageName)
 
         // Run device detection on background thread, then initialize the agent
-        if (commandHandler != null && !secureStorage.hasWalletPackage()) {
+        if (!secureStorage.hasWalletPackage()) {
             showStatus("Discovering device apps...")
             Thread {
                 discoverDeviceCapabilities(toolExecutor)
@@ -318,9 +275,6 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                 }
             }.start()
         } else {
-            if (commandHandler == null) {
-                showStatus("Accessibility off: device tools disabled (chat/calls still work)")
-            }
             createAgent(toolExecutor)
         }
     }
@@ -352,28 +306,6 @@ class ChatActivity : AppCompatActivity(), AgentListener {
      *      AgentController. On failure → user-friendly toast and bail.
      */
     private fun initializeE2eAgent(toolExecutor: LocalToolExecutor) {
-        // v0.5.1 EDGE-AI PATH: if the on-device LLM is downloaded and ready,
-        // we route chat through the local model and skip the entire
-        // cloud/envelope/vault chain. No /api/chat round-trip, no upstream
-        // provider, no rate limits, no wallet prompt for vault unlock.
-        //
-        // The cloud path remains as a fallback for first-launch users whose
-        // model file hasn't finished downloading yet. Once `LocalLlm.get`
-        // returns non-null, future ChatActivity entries take this branch.
-        if (xyz.ghola.app.email.LocalLlm.isModelReady(this)) {
-            Log.i(TAG, "initializeE2eAgent: local model ready — routing chat on-device")
-            hideStatus()
-            val backend: LlmBackend = LocalChatBackend(this)
-            agentController = AgentController(
-                backend, toolExecutor, this,
-                secureStorage.getWalletPackage(),
-                secureStorage.isSeeker(),
-                secureStorage.hasCloudAuth(),
-            )
-            setInputEnabled(true)
-            return
-        }
-
         val solanaAddress = secureStorage.getSolanaAddress()
         if (solanaAddress.isNullOrBlank()) {
             showStatus("No Solana wallet connected")
@@ -399,31 +331,8 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             return
         }
         val userDid = Envelope.didKeyFromVerifying(pubBytes)
-        // Process-wide cache: if the vault is already unlocked (from a
-        // previous chat session within the idle TTL), reuse it and skip the
-        // MWA prompt entirely. This is the fix for "wallet pops up on every
-        // tile tap" reported on Seeker.
-        val vault = xyz.ghola.app.crypto.VaultStoreHolder.get(this, userDid)
+        val vault = VaultStore.create(this, userDid)
         vaultStore = vault
-
-        if (vault.isUnlocked()) {
-            // Hot path: vault already keyed. Wire the backend without
-            // touching the wallet.
-            hideStatus()
-            val backend: LlmBackend = EnvelopeCloudBackend(
-                baseUrl = secureStorage.getCloudBaseUrl(),
-                authToken = authToken,
-                vault = vault,
-            )
-            agentController = AgentController(
-                backend, toolExecutor, this,
-                secureStorage.getWalletPackage(),
-                secureStorage.isSeeker(),
-                secureStorage.hasCloudAuth(),
-            )
-            setInputEnabled(true)
-            return
-        }
 
         setInputEnabled(false)
         showStatus("Tap your wallet to unlock end-to-end chat…")
@@ -619,16 +528,16 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         val text = messageInput.text.toString().trim()
         if (text.isEmpty()) return
 
-        messageInput.text.clear()
-        chatAdapter.addMessage(ChatMessage.UserMessage(text))
-
-        if (handleCloudTaskRouting(text, null)) {
+        val controller = agentController
+        if (controller == null) {
+            Toast.makeText(this, "Agent not ready. Check Settings.", Toast.LENGTH_SHORT).show()
             return
         }
 
-        val controller = agentController
-        if (controller == null) {
-            Toast.makeText(this, "Agent is still initializing. Try again in a moment.", Toast.LENGTH_SHORT).show()
+        messageInput.text.clear()
+        chatAdapter.addMessage(ChatMessage.UserMessage(text))
+
+        if (handleCloudTaskRouting(text)) {
             return
         }
 
@@ -654,19 +563,11 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         controller.sendMessage(text)
     }
 
-    private fun handleCloudTaskRouting(
-        text: String,
-        forcedRoute: TaskClassifier.TaskRoute?
-    ): Boolean {
+    private fun handleCloudTaskRouting(text: String): Boolean {
         if (!secureStorage.hasCloudAuth()) return false
         val token = secureStorage.getCloudAuthToken() ?: return false
-        val route = forcedRoute ?: TaskClassifier.classify(text, true).route
-        if (route != TaskClassifier.TaskRoute.CLOUD_CALL &&
-            route != TaskClassifier.TaskRoute.CLOUD_EMAIL &&
-            route != TaskClassifier.TaskRoute.CLOUD_CALENDAR
-        ) {
-            return false
-        }
+        val route = TaskClassifier.classify(text, true).route
+        if (route == TaskClassifier.TaskRoute.CHAT) return false
 
         val client = ThumperCloudClient(secureStorage.getCloudBaseUrl(), token)
         setInputEnabled(false)
@@ -683,45 +584,35 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                         "Add a phone number so I can place the call through Ghola Cloud."
                     } else {
                         val call = client.initiateCall(number, text)
-                        formatCallForChat(call, number, text)
+                        if (call != null) {
+                            "Call started through Ghola Cloud."
+                        } else {
+                            "Call request failed. Please try again."
+                        }
                     }
                 }
                 TaskClassifier.TaskRoute.CLOUD_EMAIL -> {
-                    // v0.5: route Email tile through the on-device email
-                    // stack instead of /api/emails/generate. The user's
-                    // prompt + Gmail corpus + draft never leave the device.
-                    // Falls back to the cloud path only if the local model
-                    // isn't downloaded yet (signaled by null return).
                     val to = Regex("""[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}""")
                         .find(text)
                         ?.value
-                    val localDraftJson = runBlocking {
-                        renderLocalDraftAsJson(text, to)
-                    }
-                    if (localDraftJson != null) {
-                        formatEmailDraftForChat(localDraftJson)
+                    if (to != null) {
+                        val draft = client.createEmailDraft(
+                            toAddress = to,
+                            subject = "Draft from Ghola",
+                            bodyText = text
+                        )
+                        if (draft != null) "Email draft created in Ghola Cloud." else "Email draft failed."
                     } else {
-                        // Cloud fallback for users without the local model
-                        // download yet. Same fortune-cookie risk as v0.4
-                        // but at least functional.
-                        val draft = if (to != null) {
-                            client.createEmailDraft(
-                                toAddress = to,
-                                subject = "Draft from Ghola",
-                                bodyText = text,
-                            )
-                        } else {
-                            client.generateEmail(text)
-                        }
-                        formatEmailDraftForChat(draft)
+                        val generated = client.generateEmail(text)
+                        if (generated != null) "Email draft generated in Ghola Cloud." else "Email generation failed."
                     }
                 }
-                TaskClassifier.TaskRoute.CLOUD_CALENDAR -> {
+                TaskClassifier.TaskRoute.CLOUD_CALENDAR,
+                TaskClassifier.TaskRoute.DEVICE -> {
                     val plan = client.planDeviceAction(text)
                     plan?.optString("plan")?.takeIf { it.isNotBlank() }
                         ?: "Planning request sent to Ghola Cloud, but no plan was returned."
                 }
-                TaskClassifier.TaskRoute.DEVICE,
                 TaskClassifier.TaskRoute.CHAT -> ""
             }
 
@@ -734,85 +625,6 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             }
         }.start()
         return true
-    }
-
-    /**
-     * Render the actual email draft returned by /api/emails/generate (or
-     * /api/emails/draft) as a readable assistant message. Previously the user
-     * saw only "Email draft generated in Ghola Cloud." while the To / Subject
-     * / Body were quietly persisted in the cloud DB with no way for the user
-     * to see them — a confusing dead-end that read as "where tf was it
-     * generated?". The full draft text is now rendered inline so the user
-     * can review and decide whether to ship it (the actual send action lives
-     * in the web ActionCard surface; Android sees the draft + an explainer).
-     */
-    /**
-     * Run the on-device email generation stack and roll the streaming output
-     * into the same JSONObject shape `formatEmailDraftForChat` expects.
-     * Returns null if the local model isn't ready yet (caller falls back to
-     * the cloud path so the user still gets *something*).
-     *
-     * The streaming Flow is collected to completion here — `last()` waits
-     * for `done=true` and returns the final cumulative body string. The
-     * skeleton-first benefit (paint <500ms) is preserved when we wire this
-     * into a dedicated EmailDraftActivity (P5 follow-up); inline-in-chat
-     * we wait for the full body before showing anything, which is fine for
-     * the v0.5 "tap → draft" UX.
-     */
-    private suspend fun renderLocalDraftAsJson(
-        intent: String,
-        recipientHint: String?,
-    ): org.json.JSONObject? = withContext(Dispatchers.IO) {
-        val local = LocalEmailService.draft(
-            context = this@ChatActivity,
-            intent = intent,
-            recipientHint = recipientHint,
-        ) ?: return@withContext null
-        val finalBody = try {
-            local.body.last()
-        } catch (t: Throwable) {
-            android.util.Log.w(TAG, "local body collection failed: ${t.message}")
-            ""
-        }
-        org.json.JSONObject().apply {
-            put("to_address", local.to)
-            put("subject", local.subject)
-            put("body", finalBody)
-        }
-    }
-
-    private fun formatEmailDraftForChat(draft: org.json.JSONObject?): String {
-        if (draft == null) return "Email generation failed. Please try again."
-        val to = draft.optString("to_address", "").ifBlank { "(no recipient)" }
-        val subject = draft.optString("subject", "").ifBlank { "(no subject)" }
-        val body = draft.optString("body", "").ifBlank { "(empty body)" }
-        return buildString {
-            append("Drafted an email for you. Review below and send from the inbox at ghola.xyz.\n\n")
-            append("To: ").append(to).append('\n')
-            append("Subject: ").append(subject).append("\n\n")
-            append(body)
-        }
-    }
-
-    /**
-     * Render the cloud-call response so the user sees a confirmation, the
-     * dialed number, and the call id (used by support / retries). Previously
-     * collapsed to "Call started through Ghola Cloud." which hid useful state.
-     */
-    private fun formatCallForChat(
-        response: org.json.JSONObject?,
-        number: String,
-        objective: String,
-    ): String {
-        if (response == null) return "Call request failed. Please try again."
-        val callId = response.optString("id", "").ifBlank { response.optString("call_id", "") }
-        val status = response.optString("status", "queued")
-        return buildString {
-            append("Calling ").append(number).append(" through Ghola Cloud.")
-            if (objective.isNotBlank()) append("\nObjective: ").append(objective)
-            append("\nStatus: ").append(status)
-            if (callId.isNotBlank()) append("\nCall id: ").append(callId)
-        }
     }
 
     /**

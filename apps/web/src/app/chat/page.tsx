@@ -279,6 +279,11 @@ export default function ChatPage() {
     setIsStreaming(true);
     setProviderInfo(null);
     let fullContent = "";
+    let pendingActions: ThumperInlineAction[] | null = null;
+    // Default to true: if the cloud doesn't emit a `provider` event for any
+    // reason, prefer the structured path (which simply renders no card if no
+    // tool_use arrives) over kicking in the regex fallback unnecessarily.
+    let providerSupportsToolUse = true;
     const currentSessionId = sessionId;
     // Fresh job id per message — also becomes the receipt's job_id so
     // each assistant turn has its own audit trail rather than reusing
@@ -461,6 +466,9 @@ export default function ChatPage() {
       onProvider: (info) => {
         setProviderInfo(info);
         localProviderInfo = info;
+        if (typeof info.tool_use_supported === "boolean") {
+          providerSupportsToolUse = info.tool_use_supported;
+        }
       },
       onChunk: (chunk) => {
         fullContent += chunk;
@@ -473,15 +481,24 @@ export default function ChatPage() {
           return { ...s, messages: msgs };
         });
       },
+      onActions: (actions) => {
+        pendingActions = actions;
+      },
       onDone: () => {
-        // Detect actions in the final response
-        const action = detectAction(fullContent);
+        // If the provider supports tool-use, trust the structured stream.
+        // Otherwise fall back to the regex `detectAction` so Community/Ollama
+        // users still get an inline card for the simple call/email cases.
+        let finalActions: ThumperInlineAction[] | undefined = pendingActions ?? undefined;
+        if (!finalActions?.length && !providerSupportsToolUse) {
+          const fallback = detectAction(fullContent);
+          if (fallback) finalActions = [fallback];
+        }
         updateSession(currentSessionId, (s) => {
           const msgs = [...s.messages];
           msgs[msgs.length - 1] = {
             ...msgs[msgs.length - 1],
             content: fullContent,
-            action,
+            actions: finalActions,
           };
           return {
             ...s,
