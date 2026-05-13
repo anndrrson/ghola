@@ -25,6 +25,7 @@ members = [
     "crates/thumper-mcp",
     "crates/thumper-cli",
     "crates/thumper-cloud",
+    "crates/thumper-gpu-provider",
     "crates/ghola-home",
 
     # Marketplace (Orni Models)
