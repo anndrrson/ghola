@@ -504,25 +504,15 @@ std::vector<int32_t> greedy_decode_qwen_gallocr(
     int max_new_tokens,
     std::vector<LogitTopK> * per_step_top3 = nullptr)
 {
+    // NOTE: name retained for ABI/JNI compat. Implementation reverted from
+    // gallocr+backend to the proven no_alloc=false path because gallocr
+    // deadlocks on Seeker at compute time (0% CPU, no progress past
+    // model-load log). Hardware-validated with this path at N=3 earlier.
+    // Phase E gallocr only retained for the training path where memory
+    // budget actually matters.
     std::vector<int32_t> generated;
     generated.reserve(max_new_tokens);
     std::vector<int32_t> ctx_tokens = prompt_tokens;
-
-    ggml_backend_t backend = ggml_backend_cpu_init();
-    if (!backend) {
-        LOGE("greedy_decode_qwen_gallocr: ggml_backend_cpu_init failed");
-        return generated;
-    }
-    // Dimensity 9300 (Seeker SoC): 1 prime + 3 perf + 4 efficiency cores.
-    // 6 threads keeps us on the 1+3+(2 of 4) high-bandwidth tier and avoids
-    // contention with the efficiency cores running UI + WorkManager.
-    ggml_backend_cpu_set_n_threads(backend, 6);
-    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_cpu_buffer_type());
-    if (!galloc) {
-        LOGE("greedy_decode_qwen_gallocr: ggml_gallocr_new failed");
-        ggml_backend_free(backend);
-        return generated;
-    }
 
     for (int s = 0; s < max_new_tokens; ++s) {
         auto t_step = std::chrono::steady_clock::now();
@@ -530,16 +520,15 @@ std::vector<int32_t> greedy_decode_qwen_gallocr(
         std::vector<int32_t> positions(n_tokens);
         for (int i = 0; i < n_tokens; ++i) positions[i] = i;
 
-        // Metadata-only ctx — tensors record shapes but allocate no data.
-        // 16 MB covers >10k tensor records; the 28-layer forward needs ~2k.
+        // 384 MB no_alloc=false. Enough for activations at ctx_len<64.
         struct ggml_init_params gp = {
-            /*.mem_size   =*/ (size_t) 16 * 1024 * 1024,
+            /*.mem_size   =*/ (size_t) 384 * 1024 * 1024,
             /*.mem_buffer =*/ nullptr,
-            /*.no_alloc   =*/ true,
+            /*.no_alloc   =*/ false,
         };
         ggml_context * gctx = ggml_init(gp);
         if (!gctx) {
-            LOGE("greedy_decode_qwen_gallocr: ggml_init failed at step %d", s);
+            LOGE("greedy_decode_qwen: ggml_init failed at step %d", s);
             break;
         }
 
@@ -548,50 +537,19 @@ std::vector<int32_t> greedy_decode_qwen_gallocr(
             model, gctx, ctx_tokens, positions, /*lora=*/ nullptr,
             /*return_all_positions=*/ false);
         if (!last_logits) {
-            LOGE("greedy_decode_qwen_gallocr: forward returned null");
+            LOGE("greedy_decode_qwen: forward returned null");
             ggml_free(gctx);
             break;
         }
+
         ggml_cgraph * cgraph = ggml_new_graph(gctx);
         ggml_build_forward_expand(cgraph, last_logits);
-
-        // gallocr allocates a single contiguous buffer big enough for all
-        // intermediate tensors, reusing slots whose lifetimes don't overlap.
-        if (!ggml_gallocr_alloc_graph(galloc, cgraph)) {
-            LOGE("greedy_decode_qwen_gallocr: alloc_graph failed at step %d", s);
-            ggml_free(gctx);
-            break;
-        }
-
-        // Fill input tensors AFTER allocation.
-        ggml_tensor * tok_t  = ggml_graph_get_tensor(cgraph, "tokens");
-        ggml_tensor * pos_t  = ggml_graph_get_tensor(cgraph, "positions");
-        ggml_tensor * mask_t = ggml_graph_get_tensor(cgraph, "KQ_mask");
-        if (!tok_t || !pos_t || !mask_t) {
-            LOGE("greedy_decode_qwen_gallocr: missing named input (tok=%p pos=%p mask=%p)",
-                 (void*)tok_t, (void*)pos_t, (void*)mask_t);
-            ggml_free(gctx);
-            break;
-        }
-        qwen_fill_int32(tok_t, ctx_tokens.data(), n_tokens);
-        qwen_fill_int32(pos_t, positions.data(),  n_tokens);
-        qwen_fill_kq_mask(mask_t, n_tokens);
-
         auto t_compute = std::chrono::steady_clock::now();
-        const enum ggml_status status = ggml_backend_graph_compute(backend, cgraph);
+        ggml_graph_compute_with_ctx(gctx, cgraph, /*n_threads=*/ 6);
         auto t_done = std::chrono::steady_clock::now();
-        if (status != GGML_STATUS_SUCCESS) {
-            LOGE("greedy_decode_qwen_gallocr: compute failed status=%d at step %d", (int) status, s);
-            ggml_free(gctx);
-            break;
-        }
 
-        // Read logits via backend (they live in the gallocr buffer).
-        std::vector<float> logits(QwenConfig::vocab_size);
-        ggml_backend_tensor_get(last_logits, logits.data(), 0,
-                                logits.size() * sizeof(float));
-
-        LogitTopK tk = top3(logits.data(), QwenConfig::vocab_size);
+        const float * logits = (const float *) last_logits->data;
+        LogitTopK tk = top3(logits, QwenConfig::vocab_size);
         if (per_step_top3) per_step_top3->push_back(tk);
         generated.push_back(tk.id[0]);
         ctx_tokens.push_back(tk.id[0]);
@@ -599,15 +557,13 @@ std::vector<int32_t> greedy_decode_qwen_gallocr(
         const auto ms_init    = std::chrono::duration_cast<std::chrono::milliseconds>(t_build - t_step).count();
         const auto ms_build   = std::chrono::duration_cast<std::chrono::milliseconds>(t_compute - t_build).count();
         const auto ms_compute = std::chrono::duration_cast<std::chrono::milliseconds>(t_done - t_compute).count();
-        LOGI("ours[gallocr] step %d/%d ctx=%d: init=%lldms build=%lldms compute=%lldms → tok=%d",
+        LOGI("ours[na] step %d/%d ctx=%d: init=%lldms build=%lldms compute=%lldms → tok=%d",
              s + 1, max_new_tokens, n_tokens,
              (long long) ms_init, (long long) ms_build, (long long) ms_compute, tk.id[0]);
 
         ggml_free(gctx);
     }
 
-    ggml_gallocr_free(galloc);
-    ggml_backend_free(backend);
     return generated;
 }
 
