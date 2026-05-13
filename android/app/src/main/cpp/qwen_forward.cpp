@@ -259,16 +259,21 @@ static ggml_tensor * build_attn_block(
     ggml_tensor * kq_mask,
     const LoraSet * lora)
 {
+    const bool trace = (layer_idx == 0);
+    if (trace) LOGI("attn: enter input ne=[%lld,%lld,%lld]",
+                    (long long)input->ne[0], (long long)input->ne[1], (long long)input->ne[2]);
     const float kq_scale = 1.0f / std::sqrt(float(QwenConfig::head_dim));
     const std::string prefix = "blk." + std::to_string(layer_idx) + ".";
 
     // ── 1. Pre-attention RMSNorm ──────────────────────────────────────
-    // Note: ggml_rms_norm doesn't apply the learnable gamma — caller
-    // multiplies. This matches llm_build_norm at LLM_NORM_RMS.
+    if (trace) LOGI("attn: rms_norm");
     ggml_tensor * norm = ggml_rms_norm(ctx, input, QwenConfig::rms_eps);
+    if (trace) LOGI("attn: mul gamma");
     norm = ggml_mul(ctx, norm, layer.attn_norm);
 
     // ── 2. Q/K/V projections + bias + LoRA ────────────────────────────
+    if (trace) LOGI("attn: Q = mul_mat(attn_q, norm)  weight ne=[%lld,%lld] dtype=%d",
+                    (long long)layer.attn_q->ne[0], (long long)layer.attn_q->ne[1], layer.attn_q->type);
     ggml_tensor * Q = ggml_mul_mat(ctx, layer.attn_q, norm);
     Q = apply_lora_delta(ctx, Q, norm, prefix + "attn_q.weight", lora);
     if (layer.attn_q_bias) Q = ggml_add(ctx, Q, layer.attn_q_bias);
@@ -281,7 +286,10 @@ static ggml_tensor * build_attn_block(
     V = apply_lora_delta(ctx, V, norm, prefix + "attn_v.weight", lora);
     if (layer.attn_v_bias) V = ggml_add(ctx, V, layer.attn_v_bias);
 
+    if (trace) LOGI("attn: K/V projections done");
+
     // ── 3. Reshape into per-head layout ────────────────────────────────
+    if (trace) LOGI("attn: reshape Q/K/V");
     // Q: [hidden, n_tokens] → [head_dim, n_head, n_tokens]
     // K: [kv_dim, n_tokens] → [head_dim, n_kv_head, n_tokens]
     // V: same layout as K.
@@ -289,6 +297,7 @@ static ggml_tensor * build_attn_block(
     K = ggml_reshape_3d(ctx, K, QwenConfig::head_dim, QwenConfig::n_kv_head, n_tokens);
     V = ggml_reshape_3d(ctx, V, QwenConfig::head_dim, QwenConfig::n_kv_head, n_tokens);
 
+    if (trace) LOGI("attn: rope_ext Q");
     // ── 4. RoPE on Q and K ─────────────────────────────────────────────
     // Args from build_qwen2: n_rot=head_dim, mode=0, n_ctx_orig=32768,
     // freq_base=1e6, freq_scale=1.0, ext_factor=0, attn_factor=1,
@@ -305,6 +314,7 @@ static ggml_tensor * build_attn_block(
         QwenConfig::rope_dim, rope_mode, QwenConfig::max_position,
         QwenConfig::rope_theta, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
 
+    if (trace) LOGI("attn: rope done, permute Q/K/V");
     // ── 5. Permute for KQ matmul ───────────────────────────────────────
     // ggml_mul_mat semantics: dst[i,j,k] = Σ_d a[d,i,k] * b[d,j,k]
     // We want kq[k_pos, q_pos, head] = Σ_d K[d,k_pos,kvh] * Q[d,q_pos,head]
@@ -312,10 +322,17 @@ static ggml_tensor * build_attn_block(
     // b4524 ggml_mul_mat handles this when the outer dim is a divisor).
     Q = ggml_permute(ctx, Q, 0, 2, 1, 3); // [head_dim, n_tokens, n_head]
     K = ggml_permute(ctx, K, 0, 2, 1, 3); // [head_dim, n_tokens, n_kv_head]
-    // V is consumed via mul_mat(V, attn) below — needs to be transposed
-    // along the seq axis so we can dot it with attn weights along that axis.
+    // V is consumed via mul_mat(V, attn) below. The permute brings n_tokens
+    // to ne[0] (the reduction axis), but the resulting strides have
+    // nb[0]=row_stride > nb[1]=elem_size, which ggml_mul_mat rejects via
+    // its GGML_ASSERT(!ggml_is_transposed(a)) check. Adding ggml_cont
+    // materializes a contiguous copy so the mul_mat passes. This matches
+    // the convention in llama.cpp's llm_build_kqv which constructs V from
+    // a ggml_view_3d with hand-set strides that are already contiguous.
     V = ggml_permute(ctx, V, 1, 2, 0, 3); // [n_tokens, head_dim, n_kv_head]
+    V = ggml_cont(ctx, V);                // materialize contiguous copy
 
+    if (trace) LOGI("attn: KQ = mul_mat(K, Q)");
     // ── 6. Attention scores + softmax ──────────────────────────────────
     // KQ: [n_tokens (kv), n_tokens (q), n_head]
     ggml_tensor * KQ = ggml_mul_mat(ctx, K, Q);
@@ -325,18 +342,26 @@ static ggml_tensor * build_attn_block(
     // models without ALiBi (Qwen uses RoPE).
     KQ = ggml_soft_max_ext(ctx, KQ, kq_mask, kq_scale, /*max_alibi_bias=*/ 0.0f);
 
+    if (trace) LOGI("attn: soft_max_ext done. KQ ne=[%lld,%lld,%lld] V ne=[%lld,%lld,%lld]",
+                    (long long)KQ->ne[0], (long long)KQ->ne[1], (long long)KQ->ne[2],
+                    (long long)V->ne[0],  (long long)V->ne[1],  (long long)V->ne[2]);
     // ── 7. Context = V · attn_weights ──────────────────────────────────
-    // KQV: [head_dim, n_tokens (q), n_head]
+    if (trace) LOGI("attn: pre mul_mat(V, KQ)");
     ggml_tensor * KQV = ggml_mul_mat(ctx, V, KQ);
+    if (trace) LOGI("attn: post mul_mat");
 
     // ── 8. Merge heads back to [hidden, n_tokens] ──────────────────────
+    if (trace) LOGI("attn: permute KQV");
     KQV = ggml_permute(ctx, KQV, 0, 2, 1, 3); // [head_dim, n_head, n_tokens]
+    if (trace) LOGI("attn: cont_2d");
     ggml_tensor * merged = ggml_cont_2d(ctx, KQV, QwenConfig::hidden_dim, n_tokens);
 
+    if (trace) LOGI("attn: KQV done, merging heads");
     // ── 9. Output projection + LoRA + residual ─────────────────────────
     ggml_tensor * out = ggml_mul_mat(ctx, layer.attn_output, merged);
     out = apply_lora_delta(ctx, out, merged, prefix + "attn_output.weight", lora);
 
+    if (trace) LOGI("attn: residual add, returning");
     return ggml_add(ctx, input, out);
 }
 
@@ -426,9 +451,11 @@ ggml_tensor * qwen_forward_build(
 
     // 2. Iterate transformer layers.
     for (int i = 0; i < QwenConfig::n_layer; ++i) {
+        LOGI("qwen_forward_build: layer %d/%d", i, QwenConfig::n_layer);
         x = build_attn_block(ctx, model.layers[i], i, x, pos_ids, n_tokens, kq_mask, lora);
         x = build_mlp_block (ctx, model.layers[i], i, x);
     }
+    LOGI("qwen_forward_build: layers done, lm_head …");
 
     // 3. Final RMSNorm + lm_head projection.
     //
@@ -515,6 +542,7 @@ std::vector<int32_t> greedy_decode_qwen_gallocr(
     std::vector<int32_t> ctx_tokens = prompt_tokens;
 
     for (int s = 0; s < max_new_tokens; ++s) {
+        LOGI("ours[na] step %d/%d: enter (ctx_tokens=%zu)", s + 1, max_new_tokens, ctx_tokens.size());
         auto t_step = std::chrono::steady_clock::now();
         const int n_tokens = (int) ctx_tokens.size();
         std::vector<int32_t> positions(n_tokens);
@@ -526,11 +554,13 @@ std::vector<int32_t> greedy_decode_qwen_gallocr(
             /*.mem_buffer =*/ nullptr,
             /*.no_alloc   =*/ false,
         };
+        LOGI("ours[na] step %d: ggml_init …", s + 1);
         ggml_context * gctx = ggml_init(gp);
         if (!gctx) {
             LOGE("greedy_decode_qwen: ggml_init failed at step %d", s);
             break;
         }
+        LOGI("ours[na] step %d: ggml_init OK, building forward …", s + 1);
 
         auto t_build = std::chrono::steady_clock::now();
         ggml_tensor * last_logits = qwen_forward_build(
@@ -541,12 +571,16 @@ std::vector<int32_t> greedy_decode_qwen_gallocr(
             ggml_free(gctx);
             break;
         }
+        LOGI("ours[na] step %d: forward graph built, creating cgraph …", s + 1);
 
         ggml_cgraph * cgraph = ggml_new_graph(gctx);
         ggml_build_forward_expand(cgraph, last_logits);
+        LOGI("ours[na] step %d: cgraph %d nodes, starting compute (6 threads) …",
+             s + 1, ggml_graph_n_nodes(cgraph));
         auto t_compute = std::chrono::steady_clock::now();
         ggml_graph_compute_with_ctx(gctx, cgraph, /*n_threads=*/ 6);
         auto t_done = std::chrono::steady_clock::now();
+        LOGI("ours[na] step %d: compute done", s + 1);
 
         const float * logits = (const float *) last_logits->data;
         LogitTopK tk = top3(logits, QwenConfig::vocab_size);
