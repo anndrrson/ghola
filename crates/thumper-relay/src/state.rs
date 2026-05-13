@@ -3,9 +3,12 @@ use std::sync::Arc;
 
 use axum::extract::ws::Message;
 use dashmap::DashMap;
+use sha2::{Digest, Sha256};
+use std::sync::RwLock;
 use tokio::sync::mpsc;
 
-use thumper_types::{Envelope, ProviderModelInfo};
+use said_attest::AttestedEnclave;
+use thumper_types::{EnclaveKeyId, Envelope, ProviderModelInfo};
 
 use crate::auth::NonceCache;
 use crate::config::RelayConfig;
@@ -65,6 +68,12 @@ struct AppStateInner {
     pending_inference_streams: DashMap<String, mpsc::UnboundedSender<Envelope>>,
     /// Per-device rate limiters (keyed by device pubkey).
     device_rate_limiters: DashMap<String, std::sync::Mutex<RateLimiter>>,
+    /// Attested enclaves keyed by EnclaveKeyId (sha256-hex of x25519 pub).
+    attested_enclaves: DashMap<EnclaveKeyId, Arc<RwLock<AttestedEnclave>>>,
+    /// Hash-of-vendor-quote (sha256 hex) -> EnclaveKeyId, for /attestations/:hash lookup.
+    attestation_hash_index: DashMap<String, EnclaveKeyId>,
+    /// EnclaveKeyId -> vendor_quote_b64 (cached so /attestations/:hash can serve it).
+    attestation_quotes: DashMap<EnclaveKeyId, String>,
     config: RelayConfig,
     nonce_cache: NonceCache,
     metrics: RelayMetrics,
@@ -111,6 +120,9 @@ impl AppState {
                 pending_inference: DashMap::new(),
                 pending_inference_streams: DashMap::new(),
                 device_rate_limiters: DashMap::new(),
+                attested_enclaves: DashMap::new(),
+                attestation_hash_index: DashMap::new(),
+                attestation_quotes: DashMap::new(),
                 config,
                 nonce_cache: NonceCache::new(nonce_ttl),
                 metrics: RelayMetrics::new(),
@@ -539,5 +551,114 @@ impl AppState {
         self.inner.device_rate_limiters.retain(|key, _| {
             self.inner.devices.contains_key(key)
         });
+    }
+
+    // -- Attested enclaves --
+
+    /// Compute sha256(decoded vendor_quote_b64) -> hex. Used as the
+    /// /attestations/:hash lookup key.
+    pub fn compute_attestation_hash(vendor_quote_b64: &str) -> String {
+        use base64::Engine;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(vendor_quote_b64)
+            .unwrap_or_default();
+        let mut hasher = Sha256::new();
+        hasher.update(&decoded);
+        hex::encode(hasher.finalize())
+    }
+
+    /// Insert an attested enclave. Also caches the vendor_quote_b64 so
+    /// `find_attestation_by_hash` can return it later.
+    pub fn insert_attested_enclave(
+        &self,
+        enclave: AttestedEnclave,
+        vendor_quote_b64: String,
+    ) -> EnclaveKeyId {
+        let key_id = enclave.enclave_key_id.clone();
+        let attestation_hash = Self::compute_attestation_hash(&vendor_quote_b64);
+        self.inner
+            .attested_enclaves
+            .insert(key_id.clone(), Arc::new(RwLock::new(enclave)));
+        self.inner
+            .attestation_hash_index
+            .insert(attestation_hash, key_id.clone());
+        self.inner
+            .attestation_quotes
+            .insert(key_id.clone(), vendor_quote_b64);
+        key_id
+    }
+
+    /// Get a clone of the attested enclave with the given key id.
+    pub fn get_attested_enclave(&self, key_id: &EnclaveKeyId) -> Option<AttestedEnclave> {
+        self.inner
+            .attested_enclaves
+            .get(key_id)
+            .map(|entry| entry.value().read().unwrap_or_else(|e| e.into_inner()).clone())
+    }
+
+    /// List all currently attested enclaves (clones).
+    pub fn list_attested_enclaves(&self) -> Vec<AttestedEnclave> {
+        self.inner
+            .attested_enclaves
+            .iter()
+            .map(|entry| entry.value().read().unwrap_or_else(|e| e.into_inner()).clone())
+            .collect()
+    }
+
+    /// Remove all entries whose `expires_at_unix < now_unix`. Returns count removed.
+    pub fn prune_expired_enclaves(&self, now_unix: i64) -> usize {
+        let expired: Vec<EnclaveKeyId> = self
+            .inner
+            .attested_enclaves
+            .iter()
+            .filter_map(|entry| {
+                let enclave = entry.value().read().unwrap_or_else(|e| e.into_inner());
+                if enclave.expires_at_unix < now_unix {
+                    Some(entry.key().clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let count = expired.len();
+        for key_id in &expired {
+            self.inner.attested_enclaves.remove(key_id);
+            self.inner.attestation_quotes.remove(key_id);
+        }
+        // Drop any hash-index entries that now point nowhere.
+        self.inner
+            .attestation_hash_index
+            .retain(|_, v| self.inner.attested_enclaves.contains_key(v));
+        count
+    }
+
+    /// Look up an attested enclave by sha256-hex of the decoded vendor quote.
+    /// Returns the enclave plus the cached `vendor_quote_b64`.
+    pub fn find_attestation_by_hash(
+        &self,
+        attestation_hash_hex: &str,
+    ) -> Option<(AttestedEnclave, String)> {
+        let key_id = self
+            .inner
+            .attestation_hash_index
+            .get(attestation_hash_hex)
+            .map(|e| e.value().clone())?;
+        let enclave = self.get_attested_enclave(&key_id)?;
+        let quote = self
+            .inner
+            .attestation_quotes
+            .get(&key_id)
+            .map(|e| e.value().clone())?;
+        Some((enclave, quote))
+    }
+
+    /// Look up the provider WebSocket session id (long-lived auth pubkey)
+    /// bound to an enclave_key_id. Returns `None` if the enclave is unknown.
+    pub fn provider_for_enclave(&self, key_id: &EnclaveKeyId) -> Option<String> {
+        self.inner
+            .attested_enclaves
+            .get(key_id)
+            .map(|entry| entry.value().read().unwrap_or_else(|e| e.into_inner()).provider_id.clone())
     }
 }
