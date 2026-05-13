@@ -670,6 +670,64 @@ fn error_payload_roundtrip() {
     }
 }
 
+// -- v2 confidential AI: sealed inference + provider attestation --
+
+#[test]
+fn sealed_inference_request_round_trips() {
+    let original = MessageType::InferenceRequestSealed(SealedInferenceRequestPayload {
+        job_id: "job-1".into(),
+        enclave_key_id: EnclaveKeyId("a".repeat(64)),
+        ciphertext_b64: "AAAAAA==".into(),
+    });
+    let json = serde_json::to_string(&original).unwrap();
+    assert!(json.contains("\"type\":\"InferenceRequestSealed\""));
+    let back: MessageType = serde_json::from_str(&json).unwrap();
+    assert_eq!(format!("{:?}", original), format!("{:?}", back));
+}
+
+#[test]
+fn sealed_inference_response_round_trips() {
+    let original = MessageType::InferenceResponseSealed(SealedInferenceResponsePayload {
+        job_id: "job-2".into(),
+        ciphertext_b64: "BBBBBB==".into(),
+        is_final: true,
+    });
+    let json = serde_json::to_string(&original).unwrap();
+    assert!(json.contains("\"type\":\"InferenceResponseSealed\""));
+    let back: MessageType = serde_json::from_str(&json).unwrap();
+    assert_eq!(format!("{:?}", original), format!("{:?}", back));
+}
+
+#[test]
+fn provider_attest_round_trips() {
+    let original = MessageType::ProviderAttest(ProviderAttestPayload {
+        tee_kind: TeeKind::Nitro,
+        enclave_x25519_pub_hex: "11".repeat(32),
+        enclave_ed25519_pub_hex: "22".repeat(32),
+        vendor_quote_b64: "Q09TRQ==".into(),
+        ghola_allowlist_sig_b64: "U0lH".into(),
+    });
+    let json = serde_json::to_string(&original).unwrap();
+    assert!(json.contains("\"type\":\"ProviderAttest\""));
+    assert!(json.contains("\"tee_kind\":\"nitro\""));
+    let back: MessageType = serde_json::from_str(&json).unwrap();
+    assert_eq!(format!("{:?}", original), format!("{:?}", back));
+}
+
+#[test]
+fn provider_attest_ack_round_trips() {
+    let original = MessageType::ProviderAttestAck(ProviderAttestAckPayload {
+        accepted: true,
+        enclave_key_id: Some(EnclaveKeyId("c".repeat(64))),
+        expires_at: Some(1_800_000_000),
+        reason: None,
+    });
+    let json = serde_json::to_string(&original).unwrap();
+    assert!(json.contains("\"type\":\"ProviderAttestAck\""));
+    let back: MessageType = serde_json::from_str(&json).unwrap();
+    assert_eq!(format!("{:?}", original), format!("{:?}", back));
+}
+
 // -- Full envelope roundtrip with complex payload --
 
 #[test]
