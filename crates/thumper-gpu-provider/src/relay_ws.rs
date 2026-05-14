@@ -55,7 +55,10 @@ impl InferenceRunner for crate::inference::InferenceClient {
 }
 
 /// All the state a long-lived provider connection holds between the
-/// initial handshake and an inference request.
+/// initial handshake and an inference request. Clone is cheap — the
+/// keys/runner are Arc-wrapped and the quote/sig are small byte
+/// vectors. The reconnect loop in `connect_and_serve` relies on this.
+#[derive(Clone)]
 pub struct Provider {
     pub cfg: ProviderConfig,
     pub keys: Arc<EnclaveKeys>,
@@ -68,7 +71,47 @@ type WsSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 type WsStream = SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
 
 impl Provider {
+    /// Run the provider forever, reconnecting on any disconnect.
+    ///
+    /// Render's WS proxy closes idle connections after some interval,
+    /// which used to leave the provider's process alive but with a
+    /// dead WS — `gpu_providers: 0` on /health and Private mode falls
+    /// back to relay-plain until the systemd unit was manually
+    /// restarted. The reconnect loop here makes the provider
+    /// self-heal: clean disconnect or error, sleep with exponential
+    /// backoff (capped at 60s), reconnect, re-attest, keep serving.
+    ///
+    /// The enclave keypair is stable across reconnects (allocated
+    /// once at process start) so `enclave_key_id` and the receipt
+    /// signing key stay consistent — clients that cached the
+    /// previous enclave info don't need to refetch.
     pub async fn connect_and_serve(self) -> Result<()> {
+        let mut backoff = std::time::Duration::from_secs(1);
+        let max_backoff = std::time::Duration::from_secs(60);
+        loop {
+            match self.attempt_once().await {
+                Ok(()) => {
+                    tracing::info!("provider session ended cleanly; reconnecting in 1s");
+                    backoff = std::time::Duration::from_secs(1);
+                    tokio::time::sleep(backoff).await;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        backoff_ms = backoff.as_millis() as u64,
+                        "provider session ended with error; reconnecting after backoff"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(max_backoff);
+                }
+            }
+        }
+    }
+
+    /// One round of connect + handshake + serve. Returns Ok when the
+    /// WS closes cleanly, Err on any handshake or transport failure.
+    /// The caller (`connect_and_serve`) loops on either outcome.
+    async fn attempt_once(&self) -> Result<()> {
         let (ws_stream, _) = tokio_tungstenite::connect_async(&self.cfg.relay_url)
             .await
             .with_context(|| format!("connecting to {}", self.cfg.relay_url))?;
@@ -79,7 +122,10 @@ impl Provider {
         let read = Arc::new(Mutex::new(read));
 
         self.handshake(write.clone(), read.clone()).await?;
-        self.serve_loop(write, read).await
+        // serve_loop takes `self` by value (it wraps in Arc internally
+        // for fan-out to the recv/send tasks). Cheap clone — the heavy
+        // state is Arc-wrapped, only the quote/sig get copied.
+        self.clone().serve_loop(write, read).await
     }
 
     async fn handshake(
