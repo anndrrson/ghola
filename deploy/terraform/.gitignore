@@ -1,0 +1,6 @@
+# Terraform local state — never commit.
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfplan
