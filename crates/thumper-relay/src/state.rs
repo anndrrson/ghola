@@ -12,6 +12,7 @@ use thumper_types::{EnclaveKeyId, Envelope, ProviderModelInfo};
 
 use crate::auth::NonceCache;
 use crate::config::RelayConfig;
+use crate::did_set::DidSet;
 use crate::metrics::RelayMetrics;
 
 /// Token bucket rate limiter per connection.
@@ -77,6 +78,11 @@ struct AppStateInner {
     config: RelayConfig,
     nonce_cache: NonceCache,
     metrics: RelayMetrics,
+    /// In-memory set of registered Ghola DIDs, refreshed from
+    /// thumper-cloud. Used by the sealed-inference auth middleware to
+    /// reject requests whose `sender_did` is not a registered user
+    /// — without ever persisting the user→DID mapping at the relay.
+    did_set: DidSet,
 }
 
 pub struct DeviceEntry {
@@ -111,6 +117,13 @@ fn now_epoch_secs() -> u64 {
 
 impl AppState {
     pub fn new(config: RelayConfig) -> Self {
+        Self::new_with_did_set(config, DidSet::new())
+    }
+
+    /// Construct with a caller-supplied `DidSet`. Used by tests that need
+    /// to pre-populate the membership set without spinning up a refresh
+    /// task against a real thumper-cloud.
+    pub fn new_with_did_set(config: RelayConfig, did_set: DidSet) -> Self {
         let nonce_ttl = config.auth_timeout_secs * 2;
         Self {
             inner: Arc::new(AppStateInner {
@@ -126,8 +139,14 @@ impl AppState {
                 config,
                 nonce_cache: NonceCache::new(nonce_ttl),
                 metrics: RelayMetrics::new(),
+                did_set,
             }),
         }
+    }
+
+    /// Cloneable handle to the in-memory DID set holder.
+    pub fn did_set(&self) -> &DidSet {
+        &self.inner.did_set
     }
 
     pub fn config(&self) -> &RelayConfig {

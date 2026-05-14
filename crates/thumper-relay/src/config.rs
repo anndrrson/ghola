@@ -13,6 +13,14 @@ pub struct RelayConfig {
     pub tls_cert_path: Option<String>,
     /// Path to TLS private key file (PEM format).
     pub tls_key_path: Option<String>,
+    /// URL of thumper-cloud's `/v1/did-set` endpoint. Polled periodically
+    /// to materialise the membership set used by sealed-inference auth.
+    /// If unset, sealed-inference middleware fails closed.
+    pub did_set_url: Option<String>,
+    /// Static API key the relay sends as `Authorization: Bearer <key>`
+    /// when polling `did_set_url`. Must match
+    /// `THUMPER_CLOUD_RELAY_API_KEY` on the cloud side.
+    pub did_set_api_key: Option<String>,
 }
 
 impl RelayConfig {
@@ -39,6 +47,8 @@ impl RelayConfig {
                 .unwrap_or(false),
             tls_cert_path: env::var("THUMPER_TLS_CERT").ok(),
             tls_key_path: env::var("THUMPER_TLS_KEY").ok(),
+            did_set_url: env::var("THUMPER_CLOUD_DID_SET_URL").ok(),
+            did_set_api_key: env::var("THUMPER_CLOUD_RELAY_API_KEY").ok(),
         }
     }
 }
