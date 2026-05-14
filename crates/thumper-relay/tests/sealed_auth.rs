@@ -75,6 +75,7 @@ fn test_config() -> RelayConfig {
         did_set_url: None,
         did_set_api_key: None,
         did_set_max_staleness_secs: 300,
+        sealed_rate_limit_per_did: 1000,
     }
 }
 

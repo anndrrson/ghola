@@ -46,6 +46,14 @@ pub struct RelayConfig {
     ///
     /// Set via `THUMPER_DID_SET_MAX_STALENESS_SECS`.
     pub did_set_max_staleness_secs: u64,
+    /// Per-DID rate limit for the sealed-inference path (HTTP + OHTTP).
+    /// The general `rate_limit_per_second` knob applies per WebSocket
+    /// connection — useless for stateless HTTP, doubly useless behind
+    /// OHTTP which collapses all client IPs onto Cloudflare's egress.
+    /// We enforce a per-DID bucket here instead. Defaults to 5/s/DID.
+    ///
+    /// Set via `THUMPER_SEALED_RATE_LIMIT_PER_DID`.
+    pub sealed_rate_limit_per_did: u32,
 }
 
 impl RelayConfig {
@@ -83,6 +91,10 @@ impl RelayConfig {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(300),
+            sealed_rate_limit_per_did: env::var("THUMPER_SEALED_RATE_LIMIT_PER_DID")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5),
         }
     }
 

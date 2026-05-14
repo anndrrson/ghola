@@ -20,7 +20,7 @@ pub struct RateLimiter {
     tokens: f64,
     max_tokens: f64,
     refill_rate: f64,
-    last_refill: std::time::Instant,
+    pub(crate) last_refill: std::time::Instant,
 }
 
 impl RateLimiter {
@@ -69,6 +69,16 @@ struct AppStateInner {
     pending_inference_streams: DashMap<String, mpsc::UnboundedSender<Envelope>>,
     /// Per-device rate limiters (keyed by device pubkey).
     device_rate_limiters: DashMap<String, std::sync::Mutex<RateLimiter>>,
+    /// Per-DID rate limiters for sealed inference (keyed by `did:key:z…`
+    /// sender DID extracted from the sealed envelope header). The general
+    /// HTTP rate limit on the WebSocket path is per-connection, which is
+    /// useless for sealed inference: every OHTTP-fronted request arrives
+    /// from the same Cloudflare egress IP, so a per-IP limit would gate
+    /// the whole user base together. Per-DID is the right granularity —
+    /// the DID is the authenticated principal for sealed inference, and
+    /// it costs the relay HPKE-decap + envelope verify + did-set check
+    /// per request, which is expensive enough to want bounded.
+    sealed_did_rate_limiters: DashMap<String, std::sync::Mutex<RateLimiter>>,
     /// Attested enclaves keyed by EnclaveKeyId (sha256-hex of x25519 pub).
     attested_enclaves: DashMap<EnclaveKeyId, Arc<RwLock<AttestedEnclave>>>,
     /// Hash-of-vendor-quote (sha256 hex) -> EnclaveKeyId, for /attestations/:hash lookup.
@@ -147,6 +157,7 @@ impl AppState {
                 pending_inference: DashMap::new(),
                 pending_inference_streams: DashMap::new(),
                 device_rate_limiters: DashMap::new(),
+                sealed_did_rate_limiters: DashMap::new(),
                 attested_enclaves: DashMap::new(),
                 attestation_hash_index: DashMap::new(),
                 attestation_quotes: DashMap::new(),
@@ -188,6 +199,41 @@ impl AppState {
             .unwrap_or_else(|e| e.into_inner())
             .try_consume();
         result
+    }
+
+    /// Check the per-DID rate limit for the sealed-inference path.
+    /// Returns true if allowed. Initialises a token bucket on first use
+    /// at `rate_per_second` tokens/sec, max burst = `rate_per_second`.
+    ///
+    /// Per-DID (rather than per-IP or per-connection) because the OHTTP
+    /// front-end collapses all client IPs onto Cloudflare's egress range,
+    /// and sealed-inference is stateless HTTP so there is no long-lived
+    /// connection to attach a per-connection limiter to.
+    pub fn check_sealed_did_rate_limit(&self, sender_did: &str, rate_per_second: u32) -> bool {
+        let entry = self
+            .inner
+            .sealed_did_rate_limiters
+            .entry(sender_did.to_string())
+            .or_insert_with(|| std::sync::Mutex::new(RateLimiter::new(rate_per_second)));
+        let result = entry
+            .value()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .try_consume();
+        result
+    }
+
+    /// Drop per-DID rate-limiter buckets that haven't been touched in a
+    /// while. Bounded growth: without this, an adversary could open many
+    /// short-lived DIDs and grow the map indefinitely. Called from the
+    /// heartbeat loop.
+    pub fn prune_sealed_did_rate_limiters(&self, max_idle_secs: u64) {
+        let now = std::time::Instant::now();
+        let max_idle = std::time::Duration::from_secs(max_idle_secs);
+        self.inner.sealed_did_rate_limiters.retain(|_, m| {
+            let g = m.lock().unwrap_or_else(|e| e.into_inner());
+            now.duration_since(g.last_refill) < max_idle
+        });
     }
 
     // -- Device connections --

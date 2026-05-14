@@ -1170,11 +1170,43 @@ pub async fn ohttp_gateway(
     // Dispatch on the inner request's method + path. We only support the
     // sealed-inference path through OHTTP for now; everything else gets a
     // 404 BHTTP response so the client surfaces a meaningful error.
+    //
+    // SECURITY: the direct `POST /inference/sealed` route is wrapped by
+    // `auth::require_sealed_envelope_auth`, but axum middleware doesn't
+    // cross transport boundaries — an OHTTP-wrapped sealed-inference
+    // request reaches `ohttp_gateway` and would otherwise bypass that
+    // middleware entirely. We therefore call the shared
+    // `validate_sealed_envelope_bytes` here so both transports get
+    // identical auth semantics (did-set bootstrap + freshness + sig +
+    // DID membership + nonce replay + per-DID rate limit). The status
+    // code from the validator is forwarded inside the BHTTP response so
+    // the client surfaces the real failure through the encrypted tunnel.
     let (resp_status, resp_json) = if bhttp_req.method.eq_ignore_ascii_case("POST")
         && bhttp_req.path == "/inference/sealed"
     {
         match serde_json::from_slice::<SealedInferenceDispatchRequest>(&bhttp_req.body) {
-            Ok(parsed) => handle_sealed_inference(&state, parsed).await,
+            Ok(parsed) => match base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                &parsed.sealed_request_b64,
+            ) {
+                Ok(sealed_bytes) => match crate::auth::validate_sealed_envelope_bytes(
+                    &state,
+                    &sealed_bytes,
+                ) {
+                    Ok(_header) => handle_sealed_inference(&state, parsed).await,
+                    Err(status) => (
+                        status,
+                        json!({
+                            "error": "sealed inference rejected by gateway auth",
+                            "status": status.as_u16(),
+                        }),
+                    ),
+                },
+                Err(e) => (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    json!({"error": format!("bad sealed_request_b64: {e}")}),
+                ),
+            },
             Err(e) => (
                 axum::http::StatusCode::BAD_REQUEST,
                 json!({"error": format!("invalid sealed inference body: {e}")}),

@@ -52,6 +52,9 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
                 state.prune_nonces();
                 state.ping_all_and_prune_dead();
                 state.prune_stale_connections(90);
+                // Keep per-DID rate-limiter map bounded — drop buckets
+                // we haven't touched in 15 minutes.
+                state.prune_sealed_did_rate_limiters(15 * 60);
                 let now = chrono::Utc::now().timestamp();
                 let removed = state.prune_expired_enclaves(now);
                 if removed > 0 {
