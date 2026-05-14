@@ -115,7 +115,7 @@ export async function streamSealedChat(
     const jobId = crypto.randomUUID();
     const requestPayload = {
       job_id: jobId,
-      model_id: options.modelId ?? "llama3.2",
+      model_id: options.modelId ?? "llama3.2:3b",
       messages: [{ role: "user", content: message } satisfies InferenceMessage],
       max_tokens: options.maxTokens ?? 2048,
       stream: options.stream ?? false,
