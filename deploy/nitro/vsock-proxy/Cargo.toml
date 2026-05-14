@@ -1,0 +1,41 @@
+[package]
+name = "ghola-vsock-proxy"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Bidirectional vsock<->TCP byte tunnel for the Ghola Nitro Enclave provider. Two binaries: vsock-proxy runs on the EC2 host, enclave-vsock-client runs inside the enclave."
+
+# Standalone Cargo project — intentionally outside the main repo workspace
+# so the workspace doesn't need to grow a Linux-only vsock dep tree. See
+# the workspace Cargo.toml at the repo root.
+[workspace]
+
+[features]
+default = []
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "signal", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+
+# `tokio-vsock` only compiles on Linux (it transitively pulls in
+# `vsock`, which depends on Linux-only libc constants like
+# `VMADDR_CID_LOCAL` and `MSG_NOSIGNAL`). We target it conditionally so
+# `cargo check` works on macOS dev machines; the actual EIF + EC2 host
+# builds are Linux-only and pull this in automatically.
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-vsock = "0.5"
+
+[[bin]]
+name = "vsock-proxy"
+path = "src/bin/vsock_proxy.rs"
+
+[[bin]]
+name = "enclave-vsock-client"
+path = "src/bin/enclave_vsock_client.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
