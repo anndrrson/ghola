@@ -100,6 +100,21 @@ impl DidSet {
         (g.set.len(), g.last_refresh_unix)
     }
 
+    /// Test-only: insert a DID directly and mark the holder as
+    /// bootstrapped. Used by integration tests that don't want to spin
+    /// up a thumper-cloud stub.
+    ///
+    /// This is intentionally `pub` (not `pub(crate)`) so the
+    /// `tests/sealed_auth.rs` integration test can call it. It MUST NOT
+    /// be called from production code paths — the only writer in
+    /// production is the background refresh task's `replace`.
+    pub fn insert_for_test(&self, did: String) {
+        let mut g = self.inner.write();
+        g.set.insert(did);
+        g.bootstrapped = true;
+        g.last_refresh_unix = chrono::Utc::now().timestamp();
+    }
+
     fn replace(&self, snapshot: WireSnapshot, now_unix: i64) {
         let mut g = self.inner.write();
         let changed = g.last_digest != snapshot.digest_hex;

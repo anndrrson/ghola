@@ -272,6 +272,8 @@ fn test_config() -> RelayConfig {
         dev_mode: true,
         tls_cert_path: None,
         tls_key_path: None,
+        did_set_url: None,
+        did_set_api_key: None,
     }
 }
 
