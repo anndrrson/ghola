@@ -32,6 +32,7 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 // ── Suite constants ─────────────────────────────────────────────────────
 
@@ -126,7 +127,12 @@ impl OhttpKeypair {
 
 /// Per-request decapsulation context. Keep this around to seal the
 /// response back to the requester (RFC 9458 §4.4).
-#[derive(Debug)]
+///
+/// `ZeroizeOnDrop` wipes `export_secret` and `enc` when the context goes
+/// out of scope — important because the handler holds this across the
+/// inner request dispatch (which may await on inference latency), so the
+/// HPKE-derived secret is in memory longer than the AEAD operation itself.
+#[derive(Debug, ZeroizeOnDrop)]
 pub struct ResponseContext {
     /// HPKE export secret tied to this request (Nh bytes).
     export_secret: [u8; NH],
@@ -137,6 +143,7 @@ pub struct ResponseContext {
     /// unused at seal time (AES-GCM AAD is empty per RFC 9458 §4) but
     /// kept so we can extend without a wire break.
     #[allow(dead_code)]
+    #[zeroize(skip)]
     hdr: [u8; 7],
 }
 
@@ -206,7 +213,15 @@ fn extract_and_expand(dh: &[u8], enc: &[u8], pk_r: &[u8]) -> Result<[u8; NH], Oh
 
 /// HPKE KeySchedule (RFC 9180 §5.1) for `mode_base` (no PSK), Nh = 32.
 /// Returns `(key, base_nonce, exporter_secret)`.
-fn key_schedule_base(shared_secret: &[u8; NH], info: &[u8]) -> Result<([u8; NK], [u8; NN], [u8; NH]), OhttpError> {
+///
+/// `key` and `base_nonce` are returned as `Zeroizing<>` so they wipe on
+/// drop as soon as the caller has fed them into AES-256-GCM. The exporter
+/// is plain `[u8; NH]` because it gets handed off to `ResponseContext`,
+/// which is itself `ZeroizeOnDrop`.
+fn key_schedule_base(
+    shared_secret: &[u8; NH],
+    info: &[u8],
+) -> Result<(Zeroizing<[u8; NK]>, Zeroizing<[u8; NN]>, [u8; NH]), OhttpError> {
     let suite = suite_id_hpke();
     // mode = 0 (base)
     let psk_id_hash = labeled_extract(&suite, &[], b"psk_id_hash", &[]);
@@ -216,18 +231,27 @@ fn key_schedule_base(shared_secret: &[u8; NH], info: &[u8]) -> Result<([u8; NK],
     key_schedule_context.extend_from_slice(&psk_id_hash);
     key_schedule_context.extend_from_slice(&info_hash);
 
-    let secret = labeled_extract(&suite, shared_secret, b"secret", &[]);
+    let mut secret = labeled_extract(&suite, shared_secret, b"secret", &[]);
 
-    let key_v = labeled_expand(&suite, &secret, b"key", &key_schedule_context, NK)?;
-    let base_nonce_v = labeled_expand(&suite, &secret, b"base_nonce", &key_schedule_context, NN)?;
-    let exporter_v = labeled_expand(&suite, &secret, b"exp", &key_schedule_context, NH)?;
+    let mut key_v = labeled_expand(&suite, &secret, b"key", &key_schedule_context, NK)?;
+    let mut base_nonce_v = labeled_expand(&suite, &secret, b"base_nonce", &key_schedule_context, NN)?;
+    let mut exporter_v = labeled_expand(&suite, &secret, b"exp", &key_schedule_context, NH)?;
 
-    let mut key = [0u8; NK];
+    let mut key = Zeroizing::new([0u8; NK]);
     key.copy_from_slice(&key_v);
-    let mut base_nonce = [0u8; NN];
+    let mut base_nonce = Zeroizing::new([0u8; NN]);
     base_nonce.copy_from_slice(&base_nonce_v);
     let mut exporter = [0u8; NH];
     exporter.copy_from_slice(&exporter_v);
+
+    // Wipe the intermediate Vec<u8>s before returning — `Zeroizing` covers
+    // the outputs, but the labeled_expand intermediates would otherwise
+    // linger in the allocator until the next alloc reuses the slot.
+    secret.zeroize();
+    key_v.zeroize();
+    base_nonce_v.zeroize();
+    exporter_v.zeroize();
+
     Ok((key, base_nonce, exporter))
 }
 
@@ -287,11 +311,12 @@ pub fn decapsulate_request(
     let (key, base_nonce, exporter_secret) = key_schedule_base(&shared_secret, &info)?;
 
     // Seq = 0; nonce = base_nonce ⊕ seq_be(Nn) = base_nonce
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| OhttpError::AeadOpen)?;
-    let nonce = Nonce::from_slice(&base_nonce);
+    let cipher = Aes256Gcm::new_from_slice(&key[..]).map_err(|_| OhttpError::AeadOpen)?;
+    let nonce = Nonce::from_slice(&base_nonce[..]);
     let plaintext = cipher
         .decrypt(nonce, Payload { msg: ct, aad: &[] })
         .map_err(|_| OhttpError::AeadOpen)?;
+    // `key` and `base_nonce` are `Zeroizing<>` — they wipe here on drop.
 
     Ok((
         plaintext,
@@ -322,23 +347,24 @@ pub fn encapsulate_response(ctx: &ResponseContext, response_plaintext: &[u8]) ->
     //                   prk    = Extract(salt = enc || response_nonce, secret)
     //                   key    = Expand(prk, "key",   "", Nk)
     //                   nonce  = Expand(prk, "nonce", "", Nn)
-    let secret = export(&ctx.export_secret, OHTTP_RESPONSE_LABEL, NK)?;
+    let mut secret = export(&ctx.export_secret, OHTTP_RESPONSE_LABEL, NK)?;
     let (prk, _) = Hkdf::<Sha256>::extract(Some(&salt), &secret);
-    let mut key = [0u8; NK];
+    let mut key = Zeroizing::new([0u8; NK]);
     Hkdf::<Sha256>::from_prk(&prk)
         .map_err(|_| OhttpError::HkdfExpand)?
-        .expand(b"key", &mut key)
+        .expand(b"key", &mut key[..])
         .map_err(|_| OhttpError::HkdfExpand)?;
-    let mut nonce_bytes = [0u8; NN];
+    let mut nonce_bytes = Zeroizing::new([0u8; NN]);
     Hkdf::<Sha256>::from_prk(&prk)
         .map_err(|_| OhttpError::HkdfExpand)?
-        .expand(b"nonce", &mut nonce_bytes)
+        .expand(b"nonce", &mut nonce_bytes[..])
         .map_err(|_| OhttpError::HkdfExpand)?;
+    secret.zeroize();
 
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| OhttpError::AeadSeal)?;
+    let cipher = Aes256Gcm::new_from_slice(&key[..]).map_err(|_| OhttpError::AeadSeal)?;
     let ct = cipher
         .encrypt(
-            Nonce::from_slice(&nonce_bytes),
+            Nonce::from_slice(&nonce_bytes[..]),
             Payload {
                 msg: response_plaintext,
                 aad: &[],
@@ -378,9 +404,9 @@ pub fn encapsulate_request_for_test(
 
     let info = ohttp_request_info(&hdr);
     let (key, base_nonce, exporter_secret) = key_schedule_base(&shared_secret, &info)?;
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| OhttpError::AeadSeal)?;
+    let cipher = Aes256Gcm::new_from_slice(&key[..]).map_err(|_| OhttpError::AeadSeal)?;
     let ct = cipher
-        .encrypt(Nonce::from_slice(&base_nonce), Payload { msg: plaintext, aad: &[] })
+        .encrypt(Nonce::from_slice(&base_nonce[..]), Payload { msg: plaintext, aad: &[] })
         .map_err(|_| OhttpError::AeadSeal)?;
 
     let mut capsule = Vec::with_capacity(7 + NPK + ct.len());
@@ -660,13 +686,19 @@ mod tests {
     fn rejects_wrong_key_id() {
         let kp = OhttpKeypair::generate(0x01);
         let plaintext = b"x";
-        let (mut capsule, _) =
+        let (capsule, _) =
             encapsulate_request_for_test(&kp.public, 0x02, plaintext).expect("encap");
         // header key_id is at offset 0
         assert_eq!(capsule[0], 0x02);
-        capsule[0] = 0x02;
         let err = decapsulate_request(&kp, &capsule).unwrap_err();
-        matches!(err, OhttpError::UnknownKeyId(_));
+        // Explicit `assert!` — a bare `matches!()` discards the bool and
+        // would let a regression to the wrong variant pass silently
+        // (caught by Agent C's review).
+        assert!(
+            matches!(err, OhttpError::UnknownKeyId(2)),
+            "expected UnknownKeyId(2), got {:?}",
+            err
+        );
     }
 
     #[test]

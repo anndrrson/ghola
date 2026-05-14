@@ -44,6 +44,11 @@ hkdf = { workspace = true }
 aes-gcm = { workspace = true }
 rand = { workspace = true }
 clap = { workspace = true }
+# Per-request derived key material is wrapped in Zeroizing<>/derives
+# ZeroizeOnDrop so AEAD keys, base_nonce, and HPKE exporter secrets are
+# wiped from memory when the request finishes. Already a transitive dep
+# via ed25519-dalek; declaring explicitly to keep the contract visible.
+zeroize = { version = "1", features = ["derive"] }
 # Used by the sealed-auth middleware to poll thumper-cloud's /v1/did-set.
 reqwest = { workspace = true }
 
