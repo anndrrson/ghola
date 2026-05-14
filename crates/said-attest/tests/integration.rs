@@ -428,6 +428,123 @@ fn future_timestamp_fails() {
     assert!(matches!(err, AttestationError::FutureTimestamp), "got: {err}");
 }
 
+// ---- KMS-anchored measurement verification path ----
+
+mod kms_path {
+    use super::*;
+    use p384::ecdsa::{signature::Signer as _, VerifyingKey as P384Vk};
+    use sha2::Sha384;
+    use said_attest::verify_attestation_with_root_and_kms;
+
+    fn kms_sign(measurement: &[u8]) -> (Vec<u8>, P384Vk) {
+        let sk = P384Sk::random(&mut rand::rngs::OsRng);
+        let vk = *sk.verifying_key();
+        let mut h = Sha384::new();
+        h.update(measurement);
+        let digest = h.finalize();
+        let sig: P384Sig = sk.sign(&digest);
+        (sig.to_der().as_bytes().to_vec(), vk)
+    }
+
+    #[test]
+    fn happy_path_with_kms() {
+        let x25519 = [0x11u8; 32];
+        let ed25519 = [0x22u8; 32];
+        let ts_ms: u64 = 1_700_000_000_000;
+        let now = (ts_ms / 1000) as i64;
+
+        let (quote, sig, pk, root, _chain) = build_full(x25519, ed25519, None, ts_ms);
+
+        // KMS signs the same measurement (PCR0||PCR1||PCR2).
+        let measurement: Vec<u8> = vec![
+            vec![0xAAu8; 48],
+            vec![0xBBu8; 48],
+            vec![0xCCu8; 48],
+        ]
+        .concat();
+        let (kms_sig, kms_pub) = kms_sign(&measurement);
+
+        let attested = verify_attestation_with_root_and_kms(
+            &quote, &sig, &pk, &kms_sig, &kms_pub, TeeKind::Nitro, now, &root,
+        )
+        .expect("happy path with KMS");
+        assert_eq!(attested.enclave_x25519_pub, x25519);
+    }
+
+    #[test]
+    fn tampered_kms_sig_fails() {
+        let x25519 = [0x11u8; 32];
+        let ed25519 = [0x22u8; 32];
+        let ts_ms: u64 = 1_700_000_000_000;
+        let now = (ts_ms / 1000) as i64;
+
+        let (quote, sig, pk, root, _chain) = build_full(x25519, ed25519, None, ts_ms);
+        let measurement: Vec<u8> = vec![
+            vec![0xAAu8; 48],
+            vec![0xBBu8; 48],
+            vec![0xCCu8; 48],
+        ]
+        .concat();
+        let (mut kms_sig, kms_pub) = kms_sign(&measurement);
+
+        // Flip a byte in the middle of the sig (skip the DER header so
+        // we still parse but verify-fail).
+        let mid = kms_sig.len() / 2;
+        kms_sig[mid] ^= 0xFF;
+
+        let err = verify_attestation_with_root_and_kms(
+            &quote, &sig, &pk, &kms_sig, &kms_pub, TeeKind::Nitro, now, &root,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AttestationError::KmsSig), "got: {err}");
+    }
+
+    #[test]
+    fn wrong_kms_pubkey_fails() {
+        let x25519 = [0x11u8; 32];
+        let ed25519 = [0x22u8; 32];
+        let ts_ms: u64 = 1_700_000_000_000;
+        let now = (ts_ms / 1000) as i64;
+
+        let (quote, sig, pk, root, _chain) = build_full(x25519, ed25519, None, ts_ms);
+        let measurement: Vec<u8> = vec![
+            vec![0xAAu8; 48],
+            vec![0xBBu8; 48],
+            vec![0xCCu8; 48],
+        ]
+        .concat();
+        let (kms_sig, _kms_pub) = kms_sign(&measurement);
+        // Verify with a *different* pubkey.
+        let other_sk = P384Sk::random(&mut rand::rngs::OsRng);
+        let other_vk = *other_sk.verifying_key();
+
+        let err = verify_attestation_with_root_and_kms(
+            &quote, &sig, &pk, &kms_sig, &other_vk, TeeKind::Nitro, now, &root,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AttestationError::KmsSig), "got: {err}");
+    }
+
+    #[test]
+    fn kms_sig_over_different_measurement_fails() {
+        let x25519 = [0x11u8; 32];
+        let ed25519 = [0x22u8; 32];
+        let ts_ms: u64 = 1_700_000_000_000;
+        let now = (ts_ms / 1000) as i64;
+
+        let (quote, sig, pk, root, _chain) = build_full(x25519, ed25519, None, ts_ms);
+        // Sign a *different* measurement than the one PCRs encode.
+        let fake_measurement: Vec<u8> = vec![0u8; 48 * 3];
+        let (kms_sig, kms_pub) = kms_sign(&fake_measurement);
+
+        let err = verify_attestation_with_root_and_kms(
+            &quote, &sig, &pk, &kms_sig, &kms_pub, TeeKind::Nitro, now, &root,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AttestationError::KmsSig), "got: {err}");
+    }
+}
+
 #[test]
 fn unsupported_tee_kind_rejected() {
     let x25519 = [0x11u8; 32];

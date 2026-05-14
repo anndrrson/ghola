@@ -68,6 +68,8 @@ pub enum AttestationError {
     UserDataMismatch,
     #[error("allowlist signature invalid")]
     AllowlistSig,
+    #[error("KMS measurement signature invalid")]
+    KmsSig,
     #[error("attestation expired (now {now}, doc ts {ts})")]
     Expired { now: i64, ts: i64 },
     #[error("attestation timestamp in the future")]

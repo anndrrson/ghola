@@ -19,6 +19,7 @@
 //! session that received the `ProviderAttest`.
 
 pub mod allowlist;
+pub mod kms;
 pub mod nitro;
 pub mod types;
 
@@ -59,6 +60,35 @@ pub fn verify_attestation(
         expected_tee_kind,
         now_unix,
         /* test_root_der = */ None,
+        /* kms = */ None,
+    )
+}
+
+/// Variant that additionally verifies a KMS-anchored ECDSA P-384
+/// signature over `sha384(PCR0||PCR1||PCR2)`. This is the production
+/// path for Phase 1 of the v3.5 privacy rollout — both the offline
+/// Ed25519 allowlist sig and the KMS-managed P-384 sig must verify
+/// for the attestation to be accepted.
+///
+/// `kms_sig_bytes` accepts either DER-encoded (the KMS-native output)
+/// or raw `r||s` (96 bytes) per [`kms::verify_measurement_kms_raw_or_der`].
+pub fn verify_attestation_with_kms(
+    vendor_quote: &[u8],
+    ghola_allowlist_sig: &[u8],
+    ghola_allowlist_pub: &VerifyingKey,
+    kms_sig_bytes: &[u8],
+    kms_pub: &p384::ecdsa::VerifyingKey,
+    expected_tee_kind: TeeKind,
+    now_unix: i64,
+) -> Result<AttestedEnclave, AttestationError> {
+    verify_attestation_inner(
+        vendor_quote,
+        ghola_allowlist_sig,
+        ghola_allowlist_pub,
+        expected_tee_kind,
+        now_unix,
+        None,
+        Some((kms_sig_bytes, kms_pub)),
     )
 }
 
@@ -81,6 +111,30 @@ pub fn verify_attestation_with_root(
         expected_tee_kind,
         now_unix,
         Some(test_root_der),
+        None,
+    )
+}
+
+/// Test-only variant that combines test root + KMS verification.
+#[doc(hidden)]
+pub fn verify_attestation_with_root_and_kms(
+    vendor_quote: &[u8],
+    ghola_allowlist_sig: &[u8],
+    ghola_allowlist_pub: &VerifyingKey,
+    kms_sig_bytes: &[u8],
+    kms_pub: &p384::ecdsa::VerifyingKey,
+    expected_tee_kind: TeeKind,
+    now_unix: i64,
+    test_root_der: &[u8],
+) -> Result<AttestedEnclave, AttestationError> {
+    verify_attestation_inner(
+        vendor_quote,
+        ghola_allowlist_sig,
+        ghola_allowlist_pub,
+        expected_tee_kind,
+        now_unix,
+        Some(test_root_der),
+        Some((kms_sig_bytes, kms_pub)),
     )
 }
 
@@ -91,6 +145,7 @@ fn verify_attestation_inner(
     expected_tee_kind: TeeKind,
     now_unix: i64,
     test_root_der: Option<&[u8]>,
+    kms: Option<(&[u8], &p384::ecdsa::VerifyingKey)>,
 ) -> Result<AttestedEnclave, AttestationError> {
     if expected_tee_kind != TeeKind::Nitro {
         return Err(AttestationError::UnsupportedTeeKind);
@@ -105,8 +160,13 @@ fn verify_attestation_inner(
     // 2. Measurement = PCR0 || PCR1 || PCR2 (in that order).
     let measurement = derive_measurement(&doc)?;
 
-    // 3. Allowlist signature over sha256(measurement).
+    // 3a. Allowlist signature over sha256(measurement).
     allowlist::verify_measurement(&measurement, ghola_allowlist_sig, ghola_allowlist_pub)?;
+
+    // 3b. KMS signature over sha384(measurement), when provided.
+    if let Some((sig_bytes, kms_pub)) = kms {
+        kms::verify_measurement_kms_raw_or_der(&measurement, sig_bytes, kms_pub)?;
+    }
 
     // 4. user_data bind: [x25519_pub (32)][ed25519_pub (32)][ts_ms_le (8)].
     let ud = doc
