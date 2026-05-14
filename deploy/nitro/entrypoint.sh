@@ -57,11 +57,24 @@ OLLAMA_PID=$!
 sleep 2
 
 # ---- 3. Provider ----
-# Hand off to the provider. `exec` so PID 1 inside the enclave init
-# tree is the provider — when it dies, the enclave dies, and ops sees
-# the failure cleanly in nitro-cli describe-enclaves.
+# Run the provider in the background and `wait` so this entrypoint
+# stays alive as the parent of all three children (vsock-client,
+# ollama, provider). The earlier `exec provider` pattern caused
+# enclave-vsock-client to stop processing connections immediately
+# after `exec` — bash's PID got reused by the provider, and the
+# vsock-client's accept loop went silent (TCP listener bound but no
+# subsequent "accepted TCP conn" logs, observed via nitro-cli
+# console). Keeping bash alive as the parent restores normal
+# child-process management.
 #
-# Sanity log of children (debug only — these PIDs don't leak outside
-# the enclave so it's safe to print).
+# When provider exits we exit too, and the enclave init tears the
+# whole tree down — same semantics as `exec`, just with bash still
+# in the chain to manage the children.
 echo "==> enclave-vsock-client pid=${VSOCK_PID}, ollama pid=${OLLAMA_PID}"
-exec /usr/local/bin/thumper-gpu-provider
+/usr/local/bin/thumper-gpu-provider &
+PROVIDER_PID=$!
+
+# Propagate SIGTERM (nitro-cli terminate-enclave) to children cleanly.
+trap 'kill -TERM "${VSOCK_PID}" "${OLLAMA_PID}" "${PROVIDER_PID}" 2>/dev/null; wait' TERM INT
+
+wait "${PROVIDER_PID}"
