@@ -262,6 +262,19 @@ export async function streamSealedChat(
     // POST to /inference/sealed. The relay forwards the opaque blob to
     // the enclave verbatim — it never sees plaintext.
     //
+    // === v3.5 Phase 3: auth comes from the envelope, not a Bearer header ===
+    // The relay validates this request by:
+    //   1. parsing the said-envelope nested in `sealed_request_b64`,
+    //   2. verifying the envelope's Ed25519 signature against `sender_did`,
+    //   3. checking `sender_did ∈ did_set` (a periodically-refreshed
+    //      snapshot pulled from thumper-cloud),
+    //   4. enforcing replay defense via the envelope's nonce.
+    // Including `Authorization: Bearer <thumper_token>` here would leak
+    // the user account identity to the relay — exactly the linkage Phase
+    // 3 is removing. The `thumper_token` machinery in localStorage stays
+    // in place for non-sealed endpoints (e.g. wallet, chat history).
+    //
+    // === v3.5 Phase 2: outer OHTTP envelope ===
     // When NEXT_PUBLIC_OHTTP_RELAY_URL is configured, we wrap the entire
     // request in an OHTTP (RFC 9458) capsule and post to the Cloudflare
     // OHTTP relay instead of hitting the Ghola Gateway directly. Double
@@ -269,10 +282,6 @@ export async function streamSealedChat(
     // said-envelope to the enclave. Apple PCC-style: Cloudflare sees the
     // client IP but not the body; the Gateway sees the body but not the
     // client IP.
-    const token =
-      typeof window !== "undefined"
-        ? localStorage.getItem("thumper_token")
-        : null;
     const innerBody = JSON.stringify({
       enclave_key_id: enclave.enclave_key_id,
       job_id: jobId,
@@ -288,13 +297,16 @@ export async function streamSealedChat(
     let wire: SealedInferenceResponseWire;
     try {
       if (ohttpRelay) {
+        // token: null — Phase 3 auth model: the relay verifies the
+        // inner said-envelope's signature against the registered DID set
+        // instead of reading a Bearer token.
         wire = await sendViaOhttp({
           ohttpRelay,
-          token,
+          token: null,
           innerBody,
         });
       } else {
-        wire = await sendDirect({ token, innerBody });
+        wire = await sendDirect({ token: null, innerBody });
       }
     } catch (err) {
       options.onError(

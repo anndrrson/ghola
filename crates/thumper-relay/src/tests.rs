@@ -274,6 +274,8 @@ fn test_config() -> RelayConfig {
         tls_key_path: None,
         ohttp_key_secret_hex: None,
         ohttp_key_id: crate::config::DEFAULT_OHTTP_KEY_ID,
+        did_set_url: None,
+        did_set_api_key: None,
     }
 }
 

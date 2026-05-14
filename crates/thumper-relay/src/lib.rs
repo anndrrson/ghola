@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod config;
+pub mod did_set;
 pub mod error;
 pub mod handlers;
 pub mod metrics;
@@ -30,6 +31,16 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     tracing::info!(%bind_addr, dev_mode = config.dev_mode, "starting thumper relay server");
 
     let state = AppState::new(config);
+
+    // Phase 3 (v3.5): periodically poll thumper-cloud for the registered
+    // Ghola DID set. The sealed-inference auth middleware uses this to
+    // verify "request is from *some* registered DID" without learning
+    // which user account it maps to. The holder is in-memory only.
+    did_set::spawn_refresh_task(
+        state.did_set().clone(),
+        state.config().did_set_url.clone(),
+        state.config().did_set_api_key.clone(),
+    );
 
     // Spawn heartbeat + nonce cleanup + dead connection pruning task
     {
@@ -65,16 +76,27 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         );
     }
 
+    // The sealed-inference route uses a DID-envelope-based auth
+    // middleware (Phase 3 privacy): the Bearer token is gone, auth
+    // derives from the said-envelope's sender signature + did_set
+    // membership. All other routes keep their existing auth posture.
+    let sealed_router = Router::new()
+        .route("/inference/sealed", post(handlers::dispatch_inference_sealed))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_sealed_envelope_auth,
+        ));
+
     let mut app = Router::new()
         .route("/health", get(handlers::health))
         .route("/metrics", get(handlers::metrics_handler))
         .route("/ws", get(handlers::ws_upgrade))
         .route("/inference", post(handlers::dispatch_inference))
         .route("/inference-stream", post(handlers::dispatch_inference_stream))
-        .route("/inference/sealed", post(handlers::dispatch_inference_sealed))
         .route("/providers/attest", post(handlers::provider_attest_http))
         .route("/providers/attested", get(handlers::list_attested_providers))
-        .route("/attestations/{hash_hex}", get(handlers::get_attestation));
+        .route("/attestations/{hash_hex}", get(handlers::get_attestation))
+        .merge(sealed_router);
 
     if ohttp_enabled {
         app = app

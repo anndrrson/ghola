@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 thumper-types = { path = "../thumper-types" }
 said-attest = { workspace = true }
+said-envelope = { workspace = true }
 said-noncecache = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
@@ -43,5 +44,10 @@ hkdf = { workspace = true }
 aes-gcm = { workspace = true }
 rand = { workspace = true }
 clap = { workspace = true }
+# Used by the sealed-auth middleware to poll thumper-cloud's /v1/did-set.
+reqwest = { workspace = true }
 
 [dev-dependencies]
+said-envelope = { workspace = true }
+tower = { workspace = true }
+http-body-util = "0.1"

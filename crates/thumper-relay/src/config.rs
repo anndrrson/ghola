@@ -26,6 +26,14 @@ pub struct RelayConfig {
     pub ohttp_key_secret_hex: Option<String>,
     /// Key id advertised in the OHTTP keyconfig + capsule header.
     pub ohttp_key_id: u8,
+    /// URL of thumper-cloud's `/v1/did-set` endpoint. Polled periodically
+    /// to materialise the membership set used by sealed-inference auth.
+    /// If unset, sealed-inference middleware fails closed.
+    pub did_set_url: Option<String>,
+    /// Static API key the relay sends as `Authorization: Bearer <key>`
+    /// when polling `did_set_url`. Must match
+    /// `THUMPER_CLOUD_RELAY_API_KEY` on the cloud side.
+    pub did_set_api_key: Option<String>,
 }
 
 impl RelayConfig {
@@ -57,6 +65,8 @@ impl RelayConfig {
                 .ok()
                 .and_then(|s| s.parse::<u8>().ok())
                 .unwrap_or(DEFAULT_OHTTP_KEY_ID),
+            did_set_url: env::var("THUMPER_CLOUD_DID_SET_URL").ok(),
+            did_set_api_key: env::var("THUMPER_CLOUD_RELAY_API_KEY").ok(),
         }
     }
 

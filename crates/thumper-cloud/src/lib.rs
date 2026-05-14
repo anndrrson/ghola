@@ -265,6 +265,10 @@ pub fn build_router(state: AppState) -> Router {
         // x402 Discovery (unauthenticated)
         .route("/x402/agents", get(routes::x402::list_agents))
         .route("/x402/agents/{slug}", get(routes::x402::get_agent))
+        // DID set snapshot (relay polls this with a static API key).
+        // Phase 3 privacy: lets the relay verify "this sealed request is
+        // from *some* registered Ghola DID" without learning which user.
+        .route("/v1/did-set", get(routes::did_snapshot::get_did_set))
         // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(routes::openai_compat::chat_completions))
         .route("/v1/models", get(routes::openai_compat::list_models))
