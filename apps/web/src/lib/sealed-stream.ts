@@ -148,15 +148,22 @@ export async function streamSealedChat(
 
     // POST to /inference/sealed. The relay forwards the opaque blob to
     // the enclave verbatim — it never sees plaintext.
+    //
+    // === v3.5 Phase 3: auth comes from the envelope, not a Bearer header ===
+    // The relay validates this request by:
+    //   1. parsing the said-envelope nested in `sealed_request_b64`,
+    //   2. verifying the envelope's Ed25519 signature against `sender_did`,
+    //   3. checking `sender_did ∈ did_set` (a periodically-refreshed
+    //      snapshot pulled from thumper-cloud),
+    //   4. enforcing replay defense via the envelope's nonce.
+    // Including `Authorization: Bearer <thumper_token>` here would leak
+    // the user account identity to the relay — exactly the linkage Phase
+    // 3 is removing. The `thumper_token` machinery in localStorage stays
+    // in place for non-sealed endpoints (e.g. wallet, chat history).
     const url = new URL("/inference/sealed", thumperRelayBase());
-    const token =
-      typeof window !== "undefined"
-        ? localStorage.getItem("thumper_token")
-        : null;
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
 
     const res = await fetch(url.toString(), {
       method: "POST",
