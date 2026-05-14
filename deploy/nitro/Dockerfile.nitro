@@ -75,6 +75,13 @@ RUN cargo build --release \
         -p thumper-gpu-provider \
         --features aws-nitro-enclaves-nsm-api
 
+# Build the in-enclave vsock client. It lives in a standalone Cargo
+# project under deploy/nitro/vsock-proxy/ (not part of the workspace
+# because vsock is Linux-only and we don't want that dep entangling
+# the rest of the tree). The runtime stage copies the binary in.
+COPY deploy/nitro/vsock-proxy/ /vsock-proxy/
+RUN cd /vsock-proxy && cargo build --release --bin enclave-vsock-client
+
 # -------- Stage 2: runtime --------
 FROM amazonlinux:2023 AS runtime
 
@@ -104,6 +111,13 @@ RUN curl -fsSL https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERS
 # Provider binary.
 COPY --from=builder /src/target/release/thumper-gpu-provider /usr/local/bin/thumper-gpu-provider
 
+# In-enclave vsock client. Listens on 127.0.0.1:8443 and tunnels to
+# the host's vsock-proxy (CID=3, port=8443). The provider connects to
+# 127.0.0.1:8443 via rustls with SNI overridden to the relay's
+# hostname — TLS terminates end-to-end at the relay, the host vsock
+# proxy never sees plaintext.
+COPY --from=builder /vsock-proxy/target/release/enclave-vsock-client /usr/local/bin/enclave-vsock-client
+
 # Entrypoint shim — starts Ollama in the background, then execs the
 # provider. We intentionally don't use a process supervisor (s6, tini)
 # because the EIF init replaces PID 1 anyway; the provider crashing is
@@ -121,7 +135,8 @@ EXPOSE 11434
 
 ENV RUST_LOG=info \
     OLLAMA_URL=http://127.0.0.1:11434 \
-    RELAY_URL=wss://relay.ghola.xyz/ws \
+    RELAY_URL=wss://127.0.0.1:8443/ws \
+    RELAY_SNI_OVERRIDE=ghola-relay.onrender.com \
     TEE_KIND=nitro \
     PROVIDER_NAME=ghola-nitro
 

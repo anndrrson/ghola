@@ -66,6 +66,18 @@ variable "name_prefix" {
   description = "Tag/name prefix for all resources."
 }
 
+variable "relay_host" {
+  type        = string
+  default     = "ghola-relay.onrender.com"
+  description = "Relay hostname the vsock-proxy dials. Must match the SNI override the in-enclave provider expects (RELAY_SNI_OVERRIDE)."
+}
+
+variable "relay_port" {
+  type        = number
+  default     = 443
+  description = "Relay TCP port. Almost always 443."
+}
+
 # ---- Networking ----
 #
 # A minimal VPC with one public subnet. The instance gets a public IP so
@@ -277,6 +289,8 @@ resource "aws_instance" "host" {
   user_data = templatefile("${path.module}/user-data.sh", {
     eif_s3_uri = var.eif_s3_uri
     aws_region = var.aws_region
+    relay_host = var.relay_host
+    relay_port = var.relay_port
   })
 
   # Force replacement when user-data changes so a new EIF rolls out
