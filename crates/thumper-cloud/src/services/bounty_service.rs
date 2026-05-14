@@ -170,8 +170,8 @@ pub async fn settle_bounty(
     .execute(db)
     .await?;
 
-    // Get funder_id from the bounty to update their stats
-    let funder_id = row.0; // bounty_id is row.0, but we need funder — let me use task_id
+    // Bump funder reputation. The funder is resolved via subquery from the
+    // task row (tasks.user_id), so we only need to bind task_id here.
     sqlx::query(
         r#"
         UPDATE users SET
