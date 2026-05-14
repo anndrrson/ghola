@@ -184,6 +184,31 @@ pub async fn require_sealed_envelope_auth(
         return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    // -- fail-closed if the cached DID set is too stale -------------------
+    //
+    // Even after a successful initial bootstrap, the in-memory set will
+    // diverge from the cloud-side registry whenever the refresh task
+    // can't reach thumper-cloud. Without a staleness bound, a revoked
+    // DID would keep access indefinitely until the cloud came back.
+    // After `did_set_max_staleness_secs` seconds we degrade to deny-all,
+    // which is the correct posture for a revocation-sensitive control.
+    {
+        let now_unix = chrono::Utc::now().timestamp();
+        let max = state.config().did_set_max_staleness_secs;
+        if !state.did_set().is_fresh(now_unix, max) {
+            let (count, last_refresh) = state.did_set().stats();
+            tracing::warn!(
+                count,
+                last_refresh,
+                now_unix,
+                max_staleness_secs = max,
+                "sealed-inference auth rejecting: did_set cache stale beyond \
+                 THUMPER_DID_SET_MAX_STALENESS_SECS"
+            );
+            return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        }
+    }
+
     let (parts, body) = request.into_parts();
     let body_bytes = match to_bytes(body, MAX_SEALED_BODY_BYTES).await {
         Ok(b) => b,

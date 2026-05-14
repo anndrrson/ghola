@@ -124,7 +124,21 @@ impl AppState {
     /// to pre-populate the membership set without spinning up a refresh
     /// task against a real thumper-cloud.
     pub fn new_with_did_set(config: RelayConfig, did_set: DidSet) -> Self {
-        let nonce_ttl = config.auth_timeout_secs * 2;
+        // Nonce TTL must be >= the DID-set max-staleness window. Otherwise:
+        // a DID is revoked cloud-side at T, the relay refresh happens at
+        // T+staleness, but a replay of a request the now-revoked DID
+        // signed pre-revocation would slip through if the nonce had
+        // already aged out of the replay cache. By making the nonce TTL
+        // strictly >= the staleness window we guarantee any replay is
+        // caught either by the membership check (after refresh) or by
+        // the nonce cache (before refresh).
+        //
+        // `auth_timeout_secs * 2` is the historical setting (the auth
+        // message lives for `auth_timeout_secs`, the nonce must outlive
+        // it by enough to catch in-flight replays). We take the max of
+        // that and the configured DID-set staleness to enforce the
+        // invariant even if an operator dials the staleness window up.
+        let nonce_ttl = (config.auth_timeout_secs * 2).max(config.did_set_max_staleness_secs);
         Self {
             inner: Arc::new(AppStateInner {
                 devices: DashMap::new(),

@@ -94,6 +94,34 @@ impl DidSet {
         self.inner.read().bootstrapped
     }
 
+    /// Returns true iff the holder is bootstrapped AND the cached set is
+    /// younger than `max_staleness_secs` (where age is measured as
+    /// `now_unix - last_refresh_unix`).
+    ///
+    /// Returns false when:
+    ///   - The holder has never been refreshed (cold start).
+    ///   - The most recent successful refresh is older than the bound.
+    ///
+    /// Without this bound, a thumper-cloud outage would leave the relay
+    /// serving against an indefinitely stale cache — a DID revoked
+    /// cloud-side would keep access until the cloud came back. Callers
+    /// should fail closed (reject all requests) when this returns false.
+    pub fn is_fresh(&self, now_unix: i64, max_staleness_secs: u64) -> bool {
+        let g = self.inner.read();
+        if !g.bootstrapped {
+            return false;
+        }
+        // `last_refresh_unix` is monotonically set to "now at refresh
+        // time"; if the clock skews backwards `now_unix - last` may go
+        // negative — treat that as "fresh" (we just refreshed) rather
+        // than fail closed on clock noise.
+        let age = now_unix.saturating_sub(g.last_refresh_unix);
+        if age < 0 {
+            return true;
+        }
+        (age as u64) < max_staleness_secs
+    }
+
     /// Returns `(count, last_refresh_unix)`. For metrics.
     pub fn stats(&self) -> (usize, i64) {
         let g = self.inner.read();
@@ -257,6 +285,59 @@ mod tests {
         let s = DidSet::new();
         assert!(!s.contains("did:key:zSomeone"));
         assert!(!s.is_bootstrapped());
+    }
+
+    #[test]
+    fn is_fresh_false_when_not_bootstrapped() {
+        let s = DidSet::new();
+        assert!(!s.is_fresh(1_000_000, 300));
+    }
+
+    #[test]
+    fn is_fresh_true_within_window() {
+        let s = DidSet::new();
+        let snap = WireSnapshot {
+            version: "v1".into(),
+            count: 0,
+            dids: vec![],
+            snapshot_at_unix: 0,
+            digest_hex: "d".into(),
+        };
+        s.replace(snap, 1000);
+        assert!(s.is_fresh(1100, 300));
+        assert!(s.is_fresh(1299, 300));
+    }
+
+    #[test]
+    fn is_fresh_false_past_window() {
+        let s = DidSet::new();
+        let snap = WireSnapshot {
+            version: "v1".into(),
+            count: 0,
+            dids: vec![],
+            snapshot_at_unix: 0,
+            digest_hex: "d".into(),
+        };
+        s.replace(snap, 1000);
+        assert!(!s.is_fresh(1300, 300));
+        assert!(!s.is_fresh(9999, 300));
+    }
+
+    #[test]
+    fn is_fresh_handles_clock_skew_backwards() {
+        // If `now` ends up earlier than `last_refresh_unix` (NTP step,
+        // clock adjustment, …) we treat the set as fresh rather than
+        // fail closed on noise.
+        let s = DidSet::new();
+        let snap = WireSnapshot {
+            version: "v1".into(),
+            count: 0,
+            dids: vec![],
+            snapshot_at_unix: 0,
+            digest_hex: "d".into(),
+        };
+        s.replace(snap, 1000);
+        assert!(s.is_fresh(500, 300));
     }
 
     #[test]
