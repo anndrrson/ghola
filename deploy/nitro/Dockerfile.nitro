@@ -98,6 +98,7 @@ RUN dnf -y update && dnf -y install --allowerasing \
     tar \
     gzip \
     openssl \
+    iproute \
     && dnf clean all
 
 # Install Ollama. Pinned to a known-good release; bump when needed.

@@ -14,6 +14,19 @@
 #      sends ProviderAttest, serves sealed inference requests.
 set -euo pipefail
 
+# ---- 0. Bring up loopback interface ----
+# linuxkit's init does NOT bring up `lo` by default. Without it,
+# bind(127.0.0.1) succeeds (kernel takes the IP) but connect(127.0.0.1)
+# from a sibling process gets ECONNREFUSED — the kernel won't route to
+# a down interface. Symptom we hit on the first non-debug launch:
+# enclave-vsock-client logged "TCP listener bound" then the provider's
+# `tcp connect 127.0.0.1:8443` failed forever with no "accepted TCP
+# conn" log on the vsock-client side (accept() never returned because
+# no connection ever reached the listener).
+echo "==> bringing up lo interface"
+ip link set lo up 2>&1 || /sbin/ip link set lo up 2>&1 || true
+ip addr show lo 2>&1 | head -3 || true
+
 # ---- 1. vsock egress stub ----
 # Default listen on 127.0.0.1:8443; the provider's RELAY_URL points
 # here. Override VSOCK_HOST_CID/VSOCK_HOST_PORT for dev testing.
@@ -33,6 +46,11 @@ VSOCK_PID=$!
 # tries to connect. The provider's reconnect loop would recover from a
 # transient ECONNREFUSED, but logging a clean boot is nicer.
 sleep 1
+if kill -0 "${VSOCK_PID}" 2>/dev/null; then
+    echo "==> enclave-vsock-client alive after 1s (pid ${VSOCK_PID})"
+else
+    echo "==> WARNING: enclave-vsock-client dead after 1s (pid ${VSOCK_PID})"
+fi
 
 # ---- 2. Ollama ----
 # Ollama needs a writable model cache. The enclave gives us an empty
