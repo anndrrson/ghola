@@ -17,7 +17,14 @@ set -euo pipefail
 # ---- 1. vsock egress stub ----
 # Default listen on 127.0.0.1:8443; the provider's RELAY_URL points
 # here. Override VSOCK_HOST_CID/VSOCK_HOST_PORT for dev testing.
+#
+# VSOCK_HOST_CID=3 is the AWS Nitro Enclaves *parent* CID. The
+# `tokio-vsock` library's `VMADDR_CID_HOST` constant is 2, which is the
+# generic VM-host convention but NOT what Nitro uses for the parent EC2
+# instance. We pin to 3 here so the enclave-vsock-client dials the
+# correct vsock peer (the host-side vsock-proxy on the m5.xlarge).
 export LISTEN_ADDR="${LISTEN_ADDR:-127.0.0.1:8443}"
+export VSOCK_HOST_CID="${VSOCK_HOST_CID:-3}"
 export VSOCK_HOST_PORT="${VSOCK_HOST_PORT:-8443}"
 /usr/local/bin/enclave-vsock-client &
 VSOCK_PID=$!
@@ -31,6 +38,11 @@ sleep 1
 # Ollama needs a writable model cache. The enclave gives us an empty
 # tmpfs at /var/lib/ollama; bake models in via `ollama pull` during
 # the image build if cold-start latency matters.
+#
+# Ollama also reads $HOME at startup to locate its config dir. The
+# enclave init doesn't set HOME, so we have to or Ollama exits with
+# "Error: $HOME is not defined" before binding 127.0.0.1:11434.
+export HOME="${HOME:-/var/lib/ollama}"
 export OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
 export OLLAMA_MODELS="${OLLAMA_MODELS:-/var/lib/ollama}"
 mkdir -p "${OLLAMA_MODELS}"

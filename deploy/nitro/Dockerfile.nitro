@@ -138,6 +138,7 @@ ENV RUST_LOG=info \
     RELAY_URL=wss://127.0.0.1:8443/ws \
     RELAY_SNI_OVERRIDE=ghola-relay.onrender.com \
     TEE_KIND=nitro \
-    PROVIDER_NAME=ghola-nitro
+    PROVIDER_NAME=ghola-nitro \
+    MODELS=llama3.2:3b
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
