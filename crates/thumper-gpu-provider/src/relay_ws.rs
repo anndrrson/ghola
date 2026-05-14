@@ -14,7 +14,9 @@
 //! is new for v2 and the relay's `dispatch_inference_sealed` path needs it
 //! before it will route sealed requests to this provider.
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll};
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -22,11 +24,16 @@ use ed25519_dalek::Signer;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
+
+use rustls::pki_types::ServerName;
+use rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::TlsConnector;
 
 use said_envelope::{open as envelope_open, seal as envelope_seal, RecipientKind, SealParams};
 use thumper_types::{
@@ -67,8 +74,67 @@ pub struct Provider {
     pub runner: Arc<dyn InferenceRunner>,
 }
 
-type WsSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
-type WsStream = SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
+/// The transport under our WebSocket. Either the default
+/// `tokio-tungstenite` `MaybeTlsStream` (used when `RELAY_SNI_OVERRIDE`
+/// is unset and the URL's host matches the relay's cert) or a hand-built
+/// rustls TLS stream over plain TCP (used when we tunnel through the
+/// in-enclave vsock bridge and need to override SNI because the URL
+/// host is `127.0.0.1`).
+///
+/// The enum implements `AsyncRead` + `AsyncWrite` by delegation, so
+/// `WebSocketStream<RelayTransport>` works the same regardless of
+/// which variant we built.
+pub enum RelayTransport {
+    Default(MaybeTlsStream<TcpStream>),
+    SniOverridden(tokio_rustls::client::TlsStream<TcpStream>),
+}
+
+impl AsyncRead for RelayTransport {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            RelayTransport::Default(s) => Pin::new(s).poll_read(cx, buf),
+            RelayTransport::SniOverridden(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for RelayTransport {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            RelayTransport::Default(s) => Pin::new(s).poll_write(cx, buf),
+            RelayTransport::SniOverridden(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            RelayTransport::Default(s) => Pin::new(s).poll_flush(cx),
+            RelayTransport::SniOverridden(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            RelayTransport::Default(s) => Pin::new(s).poll_shutdown(cx),
+            RelayTransport::SniOverridden(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+type WsSink = SplitSink<WebSocketStream<RelayTransport>, Message>;
+type WsStream = SplitStream<WebSocketStream<RelayTransport>>;
 
 impl Provider {
     /// Run the provider forever, reconnecting on any disconnect.
@@ -112,9 +178,7 @@ impl Provider {
     /// WS closes cleanly, Err on any handshake or transport failure.
     /// The caller (`connect_and_serve`) loops on either outcome.
     async fn attempt_once(&self) -> Result<()> {
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&self.cfg.relay_url)
-            .await
-            .with_context(|| format!("connecting to {}", self.cfg.relay_url))?;
+        let ws_stream = connect_ws(&self.cfg.relay_url).await?;
         tracing::info!(url = %self.cfg.relay_url, "ws connected");
 
         let (write, read) = ws_stream.split();
@@ -432,6 +496,93 @@ async fn recv_text(read: &Arc<Mutex<WsStream>>) -> Result<String> {
             _ => continue,
         }
     }
+}
+
+/// Build a `WebSocketStream` over either the default tokio-tungstenite
+/// `connect_async` (no SNI override) or a hand-built TCP+rustls path
+/// where the TLS ServerName is taken from `RELAY_SNI_OVERRIDE`.
+///
+/// The override path exists so the provider can speak rustls all the
+/// way to the relay while routing through the in-enclave vsock bridge
+/// (`127.0.0.1:8443` — loopback hostname that wouldn't match the
+/// relay's TLS cert). End-to-end TLS is preserved; the host's vsock
+/// proxy sees only ciphertext.
+async fn connect_ws(relay_url: &str) -> Result<WebSocketStream<RelayTransport>> {
+    let sni_override = std::env::var("RELAY_SNI_OVERRIDE").ok().filter(|s| !s.is_empty());
+
+    let url = url::Url::parse(relay_url).with_context(|| format!("parse url {relay_url}"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("relay url has no host"))?
+        .to_string();
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("relay url has no port and no default"))?;
+    let scheme = url.scheme();
+    let is_tls = matches!(scheme, "wss" | "https");
+
+    // Pick the SNI / Host header. If override is set, use it; otherwise
+    // mirror the URL's host (the original `connect_async` behavior).
+    let sni = sni_override.clone().unwrap_or_else(|| host.clone());
+    if sni_override.is_some() {
+        tracing::info!(sni = %sni, host = %host, "RELAY_SNI_OVERRIDE active; building TLS manually");
+    }
+
+    let tcp = TcpStream::connect((host.as_str(), port))
+        .await
+        .with_context(|| format!("tcp connect {host}:{port}"))?;
+    tcp.set_nodelay(true).ok();
+
+    let transport = if is_tls {
+        let mut roots = RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        // Use the `ring` provider explicitly. The workspace also pulls
+        // in `aws-lc-rs` (via reqwest+sqlx), so we want a single,
+        // explicit provider here to avoid the "no default crypto
+        // provider installed" panic rustls 0.23 throws when the global
+        // default isn't set.
+        let provider = rustls::crypto::ring::default_provider();
+        let config = ClientConfig::builder_with_provider(Arc::new(provider))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| anyhow::anyhow!("rustls protocol versions: {e}"))?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = TlsConnector::from(Arc::new(config));
+        let server_name = ServerName::try_from(sni.clone())
+            .map_err(|e| anyhow::anyhow!("invalid SNI {sni}: {e}"))?;
+        let tls = connector
+            .connect(server_name, tcp)
+            .await
+            .with_context(|| format!("rustls handshake to {host}:{port} sni={sni}"))?;
+        RelayTransport::SniOverridden(tls)
+    } else {
+        RelayTransport::Default(MaybeTlsStream::Plain(tcp))
+    };
+
+    // Build the HTTP Upgrade request. Use `sni` as the Host header so
+    // the relay's vhost routing matches the cert subject we just
+    // validated.
+    let request = build_ws_request(relay_url, &sni)?;
+    let (ws_stream, _resp) = tokio_tungstenite::client_async(request, transport)
+        .await
+        .with_context(|| format!("ws handshake against {relay_url}"))?;
+    Ok(ws_stream)
+}
+
+fn build_ws_request(
+    relay_url: &str,
+    host_header: &str,
+) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = relay_url.into_client_request()?;
+    let headers = req.headers_mut();
+    headers.insert(
+        "Host",
+        host_header
+            .parse()
+            .map_err(|e| anyhow::anyhow!("bad Host header value {host_header}: {e}"))?,
+    );
+    Ok(req)
 }
 
 // Re-exports used by tests & callers that don't want to depend on
