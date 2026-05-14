@@ -907,23 +907,23 @@ pub struct SealedInferenceDispatchRequest {
     pub mode_hint: Option<String>,
 }
 
-/// POST /inference/sealed — forward an opaque sealed envelope to the attested
-/// enclave and stream back the opaque sealed response. The relay never
-/// decrypts. Streaming sealed responses are out of scope for Track E; if the
-/// provider replies with multiple chunks, only the first non-final response
-/// is returned (full streaming lands in Wave 3).
-pub async fn dispatch_inference_sealed(
-    State(state): State<AppState>,
-    Json(req): Json<SealedInferenceDispatchRequest>,
-) -> impl IntoResponse {
+/// Core of the sealed-inference dispatch path, factored out so both
+/// the direct `POST /inference/sealed` handler and the OHTTP gateway can
+/// invoke it without re-implementing the WebSocket plumbing.
+///
+/// Returns `(status, json_body)` so the caller can render it as either
+/// an `axum::Json` response or a BHTTP response inside an OHTTP capsule.
+pub async fn handle_sealed_inference(
+    state: &AppState,
+    req: SealedInferenceDispatchRequest,
+) -> (axum::http::StatusCode, serde_json::Value) {
     let enclave = match state.get_attested_enclave(&req.enclave_key_id) {
         Some(e) => e,
         None => {
             return (
                 axum::http::StatusCode::NOT_FOUND,
-                Json(json!({"error": "enclave_key_id not attested"})),
-            )
-                .into_response();
+                json!({"error": "enclave_key_id not attested"}),
+            );
         }
     };
 
@@ -931,22 +931,17 @@ pub async fn dispatch_inference_sealed(
     if provider_pubkey.is_empty() {
         return (
             axum::http::StatusCode::BAD_GATEWAY,
-            Json(json!({"error": "attested enclave has no bound provider"})),
-        )
-            .into_response();
+            json!({"error": "attested enclave has no bound provider"}),
+        );
     }
 
-    // Concurrency / connectivity check.
     if state.gpu_provider_concurrency(&provider_pubkey).is_none() {
         return (
             axum::http::StatusCode::BAD_GATEWAY,
-            Json(json!({"error": "provider disconnected"})),
-        )
-            .into_response();
+            json!({"error": "provider disconnected"}),
+        );
     }
 
-    // Register a pending oneshot. The WS recv loop resolves it when the
-    // provider replies with InferenceResponseSealed.
     let (tx, rx) = tokio::sync::oneshot::channel::<Envelope>();
     state.register_pending_inference(&req.job_id, tx);
     state.increment_gpu_provider_jobs(&provider_pubkey);
@@ -958,54 +953,64 @@ pub async fn dispatch_inference_sealed(
             ciphertext_b64: req.sealed_request_b64.clone(),
         },
     ));
-    let _ = req.mode_hint; // not yet routed; reserved for future stream/private split
+    let _ = req.mode_hint; // reserved for future stream/private split
 
     let data = serde_json::to_vec(&envelope).unwrap_or_default();
     if !state.send_to_gpu_provider(&provider_pubkey, &data) {
         state.decrement_gpu_provider_jobs(&provider_pubkey);
         return (
             axum::http::StatusCode::BAD_GATEWAY,
-            Json(json!({"error": "failed to send to provider"})),
-        )
-            .into_response();
+            json!({"error": "failed to send to provider"}),
+        );
     }
 
     match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
         Ok(Ok(response_envelope)) => match response_envelope.message {
-            MessageType::InferenceResponseSealed(resp) => Json(json!({
-                "job_id": resp.job_id,
-                "ciphertext_b64": resp.ciphertext_b64,
-                "is_final": resp.is_final,
-            }))
-            .into_response(),
+            MessageType::InferenceResponseSealed(resp) => (
+                axum::http::StatusCode::OK,
+                json!({
+                    "job_id": resp.job_id,
+                    "ciphertext_b64": resp.ciphertext_b64,
+                    "is_final": resp.is_final,
+                }),
+            ),
             MessageType::Error(err) => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": err.message, "code": err.code})),
-            )
-                .into_response(),
+                json!({"error": err.message, "code": err.code}),
+            ),
             _ => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "unexpected response type from provider"})),
-            )
-                .into_response(),
+                json!({"error": "unexpected response type from provider"}),
+            ),
         },
         Ok(Err(_)) => {
             state.decrement_gpu_provider_jobs(&provider_pubkey);
             (
                 axum::http::StatusCode::BAD_GATEWAY,
-                Json(json!({"error": "provider disconnected before responding"})),
+                json!({"error": "provider disconnected before responding"}),
             )
-                .into_response()
         }
         Err(_) => {
             state.decrement_gpu_provider_jobs(&provider_pubkey);
             (
                 axum::http::StatusCode::GATEWAY_TIMEOUT,
-                Json(json!({"error": "sealed inference timed out (120s)"})),
+                json!({"error": "sealed inference timed out (120s)"}),
             )
-                .into_response()
         }
     }
+}
+
+/// POST /inference/sealed — forward an opaque sealed envelope to the attested
+/// enclave and stream back the opaque sealed response. The relay never
+/// decrypts. Streaming sealed responses are out of scope for Track E; if the
+/// provider replies with multiple chunks, only the first non-final response
+/// is returned (full streaming lands in Wave 3).
+pub async fn dispatch_inference_sealed(
+    State(state): State<AppState>,
+    Json(req): Json<SealedInferenceDispatchRequest>,
+) -> impl IntoResponse {
+    let (status, body) = handle_sealed_inference(&state, req).await;
+    (status, Json(body)).into_response()
 }
 
 /// Request body for `POST /providers/attest` (HTTP convenience for tests).
@@ -1079,6 +1084,135 @@ pub async fn list_attested_providers(
         enclaves.iter().map(enclave_to_json).collect()
     };
     Json(filtered).into_response()
+}
+
+// ── OHTTP gateway (RFC 9458) ───────────────────────────────────────────
+
+/// GET /ohttp-keys — serve the gateway keyconfig so OHTTP clients can
+/// encrypt to us. The body is the raw RFC 9458 §3 keyconfig (binary),
+/// served with `Content-Type: application/ohttp-keys`.
+pub async fn ohttp_keys(State(state): State<AppState>) -> impl IntoResponse {
+    let kp = match state.config().ohttp_keypair() {
+        Some(kp) => kp,
+        None => {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(json!({"error": "OHTTP gateway not configured on this relay"})),
+            )
+                .into_response();
+        }
+    };
+    let body = kp.key_config();
+    (
+        axum::http::StatusCode::OK,
+        [("content-type", "application/ohttp-keys")],
+        body,
+    )
+        .into_response()
+}
+
+/// POST /ohttp-gateway — decapsulate an OHTTP request capsule, dispatch
+/// the inner BHTTP request to the relay's existing handlers, then
+/// encapsulate the response. Only `/inference/sealed` is currently
+/// dispatched; everything else returns 404 inside the BHTTP envelope.
+pub async fn ohttp_gateway(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    use crate::ohttp;
+
+    // Content-Type sanity-check (RFC 9458 §4).
+    if let Some(ct) = headers.get(axum::http::header::CONTENT_TYPE) {
+        if ct.as_bytes() != b"message/ohttp-req" {
+            return (
+                axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                Json(json!({"error": "expected Content-Type: message/ohttp-req"})),
+            )
+                .into_response();
+        }
+    }
+
+    let kp = match state.config().ohttp_keypair() {
+        Some(kp) => kp,
+        None => {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(json!({"error": "OHTTP gateway not configured on this relay"})),
+            )
+                .into_response();
+        }
+    };
+
+    let (bhttp_bytes, resp_ctx) = match ohttp::decapsulate_request(&kp, &body) {
+        Ok(out) => out,
+        Err(e) => {
+            tracing::warn!(err = %e, "ohttp capsule decap failed");
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("ohttp decap: {e}")})),
+            )
+                .into_response();
+        }
+    };
+
+    let bhttp_req = match ohttp::BhttpRequest::decode(&bhttp_bytes) {
+        Some(r) => r,
+        None => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(json!({"error": "malformed inner BHTTP request"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Dispatch on the inner request's method + path. We only support the
+    // sealed-inference path through OHTTP for now; everything else gets a
+    // 404 BHTTP response so the client surfaces a meaningful error.
+    let (resp_status, resp_json) = if bhttp_req.method.eq_ignore_ascii_case("POST")
+        && bhttp_req.path == "/inference/sealed"
+    {
+        match serde_json::from_slice::<SealedInferenceDispatchRequest>(&bhttp_req.body) {
+            Ok(parsed) => handle_sealed_inference(&state, parsed).await,
+            Err(e) => (
+                axum::http::StatusCode::BAD_REQUEST,
+                json!({"error": format!("invalid sealed inference body: {e}")}),
+            ),
+        }
+    } else {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            json!({"error": "OHTTP gateway: unsupported inner path", "path": bhttp_req.path}),
+        )
+    };
+
+    let body_bytes = serde_json::to_vec(&resp_json).unwrap_or_default();
+    let bhttp_resp = ohttp::BhttpResponse {
+        status: resp_status.as_u16(),
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
+        body: body_bytes,
+    }
+    .encode();
+
+    let capsule = match ohttp::encapsulate_response(&resp_ctx, &bhttp_resp) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(err = %e, "ohttp response encap failed");
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("ohttp encap: {e}")})),
+            )
+                .into_response();
+        }
+    };
+
+    (
+        axum::http::StatusCode::OK,
+        [("content-type", "message/ohttp-res")],
+        capsule,
+    )
+        .into_response()
 }
 
 /// GET /attestations/:hash_hex — serve the cached vendor_quote_b64 plus the
