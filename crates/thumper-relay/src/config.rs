@@ -34,6 +34,26 @@ pub struct RelayConfig {
     /// when polling `did_set_url`. Must match
     /// `THUMPER_CLOUD_RELAY_API_KEY` on the cloud side.
     pub did_set_api_key: Option<String>,
+    /// Maximum age, in seconds, of the cached DID-set before the
+    /// sealed-inference middleware fails closed. Defaults to 300 (5 min).
+    ///
+    /// Without this bound, a thumper-cloud outage would leave the relay
+    /// happily serving traffic against an unbounded-stale set, so a DID
+    /// removed cloud-side keeps access until the cloud comes back. With
+    /// a bound, the relay degrades to "deny all" once the cached set is
+    /// older than the configured horizon — which is the correct posture
+    /// for a revocation-sensitive control.
+    ///
+    /// Set via `THUMPER_DID_SET_MAX_STALENESS_SECS`.
+    pub did_set_max_staleness_secs: u64,
+    /// Per-DID rate limit for the sealed-inference path (HTTP + OHTTP).
+    /// The general `rate_limit_per_second` knob applies per WebSocket
+    /// connection — useless for stateless HTTP, doubly useless behind
+    /// OHTTP which collapses all client IPs onto Cloudflare's egress.
+    /// We enforce a per-DID bucket here instead. Defaults to 5/s/DID.
+    ///
+    /// Set via `THUMPER_SEALED_RATE_LIMIT_PER_DID`.
+    pub sealed_rate_limit_per_did: u32,
 }
 
 impl RelayConfig {
@@ -67,6 +87,14 @@ impl RelayConfig {
                 .unwrap_or(DEFAULT_OHTTP_KEY_ID),
             did_set_url: env::var("THUMPER_CLOUD_DID_SET_URL").ok(),
             did_set_api_key: env::var("THUMPER_CLOUD_RELAY_API_KEY").ok(),
+            did_set_max_staleness_secs: env::var("THUMPER_DID_SET_MAX_STALENESS_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300),
+            sealed_rate_limit_per_did: env::var("THUMPER_SEALED_RATE_LIMIT_PER_DID")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5),
         }
     }
 

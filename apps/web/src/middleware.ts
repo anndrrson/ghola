@@ -94,11 +94,24 @@ export function middleware(request: NextRequest) {
         "https://ghola-relay.onrender.com " +
         "https://ghola-receipts.onrender.com " +
         // v3.5 Phase 2: Cloudflare OHTTP relay (RFC 9458).
-        // TODO(phase-2-go-live): confirm Cloudflare's current OHTTP relay
-        // URL once ops finishes registering with cloudflare.com/onion-routing
-        // and replace the wildcard below with the exact production host.
-        "https://ohttp.cloudflare.com " +
-        "https://*.ohttp.cloudflare.com",
+        //
+        // SECURITY: do NOT add a wildcard host here. Wildcards in
+        // `connect-src` defeat the entire purpose of pinning OHTTP traffic
+        // to a known relay — a compromised subdomain of cloudflare.com
+        // would otherwise be silently reachable from authenticated pages.
+        //
+        // The single pinned host below is the public landing URL for the
+        // Cloudflare OHTTP relay during invite-only beta. Once Cloudflare
+        // assigns our production-tier relay hostname (post-onboarding via
+        // cloudflare.com/onion-routing), update the line below in a
+        // single, reviewed commit — do not paper over with a wildcard.
+        //
+        // TODO(phase-2-go-live): replace `https://ohttp.cloudflare.com`
+        // with the exact relay hostname Cloudflare assigns us once we are
+        // out of invite-only beta. If the assigned host is unknown at
+        // deploy time, gate the OHTTP rollout on this CSP entry — do NOT
+        // ship a `https://*.ohttp.cloudflare.com` wildcard to production.
+        "https://ohttp.cloudflare.com",
       "frame-src https://accounts.google.com",
       "object-src 'none'",
       "base-uri 'self'",

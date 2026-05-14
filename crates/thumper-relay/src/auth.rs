@@ -176,14 +176,6 @@ pub async fn require_sealed_envelope_auth(
 ) -> Result<axum::response::Response, axum::http::StatusCode> {
     use axum::body::{to_bytes, Body};
 
-    // -- fail-closed if the holder hasn't bootstrapped yet ----------------
-    if !state.did_set().is_bootstrapped() {
-        tracing::warn!(
-            "sealed-inference auth rejecting: did_set not yet bootstrapped"
-        );
-        return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
-    }
-
     let (parts, body) = request.into_parts();
     let body_bytes = match to_bytes(body, MAX_SEALED_BODY_BYTES).await {
         Ok(b) => b,
@@ -213,8 +205,64 @@ pub async fn require_sealed_envelope_auth(
         }
     };
 
-    // -- envelope header inspection + signature verification --------------
-    let header = match parse_envelope_header(&envelope_bytes) {
+    // Run the shared validator. Same logic the OHTTP gateway uses, so
+    // both transports get identical auth semantics — bootstrap +
+    // freshness + signature + DID membership + nonce + per-DID rate
+    // limit.
+    validate_sealed_envelope_bytes(&state, &envelope_bytes)?;
+
+    // -- Reconstruct request with the original body and forward -----------
+    let req = axum::http::Request::from_parts(parts, Body::from(body_bytes));
+    Ok(next.run(req).await)
+}
+
+/// Run the full sealed-envelope authentication and rate-limiting check
+/// against the raw (base64-decoded) envelope bytes. Used by both the
+/// `POST /inference/sealed` middleware (`require_sealed_envelope_auth`)
+/// and the OHTTP gateway (`handle_sealed_inference_ohttp`).
+///
+/// Steps, all fail-closed:
+///   1. did_set must be bootstrapped (rejects until first cloud fetch).
+///   2. did_set must be fresh per `did_set_max_staleness_secs`.
+///   3. Envelope header must parse.
+///   4. Trailing Ed25519 signature must verify against the sender DID.
+///   5. Sender DID must be in the cached set.
+///   6. Envelope nonce must not have been seen recently.
+///   7. Sender DID must be within its rate-limit bucket.
+///
+/// Returns the parsed `EnvelopeHeader` on success so callers can use the
+/// `sender_did` for downstream accounting/metrics if needed.
+pub(crate) fn validate_sealed_envelope_bytes(
+    state: &crate::state::AppState,
+    envelope_bytes: &[u8],
+) -> Result<EnvelopeHeader, axum::http::StatusCode> {
+    // -- fail-closed if the holder hasn't bootstrapped yet ----------------
+    if !state.did_set().is_bootstrapped() {
+        tracing::warn!(
+            "sealed-inference auth rejecting: did_set not yet bootstrapped"
+        );
+        return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // -- fail-closed if the cached DID set is too stale -------------------
+    {
+        let now_unix = chrono::Utc::now().timestamp();
+        let max = state.config().did_set_max_staleness_secs;
+        if !state.did_set().is_fresh(now_unix, max) {
+            let (count, last_refresh) = state.did_set().stats();
+            tracing::warn!(
+                count,
+                last_refresh,
+                now_unix,
+                max_staleness_secs = max,
+                "sealed-inference auth rejecting: did_set cache stale beyond \
+                 THUMPER_DID_SET_MAX_STALENESS_SECS"
+            );
+            return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        }
+    }
+
+    let header = match parse_envelope_header(envelope_bytes) {
         Ok(h) => h,
         Err(e) => {
             tracing::warn!("sealed-inference auth: envelope parse failed: {e}");
@@ -222,7 +270,7 @@ pub async fn require_sealed_envelope_auth(
         }
     };
 
-    if !verify_envelope_signature(&envelope_bytes, &header.sender_did) {
+    if !verify_envelope_signature(envelope_bytes, &header.sender_did) {
         tracing::warn!(
             "sealed-inference auth: envelope signature verification failed \
              (DID redacted from public-facing logs)"
@@ -230,24 +278,33 @@ pub async fn require_sealed_envelope_auth(
         return Err(axum::http::StatusCode::UNAUTHORIZED);
     }
 
-    // -- DID membership check --------------------------------------------
     if !state.did_set().contains(&header.sender_did) {
-        // Intentionally vague to anyone scraping logs: we know it failed,
-        // but the relay does NOT log the DID either (it's user-correlated).
         tracing::warn!("sealed-inference auth: sender DID not in did_set");
         return Err(axum::http::StatusCode::UNAUTHORIZED);
     }
 
-    // -- Replay defense via the existing said-noncecache ------------------
     if state.nonce_cache().check_and_insert(&header.nonce_hex) {
         tracing::warn!("sealed-inference auth: nonce replay detected");
         return Err(axum::http::StatusCode::TOO_MANY_REQUESTS);
     }
 
-    // -- Reconstruct request with the original body and forward -----------
-    let req = axum::http::Request::from_parts(parts, Body::from(body_bytes));
-    Ok(next.run(req).await)
+    // -- per-DID rate limit -----------------------------------------------
+    //
+    // Sealed inference is expensive on the relay (HPKE decap, envelope
+    // verify, did-set check, then a WS forward to the provider). A
+    // per-WS-connection limiter does nothing for an OHTTP-fronted POST
+    // that bypasses the WebSocket plumbing, and a per-IP limit collapses
+    // the whole user base into Cloudflare's egress range. Per-DID is the
+    // right granularity for this surface.
+    let rate = state.config().sealed_rate_limit_per_did;
+    if !state.check_sealed_did_rate_limit(&header.sender_did, rate) {
+        tracing::warn!("sealed-inference auth: per-DID rate limit exceeded");
+        return Err(axum::http::StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    Ok(header)
 }
+
 
 /// Header fields the middleware needs from the wire envelope.
 ///
@@ -255,10 +312,10 @@ pub async fn require_sealed_envelope_auth(
 /// `sender_did` and the AES-GCM `nonce` (used for replay protection)
 /// without re-implementing AEAD or the X25519 handshake.
 #[derive(Debug)]
-struct EnvelopeHeader {
-    sender_did: String,
+pub(crate) struct EnvelopeHeader {
+    pub(crate) sender_did: String,
     /// Hex-encoded 12-byte AES-GCM nonce — used as the replay key.
-    nonce_hex: String,
+    pub(crate) nonce_hex: String,
 }
 
 const SE_MAGIC: &[u8; 4] = b"SEv1";
