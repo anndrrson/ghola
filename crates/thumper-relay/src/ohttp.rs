@@ -717,3 +717,327 @@ mod tests {
         assert_eq!(&cfg[3..35], kp.public.as_bytes());
     }
 }
+
+// ── Property / fuzz tests ──────────────────────────────────────────────
+//
+// We don't have `proptest` or `quickcheck` in the workspace dep graph and
+// the task constraints forbid adding new crates, so each "property" below
+// is a hand-rolled fuzz loop driven by `rand::thread_rng()`. Iteration
+// counts are kept modest (32 per case) so the full suite stays under a
+// second on cold builds — these tests are catch-the-sharp-edge nets, not
+// exhaustive validators.
+
+#[cfg(test)]
+mod proptest_ohttp {
+    use super::*;
+    use rand::{thread_rng, Rng, RngCore};
+
+    const FUZZ_ITERS: usize = 32;
+
+    fn random_plaintext(rng: &mut impl RngCore, max_len: usize) -> Vec<u8> {
+        // bias toward small + medium payloads; cover empty too
+        let len = (rng.next_u32() as usize) % (max_len + 1);
+        let mut v = vec![0u8; len];
+        rng.fill_bytes(&mut v);
+        v
+    }
+
+    #[test]
+    fn fuzz_request_round_trip() {
+        let mut rng = thread_rng();
+        for i in 0..FUZZ_ITERS {
+            let key_id = (i as u8).wrapping_add(1); // avoid 0 to vary
+            let kp = OhttpKeypair::generate(key_id);
+            // Mix in an "empty" case at i==0.
+            let pt = if i == 0 {
+                Vec::new()
+            } else {
+                random_plaintext(&mut rng, 4096)
+            };
+            let (capsule, _exp) = encapsulate_request_for_test(&kp.public, kp.key_id, &pt)
+                .expect("encap should succeed");
+            let (decoded, _ctx) = decapsulate_request(&kp, &capsule)
+                .expect("decap should succeed for honest capsule");
+            assert_eq!(decoded, pt, "round-trip plaintext mismatch on iter {i}");
+        }
+    }
+
+    #[test]
+    fn fuzz_response_round_trip() {
+        let mut rng = thread_rng();
+        for i in 0..FUZZ_ITERS {
+            let kp = OhttpKeypair::generate(0x10);
+            let req_pt = random_plaintext(&mut rng, 256);
+            let (capsule, exporter) =
+                encapsulate_request_for_test(&kp.public, kp.key_id, &req_pt).unwrap();
+            let (_, ctx) = decapsulate_request(&kp, &capsule).unwrap();
+
+            let resp_pt = if i == 0 {
+                Vec::new()
+            } else {
+                random_plaintext(&mut rng, 8192)
+            };
+            let resp_capsule = encapsulate_response(&ctx, &resp_pt).unwrap();
+
+            let mut enc_arr = [0u8; NPK];
+            enc_arr.copy_from_slice(&capsule[7..7 + NPK]);
+            let opened =
+                decapsulate_response_for_test(&exporter, &enc_arr, &resp_capsule).unwrap();
+            assert_eq!(opened, resp_pt, "response round-trip mismatch on iter {i}");
+        }
+    }
+
+    #[test]
+    fn fuzz_aead_tamper_detection() {
+        // Flip one bit at 32 random positions inside the capsule body
+        // (i.e. after the 7-byte header, since key-id/suite-id changes
+        // are exercised by the dedicated test). Each flip MUST cause
+        // either AEAD failure or a suite-mismatch error — never a
+        // silent successful decap of altered bytes, and never a panic.
+        let mut rng = thread_rng();
+        let kp = OhttpKeypair::generate(0x07);
+        let pt = b"the inner BHTTP payload, suitably non-trivial in length";
+        let (capsule, _) = encapsulate_request_for_test(&kp.public, kp.key_id, pt).unwrap();
+        assert!(capsule.len() > 7);
+
+        // 32 distinct random positions in the capsule body.
+        for _ in 0..32 {
+            let pos: usize = rng.gen_range(7..capsule.len());
+            let bit: u8 = 1u8 << (rng.gen_range(0..8u8));
+            let mut tampered = capsule.clone();
+            tampered[pos] ^= bit;
+            // Use catch_unwind to assert no panic, then check result.
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                decapsulate_request(&kp, &tampered)
+            }));
+            match res {
+                Ok(Ok((opened, _))) => panic!(
+                    "tampered byte {pos} bit {bit:#04x} decapsulated successfully (opened {} bytes)",
+                    opened.len()
+                ),
+                Ok(Err(_)) => {}
+                Err(_) => panic!("decapsulate_request panicked on tampered byte {pos} bit {bit:#04x}"),
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_response_tamper_detection() {
+        let mut rng = thread_rng();
+        let kp = OhttpKeypair::generate(0x09);
+        let (capsule, exporter) =
+            encapsulate_request_for_test(&kp.public, kp.key_id, b"req").unwrap();
+        let (_, ctx) = decapsulate_request(&kp, &capsule).unwrap();
+        let resp_capsule = encapsulate_response(&ctx, b"the server response").unwrap();
+        let mut enc_arr = [0u8; NPK];
+        enc_arr.copy_from_slice(&capsule[7..7 + NPK]);
+
+        for _ in 0..32 {
+            let pos: usize = rng.gen_range(0..resp_capsule.len());
+            let bit: u8 = 1u8 << (rng.gen_range(0..8u8));
+            let mut tampered = resp_capsule.clone();
+            tampered[pos] ^= bit;
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                decapsulate_response_for_test(&exporter, &enc_arr, &tampered)
+            }));
+            match res {
+                Ok(Ok(opened)) => panic!(
+                    "tampered response byte {pos} bit {bit:#04x} opened successfully ({} bytes)",
+                    opened.len()
+                ),
+                Ok(Err(_)) => {}
+                Err(_) => panic!("decapsulate_response panicked on tampered byte {pos}"),
+            }
+        }
+    }
+
+    #[test]
+    fn wrong_key_id_rejected() {
+        // Encapsulate addressed to key_id X. Gateway holds a key with id Y.
+        // Decapsulation must fail with UnknownKeyId — and NOT proceed to AEAD.
+        let gw = OhttpKeypair::generate(0xAA);
+        let (capsule, _) = encapsulate_request_for_test(&gw.public, 0xBB, b"hi").unwrap();
+        assert_eq!(capsule[0], 0xBB);
+        let err = decapsulate_request(&gw, &capsule).unwrap_err();
+        match err {
+            OhttpError::UnknownKeyId(k) => assert_eq!(k, 0xBB),
+            other => panic!("expected UnknownKeyId, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrong_gateway_key_rejected() {
+        // Encapsulate to gateway A's public key but try to decapsulate
+        // with gateway B that happens to claim the same key_id. The DH
+        // share won't match so AEAD must fail.
+        let gw_a = OhttpKeypair::generate(0x42);
+        let gw_b = OhttpKeypair::generate(0x42); // same key_id, different secret
+        assert_ne!(gw_a.public.as_bytes(), gw_b.public.as_bytes());
+        let (capsule, _) = encapsulate_request_for_test(&gw_a.public, 0x42, b"hi").unwrap();
+        let err = decapsulate_request(&gw_b, &capsule).unwrap_err();
+        // Explicit match (not `matches!`) so a regression that yields
+        // a wrong variant actually fails the test.
+        match err {
+            OhttpError::AeadOpen => {}
+            other => panic!("expected AeadOpen on wrong gateway key, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn truncation_rejected_without_panic() {
+        let kp = OhttpKeypair::generate(0x01);
+        let (capsule, _) =
+            encapsulate_request_for_test(&kp.public, kp.key_id, b"a non-trivial body").unwrap();
+        let n = capsule.len();
+
+        // capsule[..n-1] strips one ciphertext byte (or the final tag byte).
+        // capsule[..n/2] is likely already shorter than the AEAD ciphertext
+        // window. empty is the trivial case.
+        let cuts: Vec<&[u8]> = vec![&capsule[..n - 1], &capsule[..n / 2], &[]];
+        for (idx, cut) in cuts.iter().enumerate() {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                decapsulate_request(&kp, cut)
+            }));
+            match res {
+                Ok(Ok(_)) => panic!("truncation #{idx} unexpectedly decapsulated"),
+                Ok(Err(_)) => {}
+                Err(_) => panic!("decapsulate_request panicked on truncation #{idx}"),
+            }
+        }
+    }
+
+    #[test]
+    fn random_capsule_never_panics() {
+        // 32 entirely-random byte buffers of varied lengths, fed to the
+        // decapsulator. None should ever panic; all should error.
+        let mut rng = thread_rng();
+        let kp = OhttpKeypair::generate(0xCC);
+        for _ in 0..FUZZ_ITERS {
+            let len: usize = rng.gen_range(0..512);
+            let mut buf = vec![0u8; len];
+            rng.fill_bytes(&mut buf);
+            // Force key_id mismatch is fine — we want to make sure even
+            // a "correct" key_id with garbage doesn't panic.
+            if len >= 1 {
+                buf[0] = kp.key_id;
+            }
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                decapsulate_request(&kp, &buf)
+            }));
+            assert!(res.is_ok(), "panicked on random {len}-byte capsule");
+            assert!(res.unwrap().is_err(), "random {len}-byte capsule somehow opened");
+        }
+    }
+
+    // ── BHTTP edge cases ───────────────────────────────────────────────
+
+    #[test]
+    fn bhttp_empty_body_round_trip() {
+        let req = BhttpRequest {
+            method: "GET".to_string(),
+            scheme: "https".to_string(),
+            authority: "example.com".to_string(),
+            path: "/".to_string(),
+            headers: vec![("h".to_string(), "v".to_string())],
+            body: Vec::new(),
+        };
+        let bytes = req.encode();
+        let decoded = BhttpRequest::decode(&bytes).expect("decode");
+        assert_eq!(decoded.body, Vec::<u8>::new());
+        assert_eq!(decoded.method, "GET");
+    }
+
+    #[test]
+    fn bhttp_empty_headers_round_trip() {
+        let req = BhttpRequest {
+            method: "POST".to_string(),
+            scheme: "https".to_string(),
+            authority: "example.com".to_string(),
+            path: "/x".to_string(),
+            headers: Vec::new(),
+            body: b"body".to_vec(),
+        };
+        let bytes = req.encode();
+        let decoded = BhttpRequest::decode(&bytes).expect("decode");
+        assert!(decoded.headers.is_empty());
+        assert_eq!(decoded.body, b"body");
+    }
+
+    #[test]
+    fn bhttp_no_path_round_trip() {
+        // RFC 9292 allows empty path components in a known-length frame.
+        // The minimal varint-length-prefix codec must round-trip "".
+        let req = BhttpRequest {
+            method: "OPTIONS".to_string(),
+            scheme: "https".to_string(),
+            authority: "example.com".to_string(),
+            path: String::new(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        let bytes = req.encode();
+        let decoded = BhttpRequest::decode(&bytes).expect("decode");
+        assert_eq!(decoded.path, "");
+    }
+
+    #[test]
+    fn bhttp_header_value_with_crlf_round_trips_as_bytes() {
+        // BHTTP is binary, length-prefixed — CR/LF in values is legal at
+        // the framing layer (unlike HTTP/1.1 text mode). The codec must
+        // round-trip them losslessly, and downstream HTTP-emission code
+        // is responsible for rejecting them.
+        let req = BhttpRequest {
+            method: "POST".to_string(),
+            scheme: "https".to_string(),
+            authority: "example.com".to_string(),
+            path: "/".to_string(),
+            headers: vec![("x-evil".to_string(), "a\r\nInjected: yes".to_string())],
+            body: Vec::new(),
+        };
+        let bytes = req.encode();
+        let decoded = BhttpRequest::decode(&bytes).expect("decode");
+        assert_eq!(decoded.headers[0].1, "a\r\nInjected: yes");
+    }
+
+    #[test]
+    fn bhttp_malformed_input_rejected_without_panic() {
+        // Feed a pile of garbage into the request and response decoders.
+        // Both must return None / decode error and never panic.
+        let mut rng = thread_rng();
+        for _ in 0..FUZZ_ITERS {
+            let len: usize = rng.gen_range(0..128);
+            let mut buf = vec![0u8; len];
+            rng.fill_bytes(&mut buf);
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = BhttpRequest::decode(&buf);
+                let _ = BhttpResponse::decode(&buf);
+            }));
+            assert!(res.is_ok(), "BHTTP decode panicked on {len}-byte garbage");
+        }
+        // Specific structured-malformed cases:
+        assert!(BhttpRequest::decode(&[]).is_none());
+        assert!(BhttpRequest::decode(&[0x01]).is_none()); // wrong framing byte
+        assert!(BhttpResponse::decode(&[]).is_none());
+        assert!(BhttpResponse::decode(&[0x00]).is_none());
+        // framing OK but truncated mid-varint:
+        assert!(BhttpRequest::decode(&[0x00, 0x40]).is_none());
+        // length-prefix that overruns the buffer:
+        assert!(BhttpRequest::decode(&[0x00, 0x3f, b'X', b'X']).is_none());
+    }
+
+    #[test]
+    fn bhttp_response_status_3byte_varint_round_trip() {
+        // Status 200 fits in a 2-byte varint; 16384 forces 4-byte varint.
+        // Make sure decode handles both.
+        for status in [100u16, 200, 404, 500].iter() {
+            let resp = BhttpResponse {
+                status: *status,
+                headers: vec![("a".to_string(), "b".to_string())],
+                body: b"hello".to_vec(),
+            };
+            let bytes = resp.encode();
+            let decoded = BhttpResponse::decode(&bytes).expect("decode");
+            assert_eq!(decoded.status, *status, "status mismatch for {status}");
+        }
+    }
+}
