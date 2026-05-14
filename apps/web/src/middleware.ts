@@ -88,9 +88,17 @@ export function middleware(request: NextRequest) {
         "https://thumper-cloud.onrender.com " +
         "https://ghola-gateway.onrender.com " +
         "https://ghola-merchant-gateway.onrender.com " +
-        // v2 surfaces — sealed transport relay + on-chain anchor receipts service
+        // v2 surfaces — sealed transport relay + on-chain anchor receipts service.
+        // ghola-relay stays during v3.5 OHTTP rollout so the legacy direct
+        // POST /inference/sealed path still works.
         "https://ghola-relay.onrender.com " +
-        "https://ghola-receipts.onrender.com",
+        "https://ghola-receipts.onrender.com " +
+        // v3.5 Phase 2: Cloudflare OHTTP relay (RFC 9458).
+        // TODO(phase-2-go-live): confirm Cloudflare's current OHTTP relay
+        // URL once ops finishes registering with cloudflare.com/onion-routing
+        // and replace the wildcard below with the exact production host.
+        "https://ohttp.cloudflare.com " +
+        "https://*.ohttp.cloudflare.com",
       "frame-src https://accounts.google.com",
       "object-src 'none'",
       "base-uri 'self'",

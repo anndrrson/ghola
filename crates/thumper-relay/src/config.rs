@@ -1,6 +1,13 @@
 use std::env;
 use std::net::SocketAddr;
 
+use crate::ohttp::OhttpKeypair;
+
+/// Default OHTTP key id when the operator hasn't pinned one explicitly.
+/// RFC 9458 allows 0–255; we reserve 0x01 for the primary in-flight key
+/// and bump on rotation.
+pub const DEFAULT_OHTTP_KEY_ID: u8 = 0x01;
+
 #[derive(Debug, Clone)]
 pub struct RelayConfig {
     pub bind_addr: SocketAddr,
@@ -13,6 +20,12 @@ pub struct RelayConfig {
     pub tls_cert_path: Option<String>,
     /// Path to TLS private key file (PEM format).
     pub tls_key_path: Option<String>,
+    /// Optional OHTTP gateway secret (32-byte X25519, hex-encoded). When
+    /// present, the relay mounts `/ohttp-keys` and `/ohttp-gateway`. Set
+    /// via `GHOLA_OHTTP_KEY_SECRET_HEX`, ideally sourced from SSM at boot.
+    pub ohttp_key_secret_hex: Option<String>,
+    /// Key id advertised in the OHTTP keyconfig + capsule header.
+    pub ohttp_key_id: u8,
 }
 
 impl RelayConfig {
@@ -39,6 +52,21 @@ impl RelayConfig {
                 .unwrap_or(false),
             tls_cert_path: env::var("THUMPER_TLS_CERT").ok(),
             tls_key_path: env::var("THUMPER_TLS_KEY").ok(),
+            ohttp_key_secret_hex: env::var("GHOLA_OHTTP_KEY_SECRET_HEX").ok(),
+            ohttp_key_id: env::var("GHOLA_OHTTP_KEY_ID")
+                .ok()
+                .and_then(|s| s.parse::<u8>().ok())
+                .unwrap_or(DEFAULT_OHTTP_KEY_ID),
         }
+    }
+
+    /// Resolve the OHTTP keypair from the configured hex secret, if any.
+    /// Returns `None` when the operator has not opted into OHTTP; the
+    /// router skips mounting the OHTTP routes in that case.
+    pub fn ohttp_keypair(&self) -> Option<OhttpKeypair> {
+        let hex_str = self.ohttp_key_secret_hex.as_ref()?.trim();
+        let bytes = hex::decode(hex_str).ok()?;
+        let arr: [u8; 32] = bytes.try_into().ok()?;
+        Some(OhttpKeypair::from_secret_bytes(self.ohttp_key_id, arr))
     }
 }

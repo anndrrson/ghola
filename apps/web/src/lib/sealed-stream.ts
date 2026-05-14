@@ -29,6 +29,14 @@ import type { AttestedEnclaveInfo } from "./sovereignty";
 import { thumperRelayBase } from "./sovereignty";
 import { deriveVaultX25519Keypair } from "./vault-x25519";
 import type { ReceiptV1 } from "./receipt";
+import {
+  decapsulateResponse,
+  decodeBhttpResponse,
+  encapsulateRequest,
+  encodeBhttpRequest,
+  parseKeyConfig,
+  type OhttpKeyConfig,
+} from "./ohttp";
 
 export interface InferenceMessage {
   role: "system" | "user" | "assistant";
@@ -90,6 +98,107 @@ function base64ToBytes(s: string): Uint8Array {
   return out;
 }
 
+// ── Transport helpers (legacy direct + OHTTP) ───────────────────────────
+
+interface SendArgs {
+  token: string | null;
+  innerBody: string;
+}
+
+interface SendViaOhttpArgs extends SendArgs {
+  ohttpRelay: string;
+}
+
+/** Cache the gateway keyconfig so we don't refetch it on every chat turn. */
+let cachedGatewayKey: { ts: number; cfg: OhttpKeyConfig } | null = null;
+const KEYCONFIG_TTL_MS = 60 * 60 * 1000; // 1 hour; matches RFC 9458 ops guidance
+
+async function fetchGatewayKeyConfig(): Promise<OhttpKeyConfig> {
+  const now = Date.now();
+  if (cachedGatewayKey && now - cachedGatewayKey.ts < KEYCONFIG_TTL_MS) {
+    return cachedGatewayKey.cfg;
+  }
+  const url = new URL("/ohttp-keys", thumperRelayBase());
+  const res = await fetch(url.toString(), { method: "GET" });
+  if (!res.ok) {
+    throw new Error(`fetch keyconfig: ${res.status}`);
+  }
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const cfg = parseKeyConfig(buf);
+  cachedGatewayKey = { ts: now, cfg };
+  return cfg;
+}
+
+async function sendDirect(args: SendArgs): Promise<SealedInferenceResponseWire> {
+  const url = new URL("/inference/sealed", thumperRelayBase());
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (args.token) headers["Authorization"] = `Bearer ${args.token}`;
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    headers,
+    body: args.innerBody,
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => `HTTP ${res.status}`);
+    throw new Error(`Sealed inference failed: ${res.status} ${body}`);
+  }
+  return (await res.json()) as SealedInferenceResponseWire;
+}
+
+async function sendViaOhttp(
+  args: SendViaOhttpArgs,
+): Promise<SealedInferenceResponseWire> {
+  const keyConfig = await fetchGatewayKeyConfig();
+
+  // Inner BHTTP request — what the gateway sees after decapsulating.
+  const headers: Array<[string, string]> = [
+    ["content-type", "application/json"],
+  ];
+  if (args.token) headers.push(["authorization", `Bearer ${args.token}`]);
+
+  const gatewayHost = (() => {
+    try {
+      return new URL(thumperRelayBase()).host;
+    } catch {
+      return "ghola-relay.onrender.com";
+    }
+  })();
+
+  const bhttp = encodeBhttpRequest({
+    method: "POST",
+    scheme: "https",
+    authority: gatewayHost,
+    path: "/inference/sealed",
+    headers,
+    body: new TextEncoder().encode(args.innerBody),
+  });
+
+  const { capsule, context } = await encapsulateRequest(keyConfig, bhttp);
+
+  // Wrap in a Blob — Next.js' strict TS types reject raw Uint8Array as BodyInit
+  // even though the runtime accepts it.
+  const res = await fetch(args.ohttpRelay, {
+    method: "POST",
+    headers: { "Content-Type": "message/ohttp-req" },
+    body: new Blob([new Uint8Array(capsule)], {
+      type: "message/ohttp-req",
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => `HTTP ${res.status}`);
+    throw new Error(`OHTTP relay failed: ${res.status} ${body}`);
+  }
+  const respCapsule = new Uint8Array(await res.arrayBuffer());
+  const innerBytes = await decapsulateResponse(context, respCapsule);
+  const inner = decodeBhttpResponse(innerBytes);
+  if (inner.status >= 400) {
+    const body = new TextDecoder().decode(inner.body);
+    throw new Error(`OHTTP inner ${inner.status}: ${body}`);
+  }
+  const parsed = JSON.parse(new TextDecoder().decode(inner.body));
+  return parsed as SealedInferenceResponseWire;
+}
+
 /**
  * Send a single sealed inference round-trip.
  *
@@ -102,6 +211,10 @@ function base64ToBytes(s: string): Uint8Array {
  * `senderDid` is the user's `did:key:z…` (Ed25519 multicodec). It goes
  * into the envelope header so the provider can verify the request
  * signature and address the response back to the same identity.
+ *
+ * Set `NEXT_PUBLIC_OHTTP_RELAY_URL` to a Cloudflare OHTTP relay endpoint
+ * to wrap the whole request in an RFC 9458 capsule. Unset = legacy
+ * direct POST to the Ghola Gateway.
  */
 export async function streamSealedChat(
   sessionId: string,
@@ -148,34 +261,48 @@ export async function streamSealedChat(
 
     // POST to /inference/sealed. The relay forwards the opaque blob to
     // the enclave verbatim — it never sees plaintext.
-    const url = new URL("/inference/sealed", thumperRelayBase());
+    //
+    // When NEXT_PUBLIC_OHTTP_RELAY_URL is configured, we wrap the entire
+    // request in an OHTTP (RFC 9458) capsule and post to the Cloudflare
+    // OHTTP relay instead of hitting the Ghola Gateway directly. Double
+    // encryption: outer HPKE to the Gateway's published key, inner
+    // said-envelope to the enclave. Apple PCC-style: Cloudflare sees the
+    // client IP but not the body; the Gateway sees the body but not the
+    // client IP.
     const token =
       typeof window !== "undefined"
         ? localStorage.getItem("thumper_token")
         : null;
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-
-    const res = await fetch(url.toString(), {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        enclave_key_id: enclave.enclave_key_id,
-        job_id: jobId,
-        sealed_request_b64: bytesToBase64(sealedBytes),
-        mode_hint: "private",
-      }),
+    const innerBody = JSON.stringify({
+      enclave_key_id: enclave.enclave_key_id,
+      job_id: jobId,
+      sealed_request_b64: bytesToBase64(sealedBytes),
+      mode_hint: "private",
     });
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => `HTTP ${res.status}`);
-      options.onError(`Sealed inference failed: ${res.status} ${body}`);
+    const ohttpRelay =
+      typeof process !== "undefined"
+        ? process.env.NEXT_PUBLIC_OHTTP_RELAY_URL
+        : undefined;
+
+    let wire: SealedInferenceResponseWire;
+    try {
+      if (ohttpRelay) {
+        wire = await sendViaOhttp({
+          ohttpRelay,
+          token,
+          innerBody,
+        });
+      } else {
+        wire = await sendDirect({ token, innerBody });
+      }
+    } catch (err) {
+      options.onError(
+        err instanceof Error ? err.message : `Sealed inference failed: ${err}`,
+      );
       return;
     }
 
-    const wire = (await res.json()) as SealedInferenceResponseWire;
     if (typeof wire.ciphertext_b64 !== "string") {
       options.onError("Sealed inference: malformed response (no ciphertext)");
       return;

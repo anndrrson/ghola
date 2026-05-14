@@ -4208,15 +4208,18 @@ dependencies = [
 name = "thumper-relay"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "async-stream",
  "axum",
  "axum-server",
  "base64",
  "chrono",
+ "clap",
  "dashmap",
  "ed25519-dalek",
  "futures",
  "hex",
+ "hkdf",
  "rand 0.8.5",
  "said-attest",
  "said-noncecache",
@@ -4231,6 +4234,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "x25519-dalek",
 ]
 
 [[package]]

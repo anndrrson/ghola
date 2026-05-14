@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 pub mod handlers;
 pub mod metrics;
+pub mod ohttp;
 pub mod state;
 
 #[cfg(test)]
@@ -55,7 +56,16 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         });
     }
 
-    let app = Router::new()
+    let ohttp_enabled = state.config().ohttp_keypair().is_some();
+    if ohttp_enabled {
+        tracing::info!("OHTTP gateway routes mounted (/ohttp-keys, /ohttp-gateway)");
+    } else {
+        tracing::info!(
+            "OHTTP gateway disabled — set GHOLA_OHTTP_KEY_SECRET_HEX to enable RFC 9458 routes"
+        );
+    }
+
+    let mut app = Router::new()
         .route("/health", get(handlers::health))
         .route("/metrics", get(handlers::metrics_handler))
         .route("/ws", get(handlers::ws_upgrade))
@@ -64,7 +74,15 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         .route("/inference/sealed", post(handlers::dispatch_inference_sealed))
         .route("/providers/attest", post(handlers::provider_attest_http))
         .route("/providers/attested", get(handlers::list_attested_providers))
-        .route("/attestations/{hash_hex}", get(handlers::get_attestation))
+        .route("/attestations/{hash_hex}", get(handlers::get_attestation));
+
+    if ohttp_enabled {
+        app = app
+            .route("/ohttp-keys", get(handlers::ohttp_keys))
+            .route("/ohttp-gateway", post(handlers::ohttp_gateway));
+    }
+
+    let app = app
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state);
