@@ -1426,6 +1426,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghola-zkml-types"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3116,6 +3126,7 @@ dependencies = [
 name = "said-attest"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "ciborium",
  "coset",
  "der",
@@ -3125,6 +3136,7 @@ dependencies = [
  "rand 0.8.5",
  "rcgen",
  "serde",
+ "serde_json",
  "sha2",
  "thiserror",
  "thumper-types",

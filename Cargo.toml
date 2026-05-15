@@ -32,6 +32,9 @@ members = [
     # Marketplace (Orni Models)
     "crates/orni-models-types",
     "crates/orni-models-api",
+
+    # Tier 2 schema-only first PRs (no behavior change; types only)
+    "crates/ghola-zkml-types",
 ]
 exclude = [
     "programs/said-registry",
