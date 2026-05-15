@@ -40,7 +40,43 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
       - run: npm install --frozen-lockfile || npm install
       - run: npm test
+      - name: Block dangerous HTML sinks
+        run: ../../scripts/security/check-dangerous-html.sh
       - run: npm run build
+      # Tier 1C — supply-chain hardening. The build step writes an SRI
+      # manifest to public/.well-known/sri-manifest.json. Surface its
+      # top-level hash in the CI run summary so it's discoverable from
+      # the workflow's run page, and upload the full manifest as an
+      # artifact so a reviewer can `gh run download` it for any commit.
+      # GitHub's immutable run logs become the out-of-band tamper
+      # record for the deployed bundle's hash set.
+      - name: Surface SRI manifest hash
+        if: always()
+        run: |
+          set -euo pipefail
+          MANIFEST="public/.well-known/sri-manifest.json"
+          if [ ! -f "${MANIFEST}" ]; then
+            echo "SRI manifest missing — build step did not run the post-build hook."
+            exit 1
+          fi
+          sha=$(jq -r '.manifest_sha256' "${MANIFEST}")
+          files=$(jq -r '.file_count' "${MANIFEST}")
+          {
+            echo "## Web bundle SRI manifest"
+            echo ""
+            echo "- **Commit:** \`${GITHUB_SHA}\`"
+            echo "- **Files hashed:** ${files}"
+            echo "- **manifest_sha256:** \`${sha}\`"
+            echo ""
+            echo "Reviewers: \`gh run download ${GITHUB_RUN_ID} --name sri-manifest\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - name: Upload SRI manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sri-manifest
+          path: apps/web/public/.well-known/sri-manifest.json
+          retention-days: 90
 
   envelope-vector-drift:
     name: Envelope vector-drift gate
@@ -90,3 +126,68 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  release-gate:
+    name: Release Gate (canary + security)
+    if: github.ref == 'refs/heads/main'
+    needs:
+      - backend
+      - frontend
+      - envelope-vector-drift
+      - android
+      - docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enforce zero known High/Critical findings
+        run: |
+          set -euo pipefail
+          report=".github/security/security-findings.json"
+          if [ ! -f "${report}" ]; then
+            echo "Missing ${report}"
+            exit 1
+          fi
+          high="$(jq -r '.counts.high // 0' "${report}")"
+          critical="$(jq -r '.counts.critical // 0' "${report}")"
+          if [ "${high}" != "0" ] || [ "${critical}" != "0" ]; then
+            echo "Security gate failed: high=${high}, critical=${critical}"
+            exit 1
+          fi
+
+      - name: Enforce latest canary pass
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          API_URL: ${{ github.api_url }}
+        run: |
+          set -euo pipefail
+          runs_json="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${API_URL}/repos/${REPO}/actions/workflows/canary-private.yml/runs?branch=main&per_page=1")"
+
+          total="$(echo "${runs_json}" | jq -r '.total_count // 0')"
+          if [ "${total}" = "0" ]; then
+            echo "No canary runs found for canary-private.yml"
+            exit 1
+          fi
+
+          status="$(echo "${runs_json}" | jq -r '.workflow_runs[0].status // ""')"
+          conclusion="$(echo "${runs_json}" | jq -r '.workflow_runs[0].conclusion // ""')"
+          started_at="$(echo "${runs_json}" | jq -r '.workflow_runs[0].run_started_at // ""')"
+          if [ "${status}" != "completed" ] || [ "${conclusion}" != "success" ]; then
+            echo "Latest canary is not passing (status=${status}, conclusion=${conclusion})"
+            exit 1
+          fi
+          if [ -z "${started_at}" ]; then
+            echo "Latest canary missing run_started_at"
+            exit 1
+          fi
+          now_epoch="$(date -u +%s)"
+          started_epoch="$(date -u -d "${started_at}" +%s)"
+          age_minutes="$(((now_epoch - started_epoch) / 60))"
+          if [ "${age_minutes}" -gt 15 ]; then
+            echo "Latest canary is stale (${age_minutes} minutes old)"
+            exit 1
+          fi
