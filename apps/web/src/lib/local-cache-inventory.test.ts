@@ -145,12 +145,15 @@ describe("getStorageEstimate", () => {
   });
 
   it("returns the estimate when storage API is present", async () => {
-    // @ts-expect-error — partial navigator stub
+    // Partial Navigator stub — the function under test only uses
+    // navigator.storage.estimate, so casting through `unknown` is
+    // safer than @ts-expect-error (which fired on a line that no
+    // longer errors in newer TS lib defs).
     globalThis.navigator = {
       storage: {
         estimate: async () => ({ usage: 1234, quota: 999999 }),
       },
-    };
+    } as unknown as Navigator;
     const result = await getStorageEstimate();
     expect(result).toEqual({ usage: 1234, quota: 999999 });
   });

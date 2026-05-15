@@ -53,6 +53,14 @@ function loadInlineHashes(): string[] | null {
 export function buildCspHeader(): { key: string; value: string } {
   const inlineHashes = loadInlineHashes();
 
+  // CSP violations POST to `/api/csp-report` (handler at
+  // apps/web/src/app/api/csp-report/route.ts). Browsers logging via
+  // the legacy `report-uri` directive; we don't ship a Reporting API
+  // group header yet because the legacy form is wider-supported.
+  // The report endpoint logs every violation as a structured JSON
+  // line so an operator can `vercel logs --since 1h | grep csp-violation`.
+  const reportUri = "report-uri /api/csp-report";
+
   if (inlineHashes && inlineHashes.length > 0) {
     // ENFORCING mode: every legitimate inline `<script>` body has
     // its sha256 listed; `'unsafe-inline'` is gone.
@@ -71,6 +79,7 @@ export function buildCspHeader(): { key: string; value: string } {
         "base-uri 'self'",
         "form-action 'self'",
         "object-src 'none'",
+        reportUri,
       ].join("; "),
     };
   }
@@ -93,6 +102,7 @@ export function buildCspHeader(): { key: string; value: string } {
       "base-uri 'self'",
       "form-action 'self'",
       "object-src 'none'",
+      reportUri,
     ].join("; "),
   };
 }
