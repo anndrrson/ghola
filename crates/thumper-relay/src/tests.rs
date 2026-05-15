@@ -278,7 +278,20 @@ fn test_config() -> RelayConfig {
         did_set_api_key: None,
         did_set_max_staleness_secs: 300,
         sealed_rate_limit_per_did: 1000,
+        max_body_size_bytes: 1_048_576,
+        max_sealed_body_size_bytes: 4 * 1_048_576,
+        cors_allowed_origins: vec!["https://ghola.xyz".to_string()],
     }
+}
+
+/// Production-shaped test config: dev_mode = false, real CORS allowlist.
+/// Used by the CORS preflight tests to exercise the strict path that
+/// production runs under (CorsLayer::permissive masks origin checks).
+fn test_config_prod() -> RelayConfig {
+    let mut cfg = test_config();
+    cfg.dev_mode = false;
+    cfg.cors_allowed_origins = vec!["https://ghola.xyz".to_string()];
+    cfg
 }
 
 #[test]
@@ -831,4 +844,181 @@ async fn health_includes_private_readiness_fields() {
     assert!(json.get("did_set_fresh").is_some());
     assert!(json.get("private_ready").is_some());
     assert!(json.get("private_reason_codes").is_some());
+}
+
+// -- AFK hardening sprint: body-size + CORS + COR-P tests -------------
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use tower::ServiceExt;
+
+/// POSTing a body larger than `max_body_size_bytes` to a JSON endpoint
+/// is rejected by axum's `DefaultBodyLimit` layer — the handler never
+/// runs. axum returns `413 Payload Too Large` in this case.
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_oversized_body() {
+    let mut cfg = test_config();
+    // Tiny ceiling so we don't have to allocate megabytes in the test.
+    cfg.max_body_size_bytes = 256;
+    let state = AppState::new(cfg);
+    let app = crate::build_app(state);
+
+    // 4 KiB of valid-shape JSON — well above 256 bytes.
+    let pad = "a".repeat(4096);
+    let body = format!(
+        r#"{{"provider_pubkey":"p","job_id":"j","model_id":"m","messages":[],"system":"{pad}"}}"#,
+    );
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/inference")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "expected 413 for body over max_body_size_bytes"
+    );
+}
+
+/// Malformed JSON to a Json-extracted endpoint returns 400 via axum's
+/// built-in extractor — no custom error handling needed, just confirm
+/// the contract holds.
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_malformed_json_body() {
+    let state = AppState::new(test_config());
+    let app = crate::build_app(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/providers/attest")
+                .header("content-type", "application/json")
+                .body(Body::from("{"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "expected 400 for malformed JSON"
+    );
+}
+
+/// OPTIONS preflight from an allowed production origin should be
+/// accepted by the CORS layer with the matching Access-Control headers.
+#[tokio::test(flavor = "current_thread")]
+async fn cors_preflight_allows_known_origin() {
+    let state = AppState::new(test_config_prod());
+    let app = crate::build_app(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/health")
+                .header("origin", "https://ghola.xyz")
+                .header("access-control-request-method", "GET")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // CORS layer answers preflights with 200 OK + headers.
+    assert!(resp.status().is_success(), "preflight status: {}", resp.status());
+    let allow_origin = resp
+        .headers()
+        .get("access-control-allow-origin")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(allow_origin, "https://ghola.xyz");
+}
+
+/// OPTIONS preflight from an unknown origin must NOT receive a matching
+/// Access-Control-Allow-Origin echoing the attacker origin. (tower-http
+/// returns the preflight without the allow-origin header when the
+/// origin isn't allowlisted.)
+#[tokio::test(flavor = "current_thread")]
+async fn cors_preflight_rejects_unknown_origin() {
+    let state = AppState::new(test_config_prod());
+    let app = crate::build_app(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/health")
+                .header("origin", "https://evil.example")
+                .header("access-control-request-method", "GET")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let allow_origin = resp
+        .headers()
+        .get("access-control-allow-origin")
+        .and_then(|v| v.to_str().ok());
+    assert!(
+        allow_origin != Some("https://evil.example") && allow_origin != Some("*"),
+        "unknown origin must not be echoed in access-control-allow-origin (got: {allow_origin:?})"
+    );
+}
+
+/// Every response should carry the Cross-Origin-Resource-Policy header.
+/// The verifier-public path (`/attestations/...`) is overridden to
+/// `cross-origin`; everything else defaults to `same-origin`.
+#[tokio::test(flavor = "current_thread")]
+async fn cross_origin_resource_policy_header_present() {
+    let state = AppState::new(test_config());
+    let app = crate::build_app(state);
+
+    // Default route — should be same-origin.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let corp = resp
+        .headers()
+        .get("cross-origin-resource-policy")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(corp, Some("same-origin"));
+
+    // Public verifier route — must be cross-origin so the verifier page
+    // on a different origin can fetch the cached attestation. We expect
+    // 404 (unknown hash) — the CORP header is set regardless of status.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/attestations/deadbeef")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let corp = resp
+        .headers()
+        .get("cross-origin-resource-policy")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(corp, Some("cross-origin"));
 }

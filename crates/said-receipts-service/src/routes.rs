@@ -10,12 +10,14 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
+use tower_http::cors::CorsLayer;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::merkle::{build_tree, proof_for_leaf};
 use crate::receipt::ReceiptV1;
@@ -29,11 +31,116 @@ pub struct AppState {
     pub batcher_interval_secs: u64,
 }
 
+/// HTTP-surface hardening knobs for the receipts service. Mirrors the
+/// shape of `thumper_relay::config::RelayConfig` so operators can reason
+/// about both services with the same mental model.
+#[derive(Debug, Clone)]
+pub struct ReceiptsServiceConfig {
+    /// Max body size accepted by `POST /v1/receipts`. Defaults to 64 KiB —
+    /// receipts are small JSON blobs with two SHA-256 hashes + a sig.
+    pub max_body_size_bytes: usize,
+    /// CORS allowlist. Production defaults to `["https://ghola.xyz"]`.
+    pub cors_allowed_origins: Vec<String>,
+    /// When true (matched against `RECEIPTS_DEV_MODE=1`), CORS degrades
+    /// to permissive so any localhost origin works without ceremony.
+    pub dev_mode: bool,
+}
+
+impl ReceiptsServiceConfig {
+    /// Construct from environment. Matches the env-var conventions used
+    /// elsewhere in the workspace (THUMPER_/SAID_/RECEIPTS_ prefixes).
+    pub fn from_env() -> Self {
+        let max_body = std::env::var("RECEIPTS_MAX_BODY_SIZE_BYTES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(64 * 1024);
+        let dev_mode = std::env::var("RECEIPTS_DEV_MODE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let cors_allowed_origins = std::env::var("RECEIPTS_CORS_ALLOWED_ORIGINS")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| vec!["https://ghola.xyz".to_string()]);
+        Self {
+            max_body_size_bytes: max_body,
+            cors_allowed_origins,
+            dev_mode,
+        }
+    }
+}
+
+impl Default for ReceiptsServiceConfig {
+    fn default() -> Self {
+        Self {
+            max_body_size_bytes: 64 * 1024,
+            cors_allowed_origins: vec!["https://ghola.xyz".to_string()],
+            dev_mode: false,
+        }
+    }
+}
+
+fn build_cors_layer(config: &ReceiptsServiceConfig) -> CorsLayer {
+    use axum::http::{HeaderValue, Method};
+
+    if config.dev_mode {
+        return CorsLayer::permissive();
+    }
+
+    let origins: Vec<HeaderValue> = config
+        .cors_allowed_origins
+        .iter()
+        .filter_map(|o| HeaderValue::from_str(o).ok())
+        .collect();
+
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
+}
+
+/// Build the router with default hardening configuration (suitable for
+/// tests and existing call sites that don't pass an explicit config).
 pub fn router(state: AppState) -> Router {
+    router_with_config(state, ReceiptsServiceConfig::default())
+}
+
+/// Build the router with an explicit `ReceiptsServiceConfig`. The
+/// binary entrypoint uses this so prod can tune body limits + CORS via
+/// env vars without rebuilding.
+pub fn router_with_config(state: AppState, config: ReceiptsServiceConfig) -> Router {
+    let cors = build_cors_layer(&config);
+    let max_body = config.max_body_size_bytes;
+
+    // Public verifier path: `/v1/receipts/{hash}/proof` is fetched from
+    // the cross-origin `/r/<hash>` verifier page, so it must carry
+    // `Cross-Origin-Resource-Policy: cross-origin` to avoid a CORP
+    // block. Every other route (incl. `POST /v1/receipts`) defaults to
+    // same-origin via the broader layer below.
+    let public_proof_router = Router::new()
+        .route("/v1/receipts/{hash}/proof", get(get_proof))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::HeaderName::from_static("cross-origin-resource-policy"),
+            axum::http::HeaderValue::from_static("cross-origin"),
+        ));
+
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/receipts", post(post_receipt))
-        .route("/v1/receipts/{hash}/proof", get(get_proof))
+        .merge(public_proof_router)
+        .layer(DefaultBodyLimit::max(max_body))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            axum::http::HeaderName::from_static("cross-origin-resource-policy"),
+            axum::http::HeaderValue::from_static("same-origin"),
+        ))
+        .layer(cors)
         .with_state(state)
 }
 

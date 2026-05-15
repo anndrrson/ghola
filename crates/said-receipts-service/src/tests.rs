@@ -11,7 +11,7 @@ use tower::ServiceExt;
 
 use crate::batch::Batcher;
 use crate::receipt::ReceiptV1;
-use crate::routes::{router, AppState};
+use crate::routes::{router, router_with_config, AppState, ReceiptsServiceConfig};
 use crate::solana::{InMemoryPublisher, SolanaPublisher};
 use crate::storage::{MemoryStore, ReceiptsStore};
 
@@ -220,4 +220,127 @@ async fn solana_failure_retries_next_tick() {
     assert_eq!(publisher.calls().len(), 1);
     let unpub = store.list_unpublished_batches().await.unwrap();
     assert_eq!(unpub.len(), 0);
+}
+
+// -- AFK hardening sprint: body-size + malformed-JSON tests -----------
+
+/// POSTing a body larger than `max_body_size_bytes` is rejected with
+/// `413 Payload Too Large` by axum's body-limit layer before the
+/// handler runs.
+#[tokio::test]
+async fn rejects_oversized_receipt_body() {
+    let store: Arc<dyn ReceiptsStore> = Arc::new(MemoryStore::new());
+    let state = AppState {
+        store,
+        batcher_interval_secs: 60,
+    };
+    let cfg = ReceiptsServiceConfig {
+        max_body_size_bytes: 256,
+        cors_allowed_origins: vec!["https://ghola.xyz".to_string()],
+        dev_mode: false,
+    };
+    let app = router_with_config(state, cfg);
+
+    // 4 KiB of valid-shape JSON, well above 256-byte ceiling.
+    let pad = "a".repeat(4096);
+    let body = format!(r#"{{"version":1,"job_id":"j","mode":"cloud","pad":"{pad}"}}"#);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/receipts")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "expected 413 for body over max_body_size_bytes"
+    );
+}
+
+/// Malformed JSON to `POST /v1/receipts` is rejected with 400 by
+/// axum's `Json` extractor before any storage call runs.
+#[tokio::test]
+async fn rejects_malformed_receipt_json() {
+    let store: Arc<dyn ReceiptsStore> = Arc::new(MemoryStore::new());
+    let state = AppState {
+        store,
+        batcher_interval_secs: 60,
+    };
+    let app = router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/receipts")
+                .header("content-type", "application/json")
+                .body(Body::from("{"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "expected 400 for malformed JSON"
+    );
+}
+
+/// Every response carries the Cross-Origin-Resource-Policy header. The
+/// public proof path (`/v1/receipts/{hash}/proof`) is overridden to
+/// `cross-origin` so the `/r/<hash>` verifier page can fetch it; every
+/// other route defaults to `same-origin`.
+#[tokio::test]
+async fn cross_origin_resource_policy_header_present() {
+    let store: Arc<dyn ReceiptsStore> = Arc::new(MemoryStore::new());
+    let state = AppState {
+        store,
+        batcher_interval_secs: 60,
+    };
+    let app = router(state);
+
+    // Default route: same-origin.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let corp = resp
+        .headers()
+        .get("cross-origin-resource-policy")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(corp, Some("same-origin"));
+
+    // Public proof path: cross-origin. The hash doesn't exist so we get
+    // 404 — the CORP header is set regardless of status.
+    let bogus_hash = "0".repeat(64);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/receipts/{bogus_hash}/proof"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let corp = resp
+        .headers()
+        .get("cross-origin-resource-policy")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(corp, Some("cross-origin"));
 }

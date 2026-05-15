@@ -54,6 +54,31 @@ pub struct RelayConfig {
     ///
     /// Set via `THUMPER_SEALED_RATE_LIMIT_PER_DID`.
     pub sealed_rate_limit_per_did: u32,
+    /// Maximum accepted HTTP request body size, in bytes, for the
+    /// general JSON POST/PUT endpoints (e.g. `POST /inference`,
+    /// `POST /providers/attest`). Requests exceeding this are rejected
+    /// with `413 Payload Too Large` by axum's body-limit middleware
+    /// before the handler ever sees them.
+    ///
+    /// Defaults to 1 MiB (1_048_576). Set via
+    /// `THUMPER_MAX_BODY_SIZE_BYTES`.
+    pub max_body_size_bytes: usize,
+    /// Maximum accepted HTTP request body size for the sealed-inference
+    /// path (`POST /inference/sealed` and the OHTTP gateway). Sealed
+    /// envelopes are encrypted blobs that include the full prompt +
+    /// chat history, so they routinely run larger than the general
+    /// limit. Defaults to 4 MiB; set via
+    /// `THUMPER_MAX_SEALED_BODY_SIZE_BYTES`.
+    pub max_sealed_body_size_bytes: usize,
+    /// CORS allowed origins for browser-facing endpoints. Production
+    /// default is `["https://ghola.xyz"]`. In dev mode (`THUMPER_DEV_MODE=1`)
+    /// the relay also allows `http://localhost:*` and `http://127.0.0.1:*`
+    /// patterns so a developer can hit it from any local dev server
+    /// without rebuilding.
+    ///
+    /// Override with `THUMPER_CORS_ALLOWED_ORIGINS` (comma-separated
+    /// list of fully-qualified origins).
+    pub cors_allowed_origins: Vec<String>,
 }
 
 impl RelayConfig {
@@ -95,6 +120,23 @@ impl RelayConfig {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5),
+            max_body_size_bytes: env::var("THUMPER_MAX_BODY_SIZE_BYTES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1_048_576), // 1 MiB
+            max_sealed_body_size_bytes: env::var("THUMPER_MAX_SEALED_BODY_SIZE_BYTES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(4 * 1_048_576), // 4 MiB
+            cors_allowed_origins: env::var("THUMPER_CORS_ALLOWED_ORIGINS")
+                .ok()
+                .map(|s| {
+                    s.split(',')
+                        .map(|p| p.trim().to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec!["https://ghola.xyz".to_string()]),
         }
     }
 

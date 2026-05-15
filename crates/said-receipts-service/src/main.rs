@@ -8,12 +8,11 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;
-use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 use said_receipts_service::batch::{spawn, Batcher};
-use said_receipts_service::routes::{router, AppState};
+use said_receipts_service::routes::{router_with_config, AppState, ReceiptsServiceConfig};
 use said_receipts_service::solana::{
     load_signer_from_env, InMemoryPublisher, RpcConfig, RpcPublisher, SolanaPublisher,
 };
@@ -75,11 +74,13 @@ async fn main() -> anyhow::Result<()> {
     spawn(batcher, interval_secs);
     tracing::info!(interval_secs, "spawned Merkle batcher");
 
-    let app = router(AppState {
-        store,
-        batcher_interval_secs: interval_secs,
-    })
-    .layer(CorsLayer::permissive())
+    let app = router_with_config(
+        AppState {
+            store,
+            batcher_interval_secs: interval_secs,
+        },
+        ReceiptsServiceConfig::from_env(),
+    )
     .layer(TraceLayer::new_for_http());
 
     tracing::info!(%bind_addr, "said-receipts-service listening");
