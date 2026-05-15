@@ -19,10 +19,14 @@
 //! session that received the `ProviderAttest`.
 
 pub mod allowlist;
+pub mod h100;
 pub mod kms;
 pub mod nitro;
+pub mod tdx;
 pub mod types;
 
+pub use h100::{verify_h100_cc, verify_h100_cc_with_root};
+pub use tdx::{verify_tdx, verify_tdx_with_root};
 pub use types::{AttestationError, AttestedEnclave, NitroAttestation};
 
 use ed25519_dalek::VerifyingKey;
@@ -53,15 +57,38 @@ pub fn verify_attestation(
     expected_tee_kind: TeeKind,
     now_unix: i64,
 ) -> Result<AttestedEnclave, AttestationError> {
-    verify_attestation_inner(
-        vendor_quote,
-        ghola_allowlist_sig,
-        ghola_allowlist_pub,
-        expected_tee_kind,
-        now_unix,
-        /* test_root_der = */ None,
-        /* kms = */ None,
-    )
+    // TEE vendor dispatch — Nitro keeps the existing PCR-based path;
+    // H100 CC and TDX route to their own verifier modules. The
+    // three-vendor diversity matters because a single hardware vendor
+    // would be a single point of compromise for the whole network
+    // (Yahya's privacy thesis explicitly calls this out as the
+    // structural moat).
+    match expected_tee_kind {
+        TeeKind::Nitro => verify_attestation_inner(
+            vendor_quote,
+            ghola_allowlist_sig,
+            ghola_allowlist_pub,
+            expected_tee_kind,
+            now_unix,
+            None,
+            None,
+        ),
+        TeeKind::H100Cc => h100::verify_h100_cc(
+            vendor_quote,
+            ghola_allowlist_sig,
+            ghola_allowlist_pub,
+            expected_tee_kind,
+            now_unix,
+        ),
+        TeeKind::Tdx => tdx::verify_tdx(
+            vendor_quote,
+            ghola_allowlist_sig,
+            ghola_allowlist_pub,
+            expected_tee_kind,
+            now_unix,
+        ),
+        _ => Err(AttestationError::UnsupportedTeeKind),
+    }
 }
 
 /// Variant that additionally verifies a KMS-anchored ECDSA P-384
