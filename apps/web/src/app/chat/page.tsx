@@ -25,7 +25,12 @@ import {
 } from "@/lib/sovereignty";
 import { makeReceipt, submitReceiptToService } from "@/lib/receipt";
 import { streamLocalChat } from "@/lib/local-inference";
-import { streamWebGPUChat, DEFAULT_WEBGPU_MODEL } from "@/lib/webgpu-inference";
+import {
+  streamWebGPUChat,
+  warmEngine,
+  detectWebGPU,
+  DEFAULT_WEBGPU_MODEL,
+} from "@/lib/webgpu-inference";
 import { streamSealedChat } from "@/lib/sealed-stream";
 import bs58 from "bs58";
 import type { ThumperSession, ThumperChatMessage, ThumperInlineAction } from "@/lib/thumper-types";
@@ -134,6 +139,40 @@ export default function ChatPage() {
   // is visible to anyone actually reading the network panel.
   const { mode: sovereigntyMode, setMode: setSovereigntyMode } =
     useSovereigntyMode(userDid);
+
+  // WebGPU engine warm-up. Cold-loading the model on first send adds a
+  // ~10-30s wait before the first token; pre-loading on chat mount lets
+  // the multi-hundred-megabyte download + WebGPU shader compile happen
+  // in the background while the user is reading the welcome surface.
+  // The actual `streamWebGPUChat` call below transparently reuses the
+  // already-warm singleton — no behavior change on the send path.
+  const [warmupProgress, setWarmupProgress] = useState<number | null>(null);
+  useEffect(() => {
+    if (sovereigntyMode !== "local") return;
+    const support = detectWebGPU();
+    if (!support.supported) return;
+    let cancelled = false;
+    setWarmupProgress((prev) => (prev === null ? 0 : prev));
+    // Defer to the next microtask so we don't compete with hydration
+    // paint work. `warmEngine` is idempotent — StrictMode double-invoke
+    // or a re-mount won't kick off a second download.
+    void warmEngine(DEFAULT_WEBGPU_MODEL, (report) => {
+      if (cancelled) return;
+      setWarmupProgress(report.progress);
+    })
+      .then(() => {
+        if (!cancelled) setWarmupProgress(1);
+      })
+      .catch(() => {
+        // Swallow — the next user-initiated send through `streamWebGPUChat`
+        // will surface a proper error in the chat bubble. We don't want
+        // a background load failure to disrupt the chat UI on mount.
+        if (!cancelled) setWarmupProgress(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sovereigntyMode]);
 
   // The Local-mode banner is for ghola-home pairing UX. Anonymous /
   // WebGPU users don't need an "install ghola-home" pitch in their
@@ -748,6 +787,9 @@ export default function ChatPage() {
                 sovereigntyMode === "local"
                   ? DEFAULT_WEBGPU_MODEL
                   : providerInfo?.model ?? null
+              }
+              warmupProgress={
+                sovereigntyMode === "local" ? warmupProgress : null
               }
             />
             {sovereigntyMode === "local" && hasPairedGholaHome && <LocalSetupBanner />}

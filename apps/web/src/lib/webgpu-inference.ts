@@ -238,6 +238,39 @@ export async function streamWebGPUChat(
 }
 
 /**
+ * Pre-warm the WebGPU engine for the given model without requesting a
+ * completion. Safe to call on page mount — kicks off the model download
+ * + WebGPU shader compilation in the background so the first user-sent
+ * message can stream tokens immediately rather than blocking on a
+ * multi-hundred-megabyte download.
+ *
+ * Idempotency:
+ *   - If the engine is already warm for `modelId`, returns immediately.
+ *   - If a warm-up is already in flight for `modelId`, returns the same
+ *     promise rather than starting a second concurrent load.
+ *   - Safe to call multiple times from React effects (StrictMode
+ *     double-invoke, concurrent component mounts).
+ *
+ * The promise resolves once the engine is ready. Callers that want
+ * fire-and-forget can ignore the returned promise; callers that want
+ * to track progress in UI should pass `onProgress`.
+ *
+ * Errors thrown by the underlying load are propagated. Callers in a
+ * non-blocking mount path should attach `.catch()` to swallow load
+ * failures (the eventual user-initiated send through `streamWebGPUChat`
+ * will surface its own error to the chat UI).
+ */
+export async function warmEngine(
+  modelId: string = DEFAULT_WEBGPU_MODEL,
+  onProgress?: (report: InitProgressReport) => void,
+): Promise<void> {
+  // Fast-path: already warm.
+  if (engineSlot && engineSlot.modelId === modelId) return;
+  // getEngine() itself handles the in-flight dedup and singleton update.
+  await getEngine(modelId, onProgress);
+}
+
+/**
  * Force-unload the cached engine. Useful for tests and for "switch
  * model" UI that needs to free VRAM before loading something else.
  */
