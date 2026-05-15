@@ -25,7 +25,8 @@ mod linux {
     use ghola_vsock_proxy::{env_port, init_tracing};
     use std::env;
     use std::time::Duration;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use std::io::Write;
+    use tokio::io::AsyncReadExt;
     use tokio_vsock::{VsockAddr, VsockStream};
 
     #[tokio::main]
@@ -66,11 +67,14 @@ mod linux {
         .map_err(|e| anyhow::anyhow!("vsock connect to {vsock_host_cid}:{vsock_port}: {e}"))?;
 
         // Read everything the server sends until EOF, then dump to stdout.
+        // Use std::io::stdout (sync) because the tokio "io-std" feature
+        // isn't enabled on this crate and bringing it in just for one
+        // final write isn't worth the transitive-dep cost.
         let mut buf = Vec::new();
         stream.read_to_end(&mut buf).await?;
-        let mut stdout = tokio::io::stdout();
-        stdout.write_all(&buf).await?;
-        stdout.flush().await?;
+        let mut stdout = std::io::stdout();
+        stdout.write_all(&buf)?;
+        stdout.flush()?;
         tracing::info!(bytes = buf.len(), "vsock-env-client done");
         Ok(())
     }
