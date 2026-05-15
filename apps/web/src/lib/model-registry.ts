@@ -16,17 +16,16 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import { sha256 } from "@noble/hashes/sha256";
 
-// Program id of the on-chain model registry. Mirrors the deployed
-// `ghola-model-registry` Anchor program (programs/ghola-model-registry).
-// Override via env when running against devnet vs mainnet.
-//
-// Until the program is deployed, this client returns "unregistered"
-// for every lookup — the deterministic PDA still resolves so the read
-// path exercises a real RPC.
+// Program id of the on-chain model registry. The real program id is
+// `MdLRegMa1iYxBg5gKhCJVTDfXkqHpQF6PoG3kRYW6S1` (reserved in
+// Anchor.toml) but the program is not deployed yet, so the client
+// defaults to the System Program as a known-valid placeholder that
+// produces deterministic off-curve PDAs for the test + dev flow.
+// Override via env when running against devnet / mainnet.
 const REGISTRY_PROGRAM_ID = new PublicKey(
   (typeof process !== "undefined" &&
     process.env?.NEXT_PUBLIC_MODEL_REGISTRY_PROGRAM_ID) ||
-    "MdLRegMa1iYxBg5gKhCJVTDfXkqHpQF6PoG3kRYW6S1",
+    "11111111111111111111111111111111",
 );
 
 const PDA_SEED_PREFIX = "ghola-model";
@@ -82,9 +81,14 @@ export async function deriveModelPda(modelId: string): Promise<PublicKey> {
   // (e.g. "Llama-3.2-1B-Instruct-q4f16_1-MLC" is 33 bytes), so the
   // canonical seed is sha256(model_id). Anchor program mirrors this
   // derivation in programs/ghola-model-registry.
+  //
+  // The seeds are wrapped in Buffer because @solana/web3.js performs
+  // strict-equality checks against the Buffer prototype in some code
+  // paths; bare Uint8Array works at runtime in Node but fails in jsdom
+  // where the cross-realm prototype mismatch defeats the check.
   const idHash = sha256(new TextEncoder().encode(modelId));
   const [pda] = await PublicKey.findProgramAddress(
-    [new TextEncoder().encode(PDA_SEED_PREFIX), idHash],
+    [Buffer.from(PDA_SEED_PREFIX, "utf8"), Buffer.from(idHash)],
     REGISTRY_PROGRAM_ID,
   );
   return pda;
