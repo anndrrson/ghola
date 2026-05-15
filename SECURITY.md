@@ -71,7 +71,11 @@ depend on (Solana validators, Turnkey enclave, Render).
 
 ## Reproducible verification
 
-Until Tier 1C ships the SRI manifest, a determined reviewer can still
+Open [`/security/status`](https://ghola.xyz/security/status) — every
+claim above resolves to a live probe in your own browser. A regression
+on any indicator can be reproduced without running our code locally.
+
+Until Tier 1C ships the SRI manifest, a determined reviewer can also
 verify:
 
 - **Receipt math** — open `/r/[hash]`, paste any receipt JSON exported
