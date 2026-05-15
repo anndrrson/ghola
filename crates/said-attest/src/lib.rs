@@ -160,6 +160,34 @@ fn verify_attestation_inner(
     // 2. Measurement = PCR0 || PCR1 || PCR2 (in that order).
     let measurement = derive_measurement(&doc)?;
 
+    // Temporary diagnostic: log the PCRs the NSM-issued attestation
+    // doc actually contains. The allowlist sig check below has been
+    // failing in production despite the build-side measurement_digest
+    // matching the EIF metadata — this confirms whether the runtime
+    // PCRs equal the metadata PCRs. Remove after Phase 1 ships.
+    {
+        let pcr_hex = |n: u32| {
+            doc.pcrs
+                .iter()
+                .find(|(i, _)| *i == n)
+                .map(|(_, b)| hex::encode(b))
+                .unwrap_or_else(|| "<missing>".to_string())
+        };
+        let measurement_sha256_hex = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(&measurement);
+            hex::encode(h.finalize())
+        };
+        eprintln!(
+            "[said-attest] attestation doc PCRs (pre-allowlist-verify): pcr0={} pcr1={} pcr2={} measurement_sha256={}",
+            pcr_hex(0),
+            pcr_hex(1),
+            pcr_hex(2),
+            measurement_sha256_hex,
+        );
+    }
+
     // 3a. Allowlist signature over sha256(measurement).
     allowlist::verify_measurement(&measurement, ghola_allowlist_sig, ghola_allowlist_pub)?;
 
