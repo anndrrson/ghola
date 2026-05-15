@@ -155,6 +155,11 @@ def main() -> int:
                          "single per-token measurement each. Keep small to "
                          "bound runtime.")
     ap.add_argument("--output", default="docs/perf/sparsity-llama-3.2-1b.json")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Validate the model has the SwiGLU MLP shape "
+                         "this script targets, then exit before loading "
+                         "weights. Useful for sanity-checking the script "
+                         "without a multi-GB download.")
     args = ap.parse_args()
 
     try:
@@ -168,6 +173,41 @@ def main() -> int:
     import torch
 
     prompts = load_prompts(args.prompts)
+
+    if args.dry_run:
+        # Fetch config only — skip the multi-GB weight download — and
+        # verify the architecture has the SwiGLU MLP shape this script
+        # targets (gate_proj + up_proj + down_proj). Exit non-zero if
+        # it doesn't, so a CI / dev workflow can fail fast.
+        from transformers import AutoConfig
+        print(f"dry-run: fetching config for {args.model}...", file=sys.stderr)
+        cfg = AutoConfig.from_pretrained(args.model)
+        arch = (cfg.architectures or ["unknown"])[0]
+        hidden = getattr(cfg, "hidden_size", None)
+        intermediate = getattr(cfg, "intermediate_size", None)
+        n_layers = getattr(cfg, "num_hidden_layers", None)
+        hidden_act = getattr(cfg, "hidden_act", "unknown")
+        print(json.dumps({
+            "dry_run": True,
+            "model": args.model,
+            "architecture": arch,
+            "hidden_size": hidden,
+            "intermediate_size": intermediate,
+            "num_hidden_layers": n_layers,
+            "hidden_act": hidden_act,
+            "expected_swiglu": hidden_act in ("silu", "swish"),
+            "n_prompts": len(prompts),
+        }, indent=2))
+        if hidden_act not in ("silu", "swish"):
+            print(
+                f"\nWARN: hidden_act={hidden_act!r} — this script targets "
+                f"SwiGLU (silu/swish). The measurement will still run, but "
+                f"the threshold definition assumes silu(gate) * up.",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
+
     print(f"loading {args.model}...", file=sys.stderr)
     tok = AutoTokenizer.from_pretrained(args.model)
     model = AutoModelForCausalLM.from_pretrained(

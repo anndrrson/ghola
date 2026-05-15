@@ -51,6 +51,15 @@ Runs out of band (no WebGPU, no MLC — straight transformers):
 cd /Users/andersonobrien/Downloads/ghola
 python -m venv .venv && source .venv/bin/activate
 pip install transformers torch
+
+# Optional: validate the script targets the right architecture
+# before kicking off a multi-GB download.
+python scripts/measure-sparsity.py \
+  --model meta-llama/Llama-3.2-1B-Instruct \
+  --dry-run
+
+# Full run — downloads weights, ~5-10 minutes on a recent GPU,
+# longer on CPU.
 python scripts/measure-sparsity.py \
   --model meta-llama/Llama-3.2-1B-Instruct \
   --output docs/perf/sparsity-llama-3.2-1b.json
