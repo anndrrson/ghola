@@ -18,6 +18,13 @@ import type {
   ChatCompletionMessageParam,
 } from "@mlc-ai/web-llm";
 
+import {
+  MARKS,
+  hasMark,
+  mark,
+  markEngineProgress,
+} from "./perf-marks";
+
 // The MLC model registry id. Llama 3.2 1B at q4f16_1 is ~1GB and runs
 // at usable token rates on M-series Macs and modern Windows laptops.
 // Stays under the 2GB IndexedDB quota most browsers enforce out of the
@@ -122,6 +129,13 @@ async function getEngine(
     if (engineSlot && engineSlot.modelId === modelId) return engine;
   }
 
+  // Phase A instrumentation: drop the engine-fetch-start mark once
+  // per engine load. Idempotent across StrictMode double-invoke +
+  // concurrent callers (hasMark guards against re-dropping).
+  if (!hasMark(MARKS.ENGINE_FETCH_START)) {
+    mark(MARKS.ENGINE_FETCH_START);
+  }
+
   const { CreateMLCEngine, prebuiltAppConfig } = await import("@mlc-ai/web-llm");
 
   // Compose an AppConfig that pins SRI hashes on the default model.
@@ -144,6 +158,10 @@ async function getEngine(
 
   inflight = CreateMLCEngine(modelId, {
     initProgressCallback: (report) => {
+      // Phase A: project WebLLM's free-text progress onto our typed
+      // marks. dedup keeps a single mark per phase across the
+      // multi-event progress stream WebLLM emits during init.
+      markEngineProgress(report, { dedup: true });
       onProgress?.(report);
     },
     appConfig: pinnedAppConfig,
@@ -226,6 +244,13 @@ export async function streamWebGPUChat(
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta?.content;
       if (typeof delta === "string" && delta.length > 0) {
+        // Phase A: drop the first-token mark on the first non-empty
+        // delta of the FIRST stream after a cold engine load. We let
+        // hasMark gate the call so warm-engine subsequent sends don't
+        // overwrite the measurement that anchors engineLoad → firstToken.
+        if (!hasMark(MARKS.FIRST_TOKEN)) {
+          mark(MARKS.FIRST_TOKEN);
+        }
         options.onChunk(delta);
       }
     }

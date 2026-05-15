@@ -1,0 +1,41 @@
+{
+  "_": "Phase A baseline for the Apple-flash-memory adoption plan (.claude/plans/zesty-giggling-charm.md). Fill in the measurements section from one cold load. The sparsity section is filled in by scripts/measure-sparsity.py. See docs/perf/README.md for the capture procedure.",
+  "model": "Llama-3.2-1B-Instruct-q4f16_1-MLC",
+  "captured_at": null,
+  "device": {
+    "user_agent": null,
+    "platform": null,
+    "ram_gb": null,
+    "webgpu_adapter": null
+  },
+  "measurements": {
+    "engine_load_ms": null,
+    "first_token_from_fetch_start_ms": null,
+    "first_token_from_compile_done_ms": null,
+    "cache_bytes_loaded": {
+      "webllm/config": null,
+      "webllm/wasm": null,
+      "webllm/model": null,
+      "total": null
+    },
+    "peak_vram_mb_estimate": null,
+    "tokens_per_second_warm": null
+  },
+  "sparsity": {
+    "source": "scripts/measure-sparsity.py",
+    "model_hf_id": "meta-llama/Llama-3.2-1B-Instruct",
+    "threshold": 0.001,
+    "n_prompts": null,
+    "n_layers": null,
+    "intermediate_size": null,
+    "overall_mean_active_fraction": null,
+    "overall_mean_sparsity": null,
+    "decision": null,
+    "per_layer": []
+  },
+  "decision_gate": {
+    "_": "Phase A → Phase B/C gate. Per the plan, decision_for(overall_mean_active_fraction): <=0.50 phase_c_worthwhile, 0.51-0.60 marginal, >0.60 skip.",
+    "phase_c_worthwhile": null,
+    "next_action": null
+  }
+}
