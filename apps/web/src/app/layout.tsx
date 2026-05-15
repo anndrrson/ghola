@@ -28,9 +28,9 @@ const funnelDisplay = Funnel_Display({
 // site ever moves off the apex domain this is the one place to flip.
 const SITE_URL = "https://ghola.xyz";
 
-const SHARED_TITLE = "ghola — verifiably off the record";
+const SHARED_TITLE = "ghola — the most private AI";
 const SHARED_DESCRIPTION =
-  "Open, attested, sovereign confidential AI. TEE + on-device + on-chain accountable privacy, with a per-message cryptographic receipt the user can verify.";
+  "The most private AI. Runs on your device, or end-to-end encrypted in the cloud.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),

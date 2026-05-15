@@ -13,7 +13,7 @@ import { ImageResponse } from "next/og";
 // enough to read inside an unfurl card, and the palette identical to
 // the site.
 
-export const alt = "ghola — verifiably off the record";
+export const alt = "ghola — the most private AI";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -61,9 +61,9 @@ export default async function Image() {
             letterSpacing: "-3px",
           }}
         >
-          <span style={{ display: "flex" }}>Verifiably</span>
+          <span style={{ display: "flex" }}>The most private</span>
           <span style={{ display: "flex", color: "#3da8ff" }}>
-            off the record.
+            AI.
           </span>
         </div>
 
@@ -80,7 +80,7 @@ export default async function Image() {
             letterSpacing: "-0.3px",
           }}
         >
-          Open, attested, sovereign confidential AI.
+          Runs on your device. Or end-to-end encrypted in the cloud.
         </div>
 
         {/* Bottom rail — thin credential strip in the same mono

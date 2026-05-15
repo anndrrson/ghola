@@ -129,7 +129,7 @@ export default function Home() {
           settlement). Telegram-style — adjective label, one human
           sentence of proof. Reads as feature breadth for normies;
           pattern-matches to the AI×crypto thesis for partners. */}
-      <section className="pt-20 pb-28 sm:pt-24 sm:pb-36">
+      <section className="pt-28 sm:pt-36">
         <div className="mx-auto w-full max-w-6xl px-6 lg:px-12">
           <div className="flex items-baseline gap-6 mb-16">
             <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#8b95a8]">
@@ -170,7 +170,7 @@ export default function Home() {
       </section>
 
       {/* ──────────── Sovereignty Modes ──────────── */}
-      <section className="py-28 sm:py-36">
+      <section className="pt-28 sm:pt-36">
         <div className="mx-auto w-full max-w-6xl px-6 lg:px-12">
           <div className="flex items-baseline gap-6 mb-16">
             <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#8b95a8]">
