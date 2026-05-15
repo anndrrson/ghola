@@ -25,6 +25,19 @@ pub struct Config {
     /// Google OAuth client ID for verifying Google ID tokens (mobile sign-in).
     /// Same env var as thumper-cloud uses, so Render only needs one value.
     pub google_client_id: Option<String>,
+    /// Helius API key — used both to manage the org-wide enhanced-webhook
+    /// (add/remove agent wallet addresses on agent lifecycle) and as the
+    /// `api-key` query param on Helius management calls.
+    pub helius_api_key: Option<String>,
+    /// ID of the persistent Helius webhook to mutate. Created once via the
+    /// Helius dashboard (or `POST /v0/webhooks`); we PUT to it on every
+    /// agent create/archive instead of allocating new webhooks per user.
+    pub helius_webhook_id: Option<String>,
+    /// Shared secret that Helius will send as `Authorization` on each
+    /// webhook delivery. We compare incoming requests against this value
+    /// to reject unauthenticated callers. Configured via the `authHeader`
+    /// field on the webhook itself.
+    pub helius_webhook_auth: Option<String>,
 }
 
 impl Config {
@@ -55,6 +68,19 @@ impl Config {
                 .unwrap_or_else(|_| "https://api.devnet.solana.com".into()),
             signing_key_hex: env::var("SIGNING_KEY").ok(),
             google_client_id: env::var("GOOGLE_CLIENT_ID").ok(),
+            helius_api_key: env::var("HELIUS_API_KEY").ok(),
+            helius_webhook_id: env::var("HELIUS_WEBHOOK_ID").ok(),
+            helius_webhook_auth: env::var("HELIUS_WEBHOOK_AUTH").ok(),
         }
+    }
+
+    /// True when all three Helius env vars are present, i.e. the cloud
+    /// can both mutate the watchlist and verify inbound deliveries.
+    /// Routes that touch Helius silently no-op when this returns false,
+    /// so local dev / test environments don't need the integration.
+    pub fn helius_enabled(&self) -> bool {
+        self.helius_api_key.is_some()
+            && self.helius_webhook_id.is_some()
+            && self.helius_webhook_auth.is_some()
     }
 }

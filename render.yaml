@@ -41,6 +41,16 @@ services:
         sync: false
       - key: ADMIN_EMAILS
         sync: false
+      # Helius enhanced-webhook integration. All three must be set together;
+      # if any are missing the integration silently no-ops (config.helius_enabled()).
+      # Register the webhook first via scripts/helius/register-webhook.sh,
+      # then paste the three values into the Render dashboard.
+      - key: HELIUS_API_KEY
+        sync: false
+      - key: HELIUS_WEBHOOK_ID
+        sync: false
+      - key: HELIUS_WEBHOOK_AUTH
+        sync: false
     healthCheckPath: /health
 
   - type: web

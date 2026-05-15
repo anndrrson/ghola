@@ -172,6 +172,11 @@ pub struct DbPaymentTransaction {
     pub memo: Option<String>,
     pub status: String,
     pub created_at: DateTime<Utc>,
+    pub helius_type: Option<String>,
+    pub helius_source: Option<String>,
+    pub description: Option<String>,
+    pub slot: Option<i64>,
+    pub block_time: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]

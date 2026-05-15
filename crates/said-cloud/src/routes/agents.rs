@@ -14,16 +14,17 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
+use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::Claims;
-use crate::db::{DbAgent, DbAgentWallet};
+use crate::db::{DbAgent, DbAgentWallet, DbPaymentTransaction};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -98,6 +99,51 @@ pub struct EarningsResponse {
     pub total_spent_micro_usdc: i64,
     pub net_micro_usdc: i64,
     pub transaction_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TransactionsQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TransactionResponse {
+    pub id: Uuid,
+    pub signature: String,
+    pub direction: String,
+    pub currency: String,
+    pub amount: i64,
+    pub recipient: String,
+    pub sender: String,
+    pub memo: Option<String>,
+    pub status: String,
+    pub helius_type: Option<String>,
+    pub helius_source: Option<String>,
+    pub description: Option<String>,
+    pub block_time: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<DbPaymentTransaction> for TransactionResponse {
+    fn from(t: DbPaymentTransaction) -> Self {
+        Self {
+            id: t.id,
+            signature: t.signature,
+            direction: t.direction,
+            currency: t.currency,
+            amount: t.amount,
+            recipient: t.recipient,
+            sender: t.sender,
+            memo: t.memo,
+            status: t.status,
+            helius_type: t.helius_type,
+            helius_source: t.helius_source,
+            description: t.description,
+            block_time: t.block_time,
+            created_at: t.created_at,
+        }
+    }
 }
 
 // ── Helpers ──
@@ -242,6 +288,25 @@ pub async fn create_agent(
 
     tx.commit().await?;
 
+    // Add the new agent's wallet to the Helius watchlist so its on-chain
+    // activity streams into payment_transactions. Spawned because the
+    // Helius round-trip is ~150ms and we don't want to block the
+    // create-agent response on a third-party API. Reconcile on startup
+    // covers the case where this task fails (e.g. transient network).
+    if state.config.helius_enabled() {
+        let bg_state = state.clone();
+        let address = solana_address.clone();
+        tokio::spawn(async move {
+            let Some(client) = crate::helius::Helius::new(&bg_state.http_client, &bg_state.config)
+            else {
+                return;
+            };
+            if let Err(e) = client.add_address(&address).await {
+                tracing::warn!(wallet = %address, "helius add_address failed: {e}");
+            }
+        });
+    }
+
     Ok((StatusCode::CREATED, Json(agent.into())))
 }
 
@@ -371,6 +436,16 @@ pub async fn delete_agent(
 ) -> AppResult<StatusCode> {
     let user_id = user_id_from_claims(&claims)?;
 
+    // Capture the wallet address before we flip the status so we can
+    // remove it from the Helius watchlist after the DB commit succeeds.
+    let solana_address: Option<String> = sqlx::query_scalar(
+        "SELECT solana_address FROM agents WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?;
+
     let result = sqlx::query(
         "UPDATE agents SET status = 'archived' WHERE id = $1 AND user_id = $2",
     )
@@ -381,6 +456,30 @@ pub async fn delete_agent(
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("agent not found".into()));
+    }
+
+    // Also flip the wallet's `active` flag so the inbound webhook
+    // receiver drops events for it (the watchlist mutation below is
+    // best-effort; this DB state is the source of truth).
+    let _ = sqlx::query("UPDATE agent_wallets SET active = false WHERE agent_id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await;
+
+    if let Some(address) = solana_address {
+        if state.config.helius_enabled() {
+            let bg_state = state.clone();
+            tokio::spawn(async move {
+                let Some(client) =
+                    crate::helius::Helius::new(&bg_state.http_client, &bg_state.config)
+                else {
+                    return;
+                };
+                if let Err(e) = client.remove_address(&address).await {
+                    tracing::warn!(wallet = %address, "helius remove_address failed: {e}");
+                }
+            });
+        }
     }
 
     Ok(StatusCode::NO_CONTENT)
@@ -636,4 +735,45 @@ pub async fn get_agent_earnings(
         net_micro_usdc: received - spent,
         transaction_count: count,
     }))
+}
+
+/// GET /v1/agents/:id/transactions — per-tx history from `payment_transactions`.
+pub async fn get_agent_transactions(
+    Extension(claims): Extension<Claims>,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<TransactionsQuery>,
+) -> AppResult<Json<Vec<TransactionResponse>>> {
+    let user_id = user_id_from_claims(&claims)?;
+
+    let agent: DbAgent = sqlx::query_as(
+        "SELECT * FROM agents WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
+
+    let wallet_id = match agent.wallet_id {
+        Some(w) => w,
+        None => return Ok(Json(Vec::new())),
+    };
+
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let offset = q.offset.unwrap_or(0).max(0);
+
+    let rows: Vec<DbPaymentTransaction> = sqlx::query_as(
+        r#"SELECT * FROM payment_transactions
+           WHERE agent_wallet_id = $1
+           ORDER BY COALESCE(block_time, created_at) DESC
+           LIMIT $2 OFFSET $3"#,
+    )
+    .bind(wallet_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(rows.into_iter().map(TransactionResponse::from).collect()))
 }

@@ -22,3 +22,4 @@ pub mod services;
 pub mod tenant;
 pub mod treasury;
 pub mod verify;
+pub mod webhooks;

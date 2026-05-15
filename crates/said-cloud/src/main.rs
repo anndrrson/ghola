@@ -15,6 +15,7 @@ mod config;
 mod db;
 mod error;
 mod health_checker;
+mod helius;
 mod ip_rate_limit;
 mod metered;
 mod routes;
@@ -73,6 +74,21 @@ async fn main() -> anyhow::Result<()> {
 
     // Self-register SAID's own APIs as headless merchant services
     self_register::register_self(&state.db, &config.base_url).await;
+
+    // Reconcile the Helius webhook's address list with the agent_wallets
+    // table on boot. Picks up wallets created before Helius was wired in,
+    // and corrects drift from a webhook the admin edited by hand. No-op
+    // when Helius env vars aren't set.
+    if config.helius_enabled() {
+        let bootstrap_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = reconcile_helius(&bootstrap_state).await {
+                tracing::warn!("Helius reconcile failed: {e}");
+            }
+        });
+    } else {
+        tracing::info!("Helius integration disabled (missing env vars)");
+    }
 
     // Spawn reputation recomputer (every 5 minutes)
     tokio::spawn(routes::reputation::recompute_loop(state.clone()));
@@ -137,6 +153,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/resolve/{did_or_handle}", get(routes::resolve::resolve))
         .route("/v1/discover", get(routes::resolve::discover))
         .route("/v1/billing/webhook", post(routes::billing::webhook))
+        // Helius enhanced-webhook receiver. Self-authenticated via the
+        // `Authorization` header against HELIUS_WEBHOOK_AUTH.
+        .route("/v1/webhooks/helius", post(routes::webhooks::ingest_helius))
         .route("/v1/badges/{did}", get(routes::badges::check_badge))
         .route("/v1/nodes", get(routes::nodes::list_nodes))
         .route("/v1/nodes/resolve", get(routes::nodes::resolve_nodes))
@@ -281,6 +300,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/v1/agents/{id}/earnings",
             get(routes::agents::get_agent_earnings),
+        )
+        .route(
+            "/v1/agents/{id}/transactions",
+            get(routes::agents::get_agent_transactions),
         )
         .route("/v1/business/profile", get(routes::business::get_profile))
         .route("/v1/business/profile", put(routes::business::update_profile))
@@ -567,6 +590,27 @@ async fn shutdown_signal() {
         .await
         .expect("Failed to listen for ctrl+c");
     tracing::info!("Shutdown signal received");
+}
+
+/// Pulls every active agent wallet address from the DB and PUTs it as the
+/// canonical Helius webhook watchlist. Runs once on boot; per-agent
+/// add/remove still happens inline so a freshly-created agent doesn't
+/// have to wait for the next restart to start streaming.
+async fn reconcile_helius(state: &Arc<AppState>) -> anyhow::Result<()> {
+    let Some(client) = helius::Helius::new(&state.http_client, &state.config) else {
+        return Ok(());
+    };
+    let addresses: Vec<String> = sqlx::query_scalar(
+        "SELECT solana_address FROM agent_wallets WHERE active = true",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    tracing::info!(count = addresses.len(), "Reconciling Helius watchlist");
+    client
+        .set_addresses(&addresses)
+        .await
+        .map_err(|e| anyhow::anyhow!("helius reconcile: {e}"))?;
+    Ok(())
 }
 
 /// GET /v1/signing-key — returns the server's ed25519 public key (hex).
