@@ -42,7 +42,17 @@ jobs:
       - run: npm test
       - name: Block dangerous HTML sinks
         run: ../../scripts/security/check-dangerous-html.sh
-      - run: npm run build
+      # The build IS the reproducibility check: passing GIT_COMMIT pins
+      # the Next.js build ID deterministically, and the verification
+      # script runs `npm run build` twice and asserts the resulting
+      # SRI manifest hashes match byte-for-byte. A CDN-tamper attacker
+      # cannot change the deployed bundle without producing a
+      # manifest_sha256 that differs from what every reviewer + this
+      # CI run can recompute from source.
+      - name: Reproducible build check (two runs must match)
+        env:
+          GIT_COMMIT: ${{ github.sha }}
+        run: ./scripts/verify-reproducible-build.sh
       # Tier 1C — supply-chain hardening. The build step writes an SRI
       # manifest to public/.well-known/sri-manifest.json. Surface its
       # top-level hash in the CI run summary so it's discoverable from

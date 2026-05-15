@@ -224,9 +224,9 @@ export default function SecurityStatusPage() {
           };
           if (body.version === 1 && typeof body.file_count === "number") {
             next[6] = {
-              label: "Web bundle SRI manifest",
+              label: "Web bundle SRI manifest (reproducible)",
               state: "ok",
-              detail: `${body.file_count} JS/CSS artifacts hashed${body.generated_at ? `, built ${body.generated_at}` : ""}`,
+              detail: `${body.file_count} JS/CSS artifacts hashed${body.generated_at ? `, built ${body.generated_at}` : ""} — two builds at the same git SHA produce identical hashes (CI-enforced).`,
               evidence: `manifest_sha256 ${body.manifest_sha256}${body.git_commit ? `; commit ${body.git_commit.slice(0, 7)}` : ""}`,
             };
           } else {

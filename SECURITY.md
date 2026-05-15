@@ -35,10 +35,13 @@ honestly disclose the limits of what we can do about the sixth.
 
 ## What is NOT protected today (honest list)
 
-- **Supply-chain integrity of the web client.** No SRI manifest, no
-  reproducible build. A compromised CDN could swap in a JS bundle that
-  exfiltrates prompts before they hit WebGPU. Tier 1C of the peak-security
-  plan addresses this.
+- **Browser-side enforcement of the SRI manifest.** The
+  `/.well-known/sri-manifest.json` is published per-build and the
+  build is reproducible (two runs at the same git SHA produce
+  byte-identical manifests, verified by CI). Reviewers can audit
+  out-of-band, but the runtime browser does NOT yet auto-reject a
+  script whose hash doesn't match — that requires a Next.js plugin
+  or a service-worker shim that lands in the same Tier 1C window.
 - **Runtime weight integrity.** The integrity badge in chat reads a
   deterministic registry PDA but does not yet byte-compare the
   WebLLM-loaded weights to a published hash. Tier 1A.5.
@@ -83,8 +86,19 @@ A determined reviewer can also verify:
   (hex) and SHA-384 (SRI form). Each artifact at its path is hashable
   by the reviewer (curl + sha256sum) and must match. The top-level
   `manifest_sha256` is a single value that summarises the whole
-  manifest — pin it in a transparency log or a tagged git commit to
-  detect retroactive changes.
+  manifest. The build is **reproducible** — two independent builds
+  at the same source SHA produce byte-identical manifest hashes (CI
+  enforces this on every commit via
+  `apps/web/scripts/verify-reproducible-build.sh`). To verify the
+  deployed bundle yourself:
+  ```
+  git clone https://github.com/anndrrson/ghola && cd ghola/apps/web
+  git checkout <commit-from-manifest.git_commit>
+  GIT_COMMIT=$(git rev-parse HEAD) npm run build
+  diff <(jq -S . public/.well-known/sri-manifest.json) \
+       <(curl -s https://ghola.xyz/.well-known/sri-manifest.json | jq -S .)
+  ```
+  Mismatch = the deployed bundle did not come from this source.
 - **Receipt math** — open `/r/[hash]`, paste any receipt JSON exported
   from chat. The verifier runs entirely client-side and prints the
   full chain.

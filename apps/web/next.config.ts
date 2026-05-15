@@ -55,6 +55,24 @@ const SECURITY_HEADERS = [
 const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
+  // Deterministic build id. Without this Next.js generates a random
+  // 20-char id per build, which leaks into manifest paths and
+  // defeats reproducible builds. Pinning to the git commit (or an
+  // explicit env var) means two builds at the same SHA produce
+  // identical SRI manifest hashes — the whole point of the
+  // /.well-known/sri-manifest.json supply-chain story.
+  //
+  // Fallbacks: GIT_COMMIT (CI), then `git rev-parse HEAD` (local), then
+  // a static dev sentinel so dev builds don't ship random ids either.
+  async generateBuildId() {
+    if (process.env.GIT_COMMIT) return process.env.GIT_COMMIT;
+    try {
+      const { execSync } = await import("node:child_process");
+      return execSync("git rev-parse HEAD", { encoding: "utf8" }).trim();
+    } catch {
+      return "ghola-dev-build";
+    }
+  },
   images: {
     remotePatterns: [
       {
