@@ -36,6 +36,7 @@ members = [
 exclude = [
     "programs/said-registry",
     "programs/said-receipts",
+    "programs/ghola-model-registry",
 ]
 resolver = "2"
 

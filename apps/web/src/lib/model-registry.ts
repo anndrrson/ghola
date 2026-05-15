@@ -14,15 +14,22 @@
  * below need to change — call sites keep working.
  */
 import { Connection, PublicKey } from "@solana/web3.js";
+import { sha256 } from "@noble/hashes/sha256";
 
-// Placeholder program id. Replace with the deployed registry program
-// id when Tier 1A.5 lands. The 11111…111 (System Program) is used as a
-// sentinel so a fresh client doesn't accidentally read a real account.
+// Program id of the on-chain model registry. Mirrors the deployed
+// `ghola-model-registry` Anchor program (programs/ghola-model-registry).
+// Override via env when running against devnet vs mainnet.
+//
+// Until the program is deployed, this client returns "unregistered"
+// for every lookup — the deterministic PDA still resolves so the read
+// path exercises a real RPC.
 const REGISTRY_PROGRAM_ID = new PublicKey(
-  "11111111111111111111111111111111",
+  (typeof process !== "undefined" &&
+    process.env?.NEXT_PUBLIC_MODEL_REGISTRY_PROGRAM_ID) ||
+    "MdLRegMa1iYxBg5gKhCJVTDfXkqHpQF6PoG3kRYW6S1",
 );
 
-const PDA_SEED_PREFIX = "ghola-model-registry";
+const PDA_SEED_PREFIX = "ghola-model";
 
 // Mainnet by default; override via env so dev/preview can point at
 // devnet without rebuilding. Public RPC is fine for read-only — no
@@ -71,9 +78,13 @@ export interface ModelRegistryResult {
  * before the chain confirms.
  */
 export async function deriveModelPda(modelId: string): Promise<PublicKey> {
-  const seedBytes = new TextEncoder().encode(modelId);
+  // Solana PDA seeds cap at 32 bytes each. Model ids can exceed that
+  // (e.g. "Llama-3.2-1B-Instruct-q4f16_1-MLC" is 33 bytes), so the
+  // canonical seed is sha256(model_id). Anchor program mirrors this
+  // derivation in programs/ghola-model-registry.
+  const idHash = sha256(new TextEncoder().encode(modelId));
   const [pda] = await PublicKey.findProgramAddress(
-    [new TextEncoder().encode(PDA_SEED_PREFIX), seedBytes],
+    [new TextEncoder().encode(PDA_SEED_PREFIX), idHash],
     REGISTRY_PROGRAM_ID,
   );
   return pda;
