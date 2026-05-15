@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, Copy, Laptop, Link2, Lock, ShieldOff, X } from "lucide-react";
+import { Check, Copy, ExternalLink, Laptop, Link2, Lock, ShieldOff, X } from "lucide-react";
 import type { ReceiptV1 } from "@/lib/receipt";
 import {
   fetchAttestation,
@@ -232,6 +232,22 @@ export function ReceiptBadge({
     void navigator.clipboard.writeText(JSON.stringify(receipt, null, 2));
   }
 
+  // Open the public verifier (/r/[hash]) in a new tab with the receipt
+  // body packed into the URL. The verifier does all math client-side,
+  // so this is the share-with-anyone path: paste the URL and the
+  // recipient can audit the chain on their own device with no login.
+  function handleOpenInVerifier() {
+    const hash = receiptHashHex(receipt);
+    // btoa needs a string-safe input. Receipts are JSON — ASCII-safe
+    // after JSON.stringify (no raw multibyte chars in the fields we
+    // use today). If that ever changes, swap to a UTF-8-safe encoder.
+    const body = btoa(JSON.stringify(receipt));
+    const url = `/r/${hash}?body=${encodeURIComponent(body)}`;
+    if (typeof window !== "undefined") {
+      window.open(url, "_blank", "noopener");
+    }
+  }
+
   return (
     <>
       <div className="inline-flex flex-col items-start gap-2 max-w-sm">
@@ -346,8 +362,7 @@ export function ReceiptBadge({
               <p className="text-[11px] text-[#6f798c] leading-relaxed mb-4">
                 v1 receipt: signed by the user&apos;s identity key. No
                 attestation chain — this proves what the client observed,
-                not what the cloud ran. Private mode falls back here when
-                no attested enclave is available.
+                not what the cloud ran.
               </p>
             )}
             {hasAttestation && (
@@ -389,6 +404,15 @@ export function ReceiptBadge({
               >
                 <Copy className="h-3 w-3" />
                 Copy JSON
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenInVerifier}
+                title="Opens the public verifier in a new tab — shareable URL, math runs in the recipient's browser"
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#1e2a3a] px-3 py-1.5 text-xs font-medium text-[#cfd4dd] hover:border-[#3a4a60] cursor-pointer"
+              >
+                <ExternalLink className="h-3 w-3" />
+                Open in verifier
               </button>
             </div>
 

@@ -24,6 +24,28 @@ import type {
 // box, so first-load doesn't trip a prompt.
 export const DEFAULT_WEBGPU_MODEL = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
 
+// Pinned SRI hashes for the default model's non-weight artifacts.
+// WebLLM verifies these on download via its built-in ModelIntegrity
+// path — a tampered model_lib (the WASM inference engine), config, or
+// tokenizer triggers a load failure and the inference never runs.
+//
+// Weights (the multi-GB MLC param shards) are not covered by this map;
+// upstream WebLLM does not expose SRI for them yet. The model_lib is
+// the highest-value target — it's the code that executes inference, so
+// pinning it kills the most-likely supply-chain attack vector.
+//
+// Recompute when bumping the default model:
+//   curl ... | openssl dgst -sha256 -binary | base64
+const DEFAULT_WEBGPU_MODEL_INTEGRITY = {
+  config: "sha256-DsUTtUtBmtRxAGQwaGvc/6rnECtB97Akb7/N4lF6zH8=",
+  model_lib: "sha256-posvg0hde0xvfRoAgAG8g81/Kw+u/osTgfwT1C+3jEo=",
+  tokenizer: {
+    "tokenizer.json":
+      "sha256-eePlImNfMXEwCRO7QhRkqH3mIiGCoFcLmyzLoqlksrQ=",
+  },
+  onFailure: "error" as const,
+};
+
 export interface WebGPUSupport {
   supported: boolean;
   reason?: string;
@@ -80,11 +102,31 @@ async function getEngine(
     if (engineSlot && engineSlot.modelId === modelId) return engine;
   }
 
-  const { CreateMLCEngine } = await import("@mlc-ai/web-llm");
+  const { CreateMLCEngine, prebuiltAppConfig } = await import("@mlc-ai/web-llm");
+
+  // Compose an AppConfig that pins SRI hashes on the default model.
+  // For any model id we haven't pinned, fall back to the upstream
+  // prebuilt list (no integrity check yet — followed up per-model as
+  // they're vetted). The model_list array shape matches WebLLM's
+  // public type — overriding by id keeps upstream record fields
+  // intact except for the integrity addition.
+  const pinnedAppConfig =
+    modelId === DEFAULT_WEBGPU_MODEL
+      ? {
+          ...prebuiltAppConfig,
+          model_list: prebuiltAppConfig.model_list.map((m) =>
+            m.model_id === DEFAULT_WEBGPU_MODEL
+              ? { ...m, integrity: DEFAULT_WEBGPU_MODEL_INTEGRITY }
+              : m,
+          ),
+        }
+      : prebuiltAppConfig;
+
   inflight = CreateMLCEngine(modelId, {
     initProgressCallback: (report) => {
       onProgress?.(report);
     },
+    appConfig: pinnedAppConfig,
   });
 
   try {

@@ -6,10 +6,22 @@ import {
   lookupModel,
   type ModelRegistryResult,
 } from "@/lib/model-registry";
+import { DEFAULT_WEBGPU_MODEL } from "@/lib/webgpu-inference";
 
 interface Props {
   /** The MLC model id currently loaded in the browser (or null when idle). */
   modelId: string | null;
+}
+
+/**
+ * Whether ghola ships pinned SRI hashes for the model's loader artifacts.
+ * When true, WebLLM verifies model_lib + config + tokenizer on download
+ * (see webgpu-inference.ts::DEFAULT_WEBGPU_MODEL_INTEGRITY). The on-chain
+ * registry is the broader claim for weight + creator provenance; SRI
+ * is the narrower one that already runs.
+ */
+function isSriPinned(modelId: string): boolean {
+  return modelId === DEFAULT_WEBGPU_MODEL;
 }
 
 // Small, low-key chip rendered in the chat header. The point isn't to
@@ -66,16 +78,29 @@ export function ModelIntegrityBadge({ modelId }: Props) {
           Mismatch
         </span>
       );
-    case "unregistered":
+    case "unregistered": {
+      // If we ship SRI hashes for this model, the loader is already
+      // verified at download time even though the on-chain registry
+      // record doesn't exist yet. Surface that distinction.
+      const pinned = isSriPinned(modelId);
       return (
         <span
-          title="Read the chain at the model's deterministic PDA; no registry record yet (Tier 1A.5 deliverable)"
-          className="hidden md:inline-flex items-center gap-1.5 rounded-full border border-[#1e2a3a] px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[#8b95a8]"
+          title={
+            pinned
+              ? "Model loader (config + WASM + tokenizer) verified against pinned SRI hashes. On-chain registry record pending."
+              : "Read the chain at the model's deterministic PDA; no registry record yet (Tier 1A.5 deliverable)"
+          }
+          className={
+            pinned
+              ? "hidden md:inline-flex items-center gap-1.5 rounded-full border border-[#3da8ff]/30 bg-[#3da8ff]/5 px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[#3da8ff]"
+              : "hidden md:inline-flex items-center gap-1.5 rounded-full border border-[#1e2a3a] px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[#8b95a8]"
+          }
         >
-          <ShieldQuestion className="h-3 w-3" />
-          Registry pending
+          <ShieldCheck className="h-3 w-3" />
+          {pinned ? "SRI pinned" : "Registry pending"}
         </span>
       );
+    }
     case "unreachable":
       return (
         <span
