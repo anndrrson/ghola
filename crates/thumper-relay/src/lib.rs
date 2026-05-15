@@ -30,15 +30,32 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         tracing::warn!("DEV MODE enabled — signature verification is DISABLED");
     }
     if !preflight_failures.is_empty() {
-        tracing::error!(
-            reason_codes = ?preflight_failures,
-            "private-mode preflight failed; refusing to start relay in production mode"
-        );
-        return Err(format!(
-            "private-mode preflight failed: {}",
-            preflight_failures.join(",")
-        )
-        .into());
+        // Default behavior is now to WARN rather than refuse. Phase 1
+        // (Nitro attestation) does not require the Phase 2 OHTTP key
+        // or Phase 3 DID-set envs to be present; an operator who only
+        // wants to run Phase 1 should be able to deploy without those.
+        // The strict-refuse behavior is opt-in via the env var below;
+        // set it once Phase 2 + Phase 3 are wired so future drifts in
+        // those configs surface as a clean refuse-to-start.
+        let strict = std::env::var("THUMPER_RELAY_STRICT_PREFLIGHT")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if strict {
+            tracing::error!(
+                reason_codes = ?preflight_failures,
+                "private-mode preflight failed; refusing to start relay (THUMPER_RELAY_STRICT_PREFLIGHT=1)"
+            );
+            return Err(format!(
+                "private-mode preflight failed: {}",
+                preflight_failures.join(",")
+            )
+            .into());
+        } else {
+            tracing::warn!(
+                reason_codes = ?preflight_failures,
+                "private-mode preflight failures present (relay still starting; set THUMPER_RELAY_STRICT_PREFLIGHT=1 to refuse-start instead)"
+            );
+        }
     }
     tracing::info!(%bind_addr, dev_mode = config.dev_mode, "starting thumper relay server");
 
