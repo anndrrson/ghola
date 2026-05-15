@@ -25,6 +25,9 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
+pub mod settlement;
+pub use settlement::{SettlementVerifyError, X402SettlementProof};
+
 /// The payment proof sent in the `x402-Payment` request header.
 ///
 /// After executing a Solana transfer, the agent encodes this as base64 JSON
