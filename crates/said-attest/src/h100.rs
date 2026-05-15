@@ -383,6 +383,46 @@ pub fn b64url_encode(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Build a synthetic NRAS-stand-in JWT signed by the given Ed25519
+/// key. Exposed for cross-crate test harnesses (e.g. the relay's e2e
+/// dispatch tests) that need to assert handle_provider_attest accepts
+/// a well-formed H100 CC attestation. Mirrors the TDX
+/// `build_synthetic_tdx_quote` helper.
+#[allow(clippy::too_many_arguments)]
+pub fn build_synthetic_h100_jwt(
+    signing_key: &ed25519_dalek::SigningKey,
+    cc_mode: &str,
+    secboot: &str,
+    dbgstat: &str,
+    overall_result: bool,
+    iat: i64,
+    exp: i64,
+    measurement_hex: &str,
+    x25519_hex: &str,
+    ed25519_hex: &str,
+) -> String {
+    use ed25519_dalek::Signer;
+    let header = serde_json::json!({"alg": "EdDSA", "typ": "JWT"});
+    let claims = serde_json::json!({
+        "iss": EXPECTED_ISSUER,
+        "iat": iat,
+        "exp": exp,
+        "ccmode": cc_mode,
+        "secboot": secboot,
+        "dbgstat": dbgstat,
+        "x-nvidia-overall-att-result": overall_result,
+        "measurement_hex": measurement_hex,
+        "enclave_x25519_pub_hex": x25519_hex,
+        "enclave_ed25519_pub_hex": ed25519_hex,
+    });
+    let h_b64 = b64url_encode(serde_json::to_vec(&header).unwrap().as_slice());
+    let p_b64 = b64url_encode(serde_json::to_vec(&claims).unwrap().as_slice());
+    let signing_input = format!("{h_b64}.{p_b64}");
+    let sig = signing_key.sign(signing_input.as_bytes());
+    let s_b64 = b64url_encode(&sig.to_bytes());
+    format!("{signing_input}.{s_b64}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

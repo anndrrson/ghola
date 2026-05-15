@@ -622,6 +622,198 @@ async fn ready_private_returns_200_when_private_stack_ready() {
     assert_eq!(json["did_set_fresh"], true);
 }
 
+// -- H100 CC + TDX dispatch tests ----------------------------------
+//
+// These cover the production path: handle_provider_attest dispatches
+// by TeeKind to the right verifier in said-attest, the verifier
+// reads its root pubkey from env, and the resulting attested enclave
+// lands in the state map.
+//
+// Both tests synthesize the vendor quote in-process — the real NVIDIA
+// NRAS and Intel DCAP root chains are not reachable from CI. Each
+// verifier accepts an Ed25519 stand-in root via env for exactly this
+// reason; production deploys swap that for the real PKI.
+
+fn h100_dispatch_env_setup() -> (
+    ed25519_dalek::SigningKey,
+    ed25519_dalek::SigningKey,
+    EnvGuard,
+) {
+    let nras_sk = SigningKey::generate(&mut OsRng);
+    let allow_sk = SigningKey::generate(&mut OsRng);
+    let nras_pub_hex = hex::encode(nras_sk.verifying_key().to_bytes());
+    let allow_pub_hex = hex::encode(allow_sk.verifying_key().to_bytes());
+    let env = EnvGuard::set(&[
+        ("THUMPER_ALLOW_UNATTESTED", None),
+        ("THUMPER_NVIDIA_NRAS_ROOT_PEM", Some(&nras_pub_hex)),
+        ("GHOLA_ATTEST_SIGNING_PUB", Some(&allow_pub_hex)),
+    ]);
+    (nras_sk, allow_sk, env)
+}
+
+#[test]
+fn provider_attest_accepts_well_formed_h100_jwt() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (nras_sk, allow_sk, _env) = h100_dispatch_env_setup();
+
+    // Build a measurement + matching JWT + matching allowlist signature.
+    let measurement = vec![0x11u8; 48];
+    let measurement_hex = hex::encode(&measurement);
+    let x25519_hex = hex::encode([0x22u8; 32]);
+    let ed25519_hex = hex::encode([0x33u8; 32]);
+    let now = chrono::Utc::now().timestamp();
+    let jwt = said_attest::h100::build_synthetic_h100_jwt(
+        &nras_sk,
+        "on",
+        "enabled",
+        "disabled",
+        true,
+        now - 5,
+        now + 600,
+        &measurement_hex,
+        &x25519_hex,
+        &ed25519_hex,
+    );
+    let mut h = <sha2::Sha256 as sha2::Digest>::new();
+    sha2::Digest::update(&mut h, &measurement);
+    let allow_sig = allow_sk.sign(&sha2::Digest::finalize(h)).to_bytes().to_vec();
+
+    let payload = ProviderAttestPayload {
+        tee_kind: TeeKind::H100Cc,
+        enclave_x25519_pub_hex: x25519_hex,
+        enclave_ed25519_pub_hex: ed25519_hex,
+        vendor_quote_b64: base64_encode(jwt.as_bytes()),
+        ghola_allowlist_sig_b64: base64_encode(&allow_sig),
+    };
+    let state = AppState::new(test_config());
+    let ack = handle_provider_attest(&state, "h100-provider-1", payload);
+
+    assert!(ack.accepted, "H100 attest rejected: {:?}", ack.reason);
+    let key_id = ack.enclave_key_id.expect("enclave_key_id present");
+    let enclave = state.get_attested_enclave(&key_id).expect("enclave stored");
+    assert_eq!(enclave.tee_kind, TeeKind::H100Cc);
+    assert_eq!(enclave.provider_id, "h100-provider-1");
+}
+
+#[test]
+fn provider_attest_rejects_h100_with_cc_off() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (nras_sk, allow_sk, _env) = h100_dispatch_env_setup();
+
+    let measurement = vec![0x11u8; 48];
+    let measurement_hex = hex::encode(&measurement);
+    let x25519_hex = hex::encode([0x22u8; 32]);
+    let ed25519_hex = hex::encode([0x33u8; 32]);
+    let now = chrono::Utc::now().timestamp();
+    // `ccmode = "off"` must be rejected: CC is the entire point.
+    let jwt = said_attest::h100::build_synthetic_h100_jwt(
+        &nras_sk,
+        "off",
+        "enabled",
+        "disabled",
+        true,
+        now - 5,
+        now + 600,
+        &measurement_hex,
+        &x25519_hex,
+        &ed25519_hex,
+    );
+    let mut h = <sha2::Sha256 as sha2::Digest>::new();
+    sha2::Digest::update(&mut h, &measurement);
+    let allow_sig = allow_sk.sign(&sha2::Digest::finalize(h)).to_bytes().to_vec();
+
+    let payload = ProviderAttestPayload {
+        tee_kind: TeeKind::H100Cc,
+        enclave_x25519_pub_hex: x25519_hex,
+        enclave_ed25519_pub_hex: ed25519_hex,
+        vendor_quote_b64: base64_encode(jwt.as_bytes()),
+        ghola_allowlist_sig_b64: base64_encode(&allow_sig),
+    };
+    let state = AppState::new(test_config());
+    let ack = handle_provider_attest(&state, "h100-provider-2", payload);
+
+    assert!(!ack.accepted);
+    assert!(ack.reason.is_some());
+    assert!(state.list_attested_enclaves().is_empty());
+}
+
+fn tdx_dispatch_env_setup() -> (
+    ed25519_dalek::SigningKey,
+    ed25519_dalek::SigningKey,
+    EnvGuard,
+) {
+    let tdx_sk = SigningKey::generate(&mut OsRng);
+    let allow_sk = SigningKey::generate(&mut OsRng);
+    let tdx_pub_hex = hex::encode(tdx_sk.verifying_key().to_bytes());
+    let allow_pub_hex = hex::encode(allow_sk.verifying_key().to_bytes());
+    let env = EnvGuard::set(&[
+        ("THUMPER_ALLOW_UNATTESTED", None),
+        ("THUMPER_INTEL_TDX_ROOT_PEM", Some(&tdx_pub_hex)),
+        ("GHOLA_ATTEST_SIGNING_PUB", Some(&allow_pub_hex)),
+    ]);
+    (tdx_sk, allow_sk, env)
+}
+
+#[test]
+fn provider_attest_accepts_well_formed_tdx_quote() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (tdx_sk, allow_sk, _env) = tdx_dispatch_env_setup();
+
+    // TDX measurement is MRTD || RTMR0..3 concatenated. Match the
+    // values build_synthetic_tdx_quote uses internally.
+    let mrtd = vec![0x55u8; 48];
+    let rtmr0 = vec![0x01u8; 48];
+    let rtmr1 = vec![0x02u8; 48];
+    let rtmr2 = vec![0x03u8; 48];
+    let rtmr3 = vec![0x04u8; 48];
+    let mut measurement = Vec::with_capacity(48 * 5);
+    measurement.extend(&mrtd);
+    measurement.extend(&rtmr0);
+    measurement.extend(&rtmr1);
+    measurement.extend(&rtmr2);
+    measurement.extend(&rtmr3);
+
+    let x25519_hex = hex::encode([0x22u8; 32]);
+    let ed25519_hex = hex::encode([0x33u8; 32]);
+    let now = chrono::Utc::now().timestamp();
+    // td_attributes = all zeros => DEBUG=0 (production). xfam non-zero.
+    let quote = said_attest::tdx::build_synthetic_tdx_quote(
+        &tdx_sk,
+        "1.5",
+        "0000000000000000", // td_attributes — DEBUG bit clear
+        "0000000000000007", // xfam — non-zero
+        &hex::encode(&mrtd),
+        &hex::encode(&rtmr0),
+        &hex::encode(&rtmr1),
+        &hex::encode(&rtmr2),
+        &hex::encode(&rtmr3),
+        &hex::encode([0u8; 64]),
+        now - 5,
+        now + 600,
+        &x25519_hex,
+        &ed25519_hex,
+    );
+    let mut h = <sha2::Sha256 as sha2::Digest>::new();
+    sha2::Digest::update(&mut h, &measurement);
+    let allow_sig = allow_sk.sign(&sha2::Digest::finalize(h)).to_bytes().to_vec();
+
+    let payload = ProviderAttestPayload {
+        tee_kind: TeeKind::Tdx,
+        enclave_x25519_pub_hex: x25519_hex,
+        enclave_ed25519_pub_hex: ed25519_hex,
+        vendor_quote_b64: base64_encode(quote.as_bytes()),
+        ghola_allowlist_sig_b64: base64_encode(&allow_sig),
+    };
+    let state = AppState::new(test_config());
+    let ack = handle_provider_attest(&state, "tdx-provider-1", payload);
+
+    assert!(ack.accepted, "TDX attest rejected: {:?}", ack.reason);
+    let key_id = ack.enclave_key_id.expect("enclave_key_id present");
+    let enclave = state.get_attested_enclave(&key_id).expect("enclave stored");
+    assert_eq!(enclave.tee_kind, TeeKind::Tdx);
+    assert_eq!(enclave.provider_id, "tdx-provider-1");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn health_includes_private_readiness_fields() {
     let state = AppState::new(test_config());
