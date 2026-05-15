@@ -8,7 +8,12 @@ import { useCallback, useEffect, useState } from "react";
 export type SovereigntyMode = "private" | "local" | "open";
 
 const STORAGE_KEY_PREFIX = "ghola:sovereignty-mode";
-const DEFAULT_MODE: SovereigntyMode = "private";
+// Signed-in users default to Private (TEE-attested cloud). Anonymous
+// users (no userDid) default to Local — Private requires a wallet for
+// the sealed envelope, so offering it to anonymous visitors would
+// surface a "private-unavailable" caveat on every send.
+const DEFAULT_MODE_AUTHED: SovereigntyMode = "private";
+const DEFAULT_MODE_ANON: SovereigntyMode = "local";
 
 export const SOVEREIGNTY_MODES: ReadonlyArray<{
   id: SovereigntyMode;
@@ -24,8 +29,20 @@ function storageKey(userDid: string | null): string {
   return userDid ? `${STORAGE_KEY_PREFIX}:${userDid}` : STORAGE_KEY_PREFIX;
 }
 
+// Inline check so this module stays independent of local-inference.ts.
+// Key must match PAIR_TOKEN_STORAGE_KEY in apps/web/src/lib/local-inference.ts.
+function hasGholaHomePairToken(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("ghola:home-pair-token") !== null;
+  } catch {
+    return false;
+  }
+}
+
 function readMode(userDid: string | null): SovereigntyMode {
-  if (typeof window === "undefined") return DEFAULT_MODE;
+  const fallback = userDid ? DEFAULT_MODE_AUTHED : DEFAULT_MODE_ANON;
+  if (typeof window === "undefined") return fallback;
   try {
     const raw = window.localStorage.getItem(storageKey(userDid));
     if (raw === "private" || raw === "local" || raw === "open") return raw;
@@ -33,7 +50,7 @@ function readMode(userDid: string | null): SovereigntyMode {
     // Private-mode browsers and quota errors are fine to swallow —
     // we just fall back to the default for this session.
   }
-  return DEFAULT_MODE;
+  return fallback;
 }
 
 function writeMode(userDid: string | null, mode: SovereigntyMode): void {
@@ -52,7 +69,9 @@ export function useSovereigntyMode(userDid: string | null): {
   mode: SovereigntyMode;
   setMode: (m: SovereigntyMode) => void;
 } {
-  const [mode, setModeState] = useState<SovereigntyMode>(DEFAULT_MODE);
+  const [mode, setModeState] = useState<SovereigntyMode>(
+    userDid ? DEFAULT_MODE_AUTHED : DEFAULT_MODE_ANON,
+  );
 
   useEffect(() => {
     setModeState(readMode(userDid));
@@ -72,12 +91,13 @@ export function useSovereigntyMode(userDid: string | null): {
 // Routing. As of v2 (Track H), Private mode queries the relay for an
 // attested enclave and — when one is available — routes through the
 // sealed transport end-to-end. When no attested enclave is reachable
-// (relay offline, fleet empty, network error) we fall back to the
-// plaintext relay path with an honest caveat that the receipt also
-// records, rather than silently downgrading the trust label.
+// (relay offline, fleet empty, network error), the route fails closed
+// as `private-unavailable` so callers can require explicit user action
+// before any Open-mode send.
 export type SovereigntyTransport =
   | "relay-plain"
   | "relay-sealed"
+  | "private-unavailable"
   | "webgpu"
   | "ghola-home";
 
@@ -103,10 +123,16 @@ export interface ModeRoute {
   // this to seal the request to the enclave's X25519 pub and to know
   // which key id to address the relay's sealed-inference handler.
   enclave?: AttestedEnclaveInfo;
-  // Honest caveat to surface in the UI / receipt body when a mode
-  // hasn't shipped its full guarantee yet (e.g. Private falling back
-  // to relay-plain because no enclave is attested).
+  // Honest caveat to surface in the UI / receipt body when a route
+  // cannot satisfy the requested mode as configured.
   caveat?: string;
+  reasonCodes?: string[];
+}
+
+export interface PrivateAvailability {
+  available: boolean;
+  reasonCodes: string[];
+  reason: string | null;
 }
 
 // The relay hosts /providers/attested + /inference/sealed +
@@ -132,9 +158,8 @@ export function thumperRelayBase(): string {
  * Pick a route for the next message. For Private mode this performs a
  * `GET /providers/attested` lookup — when at least one attested
  * enclave is currently in the pool we return `relay-sealed` with the
- * enclave info attached; otherwise we fall back to `relay-plain` with
- * a caveat that callers stamp into the receipt so the audit trail
- * reflects reality.
+ * enclave info attached; otherwise we fail closed with
+ * `private-unavailable`.
  *
  * `modelId` is forwarded to the relay so the pool can filter to
  * enclaves that have the requested model loaded. Pass `undefined` when
@@ -150,20 +175,31 @@ export async function selectRoute(
       if (enclave) {
         return { mode, transport: "relay-sealed", enclave };
       }
+      const availability = await fetchPrivateAvailability();
       return {
         mode,
-        transport: "relay-plain",
+        transport: "private-unavailable",
+        reasonCodes: availability.reasonCodes,
         caveat:
-          "No attested enclave currently available — falling back to plaintext relay path. The receipt will be marked unattested.",
+          availability.reason ??
+          "Private mode unavailable: relay private stack is not ready.",
       };
     }
-    case "local":
+    case "local": {
+      // Default the anonymous front door to in-browser WebGPU inference
+      // (Tier 1A) — zero install, zero account, the message never leaves
+      // the device. Users who installed ghola-home + paired this browser
+      // get routed to it instead so bigger Ollama-hosted models stay
+      // reachable from the same picker.
+      const paired = hasGholaHomePairToken();
       return {
         mode,
-        transport: "ghola-home",
-        caveat:
-          "v1: requires ghola-home running on this machine. WebGPU fallback for small in-browser models lands in v2.",
+        transport: paired ? "ghola-home" : "webgpu",
+        caveat: paired
+          ? undefined
+          : "Runs in this browser via WebGPU. Requires Chrome, Edge, or Safari 18+.",
       };
+    }
     case "open":
       return { mode, transport: "relay-plain" };
   }
@@ -186,7 +222,33 @@ async function fetchAttestedEnclave(
     return list[0] ?? null;
   } catch {
     // Network error, CORS reject, JSON parse failure — all treated as
-    // "no enclave available" and the caller falls back to relay-plain.
+    // "no enclave available" and the caller fails closed for Private.
     return null;
+  }
+}
+
+export async function fetchPrivateAvailability(): Promise<PrivateAvailability> {
+  try {
+    const url = new URL("/ready/private", relayBase());
+    const res = await fetch(url.toString(), { method: "GET" });
+    const body = (await res.json().catch(() => null)) as
+      | { reason_codes?: string[]; private_ready?: boolean }
+      | null;
+    const reasonCodes = Array.isArray(body?.reason_codes)
+      ? body!.reason_codes!.filter((v) => typeof v === "string")
+      : [];
+    if (res.ok && body?.private_ready === true) {
+      return { available: true, reasonCodes: [], reason: null };
+    }
+    const reason = reasonCodes.length
+      ? `Private mode unavailable (${reasonCodes.join(", ")}).`
+      : "Private mode unavailable (relay readiness check failed).";
+    return { available: false, reasonCodes, reason };
+  } catch {
+    return {
+      available: false,
+      reasonCodes: ["private_probe_failed"],
+      reason: "Private mode unavailable (readiness probe failed).",
+    };
   }
 }

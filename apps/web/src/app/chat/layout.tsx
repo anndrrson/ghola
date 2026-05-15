@@ -1,18 +1,14 @@
 "use client";
 
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 
+// Tier 1A front door: anonymous visitors can reach a working Local-mode
+// chat without signing in. The auth gate moves *inside* the page —
+// modes that require an identity (Private, history persistence, on-chain
+// receipt writes) prompt sign-in at the point of use rather than
+// blocking access to the surface entirely.
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
-  const { authenticated, loading } = useThumperAuth();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (!loading && !authenticated) {
-      router.push("/signup");
-    }
-  }, [authenticated, loading, router]);
+  const { loading } = useThumperAuth();
 
   if (loading) {
     return (
@@ -21,8 +17,6 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
       </div>
     );
   }
-
-  if (!authenticated) return null;
 
   return (
     <div className="h-screen bg-[#08090d] text-[#eef1f8] overflow-hidden">

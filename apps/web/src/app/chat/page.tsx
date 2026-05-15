@@ -11,15 +11,21 @@ import { LocalSetupBanner } from "@/components/chat/LocalSetupBanner";
 import { SovereigntyPicker } from "@/components/SovereigntyPicker";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
-import { handleTwitterToken } from "@/lib/thumper-api";
+import { handleTwitterSession } from "@/lib/thumper-api";
 import { createChatVault, didKeyFromVerifying } from "@/lib/chat-vault";
 import {
   loadSessions as loadSessionsFromStore,
   saveSessions as saveSessionsToStore,
 } from "@/lib/chat-history-store";
-import { selectRoute, useSovereigntyMode } from "@/lib/sovereignty";
+import {
+  fetchPrivateAvailability,
+  selectRoute,
+  useSovereigntyMode,
+  type SovereigntyMode,
+} from "@/lib/sovereignty";
 import { makeReceipt, submitReceiptToService } from "@/lib/receipt";
 import { streamLocalChat } from "@/lib/local-inference";
+import { streamWebGPUChat, DEFAULT_WEBGPU_MODEL } from "@/lib/webgpu-inference";
 import { streamSealedChat } from "@/lib/sealed-stream";
 import bs58 from "bs58";
 import type { ThumperSession, ThumperChatMessage, ThumperInlineAction } from "@/lib/thumper-types";
@@ -70,30 +76,37 @@ function detectAction(text: string): ThumperInlineAction | undefined {
   return undefined;
 }
 
+function emitPrivacyEvent(
+  event: string,
+  payload: Record<string, unknown>,
+): void {
+  // eslint-disable-next-line no-console
+  console.warn("[privacy-event]", JSON.stringify({ event, ...payload }));
+}
+
 export default function ChatPage() {
   const [sessions, setSessions] = useState<ThumperSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [mobileView, setMobileView] = useState<"list" | "chat">("list");
   const [providerInfo, setProviderInfo] = useState<{ type: string; model?: string; provider_name?: string } | null>(null);
+  const [privateAvailable, setPrivateAvailable] = useState(true);
+  const [privateUnavailableReason, setPrivateUnavailableReason] =
+    useState<string | null>(null);
+  const [pendingOpenSend, setPendingOpenSend] = useState<{
+    text: string;
+    reason: string;
+  } | null>(null);
   const searchParams = useSearchParams();
   const router = useRouter();
   const { setAuth, authenticated, loading: authLoading } = useThumperAuth();
   const { createWallet, walletAddress, signBytes } = useTurnkeyWallet();
 
-  // The homepage hero CTA points here. Logged-out visitors get
-  // bounced to /signup with a return-to so they land back at /chat
-  // after creating an account, rather than hitting an inert chat UI
-  // whose every send would 401. Twitter OAuth callback is the one
-  // case where unauthed access is expected — that flow runs setAuth
-  // synchronously below, so we wait one tick before redirecting if
-  // there's a `code` query parameter.
-  useEffect(() => {
-    if (authLoading) return;
-    if (authenticated) return;
-    if (searchParams.get("code")) return; // OAuth exchange will set auth
-    router.replace("/signup");
-  }, [authLoading, authenticated, searchParams, router]);
+  // Tier 1A: anonymous visitors land on a working Local-mode chat
+  // (WebGPU in-browser inference). No redirect — modes that require
+  // an identity (Private, history persistence, Turnkey-signed receipts)
+  // surface a sign-in prompt at the point of use rather than blocking
+  // access to the chat surface entirely.
 
   // Chat-side E2E: when a Turnkey wallet is connected, build a vault
   // whose unlock key is gated on a Turnkey signature. Sealing happens
@@ -121,6 +134,39 @@ export default function ChatPage() {
   // is visible to anyone actually reading the network panel.
   const { mode: sovereigntyMode, setMode: setSovereigntyMode } =
     useSovereigntyMode(userDid);
+
+  // The Local-mode banner is for ghola-home pairing UX. Anonymous /
+  // WebGPU users don't need an "install ghola-home" pitch in their
+  // first chat — hide the banner unless they've already paired.
+  const [hasPairedGholaHome, setHasPairedGholaHome] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      setHasPairedGholaHome(
+        window.localStorage.getItem("ghola:home-pair-token") !== null,
+      );
+    } catch {
+      setHasPairedGholaHome(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      const availability = await fetchPrivateAvailability();
+      if (cancelled) return;
+      setPrivateAvailable(availability.available);
+      setPrivateUnavailableReason(availability.reason);
+    };
+    void refresh();
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -151,9 +197,9 @@ export default function ChatPage() {
           if (!res.ok) throw new Error("Exchange failed");
           return res.json();
         })
-        .then((data: { token: string }) => {
-          const res = handleTwitterToken(data.token);
-          setAuth(res.token, res.user);
+        .then((data: { user: { id: string; email: string; name?: string } }) => {
+          const res = handleTwitterSession(data.user);
+          setAuth(res.user);
           // Try to create Turnkey wallet (non-fatal)
           if (res.user.email) {
             createWallet(res.user.email).catch(() => {});
@@ -226,12 +272,55 @@ export default function ChatPage() {
     [activeSessionId, chatVault]
   );
 
-  const handleSend = async (text: string) => {
+  const sendWithMode = async (text: string, modeOverride?: SovereigntyMode) => {
     if (isStreaming) return;
+    if (pendingOpenSend && modeOverride !== "open") {
+      setPendingOpenSend({ text, reason: pendingOpenSend.reason });
+      return;
+    }
+    const effectiveMode = modeOverride ?? sovereigntyMode;
+
+    const route = await selectRoute(effectiveMode);
+    if (route.caveat) {
+      // eslint-disable-next-line no-console
+      console.info(`[sovereignty:${route.mode}] ${route.caveat}`);
+    }
+
+    if (route.transport === "private-unavailable") {
+      const reason = route.caveat ?? "Private mode unavailable.";
+      emitPrivacyEvent("private_unavailable", {
+        requested_mode: "private",
+        reason_codes: route.reasonCodes ?? [],
+      });
+      emitPrivacyEvent("forced_open_switch", {
+        from: "private",
+        to: "open",
+        reason,
+      });
+      setSovereigntyMode("open");
+      setPendingOpenSend({ text, reason });
+      setPrivateAvailable(false);
+      setPrivateUnavailableReason(reason);
+      return;
+    }
+
+    if (route.transport === "relay-sealed" && !userDid) {
+      const reason = "Private mode requires a connected wallet DID.";
+      emitPrivacyEvent("private_unavailable", {
+        requested_mode: "private",
+        reason_codes: ["wallet_did_missing"],
+      });
+      emitPrivacyEvent("forced_open_switch", {
+        from: "private",
+        to: "open",
+        reason,
+      });
+      setSovereigntyMode("open");
+      setPendingOpenSend({ text, reason });
+      return;
+    }
 
     let sessionId = activeSessionId;
-
-    // Auto-create session if none active
     if (!sessionId) {
       const newSession: ThumperSession = {
         id: crypto.randomUUID(),
@@ -242,8 +331,6 @@ export default function ChatPage() {
       };
       setSessions((prev) => {
         const updated = [newSession, ...prev];
-        // Fire-and-forget: the store handles its own errors and falls
-        // back to localStorage if the encrypted path is unavailable.
         void saveSessionsToStore(updated, chatVault);
         return updated;
       });
@@ -257,14 +344,12 @@ export default function ChatPage() {
       content: text,
       timestamp: new Date().toISOString(),
     };
-
     const assistantMsg: ThumperChatMessage = {
       role: "assistant",
       content: "",
       timestamp: new Date().toISOString(),
     };
 
-    // Set title from first message
     updateSession(sessionId, (s) => {
       const isFirstMessage = s.messages.length === 0;
       return {
@@ -276,41 +361,20 @@ export default function ChatPage() {
       };
     });
 
+    setPendingOpenSend(null);
     setIsStreaming(true);
     setProviderInfo(null);
+
     let fullContent = "";
     let pendingActions: ThumperInlineAction[] | null = null;
-    // Default to true: if the cloud doesn't emit a `provider` event for any
-    // reason, prefer the structured path (which simply renders no card if no
-    // tool_use arrives) over kicking in the regex fallback unnecessarily.
     let providerSupportsToolUse = true;
     const currentSessionId = sessionId;
-    // Fresh job id per message — also becomes the receipt's job_id so
-    // each assistant turn has its own audit trail rather than reusing
-    // the session id (which spans many turns).
+    const currentMode = effectiveMode;
     const messageJobId = crypto.randomUUID();
-    // Capture provider info locally so the onDone closure can read
-    // it without racing the React state setter.
     let localProviderInfo:
       | { type: string; model?: string; provider_name?: string }
       | null = null;
 
-    // Route the message based on the sovereignty mode. In v2, Private
-    // mode asks the relay for an attested enclave and — when one is
-    // available — seals the request end-to-end via /inference/sealed.
-    // When no attested enclave is reachable, Private falls back to
-    // the plaintext relay path with a caveat the receipt records.
-    // Local goes straight to ghola-home and never touches the cloud.
-    // Open is always relay-plain.
-    const route = await selectRoute(sovereigntyMode);
-    if (route.caveat) {
-      // eslint-disable-next-line no-console
-      console.info(`[sovereignty:${route.mode}] ${route.caveat}`);
-    }
-
-    // Sealed relay path (v2 Private). The provider builds the receipt
-    // inside the enclave and returns it sealed back to us — we attach
-    // it to the assistant message verbatim, no user-side resign.
     if (route.transport === "relay-sealed" && route.enclave && userDid) {
       await streamSealedChat(
         currentSessionId,
@@ -351,7 +415,6 @@ export default function ChatPage() {
               };
             });
             setIsStreaming(false);
-            // Fire-and-forget on-chain anchor request.
             void submitReceiptToService(providerReceipt);
           },
           onError: (errMsg) => {
@@ -370,12 +433,80 @@ export default function ChatPage() {
       return;
     }
 
-    // Local mode: stream from ghola-home on the user's machine. On
-    // failure, surface the error message in the assistant bubble
-    // rather than silently downgrading to the cloud — Local was the
-    // user's explicit choice. Receipt is built afterwards with
-    // provider_id = "ghola-home" so the audit trail reflects reality.
-    if (route.transport === "webgpu" || route.transport === "ghola-home") {
+    if (route.transport === "webgpu") {
+      // Build conversation history from the session — drop the trailing
+      // empty assistant slot we appended above so the model isn't fed
+      // its own pending blank turn. Anonymous users have no userDid,
+      // so receipts are skipped (Tier 1A.5 will add self-signed local
+      // receipts once the signed-in upgrade path ships).
+      const priorMessages = (() => {
+        const all = activeSession?.messages ?? [];
+        const trimmed = all[all.length - 1]?.content === ""
+          ? all.slice(0, -1)
+          : all;
+        return trimmed.map((m) => ({
+          role: m.role as "user" | "assistant" | "system",
+          content: m.content,
+        }));
+      })();
+      await streamWebGPUChat(priorMessages, {
+        onChunk: (chunk) => {
+          fullContent += chunk;
+          updateSession(currentSessionId, (s) => {
+            const msgs = [...s.messages];
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              content: fullContent,
+            };
+            return { ...s, messages: msgs };
+          });
+        },
+        onProgress: (report) => {
+          // First-load only — show the download status in the streaming
+          // bubble until the engine is ready and tokens start arriving.
+          if (fullContent.length === 0) {
+            updateSession(currentSessionId, (s) => {
+              const msgs = [...s.messages];
+              msgs[msgs.length - 1] = {
+                ...msgs[msgs.length - 1],
+                content: report.text,
+              };
+              return { ...s, messages: msgs };
+            });
+          }
+        },
+        onDone: () => {
+          updateSession(currentSessionId, (s) => {
+            const msgs = [...s.messages];
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              content: fullContent,
+            };
+            return {
+              ...s,
+              lastMessage: fullContent.slice(0, 100),
+              lastMessageAt: new Date().toISOString(),
+              messages: msgs,
+            };
+          });
+          setIsStreaming(false);
+        },
+        onError: (errMsg) => {
+          updateSession(currentSessionId, (s) => {
+            const msgs = [...s.messages];
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              content: errMsg,
+            };
+            return { ...s, messages: msgs };
+          });
+          setIsStreaming(false);
+        },
+      });
+      return;
+    }
+
+    if (route.transport === "ghola-home") {
       await streamLocalChat(currentSessionId, text, {
         onChunk: (chunk) => {
           fullContent += chunk;
@@ -408,7 +539,7 @@ export default function ChatPage() {
               try {
                 const receipt = await makeReceipt({
                   jobId: messageJobId,
-                  mode: sovereigntyMode,
+                  mode: currentMode,
                   providerId: "ghola-home",
                   modelId: null,
                   prompt: text,
@@ -446,18 +577,12 @@ export default function ChatPage() {
       return;
     }
 
-    // Try to seal the user's message under the session's DEK before
-    // sending. If sealing fails (no wallet, vault unlock declined,
-    // network error talking to Turnkey) we fall through to the
-    // plaintext path so the user can still chat. The cloud handles
-    // either path — see crates/thumper-cloud/src/routes/chat.rs.
     let envelopeBlobB64: string | undefined;
     if (chatVault) {
       try {
         const sealed = await chatVault.sealUserMessage(currentSessionId, text);
         envelopeBlobB64 = sealed.envelopeB64;
       } catch (err) {
-        // Non-fatal: surface as a console warning, fall back to plaintext.
         // eslint-disable-next-line no-console
         console.warn("E2E sealing failed; falling back to plaintext:", err);
       }
@@ -465,10 +590,7 @@ export default function ChatPage() {
 
     await streamChat(currentSessionId, text, {
       envelopeBlobB64,
-      onSession: (newId) => {
-        // Server assigned a session ID — we can track it if needed
-        // For now we keep using our local UUID
-      },
+      onSession: () => {},
       onProvider: (info) => {
         setProviderInfo(info);
         localProviderInfo = info;
@@ -491,9 +613,6 @@ export default function ChatPage() {
         pendingActions = actions;
       },
       onDone: () => {
-        // If the provider supports tool-use, trust the structured stream.
-        // Otherwise fall back to the regex `detectAction` so Community/Ollama
-        // users still get an inline card for the simple call/email cases.
         let finalActions: ThumperInlineAction[] | undefined = pendingActions ?? undefined;
         if (!finalActions?.length && !providerSupportsToolUse) {
           const fallback = detectAction(fullContent);
@@ -515,15 +634,12 @@ export default function ChatPage() {
         });
         setIsStreaming(false);
 
-        // Build the per-message receipt in the background. Failure is
-        // non-fatal — the message still renders without a badge when
-        // the wallet isn't connected or signing is declined.
         if (userDid) {
           void (async () => {
             try {
               const receipt = await makeReceipt({
                 jobId: messageJobId,
-                mode: sovereigntyMode,
+                mode: currentMode,
                 providerId: localProviderInfo?.provider_name ?? "ghola-cloud",
                 modelId: localProviderInfo?.model ?? null,
                 prompt: text,
@@ -560,6 +676,17 @@ export default function ChatPage() {
     });
   };
 
+  const handleSend = async (text: string) => {
+    await sendWithMode(text);
+  };
+
+  const handleConfirmOpenSend = async () => {
+    if (!pendingOpenSend || isStreaming) return;
+    const pendingText = pendingOpenSend.text;
+    setPendingOpenSend(null);
+    await sendWithMode(pendingText, "open");
+  };
+
   return (
     <div className="flex h-full">
       {/* Sidebar */}
@@ -590,14 +717,69 @@ export default function ChatPage() {
               onBack={() => setMobileView("list")}
               mode={sovereigntyMode}
               onModeChange={setSovereigntyMode}
+              privateAvailable={privateAvailable}
+              privateUnavailableReason={privateUnavailableReason}
+              activeModelId={
+                sovereigntyMode === "local"
+                  ? DEFAULT_WEBGPU_MODEL
+                  : providerInfo?.model ?? null
+              }
             />
-            {sovereigntyMode === "local" && <LocalSetupBanner />}
+            {sovereigntyMode === "local" && hasPairedGholaHome && <LocalSetupBanner />}
+            {pendingOpenSend && (
+              <div className="mx-4 mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+                <p className="mb-2">
+                  Private send is unavailable. Mode has switched to Open. Confirm before sending this message in plaintext.
+                </p>
+                <p className="mb-3 text-xs text-amber-100/90">{pendingOpenSend.reason}</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleConfirmOpenSend}
+                    className="rounded-lg bg-amber-300 px-3 py-1.5 text-xs font-semibold text-[#201400] hover:bg-amber-200 cursor-pointer"
+                  >
+                    Send as Open
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingOpenSend(null)}
+                    className="rounded-lg border border-amber-300/60 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:border-amber-200 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
             <ChatMessages messages={messages} isStreaming={isStreaming} providerInfo={providerInfo} />
             <ChatInput onSend={handleSend} disabled={isStreaming} />
           </>
         ) : (
           <div className="flex-1 flex flex-col">
-            {sovereigntyMode === "local" && <LocalSetupBanner />}
+            {sovereigntyMode === "local" && hasPairedGholaHome && <LocalSetupBanner />}
+            {pendingOpenSend && (
+              <div className="mx-4 mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+                <p className="mb-2">
+                  Private send is unavailable. Mode has switched to Open. Confirm before sending this message in plaintext.
+                </p>
+                <p className="mb-3 text-xs text-amber-100/90">{pendingOpenSend.reason}</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleConfirmOpenSend}
+                    className="rounded-lg bg-amber-300 px-3 py-1.5 text-xs font-semibold text-[#201400] hover:bg-amber-200 cursor-pointer"
+                  >
+                    Send as Open
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingOpenSend(null)}
+                    className="rounded-lg border border-amber-300/60 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:border-amber-200 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="flex-1 flex flex-col items-center justify-center px-4">
             <div className="w-16 h-16 rounded-2xl bg-[#3da8ff]/10 flex items-center justify-center mb-6">
               <span className="text-2xl font-bold text-[#3da8ff]">G</span>
@@ -613,6 +795,8 @@ export default function ChatPage() {
               <SovereigntyPicker
                 value={sovereigntyMode}
                 onChange={setSovereigntyMode}
+                privateAvailable={privateAvailable}
+                privateUnavailableReason={privateUnavailableReason}
               />
             </div>
             <button

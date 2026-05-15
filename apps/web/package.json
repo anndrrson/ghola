@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@mlc-ai/web-llm": "^0.2.83",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",
     "@solana/web3.js": "^1.98.4",

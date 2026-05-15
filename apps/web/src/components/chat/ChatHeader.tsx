@@ -4,6 +4,7 @@ import Link from "next/link";
 import { ArrowLeft, Settings } from "lucide-react";
 import { GholaLogo } from "@/components/GholaLogo";
 import { SovereigntyPicker } from "@/components/SovereigntyPicker";
+import { ModelIntegrityBadge } from "@/components/chat/ModelIntegrityBadge";
 import type { SovereigntyMode } from "@/lib/sovereignty";
 
 interface ChatHeaderProps {
@@ -11,6 +12,10 @@ interface ChatHeaderProps {
   onBack: () => void;
   mode: SovereigntyMode;
   onModeChange: (mode: SovereigntyMode) => void;
+  privateAvailable?: boolean;
+  privateUnavailableReason?: string | null;
+  /** MLC model id loaded in-browser; passed for the on-chain integrity badge. */
+  activeModelId?: string | null;
 }
 
 export function ChatHeader({
@@ -18,6 +23,9 @@ export function ChatHeader({
   onBack,
   mode,
   onModeChange,
+  privateAvailable = true,
+  privateUnavailableReason = null,
+  activeModelId = null,
 }: ChatHeaderProps) {
   return (
     <div className="flex items-center gap-3 px-4 py-3 border-b border-[#1e2a3a] bg-[#0a0b10]">
@@ -33,7 +41,13 @@ export function ChatHeader({
           {title || "New conversation"}
         </h2>
       </div>
-      <SovereigntyPicker value={mode} onChange={onModeChange} />
+      {mode === "local" && <ModelIntegrityBadge modelId={activeModelId} />}
+      <SovereigntyPicker
+        value={mode}
+        onChange={onModeChange}
+        privateAvailable={privateAvailable}
+        privateUnavailableReason={privateUnavailableReason}
+      />
       <Link
         href="/settings"
         className="p-2 text-[#8b95a8] hover:text-[#eef1f8] transition-colors"
