@@ -11,6 +11,7 @@ import {
   computeLoadedWeightFingerprint,
   type WeightFingerprint,
 } from "@/lib/webgpu-inference";
+import { IntegrityVerifyModal } from "./IntegrityVerifyModal";
 
 interface Props {
   /** The MLC model id currently loaded in the browser (or null when idle). */
@@ -35,6 +36,10 @@ function isSriPinned(modelId: string): boolean {
 export function ModelIntegrityBadge({ modelId }: Props) {
   const [result, setResult] = useState<ModelRegistryResult | null>(null);
   const [weights, setWeights] = useState<WeightFingerprint | null>(null);
+  // The modal renders live verification on click. Kept inside the
+  // badge so the chat surface above doesn't need new wiring — the
+  // badge is a self-contained "click me to prove it" affordance.
+  const [modalOpen, setModalOpen] = useState(false);
 
   useEffect(() => {
     if (!modelId) {
@@ -74,6 +79,12 @@ export function ModelIntegrityBadge({ modelId }: Props) {
 
   if (!modelId) return null;
 
+  // Shared interactive base class: lifts the static `<span>` styling to
+  // a `<button>` so the entire chip is the click target. Cursor +
+  // subtle ring on hover signal the affordance without screaming.
+  const interactiveBase =
+    "cursor-pointer transition hover:brightness-125 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3da8ff]/60";
+
   if (!result) {
     return (
       <span className="hidden md:inline-flex items-center gap-1.5 rounded-full border border-[#1e2a3a] px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[#6f798c]">
@@ -82,6 +93,16 @@ export function ModelIntegrityBadge({ modelId }: Props) {
       </span>
     );
   }
+
+  // Single shared modal — rendered once below the switch so every
+  // badge state shares the same overlay element.
+  const modal = (
+    <IntegrityVerifyModal
+      modelId={modelId}
+      open={modalOpen}
+      onClose={() => setModalOpen(false)}
+    />
+  );
 
   switch (result.status) {
     case "verified": {
@@ -105,24 +126,36 @@ export function ModelIntegrityBadge({ modelId }: Props) {
         .filter(Boolean)
         .join("\n");
       return (
-        <span
-          title={lines}
-          className="hidden md:inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-400/5 px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-emerald-300"
-        >
-          <ShieldCheck className="h-3 w-3" />
-          Verified
-        </span>
+        <>
+          <button
+            type="button"
+            onClick={() => setModalOpen(true)}
+            title={`${lines}\n\nClick to run live verification.`}
+            aria-label="Open live integrity verification"
+            className={`hidden md:inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-400/5 px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-emerald-300 ${interactiveBase}`}
+          >
+            <ShieldCheck className="h-3 w-3" />
+            Verified
+          </button>
+          {modal}
+        </>
       );
     }
     case "mismatch":
       return (
-        <span
-          title="Loaded weights hash does not match the on-chain registry entry"
-          className="hidden md:inline-flex items-center gap-1.5 rounded-full border border-red-400/40 bg-red-400/5 px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-red-300"
-        >
-          <ShieldAlert className="h-3 w-3" />
-          Mismatch
-        </span>
+        <>
+          <button
+            type="button"
+            onClick={() => setModalOpen(true)}
+            title="Loaded weights hash does not match the on-chain registry entry. Click to inspect."
+            aria-label="Open live integrity verification"
+            className={`hidden md:inline-flex items-center gap-1.5 rounded-full border border-red-400/40 bg-red-400/5 px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-red-300 ${interactiveBase}`}
+          >
+            <ShieldAlert className="h-3 w-3" />
+            Mismatch
+          </button>
+          {modal}
+        </>
       );
     case "unregistered": {
       // If we ship SRI hashes for this model, the loader is already
@@ -136,37 +169,53 @@ export function ModelIntegrityBadge({ modelId }: Props) {
         ? `\n\nWeight fingerprint (sha256 over ${weights.files.length} cached artifacts):\n${weights.fingerprint}`
         : "";
       return (
-        <span
-          title={
-            (pinned
-              ? "Model loader (config + WASM + tokenizer) verified against pinned SRI hashes. On-chain registry record pending."
-              : "Read the chain at the model's deterministic PDA; no registry record yet (Tier 1A.5 deliverable)") + weightLine
-          }
-          className={
-            pinned
-              ? "hidden md:inline-flex items-center gap-1.5 rounded-full border border-[#3da8ff]/30 bg-[#3da8ff]/5 px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[#3da8ff]"
-              : "hidden md:inline-flex items-center gap-1.5 rounded-full border border-[#1e2a3a] px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[#8b95a8]"
-          }
-        >
-          <ShieldCheck className="h-3 w-3" />
-          {pinned ? "SRI pinned" : "Registry pending"}
-          {weights && (
-            <span className="opacity-70 normal-case tracking-normal">
-              · {weights.fingerprint.slice(0, 8)}
-            </span>
-          )}
-        </span>
+        <>
+          <button
+            type="button"
+            onClick={() => setModalOpen(true)}
+            title={
+              (pinned
+                ? "Model loader (config + WASM + tokenizer) verified against pinned SRI hashes. On-chain registry record pending."
+                : "Read the chain at the model's deterministic PDA; no registry record yet (Tier 1A.5 deliverable)") +
+              weightLine +
+              "\n\nClick to run live verification."
+            }
+            aria-label="Open live integrity verification"
+            className={
+              (pinned
+                ? "hidden md:inline-flex items-center gap-1.5 rounded-full border border-[#3da8ff]/30 bg-[#3da8ff]/5 px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[#3da8ff]"
+                : "hidden md:inline-flex items-center gap-1.5 rounded-full border border-[#1e2a3a] px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[#8b95a8]") +
+              " " +
+              interactiveBase
+            }
+          >
+            <ShieldCheck className="h-3 w-3" />
+            {pinned ? "SRI pinned" : "Registry pending"}
+            {weights && (
+              <span className="opacity-70 normal-case tracking-normal">
+                · {weights.fingerprint.slice(0, 8)}
+              </span>
+            )}
+          </button>
+          {modal}
+        </>
       );
     }
     case "unreachable":
       return (
-        <span
-          title={result.error ?? "Solana RPC unreachable"}
-          className="hidden md:inline-flex items-center gap-1.5 rounded-full border border-[#1e2a3a] px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[#6f798c]"
-        >
-          <ShieldQuestion className="h-3 w-3" />
-          Chain unreachable
-        </span>
+        <>
+          <button
+            type="button"
+            onClick={() => setModalOpen(true)}
+            title={`${result.error ?? "Solana RPC unreachable"}\n\nClick to retry / inspect.`}
+            aria-label="Open live integrity verification"
+            className={`hidden md:inline-flex items-center gap-1.5 rounded-full border border-[#1e2a3a] px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[#6f798c] ${interactiveBase}`}
+          >
+            <ShieldQuestion className="h-3 w-3" />
+            Chain unreachable
+          </button>
+          {modal}
+        </>
       );
   }
 }
