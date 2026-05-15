@@ -77,6 +77,41 @@ export default function RootLayout({
       <head>
         <meta name="theme-color" content="#08090d" />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+        {/* ───────────── Resource hints ─────────────
+            preconnect = warm TCP+TLS+DNS for hosts we *will* hit on
+            the critical path. dns-prefetch = lighter, just resolves
+            DNS — used for hosts we *might* hit but don't want to pay
+            the TLS handshake cost on every cold load.
+
+            Origins targeted:
+              • api.devnet.solana.com         — registry RPC for the
+                ModelIntegrityBadge / on-chain lookup.
+              • huggingface.co                — WebLLM model weight CDN.
+              • raw.githubusercontent.com     — WebLLM WASM model-lib CDN.
+              • ghola-api.onrender.com        — said-cloud (DNS only,
+                most visitors don't hit it until they sign in).
+              • ghola-gateway.onrender.com    — gateway (same).
+
+            `crossOrigin` is required on preconnect for any origin we
+            fetch with CORS, otherwise the browser opens a second
+            anonymous connection and the preconnect is wasted. */}
+        <link
+          rel="preconnect"
+          href="https://api.devnet.solana.com"
+          crossOrigin="anonymous"
+        />
+        <link
+          rel="preconnect"
+          href="https://huggingface.co"
+          crossOrigin="anonymous"
+        />
+        <link
+          rel="preconnect"
+          href="https://raw.githubusercontent.com"
+          crossOrigin="anonymous"
+        />
+        <link rel="dns-prefetch" href="https://ghola-api.onrender.com" />
+        <link rel="dns-prefetch" href="https://ghola-gateway.onrender.com" />
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${funnelDisplay.variable} bg-[#08090d] text-[#eef1f8] font-sans antialiased`}

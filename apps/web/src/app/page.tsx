@@ -5,6 +5,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight } from "lucide-react";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
+import { mark } from "@/lib/perf-marks";
 
 export default function Home() {
   const { authenticated, loading } = useThumperAuth();
@@ -15,6 +16,14 @@ export default function Home() {
       router.push("/chat");
     }
   }, [authenticated, loading, router]);
+
+  // Drop a perf mark the first time the landing hero hydrates on the
+  // client. Lets us measure hero-to-interactive in a future dashboard
+  // without changing anything the user sees. Invisible side effect —
+  // no DOM, no copy, no layout change.
+  useEffect(() => {
+    mark("hero-rendered");
+  }, []);
 
   if (authenticated && !loading) return null;
 
