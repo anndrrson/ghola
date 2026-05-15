@@ -106,6 +106,20 @@ pub mod ghola_model_registry {
         Ok(())
     }
 
+    /// Close a model record and refund rent to the creator. The
+    /// content-addressing invariant is enforced by immutable hash
+    /// fields on `update_model`, so the only way to *correct* a
+    /// registration with wrong hashes is to close + re-register
+    /// (a different bump now produces a different account; users
+    /// observing the chain see the close event and the new record).
+    /// Only the original creator can call.
+    pub fn close_model(_ctx: Context<CloseModel>) -> Result<()> {
+        // Anchor's `close = creator` directive in CloseModel zeros the
+        // account and refunds the rent to the creator. Nothing else
+        // to do in the handler.
+        Ok(())
+    }
+
     /// Update fields that can drift over a model's lifetime (license
     /// terms, pricing, new IPFS pin location). Hash fields are
     /// **immutable** — content-addressed records must not allow the
@@ -168,6 +182,22 @@ pub struct RegisterModel<'info> {
     #[account(mut)]
     pub creator: Signer<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CloseModel<'info> {
+    // `close = creator` returns the rent lamports to the creator and
+    // zeros the discriminator so the same PDA cannot be re-opened
+    // without a fresh init. has_one enforces only the original creator
+    // can close.
+    #[account(
+        mut,
+        close = creator,
+        has_one = creator @ ModelRegistryError::NotCreator,
+    )]
+    pub model: Account<'info, ModelRecord>,
+    #[account(mut)]
+    pub creator: Signer<'info>,
 }
 
 #[derive(Accounts)]
