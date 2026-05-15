@@ -46,13 +46,14 @@ const TOKENIZER_HASH = b64ToBytes(
   "eePlImNfMXEwCRO7QhRkqH3mIiGCoFcLmyzLoqlksrQ=",
 );
 
-// Weights hash is a placeholder until we compute the canonical
-// MLC param shard manifest hash. The web client's
-// computeLoadedWeightFingerprint produces a SHA-256 over the cached
-// artifacts; the on-chain value should match what the registry
-// commits to. For the first deploy we anchor a zero hash with a
-// follow-up update_model planned.
-const WEIGHTS_HASH = Buffer.alloc(32, 0);
+// Canonical weights manifest hash, computed by
+// scripts/compute-weights-manifest.mjs over the model's HuggingFace
+// repo. Pinned as a string here so a reviewer can grep both the
+// source constant and this script for the same value.
+const WEIGHTS_HASH = Buffer.from(
+  "8c3ae367d068c2b3a7d5b402a16395ab5089315e5256f609e54320d64d53c695",
+  "hex",
+);
 
 const IPFS_CID = "bafy-llama-3-2-1b-instruct-q4f16-placeholder";
 const LICENSE_SPDX = "Llama-3.2-Community";

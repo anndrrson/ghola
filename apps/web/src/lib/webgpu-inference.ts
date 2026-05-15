@@ -46,6 +46,26 @@ const DEFAULT_WEBGPU_MODEL_INTEGRITY = {
   onFailure: "error" as const,
 };
 
+/**
+ * Canonical on-chain weights hash for the default model. SHA-256 over
+ * the sorted manifest of every file in the model's HuggingFace repo:
+ *
+ *   sha256( join("\n", sorted( "<path>\t<lfs_oid>" for each file )) )
+ *
+ * `lfs_oid` is HF's SHA-256 for LFS files; non-LFS files (the JSON
+ * configs) are fetched and hashed inline. The full algorithm lives in
+ * `scripts/compute-weights-manifest.mjs` — anyone can recompute and
+ * compare.
+ *
+ * This is the value the ghola-model-registry program SHOULD anchor as
+ * the on-chain `weights_hash`. The currently-deployed record still
+ * carries the all-zeros placeholder; the close + re-register flow
+ * (programs/ghola-model-registry/src/lib.rs::close_model) shipped in
+ * source but is awaiting a devnet redeploy.
+ */
+export const DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH =
+  "8c3ae367d068c2b3a7d5b402a16395ab5089315e5256f609e54320d64d53c695";
+
 export interface WebGPUSupport {
   supported: boolean;
   reason?: string;
