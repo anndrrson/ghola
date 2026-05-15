@@ -403,6 +403,29 @@ export default function ColdLoadPerfPage() {
               </div>
             )}
 
+            {!result.error && (
+              <div className="mt-6 rounded-md border border-[#1e2a3a] bg-[#0a0d12] p-4">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-[#6f798c]">
+                  Recommendation
+                </div>
+                {(() => {
+                  const rec = recommendation(result);
+                  return (
+                    <>
+                      <div className="mt-1 text-[13px] leading-relaxed">
+                        {rec.headline}
+                      </div>
+                      <ul className="mt-3 space-y-1 text-[12px] text-[#8b95a8]">
+                        {rec.followups.map((f, i) => (
+                          <li key={i}>— {f}</li>
+                        ))}
+                      </ul>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+
             <pre className="mt-6 max-h-96 overflow-auto rounded-md border border-[#1e2a3a] bg-[#05070a] p-4 font-mono text-[11px] leading-relaxed text-[#a0aabd]">
               {JSON.stringify(result, null, 2)}
             </pre>
@@ -426,6 +449,73 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 function ms(v: number | null): string {
   return v === null ? "—" : `${Math.round(v).toLocaleString()} ms`;
+}
+
+/**
+ * Interpret a captured RunResult against the Phase B/C/E thresholds
+ * named in `.claude/plans/zesty-giggling-charm.md`. Returns a short
+ * recommendation a reviewer can act on without re-reading the plan.
+ *
+ * Thresholds:
+ *   - engineLoadMs > 20_000 → Phase B (bundling) likely worthwhile
+ *   - totalBytes > 1_500_000_000 (~1.5 GB) → Phase E is the cheaper
+ *     win because the device might not even support Phase B's
+ *     bundled rewrite (storage quota)
+ *   - sparsity decision needs the sidecar; this surface can't compute
+ *     it from JS — but we tell the reviewer what to do next.
+ */
+function recommendation(r: RunResult): {
+  headline: string;
+  followups: string[];
+} {
+  const followups: string[] = [
+    "Run scripts/measure-sparsity.py for the Phase C/B/E decision.",
+  ];
+
+  const loadMs = r.perf.derived.engineLoadMs;
+  const totalBytes = r.cacheDelta?.totalAddedBytes ?? 0;
+
+  if (loadMs === null) {
+    return {
+      headline: "Engine never fully loaded — capture failed.",
+      followups: [
+        "Check the Result error message.",
+        "Retry in an incognito window.",
+      ],
+    };
+  }
+
+  if (loadMs > 30_000) {
+    return {
+      headline:
+        "Cold start above 30s — Phase B (row-column bundling) is the highest-leverage next step.",
+      followups: [
+        ...followups,
+        "Consider Phase E (smaller stronger model — Phi-3 mini) as a parallel track.",
+      ],
+    };
+  }
+
+  if (loadMs > 15_000) {
+    return {
+      headline:
+        "Cold start in the 15-30s range — Phase B will help; Phase C only if sparsity is favorable.",
+      followups,
+    };
+  }
+
+  if (totalBytes > 1_500_000_000) {
+    return {
+      headline:
+        "Cold start is acceptable but model is heavy — Phase E (smaller stronger model) is the bigger UX win.",
+      followups,
+    };
+  }
+
+  return {
+    headline: "Cold start is already fast — focus on Phase E (model quality) over loader perf.",
+    followups,
+  };
 }
 
 function formatBytes(b: number): string {
