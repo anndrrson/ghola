@@ -41,6 +41,8 @@ const INITIAL: ChecksState = [
   { label: "Runtime weight fingerprint", state: "pending", detail: "loads on first Local message — wait or send a message in /chat first" },
   { label: "Security response headers", state: "pending", detail: "probing /…" },
   { label: "Web bundle SRI manifest", state: "pending", detail: "probing /.well-known/sri-manifest.json…" },
+  { label: "Runtime SRI enforcement (service worker)", state: "pending", detail: "asking the service worker for its pinned-hash count…" },
+  { label: "CSP inline-script allowlist", state: "pending", detail: "probing /.well-known/csp-inline-hashes.json…" },
 ];
 
 export default function SecurityStatusPage() {
@@ -169,19 +171,23 @@ export default function SecurityStatusPage() {
         const res = await fetch(window.location.pathname, { method: "GET" });
         const xfo = res.headers.get("x-frame-options");
         const xcto = res.headers.get("x-content-type-options");
-        const csp = res.headers.get("content-security-policy-report-only");
+        // Either enforcing or report-only CSP is acceptable; next.config.ts
+        // promotes to enforcing once the inline-hash allowlist is built.
+        const cspEnforce = res.headers.get("content-security-policy");
+        const cspReport = res.headers.get("content-security-policy-report-only");
+        const csp = cspEnforce ?? cspReport;
         const hsts = res.headers.get("strict-transport-security");
         const missing: string[] = [];
         if (!xfo) missing.push("X-Frame-Options");
         if (!xcto) missing.push("X-Content-Type-Options");
         if (!hsts) missing.push("Strict-Transport-Security");
-        if (!csp) missing.push("Content-Security-Policy-Report-Only");
+        if (!csp) missing.push("Content-Security-Policy");
         if (missing.length === 0) {
           next[5] = {
             label: "Security response headers",
             state: "ok",
-            detail: "all 4 required headers present",
-            evidence: `XFO=${xfo}; XCTO=${xcto}; HSTS=${hsts?.slice(0, 30)}…; CSP=${csp ? "set" : "missing"}`,
+            detail: `all 4 required headers present (CSP: ${cspEnforce ? "enforcing" : "report-only"})`,
+            evidence: `XFO=${xfo}; XCTO=${xcto}; HSTS=${hsts?.slice(0, 30)}…; CSP=${cspEnforce ? "enforce" : "report-only"}`,
           };
         } else {
           next[5] = {
@@ -240,6 +246,130 @@ export default function SecurityStatusPage() {
       } catch (err) {
         next[6] = {
           label: "Web bundle SRI manifest",
+          state: "fail",
+          detail: err instanceof Error ? err.message : "probe failed",
+        };
+      }
+
+      // 8. Runtime SRI enforcement — ask the service worker for its
+      //    pinned-hash count via postMessage. If there's no active SW,
+      //    or it's a pre-SRI version that doesn't reply, mark warn.
+      try {
+        const reg = navigator.serviceWorker
+          ? await navigator.serviceWorker.getRegistration()
+          : null;
+        const sw = reg?.active ?? null;
+        if (!sw) {
+          next[7] = {
+            label: "Runtime SRI enforcement (service worker)",
+            state: "warn",
+            detail: "service worker not yet active in this browser (loads on next visit)",
+          };
+        } else {
+          const reply = await new Promise<{
+            type?: string;
+            manifestLoaded?: boolean;
+            hashCount?: number;
+            loadedAt?: string | null;
+            lastMismatch?: { path?: string; at?: string } | null;
+          } | null>((resolve) => {
+            const channel = new MessageChannel();
+            const timer = setTimeout(() => {
+              channel.port1.close();
+              resolve(null);
+            }, 1500);
+            channel.port1.onmessage = (ev) => {
+              clearTimeout(timer);
+              channel.port1.close();
+              resolve(ev.data);
+            };
+            try {
+              sw.postMessage({ type: "sri-status" }, [channel.port2]);
+            } catch {
+              clearTimeout(timer);
+              resolve(null);
+            }
+          });
+          if (!reply || reply.type !== "sri-status") {
+            next[7] = {
+              label: "Runtime SRI enforcement (service worker)",
+              state: "warn",
+              detail: "service worker did not reply to sri-status — likely an older cache-only version",
+            };
+          } else if (!reply.manifestLoaded || (reply.hashCount ?? 0) === 0) {
+            next[7] = {
+              label: "Runtime SRI enforcement (service worker)",
+              state: "warn",
+              detail: "service worker active but manifest not loaded (fall-open mode)",
+              evidence: reply.loadedAt ? `last load attempt: ${reply.loadedAt}` : undefined,
+            };
+          } else if (reply.lastMismatch) {
+            next[7] = {
+              label: "Runtime SRI enforcement (service worker)",
+              state: "fail",
+              detail: `SRI mismatch observed at ${reply.lastMismatch.path ?? "?"}`,
+              evidence: reply.lastMismatch.at,
+            };
+          } else {
+            next[7] = {
+              label: "Runtime SRI enforcement (service worker)",
+              state: "ok",
+              detail: `${reply.hashCount} pinned entries — every same-origin /_next/static fetch is hashed and 502'd on mismatch`,
+              evidence: reply.loadedAt ? `manifest loaded ${reply.loadedAt}` : undefined,
+            };
+          }
+        }
+      } catch (err) {
+        next[7] = {
+          label: "Runtime SRI enforcement (service worker)",
+          state: "fail",
+          detail: err instanceof Error ? err.message : "probe failed",
+        };
+      }
+
+      // 9. CSP inline-script allowlist — fetch the build-time hash
+      //    list. Present + non-empty means next.config.ts is in
+      //    enforcing mode; absent means the dev-fallback report-only
+      //    policy is live.
+      try {
+        const res = await fetch("/.well-known/csp-inline-hashes.json", {
+          method: "GET",
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          next[8] = {
+            label: "CSP inline-script allowlist",
+            state: "warn",
+            detail: `not deployed — CSP is in report-only mode (dev-fallback). HTTP ${res.status}`,
+          };
+        } else {
+          const body = (await res.json()) as {
+            version?: number;
+            hashes?: string[];
+            generated_at?: string;
+            git_commit?: string | null;
+          };
+          const count = body.hashes?.length ?? 0;
+          if (count === 0) {
+            next[8] = {
+              label: "CSP inline-script allowlist",
+              state: "warn",
+              detail: "allowlist present but empty — CSP would block every inline script",
+            };
+          } else {
+            next[8] = {
+              label: "CSP inline-script allowlist",
+              state: "ok",
+              detail: `${count} inline-script hash(es) pinned — CSP enforces 'sha256-...' sources and drops 'unsafe-inline'`,
+              evidence: body.git_commit
+                ? `commit ${body.git_commit.slice(0, 7)}${body.generated_at ? `; built ${body.generated_at}` : ""}`
+                : body.generated_at ?? undefined,
+            };
+          }
+        }
+      } catch (err) {
+        next[8] = {
+          label: "CSP inline-script allowlist",
           state: "fail",
           detail: err instanceof Error ? err.message : "probe failed",
         };
