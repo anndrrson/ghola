@@ -25,12 +25,46 @@ use crate::state::{AppState, RateLimiter};
 
 /// Health check endpoint.
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let ready = state.private_readiness();
     Json(json!({
         "status": "ok",
         "devices": state.device_count(),
         "mcp_clients": state.mcp_client_count(),
         "gpu_providers": state.gpu_provider_count(),
+        "ohttp_enabled": ready.ohttp_enabled,
+        "did_set_bootstrapped": ready.did_set_bootstrapped,
+        "did_set_fresh": ready.did_set_fresh,
+        "private_ready": ready.private_ready,
+        "private_reason_codes": ready.reason_codes,
     }))
+}
+
+/// Private-path readiness probe.
+///
+/// Returns:
+/// - `200` when private stack is ready (OHTTP + fresh did_set)
+/// - `503` when private stack is not ready, with reason codes.
+pub async fn ready_private(State(state): State<AppState>) -> impl IntoResponse {
+    let ready = state.private_readiness();
+    let status = if ready.private_ready {
+        axum::http::StatusCode::OK
+    } else {
+        tracing::warn!(
+            reason_codes = ?ready.reason_codes,
+            "relay private readiness failure"
+        );
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status,
+        Json(json!({
+            "private_ready": ready.private_ready,
+            "ohttp_enabled": ready.ohttp_enabled,
+            "did_set_bootstrapped": ready.did_set_bootstrapped,
+            "did_set_fresh": ready.did_set_fresh,
+            "reason_codes": ready.reason_codes,
+        })),
+    )
 }
 
 /// Metrics endpoint — returns a JSON snapshot of relay metrics.
@@ -820,6 +854,12 @@ pub(crate) fn handle_provider_attest(
                 };
             }
             Err(e) => {
+                tracing::warn!(
+                    provider_id = %provider_id,
+                    tee_kind = ?payload.tee_kind,
+                    error = %e,
+                    "provider attest rejected"
+                );
                 if !(allow_unattested() && matches!(payload.tee_kind, TeeKind::None)) {
                     return ProviderAttestAckPayload {
                         accepted: false,
