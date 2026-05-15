@@ -80,7 +80,7 @@ RUN cargo build --release \
 # because vsock is Linux-only and we don't want that dep entangling
 # the rest of the tree). The runtime stage copies the binary in.
 COPY deploy/nitro/vsock-proxy/ /vsock-proxy/
-RUN cd /vsock-proxy && cargo build --release --bin enclave-vsock-client
+RUN cd /vsock-proxy && cargo build --release --bin enclave-vsock-client --bin vsock-env-client
 
 # -------- Stage 2: runtime --------
 FROM amazonlinux:2023 AS runtime
@@ -111,6 +111,13 @@ RUN curl -fsSL https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERS
 
 # Provider binary.
 COPY --from=builder /src/target/release/thumper-gpu-provider /usr/local/bin/thumper-gpu-provider
+
+# Enclave-side vsock env-channel client. Pulls PROVIDER_AUTH_KEY +
+# ALLOWLIST_SIG_B64 from the host's vsock-env-server (port 8444) so the
+# entrypoint can populate them before exec'ing the provider. Nitro
+# enclaves don't inherit host env, so this side-channel is required for
+# attestation to send a non-empty allowlist sig.
+COPY --from=builder /vsock-proxy/target/release/vsock-env-client /usr/local/bin/vsock-env-client
 
 # In-enclave vsock client. Listens on 127.0.0.1:8443 and tunnels to
 # the host's vsock-proxy (CID=3, port=8443). The provider connects to

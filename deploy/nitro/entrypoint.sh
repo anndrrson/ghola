@@ -14,6 +14,24 @@
 #      sends ProviderAttest, serves sealed inference requests.
 set -euo pipefail
 
+# ---- -1. Pull per-deploy envs from the host over vsock ----
+# Nitro enclaves do not inherit parent env (no --env flag on
+# `nitro-cli run-enclave`). We pull PROVIDER_AUTH_KEY and
+# ALLOWLIST_SIG_B64 from the host's vsock-env-server (default
+# vsock://3:8444). The contents are non-secret (a sig + a per-deploy
+# provider seed); attack surface is the host filesystem +
+# vsock isolation.
+echo "==> fetching envs from host via vsock-env-server"
+if /usr/local/bin/vsock-env-client > /tmp/enclave-env.sh 2> /tmp/vsock-env-client.err; then
+    fetched=$(grep -c '^export ' /tmp/enclave-env.sh 2>/dev/null || echo 0)
+    echo "==> vsock-env-client returned $fetched env var(s)"
+    # shellcheck disable=SC1091
+    . /tmp/enclave-env.sh
+else
+    echo "==> WARNING: vsock-env-client failed; envs will be empty"
+    cat /tmp/vsock-env-client.err 2>/dev/null || true
+fi
+
 # ---- 0. Bring up loopback interface ----
 # linuxkit's init does NOT bring up `lo` by default. Without it,
 # bind(127.0.0.1) succeeds (kernel takes the IP) but connect(127.0.0.1)

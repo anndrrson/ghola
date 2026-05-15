@@ -35,6 +35,14 @@ path = "src/bin/vsock_proxy.rs"
 name = "enclave-vsock-client"
 path = "src/bin/enclave_vsock_client.rs"
 
+[[bin]]
+name = "vsock-env-server"
+path = "src/bin/vsock_env_server.rs"
+
+[[bin]]
+name = "vsock-env-client"
+path = "src/bin/vsock_env_client.rs"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
