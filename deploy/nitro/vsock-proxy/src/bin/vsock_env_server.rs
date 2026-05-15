@@ -110,8 +110,15 @@ mod linux {
             if let Err(e) = stream.write_all(&payload).await {
                 tracing::warn!(error = %e, "vsock-env: write failed");
             }
-            // Close the connection so the client sees a clean EOF.
-            let _ = stream.shutdown().await;
+            // Flush and drop the stream — close-on-drop sends FIN, which
+            // the client sees as EOF. Don't call .shutdown(): tokio-vsock
+            // shadows the AsyncWriteExt trait method with its own
+            // inherent `shutdown(how: Shutdown)` which would require the
+            // std::net::Shutdown enum and complicate the import.
+            if let Err(e) = stream.flush().await {
+                tracing::warn!(error = %e, "vsock-env: flush failed");
+            }
+            drop(stream);
         }
     }
 }
