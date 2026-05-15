@@ -35,6 +35,8 @@ members = [
 
     # Tier 2 schema-only first PRs (no behavior change; types only)
     "crates/ghola-zkml-types",
+    "crates/said-bbs-types",
+    "crates/said-pir-types",
 ]
 exclude = [
     "programs/said-registry",

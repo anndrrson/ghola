@@ -3144,6 +3144,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "said-bbs-types"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "said-cloud"
 version = "0.1.0"
 dependencies = [
@@ -3297,6 +3307,16 @@ name = "said-noncecache"
 version = "0.1.0"
 dependencies = [
  "dashmap",
+]
+
+[[package]]
+name = "said-pir-types"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
