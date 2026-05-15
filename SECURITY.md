@@ -74,9 +74,19 @@ depend on (Solana validators, Turnkey enclave, Render).
 
 ## Reproducible verification
 
-Open [`/security/status`](https://ghola.xyz/security/status) — every
-claim above resolves to a live probe in your own browser. A regression
-on any indicator can be reproduced without running our code locally.
+Two complementary pages serve auditors:
+
+- [`/security/status`](https://ghola.xyz/security/status) — **live probe board.**
+  Every claim above resolves to a probe computed from the running
+  system in the reviewer's own browser. A regression on any indicator
+  flips red here.
+- [`/security/audit-trail`](https://ghola.xyz/security/audit-trail) —
+  **static reference card.** One page bundling every verifiable
+  artifact (source SHA, bundle manifest, CSP allowlist, registry
+  program, default-model PDA + canonical weights hash, receipt
+  verifier, SECURITY.md, response headers) with copy-to-clipboard
+  shell commands to reproduce each check from a terminal. The
+  reviewer's five-minute DD landing page.
 
 A determined reviewer can also verify:
 
