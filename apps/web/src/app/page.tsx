@@ -5,7 +5,6 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight } from "lucide-react";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
-import { Footer } from "@/components/Footer";
 
 export default function Home() {
   const { authenticated, loading } = useThumperAuth();
@@ -29,7 +28,7 @@ export default function Home() {
     name: "ghola",
     url: "https://ghola.xyz",
     description:
-      "Open, attested, sovereign confidential AI. TEE + on-device + on-chain accountable privacy, with a per-message cryptographic receipt the user can verify.",
+      "The most private AI. Runs on your device, or end-to-end encrypted in the cloud.",
     logo: "https://ghola.xyz/icon-512.png",
   };
 
@@ -66,7 +65,7 @@ export default function Home() {
         />
 
         <div className="relative">
-          <div className="mx-auto w-full max-w-6xl px-6 lg:px-12 pt-24 pb-28 sm:pt-32 sm:pb-36">
+          <div className="mx-auto w-full max-w-6xl px-6 lg:px-12 pt-24 pb-20 sm:pt-32 sm:pb-24">
             {/* Live indicator — just the pulse + "Live". The "on Solana" / chain
                 detail belongs in the bottom strip and the deposit/x402 pages,
                 not in the headline real estate where most visitors don't care. */}
@@ -78,48 +77,94 @@ export default function Home() {
               Live
             </div>
 
-            {/* Single-line privacy hero. "Off the record" is the strongest
-                privacy framing English has — it's the phrase journalists,
-                lawyers, and confidants reach for when something must not
-                leave the room. Pairs with an end-to-end-encryption proof
-                line that's true post-PR-1: the cloud is server-blind, so
-                "we can't read it" is capability, not policy. */}
+            {/* Superlative claim — privacy is the moat (per Yahya's
+                a16z thesis), so we lay claim to the title rather than
+                hedge. Two-sentence subtitle names both sovereignty
+                modes the user can actually pick (local + private),
+                ladders into the modes section below. */}
             <h1 className="font-display text-[clamp(3rem,9vw,7.5rem)] leading-[0.94] text-[#eef1f8] font-medium">
-              Verifiably{" "}
-              <span className="text-[#3da8ff]">off the record.</span>
+              The <span className="text-[#3da8ff]">most private</span> AI.
             </h1>
 
-            <p className="mt-10 max-w-2xl text-lg text-[#8b95a8] leading-relaxed">
-              Open, attested, sovereign confidential AI — TEE + on-device +
-              on-chain accountable privacy, with a per-message cryptographic
-              receipt the user can verify.
+            <p className="mt-10 max-w-xl text-lg text-[#8b95a8] leading-relaxed">
+              Runs on your device. Or end-to-end encrypted in the cloud.
             </p>
 
-            <div className="mt-12">
+            <div className="mt-12 flex flex-wrap items-center gap-4">
               <Link
                 href="/chat"
                 className="group inline-flex items-center justify-center gap-2 rounded-full bg-[#3da8ff] px-7 py-3.5 text-[15px] font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
               >
-                Try Private chat
+                Try Ghola
                 <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+              </Link>
+              <Link
+                href="/security"
+                className="inline-flex items-center justify-center gap-2 rounded-full border border-[#1e2a3a] px-7 py-3.5 text-[15px] font-medium text-[#eef1f8] hover:border-[#2a3a50] hover:bg-[#0f141c] transition-all"
+              >
+                How it works
               </Link>
             </div>
           </div>
         </div>
 
-        {/* Bottom strip — "active on network" status row, lives in its own
-            band so it reads as live system state, not a feature list. */}
+        {/* Bottom credentials strip — three a16z-thesis primitives:
+            attested (TEE stack), on-chain (receipts/settlement),
+            open weights (open AI thesis). Cold visitors read it as a
+            feature list; pattern-matchers see the moat. */}
         <div className="relative border-t border-[#1e2a3a] bg-[#0a0b10]/60 backdrop-blur-sm">
           <div className="mx-auto max-w-6xl px-6 lg:px-12 py-5 flex flex-wrap items-center gap-x-8 gap-y-2 font-mono text-[11px] uppercase tracking-[0.22em] text-[#6f798c]">
-            <span className="text-[#8b95a8]">Active on network</span>
+            <span>Attested</span>
             <span className="text-[#2a3a50]">·</span>
-            <span>End-to-end encrypted</span>
-            <span className="text-[#2a3a50]">·</span>
-            <span>On-device option</span>
-            <span className="text-[#2a3a50]">·</span>
-            <span>Verifiable receipts</span>
+            <span>On-chain</span>
             <span className="text-[#2a3a50]">·</span>
             <span>Open weights</span>
+          </div>
+        </div>
+      </section>
+
+      {/* ──────────── Pillars ────────────
+          Three a16z-thesis primitives stated as features: confidential
+          (data privacy), sovereign (wallet identity), payable (agent
+          settlement). Telegram-style — adjective label, one human
+          sentence of proof. Reads as feature breadth for normies;
+          pattern-matches to the AI×crypto thesis for partners. */}
+      <section className="pt-20 pb-28 sm:pt-24 sm:pb-36">
+        <div className="mx-auto w-full max-w-6xl px-6 lg:px-12">
+          <div className="flex items-baseline gap-6 mb-16">
+            <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#8b95a8]">
+              01 — The stack
+            </span>
+            <span className="flex-1 h-px bg-[#1e2a3a]" />
+          </div>
+
+          <div className="grid md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-[#1e2a3a] border-y border-[#1e2a3a]">
+            {[
+              {
+                label: "Confidential",
+                desc: "Every input is encrypted before leaving your machine — or you can run locally so nothing leaves at all.",
+              },
+              {
+                label: "Sovereign",
+                desc: "You sign in with your wallet, so there's no account or email for anyone to compromise.",
+              },
+              {
+                label: "Payable",
+                desc: "Agents pay per call in USDC, so they can use the API without ever signing up.",
+              },
+            ].map((pillar) => (
+              <div
+                key={pillar.label}
+                className="p-8 lg:p-10"
+              >
+                <h3 className="font-display text-2xl text-[#eef1f8] mb-4">
+                  {pillar.label}
+                </h3>
+                <p className="text-sm text-[#8b95a8] leading-relaxed">
+                  {pillar.desc}
+                </p>
+              </div>
+            ))}
           </div>
         </div>
       </section>
@@ -129,7 +174,7 @@ export default function Home() {
         <div className="mx-auto w-full max-w-6xl px-6 lg:px-12">
           <div className="flex items-baseline gap-6 mb-16">
             <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#8b95a8]">
-              01 — Sovereignty modes
+              02 — Sovereignty modes
             </span>
             <span className="flex-1 h-px bg-[#1e2a3a]" />
           </div>
@@ -194,7 +239,7 @@ export default function Home() {
         <div className="mx-auto w-full max-w-6xl px-6 lg:px-12">
           <div className="flex items-baseline gap-6 mb-16">
             <span className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#8b95a8]">
-              02 — How it flows
+              03 — How it flows
             </span>
             <span className="flex-1 h-px bg-[#1e2a3a]" />
           </div>
@@ -263,25 +308,24 @@ export default function Home() {
         />
         <div className="relative mx-auto w-full max-w-4xl px-6 lg:px-12 text-center">
           <h2 className="font-display text-5xl md:text-8xl leading-[0.94] text-[#eef1f8] font-medium">
-            Verifiably <span className="text-[#3da8ff]">off the record.</span>
+            Private by <span className="text-[#3da8ff]">proof.</span>
           </h2>
           <p className="mt-8 text-[#8b95a8] max-w-md mx-auto leading-relaxed">
-            Every message gets a receipt. Every receipt says where it ran.
-            Nothing leaves a trail you can&apos;t audit.
+            Encrypted in transit. Signed on arrival. Verify any reply
+            from the badge.
           </p>
           <div className="mt-12 flex justify-center">
             <Link
               href="/chat"
               className="group inline-flex items-center justify-center gap-2 rounded-full bg-[#3da8ff] px-8 py-4 text-[15px] font-medium text-[#08090d] hover:bg-[#5bb8ff] active:scale-[0.98] transition-all"
             >
-              Try Private chat
+              Try Ghola
               <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
             </Link>
           </div>
         </div>
       </section>
 
-      <Footer />
     </div>
   );
 }
