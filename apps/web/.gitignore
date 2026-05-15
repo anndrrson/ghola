@@ -4,3 +4,7 @@ node_modules/
 .env.local
 .vercel
 .env*.local
+
+# Generated per-build; reviewers fetch the live manifest at
+# https://ghola.xyz/.well-known/sri-manifest.json (see SECURITY.md).
+public/.well-known/sri-manifest.json

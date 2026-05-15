@@ -40,6 +40,7 @@ const INITIAL: ChecksState = [
   { label: "Loader SRI verification", state: "pending", detail: "" },
   { label: "Runtime weight fingerprint", state: "pending", detail: "loads on first Local message — wait or send a message in /chat first" },
   { label: "Security response headers", state: "pending", detail: "probing /…" },
+  { label: "Web bundle SRI manifest", state: "pending", detail: "probing /.well-known/sri-manifest.json…" },
 ];
 
 export default function SecurityStatusPage() {
@@ -192,6 +193,53 @@ export default function SecurityStatusPage() {
       } catch (err) {
         next[5] = {
           label: "Security response headers",
+          state: "fail",
+          detail: err instanceof Error ? err.message : "probe failed",
+        };
+      }
+
+      // 7. Web bundle SRI manifest — proves the deployed JS hashes
+      //    are observable. A reviewer fetches every file in the
+      //    manifest and compares hashes; this probe just confirms
+      //    the manifest exists and has a non-trivial number of
+      //    entries.
+      try {
+        const res = await fetch("/.well-known/sri-manifest.json", {
+          method: "GET",
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          next[6] = {
+            label: "Web bundle SRI manifest",
+            state: "warn",
+            detail: `manifest unreachable — HTTP ${res.status}`,
+          };
+        } else {
+          const body = (await res.json()) as {
+            version?: number;
+            file_count?: number;
+            manifest_sha256?: string;
+            generated_at?: string;
+            git_commit?: string | null;
+          };
+          if (body.version === 1 && typeof body.file_count === "number") {
+            next[6] = {
+              label: "Web bundle SRI manifest",
+              state: "ok",
+              detail: `${body.file_count} JS/CSS artifacts hashed${body.generated_at ? `, built ${body.generated_at}` : ""}`,
+              evidence: `manifest_sha256 ${body.manifest_sha256}${body.git_commit ? `; commit ${body.git_commit.slice(0, 7)}` : ""}`,
+            };
+          } else {
+            next[6] = {
+              label: "Web bundle SRI manifest",
+              state: "warn",
+              detail: "manifest exists but shape unrecognized",
+            };
+          }
+        }
+      } catch (err) {
+        next[6] = {
+          label: "Web bundle SRI manifest",
           state: "fail",
           detail: err instanceof Error ? err.message : "probe failed",
         };

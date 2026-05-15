@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && node scripts/build-sri-manifest.mjs",
+    "build:no-sri": "next build",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run"

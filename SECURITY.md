@@ -75,9 +75,16 @@ Open [`/security/status`](https://ghola.xyz/security/status) — every
 claim above resolves to a live probe in your own browser. A regression
 on any indicator can be reproduced without running our code locally.
 
-Until Tier 1C ships the SRI manifest, a determined reviewer can also
-verify:
+A determined reviewer can also verify:
 
+- **Web bundle integrity** — fetch
+  `https://ghola.xyz/.well-known/sri-manifest.json`. The manifest
+  lists every JS/CSS artifact served by ghola.xyz with both SHA-256
+  (hex) and SHA-384 (SRI form). Each artifact at its path is hashable
+  by the reviewer (curl + sha256sum) and must match. The top-level
+  `manifest_sha256` is a single value that summarises the whole
+  manifest — pin it in a transparency log or a tagged git commit to
+  detect retroactive changes.
 - **Receipt math** — open `/r/[hash]`, paste any receipt JSON exported
   from chat. The verifier runs entirely client-side and prints the
   full chain.
