@@ -24,12 +24,15 @@ cd "$(dirname "$0")/.."
 
 build_and_capture() {
   local label="$1"
-  echo "[$label] building…"
+  # Diagnostics go to stderr so they don't leak into the captured hash
+  # when the caller uses $(build_and_capture "x"). Only the final echo
+  # — the bare hash — lands on stdout.
+  echo "[$label] building…" >&2
   rm -rf .next public/.well-known/sri-manifest.json
   npm run build > "/tmp/repro-build-${label}.log" 2>&1
   local hash
   hash=$(jq -r '.manifest_sha256' public/.well-known/sri-manifest.json)
-  echo "[$label] manifest_sha256: $hash"
+  echo "[$label] manifest_sha256: $hash" >&2
   echo "$hash"
 }
 
