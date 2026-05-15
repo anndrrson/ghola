@@ -6,7 +6,11 @@ import {
   lookupModel,
   type ModelRegistryResult,
 } from "@/lib/model-registry";
-import { DEFAULT_WEBGPU_MODEL } from "@/lib/webgpu-inference";
+import {
+  DEFAULT_WEBGPU_MODEL,
+  computeLoadedWeightFingerprint,
+  type WeightFingerprint,
+} from "@/lib/webgpu-inference";
 
 interface Props {
   /** The MLC model id currently loaded in the browser (or null when idle). */
@@ -30,17 +34,39 @@ function isSriPinned(modelId: string): boolean {
 // → "verified | pending | mismatch" without ever signing in.
 export function ModelIntegrityBadge({ modelId }: Props) {
   const [result, setResult] = useState<ModelRegistryResult | null>(null);
+  const [weights, setWeights] = useState<WeightFingerprint | null>(null);
 
   useEffect(() => {
     if (!modelId) {
       setResult(null);
+      setWeights(null);
       return;
     }
     let cancelled = false;
     setResult(null);
+    setWeights(null);
     void lookupModel(modelId).then((r) => {
       if (!cancelled) setResult(r);
     });
+    // Weight fingerprint isn't ready until WebLLM finishes its cache
+    // writes. Poll lightly for ~30s after the badge mounts — almost
+    // every first-load completes inside that window on broadband. After
+    // 30s we stop because either the model never loaded (browser
+    // unsupported, no first message yet) or the cache is empty.
+    let attempt = 0;
+    const tick = async () => {
+      if (cancelled) return;
+      const fp = await computeLoadedWeightFingerprint();
+      if (cancelled) return;
+      if (fp) {
+        setWeights(fp);
+        return;
+      }
+      attempt += 1;
+      if (attempt > 15) return;
+      setTimeout(tick, 2000);
+    };
+    void tick();
     return () => {
       cancelled = true;
     };
@@ -81,14 +107,20 @@ export function ModelIntegrityBadge({ modelId }: Props) {
     case "unregistered": {
       // If we ship SRI hashes for this model, the loader is already
       // verified at download time even though the on-chain registry
-      // record doesn't exist yet. Surface that distinction.
+      // record doesn't exist yet. Surface that distinction, and if a
+      // runtime weight fingerprint is available, include the hash
+      // so the user can independently compare across machines or
+      // sessions.
       const pinned = isSriPinned(modelId);
+      const weightLine = weights
+        ? `\n\nWeight fingerprint (sha256 over ${weights.files.length} cached artifacts):\n${weights.fingerprint}`
+        : "";
       return (
         <span
           title={
-            pinned
+            (pinned
               ? "Model loader (config + WASM + tokenizer) verified against pinned SRI hashes. On-chain registry record pending."
-              : "Read the chain at the model's deterministic PDA; no registry record yet (Tier 1A.5 deliverable)"
+              : "Read the chain at the model's deterministic PDA; no registry record yet (Tier 1A.5 deliverable)") + weightLine
           }
           className={
             pinned
@@ -98,6 +130,11 @@ export function ModelIntegrityBadge({ modelId }: Props) {
         >
           <ShieldCheck className="h-3 w-3" />
           {pinned ? "SRI pinned" : "Registry pending"}
+          {weights && (
+            <span className="opacity-70 normal-case tracking-normal">
+              · {weights.fingerprint.slice(0, 8)}
+            </span>
+          )}
         </span>
       );
     }

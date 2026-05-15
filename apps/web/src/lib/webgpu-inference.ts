@@ -229,3 +229,75 @@ export async function unloadWebGPUEngine(): Promise<void> {
     engineSlot = null;
   }
 }
+
+// WebLLM stores model artifacts in three CacheStorage scopes. The first
+// two are also covered by ModelIntegrity SRI, but the model-weights
+// scope ("webllm/model") is not — that's where the multi-GB weight
+// shards live and is the integrity gap the rest of the stack is
+// rebuilding around (on-chain registry, IPFS content-addressing).
+const WEBLLM_CACHE_SCOPES = ["webllm/config", "webllm/wasm", "webllm/model"];
+
+/**
+ * After a model is loaded, enumerate the CacheStorage entries WebLLM
+ * stored to and compute a deterministic SHA-256 fingerprint over
+ * every cached artifact body. The fingerprint is:
+ *
+ *   sha256( newline-join( sorted( "<url>\t<sha256(body)>" ) ) )
+ *
+ * Returns `{ fingerprint, files: [{url, hash, byteLength}] }` so the
+ * integrity badge can render a single hex string in the tooltip and
+ * (when the on-chain registry exists) compare against the published
+ * `weights_hash`.
+ *
+ * Caveats:
+ *   - Only runs in browser contexts (CacheStorage isn't in Node /
+ *     test environments).
+ *   - The fingerprint covers everything WebLLM cached, so re-loading
+ *     a different model invalidates the prior fingerprint as expected.
+ *   - Skips silently and returns null if CacheStorage is unavailable
+ *     (private-mode Safari, some iframe contexts).
+ */
+export interface WeightFingerprint {
+  fingerprint: string;
+  files: Array<{ url: string; sha256: string; byteLength: number }>;
+}
+
+export async function computeLoadedWeightFingerprint(): Promise<WeightFingerprint | null> {
+  if (typeof caches === "undefined" || typeof crypto?.subtle === "undefined") {
+    return null;
+  }
+  const collected: Array<{ url: string; sha256: string; byteLength: number }> =
+    [];
+  for (const scope of WEBLLM_CACHE_SCOPES) {
+    const has = await caches.has(scope);
+    if (!has) continue;
+    const cache = await caches.open(scope);
+    const requests = await cache.keys();
+    for (const req of requests) {
+      const res = await cache.match(req);
+      if (!res) continue;
+      const buf = await res.arrayBuffer();
+      const digest = await crypto.subtle.digest("SHA-256", buf);
+      collected.push({
+        url: req.url,
+        sha256: bytesToHex(new Uint8Array(digest)),
+        byteLength: buf.byteLength,
+      });
+    }
+  }
+  if (collected.length === 0) return null;
+  collected.sort((a, b) => (a.url < b.url ? -1 : a.url > b.url ? 1 : 0));
+  const manifest = collected.map((c) => `${c.url}\t${c.sha256}`).join("\n");
+  const manifestBuf = new TextEncoder().encode(manifest);
+  const fpDigest = await crypto.subtle.digest("SHA-256", manifestBuf);
+  return {
+    fingerprint: bytesToHex(new Uint8Array(fpDigest)),
+    files: collected,
+  };
+}
+
+function bytesToHex(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i++) s += b[i].toString(16).padStart(2, "0");
+  return s;
+}
