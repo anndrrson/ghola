@@ -23,7 +23,14 @@ interface ThumperAuthState {
 }
 
 interface ThumperAuthContextValue extends ThumperAuthState {
-  setAuth: (token: string, user: ThumperUser) => void;
+  /**
+   * Set the authenticated user. The `token` is optional — the newer
+   * Twitter exchange flow uses cookie-backed sessions (no JWT to
+   * store), so callers in that path pass only the user. Legacy
+   * email/password + Google flows still pass the token to keep the
+   * thumper_token localStorage entry in sync.
+   */
+  setAuth: (userOrToken: ThumperUser | string, user?: ThumperUser) => void;
   logout: () => void;
 }
 
@@ -125,10 +132,24 @@ export function ThumperAuthProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(interval);
   }, []);
 
-  const setAuth = useCallback((token: string, user: ThumperUser) => {
-    localStorage.setItem("thumper_token", token);
-    setState({ authenticated: true, loading: false, user });
-  }, []);
+  const setAuth = useCallback(
+    (userOrToken: ThumperUser | string, user?: ThumperUser) => {
+      // Two call shapes:
+      //   setAuth(token, user) — legacy email/password + Google
+      //   setAuth(user)        — cookie-backed Twitter session (no JWT)
+      if (typeof userOrToken === "string") {
+        localStorage.setItem("thumper_token", userOrToken);
+        if (user) setState({ authenticated: true, loading: false, user });
+      } else {
+        setState({
+          authenticated: true,
+          loading: false,
+          user: userOrToken,
+        });
+      }
+    },
+    [],
+  );
 
   const logout = useCallback(() => {
     thumperLogout();

@@ -33,6 +33,8 @@ const NO_INDEX_PATHS = [
   "/api/",
 ];
 
+const HSTS_HEADER_VALUE = "max-age=63072000; includeSubDomains; preload";
+
 function isBlockedBot(ua: string): boolean {
   return BLOCKED_BOT_PATTERNS.some((pattern) => pattern.test(ua));
 }
@@ -41,44 +43,19 @@ function isNoIndexPath(pathname: string): boolean {
   return NO_INDEX_PATHS.some((p) => pathname.startsWith(p));
 }
 
-export function middleware(request: NextRequest) {
-  const ua = request.headers.get("user-agent") ?? "";
-  const { pathname } = request.nextUrl;
-
-  // Block known AI/scraper bots with a redirect to the API docs
-  if (isBlockedBot(ua)) {
-    return new NextResponse(
-      JSON.stringify({
-        error: "Automated access via web scraping is not permitted.",
-        message:
-          "Use the Ghola API or MCP server for programmatic access. See https://ghola.xyz/docs/api",
-      }),
-      {
-        status: 403,
-        headers: {
-          "Content-Type": "application/json",
-          "X-Robots-Tag": "noindex, nofollow",
-        },
-      }
-    );
-  }
-
-  const response = NextResponse.next();
-
-  // Security headers on every response.
-  //
-  // connect-src had to grow to include our own API backends — the marketplace
-  // (orni-models-api), the SAID identity / merchant gateway (ghola-api),
-  // and the assistant cloud (thumper-cloud). Without these the page was
-  // silently blank because every API fetch tripped CSP.
-  response.headers.set(
-    "Content-Security-Policy",
+export function buildContentSecurityPolicy(isDev: boolean): string {
+  return (
     [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com https://apis.google.com",
+      // Keep inline scripts for current Next runtime hydration path, but
+      // only allow eval in development (React debug tooling).
+      `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""} https://accounts.google.com https://apis.google.com`,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob: https:",
       "font-src 'self' data:",
+      "media-src 'self' blob:",
+      "manifest-src 'self'",
+      "worker-src 'self' blob:",
       // API + auth + identity backends
       "connect-src 'self' " +
         "https://accounts.google.com https://apis.google.com " +
@@ -113,18 +90,66 @@ export function middleware(request: NextRequest) {
         // ship a `https://*.ohttp.cloudflare.com` wildcard to production.
         "https://ohttp.cloudflare.com",
       "frame-src https://accounts.google.com",
+      "frame-ancestors 'none'",
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",
+      "upgrade-insecure-requests",
+      "block-all-mixed-content",
     ].join("; ") + ";"
   );
-  response.headers.set("X-Content-Type-Options", "nosniff");
-  response.headers.set("X-Frame-Options", "DENY");
-  response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  response.headers.set(
+}
+
+export function applySecurityHeaders(
+  headers: Headers,
+  opts: { isDev: boolean; isHttps: boolean },
+): void {
+  headers.set("Content-Security-Policy", buildContentSecurityPolicy(opts.isDev));
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("X-Frame-Options", "DENY");
+  headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  headers.set("Cross-Origin-Opener-Policy", "same-origin");
+  headers.set("Cross-Origin-Resource-Policy", "same-origin");
+  headers.set("X-DNS-Prefetch-Control", "off");
+  headers.set("X-Permitted-Cross-Domain-Policies", "none");
+  headers.set("Origin-Agent-Cluster", "?1");
+  headers.set(
     "Permissions-Policy",
-    "camera=(), microphone=(), geolocation=()"
+    "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
   );
+  if (opts.isHttps) {
+    headers.set("Strict-Transport-Security", HSTS_HEADER_VALUE);
+  }
+}
+
+export function proxy(request: NextRequest) {
+  const ua = request.headers.get("user-agent") ?? "";
+  const { pathname } = request.nextUrl;
+  const isDev = process.env.NODE_ENV !== "production";
+  const isHttps = request.nextUrl.protocol === "https:";
+
+  // Block known AI/scraper bots with a redirect to the API docs
+  if (isBlockedBot(ua)) {
+    const blockedResponse = new NextResponse(
+      JSON.stringify({
+        error: "Automated access via web scraping is not permitted.",
+        message:
+          "Use the Ghola API or MCP server for programmatic access. See https://ghola.xyz/docs/api",
+      }),
+      {
+        status: 403,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Robots-Tag": "noindex, nofollow",
+        },
+      }
+    );
+    applySecurityHeaders(blockedResponse.headers, { isDev, isHttps });
+    return blockedResponse;
+  }
+
+  const response = NextResponse.next();
+  applySecurityHeaders(response.headers, { isDev, isHttps });
 
   // Sensitive pages: noindex + nofollow
   if (isNoIndexPath(pathname)) {
@@ -138,6 +163,15 @@ export function middleware(request: NextRequest) {
       "X-Ghola-Api-Docs",
       "https://ghola.xyz/docs/api"
     );
+    // API responses can carry credentials and private payloads.
+    response.headers.set("Cache-Control", "no-store, max-age=0");
+    response.headers.set("Pragma", "no-cache");
+  }
+
+  // Harden auth/token helper endpoints against intermediary caching.
+  if (pathname.startsWith("/api/auth/") || pathname.startsWith("/api/turnkey/")) {
+    response.headers.set("Cache-Control", "no-store, max-age=0");
+    response.headers.set("Pragma", "no-cache");
   }
 
   return response;

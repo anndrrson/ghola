@@ -286,6 +286,22 @@ export function handleTwitterToken(token: string): ThumperAuthResponse {
   };
 }
 
+/**
+ * Newer Twitter exchange flow: the server-side `/api/auth/twitter/exchange`
+ * endpoint sets the session cookie itself, then returns the user object
+ * directly. We don't see (or store) a JWT here — auth is cookie-backed.
+ * The chat page calls this to wrap the response in the same shape every
+ * other auth path produces, so the rest of the app doesn't branch on
+ * which sign-in flow was used.
+ */
+export function handleTwitterSession(user: {
+  id: string;
+  email: string;
+  name?: string;
+}): { user: { id: string; email: string; name?: string } } {
+  return { user };
+}
+
 // Google Sign-In
 
 export async function thumperGoogleSignIn(

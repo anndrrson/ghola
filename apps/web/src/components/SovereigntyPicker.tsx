@@ -7,6 +7,13 @@ import { SOVEREIGNTY_MODES } from "@/lib/sovereignty";
 interface SovereigntyPickerProps {
   value: SovereigntyMode;
   onChange: (mode: SovereigntyMode) => void;
+  /**
+   * When false, the Private option is disabled and shows the reason
+   * as a title tooltip. The chat page polls /ready/private to track
+   * this and forwards it down — see ChatHeader's callsite.
+   */
+  privateAvailable?: boolean;
+  privateUnavailableReason?: string | null;
 }
 
 // Three-segment pill control. Lives in the chat header so the choice is
@@ -24,7 +31,12 @@ const MODE_ICONS = {
   open: ShieldOff,
 } as const;
 
-export function SovereigntyPicker({ value, onChange }: SovereigntyPickerProps) {
+export function SovereigntyPicker({
+  value,
+  onChange,
+  privateAvailable = true,
+  privateUnavailableReason = null,
+}: SovereigntyPickerProps) {
   return (
     <div
       role="radiogroup"
@@ -34,6 +46,10 @@ export function SovereigntyPicker({ value, onChange }: SovereigntyPickerProps) {
       {SOVEREIGNTY_MODES.map((m) => {
         const selected = m.id === value;
         const Icon = MODE_ICONS[m.id];
+        const disabled = m.id === "private" && !privateAvailable;
+        const titleText = disabled
+          ? (privateUnavailableReason ?? `${m.blurb} (unavailable)`)
+          : m.blurb;
         return (
           <button
             key={m.id}
@@ -41,12 +57,18 @@ export function SovereigntyPicker({ value, onChange }: SovereigntyPickerProps) {
             role="radio"
             aria-checked={selected}
             aria-label={m.label}
-            onClick={() => onChange(m.id)}
-            title={m.blurb}
-            className={`inline-flex items-center gap-1 rounded-full px-2 sm:px-3 py-1 text-xs font-medium transition-colors cursor-pointer ${
-              selected
-                ? "bg-[#3da8ff]/15 text-[#3da8ff]"
-                : "text-[#8b95a8] hover:text-[#eef1f8]"
+            aria-disabled={disabled || undefined}
+            onClick={() => {
+              if (disabled) return;
+              onChange(m.id);
+            }}
+            title={titleText}
+            className={`inline-flex items-center gap-1 rounded-full px-2 sm:px-3 py-1 text-xs font-medium transition-colors ${
+              disabled
+                ? "text-[#3a4558] cursor-not-allowed"
+                : selected
+                  ? "bg-[#3da8ff]/15 text-[#3da8ff] cursor-pointer"
+                  : "text-[#8b95a8] hover:text-[#eef1f8] cursor-pointer"
             }`}
           >
             <Icon className="h-3 w-3" />
