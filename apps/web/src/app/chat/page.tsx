@@ -285,6 +285,16 @@ export default function ChatPage() {
       // eslint-disable-next-line no-console
       console.info(`[sovereignty:${route.mode}] ${route.caveat}`);
     }
+    // Provider plurality signal — the Yahya anonymity-set property:
+    // a Private send lands on one provider out of `poolSize`, chosen
+    // uniformly at random. Surface it so an observer of the privacy
+    // event log can audit the lower bound on the anonymity set.
+    if (route.transport === "relay-sealed" && route.poolSize) {
+      emitPrivacyEvent("attested_pool", {
+        pool_size: route.poolSize,
+        selected_enclave_key_id: route.enclave?.enclave_key_id ?? null,
+      });
+    }
 
     if (route.transport === "private-unavailable") {
       const reason = route.caveat ?? "Private mode unavailable.";

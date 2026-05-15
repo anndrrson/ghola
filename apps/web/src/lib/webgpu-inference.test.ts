@@ -16,7 +16,14 @@ function installMockCaches(
         match: async (req: Request) => {
           const hit = entries.find((e) => e.url === req.url);
           if (!hit) return undefined;
-          return new Response(hit.body);
+          // Slice the buffer so Response gets a fresh ArrayBuffer rather
+          // than a typed-array view (TS5 lib types tightened BodyInit).
+          // Cast pacifies the ArrayBuffer | SharedArrayBuffer union from
+          // the .buffer accessor; our typed array is always ArrayBuffer-
+          // backed in this test sandbox.
+          return new Response(
+            hit.body.buffer.slice(0, hit.body.byteLength) as ArrayBuffer,
+          );
         },
       },
     ]),

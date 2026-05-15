@@ -123,6 +123,13 @@ export interface ModeRoute {
   // this to seal the request to the enclave's X25519 pub and to know
   // which key id to address the relay's sealed-inference handler.
   enclave?: AttestedEnclaveInfo;
+  // Total attested providers visible at routing time. Surfaced in the
+  // chat UI as "1 of N providers attested" — this is the Yahya
+  // anonymity-set signal: the bigger the pool, the harder it is for
+  // any single provider operator to predict which user lands on them.
+  // Random selection across the pool means the operator can't even
+  // observe selection bias.
+  poolSize?: number;
   // Honest caveat to surface in the UI / receipt body when a route
   // cannot satisfy the requested mode as configured.
   caveat?: string;
@@ -171,14 +178,29 @@ export async function selectRoute(
 ): Promise<ModeRoute> {
   switch (mode) {
     case "private": {
-      const enclave = await fetchAttestedEnclave(modelId);
-      if (enclave) {
-        return { mode, transport: "relay-sealed", enclave };
+      const pool = await fetchAttestedPool(modelId);
+      if (pool.length > 0) {
+        // Random selection across the attested pool. The Yahya
+        // anonymity-set property: any single provider operator can't
+        // predict which user sessions land on them, and the pool size
+        // is the lower bound on the anonymity set. Output quorum
+        // (t-of-k matching responses) is NOT done here — temperature
+        // > 0 makes that unreliable, and the attestation-key diversity
+        // is the meaningful trust property today. Full quorum work
+        // lives in Tier 2F.
+        const enclave = pool[Math.floor(Math.random() * pool.length)];
+        return {
+          mode,
+          transport: "relay-sealed",
+          enclave,
+          poolSize: pool.length,
+        };
       }
       const availability = await fetchPrivateAvailability();
       return {
         mode,
         transport: "private-unavailable",
+        poolSize: 0,
         reasonCodes: availability.reasonCodes,
         caveat:
           availability.reason ??
@@ -205,25 +227,22 @@ export async function selectRoute(
   }
 }
 
-async function fetchAttestedEnclave(
+async function fetchAttestedPool(
   modelId?: string,
-): Promise<AttestedEnclaveInfo | null> {
+): Promise<AttestedEnclaveInfo[]> {
   try {
     const base = relayBase();
     const url = new URL("/providers/attested", base);
     if (modelId) url.searchParams.set("model", modelId);
     const res = await fetch(url.toString(), { method: "GET" });
-    if (!res.ok) return null;
+    if (!res.ok) return [];
     const list = (await res.json()) as AttestedEnclaveInfo[];
-    if (!Array.isArray(list) || list.length === 0) return null;
-    // First-wins until latency-aware selection lands. The relay
-    // already prefers fresher attestations on its side, so this is
-    // good enough for v2.
-    return list[0] ?? null;
+    if (!Array.isArray(list)) return [];
+    return list;
   } catch {
     // Network error, CORS reject, JSON parse failure — all treated as
     // "no enclave available" and the caller fails closed for Private.
-    return null;
+    return [];
   }
 }
 
