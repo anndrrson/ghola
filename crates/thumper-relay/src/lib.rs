@@ -24,9 +24,21 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     let bind_addr = config.bind_addr;
     let tls_cert_path = config.tls_cert_path.clone();
     let tls_key_path = config.tls_key_path.clone();
+    let preflight_failures = config.private_preflight_failures();
 
     if config.dev_mode {
         tracing::warn!("DEV MODE enabled — signature verification is DISABLED");
+    }
+    if !preflight_failures.is_empty() {
+        tracing::error!(
+            reason_codes = ?preflight_failures,
+            "private-mode preflight failed; refusing to start relay in production mode"
+        );
+        return Err(format!(
+            "private-mode preflight failed: {}",
+            preflight_failures.join(",")
+        )
+        .into());
     }
     tracing::info!(%bind_addr, dev_mode = config.dev_mode, "starting thumper relay server");
 
@@ -92,6 +104,7 @@ pub async fn run_relay() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 
     let mut app = Router::new()
         .route("/health", get(handlers::health))
+        .route("/ready/private", get(handlers::ready_private))
         .route("/metrics", get(handlers::metrics_handler))
         .route("/ws", get(handlers::ws_upgrade))
         .route("/inference", post(handlers::dispatch_inference))

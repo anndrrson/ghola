@@ -281,6 +281,33 @@ fn test_config() -> RelayConfig {
     }
 }
 
+#[test]
+fn private_preflight_requires_private_prerequisites_in_production() {
+    let mut cfg = test_config();
+    cfg.dev_mode = false;
+    cfg.ohttp_key_secret_hex = None;
+    cfg.did_set_url = None;
+    cfg.did_set_api_key = None;
+
+    let reasons = cfg.private_preflight_failures();
+    assert!(reasons.contains(&"ohttp_key_missing".to_string()));
+    assert!(reasons.contains(&"did_set_url_missing".to_string()));
+    assert!(reasons.contains(&"did_set_api_key_missing".to_string()));
+}
+
+#[test]
+fn private_preflight_accepts_valid_production_config() {
+    let mut cfg = test_config();
+    cfg.dev_mode = false;
+    cfg.ohttp_key_secret_hex =
+        Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string());
+    cfg.did_set_url = Some("https://cloud.example/v1/did-set".to_string());
+    cfg.did_set_api_key = Some("relay-secret".to_string());
+
+    let reasons = cfg.private_preflight_failures();
+    assert!(reasons.is_empty(), "unexpected preflight failures: {reasons:?}");
+}
+
 fn mock_attest_payload() -> ProviderAttestPayload {
     // Two distinct 32-byte hex pubkeys.
     let x25519_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
@@ -551,4 +578,65 @@ async fn get_attestation_returns_404_on_unknown_hash() {
         .await
         .into_response();
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ready_private_returns_503_when_private_stack_not_ready() {
+    let state = AppState::new(test_config());
+    use crate::handlers::ready_private;
+    use axum::extract::State;
+    use axum::response::IntoResponse;
+    let response = ready_private(State(state)).await.into_response();
+    assert_eq!(response.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    let reasons = json["reason_codes"].as_array().expect("reason_codes array");
+    let reasons: Vec<&str> = reasons.iter().filter_map(|v| v.as_str()).collect();
+    assert!(reasons.contains(&"ohttp_not_ready"));
+    assert!(reasons.contains(&"did_set_not_bootstrapped"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ready_private_returns_200_when_private_stack_ready() {
+    let mut cfg = test_config();
+    cfg.ohttp_key_secret_hex =
+        Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string());
+    let did_set = crate::did_set::DidSet::new();
+    did_set.insert_for_test("did:key:ztest".to_string());
+    let state = AppState::new_with_did_set(cfg, did_set);
+
+    use crate::handlers::ready_private;
+    use axum::extract::State;
+    use axum::response::IntoResponse;
+    let response = ready_private(State(state)).await.into_response();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(json["private_ready"], true);
+    assert_eq!(json["ohttp_enabled"], true);
+    assert_eq!(json["did_set_bootstrapped"], true);
+    assert_eq!(json["did_set_fresh"], true);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn health_includes_private_readiness_fields() {
+    let state = AppState::new(test_config());
+    use crate::handlers::health;
+    use axum::extract::State;
+    use axum::response::IntoResponse;
+    let response = health(State(state)).await.into_response();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    assert!(json.get("ohttp_enabled").is_some());
+    assert!(json.get("did_set_bootstrapped").is_some());
+    assert!(json.get("did_set_fresh").is_some());
+    assert!(json.get("private_ready").is_some());
+    assert!(json.get("private_reason_codes").is_some());
 }

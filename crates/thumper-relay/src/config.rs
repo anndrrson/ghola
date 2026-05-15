@@ -107,4 +107,43 @@ impl RelayConfig {
         let arr: [u8; 32] = bytes.try_into().ok()?;
         Some(OhttpKeypair::from_secret_bytes(self.ohttp_key_id, arr))
     }
+
+    /// Return machine-readable reason codes for production preflight failures.
+    ///
+    /// In production (`dev_mode = false`) sealed private mode requires:
+    /// - a valid OHTTP gateway secret
+    /// - did-set URL configured
+    /// - relay API key configured
+    pub fn private_preflight_failures(&self) -> Vec<String> {
+        let mut reasons = Vec::new();
+        if self.dev_mode {
+            return reasons;
+        }
+
+        match self.ohttp_key_secret_hex.as_ref().map(|s| s.trim()) {
+            None | Some("") => reasons.push("ohttp_key_missing".to_string()),
+            Some(_) if self.ohttp_keypair().is_none() => {
+                reasons.push("ohttp_key_invalid".to_string())
+            }
+            _ => {}
+        }
+
+        if self
+            .did_set_url
+            .as_ref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true)
+        {
+            reasons.push("did_set_url_missing".to_string());
+        }
+        if self
+            .did_set_api_key
+            .as_ref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true)
+        {
+            reasons.push("did_set_api_key_missing".to_string());
+        }
+        reasons
+    }
 }

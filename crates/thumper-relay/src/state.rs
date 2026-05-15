@@ -118,6 +118,15 @@ pub struct GpuProviderEntry {
     pub last_activity: Arc<AtomicU64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PrivateReadiness {
+    pub ohttp_enabled: bool,
+    pub did_set_bootstrapped: bool,
+    pub did_set_fresh: bool,
+    pub private_ready: bool,
+    pub reason_codes: Vec<String>,
+}
+
 fn now_epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -184,6 +193,35 @@ impl AppState {
 
     pub fn metrics(&self) -> &RelayMetrics {
         &self.inner.metrics
+    }
+
+    /// Compute readiness of the sealed private path.
+    pub fn private_readiness(&self) -> PrivateReadiness {
+        let ohttp_enabled = self.config().ohttp_keypair().is_some();
+        let did_set_bootstrapped = self.did_set().is_bootstrapped();
+        let now_unix = chrono::Utc::now().timestamp();
+        let did_set_fresh = self
+            .did_set()
+            .is_fresh(now_unix, self.config().did_set_max_staleness_secs);
+        let private_ready = ohttp_enabled && did_set_bootstrapped && did_set_fresh;
+
+        let mut reason_codes = Vec::new();
+        if !ohttp_enabled {
+            reason_codes.push("ohttp_not_ready".to_string());
+        }
+        if !did_set_bootstrapped {
+            reason_codes.push("did_set_not_bootstrapped".to_string());
+        } else if !did_set_fresh {
+            reason_codes.push("did_set_stale".to_string());
+        }
+
+        PrivateReadiness {
+            ohttp_enabled,
+            did_set_bootstrapped,
+            did_set_fresh,
+            private_ready,
+            reason_codes,
+        }
     }
 
     /// Check rate limit for a specific device. Returns true if allowed.
