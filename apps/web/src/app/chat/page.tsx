@@ -583,8 +583,23 @@ export default function ChatPage() {
         const sealed = await chatVault.sealUserMessage(currentSessionId, text);
         envelopeBlobB64 = sealed.envelopeB64;
       } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn("E2E sealing failed; falling back to plaintext:", err);
+        // Fail-closed: a signed-in user with a chatVault has opted into
+        // E2E sealing. If sealing fails we must NOT transparently send
+        // plaintext — that's a fail-open privacy regression an a16z
+        // security review would flag instantly. Surface the error and
+        // abort the send so the user sees what happened.
+        const reason = err instanceof Error ? err.message : "unknown error";
+        emitPrivacyEvent("e2e_seal_failed_fail_closed", { reason });
+        updateSession(currentSessionId, (s) => {
+          const msgs = [...s.messages];
+          msgs[msgs.length - 1] = {
+            ...msgs[msgs.length - 1],
+            content: `Send aborted: end-to-end sealing failed (${reason}). The message was not sent. Try again, or sign out + sign back in to refresh the vault.`,
+          };
+          return { ...s, messages: msgs };
+        });
+        setIsStreaming(false);
+        return;
       }
     }
 

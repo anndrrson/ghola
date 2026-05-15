@@ -794,7 +794,19 @@ fn b64_decode(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
     base64::engine::general_purpose::STANDARD.decode(s)
 }
 
+// Tier 1E: the unattested mock path is compile-time-denied in release
+// builds. Production ships `cargo build --release` so `debug_assertions`
+// is false and the env var becomes a no-op, closing the "operator
+// accidentally sets the flag in prod" failure mode. Debug builds still
+// honour `THUMPER_ALLOW_UNATTESTED=1` so local dev + the test suite
+// keep working.
+//
+// Security review item from the a16z peak-security plan: attestation
+// cannot be bypassed by configuration.
 fn allow_unattested() -> bool {
+    if !cfg!(debug_assertions) {
+        return false;
+    }
     std::env::var("THUMPER_ALLOW_UNATTESTED").as_deref() == Ok("1")
 }
 
