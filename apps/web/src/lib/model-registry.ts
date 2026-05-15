@@ -57,12 +57,24 @@ export type ModelRegistryStatus =
 export interface ModelRegistryResult {
   status: ModelRegistryStatus;
   modelId: string;
-  /** Hex-encoded SHA-256 of the model weights, when on-chain. */
+  /** Hex-encoded SHA-256 of the model weights manifest, when on-chain. */
   onChainHash?: string;
-  /** Creator DID, when on-chain. */
-  creatorDid?: string;
-  /** IPFS CID for the weights, when on-chain. */
+  /** Creator Solana pubkey (base58), when on-chain. */
+  creator?: string;
+  /** IPFS CID for the weights bundle, when on-chain. */
   ipfsCid?: string;
+  /** SPDX license identifier, when on-chain. */
+  licenseSpdx?: string;
+  /** Per-call price in micro-USDC, when on-chain. */
+  priceMicroUsdc?: number;
+  /** Hex-encoded SHA-256 of the WASM model_lib, when on-chain. */
+  modelLibHash?: string;
+  /** Hex-encoded SHA-256 of the model config, when on-chain. */
+  configHash?: string;
+  /** Hex-encoded SHA-256 of the tokenizer, when on-chain. */
+  tokenizerHash?: string;
+  /** Monotonic version of the record; bumps on every update. */
+  version?: number;
   /** Solana slot the registry entry was read at. */
   slot?: number;
   /** Set on unreachable; human-readable. */
@@ -113,14 +125,46 @@ export async function lookupModel(
     if (!info) {
       return { status: "unregistered", modelId };
     }
-    // Once the program ships, decode info.data here against the
-    // registry account schema (Anchor IDL) and return verified /
-    // mismatch based on the on-chain hash. Until then, the presence
-    // of any account at the deterministic PDA is treated as a stub
-    // hit — surface it as unregistered + the slot so the operator
-    // can see the read fired.
     const slot = await conn.getSlot("confirmed");
-    return { status: "unregistered", modelId, slot };
+    try {
+      const decoded = decodeModelRecord(info.data);
+      // Sanity: the on-chain model_id must match what we queried for.
+      // Mismatch means a hash collision (statistically impossible) or
+      // a misconfigured registry entry — either way, refuse to trust.
+      if (decoded.modelId !== modelId) {
+        return {
+          status: "mismatch",
+          modelId,
+          slot,
+          error: `on-chain model_id "${decoded.modelId}" does not match queried "${modelId}"`,
+        };
+      }
+      return {
+        status: "verified",
+        modelId,
+        slot,
+        creator: decoded.creator,
+        onChainHash: decoded.weightsHash,
+        modelLibHash: decoded.modelLibHash,
+        configHash: decoded.configHash,
+        tokenizerHash: decoded.tokenizerHash,
+        ipfsCid: decoded.ipfsCid,
+        licenseSpdx: decoded.licenseSpdx,
+        priceMicroUsdc: decoded.priceMicroUsdc,
+        version: decoded.version,
+      };
+    } catch (err) {
+      // Decoding failure means the account exists at the right PDA but
+      // doesn't match the schema this client knows — treat as a stub
+      // hit so the badge stays honest.
+      return {
+        status: "unregistered",
+        modelId,
+        slot,
+        error:
+          err instanceof Error ? `decode failed: ${err.message}` : undefined,
+      };
+    }
   } catch (err) {
     return {
       status: "unreachable",
@@ -128,4 +172,82 @@ export async function lookupModel(
       error: err instanceof Error ? err.message : "rpc error",
     };
   }
+}
+
+// Decode the on-chain ModelRecord account body. Layout mirrors
+// programs/ghola-model-registry/src/lib.rs::ModelRecord. The first
+// 8 bytes are Anchor's account-discriminator and are skipped.
+function decodeModelRecord(data: Uint8Array): {
+  creator: string;
+  weightsHash: string;
+  modelLibHash: string;
+  configHash: string;
+  tokenizerHash: string;
+  priceMicroUsdc: number;
+  createdAt: number;
+  updatedAt: number;
+  version: number;
+  modelId: string;
+  ipfsCid: string;
+  licenseSpdx: string;
+} {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let off = 8; // skip Anchor discriminator
+
+  const creatorBytes = data.slice(off, off + 32);
+  off += 32;
+  const weightsHash = bytesToHexLocal(data.slice(off, off + 32));
+  off += 32;
+  const modelLibHash = bytesToHexLocal(data.slice(off, off + 32));
+  off += 32;
+  const configHash = bytesToHexLocal(data.slice(off, off + 32));
+  off += 32;
+  const tokenizerHash = bytesToHexLocal(data.slice(off, off + 32));
+  off += 32;
+
+  const priceMicroUsdc = Number(view.getBigUint64(off, true));
+  off += 8;
+  const createdAt = Number(view.getBigInt64(off, true));
+  off += 8;
+  const updatedAt = Number(view.getBigInt64(off, true));
+  off += 8;
+  const version = view.getUint16(off, true);
+  off += 2;
+
+  const modelId = readBorshString(data, view, off);
+  off = modelId.next;
+  const ipfsCid = readBorshString(data, view, off);
+  off = ipfsCid.next;
+  const licenseSpdx = readBorshString(data, view, off);
+
+  return {
+    creator: new PublicKey(creatorBytes).toBase58(),
+    weightsHash,
+    modelLibHash,
+    configHash,
+    tokenizerHash,
+    priceMicroUsdc,
+    createdAt,
+    updatedAt,
+    version,
+    modelId: modelId.value,
+    ipfsCid: ipfsCid.value,
+    licenseSpdx: licenseSpdx.value,
+  };
+}
+
+function readBorshString(
+  data: Uint8Array,
+  view: DataView,
+  offset: number,
+): { value: string; next: number } {
+  const len = view.getUint32(offset, true);
+  const value = new TextDecoder().decode(data.slice(offset + 4, offset + 4 + len));
+  return { value, next: offset + 4 + len };
+}
+
+function bytesToHexLocal(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i++) s += b[i].toString(16).padStart(2, "0");
+  return s;
 }

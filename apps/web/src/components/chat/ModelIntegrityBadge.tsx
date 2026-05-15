@@ -84,16 +84,36 @@ export function ModelIntegrityBadge({ modelId }: Props) {
   }
 
   switch (result.status) {
-    case "verified":
+    case "verified": {
+      const lines = [
+        `Verified against on-chain registry${result.slot ? ` (slot ${result.slot})` : ""}.`,
+        result.creator ? `Creator: ${result.creator}` : null,
+        result.version ? `Record version: ${result.version}` : null,
+        result.modelLibHash
+          ? `Model_lib hash (on-chain): ${result.modelLibHash}`
+          : null,
+        result.configHash
+          ? `Config hash (on-chain):    ${result.configHash}`
+          : null,
+        result.tokenizerHash
+          ? `Tokenizer hash (on-chain): ${result.tokenizerHash}`
+          : null,
+        weights
+          ? `Local runtime fingerprint: ${weights.fingerprint}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
       return (
         <span
-          title={`Verified against on-chain registry${result.slot ? ` (slot ${result.slot})` : ""}`}
+          title={lines}
           className="hidden md:inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-400/5 px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-emerald-300"
         >
           <ShieldCheck className="h-3 w-3" />
           Verified
         </span>
       );
+    }
     case "mismatch":
       return (
         <span
