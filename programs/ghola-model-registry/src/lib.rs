@@ -32,7 +32,7 @@
 
 use anchor_lang::prelude::*;
 
-declare_id!("MdLRegMa1iYxBg5gKhCJVTDfXkqHpQF6PoG3kRYW6S1");
+declare_id!("7hZ9oxHyFRpKHtH3jsa8NeH4HYGrPT7ZttDFtUX9naNS");
 
 #[program]
 pub mod ghola_model_registry {
@@ -42,58 +42,66 @@ pub mod ghola_model_registry {
     /// and is the only key that can update the entry afterwards.
     /// Fails if the entry already exists (Anchor's `init` does the
     /// uniqueness enforcement via the PDA seed collision).
+    #[allow(clippy::too_many_arguments)]
     pub fn register_model(
         ctx: Context<RegisterModel>,
-        args: RegisterModelArgs,
+        // sha256(model_id) — used directly as the PDA seed. The client
+        // computes this; the program asserts that the receipted
+        // model_id below hashes to the same value, so the seed is
+        // canonically bound to the model id without the IDL-builder
+        // limitation of seeds-on-String.
+        model_id_hash: [u8; 32],
+        model_id: String,
+        weights_hash: [u8; 32],
+        model_lib_hash: [u8; 32],
+        config_hash: [u8; 32],
+        tokenizer_hash: [u8; 32],
+        ipfs_cid: String,
+        license_spdx: String,
+        price_micro_usdc: u64,
     ) -> Result<()> {
         require!(
-            args.model_id.len() <= MAX_MODEL_ID_LEN,
+            model_id.len() <= MAX_MODEL_ID_LEN,
             ModelRegistryError::ModelIdTooLong,
         );
         require!(
-            args.ipfs_cid.len() <= MAX_IPFS_CID_LEN,
+            ipfs_cid.len() <= MAX_IPFS_CID_LEN,
             ModelRegistryError::IpfsCidTooLong,
         );
         require!(
-            args.license_spdx.len() <= MAX_LICENSE_LEN,
+            license_spdx.len() <= MAX_LICENSE_LEN,
             ModelRegistryError::LicenseTooLong,
         );
 
-        // PDA seed integrity check — the seed bytes the client used to
-        // resolve this PDA must equal sha256(model_id). If a caller
-        // tries to register a record under the wrong PDA the assertion
-        // fails before any state writes.
-        let expected_seed_hash = anchor_lang::solana_program::hash::hash(args.model_id.as_bytes());
+        // Bind the seed hash to the receipted model_id. Stops a
+        // caller from registering record at PDA(sha256("foo")) but
+        // storing model_id="bar" in the account body.
+        let actual_hash = anchor_lang::solana_program::hash::hash(model_id.as_bytes());
         require!(
-            ctx.accounts.model.key()
-                == Pubkey::find_program_address(
-                    &[SEED_PREFIX, expected_seed_hash.as_ref()],
-                    ctx.program_id,
-                )
-                .0,
-            ModelRegistryError::PdaMismatch,
+            actual_hash.to_bytes() == model_id_hash,
+            ModelRegistryError::ModelIdHashMismatch,
         );
 
         let now = Clock::get()?.unix_timestamp;
         let model = &mut ctx.accounts.model;
         model.creator = ctx.accounts.creator.key();
-        model.weights_hash = args.weights_hash;
-        model.model_lib_hash = args.model_lib_hash;
-        model.config_hash = args.config_hash;
-        model.tokenizer_hash = args.tokenizer_hash;
-        model.ipfs_cid = args.ipfs_cid.clone();
-        model.license_spdx = args.license_spdx.clone();
-        model.price_micro_usdc = args.price_micro_usdc;
+        model.weights_hash = weights_hash;
+        model.model_lib_hash = model_lib_hash;
+        model.config_hash = config_hash;
+        model.tokenizer_hash = tokenizer_hash;
+        model.ipfs_cid = ipfs_cid.clone();
+        model.license_spdx = license_spdx;
+        model.price_micro_usdc = price_micro_usdc;
         model.version = 1;
-        model.model_id = args.model_id.clone();
+        model.model_id = model_id.clone();
         model.created_at = now;
         model.updated_at = now;
 
         emit!(ModelRegistered {
-            model_id: args.model_id,
+            model_id,
             creator: ctx.accounts.creator.key(),
-            weights_hash: args.weights_hash,
-            ipfs_cid: args.ipfs_cid,
+            weights_hash,
+            ipfs_cid,
         });
         Ok(())
     }
@@ -102,26 +110,31 @@ pub mod ghola_model_registry {
     /// terms, pricing, new IPFS pin location). Hash fields are
     /// **immutable** — content-addressed records must not allow the
     /// creator to retroactively swap weights under the same model id.
-    pub fn update_model(ctx: Context<UpdateModel>, args: UpdateModelArgs) -> Result<()> {
+    pub fn update_model(
+        ctx: Context<UpdateModel>,
+        ipfs_cid: String,
+        license_spdx: String,
+        price_micro_usdc: u64,
+    ) -> Result<()> {
         require!(
-            args.ipfs_cid.len() <= MAX_IPFS_CID_LEN,
+            ipfs_cid.len() <= MAX_IPFS_CID_LEN,
             ModelRegistryError::IpfsCidTooLong,
         );
         require!(
-            args.license_spdx.len() <= MAX_LICENSE_LEN,
+            license_spdx.len() <= MAX_LICENSE_LEN,
             ModelRegistryError::LicenseTooLong,
         );
         let model = &mut ctx.accounts.model;
-        model.ipfs_cid = args.ipfs_cid.clone();
-        model.license_spdx = args.license_spdx.clone();
-        model.price_micro_usdc = args.price_micro_usdc;
+        model.ipfs_cid = ipfs_cid.clone();
+        model.license_spdx = license_spdx;
+        model.price_micro_usdc = price_micro_usdc;
         model.version = model.version.checked_add(1).unwrap_or(u16::MAX);
         model.updated_at = Clock::get()?.unix_timestamp;
         emit!(ModelUpdated {
             model_id: model.model_id.clone(),
             version: model.version,
             price_micro_usdc: model.price_micro_usdc,
-            ipfs_cid: args.ipfs_cid,
+            ipfs_cid,
         });
         Ok(())
     }
@@ -142,19 +155,13 @@ pub const MAX_LICENSE_LEN: usize = 32;
 // ---------------------------------------------------------------------------
 
 #[derive(Accounts)]
-#[instruction(args: RegisterModelArgs)]
+#[instruction(model_id_hash: [u8; 32])]
 pub struct RegisterModel<'info> {
     #[account(
         init,
         payer = creator,
         space = 8 + ModelRecord::MAX_SIZE,
-        seeds = [
-            SEED_PREFIX,
-            // Use a SHA-256 of the model_id as the seed because raw
-            // model ids can exceed Solana's 32-byte per-seed limit
-            // (e.g. "Llama-3.2-1B-Instruct-q4f16_1-MLC" is 33 bytes).
-            anchor_lang::solana_program::hash::hash(args.model_id.as_bytes()).as_ref(),
-        ],
+        seeds = [SEED_PREFIX, model_id_hash.as_ref()],
         bump,
     )]
     pub model: Account<'info, ModelRecord>,
@@ -165,13 +172,15 @@ pub struct RegisterModel<'info> {
 
 #[derive(Accounts)]
 pub struct UpdateModel<'info> {
+    // Re-opening an existing account — Anchor verifies the
+    // discriminator + (via `has_one`) the creator. The seed assertion
+    // is omitted here because the account's existence at the resolved
+    // PDA already proves it was registered via the seed-checked init
+    // path above; recomputing the seed would require passing model_id
+    // again and tripping the IDL builder which can't introspect
+    // String fields of a stored account from within a seeds clause.
     #[account(
         mut,
-        seeds = [
-            SEED_PREFIX,
-            anchor_lang::solana_program::hash::hash(model.model_id.as_bytes()).as_ref(),
-        ],
-        bump,
         has_one = creator @ ModelRegistryError::NotCreator,
     )]
     pub model: Account<'info, ModelRecord>,
@@ -218,29 +227,6 @@ impl ModelRecord {
 }
 
 // ---------------------------------------------------------------------------
-// Instruction args
-// ---------------------------------------------------------------------------
-
-#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
-pub struct RegisterModelArgs {
-    pub model_id: String,
-    pub weights_hash: [u8; 32],
-    pub model_lib_hash: [u8; 32],
-    pub config_hash: [u8; 32],
-    pub tokenizer_hash: [u8; 32],
-    pub ipfs_cid: String,
-    pub license_spdx: String,
-    pub price_micro_usdc: u64,
-}
-
-#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
-pub struct UpdateModelArgs {
-    pub ipfs_cid: String,
-    pub license_spdx: String,
-    pub price_micro_usdc: u64,
-}
-
-// ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 
@@ -272,8 +258,8 @@ pub enum ModelRegistryError {
     IpfsCidTooLong,
     #[msg("license_spdx exceeds maximum length")]
     LicenseTooLong,
-    #[msg("derived PDA does not match the provided model account")]
-    PdaMismatch,
+    #[msg("model_id_hash does not equal sha256(model_id)")]
+    ModelIdHashMismatch,
     #[msg("signer is not the creator of this model record")]
     NotCreator,
 }

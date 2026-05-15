@@ -16,29 +16,28 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import { sha256 } from "@noble/hashes/sha256";
 
-// Program id of the on-chain model registry. The real program id is
-// `MdLRegMa1iYxBg5gKhCJVTDfXkqHpQF6PoG3kRYW6S1` (reserved in
-// Anchor.toml) but the program is not deployed yet, so the client
-// defaults to the System Program as a known-valid placeholder that
-// produces deterministic off-curve PDAs for the test + dev flow.
-// Override via env when running against devnet / mainnet.
+// Program id of the on-chain model registry. Deployed live on Solana
+// devnet at this address (matches `declare_id!` in
+// programs/ghola-model-registry/src/lib.rs and the entry in
+// Anchor.toml). Override via env when pointing at localnet / mainnet.
 const REGISTRY_PROGRAM_ID = new PublicKey(
   (typeof process !== "undefined" &&
     process.env?.NEXT_PUBLIC_MODEL_REGISTRY_PROGRAM_ID) ||
-    "11111111111111111111111111111111",
+    "7hZ9oxHyFRpKHtH3jsa8NeH4HYGrPT7ZttDFtUX9naNS",
 );
 
 const PDA_SEED_PREFIX = "ghola-model";
 
-// Mainnet by default; override via env so dev/preview can point at
-// devnet without rebuilding. Public RPC is fine for read-only — no
-// signing, no rate-sensitive writes.
+// Devnet by default — the registry program is currently deployed on
+// devnet only. Override via NEXT_PUBLIC_SOLANA_RPC_URL when the
+// program is promoted to mainnet. Public RPC is fine for read-only;
+// no signing, no rate-sensitive writes happen on this path.
 function rpcUrl(): string {
   if (typeof process !== "undefined" && process.env) {
     const explicit = process.env.NEXT_PUBLIC_SOLANA_RPC_URL;
     if (explicit) return explicit;
   }
-  return "https://api.mainnet-beta.solana.com";
+  return "https://api.devnet.solana.com";
 }
 
 let connection: Connection | null = null;
