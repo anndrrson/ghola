@@ -22,7 +22,7 @@ fn main() {
 #[cfg(target_os = "linux")]
 mod linux {
     use anyhow::Result;
-    use ghola_vsock_proxy::{env_port, init_tracing};
+    use ghola_vsock_proxy::env_port;
     use std::env;
     use std::time::Duration;
     use std::io::Write;
@@ -31,7 +31,11 @@ mod linux {
 
     #[tokio::main]
     pub async fn main() -> Result<()> {
-        init_tracing();
+        // No tracing init here: this binary's stdout is sourced by the
+        // enclave entrypoint as a shell script. Any tracing log line on
+        // stdout would be parsed as a command and would (with set -e)
+        // kill the entrypoint before the provider ever starts. Use
+        // eprintln! for diagnostics so stderr captures it.
 
         let vsock_host_cid: u32 = match env::var("VSOCK_HOST_CID") {
             Ok(v) => v
@@ -45,11 +49,8 @@ mod linux {
             .and_then(|v| v.parse().ok())
             .unwrap_or(5000);
 
-        tracing::info!(
-            vsock_host_cid,
-            vsock_port,
-            connect_timeout_ms,
-            "vsock-env-client connecting"
+        eprintln!(
+            "[vsock-env-client] connecting vsock_host_cid={vsock_host_cid} vsock_port={vsock_port} connect_timeout_ms={connect_timeout_ms}"
         );
 
         let addr = VsockAddr::new(vsock_host_cid, vsock_port);
@@ -75,7 +76,7 @@ mod linux {
         let mut stdout = std::io::stdout();
         stdout.write_all(&buf)?;
         stdout.flush()?;
-        tracing::info!(bytes = buf.len(), "vsock-env-client done");
+        eprintln!("[vsock-env-client] done bytes={}", buf.len());
         Ok(())
     }
 }
