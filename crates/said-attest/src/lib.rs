@@ -186,6 +186,16 @@ fn verify_attestation_inner(
             pcr_hex(2),
             measurement_sha256_hex,
         );
+        // ALSO log the sig + allowlist pub bytes the verifier is using, so
+        // we can compare against what the operator signed locally. The
+        // pubkey is non-secret; the sig is also non-secret (it's a
+        // signature over a public hash, not a key).
+        eprintln!(
+            "[said-attest] allowlist inputs: sig_hex={} sig_len={} allowlist_pub_hex={}",
+            hex::encode(ghola_allowlist_sig),
+            ghola_allowlist_sig.len(),
+            hex::encode(ghola_allowlist_pub.to_bytes()),
+        );
     }
 
     // 3a. Allowlist signature over sha256(measurement).
