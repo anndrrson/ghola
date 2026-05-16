@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
+import xyz.ghola.app.ai.litert.LiteRtModelManager
 import xyz.ghola.app.ai.llama.ModelManager
 import xyz.ghola.app.cloud.ThumperCloudClient
 import xyz.ghola.app.service.ThumperAccessibilityService
@@ -54,6 +55,7 @@ class SettingsActivity : AppCompatActivity() {
 
     private lateinit var secureStorage: SecureStorage
     private lateinit var modelManager: ModelManager
+    private lateinit var litertModelManager: LiteRtModelManager
     private val mainHandler = Handler(Looper.getMainLooper())
 
     // Backend selection
@@ -62,6 +64,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var radioCloud: RadioButton
     private lateinit var radioQwenCloud: RadioButton
     private lateinit var radioLocal: RadioButton
+    private lateinit var radioLitertNpu: RadioButton
 
     // Cloud section
     private lateinit var cloudSection: LinearLayout
@@ -81,6 +84,14 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var downloadButton: Button
     private lateinit var deleteModelButton: Button
 
+    // LiteRT NPU section (Phase γ.3)
+    private lateinit var litertNpuSection: LinearLayout
+    private lateinit var litertNpuStatus: TextView
+    private lateinit var litertNpuDownloadProgress: ProgressBar
+    private lateinit var litertNpuDownloadPercent: TextView
+    private lateinit var litertNpuDownloadButton: Button
+    private lateinit var litertNpuDeleteButton: Button
+
     // Common
     private lateinit var a11yStatus: TextView
     private lateinit var enableA11yButton: Button
@@ -89,6 +100,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var saveButton: Button
 
     private var isDownloading = false
+    private var isLitertDownloading = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -99,6 +111,7 @@ class SettingsActivity : AppCompatActivity() {
 
         secureStorage = SecureStorage(this)
         modelManager = ModelManager(this)
+        litertModelManager = LiteRtModelManager(this)
 
         // Bind views
         backendRadioGroup = findViewById(R.id.backendRadioGroup)
@@ -106,6 +119,7 @@ class SettingsActivity : AppCompatActivity() {
         radioCloud = findViewById(R.id.radioCloud)
         radioQwenCloud = findViewById(R.id.radioQwenCloud)
         radioLocal = findViewById(R.id.radioLocal)
+        radioLitertNpu = findViewById(R.id.radioLitertNpu)
         cloudSection = findViewById(R.id.cloudSection)
         qwenCloudSection = findViewById(R.id.qwenCloudSection)
         localSection = findViewById(R.id.localSection)
@@ -118,6 +132,12 @@ class SettingsActivity : AppCompatActivity() {
         downloadPercent = findViewById(R.id.downloadPercent)
         downloadButton = findViewById(R.id.downloadButton)
         deleteModelButton = findViewById(R.id.deleteModelButton)
+        litertNpuSection = findViewById(R.id.litertNpuSection)
+        litertNpuStatus = findViewById(R.id.litertNpuStatus)
+        litertNpuDownloadProgress = findViewById(R.id.litertNpuDownloadProgress)
+        litertNpuDownloadPercent = findViewById(R.id.litertNpuDownloadPercent)
+        litertNpuDownloadButton = findViewById(R.id.litertNpuDownloadButton)
+        litertNpuDeleteButton = findViewById(R.id.litertNpuDeleteButton)
         a11yStatus = findViewById(R.id.a11yStatus)
         enableA11yButton = findViewById(R.id.enableA11yButton)
         openRelayButton = findViewById(R.id.openRelayButton)
@@ -152,18 +172,22 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         // Set initial backend selection
-        when {
-            secureStorage.isE2ECloudMode() -> {
+        when (secureStorage.getBackendMode()) {
+            SecureStorage.BACKEND_E2E_CLOUD -> {
                 radioE2eCloud.isChecked = true
                 showE2eCloudSection()
             }
-            secureStorage.isLocalMode() -> {
+            SecureStorage.BACKEND_LOCAL -> {
                 radioLocal.isChecked = true
                 showLocalSection()
             }
-            secureStorage.isQwenCloudMode() -> {
+            SecureStorage.BACKEND_QWEN_CLOUD -> {
                 radioQwenCloud.isChecked = true
                 showQwenCloudSection()
+            }
+            SecureStorage.BACKEND_LITERT_NPU -> {
+                radioLitertNpu.isChecked = true
+                showLitertNpuSection()
             }
             else -> {
                 radioCloud.isChecked = true
@@ -178,6 +202,7 @@ class SettingsActivity : AppCompatActivity() {
                 R.id.radioCloud -> showCloudSection()
                 R.id.radioQwenCloud -> showQwenCloudSection()
                 R.id.radioLocal -> showLocalSection()
+                R.id.radioLitertNpu -> showLitertNpuSection()
             }
         }
 
@@ -199,6 +224,24 @@ class SettingsActivity : AppCompatActivity() {
             modelManager.deleteModel()
             updateModelStatus()
             Toast.makeText(this, "Model deleted", Toast.LENGTH_SHORT).show()
+        }
+
+        // LiteRT NPU download / delete buttons (Phase γ.3)
+        litertNpuDownloadButton.setOnClickListener {
+            if (isLitertDownloading) {
+                litertModelManager.cancelDownload()
+                isLitertDownloading = false
+                litertNpuDownloadButton.text = getString(R.string.litert_npu_download_cta)
+                litertNpuDownloadProgress.visibility = View.GONE
+                litertNpuDownloadPercent.visibility = View.GONE
+            } else {
+                startLitertNpuDownload()
+            }
+        }
+        litertNpuDeleteButton.setOnClickListener {
+            litertModelManager.deleteModel()
+            updateLitertNpuStatus()
+            Toast.makeText(this, "NPU model deleted", Toast.LENGTH_SHORT).show()
         }
 
         enableA11yButton.setOnClickListener {
@@ -249,6 +292,7 @@ class SettingsActivity : AppCompatActivity() {
         super.onResume()
         updateA11yStatus()
         updateModelStatus()
+        updateLitertNpuStatus()
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
@@ -265,25 +309,44 @@ class SettingsActivity : AppCompatActivity() {
         cloudSection.visibility = View.GONE
         qwenCloudSection.visibility = View.GONE
         localSection.visibility = View.GONE
+        litertNpuSection.visibility = View.GONE
     }
 
     private fun showCloudSection() {
         cloudSection.visibility = View.VISIBLE
         qwenCloudSection.visibility = View.GONE
         localSection.visibility = View.GONE
+        litertNpuSection.visibility = View.GONE
     }
 
     private fun showQwenCloudSection() {
         cloudSection.visibility = View.GONE
         qwenCloudSection.visibility = View.VISIBLE
         localSection.visibility = View.GONE
+        litertNpuSection.visibility = View.GONE
     }
 
     private fun showLocalSection() {
         cloudSection.visibility = View.GONE
         qwenCloudSection.visibility = View.GONE
         localSection.visibility = View.VISIBLE
+        litertNpuSection.visibility = View.GONE
         updateModelStatus()
+    }
+
+    /**
+     * Phase γ.3 — surface the LiteRT-LM NPU artifact status + download
+     * controls. Mirrors [showLocalSection] structurally; differs only
+     * in which manager backs the status text and which model gets
+     * downloaded. Coexists with the GGUF flow because the user may
+     * have both artifacts resident.
+     */
+    private fun showLitertNpuSection() {
+        cloudSection.visibility = View.GONE
+        qwenCloudSection.visibility = View.GONE
+        localSection.visibility = View.GONE
+        litertNpuSection.visibility = View.VISIBLE
+        updateLitertNpuStatus()
     }
 
     private fun updateModelStatus() {
@@ -310,6 +373,116 @@ class SettingsActivity : AppCompatActivity() {
             showOnDeviceRuntimePanel()
             true
         }
+    }
+
+    /**
+     * Phase γ.3 — refresh the LiteRT-LM NPU section's status line +
+     * download/delete affordances based on what
+     * [LiteRtModelManager.isModelVerified] reports.
+     *
+     * Run on the UI thread; the verification check itself is a
+     * coroutine (it hashes the artifact) so we dispatch it via
+     * `lifecycleScope` and update views in the success continuation.
+     * The synchronous path falls back to the cheap
+     * [LiteRtModelManager.isModelDownloaded] check so the UI shows
+     * *something* before the hash completes.
+     */
+    private fun updateLitertNpuStatus() {
+        val mgr = litertModelManager
+        val downloaded = mgr.isModelDownloaded()
+        if (downloaded) {
+            val size = mgr.formatSize(mgr.getModelSizeBytes())
+            litertNpuStatus.text = getString(R.string.litert_npu_status_downloaded, size)
+            litertNpuStatus.setTextColor(0xFF4CAF50.toInt())
+            litertNpuDownloadButton.text = getString(R.string.litert_npu_redownload_cta)
+            litertNpuDeleteButton.visibility = View.VISIBLE
+        } else {
+            litertNpuStatus.text = getString(R.string.litert_npu_status_not_downloaded)
+            litertNpuStatus.setTextColor(0xFF757575.toInt())
+            litertNpuDownloadButton.text = getString(R.string.litert_npu_download_cta)
+            litertNpuDeleteButton.visibility = View.GONE
+        }
+
+        // Layer the verification result on top once the hash completes.
+        // Cheap when the file is small or absent; ~300ms on a real
+        // .litertlm artifact — fast enough to do on every onResume.
+        lifecycleScope.launch {
+            val status = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { mgr.isModelVerified() }.getOrNull()
+            }
+            val sizeStr = mgr.formatSize(mgr.getModelSizeBytes())
+            when (status) {
+                LiteRtModelManager.ModelStatus.VERIFIED -> {
+                    litertNpuStatus.text = getString(R.string.litert_npu_status_verified, sizeStr)
+                    litertNpuStatus.setTextColor(0xFF4CAF50.toInt())
+                }
+                LiteRtModelManager.ModelStatus.DOWNLOADED_UNVERIFIED -> {
+                    litertNpuStatus.text = getString(R.string.litert_npu_status_unverified, sizeStr)
+                    litertNpuStatus.setTextColor(0xFFFFB300.toInt())
+                }
+                LiteRtModelManager.ModelStatus.TAMPERED -> {
+                    litertNpuStatus.text = getString(R.string.litert_npu_status_tampered)
+                    litertNpuStatus.setTextColor(0xFFF44336.toInt())
+                    litertNpuDeleteButton.visibility = View.VISIBLE
+                }
+                LiteRtModelManager.ModelStatus.NOT_DOWNLOADED, null -> {
+                    // already rendered above
+                }
+            }
+        }
+    }
+
+    /**
+     * Phase γ.3 — kick off the .litertlm download. Mirrors
+     * [startDownload] (the GGUF path) but routes progress + completion
+     * into the LiteRT NPU section's views.
+     */
+    private fun startLitertNpuDownload() {
+        isLitertDownloading = true
+        litertNpuDownloadButton.text = getString(R.string.litert_npu_download_cancel)
+        litertNpuDownloadProgress.visibility = View.VISIBLE
+        litertNpuDownloadProgress.progress = 0
+        litertNpuDownloadPercent.visibility = View.VISIBLE
+        litertNpuDownloadPercent.text = "Starting…"
+
+        litertModelManager.downloadModel(object : LiteRtModelManager.DownloadListener {
+            override fun onProgress(downloaded: Long, total: Long, percent: Int) {
+                mainHandler.post {
+                    litertNpuDownloadProgress.progress = percent
+                    val dlStr = litertModelManager.formatSize(downloaded)
+                    val totalStr = if (total > 0) litertModelManager.formatSize(total) else "?"
+                    litertNpuDownloadPercent.text = "$dlStr / $totalStr ($percent%)"
+                }
+            }
+
+            override fun onComplete(path: String) {
+                mainHandler.post {
+                    isLitertDownloading = false
+                    litertNpuDownloadProgress.visibility = View.GONE
+                    litertNpuDownloadPercent.visibility = View.GONE
+                    updateLitertNpuStatus()
+                    Toast.makeText(
+                        this@SettingsActivity,
+                        "NPU model downloaded",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            }
+
+            override fun onError(message: String) {
+                mainHandler.post {
+                    isLitertDownloading = false
+                    litertNpuDownloadButton.text = getString(R.string.litert_npu_download_cta)
+                    litertNpuDownloadProgress.visibility = View.GONE
+                    litertNpuDownloadPercent.visibility = View.GONE
+                    Toast.makeText(
+                        this@SettingsActivity,
+                        "NPU model download failed: $message",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        })
     }
 
     /**
@@ -673,6 +846,17 @@ class SettingsActivity : AppCompatActivity() {
                     return
                 }
                 secureStorage.setBackendMode(SecureStorage.BACKEND_LOCAL)
+            }
+            radioLitertNpu.isChecked -> {
+                if (!litertModelManager.isModelDownloaded()) {
+                    Toast.makeText(
+                        this,
+                        getString(R.string.litert_npu_save_requires_download),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return
+                }
+                secureStorage.setBackendMode(SecureStorage.BACKEND_LITERT_NPU)
             }
             radioQwenCloud.isChecked -> {
                 val apiKey = qwenApiKeyInput.text.toString().trim()

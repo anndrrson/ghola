@@ -34,6 +34,9 @@ import xyz.ghola.app.ai.OpenAIApiClient
 import xyz.ghola.app.ai.LocalToolExecutor
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.ai.ToolFriendlyNames
+import xyz.ghola.app.ai.litert.LiteRTNeuroPilotBackend
+import xyz.ghola.app.ai.litert.LiteRtModelManager
+import xyz.ghola.app.ai.litert.LiteRtNpuDispatcher
 import xyz.ghola.app.ai.llama.LocalLlamaBackend
 import xyz.ghola.app.ai.llama.ModelManager
 import xyz.ghola.app.cloud.CloudAuthManager
@@ -236,6 +239,22 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                 startActivity(Intent(this, SettingsActivity::class.java))
                 return
             }
+        } else if (secureStorage.getBackendMode() == SecureStorage.BACKEND_LITERT_NPU) {
+            // Phase γ.3 — gentle nudge if the user picked the NPU backend
+            // without downloading the artifact. `initializeLitertNpuAgent`
+            // also handles this state, but surfacing it in
+            // checkPrerequisites means we skip the discoverDeviceCapabilities
+            // detour when we already know we're going to bail.
+            val mgr = LiteRtModelManager(this)
+            if (!mgr.isModelDownloaded()) {
+                Toast.makeText(
+                    this,
+                    getString(R.string.litert_npu_error_missing_model),
+                    Toast.LENGTH_LONG,
+                ).show()
+                startActivity(Intent(this, SettingsActivity::class.java))
+                return
+            }
         } else if (secureStorage.isQwenCloudMode()) {
             if (!secureStorage.hasQwenApiKey()) {
                 Toast.makeText(this, "Enable Power user / BYOM in Settings and set a DashScope API key", Toast.LENGTH_LONG).show()
@@ -289,7 +308,103 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             secureStorage.isE2ECloudMode() -> initializeE2eAgent(toolExecutor)
             secureStorage.isLocalMode() -> initializeLocalAgent(toolExecutor)
             secureStorage.isQwenCloudMode() -> initializeQwenCloudAgent(toolExecutor)
+            secureStorage.getBackendMode() == SecureStorage.BACKEND_LITERT_NPU ->
+                initializeLitertNpuAgent(toolExecutor)
             else -> initializeCloudAgent(toolExecutor)
+        }
+    }
+
+    /**
+     * Phase γ.3 — LiteRT-LM + NeuroPilot Accelerator dispatch. The
+     * user picked "On-device NPU (Gemma-3-1B)" in Settings; we have
+     * to decide whether the `.litertlm` artifact is healthy enough to
+     * stand up [LiteRTNeuroPilotBackend] or whether to fall back /
+     * fail loud.
+     *
+     * Decision tree (mirrors the matrix documented on
+     * [LiteRtNpuDispatcher]):
+     *  - `VERIFIED` / `DOWNLOADED_UNVERIFIED` → build the NPU backend
+     *  - `NOT_DOWNLOADED` → toast + bounce to Settings + fall back to
+     *    the E2E cloud backend so the chat surface still works (the
+     *    user doesn't get a dead UI while their model downloads)
+     *  - `TAMPERED` → show an error message; do NOT silently
+     *    downgrade. The user explicitly chose to keep data on-device;
+     *    quietly switching to cloud would leak that data.
+     *
+     * Runs the integrity check on `Dispatchers.IO` because hashing a
+     * 600MB artifact blocks for a few hundred ms on Seeker. The
+     * AgentController construction itself stays on the main thread.
+     */
+    private fun initializeLitertNpuAgent(toolExecutor: LocalToolExecutor) {
+        val mgr = LiteRtModelManager(this)
+        setInputEnabled(false)
+        showStatus("Verifying on-device NPU model…")
+
+        lifecycleScope.launch {
+            val (status, modelPath) = withContext(Dispatchers.IO) {
+                val s = runCatching { mgr.isModelVerified() }.getOrNull()
+                    ?: LiteRtModelManager.ModelStatus.NOT_DOWNLOADED
+                val p = runCatching { mgr.getModelPath() }.getOrNull()
+                s to p
+            }
+            val decision = LiteRtNpuDispatcher.decide(status, modelPath)
+            when (decision) {
+                is LiteRtNpuDispatcher.Decision.BuildBackend -> {
+                    val backend: LlmBackend = try {
+                        LiteRTNeuroPilotBackend(
+                            modelFile = java.io.File(decision.modelPath),
+                            nativeLibraryDir = applicationInfo.nativeLibraryDir,
+                            cacheDir = cacheDir.absolutePath,
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "LiteRT NPU backend construction failed", e)
+                        hideStatus()
+                        Toast.makeText(
+                            this@ChatActivity,
+                            "On-device NPU backend failed to load: ${e.message}",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                        setInputEnabled(true)
+                        return@launch
+                    }
+                    agentController = AgentController(
+                        backend, toolExecutor, this@ChatActivity,
+                        secureStorage.getWalletPackage(),
+                        secureStorage.isSeeker(),
+                        secureStorage.hasCloudAuth(),
+                    )
+                    hideStatus()
+                    setInputEnabled(true)
+                }
+                is LiteRtNpuDispatcher.Decision.FallbackMissingModel -> {
+                    Toast.makeText(
+                        this@ChatActivity,
+                        getString(R.string.litert_npu_error_missing_model),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    // Fall back to a working backend so the chat surface
+                    // isn't dead while the user downloads. Prefer E2E
+                    // cloud when available; the cloud BYOM path needs
+                    // an API key the user hasn't necessarily set.
+                    if (secureStorage.hasCloudAuth() && secureStorage.hasSolanaAddress()) {
+                        initializeE2eAgent(toolExecutor)
+                    } else {
+                        hideStatus()
+                        setInputEnabled(true)
+                        startActivity(Intent(this@ChatActivity, SettingsActivity::class.java))
+                    }
+                }
+                is LiteRtNpuDispatcher.Decision.FailWithTamperedError -> {
+                    hideStatus()
+                    Toast.makeText(
+                        this@ChatActivity,
+                        getString(R.string.litert_npu_error_tampered),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    setInputEnabled(true)
+                    startActivity(Intent(this@ChatActivity, SettingsActivity::class.java))
+                }
+            }
         }
     }
 

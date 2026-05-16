@@ -60,6 +60,14 @@
                 android:textSize="14sp"
                 android:padding="4dp" />
 
+            <RadioButton
+                android:id="@+id/radioLitertNpu"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/litert_npu_radio_label"
+                android:textSize="14sp"
+                android:padding="4dp" />
+
         </RadioGroup>
 
         <!-- Cloud Configuration Section -->
@@ -220,6 +228,80 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Delete Model"
+                android:textColor="#ef4444"
+                android:visibility="gone"
+                android:layout_marginBottom="16dp"
+                style="@style/Widget.MaterialComponents.Button.TextButton" />
+
+        </LinearLayout>
+
+        <!-- LiteRT-LM NPU Section (Phase γ.3) -->
+        <LinearLayout
+            android:id="@+id/litertNpuSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/litert_npu_section_title"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/litert_npu_section_caption"
+                android:textSize="13sp"
+                android:textColor="#4a5568"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:id="@+id/litertNpuStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/litert_npu_status_not_downloaded"
+                android:textSize="14sp"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="8dp" />
+
+            <ProgressBar
+                android:id="@+id/litertNpuDownloadProgress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:visibility="gone"
+                android:layout_marginBottom="4dp" />
+
+            <TextView
+                android:id="@+id/litertNpuDownloadPercent"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="12sp"
+                android:textColor="#4a5568"
+                android:gravity="center"
+                android:visibility="gone"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/litertNpuDownloadButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/litert_npu_download_cta"
+                android:layout_marginBottom="8dp"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+            <Button
+                android:id="@+id/litertNpuDeleteButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/litert_npu_delete_cta"
                 android:textColor="#ef4444"
                 android:visibility="gone"
                 android:layout_marginBottom="16dp"

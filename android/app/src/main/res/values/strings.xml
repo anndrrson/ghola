@@ -30,4 +30,21 @@
     <string name="onboarding_cta_check_a11y">I\'ve enabled it</string>
     <string name="onboarding_cta_finish">Finish</string>
     <string name="onboarding_cta_done">Done</string>
+
+    <!-- Phase γ.3 — LiteRT-LM NPU backend (Gemma-3-1B on APU 655) -->
+    <string name="litert_npu_radio_label">On-device NPU (Gemma-3-1B)</string>
+    <string name="litert_npu_section_title">On-Device NPU Model</string>
+    <string name="litert_npu_section_caption">Runs Gemma-3-1B on the Solana Seeker\'s APU 655 NPU. Around 7–12× more battery efficient than CPU or GPU inference. Nothing leaves the device.</string>
+    <string name="litert_npu_status_not_downloaded">Model: Not downloaded</string>
+    <string name="litert_npu_status_downloaded">Model: Downloaded (%1$s)</string>
+    <string name="litert_npu_status_verified">Model: Verified (%1$s)</string>
+    <string name="litert_npu_status_unverified">Model: Downloaded, unverified (%1$s)</string>
+    <string name="litert_npu_status_tampered">Model: Integrity check failed — re-download required</string>
+    <string name="litert_npu_download_cta">Download model (~600 MB)</string>
+    <string name="litert_npu_download_cancel">Cancel download</string>
+    <string name="litert_npu_redownload_cta">Re-download model</string>
+    <string name="litert_npu_delete_cta">Delete model</string>
+    <string name="litert_npu_error_missing_model">NPU model isn\'t downloaded yet. Open Settings to download Gemma-3-1B, or pick a different backend.</string>
+    <string name="litert_npu_error_tampered">NPU model failed integrity check. Delete and re-download it in Settings before using the on-device NPU backend.</string>
+    <string name="litert_npu_save_requires_download">Download the NPU model first before saving this selection.</string>
 </resources>
