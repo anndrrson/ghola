@@ -31,7 +31,7 @@ final class SaidCloudClient {
 
     /// POST /v1/auth/google — exchange a Google ID token for a said-cloud JWT.
     /// Idempotent: returning users get their existing user_id back.
-    func googleSignIn(idToken: String) async throws -> AuthResponse {
+    func googleSignIn(idToken: String) async throws -> SaidAuthResponse {
         struct Request: Encodable { let id_token: String }
         return try await post("/auth/google", body: Request(id_token: idToken), authed: false)
     }
@@ -151,7 +151,13 @@ final class SaidCloudClient {
 
 // MARK: - Response types
 
-struct AuthResponse: Decodable {
+/// said-cloud auth response — distinct wire shape from the thumper-cloud
+/// `AuthResponse` (Models/User.swift). said-cloud returns a string `user_id`
+/// plus a `did` (decentralized identifier); thumper-cloud returns a UUID
+/// `userId` plus an `isNewUser` flag. The two backends have separate JWT
+/// secrets and user tables, so the iOS app holds two tokens (mirror of
+/// Android's two-client setup).
+struct SaidAuthResponse: Decodable {
     let token: String
     let user_id: String
     let did: String
