@@ -4,10 +4,17 @@ struct ChatView: View {
     @State private var messages: [ChatMessage] = []
     @State private var inputText = ""
     @State private var isStreaming = false
-    @State private var sessionId: UUID?
     @FocusState private var isInputFocused: Bool
 
-    private let sseClient = SSEClient()
+    // Single backend instance for this chat surface. Built lazily so a
+    // future `.mlxLocal` mode that throws at `make(...)` time doesn't
+    // crash the view; we surface the error in-line on first send.
+    //
+    // The backend owns its own session-id continuity (CloudLlmBackend
+    // pins it across generate calls), so ChatView no longer needs to
+    // thread `sessionId` through every send.
+    @State private var backend: LlmBackend? = nil
+    @State private var backendError: String? = nil
 
     var body: some View {
         NavigationStack {
@@ -42,6 +49,9 @@ struct ChatView: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
+            .task {
+                ensureBackend()
+            }
         }
     }
 
@@ -78,6 +88,21 @@ struct ChatView: View {
         .padding()
     }
 
+    // MARK: - Backend wiring
+
+    /// Build (or rebuild) the backend on the user's currently-selected
+    /// mode. Today this is always `.cloud`; once a UI for switching
+    /// modes lands, plumb it through here.
+    private func ensureBackend() {
+        guard backend == nil else { return }
+        do {
+            backend = try BackendRegistry.make(for: BackendRegistry.defaultMode)
+            backendError = nil
+        } catch {
+            backendError = error.localizedDescription
+        }
+    }
+
     // MARK: - Send
 
     private func sendMessage() {
@@ -95,32 +120,58 @@ struct ChatView: View {
         messages.append(assistantMsg)
         let assistantIndex = messages.count - 1
 
+        // Build the LlmMessage history from the visible UI history.
+        // We map .error rows to nothing (they're terminal UI markers,
+        // not LLM turns) and pass the rest as user/assistant turns.
+        let history: [LlmMessage] = messages.compactMap { m in
+            switch m.role {
+            case .user: return LlmMessage(role: .user, content: m.content)
+            case .assistant:
+                // Skip the empty assistant placeholder we just appended
+                // so it doesn't end up echoed as prior context.
+                return m.content.isEmpty ? nil : LlmMessage(role: .assistant, content: m.content)
+            case .error: return nil
+            }
+        }
+
+        ensureBackend()
+        guard let backend else {
+            let msg = backendError ?? "No backend available"
+            messages[assistantIndex] = ChatMessage(role: .error, content: msg, timestamp: Date())
+            return
+        }
+
         isStreaming = true
 
         Task {
-            let stream = await sseClient.stream(sessionId: sessionId, message: text)
+            defer { isStreaming = false }
+            do {
+                let response = try await backend.generate(
+                    messages: history,
+                    tools: [],
+                    system: "",
+                    forceToolUse: false
+                )
 
-            for await event in stream {
-                switch event {
-                case .sessionId(let id):
-                    sessionId = id
+                // Flatten ContentBlocks back into a single string for
+                // the UI. The Cloud backend always returns a single
+                // .text(...) block today; future backends (tool-use)
+                // can expand this rendering.
+                let flattened = response.contentBlocks
+                    .compactMap { block -> String? in
+                        if case .text(let s) = block { return s }
+                        return nil
+                    }
+                    .joined()
 
-                case .textDelta(let delta):
-                    messages[assistantIndex].content += delta
-
-                case .error(let msg):
-                    messages[assistantIndex] = ChatMessage(
-                        role: .error,
-                        content: msg,
-                        timestamp: Date()
-                    )
-
-                case .done:
-                    break
-                }
+                messages[assistantIndex].content = flattened
+            } catch {
+                messages[assistantIndex] = ChatMessage(
+                    role: .error,
+                    content: error.localizedDescription,
+                    timestamp: Date()
+                )
             }
-
-            isStreaming = false
         }
     }
 }
