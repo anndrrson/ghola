@@ -5,6 +5,25 @@ options:
     iOS: "17.0"
     macOS: "14.0"
 
+packages:
+  # MLX Swift — Apple ml-explore Metal-accelerated tensor + LLM runtime.
+  # Required for ζ-iOS.1+ on-device inference (see docs/perf/ios-phase-zeta-mlx-plan.md).
+  # Latest stable as of 2026-04-01: 0.31.3.
+  # NB: 0.31.3 is the upstream tip (2026-04-01) but mlx-swift-examples 2.29.1
+  # pins to 0.29.1..<0.30.0. SPM picks the floor that satisfies both; we let
+  # mlx-swift-examples drive the version. Upgrade together when examples
+  # publishes against 0.31.x.
+  MLXSwift:
+    url: https://github.com/ml-explore/mlx-swift
+    minVersion: "0.29.1"
+    maxVersion: "0.30.0"
+  # mlx-swift-examples ships the reusable `MLXLLM` / `MLXLMCommon` libraries
+  # used by every Apple LLM sample (LLMEval, MLXChatExample). API is pre-1.0;
+  # pin upToNextMinor per plan §10 risk #5.
+  MLXSwiftExamples:
+    url: https://github.com/ml-explore/mlx-swift-examples
+    minorVersion: "2.29.1"
+
 targets:
   Ghola:
     type: application
@@ -23,13 +42,25 @@ targets:
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Ghola uses your local network to connect to Ghola Home servers and for Bonjour discovery."
         INFOPLIST_KEY_NSBonjourServices: "_ghola._tcp."
         SUPPORTS_MACCATALYST: false
+        CODE_SIGN_ENTITLEMENTS: Ghola.entitlements
       configs:
         debug:
           CODE_SIGN_IDENTITY: "Apple Development"
         release:
           CODE_SIGN_IDENTITY: "Apple Distribution"
-    entitlements:
-      Ghola.entitlements
+    dependencies:
+      - package: MLXSwift
+        product: MLX
+      - package: MLXSwift
+        product: MLXNN
+      - package: MLXSwift
+        product: MLXOptimizers
+      - package: MLXSwift
+        product: MLXRandom
+      - package: MLXSwiftExamples
+        product: MLXLLM
+      - package: MLXSwiftExamples
+        product: MLXLMCommon
 
   GholaTests:
     type: bundle.unit-test
@@ -37,4 +68,4 @@ targets:
     sources:
       - GholaTests
     dependencies:
-      - target: Ghola
+      - target: Ghola_${platform}
