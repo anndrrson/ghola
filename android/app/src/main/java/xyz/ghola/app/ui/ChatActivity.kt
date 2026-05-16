@@ -32,6 +32,7 @@ import xyz.ghola.app.ai.CloudLlmBackend
 import xyz.ghola.app.ai.LlmBackend
 import xyz.ghola.app.ai.OpenAIApiClient
 import xyz.ghola.app.ai.LocalToolExecutor
+import xyz.ghola.app.ai.PinnedModelHashes
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.ai.ToolFriendlyNames
 import xyz.ghola.app.ai.litert.LiteRTNeuroPilotBackend
@@ -47,6 +48,8 @@ import xyz.ghola.app.crypto.VaultStore
 import xyz.ghola.app.crypto.mwaSignerForVault
 import xyz.ghola.app.service.ThumperAccessibilityService
 import xyz.ghola.app.solana.Base58
+import xyz.ghola.app.ui.components.IntegrityBadge
+import xyz.ghola.app.ui.components.IntegrityBadgeDetailDialog
 
 class ChatActivity : AppCompatActivity(), AgentListener {
 
@@ -72,6 +75,56 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             "com.solanamobile.seedvaultimpl",
             "com.solanamobile.dappstore"
         )
+
+        /**
+         * Pure helper: project a backend-mode string into the
+         * [IntegrityArgs] tag we use to decide what to do with the badge.
+         * Lives on the companion (not as an instance method) so it's
+         * testable from a plain JVM JUnit suite without touching Android
+         * internals.
+         *
+         * Unknown / future backend strings fall through to [IntegrityArgs.Cloud]
+         * — safer to hide the chip than to assert against an artifact we
+         * don't have a manager for.
+         */
+        @JvmStatic
+        fun integrityArgsForBackend(backendMode: String): IntegrityArgs = when (backendMode) {
+            SecureStorage.BACKEND_LOCAL -> IntegrityArgs.LocalLlama
+            SecureStorage.BACKEND_LITERT_NPU -> IntegrityArgs.LiteRtNpu
+            SecureStorage.BACKEND_CLOUD,
+            SecureStorage.BACKEND_QWEN_CLOUD,
+            SecureStorage.BACKEND_E2E_CLOUD -> IntegrityArgs.Cloud
+            else -> IntegrityArgs.Cloud
+        }
+    }
+
+    /**
+     * Which on-device backend a [SecureStorage] backend-mode string
+     * corresponds to from the IntegrityBadge's point of view.
+     *
+     * Cloud backends ([SecureStorage.BACKEND_CLOUD],
+     * [SecureStorage.BACKEND_QWEN_CLOUD], [SecureStorage.BACKEND_E2E_CLOUD])
+     * map to [Cloud] — the badge hides itself because the artifact
+     * lives on someone else's GPU and an on-device hash is meaningless.
+     *
+     * On-device backends ([SecureStorage.BACKEND_LOCAL],
+     * [SecureStorage.BACKEND_LITERT_NPU]) carry a real artifact whose
+     * SHA-256 we can compute against [PinnedModelHashes].
+     *
+     * Declared as a nested class on the outer activity (rather than
+     * inside the companion) so unit tests can reference
+     * `ChatActivity.IntegrityArgs.Cloud` without going through
+     * `ChatActivity.Companion`.
+     */
+    sealed class IntegrityArgs {
+        /** Cloud backend — badge is hidden. */
+        object Cloud : IntegrityArgs()
+
+        /** llama.cpp / GGUF on-device backend. */
+        object LocalLlama : IntegrityArgs()
+
+        /** LiteRT-LM NPU on-device backend. */
+        object LiteRtNpu : IntegrityArgs()
     }
 
     private lateinit var secureStorage: SecureStorage
@@ -80,6 +133,24 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     private lateinit var sendButton: ImageButton
     private lateinit var statusBar: TextView
     private lateinit var chatAdapter: ChatAdapter
+    private lateinit var integrityBadge: IntegrityBadge
+    private lateinit var backendNameText: TextView
+
+    /**
+     * Cached snapshot from the most recent [refreshIntegrityBadge] so the
+     * badge's click handler can pop the [IntegrityBadgeDetailDialog] with
+     * the same hash + path it last rendered, without re-running the
+     * (expensive) SHA-256 hash on every tap. Re-verify re-populates this.
+     */
+    private data class IntegritySnapshot(
+        val status: ModelManager.ModelStatus,
+        val artifactName: String,
+        val artifactPath: String?,
+        val fullHash: String?,
+    )
+
+    @Volatile
+    private var lastIntegritySnapshot: IntegritySnapshot? = null
 
     // ActivityResultSender MUST be a field initializer (not lazy/onCreate)
     // — see WalletActivity for the same constraint. It registers an
@@ -110,6 +181,20 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         sendButton = findViewById(R.id.sendButton)
         statusBar = findViewById(R.id.statusBar)
 
+        integrityBadge = findViewById(R.id.integrityBadge)
+        backendNameText = findViewById(R.id.backendNameText)
+        integrityBadge.onBadgeClick = Runnable {
+            val snap = lastIntegritySnapshot ?: return@Runnable
+            IntegrityBadgeDetailDialog.show(
+                context = this,
+                status = snap.status,
+                artifactName = snap.artifactName,
+                artifactPath = snap.artifactPath,
+                fullHash = snap.fullHash,
+                onReverify = Runnable { refreshIntegrityBadge() },
+            )
+        }
+
         chatAdapter = ChatAdapter()
         val layoutManager = LinearLayoutManager(this).apply {
             stackFromEnd = true
@@ -136,6 +221,11 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             }
         }
 
+        // Phase γ.3 — render the IntegrityBadge against the active
+        // backend's artifact. Safe to call before checkPrerequisites()
+        // runs the agent: this just hashes a file on Dispatchers.IO.
+        refreshIntegrityBadge()
+
         // Handle prefill from HomeActivity voice input or quick actions
         intent.getStringExtra("prefill_message")?.let { prefill ->
             messageInput.setText(prefill)
@@ -155,6 +245,9 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     override fun onResume() {
         super.onResume()
         checkPrerequisites()
+        // The user may have switched backends in Settings while we were
+        // paused — re-hash and re-bind the badge so it tells the truth.
+        refreshIntegrityBadge()
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -193,6 +286,109 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         agentController?.shutdown()
         localBackend?.shutdown()
         vaultStore?.lock()
+    }
+
+    /**
+     * Re-hash the active on-device artifact and re-bind the
+     * [IntegrityBadge] in the toolbar. Cloud backends hide the chip —
+     * the badge has nothing useful to say about a model we never
+     * received bytes for. On-device backends drop into [Dispatchers.IO]
+     * to stream the SHA-256 (the GGUF is ~1.6 GB; we never want this
+     * on the UI thread), then marshal back to update the View.
+     *
+     * Safe to call repeatedly: every invocation recomputes from scratch
+     * and overwrites [lastIntegritySnapshot], which the click handler
+     * reads to populate [IntegrityBadgeDetailDialog].
+     */
+    private fun refreshIntegrityBadge() {
+        val mode = secureStorage.getBackendMode()
+        val tag = integrityArgsForBackend(mode)
+
+        when (tag) {
+            IntegrityArgs.Cloud -> {
+                integrityBadge.visibility = View.GONE
+                backendNameText.text = backendDisplayNameForMode(mode)
+                lastIntegritySnapshot = null
+            }
+            IntegrityArgs.LocalLlama -> {
+                backendNameText.text = backendDisplayNameForMode(mode)
+                integrityBadge.visibility = View.VISIBLE
+                val mgr = ModelManager(this)
+                lifecycleScope.launch {
+                    val (status, path) = withContext(Dispatchers.IO) {
+                        val s = runCatching { mgr.isModelVerified() }.getOrNull()
+                            ?: ModelManager.ModelStatus.NOT_DOWNLOADED
+                        val p = runCatching { mgr.getModelPath() }.getOrNull()
+                        s to p
+                    }
+                    val fullHash = PinnedModelHashes.QWEN_2_5_1_5B_Q8_GGUF_SHA256
+                    val artifact = "qwen2.5-1.5b-instruct-q8_0.gguf"
+                    integrityBadge.bind(status, artifact, fullHash?.take(8))
+                    lastIntegritySnapshot = IntegritySnapshot(
+                        status = status,
+                        artifactName = artifact,
+                        artifactPath = path,
+                        fullHash = fullHash,
+                    )
+                }
+            }
+            IntegrityArgs.LiteRtNpu -> {
+                val mgr = LiteRtModelManager(this)
+                backendNameText.text = mgr.activeVariant.displayName
+                integrityBadge.visibility = View.VISIBLE
+                lifecycleScope.launch {
+                    val (status, path) = withContext(Dispatchers.IO) {
+                        val s = runCatching { mgr.isModelVerified() }.getOrNull()
+                            ?: LiteRtModelManager.ModelStatus.NOT_DOWNLOADED
+                        val p = runCatching { mgr.getModelPath() }.getOrNull()
+                        s to p
+                    }
+                    val fullHash = PinnedModelHashes.forVariant(mgr.activeVariant)
+                    val canonical = liteRtStatusToCanonical(status)
+                    integrityBadge.bind(canonical, mgr.activeVariant.filename, fullHash?.take(8))
+                    lastIntegritySnapshot = IntegritySnapshot(
+                        status = canonical,
+                        artifactName = mgr.activeVariant.filename,
+                        artifactPath = path,
+                        fullHash = fullHash,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Friendly label for the active backend, used in the toolbar TextView
+     * alongside the badge. Mirrors each backend's `LlmBackend.displayName`
+     * so the user sees the same string the AgentController logs against.
+     */
+    private fun backendDisplayNameForMode(mode: String): String = when (mode) {
+        SecureStorage.BACKEND_LOCAL -> "On-device (Qwen 2.5 1.5B)"
+        SecureStorage.BACKEND_LITERT_NPU -> "On-device NPU (Gemma-3-1B)"
+        SecureStorage.BACKEND_E2E_CLOUD -> "End-to-end encrypted"
+        SecureStorage.BACKEND_QWEN_CLOUD -> "Qwen (Cloud)"
+        SecureStorage.BACKEND_CLOUD -> "Claude (Cloud)"
+        else -> ""
+    }
+
+    /**
+     * Map [LiteRtModelManager.ModelStatus] onto the canonical
+     * [ModelManager.ModelStatus] enum that [IntegrityBadge.bind]
+     * consumes. The two enums have identical members today — this
+     * exists so an asymmetric drift on either side surfaces as a
+     * compile error rather than a silent badge misrender.
+     */
+    private fun liteRtStatusToCanonical(
+        s: LiteRtModelManager.ModelStatus,
+    ): ModelManager.ModelStatus = when (s) {
+        LiteRtModelManager.ModelStatus.NOT_DOWNLOADED ->
+            ModelManager.ModelStatus.NOT_DOWNLOADED
+        LiteRtModelManager.ModelStatus.DOWNLOADED_UNVERIFIED ->
+            ModelManager.ModelStatus.DOWNLOADED_UNVERIFIED
+        LiteRtModelManager.ModelStatus.VERIFIED ->
+            ModelManager.ModelStatus.VERIFIED
+        LiteRtModelManager.ModelStatus.TAMPERED ->
+            ModelManager.ModelStatus.TAMPERED
     }
 
     private fun checkPrerequisites() {
