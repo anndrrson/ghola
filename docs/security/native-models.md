@@ -279,12 +279,31 @@ What we are **not** defending against, in the same spirit as the
   libraries; the Phase η plan tasks a telemetry audit ("confirm
   LiteRT-LM, NeuroPilot, llama.cpp, PowerInfer all run without
   phone-home network calls. If any do, block at the Android app level
-  via `NetworkSecurityConfig`"). This audit is not yet performed at
-  the time of this document; today's
+  via `NetworkSecurityConfig`"). The first half of that audit has now
+  landed:
   [`network_security_config.xml`](../../android/app/src/main/res/xml/network_security_config.xml)
-  permits cleartext base config and does not yet enumerate a
-  per-host deny list for runtime libraries. **This is a known gap
-  and a follow-up commit.**
+  is HTTPS-only (`cleartextTrafficPermitted="false"` in the
+  `base-config`) and enumerates a per-host allowlist for every host
+  the Kotlin codebase legitimately contacts —
+  `ghola.xyz`/`api.ghola.xyz`, `ghola-api.onrender.com`,
+  `thumper-cloud.onrender.com`, `huggingface.co` (incl. LFS subdomains),
+  `api.anthropic.com`, `dashscope-intl.aliyuncs.com`,
+  `accounts.google.com`, and `*.googleapis.com` (gmail, oauth2, www,
+  storage). Every other host is blocked by the platform before the
+  network stack sees the request. Inline XML comments at the top of
+  that file enumerate the audited runtime libraries (LiteRT-LM,
+  MediaPipe Tasks GenAI, llama.cpp NDK, ONNX Runtime, BouncyCastle)
+  and confirm none of them have a documented phone-home in their
+  public release notes. The strict policy is release-only; the debug
+  variant at
+  [`src/debug/res/xml/network_security_config.xml`](../../android/app/src/debug/res/xml/network_security_config.xml)
+  permits localhost cleartext + user-installed CAs so Charles Proxy
+  and LAN-hosted thumper-cloud still work in development. **Residual
+  gap:** this is a *static* allowlist audit; we have not yet captured
+  packet traces from each runtime library in isolation to confirm
+  zero outbound attempts at the syscall level. A runtime library
+  attempting to phone home will fail closed, but we have not
+  exercised that failure mode in CI.
 - **Pin enforcement timing.** Every value in `PinnedModelHashes` is
   `null` today; the verifier is in observe-mode. A malicious model
   download (MITM against the HF download URL, or a Hugging Face
