@@ -35,6 +35,12 @@ class SecureStorage(context: Context) {
         private const val KEY_CRYPTO_ENABLED = "crypto_features_enabled"
         // v0.6: on-device LLM runtime + LoRA state.
         private const val KEY_USE_LLAMACPP_RUNTIME = "use_llamacpp_runtime"
+        // v0.7 (Phase γ.1): on-device runtime selector. Replaces the
+        // boolean useLlamaCppRuntime flag with a tri-state string so the
+        // MediaPipe / llama.cpp / LiteRT-NeuroPilot triplet can be
+        // expressed without a second flag. The legacy boolean is still
+        // honoured for backwards compat (see [activeRuntime]).
+        private const val KEY_RUNTIME = "local_llm_runtime"
         private const val KEY_VOICE_LORA_READY = "voice_lora_ready"
         private const val KEY_VOICE_LORA_READY_AT = "voice_lora_ready_at_millis"
         private const val KEY_VOICE_LORA_ACTIVE = "voice_lora_active"
@@ -59,6 +65,37 @@ class SecureStorage(context: Context) {
          *  (sealed-envelope-v1). Default for wallet-paired users from
          *  v0.3.0 onward. */
         const val BACKEND_E2E_CLOUD = "e2e_cloud"
+        /**
+         * v0.7 (Phase γ.1) — LiteRT-LM + NeuroPilot Accelerator on-device
+         * backend mode. Selects Gemma-3-1B running on the APU 655 NPU
+         * via Google's `com.google.ai.edge.litertlm` runtime. Power
+         * target: ~0.32W decode on D9500-class hardware per Google's
+         * published numbers; APU 655 on D7300 (Seeker) is mid-tier of
+         * the same family. Exposed as a [BACKEND_*] constant for
+         * symmetry with [BACKEND_LOCAL] / [BACKEND_E2E_CLOUD]; wiring
+         * into the SettingsActivity radio + ChatActivity.createAgent
+         * dispatch lands in Phase γ.3.
+         */
+        const val BACKEND_LITERT_NPU = "litert_npu"
+
+        // ── v0.7 runtime triplet (Phase γ.1) ──────────────────────────────
+        //
+        // The on-device facade [xyz.ghola.app.email.LocalLlm] now picks
+        // between three implementations. Each value below is what
+        // [setRuntime] / [activeRuntime] store and read from
+        // [KEY_RUNTIME].
+
+        /** [LocalLlm.MediaPipeImpl] — v0.5 path, `.task` bundle. */
+        const val RUNTIME_MEDIAPIPE = "mediapipe"
+
+        /** [LocalLlm.LlamaCppImpl] — v0.6 path, GGUF + LoRA support. */
+        const val RUNTIME_LLAMACPP = "llamacpp"
+
+        /**
+         * [LocalLlm.LiteRTNeuroPilotImpl] — v0.7 path, `.litertlm`
+         * artifact on the APU 655 NPU. The big battery win.
+         */
+        const val RUNTIME_LITERT_NPU = "litert_npu"
     }
 
     private val prefs: SharedPreferences
@@ -177,9 +214,75 @@ class SecureStorage(context: Context) {
     // The training metadata (when, how many pairs, what hash) is preserved so
     // the user can be told "Trained at …, X emails, Y epochs."
 
-    fun useLlamaCppRuntime(): Boolean = prefs.getBoolean(KEY_USE_LLAMACPP_RUNTIME, false)
+    fun useLlamaCppRuntime(): Boolean {
+        // The Phase γ.1 string selector wins when present so callers
+        // that have flipped to MediaPipe via [setRuntime] don't get
+        // overridden by a stale legacy boolean. When the string is
+        // absent we fall through to the legacy boolean so v0.6 installs
+        // keep their existing runtime through the upgrade.
+        prefs.getString(KEY_RUNTIME, null)?.let { return it == RUNTIME_LLAMACPP }
+        return prefs.getBoolean(KEY_USE_LLAMACPP_RUNTIME, false)
+    }
+
     fun setUseLlamaCppRuntime(value: Boolean) {
-        prefs.edit().putBoolean(KEY_USE_LLAMACPP_RUNTIME, value).apply()
+        // Keep the legacy boolean in lockstep with the string selector
+        // so observers that haven't been migrated yet keep working.
+        prefs.edit()
+            .putBoolean(KEY_USE_LLAMACPP_RUNTIME, value)
+            .putString(
+                KEY_RUNTIME,
+                if (value) RUNTIME_LLAMACPP else RUNTIME_MEDIAPIPE,
+            )
+            .apply()
+    }
+
+    /**
+     * v0.7 (Phase γ.1) — true when the LiteRT-LM + NeuroPilot
+     * Accelerator path should serve on-device generation. Symmetric
+     * with [useLlamaCppRuntime]. Mutually exclusive: at most one of
+     * {MediaPipe, llama.cpp, LiteRT-NPU} is active at a time, mediated
+     * via [setRuntime].
+     *
+     * Default is `false` — Phase γ.1 ships the runtime skeleton only;
+     * the radio UI that lets users opt in lands in Phase γ.3.
+     */
+    fun useLiteRTNeuroPilotRuntime(): Boolean {
+        return prefs.getString(KEY_RUNTIME, null) == RUNTIME_LITERT_NPU
+    }
+
+    /**
+     * v0.7 (Phase γ.1) — read the active on-device runtime as a
+     * string from the triplet [RUNTIME_MEDIAPIPE] / [RUNTIME_LLAMACPP]
+     * / [RUNTIME_LITERT_NPU]. Falls back to the legacy boolean for
+     * upgrades from v0.6.
+     */
+    fun activeRuntime(): String {
+        prefs.getString(KEY_RUNTIME, null)?.let { return it }
+        return if (prefs.getBoolean(KEY_USE_LLAMACPP_RUNTIME, false))
+            RUNTIME_LLAMACPP
+        else
+            RUNTIME_MEDIAPIPE
+    }
+
+    /**
+     * v0.7 (Phase γ.1) — write the active on-device runtime. Accepts
+     * any of the three [RUNTIME_*] constants. Also updates the legacy
+     * llama.cpp boolean so unmigrated readers stay consistent.
+     *
+     * @throws IllegalArgumentException if [runtime] isn't one of the
+     *   three known values. Defensive — silent fallthrough would leave
+     *   the prefs in a state that [activeRuntime] can't classify.
+     */
+    fun setRuntime(runtime: String) {
+        require(
+            runtime == RUNTIME_MEDIAPIPE ||
+                runtime == RUNTIME_LLAMACPP ||
+                runtime == RUNTIME_LITERT_NPU,
+        ) { "unknown runtime: $runtime" }
+        prefs.edit()
+            .putString(KEY_RUNTIME, runtime)
+            .putBoolean(KEY_USE_LLAMACPP_RUNTIME, runtime == RUNTIME_LLAMACPP)
+            .apply()
     }
 
     fun voiceLoraReady(): Boolean = prefs.getBoolean(KEY_VOICE_LORA_READY, false)

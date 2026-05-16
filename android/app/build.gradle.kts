@@ -144,6 +144,19 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+        // v0.7 (Phase γ.1): LiteRT-LM 0.11.0 is compiled with Kotlin
+        // 2.3 and pulls in `kotlin-reflect:2.2.21` transitively. Our
+        // project is on Kotlin 1.9.22 (per android/build.gradle.kts).
+        // The Kotlin 1.9 compiler errors-out reading 2.x metadata
+        // ("expected version is 1.9.0") rather than warning. The
+        // `-Xskip-metadata-version-check` flag downgrades that to a
+        // warning — safe here because LiteRT-LM's public Kotlin
+        // surface is intentionally backwards-compatible (data
+        // classes + interfaces, no Kotlin 2 reflection/contracts).
+        // Remove once the project moves to Kotlin 2.x.
+        freeCompilerArgs = freeCompilerArgs + listOf(
+            "-Xskip-metadata-version-check",
+        )
     }
 
     // Native llama.cpp build is disabled because the llama.cpp source subtree
@@ -209,6 +222,26 @@ dependencies {
     // v0.5: MediaPipe LLM Inference — Phi-3 Mini / Gemma 2 .task models
     // executed on-device. Output streams via callback.
     implementation("com.google.mediapipe:tasks-genai:0.10.14")
+
+    // v0.7 (Phase γ.1): LiteRT-LM — Google's on-device LLM runtime that
+    // supersedes the now-deprecated MediaPipe LlmInference. Ships an
+    // `Engine` API in `com.google.ai.edge.litertlm` with selectable
+    // `Backend.CPU()` / `Backend.GPU()` / `Backend.NPU(nativeLibraryDir)`.
+    // On the Solana Seeker (MediaTek Dimensity 7300 / MT6878) the NPU
+    // backend dispatches to APU 655 via NeuroPilot Accelerator — the
+    // 7-12× lower-power steady-state path per Google's published
+    // Dimensity numbers. Gemma3-1B-IT ships as a single `.litertlm`
+    // artifact on HuggingFace litert-community.
+    //
+    // v0.11.0 (released 2026-05-07) is the latest stable; we pin
+    // explicitly rather than `latest.release` so a transient Maven
+    // republish can't change the build's binary surface mid-cycle.
+    //
+    // Verified against:
+    //   https://github.com/google-ai-edge/LiteRT-LM/blob/main/docs/api/kotlin/getting_started.md
+    //   https://ai.google.dev/edge/litert-lm/android
+    //   https://github.com/google-ai-edge/LiteRT-LM/releases/tag/v0.11.0
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.11.0")
 
     // Sealed-envelope-v1 E2E (Phase 0.3 / dApp Store v0.3.0).
     // BouncyCastle is required because minSdk = 28 and platform support for

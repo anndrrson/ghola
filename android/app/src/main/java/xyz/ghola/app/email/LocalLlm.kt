@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.channels.awaitClose
 import xyz.ghola.app.ai.SecureStorage
+import xyz.ghola.app.ai.litert.LiteRTLmRuntime
+import xyz.ghola.app.ai.litert.LiteRTRuntime
+import xyz.ghola.app.ai.litert.LiteRtModelManager
 import xyz.ghola.app.ai.llama.LlamaCallback
 import xyz.ghola.app.ai.llama.LlamaCpp
 import xyz.ghola.app.ai.llama.ModelManager
@@ -102,11 +105,27 @@ class LocalLlm private constructor(private val impl: Impl) {
          * `.task` location.
          */
         fun modelFile(context: Context): File {
-            return if (SecureStorage(context).useLlamaCppRuntime()) {
-                File(ModelManager(context).getModelPath())
-            } else {
-                val base = context.getExternalFilesDir(null) ?: context.filesDir
-                File(File(base, "models").apply { mkdirs() }, MEDIAPIPE_MODEL_FILENAME)
+            val storage = SecureStorage(context)
+            return when {
+                storage.useLiteRTNeuroPilotRuntime() -> {
+                    // Resolve via LiteRtModelManager so the path stays
+                    // colocated with where Phase γ.2's downloader puts
+                    // the `.litertlm` artifact. We runBlocking the
+                    // suspend `getModelPath()` because this helper is
+                    // already a sync API.
+                    val mm = LiteRtModelManager(context)
+                    val path = kotlinx.coroutines.runBlocking { mm.getModelPath() }
+                    val base = context.getExternalFilesDir(null) ?: context.filesDir
+                    File(
+                        path
+                            ?: File(File(base, "models"), LiteRtModelManager.MODEL_FILENAME).absolutePath,
+                    )
+                }
+                storage.useLlamaCppRuntime() -> File(ModelManager(context).getModelPath())
+                else -> {
+                    val base = context.getExternalFilesDir(null) ?: context.filesDir
+                    File(File(base, "models").apply { mkdirs() }, MEDIAPIPE_MODEL_FILENAME)
+                }
             }
         }
 
@@ -142,10 +161,14 @@ class LocalLlm private constructor(private val impl: Impl) {
         }
 
         private fun build(context: Context): LocalLlm? {
-            return if (SecureStorage(context).useLlamaCppRuntime()) {
-                LlamaCppImpl.build(context)?.let { LocalLlm(it) }
-            } else {
-                MediaPipeImpl.build(context)?.let { LocalLlm(it) }
+            val storage = SecureStorage(context)
+            return when {
+                storage.useLiteRTNeuroPilotRuntime() ->
+                    LiteRTNeuroPilotImpl.build(context)?.let { LocalLlm(it) }
+                storage.useLlamaCppRuntime() ->
+                    LlamaCppImpl.build(context)?.let { LocalLlm(it) }
+                else ->
+                    MediaPipeImpl.build(context)?.let { LocalLlm(it) }
             }
         }
 
@@ -349,6 +372,94 @@ class LocalLlm private constructor(private val impl: Impl) {
                         LlamaCppImpl(llama, AtomicReference(false))
                     } catch (t: Throwable) {
                         Log.e(TAG, "LlamaCppImpl init failed", t)
+                        null
+                    }
+                }
+            }
+        }
+
+        // ── LiteRT-LM NPU impl (v0.7 / Phase γ.1 path) ────────────────────
+
+        /**
+         * Backend over the LiteRT-LM Kotlin API (v0.11.0). Routes
+         * Gemma-3-1B on-device via the APU 655 NPU when available,
+         * falls back to CPU per [LiteRTLmRuntime.tryCreate]'s
+         * try-NPU-then-CPU pattern.
+         *
+         * Streaming intentionally unimplemented in γ.1 — the
+         * downstream callers that need streaming
+         * (`SuggestionEngine`, `PreDraftWorker`) target the
+         * Qwen-class llama.cpp / MediaPipe paths and a model swap
+         * needs the corresponding LoRA story, which γ.1 doesn't
+         * have. Returns an empty flow for now; γ.3 (UI wiring) will
+         * decide whether to enable streaming.
+         *
+         * @see xyz.ghola.app.ai.litert.LiteRTNeuroPilotBackend the
+         *   public chat backend impl that talks to the same runtime
+         *   through the [LiteRTRuntime] interface seam.
+         */
+        private class LiteRTNeuroPilotImpl(
+            private val runtime: LiteRTRuntime,
+            private val activeCall: AtomicReference<Boolean>,
+        ) : Impl {
+
+            override fun once(prompt: String): String? = try {
+                runtime.generate(prompt).ifBlank { null }
+            } catch (t: Throwable) {
+                Log.e(TAG, "LiteRT-LM once failed", t)
+                null
+            }
+
+            override fun stream(prompt: String): Flow<String> = flow {
+                // γ.1 ships one-shot only. Implementing this requires
+                // wiring [com.google.ai.edge.litertlm.Conversation.sendMessageAsync]
+                // through the [LiteRTRuntime] seam, which the email
+                // path doesn't need today (no LiteRT LoRA story →
+                // SuggestionEngine + PreDraftWorker stay on llama.cpp).
+                if (!activeCall.compareAndSet(false, true)) {
+                    Log.w(TAG, "LiteRT-LM stream called while another generation in flight")
+                    return@flow
+                }
+                try {
+                    val text = runtime.generate(prompt)
+                    if (text.isNotBlank()) emit(text)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "LiteRT-LM stream failed", t)
+                } finally {
+                    activeCall.set(false)
+                }
+            }
+
+            override fun close() {
+                try {
+                    runtime.shutdown()
+                } catch (_: Throwable) {
+                    // best-effort
+                }
+            }
+
+            companion object {
+                fun build(context: Context): LiteRTNeuroPilotImpl? {
+                    return try {
+                        val mm = LiteRtModelManager(context)
+                        if (!mm.isModelDownloaded()) {
+                            Log.w(TAG, "LiteRT-LM model file not present — caller should trigger download")
+                            return null
+                        }
+                        val modelPath = kotlinx.coroutines.runBlocking { mm.getModelPath() }
+                        if (modelPath == null) {
+                            Log.w(TAG, "LiteRT-LM model path unresolved despite isModelDownloaded=true")
+                            return null
+                        }
+                        val runtime = LiteRTLmRuntime.tryCreate(
+                            modelPath = modelPath,
+                            nativeLibraryDir = context.applicationInfo.nativeLibraryDir,
+                            cacheDir = context.cacheDir.absolutePath,
+                        )
+                        Log.i(TAG, "LiteRT-LM impl ready on ${runtime.activeBackendName}")
+                        LiteRTNeuroPilotImpl(runtime, AtomicReference(false))
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "LiteRTNeuroPilotImpl init failed", t)
                         null
                     }
                 }
