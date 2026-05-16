@@ -18,7 +18,9 @@ import android.widget.RadioGroup
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.textfield.TextInputEditText
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -92,6 +94,14 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var litertNpuDownloadButton: Button
     private lateinit var litertNpuDeleteButton: Button
 
+    // HuggingFace Bearer token (Phase γ.4 / L3) — nested inside the NPU
+    // section in the layout because the gated repo it unlocks is the
+    // only download path that consumes it today.
+    private lateinit var hfTokenInput: TextInputEditText
+    private lateinit var hfTokenSaveButton: Button
+    private lateinit var hfTokenClearButton: Button
+    private lateinit var hfTokenStatusText: TextView
+
     // Common
     private lateinit var a11yStatus: TextView
     private lateinit var enableA11yButton: Button
@@ -138,6 +148,10 @@ class SettingsActivity : AppCompatActivity() {
         litertNpuDownloadPercent = findViewById(R.id.litertNpuDownloadPercent)
         litertNpuDownloadButton = findViewById(R.id.litertNpuDownloadButton)
         litertNpuDeleteButton = findViewById(R.id.litertNpuDeleteButton)
+        hfTokenInput = findViewById(R.id.hfTokenInput)
+        hfTokenSaveButton = findViewById(R.id.hfTokenSaveButton)
+        hfTokenClearButton = findViewById(R.id.hfTokenClearButton)
+        hfTokenStatusText = findViewById(R.id.hfTokenStatus)
         a11yStatus = findViewById(R.id.a11yStatus)
         enableA11yButton = findViewById(R.id.enableA11yButton)
         openRelayButton = findViewById(R.id.openRelayButton)
@@ -243,6 +257,16 @@ class SettingsActivity : AppCompatActivity() {
             updateLitertNpuStatus()
             Toast.makeText(this, "NPU model deleted", Toast.LENGTH_SHORT).show()
         }
+
+        // HuggingFace Bearer token wiring (Phase γ.4 / L3).
+        //
+        // We deliberately DO NOT populate hfTokenInput with the saved
+        // token — even masked, echoing it back would let a screen-
+        // recorder lift it. Status text alone ("Token set ✓" /
+        // "No token set") tells the user what's persisted.
+        updateHfTokenStatus()
+        hfTokenSaveButton.setOnClickListener { onSaveHfToken() }
+        hfTokenClearButton.setOnClickListener { onClearHfToken() }
 
         enableA11yButton.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -430,6 +454,76 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * Phase γ.4 / L3 — render the "Token set ✓ / No token set" line.
+     * Pure-formatting logic lives in [SettingsHelpers.formatHfTokenStatus]
+     * so it can be unit-tested without standing up an Activity.
+     */
+    private fun updateHfTokenStatus() {
+        val status = SettingsHelpers.formatHfTokenStatus(secureStorage.hasHfBearerToken())
+        when (status) {
+            SettingsHelpers.HF_STATUS_SET -> {
+                hfTokenStatusText.text = getString(R.string.hf_token_status_set)
+                hfTokenStatusText.setTextColor(0xFF4CAF50.toInt())
+                hfTokenClearButton.visibility = View.VISIBLE
+            }
+            else -> {
+                hfTokenStatusText.text = getString(R.string.hf_token_status_not_set)
+                hfTokenStatusText.setTextColor(0xFF757575.toInt())
+                hfTokenClearButton.visibility = View.GONE
+            }
+        }
+    }
+
+    /**
+     * Phase γ.4 / L3 — persist whatever the user typed into the HF
+     * token field. Validation is intentionally permissive: a token
+     * that doesn't look like `hf_…` produces a warning toast but is
+     * still saved, so future-format tokens (if HF changes the prefix)
+     * don't get rejected.
+     */
+    private fun onSaveHfToken() {
+        val raw = hfTokenInput.text?.toString()?.trim().orEmpty()
+        if (raw.isEmpty()) {
+            Toast.makeText(this, getString(R.string.hf_token_empty_toast), Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!SettingsHelpers.looksLikeHfToken(raw)) {
+            Toast.makeText(
+                this,
+                getString(R.string.hf_token_format_warning),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+        secureStorage.setHfBearerToken(raw)
+        hfTokenInput.setText("")
+        updateHfTokenStatus()
+        Toast.makeText(this, getString(R.string.hf_token_saved_toast), Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Phase γ.4 / L3 — clear the persisted HF token after a confirm
+     * dialog. The confirm exists because subsequent NPU bundle
+     * downloads will 401 against the gated repo — the user should
+     * mean it.
+     */
+    private fun onClearHfToken() {
+        AlertDialog.Builder(this)
+            .setMessage(getString(R.string.hf_token_confirm_clear))
+            .setPositiveButton(R.string.hf_token_clear) { _, _ ->
+                secureStorage.setHfBearerToken(null)
+                hfTokenInput.setText("")
+                updateHfTokenStatus()
+                Toast.makeText(
+                    this,
+                    getString(R.string.hf_token_removed_toast),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     /**
