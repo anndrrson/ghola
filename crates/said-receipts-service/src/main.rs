@@ -4,10 +4,11 @@
 //! Merkle batcher background task, and the axum HTTP router.
 
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Context;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -17,6 +18,63 @@ use said_receipts_service::solana::{
     load_signer_from_env, InMemoryPublisher, RpcConfig, RpcPublisher, SolanaPublisher,
 };
 use said_receipts_service::storage::{PgStore, ReceiptsStore};
+
+fn db_connect_options_from_env() -> anyhow::Result<PgConnectOptions> {
+    for key in [
+        "DATABASE_URL",
+        "RENDER_DATABASE_URL",
+        "INTERNAL_DATABASE_URL",
+        "POSTGRES_URL",
+        "RECEIPTS_DATABASE_URL",
+    ] {
+        if let Ok(raw) = std::env::var(key) {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                continue;
+            }
+            match PgConnectOptions::from_str(raw) {
+                Ok(opts) => {
+                    tracing::info!(db_url_var = key, "using Postgres URL from env");
+                    return Ok(opts);
+                }
+                Err(e) => {
+                    tracing::warn!(db_url_var = key, error = %e, "invalid Postgres URL in env, trying fallback");
+                }
+            }
+        }
+    }
+
+    let host = std::env::var("PGHOST").context("missing PGHOST for Postgres fallback")?;
+    let user = std::env::var("PGUSER").context("missing PGUSER for Postgres fallback")?;
+    let password = std::env::var("PGPASSWORD").unwrap_or_default();
+    let database = std::env::var("PGDATABASE").context("missing PGDATABASE for Postgres fallback")?;
+    let port = std::env::var("PGPORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(5432);
+    let ssl_mode = match std::env::var("PGSSLMODE")
+        .unwrap_or_else(|_| "prefer".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "disable" => PgSslMode::Disable,
+        "allow" => PgSslMode::Allow,
+        "prefer" => PgSslMode::Prefer,
+        "require" => PgSslMode::Require,
+        "verify-ca" => PgSslMode::VerifyCa,
+        "verify-full" => PgSslMode::VerifyFull,
+        _ => PgSslMode::Prefer,
+    };
+
+    tracing::info!("using PG* env fallback for Postgres");
+    Ok(PgConnectOptions::new()
+        .host(&host)
+        .port(port)
+        .username(&user)
+        .password(&password)
+        .database(&database)
+        .ssl_mode(ssl_mode))
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -29,8 +87,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let database_url = std::env::var("DATABASE_URL")
-        .context("DATABASE_URL must be set for said-receipts-service")?;
+    let connect_options = db_connect_options_from_env().context("resolve Postgres configuration")?;
     let interval_secs: u64 = std::env::var("RECEIPTS_BATCH_INTERVAL_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -48,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
 
     let pool = PgPoolOptions::new()
         .max_connections(10)
-        .connect(&database_url)
+        .connect_with(connect_options)
         .await
         .context("connect Postgres")?;
     tracing::info!("connected to Postgres");
