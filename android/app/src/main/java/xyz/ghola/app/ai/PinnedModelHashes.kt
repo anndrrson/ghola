@@ -54,28 +54,96 @@ object PinnedModelHashes {
     val MEDIAPIPE_QWEN_2_5_1_5B_EKV1280_SHA256: String? = null
 
     /**
-     * Pinned SHA-256 for the Phase γ LiteRT-LM NPU artifact:
-     * `Gemma-3-1B-D7300.litertlm` — Gemma-3-1B AOT-compiled for the
-     * Solana Seeker (MediaTek Dimensity 7300 / MT6878, APU 655 NPU).
-     *
-     * Source URL (see `LiteRtModelManager.GEMMA_3_1B_LITERTLM_URL`):
-     *   https://huggingface.co/litert-community/Gemma-3-1B-NPU-MT6878/resolve/main/Gemma-3-1B.litertlm
+     * Legacy single-variant pin for the Phase γ LiteRT-LM artifact.
+     * Replaced by the per-variant ladder below ([forVariant] keyed by
+     * [xyz.ghola.app.ai.litert.LiteRtVariant]). Kept as a deprecated
+     * alias so existing call sites continue compiling during the L2
+     * [xyz.ghola.app.ai.litert.LiteRtModelManager] refactor — the
+     * accessor now resolves to [GEMMA_3_1B_LITERTLM_GENERIC_SHA256]
+     * since the original single-variant path corresponded to the
+     * cross-platform CPU+GPU bundle.
      *
      * Two-hash strategy from the plan (Phase η, "Integrity model"):
      * every `.litertlm` artifact has two anchors —
      *   1. the upstream `.tflite` input from Google's HF repo, AND
-     *   2. the SoC-tuned `.litertlm` compiled bundle (this constant).
-     *
+     *   2. the SoC-tuned `.litertlm` compiled bundle (these constants).
      * For the on-device verifier we only need the compiled-artifact
-     * pin (this constant); the input-`.tflite` pin lives in the
+     * pin; the input-`.tflite` pin lives in the
      * `ghola-model-registry` Anchor program for supply-chain audits.
-     *
-     * TODO(Phase γ.3): populate from the on-chain
-     * `ghola-model-registry` record once the `.litertlm` artifact is
-     * anchored. Until then this is null and [IntegrityVerifier] returns
-     * match=true with `reason="no expected hash pinned yet"` — i.e. the
-     * download path proceeds without enforcement, matching the
-     * [QWEN_2_5_1_5B_Q8_GGUF_SHA256] posture.
      */
-    val GEMMA_3_1B_LITERTLM_SHA256: String? = null
+    @Deprecated(
+        message = "Multi-SoC ladder makes the single-variant constant " +
+            "ambiguous. Use forVariant(LiteRtVariant.Generic) (or " +
+            "whichever variant the device resolved to) instead.",
+        replaceWith = ReplaceWith(
+            "PinnedModelHashes.forVariant(LiteRtVariant.Generic)",
+            "xyz.ghola.app.ai.litert.LiteRtVariant",
+        ),
+    )
+    val GEMMA_3_1B_LITERTLM_SHA256: String?
+        get() = GEMMA_3_1B_LITERTLM_GENERIC_SHA256
+
+    // ── Multi-SoC (Phase γ.4 / L1) per-variant LiteRT-LM pins ────────
+    //
+    // Each constant below mirrors a [xyz.ghola.app.ai.litert.LiteRtVariant]
+    // entry. All `null` today — same observe-but-don't-enforce posture
+    // as the constants above. The L1 agent owns the values; this L2
+    // commit only adds the `forVariant` accessor so [LiteRtModelManager]
+    // can look up a pin by variant without a giant when-table at the
+    // call site.
+    //
+    // When the L1 agent's commit lands with real hex strings, the only
+    // thing that changes here is `: String? = null` → `: String? = "<hex>"`.
+
+    /** SHA-256 for `Gemma3-1B-IT.litertlm` (Generic CPU+GPU fallback). */
+    val GEMMA_3_1B_LITERTLM_GENERIC_SHA256: String? = null
+
+    /** SHA-256 for `Gemma3-1B-IT-MT6989.litertlm` (Dimensity 9300). */
+    val GEMMA_3_1B_LITERTLM_MT6989_SHA256: String? = null
+
+    /** SHA-256 for `Gemma3-1B-IT-MT6991.litertlm` (Dimensity 9400). */
+    val GEMMA_3_1B_LITERTLM_MT6991_SHA256: String? = null
+
+    /** SHA-256 for `Gemma3-1B-IT-MT6993.litertlm` (Dimensity 9500). */
+    val GEMMA_3_1B_LITERTLM_MT6993_SHA256: String? = null
+
+    /** SHA-256 for `Gemma3-1B-IT-SM8550.litertlm` (Snapdragon 8 Gen 2). */
+    val GEMMA_3_1B_LITERTLM_SM8550_SHA256: String? = null
+
+    /** SHA-256 for `Gemma3-1B-IT-SM8650.litertlm` (Snapdragon 8 Gen 3). */
+    val GEMMA_3_1B_LITERTLM_SM8650_SHA256: String? = null
+
+    /** SHA-256 for `Gemma3-1B-IT-SM8750.litertlm` (Snapdragon 8 Gen 4). */
+    val GEMMA_3_1B_LITERTLM_SM8750_SHA256: String? = null
+
+    /** SHA-256 for `Gemma3-1B-IT-SM8850.litertlm` (Snapdragon 8 Gen 5). */
+    val GEMMA_3_1B_LITERTLM_SM8850_SHA256: String? = null
+
+    /**
+     * Lookup a pinned SHA-256 by [xyz.ghola.app.ai.litert.LiteRtVariant].
+     * Returns `null` for any variant that doesn't yet have a published
+     * pin (today: all of them — observe-but-don't-enforce). Used by
+     * [xyz.ghola.app.ai.litert.LiteRtModelManager] to gate the
+     * post-download integrity check on a per-variant basis.
+     */
+    fun forVariant(
+        variant: xyz.ghola.app.ai.litert.LiteRtVariant,
+    ): String? = when (variant) {
+        is xyz.ghola.app.ai.litert.LiteRtVariant.Generic ->
+            GEMMA_3_1B_LITERTLM_GENERIC_SHA256
+        is xyz.ghola.app.ai.litert.LiteRtVariant.Mt6989 ->
+            GEMMA_3_1B_LITERTLM_MT6989_SHA256
+        is xyz.ghola.app.ai.litert.LiteRtVariant.Mt6991 ->
+            GEMMA_3_1B_LITERTLM_MT6991_SHA256
+        is xyz.ghola.app.ai.litert.LiteRtVariant.Mt6993 ->
+            GEMMA_3_1B_LITERTLM_MT6993_SHA256
+        is xyz.ghola.app.ai.litert.LiteRtVariant.Sm8550 ->
+            GEMMA_3_1B_LITERTLM_SM8550_SHA256
+        is xyz.ghola.app.ai.litert.LiteRtVariant.Sm8650 ->
+            GEMMA_3_1B_LITERTLM_SM8650_SHA256
+        is xyz.ghola.app.ai.litert.LiteRtVariant.Sm8750 ->
+            GEMMA_3_1B_LITERTLM_SM8750_SHA256
+        is xyz.ghola.app.ai.litert.LiteRtVariant.Sm8850 ->
+            GEMMA_3_1B_LITERTLM_SM8850_SHA256
+    }
 }
