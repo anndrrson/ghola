@@ -5,7 +5,9 @@ Standalone plan for Phase ζ of
 Companion to [`aot-compile-mt6878.md`](aot-compile-mt6878.md) (the
 alternative NPU path) and
 [`seeker-validation-runbook.md`](seeker-validation-runbook.md) (the
-profiler harness pattern).
+profiler harness pattern). iOS counterpart:
+[`ios-phase-zeta-mlx-plan.md`](ios-phase-zeta-mlx-plan.md) — the
+MLX/Metal cross-platform story.
 
 ## 1. Context — why Phase ζ at all
 
