@@ -2,11 +2,12 @@
 
 This document is the source of truth for ghola's on-device inference
 integrity story on Android. It complements [SECURITY.md](../../SECURITY.md)
-(which scopes the web client and the Private-mode enclave path) and
-[local-mode-flash-memory.md](../local-mode-flash-memory.md) (which is the
-product-level explainer for in-browser WebGPU inference). This file
-covers what ships in the APK, what a reviewer can verify, and where the
-trust chain bottoms out.
+(which scopes the web client and the Private-mode enclave path),
+[local-mode-flash-memory.md](../local-mode-flash-memory.md) (the
+product-level explainer for in-browser WebGPU inference), and
+[ios-privacy-posture.md](./ios-privacy-posture.md) (the iOS Phase ζ
+companion to this file). This file covers what ships in the APK, what
+a reviewer can verify, and where the trust chain bottoms out.
 
 The audience is an a16z-style security reviewer or a Solana dApp Store
 submission auditor. Tone matches SECURITY.md: terse, factual, honest
