@@ -21,17 +21,42 @@ import type {
 const THUMPER_API_BASE =
   process.env.NEXT_PUBLIC_THUMPER_API_URL || "http://localhost:3000";
 
+function safeGetLocalStorage(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSetLocalStorage(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Best-effort only. If storage is unavailable, auth continues via
+    // in-memory state for this tab.
+  }
+}
+
+function safeRemoveLocalStorage(key: string) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Best-effort only.
+  }
+}
+
 function getThumperToken(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("thumper_token");
+  return safeGetLocalStorage("thumper_token");
 }
 
 export function setThumperToken(token: string) {
-  localStorage.setItem("thumper_token", token);
+  safeSetLocalStorage("thumper_token", token);
 }
 
 export function clearThumperToken() {
-  localStorage.removeItem("thumper_token");
+  safeRemoveLocalStorage("thumper_token");
 }
 
 export function thumperLogout() {

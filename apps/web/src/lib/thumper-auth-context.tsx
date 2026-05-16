@@ -42,6 +42,22 @@ const ThumperAuthContext = createContext<ThumperAuthContextValue>({
   logout: () => {},
 });
 
+function safeGetTokenFromStorage(): string | null {
+  try {
+    return localStorage.getItem("thumper_token");
+  } catch {
+    return null;
+  }
+}
+
+function safeSetTokenInStorage(token: string) {
+  try {
+    localStorage.setItem("thumper_token", token);
+  } catch {
+    // Best-effort only.
+  }
+}
+
 export function ThumperAuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ThumperAuthState>({
     authenticated: false,
@@ -50,35 +66,46 @@ export function ThumperAuthProvider({ children }: { children: ReactNode }) {
   });
 
   useEffect(() => {
-    const token = localStorage.getItem("thumper_token");
-    if (token) {
-      try {
-        const payload = JSON.parse(atob(token.split(".")[1]));
-        if (payload.exp * 1000 > Date.now()) {
-          setState({
-            authenticated: true,
-            loading: false,
-            user: {
-              id: payload.sub || payload.user_id,
-              email: payload.email,
-              name: payload.name,
-            },
-          });
-          return;
+    // Fail-safe: never leave auth in permanent loading on this route.
+    const fallback = window.setTimeout(() => {
+      setState((prev) => (prev.loading ? { ...prev, loading: false } : prev));
+    }, 2000);
+    try {
+      const token = safeGetTokenFromStorage();
+      if (token) {
+        try {
+          const payload = JSON.parse(atob(token.split(".")[1]));
+          if (payload.exp * 1000 > Date.now()) {
+            setState({
+              authenticated: true,
+              loading: false,
+              user: {
+                id: payload.sub || payload.user_id,
+                email: payload.email,
+                name: payload.name,
+              },
+            });
+            return () => window.clearTimeout(fallback);
+          }
+        } catch {
+          // invalid token
         }
-      } catch {
-        // invalid token
+        clearThumperToken();
       }
-      clearThumperToken();
+    } catch {
+      // Keep going; we always drop loading below.
     }
     setState({ authenticated: false, loading: false, user: null });
+    return () => window.clearTimeout(fallback);
   }, []);
 
   // Auto-refresh JWT before expiry
   useEffect(() => {
     const interval = setInterval(() => {
-      const token = localStorage.getItem("thumper_token");
-      if (!token) return;
+      const token = safeGetTokenFromStorage();
+      // Storage can be unavailable in hardened browser settings.
+      // Treat that as "logged out" and skip refresh.
+      if (token === null) return;
 
       try {
         const payload = JSON.parse(atob(token.split(".")[1]));
@@ -104,7 +131,7 @@ export function ThumperAuthProvider({ children }: { children: ReactNode }) {
               return res.json();
             })
             .then((data: { token: string }) => {
-              localStorage.setItem("thumper_token", data.token);
+              safeSetTokenInStorage(data.token);
               const newPayload = JSON.parse(atob(data.token.split(".")[1]));
               setState({
                 authenticated: true,
@@ -138,7 +165,7 @@ export function ThumperAuthProvider({ children }: { children: ReactNode }) {
       //   setAuth(token, user) — legacy email/password + Google
       //   setAuth(user)        — cookie-backed Twitter session (no JWT)
       if (typeof userOrToken === "string") {
-        localStorage.setItem("thumper_token", userOrToken);
+        safeSetTokenInStorage(userOrToken);
         if (user) setState({ authenticated: true, loading: false, user });
       } else {
         setState({
