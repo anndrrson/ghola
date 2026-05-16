@@ -3,8 +3,10 @@ package xyz.ghola.app.ai
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
+import xyz.ghola.app.service.BatteryEnergyProfiler
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -35,7 +37,15 @@ class AgentController(
      */
     private val agentId: String? = null,
     private val agentDisplayName: String? = null,
-    private val agentDid: String? = null
+    private val agentDid: String? = null,
+    /**
+     * Phase α: optional battery / thermal / energy profiler. When supplied,
+     * each [LlmBackend.generate] call is wrapped in begin/end so we get a
+     * per-inference snapshot tagged with the backend's `displayName`. When
+     * `null`, behaviour is identical to pre-Phase-α — no overhead, no
+     * coroutine glue, no listeners.
+     */
+    private val profiler: BatteryEnergyProfiler? = null
 ) {
 
     companion object {
@@ -231,6 +241,14 @@ class AgentController(
             // Streaming is used only for the final text response
             val response: ApiResponse
 
+            // Phase α: open a profiler session around every backend call.
+            // The session id threads through to the matching end()/cancel()
+            // call below; on exception the session is cancelled so the
+            // snapshot still lands in the ring buffer (analyser can spot
+            // patterns of failure under thermal pressure).
+            val profileSessionId: String? = profiler?.let {
+                runBlocking { it.begin(backend.displayName, modelName = null) }
+            }
             try {
                 response = backend.generate(
                     messages,
@@ -239,9 +257,16 @@ class AgentController(
                     false
                 )
             } catch (e: Exception) {
+                if (profileSessionId != null) {
+                    runBlocking { profiler?.cancel(profileSessionId) }
+                }
                 Log.e(TAG, "API call failed", e)
                 mainHandler.post { listener.onError("API error: ${e.message}") }
                 return
+            }
+            if (profileSessionId != null) {
+                val tokens = response.usage?.outputTokens ?: 0
+                runBlocking { profiler?.end(profileSessionId, tokens) }
             }
 
             if (isCancelled.get()) return
