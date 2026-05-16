@@ -36,6 +36,13 @@ export interface ModelLibraryCardProps {
    * record.
    */
   integrityHashShort: string;
+  /**
+   * Optional override for the "Verify integrity now →" target. When
+   * omitted the card links to `/chat`; the `/models/local` page sets
+   * this so each model's card deep-links into a chat with the right
+   * `?model=…` selection.
+   */
+  chatHref?: string;
 }
 
 // Lazy-import the preload CTA so we don't crash the build if Agent 4
@@ -47,7 +54,7 @@ type PreloadModelCtaModule = {
 };
 
 export function ModelLibraryCard(props: ModelLibraryCardProps) {
-  const { name, size, license, modelId, cached, integrityHashShort } = props;
+  const { name, size, license, modelId, cached, integrityHashShort, chatHref } = props;
   const [PreloadCta, setPreloadCta] = useState<ComponentType<{
     modelId?: string;
   }> | null>(null);
@@ -137,7 +144,7 @@ export function ModelLibraryCard(props: ModelLibraryCardProps) {
               </button>
             )}
             <Link
-              href="/chat"
+              href={chatHref ?? "/chat"}
               className="inline-flex items-center gap-1.5 rounded-full border border-[#1e2a3a] px-3 py-1.5 text-[11px] font-mono uppercase tracking-[0.18em] text-[#3da8ff] hover:text-[#eef1f8] hover:border-[#2a3a50]"
             >
               Verify integrity now →

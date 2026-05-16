@@ -6,6 +6,8 @@ import { ModelLibraryCard } from "@/components/ModelLibraryCard";
 import {
   DEFAULT_WEBGPU_MODEL,
   DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH,
+  PHI3_MINI_WEBGPU_MODEL,
+  PHI3_MINI_WEBGPU_MODEL_WEIGHTS_HASH,
 } from "@/lib/webgpu-inference";
 import { getCacheInventory } from "@/lib/local-cache-inventory";
 
@@ -42,6 +44,14 @@ const LOCAL_MODELS: LocalModelDescriptor[] = [
     modelId: DEFAULT_WEBGPU_MODEL,
     weightsHash: DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH,
     cacheMarker: "Llama-3.2-1B-Instruct-q4f16_1-MLC",
+  },
+  {
+    name: "Phi-3 mini 4k Instruct (q4f16_1)",
+    size: "~2.3 GB",
+    license: "MIT",
+    modelId: PHI3_MINI_WEBGPU_MODEL,
+    weightsHash: PHI3_MINI_WEBGPU_MODEL_WEIGHTS_HASH,
+    cacheMarker: "Phi-3-mini-4k-instruct-q4f16_1-MLC",
   },
 ];
 
@@ -108,6 +118,11 @@ export default function LocalModelsPage() {
               modelId={m.modelId}
               cached={cachedMarkers.has(m.cacheMarker)}
               integrityHashShort={`${m.weightsHash.slice(0, 12)}…${m.weightsHash.slice(-6)}`}
+              chatHref={
+                m.modelId === DEFAULT_WEBGPU_MODEL
+                  ? "/chat"
+                  : `/chat?model=${encodeURIComponent(m.modelId)}`
+              }
             />
           ))}
         </div>

@@ -30,6 +30,7 @@ import {
   warmEngine,
   detectWebGPU,
   DEFAULT_WEBGPU_MODEL,
+  PHI3_MINI_WEBGPU_MODEL,
 } from "@/lib/webgpu-inference";
 import { streamSealedChat } from "@/lib/sealed-stream";
 import bs58 from "bs58";
@@ -140,6 +141,23 @@ export default function ChatPage() {
   const { mode: sovereigntyMode, setMode: setSovereigntyMode } =
     useSovereigntyMode(userDid);
 
+  // Local-mode model selection. `/models/local` links into chat with a
+  // `?model=…` query param so a user who opted into Phi-3 mini lands
+  // in a chat that loads it instead of the default Llama-1B. Allowlist
+  // the value — anything else falls back to the default so a stray
+  // querystring can't trigger loading an un-vetted model id.
+  const LOCAL_MODEL_ALLOWLIST = useMemo<readonly string[]>(
+    () => [DEFAULT_WEBGPU_MODEL, PHI3_MINI_WEBGPU_MODEL],
+    [],
+  );
+  const requestedModel = searchParams.get("model");
+  const localModelId = useMemo(() => {
+    if (requestedModel && LOCAL_MODEL_ALLOWLIST.includes(requestedModel)) {
+      return requestedModel;
+    }
+    return DEFAULT_WEBGPU_MODEL;
+  }, [requestedModel, LOCAL_MODEL_ALLOWLIST]);
+
   // WebGPU engine warm-up. Cold-loading the model on first send adds a
   // ~10-30s wait before the first token; pre-loading on chat mount lets
   // the multi-hundred-megabyte download + WebGPU shader compile happen
@@ -156,7 +174,7 @@ export default function ChatPage() {
     // Defer to the next microtask so we don't compete with hydration
     // paint work. `warmEngine` is idempotent — StrictMode double-invoke
     // or a re-mount won't kick off a second download.
-    void warmEngine(DEFAULT_WEBGPU_MODEL, (report) => {
+    void warmEngine(localModelId, (report) => {
       if (cancelled) return;
       setWarmupProgress(report.progress);
     })
@@ -172,7 +190,7 @@ export default function ChatPage() {
     return () => {
       cancelled = true;
     };
-  }, [sovereigntyMode]);
+  }, [sovereigntyMode, localModelId]);
 
   // The Local-mode banner is for ghola-home pairing UX. Anonymous /
   // WebGPU users don't need an "install ghola-home" pitch in their
@@ -499,6 +517,7 @@ export default function ChatPage() {
         }));
       })();
       await streamWebGPUChat(priorMessages, {
+        model: localModelId,
         onChunk: (chunk) => {
           fullContent += chunk;
           updateSession(currentSessionId, (s) => {
@@ -785,7 +804,7 @@ export default function ChatPage() {
               privateUnavailableReason={privateUnavailableReason}
               activeModelId={
                 sovereigntyMode === "local"
-                  ? DEFAULT_WEBGPU_MODEL
+                  ? localModelId
                   : providerInfo?.model ?? null
               }
               warmupProgress={

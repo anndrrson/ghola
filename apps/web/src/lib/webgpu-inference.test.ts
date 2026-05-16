@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { computeLoadedWeightFingerprint } from "./webgpu-inference";
+import {
+  computeLoadedWeightFingerprint,
+  getWebGPUModelIntegrity,
+  DEFAULT_WEBGPU_MODEL,
+  DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH,
+  PHI3_MINI_WEBGPU_MODEL,
+  PHI3_MINI_WEBGPU_MODEL_WEIGHTS_HASH,
+} from "./webgpu-inference";
 
 // Lightweight CacheStorage mock. Vitest's `happy-dom` env doesn't ship
 // the Cache API, so the test polyfills the surface needed by the
@@ -103,5 +110,47 @@ describe("computeLoadedWeightFingerprint", () => {
     const b = await computeLoadedWeightFingerprint();
 
     expect(a!.fingerprint).not.toBe(b!.fingerprint);
+  });
+});
+
+describe("WebGPU model integrity registry", () => {
+  // Shape-of-record assertion: every pinned model must declare
+  // `config`, `model_lib`, a `tokenizer.json` SRI hash, and a
+  // fail-closed `onFailure` policy. Catches a partial entry that would
+  // otherwise pass WebLLM at runtime but skip part of the SRI check.
+  const SRI_RE = /^sha256-[A-Za-z0-9+/]+=*$/;
+
+  function assertIntegrityShape(modelId: string): void {
+    const record = getWebGPUModelIntegrity(modelId);
+    expect(record).toBeDefined();
+    if (!record) return;
+    expect(record.config).toMatch(SRI_RE);
+    expect(record.model_lib).toMatch(SRI_RE);
+    expect(record.tokenizer["tokenizer.json"]).toMatch(SRI_RE);
+    expect(record.onFailure).toBe("error");
+  }
+
+  it("pins SRI hashes for the default Llama model", () => {
+    assertIntegrityShape(DEFAULT_WEBGPU_MODEL);
+  });
+
+  it("pins SRI hashes for the opt-in Phi-3 mini model", () => {
+    assertIntegrityShape(PHI3_MINI_WEBGPU_MODEL);
+  });
+
+  it("returns undefined for unknown model ids", () => {
+    expect(getWebGPUModelIntegrity("not-a-real-model")).toBeUndefined();
+  });
+
+  it("exposes 64-hex canonical weights hashes for both pinned models", () => {
+    const hex = /^[0-9a-f]{64}$/;
+    expect(DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH).toMatch(hex);
+    expect(PHI3_MINI_WEBGPU_MODEL_WEIGHTS_HASH).toMatch(hex);
+    // The two models must not collide on the canonical hash — that
+    // would mean either a copy-paste mistake or a real
+    // weights-collision incident worth investigating.
+    expect(DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH).not.toBe(
+      PHI3_MINI_WEBGPU_MODEL_WEIGHTS_HASH,
+    );
   });
 });

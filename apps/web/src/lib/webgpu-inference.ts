@@ -31,6 +31,13 @@ import {
 // box, so first-load doesn't trip a prompt.
 export const DEFAULT_WEBGPU_MODEL = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
 
+// Opt-in second Local model. Phi-3 mini 4k instruct (q4f16_1) is
+// ~2.3GB on disk and meaningfully stronger than Llama-3.2-1B at chat
+// tasks. Not the default because it crosses the 2GB IndexedDB quota
+// some browsers enforce by default and roughly doubles the first-load
+// download. Exposed on /models/local as a per-user toggle.
+export const PHI3_MINI_WEBGPU_MODEL = "Phi-3-mini-4k-instruct-q4f16_1-MLC";
+
 // Pinned SRI hashes for the default model's non-weight artifacts.
 // WebLLM verifies these on download via its built-in ModelIntegrity
 // path — a tampered model_lib (the WASM inference engine), config, or
@@ -72,6 +79,68 @@ const DEFAULT_WEBGPU_MODEL_INTEGRITY = {
  */
 export const DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH =
   "8c3ae367d068c2b3a7d5b402a16395ab5089315e5256f609e54320d64d53c695";
+
+/**
+ * SRI hashes for the Phi-3 mini 4k instruct (q4f16_1) non-weight
+ * artifacts. Mirrors the {@link DEFAULT_WEBGPU_MODEL_INTEGRITY} shape.
+ *
+ * The model_lib URL pinned below (and therefore the SRI hash of the
+ * WASM payload) is version-stamped — `prebuiltAppConfig.model_lib_map`
+ * upstream uses `modelVersion = "v0_2_83/base"`. If a future WebLLM
+ * bump moves the URL prefix, the new wasm body will have a new hash
+ * and this entry must be recomputed. Pinned URL (so a reviewer can
+ * re-derive the hash):
+ *
+ *   https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/
+ *     main/web-llm-models/v0_2_83/base/
+ *     Phi-3-mini-4k-instruct-q4f16_1_cs1k-webgpu.wasm
+ *
+ * Recompute via:
+ *   curl -L "<url>" | openssl dgst -sha256 -binary | base64
+ */
+const PHI3_MINI_WEBGPU_MODEL_INTEGRITY = {
+  config: "sha256-+cPkVNE9Y+Lbk8twcN2IEsetj4TTrn5rLTmbm7XnpUI=",
+  model_lib: "sha256-tey46y6P2Bs0JOQ68X3J0WNqbSBpsbtu6EBXlN+9AP4=",
+  tokenizer: {
+    "tokenizer.json":
+      "sha256-C73dSzm1lAJ7AizyLEdmnc2eBf/DttSpcrOacTdQ+CM=",
+  },
+  onFailure: "error" as const,
+};
+
+/**
+ * Canonical on-chain weights hash for Phi-3 mini 4k instruct (q4f16_1).
+ * Computed via `scripts/compute-weights-manifest.mjs
+ * mlc-ai/Phi-3-mini-4k-instruct-q4f16_1-MLC main` — same algorithm as
+ * {@link DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH}. Documented in
+ * `docs/perf/phase-e-phi3-mini-prep.md`.
+ *
+ * TODO(ghola-model-registry): Anchor this on devnet via
+ * `scripts/register-default-model.mjs` adapted with MODEL_ID and this
+ * hash — requires a funded devnet keypair the user must authorize.
+ */
+export const PHI3_MINI_WEBGPU_MODEL_WEIGHTS_HASH =
+  "438aeaa97d1b793a2e4374e36f51a22a906839775b1bb30fdfd5a5d3c65e3b1a";
+
+// Per-model SRI integrity records. Used by `getEngine()` to inject the
+// right pinned-hash block into WebLLM's AppConfig when the requested
+// model_id is one we've vetted. Models not in this map fall through to
+// the upstream prebuilt list (no SRI check — followed up per-model as
+// they're vetted).
+const WEBGPU_MODEL_INTEGRITY: Record<
+  string,
+  typeof DEFAULT_WEBGPU_MODEL_INTEGRITY
+> = {
+  [DEFAULT_WEBGPU_MODEL]: DEFAULT_WEBGPU_MODEL_INTEGRITY,
+  [PHI3_MINI_WEBGPU_MODEL]: PHI3_MINI_WEBGPU_MODEL_INTEGRITY,
+};
+
+/** Exposed for tests; do not mutate. */
+export function getWebGPUModelIntegrity(
+  modelId: string,
+): typeof DEFAULT_WEBGPU_MODEL_INTEGRITY | undefined {
+  return WEBGPU_MODEL_INTEGRITY[modelId];
+}
 
 export interface WebGPUSupport {
   supported: boolean;
@@ -138,23 +207,19 @@ async function getEngine(
 
   const { CreateMLCEngine, prebuiltAppConfig } = await import("@mlc-ai/web-llm");
 
-  // Compose an AppConfig that pins SRI hashes on the default model.
+  // Compose an AppConfig that pins SRI hashes on every vetted model.
   // For any model id we haven't pinned, fall back to the upstream
   // prebuilt list (no integrity check yet — followed up per-model as
   // they're vetted). The model_list array shape matches WebLLM's
   // public type — overriding by id keeps upstream record fields
   // intact except for the integrity addition.
-  const pinnedAppConfig =
-    modelId === DEFAULT_WEBGPU_MODEL
-      ? {
-          ...prebuiltAppConfig,
-          model_list: prebuiltAppConfig.model_list.map((m) =>
-            m.model_id === DEFAULT_WEBGPU_MODEL
-              ? { ...m, integrity: DEFAULT_WEBGPU_MODEL_INTEGRITY }
-              : m,
-          ),
-        }
-      : prebuiltAppConfig;
+  const pinnedAppConfig = {
+    ...prebuiltAppConfig,
+    model_list: prebuiltAppConfig.model_list.map((m) => {
+      const integrity = WEBGPU_MODEL_INTEGRITY[m.model_id];
+      return integrity ? { ...m, integrity } : m;
+    }),
+  };
 
   inflight = CreateMLCEngine(modelId, {
     initProgressCallback: (report) => {
