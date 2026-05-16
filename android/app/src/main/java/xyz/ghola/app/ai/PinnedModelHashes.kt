@@ -52,4 +52,30 @@ object PinnedModelHashes {
      * match=true with `reason="no expected hash pinned yet"`.
      */
     val MEDIAPIPE_QWEN_2_5_1_5B_EKV1280_SHA256: String? = null
+
+    /**
+     * Pinned SHA-256 for the Phase γ LiteRT-LM NPU artifact:
+     * `Gemma-3-1B-D7300.litertlm` — Gemma-3-1B AOT-compiled for the
+     * Solana Seeker (MediaTek Dimensity 7300 / MT6878, APU 655 NPU).
+     *
+     * Source URL (see `LiteRtModelManager.GEMMA_3_1B_LITERTLM_URL`):
+     *   https://huggingface.co/litert-community/Gemma-3-1B-NPU-MT6878/resolve/main/Gemma-3-1B.litertlm
+     *
+     * Two-hash strategy from the plan (Phase η, "Integrity model"):
+     * every `.litertlm` artifact has two anchors —
+     *   1. the upstream `.tflite` input from Google's HF repo, AND
+     *   2. the SoC-tuned `.litertlm` compiled bundle (this constant).
+     *
+     * For the on-device verifier we only need the compiled-artifact
+     * pin (this constant); the input-`.tflite` pin lives in the
+     * `ghola-model-registry` Anchor program for supply-chain audits.
+     *
+     * TODO(Phase γ.3): populate from the on-chain
+     * `ghola-model-registry` record once the `.litertlm` artifact is
+     * anchored. Until then this is null and [IntegrityVerifier] returns
+     * match=true with `reason="no expected hash pinned yet"` — i.e. the
+     * download path proceeds without enforcement, matching the
+     * [QWEN_2_5_1_5B_Q8_GGUF_SHA256] posture.
+     */
+    val GEMMA_3_1B_LITERTLM_SHA256: String? = null
 }
