@@ -13,7 +13,7 @@ import androidx.annotation.ColorInt
 import androidx.appcompat.widget.AppCompatTextView
 import androidx.core.content.ContextCompat
 import xyz.ghola.app.R
-import xyz.ghola.app.ai.llama.ModelManager.ModelStatus
+import xyz.ghola.app.ai.ModelStatus
 
 // R is still imported because init{} references R.color.ghola_text_secondary
 // for the placeholder colour before bind() is called.

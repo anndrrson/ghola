@@ -2,7 +2,7 @@ package xyz.ghola.app.ui.components
 
 import androidx.annotation.ColorRes
 import xyz.ghola.app.R
-import xyz.ghola.app.ai.llama.ModelManager.ModelStatus
+import xyz.ghola.app.ai.ModelStatus
 
 /**
  * Pure-Kotlin (no Android runtime types) projection of a

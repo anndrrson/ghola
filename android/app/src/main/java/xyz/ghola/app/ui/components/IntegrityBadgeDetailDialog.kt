@@ -2,7 +2,7 @@ package xyz.ghola.app.ui.components
 
 import android.content.Context
 import androidx.appcompat.app.AlertDialog
-import xyz.ghola.app.ai.llama.ModelManager.ModelStatus
+import xyz.ghola.app.ai.ModelStatus
 
 /**
  * Lightweight detail dialog for the [IntegrityBadge].

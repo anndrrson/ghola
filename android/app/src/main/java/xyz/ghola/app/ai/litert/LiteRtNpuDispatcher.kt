@@ -1,10 +1,10 @@
 package xyz.ghola.app.ai.litert
 
-import xyz.ghola.app.ai.litert.LiteRtModelManager.ModelStatus
+import xyz.ghola.app.ai.ModelStatus
 
 /**
  * Phase γ.3 — pure-Kotlin decision helper that maps a
- * [LiteRtModelManager.ModelStatus] into a user-facing dispatch
+ * [ModelStatus] into a user-facing dispatch
  * [Decision] for the LiteRT-LM NPU backend.
  *
  * Lives outside [xyz.ghola.app.ui.ChatActivity] for two reasons:

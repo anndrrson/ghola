@@ -3,6 +3,7 @@ package xyz.ghola.app.ai.llama
 import android.content.Context
 import android.util.Log
 import xyz.ghola.app.ai.IntegrityVerifier
+import xyz.ghola.app.ai.ModelStatus
 import xyz.ghola.app.ai.PinnedModelHashes
 import java.io.File
 import java.io.FileOutputStream
@@ -79,20 +80,6 @@ class ModelManager(private val context: Context) {
     private var cancelled = false
 
     fun isModelDownloaded(): Boolean = modelFile.exists() && modelFile.length() > 0
-
-    /**
-     * Coarse-grained status for the base GGUF artifact, combining
-     * presence-on-disk with the Phase η integrity check.
-     *
-     * - [NOT_DOWNLOADED] — file is missing or zero-byte.
-     * - [DOWNLOADED_UNVERIFIED] — file is present but the pinned
-     *   SHA-256 in [PinnedModelHashes] is still null (i.e. we ship
-     *   today without enforcement; behavior is identical to the legacy
-     *   `isModelDownloaded()=true` case).
-     * - [VERIFIED] — file present AND its SHA-256 matches the pin.
-     * - [TAMPERED] — file present, pin present, hashes disagree.
-     */
-    enum class ModelStatus { NOT_DOWNLOADED, DOWNLOADED_UNVERIFIED, VERIFIED, TAMPERED }
 
     /**
      * Run the Phase η integrity check on the base GGUF artifact. This is

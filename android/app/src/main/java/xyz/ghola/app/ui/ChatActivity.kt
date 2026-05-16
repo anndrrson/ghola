@@ -32,6 +32,7 @@ import xyz.ghola.app.ai.CloudLlmBackend
 import xyz.ghola.app.ai.LlmBackend
 import xyz.ghola.app.ai.OpenAIApiClient
 import xyz.ghola.app.ai.LocalToolExecutor
+import xyz.ghola.app.ai.ModelStatus
 import xyz.ghola.app.ai.PinnedModelHashes
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.ai.ToolFriendlyNames
@@ -143,7 +144,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
      * (expensive) SHA-256 hash on every tap. Re-verify re-populates this.
      */
     private data class IntegritySnapshot(
-        val status: ModelManager.ModelStatus,
+        val status: ModelStatus,
         val artifactName: String,
         val artifactPath: String?,
         val fullHash: String?,
@@ -317,7 +318,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                 lifecycleScope.launch {
                     val (status, path) = withContext(Dispatchers.IO) {
                         val s = runCatching { mgr.isModelVerified() }.getOrNull()
-                            ?: ModelManager.ModelStatus.NOT_DOWNLOADED
+                            ?: ModelStatus.NOT_DOWNLOADED
                         val p = runCatching { mgr.getModelPath() }.getOrNull()
                         s to p
                     }
@@ -339,15 +340,14 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                 lifecycleScope.launch {
                     val (status, path) = withContext(Dispatchers.IO) {
                         val s = runCatching { mgr.isModelVerified() }.getOrNull()
-                            ?: LiteRtModelManager.ModelStatus.NOT_DOWNLOADED
+                            ?: ModelStatus.NOT_DOWNLOADED
                         val p = runCatching { mgr.getModelPath() }.getOrNull()
                         s to p
                     }
                     val fullHash = PinnedModelHashes.forVariant(mgr.activeVariant)
-                    val canonical = liteRtStatusToCanonical(status)
-                    integrityBadge.bind(canonical, mgr.activeVariant.filename, fullHash?.take(8))
+                    integrityBadge.bind(status, mgr.activeVariant.filename, fullHash?.take(8))
                     lastIntegritySnapshot = IntegritySnapshot(
-                        status = canonical,
+                        status = status,
                         artifactName = mgr.activeVariant.filename,
                         artifactPath = path,
                         fullHash = fullHash,
@@ -369,26 +369,6 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         SecureStorage.BACKEND_QWEN_CLOUD -> "Qwen (Cloud)"
         SecureStorage.BACKEND_CLOUD -> "Claude (Cloud)"
         else -> ""
-    }
-
-    /**
-     * Map [LiteRtModelManager.ModelStatus] onto the canonical
-     * [ModelManager.ModelStatus] enum that [IntegrityBadge.bind]
-     * consumes. The two enums have identical members today — this
-     * exists so an asymmetric drift on either side surfaces as a
-     * compile error rather than a silent badge misrender.
-     */
-    private fun liteRtStatusToCanonical(
-        s: LiteRtModelManager.ModelStatus,
-    ): ModelManager.ModelStatus = when (s) {
-        LiteRtModelManager.ModelStatus.NOT_DOWNLOADED ->
-            ModelManager.ModelStatus.NOT_DOWNLOADED
-        LiteRtModelManager.ModelStatus.DOWNLOADED_UNVERIFIED ->
-            ModelManager.ModelStatus.DOWNLOADED_UNVERIFIED
-        LiteRtModelManager.ModelStatus.VERIFIED ->
-            ModelManager.ModelStatus.VERIFIED
-        LiteRtModelManager.ModelStatus.TAMPERED ->
-            ModelManager.ModelStatus.TAMPERED
     }
 
     private fun checkPrerequisites() {
@@ -539,7 +519,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         lifecycleScope.launch {
             val (status, modelPath) = withContext(Dispatchers.IO) {
                 val s = runCatching { mgr.isModelVerified() }.getOrNull()
-                    ?: LiteRtModelManager.ModelStatus.NOT_DOWNLOADED
+                    ?: ModelStatus.NOT_DOWNLOADED
                 val p = runCatching { mgr.getModelPath() }.getOrNull()
                 s to p
             }

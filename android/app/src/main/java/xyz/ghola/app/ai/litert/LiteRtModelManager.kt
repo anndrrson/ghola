@@ -6,6 +6,7 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import xyz.ghola.app.ai.IntegrityVerifier
+import xyz.ghola.app.ai.ModelStatus
 import xyz.ghola.app.ai.PinnedModelHashes
 import xyz.ghola.app.ai.SecureStorage
 import java.io.File
@@ -104,6 +105,17 @@ class LiteRtModelManager internal constructor(
      * anonymous-request path).
      */
     private val hfTokenOverride: (() -> String?)? = null,
+    /**
+     * Test-only override of the per-variant SHA-256 pin lookup.
+     * Extracted for end-to-end testability — production paths pass
+     * `null` here and the manager falls back to
+     * [PinnedModelHashes.forVariant], which is the only production
+     * source of truth. Integration tests inject a stub that returns
+     * a deliberately wrong hex so they can exercise the TAMPERED
+     * branch in [runDownload] without mutating the [PinnedModelHashes]
+     * constants. Has no effect on production behaviour.
+     */
+    private val pinResolverOverride: ((LiteRtVariant) -> String?)? = null,
 ) {
 
     /**
@@ -117,6 +129,7 @@ class LiteRtModelManager internal constructor(
         modelsDirOverride = null,
         urlOverride = null,
         hfTokenOverride = null,
+        pinResolverOverride = null,
     )
 
     /**
@@ -130,6 +143,7 @@ class LiteRtModelManager internal constructor(
         modelsDirOverride = null,
         urlOverride = null,
         hfTokenOverride = null,
+        pinResolverOverride = null,
     )
 
     companion object {
@@ -206,9 +220,6 @@ class LiteRtModelManager internal constructor(
         fun onError(message: String)
     }
 
-    /** See [xyz.ghola.app.ai.llama.ModelManager.ModelStatus]. */
-    enum class ModelStatus { NOT_DOWNLOADED, DOWNLOADED_UNVERIFIED, VERIFIED, TAMPERED }
-
     private val modelsDir: File
         get() {
             val dir = modelsDirOverride
@@ -252,7 +263,7 @@ class LiteRtModelManager internal constructor(
      */
     suspend fun isModelVerified(): ModelStatus {
         if (!isModelDownloaded()) return ModelStatus.NOT_DOWNLOADED
-        val pin = PinnedModelHashes.forVariant(activeVariant)
+        val pin = resolvePin()
         val result = IntegrityVerifier.verifyFile(modelFile, pin)
         return when {
             pin == null -> ModelStatus.DOWNLOADED_UNVERIFIED
@@ -354,6 +365,18 @@ class LiteRtModelManager internal constructor(
         return SecureStorage(ctx).getHfBearerToken()
     }
 
+    /**
+     * Resolve the per-variant SHA-256 pin. Production code path always
+     * calls [PinnedModelHashes.forVariant] (the canonical source of
+     * truth). The [pinResolverOverride] hook exists purely for the
+     * end-to-end integration test suite — production callers never
+     * supply it.
+     */
+    private fun resolvePin(): String? {
+        pinResolverOverride?.let { return it(activeVariant) }
+        return PinnedModelHashes.forVariant(activeVariant)
+    }
+
     private fun runDownload(listener: DownloadListener) {
         val existingSize = if (modelFile.exists()) modelFile.length() else 0L
 
@@ -443,7 +466,7 @@ class LiteRtModelManager internal constructor(
         // Post-download integrity check (Phase η). Run synchronously
         // on the worker thread — the file is freshly closed, the
         // hash is the gate to declaring `onComplete`.
-        val pin = PinnedModelHashes.forVariant(activeVariant)
+        val pin = resolvePin()
         val verifyResult = runBlocking { IntegrityVerifier.verifyFile(modelFile, pin) }
 
         if (pin != null && !verifyResult.match) {

@@ -12,7 +12,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import xyz.ghola.app.ai.litert.LiteRtModelManager.ModelStatus
+import xyz.ghola.app.ai.ModelStatus
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit

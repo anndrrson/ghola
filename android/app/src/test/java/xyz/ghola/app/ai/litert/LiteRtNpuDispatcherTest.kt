@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import xyz.ghola.app.ai.litert.LiteRtModelManager.ModelStatus
+import xyz.ghola.app.ai.ModelStatus
 
 /**
  * Phase γ.3 unit tests for [LiteRtNpuDispatcher].

@@ -5,7 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import xyz.ghola.app.R
-import xyz.ghola.app.ai.llama.ModelManager.ModelStatus
+import xyz.ghola.app.ai.ModelStatus
 
 /**
  * Unit tests for the [IntegrityBadge] rendering contract.

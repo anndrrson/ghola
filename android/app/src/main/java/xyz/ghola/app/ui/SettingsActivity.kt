@@ -25,6 +25,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import xyz.ghola.app.R
+import xyz.ghola.app.ai.ModelStatus
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.ai.litert.LiteRtModelManager
 import xyz.ghola.app.ai.llama.ModelManager
@@ -436,20 +437,20 @@ class SettingsActivity : AppCompatActivity() {
             }
             val sizeStr = mgr.formatSize(mgr.getModelSizeBytes())
             when (status) {
-                LiteRtModelManager.ModelStatus.VERIFIED -> {
+                ModelStatus.VERIFIED -> {
                     litertNpuStatus.text = getString(R.string.litert_npu_status_verified, sizeStr)
                     litertNpuStatus.setTextColor(0xFF4CAF50.toInt())
                 }
-                LiteRtModelManager.ModelStatus.DOWNLOADED_UNVERIFIED -> {
+                ModelStatus.DOWNLOADED_UNVERIFIED -> {
                     litertNpuStatus.text = getString(R.string.litert_npu_status_unverified, sizeStr)
                     litertNpuStatus.setTextColor(0xFFFFB300.toInt())
                 }
-                LiteRtModelManager.ModelStatus.TAMPERED -> {
+                ModelStatus.TAMPERED -> {
                     litertNpuStatus.text = getString(R.string.litert_npu_status_tampered)
                     litertNpuStatus.setTextColor(0xFFF44336.toInt())
                     litertNpuDeleteButton.visibility = View.VISIBLE
                 }
-                LiteRtModelManager.ModelStatus.NOT_DOWNLOADED, null -> {
+                ModelStatus.NOT_DOWNLOADED, null -> {
                     // already rendered above
                 }
             }
