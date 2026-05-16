@@ -135,6 +135,9 @@ hash lives on-chain alongside it so a third party can audit the
 compilation step out-of-band if Google publishes the compiler's
 expected fingerprint. Neither hash is pinned today (Phase γ.3 + Phase η
 in [`zesty-giggling-charm.md`](../../.claude/plans/zesty-giggling-charm.md)).
+The end-to-end self-compile recipe for the MT6878 (Seeker) bundle —
+including the toolchain, hosting model, and an honest accounting of
+gaps — is in [`docs/perf/aot-compile-mt6878.md`](../perf/aot-compile-mt6878.md).
 
 ### On-chain registry shape
 
