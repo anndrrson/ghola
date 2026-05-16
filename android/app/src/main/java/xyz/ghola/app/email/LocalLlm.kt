@@ -116,9 +116,16 @@ class LocalLlm private constructor(private val impl: Impl) {
                     val mm = LiteRtModelManager(context)
                     val path = kotlinx.coroutines.runBlocking { mm.getModelPath() }
                     val base = context.getExternalFilesDir(null) ?: context.filesDir
+                    // Per-SoC `.litertlm` lives under
+                    // models/litert-lm/<variant.filename>; mirror that
+                    // layout when constructing the fallback path that
+                    // covers the "not downloaded yet" branch.
                     File(
                         path
-                            ?: File(File(base, "models"), LiteRtModelManager.MODEL_FILENAME).absolutePath,
+                            ?: File(
+                                File(File(base, "models"), LiteRtModelManager.MODELS_SUBDIR),
+                                mm.activeVariant.filename,
+                            ).absolutePath,
                     )
                 }
                 storage.useLlamaCppRuntime() -> File(ModelManager(context).getModelPath())

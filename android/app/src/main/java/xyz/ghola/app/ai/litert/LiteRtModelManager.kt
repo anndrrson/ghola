@@ -7,111 +7,158 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import xyz.ghola.app.ai.IntegrityVerifier
 import xyz.ghola.app.ai.PinnedModelHashes
+import xyz.ghola.app.ai.SecureStorage
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Lifecycle manager for the Phase γ LiteRT-LM `.litertlm` artifact —
- * Gemma-3-1B AOT-compiled for the Solana Seeker's MediaTek Dimensity
- * 7300 (MT6878) SoC and APU 655 NPU.
+ * Lifecycle manager for a Phase γ LiteRT-LM `.litertlm` artifact.
+ *
+ * **Multi-SoC (Phase γ.4 / L2).** This manager is now variant-aware:
+ * every public surface dispatches off the [LiteRtVariant] passed at
+ * construction time, which encodes the SoC tuning. The production
+ * constructor picks the variant for you using [SoCDetector] →
+ * [LiteRtVariant.forSoC], so existing callers (`LiteRtModelManager(context)`)
+ * keep compiling and Just Work — they silently get the SoC-matched
+ * bundle on launch. Tests + admin UI can pass a variant explicitly.
  *
  * Parallels [xyz.ghola.app.ai.llama.ModelManager] but for a different
  * artifact format (`.litertlm` instead of `.gguf`) and a different
  * runtime (LiteRT-LM NPU path instead of llama.cpp). The two managers
  * intentionally coexist — the user may have both the GGUF base model
- * and the LiteRT artifact resident, and the Phase δ
- * `BackendSelector` decides which one to dispatch to per inference.
+ * and a LiteRT artifact resident, and the Phase δ `BackendSelector`
+ * decides which one to dispatch to per inference.
  *
- * Storage layout: `getExternalFilesDir(null)/models/Gemma-3-1B-D7300.litertlm`.
- * The filename embeds the SoC tag because LiteRT-LM artifacts are
- * AOT-compiled per-SoC; an MT6878-compiled bundle will not run on an
- * MT6989 (D9300) device, and shipping a generic name would invite a
- * silent runtime mismatch. The on-disk file is always SoC-pinned.
+ * **Storage layout.**
+ * `getExternalFilesDir(null)/models/litert-lm/<variant.filename>`.
+ * The filename comes verbatim from [LiteRtVariant.filename] which
+ * embeds the SoC tag (e.g. `Gemma3-1B-IT_q4_ekv1280_mt6989.litertlm`)
+ * because LiteRT-LM artifacts are AOT-compiled per-SoC; an MT6989
+ * bundle will not run on an SM8650 device, and a generic name would
+ * invite a silent runtime mismatch. The on-disk file is always
+ * SoC-pinned.
  *
- * Download protocol: HTTP Range-resume via OkHttp. Resumes from the
- * current on-disk file size on every call; servers that don't honour
- * the `Range` header fall through to a full re-download (handled
- * transparently — same shape as [xyz.ghola.app.ai.llama.ModelManager]).
+ * **Download protocol.** HTTP Range-resume via OkHttp. Resumes from
+ * the current on-disk file size on every call; servers that don't
+ * honour the `Range` header fall through to a full re-download
+ * (handled transparently — same shape as
+ * [xyz.ghola.app.ai.llama.ModelManager]). The `litert-community` HF
+ * repo is gated, so a non-`null` HF Bearer token from
+ * [SecureStorage.getHfBearerToken] is attached as
+ * `Authorization: Bearer <token>` when present. An anonymous request
+ * against the gated repo returns 401, which this manager translates
+ * to a specific, user-facing error (see [runDownload]).
  *
- * Post-download: the file is hashed via the Phase η
- * [IntegrityVerifier] and compared to
- * [PinnedModelHashes.GEMMA_3_1B_LITERTLM_SHA256]. Today that pin is
- * `null` (observe-but-don't-enforce) so the post-download path is a
- * no-op pass-through. When the pin lands, a mismatch deletes the
- * file and reports `onError("integrity check failed: tampered or wrong artifact")`.
+ * **Post-download.** The file is hashed via the Phase η
+ * [IntegrityVerifier] and compared to [PinnedModelHashes.forVariant].
+ * Today every per-variant pin returns `null`
+ * (observe-but-don't-enforce) so the post-download path is a no-op
+ * pass-through. When the pin lands, a mismatch deletes the file and
+ * reports `onError("integrity check failed: tampered or wrong artifact")`.
  *
  * No UI dependencies — caller owns the listener and the threading
  * model. Downloads run on a dedicated worker thread; listener
  * callbacks fire on that same thread.
  *
- * @see xyz.ghola.app.ai.llama.ModelManager — the sibling GGUF manager
- *   whose patterns this class mirrors.
- * @see xyz.ghola.app.ai.IntegrityVerifier — Phase η SHA-256 comparator
- *   used for the post-download check.
- * @see xyz.ghola.app.ai.PinnedModelHashes.GEMMA_3_1B_LITERTLM_SHA256 —
- *   the pin enforced after every successful download.
+ * @see LiteRtVariant — sealed enumeration of supported `.litertlm`
+ *   bundles, one per SoC family.
+ * @see SoCDetector — runtime SoC detection (API 31+ Build.SOC_MODEL
+ *   with /proc/cpuinfo fallback).
+ * @see xyz.ghola.app.ai.llama.ModelManager — the sibling GGUF
+ *   manager whose patterns this class mirrors.
+ * @see xyz.ghola.app.ai.IntegrityVerifier — Phase η SHA-256
+ *   comparator used for the post-download check.
+ * @see xyz.ghola.app.ai.PinnedModelHashes.forVariant — per-variant
+ *   pin lookup, enforced after every successful download.
  */
 class LiteRtModelManager internal constructor(
     private val context: Context?,
     /**
+     * The SoC-tuned bundle this manager instance targets. Determines
+     * the download URL, the on-disk filename, and the pinned SHA-256
+     * lookup. See class KDoc for the multi-SoC design.
+     */
+    val activeVariant: LiteRtVariant,
+    /**
      * Test-only override of the models directory. Production code
      * always passes `null` here and the dir is derived from
-     * `context.getExternalFilesDir(null)/models/`. Unit tests inject
-     * a temp dir directly because pure-JVM tests don't have a real
-     * Android [Context].
+     * `context.getExternalFilesDir(null)/models/litert-lm/`. Unit
+     * tests inject a temp dir directly because pure-JVM tests don't
+     * have a real Android [Context].
      */
     private val modelsDirOverride: File? = null,
     /**
      * Test-only override of the download URL. Production code passes
-     * `null` and the URL is the public [GEMMA_3_1B_LITERTLM_URL]
-     * constant. The unit test suite points this at MockWebServer.
+     * `null` and the URL is derived from [activeVariant] using
+     * [GEMMA_3_1B_BASE_URL]. The unit test suite points this at
+     * MockWebServer.
      */
     private val urlOverride: String? = null,
+    /**
+     * Test-only override of the HF Bearer token resolver. Production
+     * code passes `null` and the token is fetched from
+     * [SecureStorage.getHfBearerToken] using the manager's [context].
+     * Tests inject a constant string (or `null` to assert the
+     * anonymous-request path).
+     */
+    private val hfTokenOverride: (() -> String?)? = null,
 ) {
 
-    /** Production constructor — the only one called from app code. */
-    constructor(context: Context) : this(context, null, null)
+    /**
+     * Production constructor. Auto-selects the variant via
+     * [SoCDetector] so existing callers — `LiteRtModelManager(context)`
+     * — keep compiling and silently get the SoC-matched bundle.
+     */
+    constructor(context: Context) : this(
+        context = context,
+        activeVariant = LiteRtVariant.forSoC(SoCDetector.detect(context)),
+        modelsDirOverride = null,
+        urlOverride = null,
+        hfTokenOverride = null,
+    )
+
+    /**
+     * Production constructor with an explicit variant override —
+     * used by Settings (manual SoC override) and any admin UI that
+     * wants to force-download a non-default bundle.
+     */
+    constructor(context: Context, variant: LiteRtVariant) : this(
+        context = context,
+        activeVariant = variant,
+        modelsDirOverride = null,
+        urlOverride = null,
+        hfTokenOverride = null,
+    )
 
     companion object {
         private const val TAG = "LiteRtModelManager"
 
         /**
-         * Distribution URL for the AOT-compiled `.litertlm` bundle.
+         * Base HuggingFace path for the per-SoC `.litertlm` ladder.
+         * The full download URL is `${BASE}/${variant.filename}`.
          *
-         * **Default choice.** litert-community on Hugging Face. This is
-         * the same org pattern Ghola already uses for the MediaPipe
-         * `.task` artifact (see `LocalLlm.MEDIAPIPE_MODEL_URL` →
-         * `huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/...`),
-         * so reusing it for the LiteRT-LM artifact keeps the supply
-         * chain consistent (one CDN, one org, one auth posture).
+         * The `litert-community/Gemma3-1B-IT` repo is **gated** — see
+         * the class KDoc. Downloads without an HF Bearer token will
+         * 401; the manager surfaces a specific error message in that
+         * case so the UI can prompt the user.
          *
-         * **Alternative considered (not chosen).** Google AI Edge GCS
-         * bucket, e.g.
-         * `https://storage.googleapis.com/ai-edge/litert-lm/Gemma-3-1B/v1/mt6878.litertlm`
-         * (pattern, not a confirmed live URL). Google's official docs
-         * at [ai.google.dev/edge/litert/next/mediatek] currently route
-         * users to the HF repo for pre-compiled artifacts; the GCS
-         * bucket is reserved for the LiteRT Python compiler outputs.
-         *
-         * Both URLs are placeholders pending Google's final
-         * distribution confirmation. Swap this constant + the
-         * corresponding [PinnedModelHashes.GEMMA_3_1B_LITERTLM_SHA256]
-         * pin in lock-step when Google publishes the canonical path.
+         * Confirmed by the parallel URL-research agent. Replaces the
+         * pre-multi-SoC placeholder
+         * `litert-community/Gemma-3-1B-NPU-MT6878` (which never
+         * existed — it was a stub for the single-SoC γ.2 commit).
          */
-        const val GEMMA_3_1B_LITERTLM_URL: String =
-            "https://huggingface.co/litert-community/Gemma-3-1B-NPU-MT6878/" +
-                "resolve/main/Gemma-3-1B.litertlm"
+        const val GEMMA_3_1B_BASE_URL: String =
+            "https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main"
 
         /**
-         * On-disk filename. The `-D7300` suffix encodes the SoC tuning
-         * (MediaTek Dimensity 7300 / MT6878). A future commit may add
-         * additional SoC variants (`-D9300`, `-D9400`) when ExecuTorch
-         * Phase ε broadens hardware coverage; the suffix scheme reserves
-         * the room.
+         * Sub-directory under the app's models dir where every
+         * variant lands. Keeping LiteRT artifacts under a dedicated
+         * dir means a future cleanup pass can wipe the whole tree
+         * without disturbing the sibling GGUF cache.
          */
-        const val MODEL_FILENAME: String = "Gemma-3-1B-D7300.litertlm"
+        const val MODELS_SUBDIR: String = "litert-lm"
 
         /** Buffer size for the chunked download write loop — same
          *  rationale as [xyz.ghola.app.ai.llama.ModelManager.BUFFER_SIZE]. */
@@ -122,6 +169,15 @@ class LiteRtModelManager internal constructor(
          *  millisecond setters; OkHttp wants explicit TimeUnit. */
         private const val CONNECT_TIMEOUT_SEC = 15L
         private const val READ_TIMEOUT_SEC = 30L
+
+        /**
+         * User-facing error message emitted when HuggingFace returns
+         * 401 (the gated-repo case). Stable so the UI can pattern-
+         * match against it without parsing free-form HTTP messages.
+         */
+        const val ERR_GATED_REPO: String =
+            "HuggingFace repo is gated — set an HF Bearer token in Settings " +
+                "or wait for the bundle to land on a public mirror"
     }
 
     /**
@@ -156,16 +212,19 @@ class LiteRtModelManager internal constructor(
     private val modelsDir: File
         get() {
             val dir = modelsDirOverride
-                ?: File(checkNotNull(context).getExternalFilesDir(null), "models")
+                ?: File(
+                    File(checkNotNull(context).getExternalFilesDir(null), "models"),
+                    MODELS_SUBDIR,
+                )
             if (!dir.exists()) dir.mkdirs()
             return dir
         }
 
     private val downloadUrl: String
-        get() = urlOverride ?: GEMMA_3_1B_LITERTLM_URL
+        get() = urlOverride ?: "$GEMMA_3_1B_BASE_URL/${activeVariant.filename}"
 
     private val modelFile: File
-        get() = File(modelsDir, MODEL_FILENAME)
+        get() = File(modelsDir, activeVariant.filename)
 
     private val cancelled = AtomicBoolean(false)
 
@@ -186,14 +245,14 @@ class LiteRtModelManager internal constructor(
      * Run the Phase η integrity check on the `.litertlm` artifact.
      *
      * Mirrors [xyz.ghola.app.ai.llama.ModelManager.isModelVerified]
-     * exactly, only the pin source differs
-     * ([PinnedModelHashes.GEMMA_3_1B_LITERTLM_SHA256] vs the GGUF
-     * pin). Returns [ModelStatus.NOT_DOWNLOADED] fast when the file
-     * is absent — no hashing is performed in that branch.
+     * exactly, only the pin source differs — per-variant lookup via
+     * [PinnedModelHashes.forVariant]. Returns
+     * [ModelStatus.NOT_DOWNLOADED] fast when the file is absent — no
+     * hashing is performed in that branch.
      */
     suspend fun isModelVerified(): ModelStatus {
         if (!isModelDownloaded()) return ModelStatus.NOT_DOWNLOADED
-        val pin = PinnedModelHashes.GEMMA_3_1B_LITERTLM_SHA256
+        val pin = PinnedModelHashes.forVariant(activeVariant)
         val result = IntegrityVerifier.verifyFile(modelFile, pin)
         return when {
             pin == null -> ModelStatus.DOWNLOADED_UNVERIFIED
@@ -247,13 +306,14 @@ class LiteRtModelManager internal constructor(
      * Kick off a download in a worker thread. Resumes from the
      * current on-disk size if the server honours the `Range` header
      * (HTTP 206 Partial Content); otherwise re-downloads from scratch
-     * (HTTP 200).
+     * (HTTP 200). A 401 response (gated repo) produces the stable
+     * [ERR_GATED_REPO] error message so the UI can pattern-match it.
      *
      * Post-download, the file is hashed and compared to
-     * [PinnedModelHashes.GEMMA_3_1B_LITERTLM_SHA256] via
-     * [IntegrityVerifier]. If the pin is non-null and the hash
-     * disagrees, the file is deleted and [DownloadListener.onError]
-     * is fired with `"integrity check failed: tampered or wrong artifact"`.
+     * [PinnedModelHashes.forVariant] via [IntegrityVerifier]. If the
+     * pin is non-null and the hash disagrees, the file is deleted
+     * and [DownloadListener.onError] is fired with
+     * `"integrity check failed: tampered or wrong artifact"`.
      *
      * All callbacks are invoked on the worker thread. Marshall to
      * the UI thread upstream if needed.
@@ -281,12 +341,31 @@ class LiteRtModelManager internal constructor(
         }
     }
 
+    /**
+     * Resolve the HF Bearer token. Test override wins; otherwise
+     * read from [SecureStorage] using the manager's [context]. If
+     * neither path produces a token (test passes `null` resolver,
+     * or production has no token persisted), return `null` and the
+     * request goes out anonymous.
+     */
+    private fun resolveHfToken(): String? {
+        hfTokenOverride?.let { return it() }
+        val ctx = context ?: return null
+        return SecureStorage(ctx).getHfBearerToken()
+    }
+
     private fun runDownload(listener: DownloadListener) {
         val existingSize = if (modelFile.exists()) modelFile.length() else 0L
 
         val reqBuilder = Request.Builder().url(downloadUrl)
         if (existingSize > 0) {
             reqBuilder.header("Range", "bytes=$existingSize-")
+        }
+        // Optional HF Bearer token (gated repo). When absent, the
+        // request goes out anonymous and HF returns 401, which we
+        // translate to ERR_GATED_REPO below.
+        resolveHfToken()?.takeIf { it.isNotBlank() }?.let { token ->
+            reqBuilder.header("Authorization", "Bearer $token")
         }
         val request = reqBuilder.build()
 
@@ -314,6 +393,13 @@ class LiteRtModelManager internal constructor(
                     totalSize = body.contentLength()
                     append = false
                     Log.i(TAG, "Starting fresh download, total: $totalSize")
+                }
+                401 -> {
+                    // Gated repo — surface a stable, actionable error
+                    // string instead of the generic HTTP message.
+                    Log.w(TAG, "HF returned 401 for ${activeVariant.filename} — gated repo")
+                    listener.onError(ERR_GATED_REPO)
+                    return
                 }
                 else -> {
                     listener.onError("HTTP $code: ${response.message}")
@@ -357,7 +443,7 @@ class LiteRtModelManager internal constructor(
         // Post-download integrity check (Phase η). Run synchronously
         // on the worker thread — the file is freshly closed, the
         // hash is the gate to declaring `onComplete`.
-        val pin = PinnedModelHashes.GEMMA_3_1B_LITERTLM_SHA256
+        val pin = PinnedModelHashes.forVariant(activeVariant)
         val verifyResult = runBlocking { IntegrityVerifier.verifyFile(modelFile, pin) }
 
         if (pin != null && !verifyResult.match) {

@@ -20,9 +20,9 @@ import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Unit tests for [LiteRtModelManager]. These run on the pure-JVM
- * unit-test classpath (no Robolectric) by injecting a temp dir
- * directly into the internal constructor — production code still
- * uses the [android.content.Context] entrypoint.
+ * unit-test classpath (no Robolectric) by injecting a temp dir +
+ * variant directly into the internal constructor — production code
+ * still uses the [android.content.Context] entrypoint.
  *
  * Coverage matrix:
  *   1. `isModelDownloaded()` false when nothing on disk
@@ -30,9 +30,9 @@ import java.util.concurrent.atomic.AtomicReference
  *   3. `isModelVerified()` returns NOT_DOWNLOADED when file absent
  *   4. `isModelVerified()` returns DOWNLOADED_UNVERIFIED when pin is null
  *      (today's pass-through posture — see [xyz.ghola.app.ai.PinnedModelHashes])
- *   5. `isModelVerified()` returns TAMPERED when the pin disagrees
- *      with on-disk bytes (uses [verifyAgainstSpoofedPin] helper that
- *      drives the same code path the real pin will trigger once set)
+ *   5. `isModelVerified()` TAMPERED branch reachable via the
+ *      IntegrityVerifier-with-spoofed-pin comparator (the same
+ *      predicate the manager's runDownload uses)
  *   6. Cancel flag respected: pre-arm `cancelDownload()` then invoke
  *      the blocking download — must emit `onError("Download cancelled")`
  *      and produce no completion callback
@@ -42,6 +42,13 @@ import java.util.concurrent.atomic.AtomicReference
  *      equals (partial bytes) + (server response bytes)
  *   8. Full fresh download succeeds end-to-end and the `onComplete`
  *      path returns the correct absolute path
+ *   9. Variant override: manager constructed with `Mt6989` writes to
+ *      that variant's filename, not the Generic one
+ *  10. 401 handling: MockWebServer returns 401, listener gets the
+ *      stable [LiteRtModelManager.ERR_GATED_REPO] error message
+ *  11. HF token present → request has `Authorization: Bearer …` header
+ *  12. HF token absent → request has no `Authorization` header
+ *  13. (bonus) formatSize human-readable buckets
  */
 class LiteRtModelManagerTest {
 
@@ -61,16 +68,31 @@ class LiteRtModelManagerTest {
         tempDir.deleteRecursively()
     }
 
-    private fun newManager(urlOverride: String? = null): LiteRtModelManager {
+    /**
+     * Build a manager pinned to a specific variant + temp dir + URL
+     * override. Default variant is [LiteRtVariant.Generic] because
+     * the legacy tests were written against the single-variant world
+     * and the Generic bundle is the closest analogue.
+     */
+    private fun newManager(
+        urlOverride: String? = null,
+        variant: LiteRtVariant = LiteRtVariant.Generic,
+        hfToken: String? = null,
+    ): LiteRtModelManager {
         return LiteRtModelManager(
             context = null,
+            activeVariant = variant,
             modelsDirOverride = tempDir,
             urlOverride = urlOverride,
+            // When `hfToken` is null we still inject a resolver that
+            // returns null — defeating the SecureStorage fallback,
+            // which would NPE because context=null.
+            hfTokenOverride = { hfToken },
         )
     }
 
-    private fun expectedModelFile(): File =
-        File(tempDir, LiteRtModelManager.MODEL_FILENAME)
+    private fun expectedModelFile(variant: LiteRtVariant = LiteRtVariant.Generic): File =
+        File(tempDir, variant.filename)
 
     /** Capturing listener — records exactly one terminal callback. */
     private class CapturingListener : LiteRtModelManager.DownloadListener {
@@ -121,8 +143,8 @@ class LiteRtModelManagerTest {
 
     @Test
     fun isModelVerified_returnsUnverifiedWhenPinIsNull() = runBlocking {
-        // PinnedModelHashes.GEMMA_3_1B_LITERTLM_SHA256 is null today —
-        // this is the production posture under test.
+        // PinnedModelHashes.forVariant(...) is null today for every
+        // variant — this is the production posture under test.
         val mgr = newManager()
         expectedModelFile().writeBytes("fake-litertlm-bytes".toByteArray())
 
@@ -131,21 +153,7 @@ class LiteRtModelManagerTest {
         assertEquals(expectedModelFile().absolutePath, mgr.getModelPath())
     }
 
-    // ── Test 5: isModelVerified TAMPERED when pin disagrees ──────────
-    //
-    // Because PinnedModelHashes.GEMMA_3_1B_LITERTLM_SHA256 is a `val`
-    // and Kotlin objects don't let us mutate it from a test, we cover
-    // the TAMPERED branch via the equivalent code path on the
-    // post-download integrity check: write bytes whose hash differs
-    // from a hex pin we control, then assert the manager's deletion +
-    // error contract via [downloadModelBlocking] hooked to a
-    // MockWebServer response whose Content-Hash mismatch we synthesize
-    // by overriding the pin lookup. The cleanest way to express this
-    // in the current shape is to feed the integrity check directly.
-    //
-    // (When PinnedModelHashes is reorganized to take an injectable
-    //  resolver, this test will switch to driving `isModelVerified()`
-    //  end-to-end. For today, the equivalent assertion is below.)
+    // ── Test 5: TAMPERED branch reachable via IntegrityVerifier ──────
 
     @Test
     fun isModelVerified_tamperedBranchReachableViaPinnedHashMismatch() = runBlocking {
@@ -189,7 +197,7 @@ class LiteRtModelManagerTest {
                 .setBody(body),
         )
 
-        val mgr = newManager(urlOverride = server.url("/Gemma-3-1B.litertlm").toString())
+        val mgr = newManager(urlOverride = server.url("/Gemma3.litertlm").toString())
         val listener = CapturingListener()
 
         mgr.cancelDownload() // pre-arm
@@ -222,7 +230,7 @@ class LiteRtModelManagerTest {
                 .setBody(Buffer().apply { write(suffixBytes) }),
         )
 
-        val mgr = newManager(urlOverride = server.url("/Gemma-3-1B.litertlm").toString())
+        val mgr = newManager(urlOverride = server.url("/Gemma3.litertlm").toString())
         val listener = CapturingListener()
         mgr.downloadModelBlocking(listener)
 
@@ -257,7 +265,7 @@ class LiteRtModelManagerTest {
                 .setBody(Buffer().apply { write(payload) }),
         )
 
-        val mgr = newManager(urlOverride = server.url("/Gemma-3-1B.litertlm").toString())
+        val mgr = newManager(urlOverride = server.url("/Gemma3.litertlm").toString())
         val listener = CapturingListener()
         mgr.downloadModelBlocking(listener)
 
@@ -278,6 +286,119 @@ class LiteRtModelManagerTest {
         assertTrue(
             "at least one progress callback expected on a 40 KiB download",
             listener.progressCount >= 1,
+        )
+    }
+
+    // ── Test 9: variant override writes to the variant's filename ────
+
+    @Test
+    fun variantOverride_writesToSocPinnedFilename() {
+        val payload = ByteArray(16 * 1024) { it.toByte() }
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(Buffer().apply { write(payload) }),
+        )
+
+        val mgr = newManager(
+            urlOverride = server.url("/whatever.litertlm").toString(),
+            variant = LiteRtVariant.Mt6989,
+        )
+        val listener = CapturingListener()
+        mgr.downloadModelBlocking(listener)
+
+        assertEquals("complete", listener.terminal.get())
+        // The on-disk file lives at the Mt6989 variant's filename,
+        // NOT the Generic filename — proves variant dispatch.
+        val mt6989Path = File(tempDir, LiteRtVariant.Mt6989.filename)
+        assertTrue(
+            "Mt6989 variant must land at ${LiteRtVariant.Mt6989.filename}",
+            mt6989Path.exists(),
+        )
+        assertEquals(mt6989Path.absolutePath, listener.completePath.get())
+        // And the Generic filename must NOT exist (sanity: no
+        // cross-contamination between variants).
+        assertEquals(
+            false,
+            File(tempDir, LiteRtVariant.Generic.filename).exists(),
+        )
+        // activeVariant accessor surfaces the variant for UI use.
+        assertEquals(LiteRtVariant.Mt6989, mgr.activeVariant)
+    }
+
+    // ── Test 10: 401 → ERR_GATED_REPO ────────────────────────────────
+
+    @Test
+    fun downloadModel_401MapsToGatedRepoError() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(401)
+                .setBody("gated"),
+        )
+
+        val mgr = newManager(urlOverride = server.url("/Gemma3.litertlm").toString())
+        val listener = CapturingListener()
+        mgr.downloadModelBlocking(listener)
+
+        assertEquals("error", listener.terminal.get())
+        assertEquals(LiteRtModelManager.ERR_GATED_REPO, listener.errorMsg.get())
+        assertNull(listener.completePath.get())
+        // And no file was written on disk (401 short-circuits before
+        // the write loop).
+        assertEquals(false, expectedModelFile().exists())
+    }
+
+    // ── Test 11: HF token present → Authorization header attached ────
+
+    @Test
+    fun downloadModel_attachesAuthorizationHeaderWhenTokenPresent() {
+        val payload = ByteArray(8 * 1024) { it.toByte() }
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(Buffer().apply { write(payload) }),
+        )
+
+        val mgr = newManager(
+            urlOverride = server.url("/Gemma3.litertlm").toString(),
+            hfToken = "hf_test_token_abc123",
+        )
+        val listener = CapturingListener()
+        mgr.downloadModelBlocking(listener)
+
+        assertEquals("complete", listener.terminal.get())
+        val req = server.takeRequest(2, TimeUnit.SECONDS)
+            ?: error("MockWebServer did not receive a request")
+        assertEquals(
+            "Bearer hf_test_token_abc123",
+            req.getHeader("Authorization"),
+        )
+    }
+
+    // ── Test 12: HF token absent → no Authorization header ───────────
+
+    @Test
+    fun downloadModel_omitsAuthorizationHeaderWhenTokenAbsent() {
+        val payload = ByteArray(8 * 1024) { it.toByte() }
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(Buffer().apply { write(payload) }),
+        )
+
+        val mgr = newManager(
+            urlOverride = server.url("/Gemma3.litertlm").toString(),
+            hfToken = null,
+        )
+        val listener = CapturingListener()
+        mgr.downloadModelBlocking(listener)
+
+        assertEquals("complete", listener.terminal.get())
+        val req = server.takeRequest(2, TimeUnit.SECONDS)
+            ?: error("MockWebServer did not receive a request")
+        assertNull(
+            "anonymous request must not carry an Authorization header",
+            req.getHeader("Authorization"),
         )
     }
 

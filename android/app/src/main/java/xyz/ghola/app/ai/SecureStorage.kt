@@ -50,6 +50,15 @@ class SecureStorage(context: Context) {
         private const val KEY_SAID_USER_ID = "said_cloud_user_id"
         private const val KEY_PRIMARY_AGENT_ID = "primary_agent_id"
         private const val KEY_SOLANA_ADDRESS = "solana_address"
+        // v0.7 (Phase γ.4 / L2) — HuggingFace Bearer token used to
+        // download gated repo artifacts (e.g. the per-SoC `.litertlm`
+        // bundles under `huggingface.co/litert-community/Gemma3-1B-IT`).
+        // Read by [xyz.ghola.app.ai.litert.LiteRtModelManager] when
+        // present; absent → anonymous request, which 401s on a gated
+        // repo. A future Settings UI exposes the paste form; for now
+        // the slot just exists so the manager can light up immediately
+        // when a tester sets it via adb-debugger or unit test.
+        private const val KEY_HF_BEARER_TOKEN = "hf_bearer_token"
         private const val DEFAULT_MODEL = "claude-sonnet-4-6"
         private const val DEFAULT_QWEN_MODEL = "qwen2.5-72b-instruct"
         // Source of truth lives in build.gradle.kts buildConfigField so debug
@@ -534,6 +543,30 @@ class SecureStorage(context: Context) {
             .remove(KEY_GMAIL_REFRESH_TOKEN)
             .apply()
     }
+
+    // ── HuggingFace Bearer token (Phase γ.4 / L2) ────────────────────────────
+    //
+    // The `litert-community/Gemma3-1B-IT` HF repo is gated. Without a
+    // token the LiteRT bundle download 401s on the very first byte.
+    // The token is a personal-access token created at
+    // https://huggingface.co/settings/tokens with `read` scope. Stored
+    // encrypted via EncryptedSharedPreferences, same posture as every
+    // other secret in this class. Pass `null` to [setHfBearerToken] to
+    // clear.
+
+    fun getHfBearerToken(): String? = prefs.getString(KEY_HF_BEARER_TOKEN, null)
+
+    fun setHfBearerToken(token: String?) {
+        val editor = prefs.edit()
+        if (token.isNullOrBlank()) {
+            editor.remove(KEY_HF_BEARER_TOKEN)
+        } else {
+            editor.putString(KEY_HF_BEARER_TOKEN, token)
+        }
+        editor.apply()
+    }
+
+    fun hasHfBearerToken(): Boolean = !getHfBearerToken().isNullOrBlank()
 
     /** The agent the chat surface defaults to executing tasks as. */
     fun getPrimaryAgentId(): String? = prefs.getString(KEY_PRIMARY_AGENT_ID, null)
