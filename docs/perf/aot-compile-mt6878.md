@@ -241,3 +241,39 @@ without MediaTek BD, the budget doubles or the work stalls.
 - [PyPI — ai-edge-litert-sdk-mediatek-nightly](https://pypi.org/project/ai-edge-litert-sdk-mediatek-nightly/)
 - [HF — litert-community/Gemma3-1B-IT](https://huggingface.co/litert-community/Gemma3-1B-IT/tree/main)
 - [MediaTek Genio community — NeuroPilot AOT thread](https://genio-community.mediatek.com/t/mediatek-aot-compilation-via-public-api-produces-unoptimized-bytecode-missing-19-mdla-flags-vs-googles-official-litertlm/1907)
+
+## 11. Staging status (2026-05-16)
+
+The compile pipeline is **staged but not fired** — every artifact
+described in §4 + §6 + §7 lives in
+[`tools/litertlm-compile/`](../../tools/litertlm-compile/):
+
+| Artifact | Path | What's staged |
+|---|---|---|
+| Pinned Docker toolchain | [`tools/litertlm-compile/Dockerfile`](../../tools/litertlm-compile/Dockerfile) | Ubuntu 22.04 digest-pinned, Python 3.11, Bazel 7.6.1, `ai-edge-litert==2.1.3`, `ai-edge-litert-sdk-mediatek==0.2.0`, LiteRT-LM + ai-edge-torch source clones at SHA-pinned commits |
+| Compile driver | [`tools/litertlm-compile/compile-gemma3-1b-mt6878.sh`](../../tools/litertlm-compile/compile-gemma3-1b-mt6878.sh) | End-to-end: HF download → AOT compile → LiteRT-LM packager → SHA-256 + size for both the input `.tflite` (upstream anchor) and the output `.litertlm` (canonical pin) |
+| Auditor verifier | [`tools/litertlm-compile/verify-bundle.sh`](../../tools/litertlm-compile/verify-bundle.sh) | Zero-dependency `sha256sum` wrapper; reads either an inline hex or the `sha256.txt` the compile script emits |
+| Recipe doc | [`tools/litertlm-compile/README.md`](../../tools/litertlm-compile/README.md) | One-line `docker build && docker run` invocation, pin matrix, reproducibility commitment |
+| Hosting plan | [`tools/litertlm-compile/HOSTING.md`](../../tools/litertlm-compile/HOSTING.md) | HF mirror (primary, $0) + R2 failover (~$0.02/mo) + IPFS pin (~$2/mo) topology, DNS + CDN notes, Android client wiring |
+| On-chain register | [`scripts/register-litertlm-mt6878.mjs`](../../scripts/register-litertlm-mt6878.mjs) | Adapts `register-default-model.mjs` for the `Gemma3-1B-IT-mt6878` registry entry; refuses to run with placeholder hashes |
+
+**What's still gated:**
+
+- The Docker image has **not** been built. The user has no MT6878 to
+  validate output against and the §9 blockers (#6462 + #984) prevent
+  producing a usable bundle today.
+- `PinnedModelHashes.GEMMA_3_1B_LITERTLM_MT6878_SHA256` remains `null`
+  pending a real compile.
+- `tools/litertlm-compile/Dockerfile` `LITERTLM_COMMIT` and
+  `AI_EDGE_TORCH_COMMIT` pins are best-guess SHAs that fall back to
+  `main` with a `WARN` if not found — verify against upstream before
+  tagging a release image.
+
+**What clears the staging → ship pipeline (1–2 days each):**
+
+- **Path A**: Google patches the `ai-edge-litert-sdk-mediatek` wheel
+  per #6462 → rebuild image, run compile script, flip pin, register,
+  upload.
+- **Path B**: MediaTek BD lands NeuroPilot Express SDK → swap the
+  AOT step in `compile-gemma3-1b-mt6878.sh` for a direct
+  `mtkn_compile` invocation, otherwise same flow.
