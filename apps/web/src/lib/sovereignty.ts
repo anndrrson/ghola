@@ -9,11 +9,12 @@ export type SovereigntyMode = "private" | "local" | "open";
 
 const STORAGE_KEY_PREFIX = "ghola:sovereignty-mode";
 // Signed-in users default to Private (TEE-attested cloud). Anonymous
-// users (no userDid) default to Local — Private requires a wallet for
-// the sealed envelope, so offering it to anonymous visitors would
-// surface a "private-unavailable" caveat on every send.
+// users also default to Private so the first-run path asks them to make
+// an account before cloud/private inference instead of trying to cold-load
+// a large local WebGPU model on a random phone. Users can still choose
+// Local explicitly when they want an account-free on-device run.
 const DEFAULT_MODE_AUTHED: SovereigntyMode = "private";
-const DEFAULT_MODE_ANON: SovereigntyMode = "local";
+const DEFAULT_MODE_ANON: SovereigntyMode = "private";
 
 export const SOVEREIGNTY_MODES: ReadonlyArray<{
   id: SovereigntyMode;
@@ -154,7 +155,13 @@ function relayBase(): string {
     const api = process.env.NEXT_PUBLIC_THUMPER_API_URL;
     if (api) return api;
   }
-  return "http://localhost:3000";
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+      return "http://localhost:3000";
+    }
+  }
+  return "https://ghola-relay.onrender.com";
 }
 
 export function thumperRelayBase(): string {
