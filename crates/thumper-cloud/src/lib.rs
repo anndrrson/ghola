@@ -8,11 +8,11 @@ pub mod routes;
 pub mod services;
 pub mod state;
 
+use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::http::HeaderValue;
 use axum::routing::{delete, get, patch, post};
-use axum::Json;
-use axum::Router;
 use serde_json::json;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -253,6 +253,14 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/billing/checkout",
             post(routes::billing::create_checkout),
+        )
+        .route(
+            "/api/billing/private-balance/checkout",
+            post(routes::billing::create_private_balance_top_up),
+        )
+        .route(
+            "/api/billing/private-balance",
+            get(routes::billing::private_balance_status),
         )
         .route(
             "/api/billing/webhook",

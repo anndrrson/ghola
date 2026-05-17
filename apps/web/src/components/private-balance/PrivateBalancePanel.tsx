@@ -19,6 +19,11 @@ import {
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import { getBalance } from "@/lib/api";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
+import {
+  createPrivateBalanceTopUp,
+  getPrivateBalanceStatus,
+  type PrivateBalanceStatusResponse,
+} from "@/lib/thumper-api";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { useWalletAuth } from "@/lib/wallet-provider";
 import {
@@ -68,6 +73,8 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
   const [shieldedHealth, setShieldedHealth] =
     useState<ShieldedStablecoinHealth | null>(null);
   const [balanceMicroUsd, setBalanceMicroUsd] = useState<number | null>(null);
+  const [privateBalance, setPrivateBalance] =
+    useState<PrivateBalanceStatusResponse | null>(null);
   const [selectedAmount, setSelectedAmount] =
     useState<(typeof TOP_UP_AMOUNTS)[number]>(10);
   const [notice, setNotice] = useState<string | null>(null);
@@ -84,6 +91,18 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
   >("idle");
   const [verifyMessage, setVerifyMessage] = useState<string | null>(null);
 
+  async function refreshPrivateBalance() {
+    if (!thumperAuth.authenticated) {
+      setPrivateBalance(null);
+      return;
+    }
+    try {
+      setPrivateBalance(await getPrivateBalanceStatus());
+    } catch {
+      setPrivateBalance(null);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
     void fetchPaymentHealth().then((health) => {
@@ -96,6 +115,35 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const topUpResult = new URLSearchParams(window.location.search).get("topup");
+    if (topUpResult === "success") {
+      setNotice("Top up complete. Stripe is finalizing the receipt now.");
+    } else if (topUpResult === "cancelled") {
+      setNotice("Top up cancelled.");
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!thumperAuth.authenticated) {
+      setPrivateBalance(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+    getPrivateBalanceStatus()
+      .then((status) => {
+        if (!cancelled) setPrivateBalance(status);
+      })
+      .catch(() => {
+        if (!cancelled) setPrivateBalance(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [thumperAuth.authenticated]);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,6 +185,7 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
     thumperAuth.authenticated &&
     !!turnkeyWallet.walletAddress &&
     summary.privateSpendReady;
+  const displayedBalance = privateBalance?.available_micro_usdc ?? balanceMicroUsd;
 
   const statusClass =
     summary.status === "private_ready"
@@ -163,7 +212,10 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
   async function handleEasySetup() {
     setNotice(null);
     if (!summary.privateSpendReady) {
-      setNotice("Private routing is still coming online. Account setup can continue, but private spend will wait for the rail.");
+      setNotice(
+        "Private routing is still coming online. Top up is paused so Ghola does not silently fall back to a public rail.",
+      );
+      return;
     }
     if (!thumperAuth.authenticated) {
       setAuthMode("signup");
@@ -174,16 +226,40 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
       setEasyState("working");
       try {
         await turnkeyWallet.createWallet(thumperAuth.user?.email || "ghola-user");
-        setEasyState("ready");
-        setNotice("Private account created. Normal top ups can route privately once the on-ramp is connected.");
       } catch (err) {
         setEasyState("failed");
         setNotice(err instanceof Error ? err.message : "Could not create the embedded wallet.");
+        return;
       }
+    }
+
+    setEasyState("working");
+    try {
+      const { checkout_url } = await createPrivateBalanceTopUp(selectedAmount);
+      window.location.assign(checkout_url);
+    } catch (err) {
+      setEasyState("failed");
+      setNotice(err instanceof Error ? err.message : "Could not start checkout.");
+      void refreshPrivateBalance();
       return;
     }
-    setEasyState("ready");
-    setNotice("Private account is ready. Advanced Shield deposits stay available for self-custody users.");
+  }
+
+  async function handleRefreshBalance() {
+    setNotice(null);
+    try {
+      await refreshPrivateBalance();
+      setNotice("Private Balance refreshed.");
+    } catch {
+      setNotice("Could not refresh Private Balance.");
+    }
+  }
+
+  function easyButtonLabel() {
+    if (!summary.privateSpendReady) return "Private rail pending";
+    if (!thumperAuth.authenticated) return "Create private account";
+    if (!turnkeyWallet.walletAddress) return "Create wallet and top up";
+    return `Top up ${formatMicroUsd(selectedAmount * 1_000_000)}`;
   }
 
   async function copyText(value: string | null | undefined, label: string) {
@@ -290,8 +366,13 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
             Balance
           </p>
           <p className="mt-1 text-3xl font-medium text-[#eef1f8]">
-            {formatMicroUsd(balanceMicroUsd)}
+            {formatMicroUsd(displayedBalance)}
           </p>
+          {privateBalance && privateBalance.pending_micro_usdc > 0 && (
+            <p className="mt-1 text-xs text-[#6f7d9a]">
+              {formatMicroUsd(privateBalance.pending_micro_usdc)} pending
+            </p>
+          )}
         </div>
       </div>
 
@@ -365,6 +446,22 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
 
           {topUpMode === "easy" ? (
             <>
+              <div className="mt-4 grid grid-cols-3 gap-2">
+                {TOP_UP_AMOUNTS.map((amount) => (
+                  <button
+                    key={amount}
+                    type="button"
+                    onClick={() => setSelectedAmount(amount)}
+                    className={`rounded-md border px-3 py-2 text-sm transition ${
+                      selectedAmount === amount
+                        ? "border-[#eef1f8] bg-[#eef1f8] text-[#08090d]"
+                        : "border-[#1e2a3a] bg-[#0f1117] text-[#8b95a8] hover:text-[#eef1f8]"
+                    }`}
+                  >
+                    ${amount}
+                  </button>
+                ))}
+              </div>
               <div className="mt-4 grid gap-2">
                 <div className="flex items-center justify-between gap-3 rounded-md border border-[#151b26] bg-black/30 px-3 py-2">
                   <span className="inline-flex items-center gap-2 text-xs text-[#8b95a8]">
@@ -393,12 +490,28 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
                     {summary.privateSpendReady ? "ready" : "pending"}
                   </span>
                 </div>
+                {privateBalance && (
+                  <div className="flex items-center justify-between gap-3 rounded-md border border-[#151b26] bg-black/30 px-3 py-2">
+                    <span className="inline-flex items-center gap-2 text-xs text-[#8b95a8]">
+                      <CreditCard className="h-3.5 w-3.5" />
+                      Funded
+                    </span>
+                    <span className="text-xs text-[#eef1f8]">
+                      {formatMicroUsd(privateBalance.available_micro_usdc)}
+                    </span>
+                  </div>
+                )}
               </div>
 
               <button
                 type="button"
                 onClick={handleEasySetup}
-                disabled={easyState === "working" || thumperAuth.loading || turnkeyWallet.loading}
+                disabled={
+                  easyState === "working" ||
+                  thumperAuth.loading ||
+                  turnkeyWallet.loading ||
+                  !summary.privateSpendReady
+                }
                 className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md bg-[#eef1f8] px-4 py-2.5 text-sm font-medium text-[#08090d] transition hover:bg-white disabled:cursor-wait disabled:opacity-70"
               >
                 {easyState === "working" ? (
@@ -408,19 +521,16 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
                 ) : (
                   <ArrowRight className="h-4 w-4" />
                 )}
-                {!thumperAuth.authenticated
-                  ? "Create private account"
-                  : turnkeyWallet.walletAddress
-                    ? "Private Balance ready"
-                    : "Create embedded wallet"}
+                {easyButtonLabel()}
               </button>
               <button
                 type="button"
-                disabled
-                className="mt-2 inline-flex w-full cursor-not-allowed items-center justify-center gap-2 rounded-md border border-[#1e2a3a] bg-[#0f1117] px-3 py-2 text-sm text-[#8b95a8] opacity-55"
+                onClick={handleRefreshBalance}
+                disabled={!thumperAuth.authenticated}
+                className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-md border border-[#1e2a3a] bg-[#0f1117] px-3 py-2 text-sm text-[#8b95a8] transition hover:text-[#eef1f8] disabled:cursor-not-allowed disabled:opacity-55"
               >
-                <CreditCard className="h-4 w-4" />
-                Card and USDC on-ramp next
+                <CheckCircle2 className="h-4 w-4" />
+                Refresh receipt
               </button>
             </>
           ) : (

@@ -1,5 +1,5 @@
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use std::time::Duration;
 
 pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
@@ -384,6 +384,31 @@ ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS approval_nonce TEXT;
 ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS approval_summary TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_txns_user_approval_nonce
     ON wallet_transactions(user_id, approval_nonce) WHERE approval_nonce IS NOT NULL;
+
+-- Private Balance top-ups.
+-- Stripe settles the consumer-facing payment; this ledger records the funded
+-- amount and whether it has been routed into the shielded stablecoin rail.
+CREATE TABLE IF NOT EXISTS private_balance_deposits (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    amount_usdc BIGINT NOT NULL CHECK (amount_usdc > 0),
+    status TEXT NOT NULL DEFAULT 'checkout_pending'
+        CHECK (status IN ('checkout_pending', 'paid', 'shield_pending', 'shielded', 'failed', 'refunded')),
+    source TEXT NOT NULL DEFAULT 'stripe_checkout',
+    stripe_session_id TEXT UNIQUE,
+    stripe_payment_intent_id TEXT,
+    stripe_customer_id TEXT,
+    checkout_url TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    paid_at TIMESTAMPTZ,
+    shielded_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_private_balance_deposits_user
+    ON private_balance_deposits(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_private_balance_deposits_status
+    ON private_balance_deposits(status);
 
 -- Extend task_type to include crypto
 ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_task_type_check;
