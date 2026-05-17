@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 interface ShieldedVerifyRequest {
   provider?: string;
@@ -60,6 +61,9 @@ export async function POST(request: NextRequest) {
         network: body.network,
         asset: body.asset,
         destination: body.destination,
+        indexer_configured: indexerConfigured,
+        program_configured: programConfigured,
+        signing_key_configured: signingKeyConfigured,
         error:
           "Aleo verifier adapter is deployed fail-closed; ALEO_INDEXER_URL, ALEO_PAYMENT_PROGRAM, and SHIELDED_STABLECOIN_ADAPTER_SIGNING_KEY are not fully configured.",
       },
