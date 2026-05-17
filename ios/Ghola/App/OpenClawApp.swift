@@ -24,6 +24,8 @@ struct GholaApp: App {
             #else
             ContentView()
                 .environmentObject(auth)
+                .tint(Theme.accent)
+                .preferredColorScheme(.dark)
             #endif
         }
 

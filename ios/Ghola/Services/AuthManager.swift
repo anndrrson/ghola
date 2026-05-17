@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import AuthenticationServices
+#endif
 
 @MainActor
 class AuthManager: ObservableObject {
@@ -57,6 +60,55 @@ class AuthManager: ObservableObject {
             self.error = error.localizedDescription
         }
     }
+
+    func signInWithTurnkey(email: String) async {
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
+
+        do {
+            let response = try await CloudClient.shared.turnkeySignIn(email: email)
+            await CloudClient.shared.setToken(response.token)
+            await loadProfile()
+            await registerDevice()
+            isAuthenticated = true
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    #if os(iOS)
+    func signInWithApple(credential: ASAuthorizationAppleIDCredential) async {
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
+
+        guard let tokenData = credential.identityToken,
+              let identityToken = String(data: tokenData, encoding: .utf8) else {
+            self.error = "Sign in with Apple did not return a valid identity token."
+            return
+        }
+
+        let fullName = credential.fullName
+            .map { PersonNameComponentsFormatter().string(from: $0) }?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        do {
+            let response = try await CloudClient.shared.appleSignIn(
+                identityToken: identityToken,
+                userId: credential.user,
+                email: credential.email,
+                fullName: fullName?.isEmpty == false ? fullName : nil
+            )
+            await CloudClient.shared.setToken(response.token)
+            await loadProfile()
+            await registerDevice()
+            isAuthenticated = true
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+    #endif
 
     // MARK: - Sign Out
 

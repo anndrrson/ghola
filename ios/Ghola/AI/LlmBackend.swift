@@ -98,6 +98,115 @@ public struct ApiResponse {
     }
 }
 
+/// The user-visible privacy boundary for one chat backend instance.
+/// This is code-owned provenance, not something a model is allowed to
+/// infer from its own hosting environment.
+public enum LlmRuntimeBoundary: String, Sendable, Equatable {
+    case onDevice
+    case localNetwork
+    case gholaCloud
+
+    var title: String {
+        switch self {
+        case .onDevice: return "On device"
+        case .localNetwork: return "Local network"
+        case .gholaCloud: return "Ghola Cloud"
+        }
+    }
+}
+
+enum LlmRuntimeDisclosure {
+    static func shouldAnswerDeterministically(_ text: String) -> Bool {
+        let normalized = normalize(text)
+        let asksAboutSubject = containsAny(
+            normalized,
+            ["you", "ghola", "chat", "model", "inference", "app"]
+        )
+        let asksAboutRuntime = containsAny(
+            normalized,
+            [
+                "running on device",
+                "run on device",
+                "on device",
+                "on-device",
+                "locally",
+                "local model",
+                "cloud",
+                "server",
+                "virtual machine",
+                "vm",
+                "iphone processor",
+                "offline"
+            ]
+        )
+        let asksQuestion = containsAny(
+            normalized,
+            ["are", "is", "where", "how", "do", "does", "right now", "?"]
+        )
+
+        return asksAboutSubject && asksAboutRuntime && asksQuestion
+    }
+
+    static func answer(
+        selectedMode: BackendMode,
+        backend: LlmBackend?,
+        backendError: String?,
+        localServerName: String?,
+        isLocalServerMode: Bool
+    ) -> String {
+        let appLine = "Ghola is running as a native iOS app on this iPhone."
+        let selectedLine = "Selected chat mode: \(selectedMode.title)."
+
+        guard let backend else {
+            let reason = backendError ?? "No verified local model is ready."
+            return [
+                appLine,
+                "Chat inference is not currently running in cloud fallback. \(reason)",
+                "Strict local mode fails closed instead of silently sending prompts to Ghola Cloud.",
+                selectedLine
+            ].joined(separator: "\n\n")
+        }
+
+        switch backend.runtimeBoundary {
+        case .onDevice:
+            return [
+                appLine,
+                "Yes. Chat inference is currently using \(backend.displayName), so the prompt is processed on this device.",
+                selectedLine
+            ].joined(separator: "\n\n")
+        case .localNetwork:
+            let serverName = localServerName ?? "a paired local AI server"
+            return [
+                appLine,
+                "Not on the iPhone itself. Chat inference is currently using \(serverName) on your local network, so prompts leave the phone but do not go to Ghola Cloud.",
+                selectedLine
+            ].joined(separator: "\n\n")
+        case .gholaCloud:
+            let cloudExplanation = isLocalServerMode
+                ? "The local-server switch is enabled, but this backend is still reporting a cloud boundary."
+                : "No. Chat inference is currently using \(backend.displayName), which sends prompts to Ghola Cloud and the configured model provider."
+            return [
+                appLine,
+                cloudExplanation,
+                "That is why a raw cloud model may describe itself as running in a virtualized environment. That statement describes the remote model host, not the iPhone app.",
+                selectedLine
+            ].joined(separator: "\n\n")
+        }
+    }
+
+    private static func normalize(_ text: String) -> String {
+        text
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
+        needles.contains { text.contains($0) }
+    }
+}
+
 // MARK: - Protocol
 //
 // The Kotlin interface uses a *blocking* `generate(...)` because Android
@@ -119,6 +228,9 @@ public protocol LlmBackend: AnyObject, Sendable {
     /// `true` if the backend cannot run without a network. Used to gate
     /// the UI in airplane mode and to choose a fallback.
     var requiresInternet: Bool { get }
+
+    /// Code-owned runtime provenance for privacy disclosures.
+    var runtimeBoundary: LlmRuntimeBoundary { get }
 
     /// Run a generation against the model. Mirrors the Kotlin
     /// blocking call: caller is expected to await on a Task.
@@ -166,6 +278,7 @@ public extension LlmBackend {
 /// (URLError, etc.) are wrapped in `.transport(_)`.
 public enum LlmBackendError: LocalizedError {
     case notImplemented(String)
+    case modelNotReady(String)
     case cancelled
     case transport(Error)
     case server(String)
@@ -174,6 +287,7 @@ public enum LlmBackendError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .notImplemented(let why): return "Not implemented: \(why)"
+        case .modelNotReady(let why): return "Model not ready: \(why)"
         case .cancelled: return "Cancelled"
         case .transport(let err): return err.localizedDescription
         case .server(let msg): return msg

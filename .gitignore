@@ -25,3 +25,5 @@ local.properties
 .claude/
 .vercel
 .dev/
+ios/Ghola.xcodeproj/
+ios/build/

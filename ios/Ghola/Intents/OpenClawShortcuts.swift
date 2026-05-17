@@ -10,18 +10,15 @@ struct MakeCallIntent: AppIntent {
     @Parameter(title: "What to call about")
     var objective: String
 
+    @Parameter(title: "Phone number")
+    var phoneNumber: String
+
     func perform() async throws -> some IntentResult & ProvidesDialog {
         guard await CloudClient.shared.isAuthenticated else {
             return .result(dialog: "Please open Ghola and sign in first.")
         }
 
-        let task = try await CloudClient.shared.createTask(
-            type: "call",
-            templateId: nil,
-            params: ["objective": objective]
-        )
-
-        return .result(dialog: "Got it! I'm setting up that call. Check Ghola for updates.")
+        return .result(dialog: "Open Ghola to review exactly what leaves the device before this call starts.")
     }
 }
 
@@ -40,13 +37,7 @@ struct SendEmailIntent: AppIntent {
             return .result(dialog: "Please open Ghola and sign in first.")
         }
 
-        let task = try await CloudClient.shared.createTask(
-            type: "email",
-            templateId: nil,
-            params: ["intent": intent]
-        )
-
-        return .result(dialog: "I'll draft that email for you. Check Ghola to review and send it.")
+        return .result(dialog: "Open Ghola to review exactly what leaves the device before this email is drafted.")
     }
 }
 
@@ -57,8 +48,8 @@ struct GholaShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: MakeCallIntent(),
             phrases: [
-                "Ghola call \(\.$objective)",
-                "Have Ghola call about \(\.$objective)",
+                "Ask \(.applicationName) to make a call",
+                "In \(.applicationName), start a call",
             ],
             shortTitle: "Make a Call",
             systemImageName: "phone.fill"
@@ -67,8 +58,8 @@ struct GholaShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: SendEmailIntent(),
             phrases: [
-                "Ghola email about \(\.$intent)",
-                "Have Ghola send an email about \(\.$intent)",
+                "Ask \(.applicationName) to send an email",
+                "In \(.applicationName), start an email",
             ],
             shortTitle: "Send Email",
             systemImageName: "envelope.fill"

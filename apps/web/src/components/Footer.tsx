@@ -4,8 +4,8 @@ import { GholaLogo } from "@/components/GholaLogo";
 // Slim consumer-product footer. Deliberately doesn't surface the
 // protocol surfaces (/agents, /models, /marketplace, /provide, etc.)
 // — those exist by direct URL only for investors and journalists.
-// Privacy / Terms remain because they're legal requirements for the
-// consumer chat product. /security stays unlinked from anywhere on
+// Support / Privacy / Terms remain because they're required for the
+// consumer app review path. /security stays unlinked from anywhere on
 // the public site; if a reviewer needs it they get the URL directly.
 export function Footer() {
   return (
@@ -19,6 +19,12 @@ export function Footer() {
             <span>&copy; {new Date().getFullYear()}</span>
           </div>
           <div className="flex items-center gap-5">
+            <Link
+              href="/support"
+              className="hover:text-[#8b95a8] transition-colors"
+            >
+              Support
+            </Link>
             <Link
               href="/privacy"
               className="hover:text-[#8b95a8] transition-colors"

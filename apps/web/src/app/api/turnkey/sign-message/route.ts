@@ -1,8 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Turnkey } from "@turnkey/sdk-server";
-import { logger } from "@/lib/logger";
 
 const TURNKEY_API_BASE_URL = "https://api.turnkey.com";
+
+function serverSigningEnabled() {
+  return process.env.TURNKEY_SERVER_SIGNING_ENABLED === "true";
+}
+
+function getErrorValue(err: unknown, key: string): unknown {
+  if (!err || typeof err !== "object") return undefined;
+  return (err as Record<string, unknown>)[key];
+}
+
+function getTurnkeyErrorInfo(err: unknown) {
+  const response = getErrorValue(err, "response");
+  const responseRecord = response && typeof response === "object"
+    ? response as Record<string, unknown>
+    : {};
+  const status = getErrorValue(err, "status")
+    ?? getErrorValue(err, "statusCode")
+    ?? responseRecord.status
+    ?? responseRecord.statusCode;
+  const code = getErrorValue(err, "code");
+  const name = getErrorValue(err, "name");
+  const message = getErrorValue(err, "message");
+
+  return {
+    name: typeof name === "string" ? name : "TurnkeyError",
+    code: typeof code === "string" || typeof code === "number" ? String(code) : undefined,
+    status: typeof status === "number" || typeof status === "string" ? status : undefined,
+    message: typeof message === "string" ? message.slice(0, 500) : "Turnkey request failed",
+  };
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -62,6 +91,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (!serverSigningEnabled()) {
+      return NextResponse.json(
+        {
+          error: "Server-side Turnkey signing is disabled",
+          code: "turnkey_server_signing_disabled",
+          remediation:
+            "Sign from a user-held Turnkey credential on the device. Do not route production auth or wallet signatures through Ghola's server.",
+        },
+        { status: 403 }
+      );
+    }
+
     const orgId = process.env.TURNKEY_ORG_ID;
     const apiPublicKey = process.env.TURNKEY_API_PUBLIC_KEY;
     const apiPrivateKey = process.env.TURNKEY_API_PRIVATE_KEY;
@@ -109,9 +150,14 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ signature: sigBase64 });
   } catch (err) {
-    logger.error("Turnkey sign-message error:", err);
+    const info = getTurnkeyErrorInfo(err);
+    console.error("Turnkey sign-message error", info);
     return NextResponse.json(
-      { error: "Failed to sign message" },
+      {
+        error: "Failed to sign message",
+        code: "turnkey_sign_message_failed",
+        turnkey: info,
+      },
       { status: 500 }
     );
   }
