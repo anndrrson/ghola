@@ -1,8 +1,8 @@
 # Tier 2K — Shielded Payment Rail
 
-Status: adapter boundary and runtime configuration implemented; shielded proof
-generation/provider adapter still required before production shielded
-settlement.
+Status: signed adapter boundary and runtime configuration implemented;
+shielded proof generation/provider adapter still required before production
+shielded settlement.
 Owner: payments + privacy.
 Targets the residual metadata leak from x402 USDC settlements on Solana.
 Pairs with Tier 2G (anonymity sets for the inference path) and Tier 1E
@@ -34,15 +34,19 @@ SHIELDED_STABLECOIN_PROVIDER=aleo
 SHIELDED_STABLECOIN_NETWORK=aleo:mainnet
 SHIELDED_STABLECOIN_ASSET=USDC
 SHIELDED_STABLECOIN_RECIPIENT=<shielded-recipient-address>
+SHIELDED_STABLECOIN_ADAPTER_PUBKEY=<adapter-ed25519-pubkey-hex-or-base64>
+SHIELDED_STABLECOIN_REQUIRE_SIGNED_RECEIPT=true
 ```
 
 `render.yaml` and the live `thumper-cloud` Render service carry the non-secret
 Aleo defaults. The rail remains
-disabled until the two deployment-specific values are present:
+disabled until the deployment-specific adapter URL, recipient, and verifier
+public key are present:
 
 ```
 SHIELDED_STABLECOIN_ADAPTER_URL=https://<adapter-host> \
 SHIELDED_STABLECOIN_RECIPIENT=<shielded-recipient-address> \
+SHIELDED_STABLECOIN_ADAPTER_PUBKEY=<adapter-ed25519-pubkey-hex-or-base64> \
 scripts/configure-shielded-rail.sh
 ```
 
@@ -53,15 +57,23 @@ curl https://api.ghola.xyz/health/payments
 ```
 
 Expected before the adapter exists: `shielded_stablecoin.configured=false`.
-Expected after both secrets are set and the app redeploys:
-`shielded_stablecoin.configured=true`.
+Expected after all verifier settings are set and the app redeploys:
+`shielded_stablecoin.configured=true`,
+`shielded_stablecoin.adapter_signature_required=true`, and
+`shielded_stablecoin.adapter_signature_configured=true`.
 
 The adapter contract is deliberately small: `thumper-cloud` posts to
 `{SHIELDED_STABLECOIN_ADAPTER_URL}/verify` with the requested amount, provider
 metadata, destination, and the caller's shielded proof payload. The adapter must
 return `settled=true`, an amount at least equal to the required amount, and a
-stable receipt or nullifier reference. The nullifier/receipt is recorded in
-`x402_payments.tx_signature` under a `shielded:<provider>:...` replay key.
+stable receipt or nullifier reference. The adapter response must echo the
+provider, network, asset, destination, proof digest, observation time,
+expiration time, and an Ed25519 signature from
+`SHIELDED_STABLECOIN_ADAPTER_PUBKEY`. The signed payload binds the receipt to
+the exact amount, recipient, proof digest, expiry, and nullifier/receipt
+reference, so `thumper-cloud` will reject a tampered or replayed adapter
+response. The nullifier/receipt is recorded in `x402_payments.tx_signature`
+under a `shielded:<provider>:...` replay key.
 
 This is not full RAILGUN/Aleo proof generation. It is the production safety
 boundary that prevents false privacy claims and gives us a concrete integration

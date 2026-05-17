@@ -61,6 +61,10 @@ services:
         sync: false
       - key: SHIELDED_STABLECOIN_RECIPIENT
         sync: false
+      - key: SHIELDED_STABLECOIN_ADAPTER_PUBKEY
+        sync: false
+      - key: SHIELDED_STABLECOIN_REQUIRE_SIGNED_RECEIPT
+        value: "true"
     healthCheckPath: /health
 
   - type: web

@@ -6,6 +6,7 @@ HEALTH_URL="${SHIELDED_RAIL_HEALTH_URL:-https://api.ghola.xyz/health/payments}"
 PROVIDER="${SHIELDED_STABLECOIN_PROVIDER:-aleo}"
 NETWORK="${SHIELDED_STABLECOIN_NETWORK:-aleo:mainnet}"
 ASSET="${SHIELDED_STABLECOIN_ASSET:-USDC}"
+REQUIRE_SIGNED_RECEIPT="${SHIELDED_STABLECOIN_REQUIRE_SIGNED_RECEIPT:-true}"
 
 require_env() {
   local name="$1"
@@ -17,6 +18,7 @@ require_env() {
 
 require_env SHIELDED_STABLECOIN_ADAPTER_URL
 require_env SHIELDED_STABLECOIN_RECIPIENT
+require_env SHIELDED_STABLECOIN_ADAPTER_PUBKEY
 
 case "$SHIELDED_STABLECOIN_ADAPTER_URL" in
   https://*) ;;
@@ -29,6 +31,13 @@ esac
 case "$SHIELDED_STABLECOIN_RECIPIENT" in
   "" | "<shielded-recipient-address>" | "0zk-recipient")
     printf 'SHIELDED_STABLECOIN_RECIPIENT is a placeholder, not a real recipient\n' >&2
+    exit 2
+    ;;
+esac
+
+case "$SHIELDED_STABLECOIN_ADAPTER_PUBKEY" in
+  "" | "<adapter-ed25519-pubkey>" | "adapter-pubkey")
+    printf 'SHIELDED_STABLECOIN_ADAPTER_PUBKEY is a placeholder, not a real Ed25519 public key\n' >&2
     exit 2
     ;;
 esac
@@ -67,6 +76,8 @@ set_render_env() {
 printf 'Configuring shielded rail env vars on Render service %s...\n' "$SERVICE_ID"
 set_render_env SHIELDED_STABLECOIN_ADAPTER_URL "$SHIELDED_STABLECOIN_ADAPTER_URL"
 set_render_env SHIELDED_STABLECOIN_RECIPIENT "$SHIELDED_STABLECOIN_RECIPIENT"
+set_render_env SHIELDED_STABLECOIN_ADAPTER_PUBKEY "$SHIELDED_STABLECOIN_ADAPTER_PUBKEY"
+set_render_env SHIELDED_STABLECOIN_REQUIRE_SIGNED_RECEIPT "$REQUIRE_SIGNED_RECEIPT"
 set_render_env SHIELDED_STABLECOIN_PROVIDER "$PROVIDER"
 set_render_env SHIELDED_STABLECOIN_NETWORK "$NETWORK"
 set_render_env SHIELDED_STABLECOIN_ASSET "$ASSET"
