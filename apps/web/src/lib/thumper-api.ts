@@ -19,7 +19,9 @@ import type {
 } from "./thumper-types";
 
 const THUMPER_API_BASE =
-  process.env.NEXT_PUBLIC_THUMPER_API_URL || "http://localhost:3000";
+  typeof window === "undefined"
+    ? process.env.NEXT_PUBLIC_THUMPER_API_URL || "https://thumper-cloud.onrender.com"
+    : process.env.NEXT_PUBLIC_THUMPER_API_URL || "";
 
 function safeGetLocalStorage(key: string): string | null {
   try {
