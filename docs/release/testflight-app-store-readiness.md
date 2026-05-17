@@ -61,20 +61,20 @@ Reviewer path:
 The project now includes Sign in with Apple entitlement support. Before installing on device, archiving, or uploading to App Store Connect:
 
 1. Open Certificates, Identifiers & Profiles.
-2. Select the explicit App ID for `xyz.ghola.app`.
-3. Enable Sign in with Apple and configure it as the primary App ID.
-4. Save the App ID changes.
+2. Select the explicit App ID for `xyz.ghola.ios`.
+3. Confirm Sign in with Apple is enabled and configured as the primary App ID.
+4. Save the App ID changes if any settings changed.
 5. Regenerate/download the iOS provisioning profile.
 6. Rebuild/archive in Xcode.
 
-If the current Apple team does not own `xyz.ghola.app`, either transfer/claim that identifier under the correct team or change the bundle identifier before TestFlight. Changing the bundle identifier changes the installed app identity.
+Apple rejected `xyz.ghola.app` for team `8RRWJ4U2L7`; `xyz.ghola.ios` is the registered TestFlight App ID for this release. Changing the bundle identifier changes the installed app identity.
 
 ## Backend production gate
 
 Set the production backend environment:
 
 ```sh
-APPLE_CLIENT_ID=xyz.ghola.app
+APPLE_CLIENT_ID=xyz.ghola.ios
 ```
 
 Then deploy `thumper-cloud` and verify:
