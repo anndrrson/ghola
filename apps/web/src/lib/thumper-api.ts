@@ -280,6 +280,41 @@ export async function getThumperBillingStatus(): Promise<ThumperBillingStatusRes
   return thumperFetch<ThumperBillingStatusResponse>("/api/billing/status");
 }
 
+export type PrivateBalanceDeposit = {
+  id: string;
+  amount_usdc: number;
+  status: string;
+  source: string;
+  stripe_session_id: string | null;
+  created_at: string;
+  paid_at: string | null;
+  shielded_at: string | null;
+};
+
+export type PrivateBalanceStatusResponse = {
+  available_micro_usdc: number;
+  paid_micro_usdc: number;
+  shielded_micro_usdc: number;
+  pending_micro_usdc: number;
+  deposits: PrivateBalanceDeposit[];
+};
+
+export async function createPrivateBalanceTopUp(
+  amountUsdc: number
+): Promise<{ deposit_id: string; checkout_url: string }> {
+  return thumperFetch<{ deposit_id: string; checkout_url: string }>(
+    "/api/billing/private-balance/checkout",
+    {
+      method: "POST",
+      body: JSON.stringify({ amount_usdc: amountUsdc }),
+    }
+  );
+}
+
+export async function getPrivateBalanceStatus(): Promise<PrivateBalanceStatusResponse> {
+  return thumperFetch<PrivateBalanceStatusResponse>("/api/billing/private-balance");
+}
+
 // Telegram
 
 export async function createTelegramLinkCode(): Promise<ThumperTelegramLinkCode> {
