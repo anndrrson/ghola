@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { Footer } from "@/components/Footer";
 
 // Direct-share-only page. Linked from briefings, decks, and individual
 // outreach — never from the public site chrome. The robots.txt blocks
@@ -424,8 +423,6 @@ ollama pull llama3.2`}
           </div>
         </div>
       </section>
-
-      <Footer />
     </div>
   );
 }
