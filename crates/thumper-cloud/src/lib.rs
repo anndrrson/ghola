@@ -8,11 +8,11 @@ pub mod routes;
 pub mod services;
 pub mod state;
 
-use axum::Json;
-use axum::Router;
 use axum::extract::State;
 use axum::http::HeaderValue;
 use axum::routing::{delete, get, patch, post};
+use axum::Json;
+use axum::Router;
 use serde_json::json;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -314,6 +314,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/wallet/balances", get(routes::wallet::get_balances))
         .route("/api/wallet/transfer", post(routes::wallet::transfer))
         .route("/api/wallet/history", get(routes::wallet::get_history))
+        .route(
+            "/api/wallet/private/intent",
+            post(routes::wallet::create_private_transfer_intent),
+        )
+        .route(
+            "/api/wallet/private/submit-proof",
+            post(routes::wallet::submit_private_transfer_proof),
+        )
+        .route(
+            "/api/wallet/private/history",
+            get(routes::wallet::get_private_transfer_history),
+        )
         .route("/api/wallet/earnings", get(routes::wallet::get_earnings))
         .route(
             "/api/wallet/withdraw-earnings",
@@ -508,15 +520,33 @@ async fn health_providers(State(state): State<AppState>) -> Json<serde_json::Val
 }
 
 async fn health_payments() -> Json<serde_json::Value> {
+    let shielded = services::x402_service::shielded_stablecoin_runtime_status();
     Json(json!({
-        "default_rail": "solana_public_stablecoin",
+        "default_rail": services::x402_service::SOLANA_PUBLIC_USDC_RAIL,
         "rails": {
+            "solana_public_usdc": {
+                "configured": true,
+                "ready": true,
+                "provider": "solana",
+                "network": "solana",
+                "asset": "USDC",
+                "rail": "solana_public_stablecoin",
+                "canonical_rail": services::x402_service::SOLANA_PUBLIC_USDC_RAIL,
+                "fallback_allowed": true,
+                "privacy_disclosure": services::x402_service::PUBLIC_STABLECOIN_DISCLOSURE
+            },
             "solana_public_stablecoin": {
                 "configured": true,
+                "ready": true,
+                "provider": "solana",
+                "network": "solana",
+                "asset": "USDC",
+                "canonical_rail": services::x402_service::SOLANA_PUBLIC_USDC_RAIL,
                 "fallback_allowed": true,
-                "privacy_disclosure": "Public Solana settlement reveals payer, provider, amount, asset, and timing on-chain."
+                "privacy_disclosure": services::x402_service::PUBLIC_STABLECOIN_DISCLOSURE
             },
-            "shielded_stablecoin": services::x402_service::shielded_stablecoin_runtime_status()
+            "aleo_usdcx_shielded": shielded.clone(),
+            "shielded_stablecoin": shielded
         }
     }))
 }

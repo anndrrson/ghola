@@ -220,8 +220,8 @@ export async function POST(request: NextRequest) {
   if (!body.network?.startsWith("aleo:")) {
     return badRequest("unsupported shielded network");
   }
-  if (body.asset !== "USDC") {
-    return badRequest("unsupported shielded asset");
+  if (body.asset !== "USDCx") {
+    return badRequest("unsupported shielded asset; Aleo private settlement requires USDCx");
   }
   if (!body.destination) {
     return badRequest("missing shielded recipient");
@@ -382,7 +382,7 @@ export async function POST(request: NextRequest) {
       nullifier_hex: body.proof.nullifier_hex || null,
       payer_address: "shielded",
       amount: bigintToSafeNumber(paidAmount),
-      currency: "USDC",
+      currency: "USDCx",
       provider: "aleo",
       network: body.network,
       asset: body.asset,

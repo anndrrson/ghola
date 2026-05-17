@@ -5,7 +5,8 @@ export interface PublicStablecoinHealth {
 }
 
 export interface ShieldedStablecoinHealth {
-  rail?: "shielded_stablecoin";
+  rail?: "shielded_stablecoin" | "aleo_usdcx_shielded";
+  canonical_rail?: "aleo_usdcx_shielded";
   provider?: string;
   network?: string;
   asset?: string;
@@ -24,7 +25,9 @@ export interface ShieldedStablecoinHealth {
 export interface PaymentHealth {
   default_rail?: string;
   rails?: {
+    solana_public_usdc?: PublicStablecoinHealth;
     solana_public_stablecoin?: PublicStablecoinHealth;
+    aleo_usdcx_shielded?: ShieldedStablecoinHealth;
     shielded_stablecoin?: ShieldedStablecoinHealth;
   };
 }
@@ -65,17 +68,19 @@ export function summarizePrivateBalance(
       privateSpendReady: false,
       publicFundingReady: false,
       fallbackAllowed: false,
-      asset: "USDC",
+      asset: "USDCx",
       network: "shielded",
     };
   }
 
-  const publicRail = health?.rails?.solana_public_stablecoin;
-  const shieldedRail = health?.rails?.shielded_stablecoin;
+  const publicRail =
+    health?.rails?.solana_public_usdc || health?.rails?.solana_public_stablecoin;
+  const shieldedRail =
+    health?.rails?.aleo_usdcx_shielded || health?.rails?.shielded_stablecoin;
   const publicFundingReady = publicRail?.configured === true;
   const privateSpendReady = shieldedRail?.configured === true;
   const fallbackAllowed = shieldedRail?.fallback_allowed === true;
-  const asset = shieldedRail?.asset || "USDC";
+  const asset = shieldedRail?.asset || "USDCx";
   const network = shieldedRail?.network || "shielded";
 
   if (privateSpendReady) {

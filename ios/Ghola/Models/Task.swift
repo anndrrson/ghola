@@ -127,6 +127,163 @@ struct WalletTransferResponse: Codable {
     }
 }
 
+struct PaymentHealthResponse: Codable {
+    let defaultRail: String?
+    let rails: [String: PaymentRailStatus]
+
+    enum CodingKeys: String, CodingKey {
+        case defaultRail = "default_rail"
+        case rails
+    }
+
+    var privateUSDCx: PaymentRailStatus? {
+        rails["aleo_usdcx_shielded"] ?? rails["shielded_stablecoin"]
+    }
+
+    var publicUSDC: PaymentRailStatus? {
+        rails["solana_public_usdc"] ?? rails["solana_public_stablecoin"]
+    }
+}
+
+struct PaymentRailStatus: Codable {
+    let configured: Bool?
+    let ready: Bool?
+    let provider: String?
+    let network: String?
+    let asset: String?
+    let rail: String?
+    let canonicalRail: String?
+    let fallbackAllowed: Bool?
+    let unavailableReason: String?
+    let privacyDisclosure: String?
+
+    enum CodingKeys: String, CodingKey {
+        case configured, ready, provider, network, asset, rail
+        case canonicalRail = "canonical_rail"
+        case fallbackAllowed = "fallback_allowed"
+        case unavailableReason = "unavailable_reason"
+        case privacyDisclosure = "privacy_disclosure"
+    }
+
+    var isReady: Bool {
+        ready ?? configured ?? false
+    }
+}
+
+struct PrivateTransferIntentResponse: Codable, Identifiable {
+    let id: UUID
+    let rail: String
+    let canonicalRail: String
+    let provider: String
+    let network: String
+    let asset: String
+    let amountMicroUSDC: Int64
+    let recipientPreview: String
+    let status: String
+    let expiresAt: String
+    let privacyDisclosure: String
+    let fallbackAllowed: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, rail, provider, network, asset, status
+        case canonicalRail = "canonical_rail"
+        case amountMicroUSDC = "amount_micro_usdc"
+        case recipientPreview = "recipient_preview"
+        case expiresAt = "expires_at"
+        case privacyDisclosure = "privacy_disclosure"
+        case fallbackAllowed = "fallback_allowed"
+    }
+}
+
+struct ShieldedPaymentProofPayload: Codable {
+    let txSignature: String?
+    let shieldedReceiptId: String?
+    let proofB64: String?
+    let nullifierHex: String?
+
+    enum CodingKeys: String, CodingKey {
+        case txSignature = "tx_signature"
+        case shieldedReceiptId = "shielded_receipt_id"
+        case proofB64 = "proof_b64"
+        case nullifierHex = "nullifier_hex"
+    }
+
+    var jsonFields: [String: Any] {
+        var fields: [String: Any] = [:]
+        if let txSignature { fields["tx_signature"] = txSignature }
+        if let shieldedReceiptId { fields["shielded_receipt_id"] = shieldedReceiptId }
+        if let proofB64 { fields["proof_b64"] = proofB64 }
+        if let nullifierHex { fields["nullifier_hex"] = nullifierHex }
+        return fields
+    }
+}
+
+struct ShieldedPaymentProof: Codable {
+    let scheme: String
+    let network: String
+    let payload: ShieldedPaymentProofPayload
+
+    init(network: String, payload: ShieldedPaymentProofPayload) {
+        self.scheme = "shielded_stablecoin"
+        self.network = network
+        self.payload = payload
+    }
+
+    var jsonFields: [String: Any] {
+        [
+            "scheme": scheme,
+            "network": network,
+            "payload": payload.jsonFields,
+        ]
+    }
+}
+
+struct PrivateTransferProofResponse: Codable, Identifiable {
+    let id: UUID
+    let rail: String
+    let canonicalRail: String
+    let provider: String
+    let network: String
+    let asset: String
+    let amountMicroUSDC: Int64
+    let recipientPreview: String
+    let adapterReceiptRef: String
+    let status: String
+    let privacyDisclosure: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, rail, provider, network, asset, status
+        case canonicalRail = "canonical_rail"
+        case amountMicroUSDC = "amount_micro_usdc"
+        case recipientPreview = "recipient_preview"
+        case adapterReceiptRef = "adapter_receipt_ref"
+        case privacyDisclosure = "privacy_disclosure"
+    }
+}
+
+struct PrivateTransferHistoryResponse: Codable, Identifiable {
+    let id: UUID
+    let rail: String
+    let provider: String
+    let network: String
+    let asset: String
+    let amountMicroUSDC: Int64
+    let recipientPreview: String
+    let status: String
+    let adapterReceiptRef: String?
+    let createdAt: String
+    let verifiedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, rail, provider, network, asset, status
+        case amountMicroUSDC = "amount_micro_usdc"
+        case recipientPreview = "recipient_preview"
+        case adapterReceiptRef = "adapter_receipt_ref"
+        case createdAt = "created_at"
+        case verifiedAt = "verified_at"
+    }
+}
+
 struct CreateTaskRequest: Codable {
     let taskType: String
     let templateId: String?

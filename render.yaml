@@ -56,7 +56,7 @@ services:
       - key: SHIELDED_STABLECOIN_NETWORK
         value: "aleo:mainnet"
       - key: SHIELDED_STABLECOIN_ASSET
-        value: "USDC"
+        value: "USDCx"
       - key: SHIELDED_STABLECOIN_ADAPTER_URL
         sync: false
       - key: SHIELDED_STABLECOIN_RECIPIENT

@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
 use crate::error::CloudError;
+use crate::privacy::{NetworkScope, PrivacyApproval};
+use crate::services::private_settlement_service;
 use crate::services::wallet_service;
 use crate::state::AppState;
 
@@ -11,7 +13,9 @@ use crate::state::AppState;
 pub async fn provision_wallet(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
+    Json(approval): Json<PrivacyApproval>,
 ) -> Result<Json<wallet_service::WalletInfo>, CloudError> {
+    approval.require_for(NetworkScope::WalletProvision)?;
     let info = wallet_service::generate_wallet(&state, claims.sub).await?;
     Ok(Json(info))
 }
@@ -60,10 +64,51 @@ pub async fn get_history(
     Ok(Json(history))
 }
 
+/// POST /api/wallet/private/intent — create an approved private USDCx transfer intent.
+pub async fn create_private_transfer_intent(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<private_settlement_service::CreatePrivateTransferIntentRequest>,
+) -> Result<Json<private_settlement_service::PrivateTransferIntentResponse>, CloudError> {
+    let intent =
+        private_settlement_service::create_private_transfer_intent(&state, claims.sub, req).await?;
+    Ok(Json(intent))
+}
+
+/// POST /api/wallet/private/submit-proof — verify a signed Aleo USDCx proof.
+pub async fn submit_private_transfer_proof(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<private_settlement_service::SubmitPrivateTransferProofRequest>,
+) -> Result<Json<private_settlement_service::PrivateTransferProofResponse>, CloudError> {
+    let result =
+        private_settlement_service::submit_private_transfer_proof(&state, claims.sub, req).await?;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+pub struct PrivateHistoryQuery {
+    pub limit: Option<i64>,
+}
+
+/// GET /api/wallet/private/history — private settlement history with redacted recipients.
+pub async fn get_private_transfer_history(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    axum::extract::Query(query): axum::extract::Query<PrivateHistoryQuery>,
+) -> Result<Json<Vec<private_settlement_service::PrivateTransferHistoryEntry>>, CloudError> {
+    let limit = query.limit.unwrap_or(25).min(100);
+    let history =
+        private_settlement_service::private_transfer_history(&state, claims.sub, limit).await?;
+    Ok(Json(history))
+}
+
 #[derive(Deserialize)]
 pub struct WithdrawEarningsRequest {
     pub to_address: String,
     pub amount_usdc: Option<i64>,
+    #[serde(flatten)]
+    pub approval: PrivacyApproval,
 }
 
 #[derive(Serialize)]
@@ -108,20 +153,20 @@ pub async fn withdraw_earnings(
     AuthUser(claims): AuthUser,
     Json(req): Json<WithdrawEarningsRequest>,
 ) -> Result<Json<WithdrawEarningsResponse>, CloudError> {
-    let mnemonic = state
-        .config
-        .treasury_mnemonic
-        .as_deref()
-        .ok_or_else(|| {
-            CloudError::ServiceUnavailable("withdrawals not configured yet".to_string())
-        })?;
+    req.approval.require_for(NetworkScope::WalletTransfer)?;
+
+    let mnemonic = state.config.treasury_mnemonic.as_deref().ok_or_else(|| {
+        CloudError::ServiceUnavailable("withdrawals not configured yet".to_string())
+    })?;
 
     // Validate address
     let to_bytes = bs58::decode(&req.to_address)
         .into_vec()
         .map_err(|_| CloudError::BadRequest("invalid Solana address".to_string()))?;
     if to_bytes.len() != 32 {
-        return Err(CloudError::BadRequest("invalid Solana address length".to_string()));
+        return Err(CloudError::BadRequest(
+            "invalid Solana address length".to_string(),
+        ));
     }
 
     // Fetch earned balance
@@ -140,7 +185,9 @@ pub async fn withdraw_earnings(
     let amount = req.amount_usdc.unwrap_or(available);
 
     if amount <= 0 {
-        return Err(CloudError::BadRequest("amount must be positive".to_string()));
+        return Err(CloudError::BadRequest(
+            "amount must be positive".to_string(),
+        ));
     }
     if amount < MIN_WITHDRAWAL_USDC {
         return Err(CloudError::BadRequest(format!(
@@ -189,7 +236,11 @@ pub async fn withdraw_earnings(
     let payout_index = 900_000u32 + (claims.sub.as_u128() % 100_000) as u32;
 
     match wallet_service::send_via_intermediate(
-        mnemonic, payout_index, &req.to_address, amount as u64, rpc_url,
+        mnemonic,
+        payout_index,
+        &req.to_address,
+        amount as u64,
+        rpc_url,
     )
     .await
     {
