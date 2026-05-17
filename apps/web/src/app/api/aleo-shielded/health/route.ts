@@ -37,7 +37,9 @@ export async function GET() {
   return NextResponse.json({
     ok: true,
     rail: "shielded_stablecoin",
+    canonical_rail: "aleo_usdcx_shielded",
     provider: "aleo",
+    asset: "USDCx",
     verifier: "ghola-aleo-shielded-adapter",
     configured,
     indexer_configured: indexerConfigured,

@@ -195,6 +195,10 @@ pub struct PaymentResponse {
     pub currency: String,
 }
 
+pub const SOLANA_PUBLIC_USDC_RAIL: &str = "solana_public_usdc";
+pub const ALEO_USDCX_SHIELDED_RAIL: &str = "aleo_usdcx_shielded";
+pub const SHIELDED_STABLECOIN_RAIL: &str = "shielded_stablecoin";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaymentRailKind {
     SolanaPublicStablecoin,
@@ -205,15 +209,21 @@ impl PaymentRailKind {
     pub fn as_str(self) -> &'static str {
         match self {
             PaymentRailKind::SolanaPublicStablecoin => "solana_public_stablecoin",
-            PaymentRailKind::ShieldedStablecoin => "shielded_stablecoin",
+            PaymentRailKind::ShieldedStablecoin => SHIELDED_STABLECOIN_RAIL,
+        }
+    }
+
+    pub fn canonical_rail(self) -> &'static str {
+        match self {
+            PaymentRailKind::SolanaPublicStablecoin => SOLANA_PUBLIC_USDC_RAIL,
+            PaymentRailKind::ShieldedStablecoin => ALEO_USDCX_SHIELDED_RAIL,
         }
     }
 }
 
-const PUBLIC_STABLECOIN_DISCLOSURE: &str =
+pub const PUBLIC_STABLECOIN_DISCLOSURE: &str =
     "Public Solana settlement reveals payer, provider, amount, asset, and timing on-chain.";
-const SHIELDED_STABLECOIN_DISCLOSURE: &str =
-    "Shielded settlement hides payer, provider, token, and amount from public chain observers, subject to timing, bridge, liquidity, and recipient-disclosure correlation.";
+pub const SHIELDED_STABLECOIN_DISCLOSURE: &str = "Private USDCx settlement on Aleo is designed to hide sender, receiver, and amount from public chain observers, subject to timing, bridge/xReserve, liquidity, recipient-disclosure, and adapter availability.";
 const SHIELDED_UNCONFIGURED_REASON: &str = "shielded stablecoin adapter is not configured";
 const SHIELDED_ADAPTER_URL_MISSING_REASON: &str =
     "shielded stablecoin adapter URL is not configured";
@@ -235,9 +245,10 @@ pub struct ShieldedStablecoinConfig {
     pub verifier_ready: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ShieldedStablecoinRuntimeStatus {
     pub configured: bool,
+    pub ready: bool,
     pub adapter_configured: bool,
     pub destination_configured: bool,
     pub adapter_signature_required: bool,
@@ -247,6 +258,7 @@ pub struct ShieldedStablecoinRuntimeStatus {
     pub network: String,
     pub asset: String,
     pub rail: &'static str,
+    pub canonical_rail: &'static str,
     pub fallback_allowed: bool,
     pub unavailable_reason: Option<&'static str>,
     pub privacy_disclosure: &'static str,
@@ -259,10 +271,12 @@ pub fn parse_requested_payment_rail(raw: Option<&str>) -> Result<PaymentRailKind
         .to_ascii_lowercase()
         .as_str()
     {
-        "" | "solana" | "solana_x402" | "solana_public_stablecoin" => {
+        "" | "solana" | "solana_x402" | "solana_public_stablecoin" | "solana_public_usdc" => {
             Ok(PaymentRailKind::SolanaPublicStablecoin)
         }
-        "shielded" | "shielded_stablecoin" => Ok(PaymentRailKind::ShieldedStablecoin),
+        "shielded" | "shielded_stablecoin" | "aleo_usdcx_shielded" => {
+            Ok(PaymentRailKind::ShieldedStablecoin)
+        }
         other => Err(CloudError::BadRequest(format!(
             "unsupported payment rail '{other}'"
         ))),
@@ -275,7 +289,7 @@ fn shielded_config_from_env() -> Option<ShieldedStablecoinConfig> {
         std::env::var("SHIELDED_STABLECOIN_PROVIDER").unwrap_or_else(|_| "aleo".to_string());
     let network =
         std::env::var("SHIELDED_STABLECOIN_NETWORK").unwrap_or_else(|_| "aleo:mainnet".to_string());
-    let asset = std::env::var("SHIELDED_STABLECOIN_ASSET").unwrap_or_else(|_| "USDC".to_string());
+    let asset = std::env::var("SHIELDED_STABLECOIN_ASSET").unwrap_or_else(|_| "USDCx".to_string());
     let destination = std::env::var("SHIELDED_STABLECOIN_RECIPIENT").unwrap_or_default();
     let require_signed_receipt = shielded_adapter_signature_required();
     let adapter_pubkey = shielded_adapter_pubkey_from_env();
@@ -354,7 +368,7 @@ pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
         std::env::var("SHIELDED_STABLECOIN_PROVIDER").unwrap_or_else(|_| "aleo".to_string());
     let network =
         std::env::var("SHIELDED_STABLECOIN_NETWORK").unwrap_or_else(|_| "aleo:mainnet".to_string());
-    let asset = std::env::var("SHIELDED_STABLECOIN_ASSET").unwrap_or_else(|_| "USDC".to_string());
+    let asset = std::env::var("SHIELDED_STABLECOIN_ASSET").unwrap_or_else(|_| "USDCx".to_string());
     let configured = adapter_configured
         && destination_configured
         && (!adapter_signature_required || adapter_signature_configured)
@@ -375,6 +389,7 @@ pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
 
     ShieldedStablecoinRuntimeStatus {
         configured,
+        ready: configured,
         adapter_configured,
         destination_configured,
         adapter_signature_required,
@@ -384,6 +399,7 @@ pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
         network,
         asset,
         rail: PaymentRailKind::ShieldedStablecoin.as_str(),
+        canonical_rail: ALEO_USDCX_SHIELDED_RAIL,
         fallback_allowed: false,
         unavailable_reason,
         privacy_disclosure: SHIELDED_STABLECOIN_DISCLOSURE,
@@ -400,6 +416,7 @@ pub fn build_shielded_unavailable_response() -> axum::response::Response {
             "error": "shielded payment unavailable",
             "code": "shielded_adapter_unconfigured",
             "rail": PaymentRailKind::ShieldedStablecoin.as_str(),
+            "canonical_rail": ALEO_USDCX_SHIELDED_RAIL,
             "settled": false,
             "fallback_allowed": false,
             "privacy_disclosure": "No shielded settlement was attempted. Ghola will not silently fall back to public Solana settlement.",
@@ -419,6 +436,7 @@ pub fn build_shielded_fallback_rejected_response() -> axum::response::Response {
             "error": "shielded payment required",
             "code": "shielded_public_fallback_rejected",
             "rail": PaymentRailKind::ShieldedStablecoin.as_str(),
+            "canonical_rail": ALEO_USDCX_SHIELDED_RAIL,
             "settled": false,
             "fallback_allowed": false,
             "privacy_disclosure": "The caller requested shielded settlement. Ghola rejected the public payment proof instead of downgrading privacy.",
@@ -851,9 +869,15 @@ struct ShieldedVerifyRequest<'a> {
     asset: &'a str,
     destination: &'a str,
     required_amount: i64,
-    agent_id: Uuid,
-    provider_id: Uuid,
-    model_id: &'a str,
+    purpose: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    intent_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_id: Option<&'a str>,
     proof: &'a PaymentPayload,
 }
 
@@ -876,6 +900,29 @@ struct ShieldedVerifyResponse {
     adapter_signature_b64: Option<String>,
     adapter_key_id: Option<String>,
     error: Option<String>,
+}
+
+pub struct ShieldedSettlementContext<'a> {
+    pub required_amount: i64,
+    pub purpose: &'a str,
+    pub destination: Option<&'a str>,
+    pub intent_id: Option<Uuid>,
+    pub agent_id: Option<Uuid>,
+    pub provider_id: Option<Uuid>,
+    pub model_id: Option<&'a str>,
+}
+
+pub struct VerifiedShieldedSettlement {
+    pub replay_key: String,
+    pub receipt_ref: String,
+    pub payer_address: String,
+    pub amount: i64,
+    pub currency: String,
+    pub provider: String,
+    pub network: String,
+    pub asset: String,
+    pub destination: String,
+    pub proof_digest: String,
 }
 
 fn shielded_proof_digest(proof: &PaymentPayload) -> Result<String, CloudError> {
@@ -903,6 +950,7 @@ fn require_matching_adapter_field(
 fn signed_shielded_receipt_payload(
     config: &ShieldedStablecoinConfig,
     response: &ShieldedVerifyResponse,
+    destination: &str,
     required_amount: i64,
     paid_amount: i64,
     receipt_ref: &str,
@@ -929,7 +977,7 @@ fn signed_shielded_receipt_payload(
         provider = config.provider,
         network = config.network,
         asset = config.asset,
-        destination = config.destination,
+        destination = destination,
         required_amount = required_amount,
         paid_amount = paid_amount,
         receipt_ref = receipt_ref,
@@ -943,6 +991,7 @@ fn signed_shielded_receipt_payload(
 fn validate_shielded_adapter_response(
     config: &ShieldedStablecoinConfig,
     response: &ShieldedVerifyResponse,
+    expected_destination: &str,
     required_amount: i64,
     proof: &PaymentPayload,
     fallback_receipt_ref: &str,
@@ -953,7 +1002,7 @@ fn validate_shielded_adapter_response(
     require_matching_adapter_field(
         "destination",
         response.destination.as_deref(),
-        &config.destination,
+        expected_destination,
     )?;
 
     let paid_amount = response.amount.unwrap_or(0);
@@ -1017,6 +1066,7 @@ fn validate_shielded_adapter_response(
         let signed_payload = signed_shielded_receipt_payload(
             config,
             response,
+            expected_destination,
             required_amount,
             paid_amount,
             canonical_receipt_ref,
@@ -1034,20 +1084,25 @@ fn validate_shielded_adapter_response(
     Ok(canonical_receipt_ref.to_string())
 }
 
-async fn verify_shielded_payment(
-    state: &AppState,
+pub async fn verify_shielded_stablecoin_settlement(
+    _state: &AppState,
     proof: &PaymentProof,
-    required_amount: i64,
-    agent_id: Uuid,
-    provider_id: Uuid,
-    model_id: &str,
-) -> Result<VerifiedPayment, CloudError> {
+    context: ShieldedSettlementContext<'_>,
+) -> Result<VerifiedShieldedSettlement, CloudError> {
+    if proof.scheme != SHIELDED_STABLECOIN_RAIL {
+        return Err(CloudError::PaymentRequired(format!(
+            "unsupported shielded payment scheme: {}",
+            proof.scheme
+        )));
+    }
+
     let config = shielded_config_from_env().ok_or_else(|| {
         CloudError::PaymentRequired(
             "shielded stablecoin requested but adapter is not configured; refusing public fallback"
                 .into(),
         )
     })?;
+    let expected_destination = context.destination.unwrap_or(&config.destination);
 
     if proof.network != config.network {
         return Err(CloudError::PaymentRequired(format!(
@@ -1077,11 +1132,13 @@ async fn verify_shielded_payment(
             provider: &config.provider,
             network: &config.network,
             asset: &config.asset,
-            destination: &config.destination,
-            required_amount,
-            agent_id,
-            provider_id,
-            model_id,
+            destination: expected_destination,
+            required_amount: context.required_amount,
+            purpose: context.purpose,
+            intent_id: context.intent_id,
+            agent_id: context.agent_id,
+            provider_id: context.provider_id,
+            model_id: context.model_id,
             proof: &proof.payload,
         })
         .send()
@@ -1102,24 +1159,70 @@ async fn verify_shielded_payment(
     }
 
     let paid_amount = adapter_response.amount.unwrap_or(0);
-    if paid_amount < required_amount {
+    if paid_amount < context.required_amount {
         return Err(CloudError::PaymentRequired(format!(
-            "insufficient shielded payment: paid {paid_amount}, required {required_amount}"
+            "insufficient shielded payment: paid {paid_amount}, required {}",
+            context.required_amount
         )));
     }
 
     let canonical_receipt_ref = validate_shielded_adapter_response(
         &config,
         &adapter_response,
-        required_amount,
+        expected_destination,
+        context.required_amount,
         &proof.payload,
         receipt_ref,
     )?;
     let replay_key = format!("shielded:{}:{canonical_receipt_ref}", config.provider);
+    let proof_digest = shielded_proof_digest(&proof.payload)?;
+    let payer_address = adapter_response
+        .payer_address
+        .unwrap_or_else(|| "shielded".to_string());
+    let currency = adapter_response
+        .currency
+        .unwrap_or_else(|| config.asset.clone());
+
+    Ok(VerifiedShieldedSettlement {
+        replay_key,
+        receipt_ref: canonical_receipt_ref,
+        payer_address,
+        amount: paid_amount,
+        currency,
+        provider: config.provider,
+        network: config.network,
+        asset: config.asset,
+        destination: expected_destination.to_string(),
+        proof_digest,
+    })
+}
+
+async fn verify_shielded_payment(
+    state: &AppState,
+    proof: &PaymentProof,
+    required_amount: i64,
+    agent_id: Uuid,
+    provider_id: Uuid,
+    model_id: &str,
+) -> Result<VerifiedPayment, CloudError> {
+    let verified = verify_shielded_stablecoin_settlement(
+        state,
+        proof,
+        ShieldedSettlementContext {
+            required_amount,
+            purpose: "agent_x402",
+            destination: None,
+            intent_id: None,
+            agent_id: Some(agent_id),
+            provider_id: Some(provider_id),
+            model_id: Some(model_id),
+        },
+    )
+    .await?;
 
     let already_used: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM x402_payments WHERE tx_signature = $1)")
-            .bind(&replay_key)
+            .bind(&verified.replay_key)
             .fetch_one(&state.db)
             .await
             .unwrap_or(false);
@@ -1130,13 +1233,6 @@ async fn verify_shielded_payment(
         ));
     }
 
-    let payer_address = adapter_response
-        .payer_address
-        .unwrap_or_else(|| "shielded".to_string());
-    let currency = adapter_response
-        .currency
-        .unwrap_or_else(|| config.asset.clone());
-
     let payment_id: Uuid = sqlx::query_scalar(
         r#"
         INSERT INTO x402_payments
@@ -1146,9 +1242,9 @@ async fn verify_shielded_payment(
         RETURNING id
         "#,
     )
-    .bind(&replay_key)
-    .bind(&payer_address)
-    .bind(paid_amount)
+    .bind(&verified.replay_key)
+    .bind(&verified.payer_address)
+    .bind(verified.amount)
     .bind(required_amount)
     .bind(agent_id)
     .bind(provider_id)
@@ -1166,16 +1262,17 @@ async fn verify_shielded_payment(
     })?;
 
     tracing::info!(
-        %replay_key, %currency, paid_amount, required_amount,
-        %agent_id, "shielded stablecoin payment verified"
+        rail = ALEO_USDCX_SHIELDED_RAIL,
+        %agent_id,
+        "shielded stablecoin payment verified"
     );
 
     Ok(VerifiedPayment {
         payment_id,
-        tx_signature: replay_key,
-        payer_address,
-        amount_usdc: paid_amount,
-        currency,
+        tx_signature: verified.replay_key,
+        payer_address: verified.payer_address,
+        amount_usdc: verified.amount,
+        currency: verified.currency,
         settlement_rail: PaymentRailKind::ShieldedStablecoin.as_str().to_string(),
         privacy_disclosure: SHIELDED_STABLECOIN_DISCLOSURE.to_string(),
     })
@@ -1500,6 +1597,14 @@ mod tests {
             parse_requested_payment_rail(Some("solana_x402")).unwrap(),
             PaymentRailKind::SolanaPublicStablecoin
         );
+        assert_eq!(
+            parse_requested_payment_rail(Some("solana_public_usdc")).unwrap(),
+            PaymentRailKind::SolanaPublicStablecoin
+        );
+        assert_eq!(
+            PaymentRailKind::SolanaPublicStablecoin.canonical_rail(),
+            SOLANA_PUBLIC_USDC_RAIL
+        );
     }
 
     #[test]
@@ -1507,6 +1612,14 @@ mod tests {
         assert_eq!(
             parse_requested_payment_rail(Some("shielded_stablecoin")).unwrap(),
             PaymentRailKind::ShieldedStablecoin
+        );
+        assert_eq!(
+            parse_requested_payment_rail(Some("aleo_usdcx_shielded")).unwrap(),
+            PaymentRailKind::ShieldedStablecoin
+        );
+        assert_eq!(
+            PaymentRailKind::ShieldedStablecoin.canonical_rail(),
+            ALEO_USDCX_SHIELDED_RAIL
         );
     }
 
@@ -1519,7 +1632,7 @@ mod tests {
         ShieldedStablecoinConfig {
             provider: "aleo".to_string(),
             network: "aleo:mainnet".to_string(),
-            asset: "USDC".to_string(),
+            asset: "USDCx".to_string(),
             destination: "aleo1recipient".to_string(),
             adapter_url: "https://adapter.example".to_string(),
             require_signed_receipt: true,
@@ -1568,6 +1681,7 @@ mod tests {
         let payload = signed_shielded_receipt_payload(
             config,
             &response,
+            &config.destination,
             1000,
             paid_amount,
             "abc123",
@@ -1587,9 +1701,15 @@ mod tests {
         let proof = test_shielded_proof();
         let response = signed_shielded_response(&config, &signer, &proof, 1500);
 
-        let receipt_ref =
-            validate_shielded_adapter_response(&config, &response, 1000, &proof, "fallback")
-                .unwrap();
+        let receipt_ref = validate_shielded_adapter_response(
+            &config,
+            &response,
+            &config.destination,
+            1000,
+            &proof,
+            "fallback",
+        )
+        .unwrap();
 
         assert_eq!(receipt_ref, "abc123");
     }
@@ -1602,9 +1722,16 @@ mod tests {
         let mut response = signed_shielded_response(&config, &signer, &proof, 1500);
         response.destination = Some("aleo1attacker".to_string());
 
-        let err = validate_shielded_adapter_response(&config, &response, 1000, &proof, "fallback")
-            .unwrap_err()
-            .to_string();
+        let err = validate_shielded_adapter_response(
+            &config,
+            &response,
+            &config.destination,
+            1000,
+            &proof,
+            "fallback",
+        )
+        .unwrap_err()
+        .to_string();
 
         assert!(err.contains("destination mismatch"));
     }
@@ -1617,9 +1744,16 @@ mod tests {
         let mut response = signed_shielded_response(&config, &signer, &proof, 1500);
         response.amount = Some(2500);
 
-        let err = validate_shielded_adapter_response(&config, &response, 1000, &proof, "fallback")
-            .unwrap_err()
-            .to_string();
+        let err = validate_shielded_adapter_response(
+            &config,
+            &response,
+            &config.destination,
+            1000,
+            &proof,
+            "fallback",
+        )
+        .unwrap_err()
+        .to_string();
 
         assert!(err.contains("signature verification failed"));
     }
@@ -1632,9 +1766,16 @@ mod tests {
         let mut response = signed_shielded_response(&config, &signer, &proof, 1500);
         response.proof_digest = Some("bad".to_string());
 
-        let err = validate_shielded_adapter_response(&config, &response, 1000, &proof, "fallback")
-            .unwrap_err()
-            .to_string();
+        let err = validate_shielded_adapter_response(
+            &config,
+            &response,
+            &config.destination,
+            1000,
+            &proof,
+            "fallback",
+        )
+        .unwrap_err()
+        .to_string();
 
         assert!(err.contains("proof digest mismatch"));
     }

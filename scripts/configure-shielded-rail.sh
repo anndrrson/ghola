@@ -2,10 +2,10 @@
 set -euo pipefail
 
 SERVICE_ID="${RENDER_SERVICE_ID:-srv-d6qpkd6a2pns73a5m6dg}"
-HEALTH_URL="${SHIELDED_RAIL_HEALTH_URL:-https://api.ghola.xyz/health/payments}"
+HEALTH_URL="${SHIELDED_RAIL_HEALTH_URL:-https://thumper-cloud.onrender.com/health/payments}"
 PROVIDER="${SHIELDED_STABLECOIN_PROVIDER:-aleo}"
 NETWORK="${SHIELDED_STABLECOIN_NETWORK:-aleo:mainnet}"
-ASSET="${SHIELDED_STABLECOIN_ASSET:-USDC}"
+ASSET="${SHIELDED_STABLECOIN_ASSET:-USDCx}"
 REQUIRE_SIGNED_RECEIPT="${SHIELDED_STABLECOIN_REQUIRE_SIGNED_RECEIPT:-true}"
 VERIFIER_READY="${SHIELDED_STABLECOIN_VERIFIER_READY:-false}"
 
@@ -44,9 +44,9 @@ case "$SHIELDED_STABLECOIN_ADAPTER_PUBKEY" in
 esac
 
 case "$ASSET" in
-  USDC | USDT) ;;
+  USDCx) ;;
   *)
-    printf 'SHIELDED_STABLECOIN_ASSET must be USDC or USDT, got %s\n' "$ASSET" >&2
+    printf 'SHIELDED_STABLECOIN_ASSET must be USDCx for the Aleo private rail, got %s\n' "$ASSET" >&2
     exit 2
     ;;
 esac
@@ -84,11 +84,11 @@ set_render_env SHIELDED_STABLECOIN_PROVIDER "$PROVIDER"
 set_render_env SHIELDED_STABLECOIN_NETWORK "$NETWORK"
 set_render_env SHIELDED_STABLECOIN_ASSET "$ASSET"
 
-printf 'Waiting for %s to report shielded_stablecoin.configured=true...\n' "$HEALTH_URL"
+printf 'Waiting for %s to report aleo_usdcx_shielded.configured=true...\n' "$HEALTH_URL"
 for _ in {1..30}; do
   body="$(curl -fsS "$HEALTH_URL" 2>/dev/null || true)"
   if [[ -n "$body" ]] && command -v jq >/dev/null 2>&1; then
-    if printf '%s' "$body" | jq -e '.rails.shielded_stablecoin.configured == true' >/dev/null; then
+    if printf '%s' "$body" | jq -e '(.rails.aleo_usdcx_shielded.configured // .rails.shielded_stablecoin.configured) == true' >/dev/null; then
       printf 'Shielded rail configured.\n'
       exit 0
     fi

@@ -288,17 +288,30 @@ final class LlmBackendTests: XCTestCase {
             displayName: "  Sarah  ",
             handle: " @Sarah ",
             address: " 11111111111111111111111111111111 ",
+            shieldedAddress: " aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq ",
             now: Date(timeIntervalSince1970: 1_000)
         )
 
         XCTAssertEqual(contact.displayName, "Sarah")
         XCTAssertEqual(contact.handle, "sarah")
         XCTAssertEqual(contact.address, "11111111111111111111111111111111")
+        XCTAssertEqual(contact.shieldedAddress, "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq")
     }
 
     func testWalletContact_RejectsInvalidAddress() {
         XCTAssertThrowsError(
             try WalletContact.make(displayName: "Sarah", handle: nil, address: "not-a-solana-address")
+        )
+    }
+
+    func testWalletContact_RejectsInvalidShieldedAddress() {
+        XCTAssertThrowsError(
+            try WalletContact.make(
+                displayName: "Sarah",
+                handle: nil,
+                address: "11111111111111111111111111111111",
+                shieldedAddress: "11111111111111111111111111111111"
+            )
         )
     }
 
@@ -314,6 +327,23 @@ final class LlmBackendTests: XCTestCase {
         let data = try WalletContactsCodec.encode([contact])
         let decoded = try WalletContactsCodec.decode(data)
         XCTAssertEqual(decoded, [contact])
+    }
+
+    func testPendingPrivateTransferCodec_RoundTripsLocalIntent() throws {
+        let intent = PendingPrivateTransfer(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
+            recipientAddress: "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+            recipientPreview: "aleo1qqq...qqqqqq",
+            amountMicroUSDC: 1_000_000,
+            network: "aleo:mainnet",
+            asset: "USDCx",
+            createdAt: Date(timeIntervalSince1970: 3_000),
+            expiresAt: Date(timeIntervalSince1970: 3_600)
+        )
+
+        let data = try WalletContactsCodec.encodePendingPrivateTransfers([intent])
+        let decoded = try WalletContactsCodec.decodePendingPrivateTransfers(data)
+        XCTAssertEqual(decoded, [intent])
     }
 
     func testPrivacyGate_AllowsWalletApprovalsOnlyForMatchingScope() {
