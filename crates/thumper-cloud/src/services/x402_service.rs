@@ -220,6 +220,8 @@ const SHIELDED_ADAPTER_URL_MISSING_REASON: &str =
 const SHIELDED_RECIPIENT_MISSING_REASON: &str = "shielded stablecoin recipient is not configured";
 const SHIELDED_ADAPTER_PUBKEY_MISSING_REASON: &str =
     "shielded adapter signing public key is not configured";
+const SHIELDED_VERIFIER_NOT_READY_REASON: &str =
+    "shielded stablecoin verifier is configured but not marked ready";
 
 #[derive(Debug, Clone)]
 pub struct ShieldedStablecoinConfig {
@@ -230,6 +232,7 @@ pub struct ShieldedStablecoinConfig {
     pub adapter_url: String,
     pub require_signed_receipt: bool,
     pub adapter_pubkey: Option<VerifyingKey>,
+    pub verifier_ready: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -239,6 +242,7 @@ pub struct ShieldedStablecoinRuntimeStatus {
     pub destination_configured: bool,
     pub adapter_signature_required: bool,
     pub adapter_signature_configured: bool,
+    pub verifier_ready: bool,
     pub provider: String,
     pub network: String,
     pub asset: String,
@@ -275,11 +279,15 @@ fn shielded_config_from_env() -> Option<ShieldedStablecoinConfig> {
     let destination = std::env::var("SHIELDED_STABLECOIN_RECIPIENT").unwrap_or_default();
     let require_signed_receipt = shielded_adapter_signature_required();
     let adapter_pubkey = shielded_adapter_pubkey_from_env();
+    let verifier_ready = shielded_verifier_ready();
 
     if adapter_url.trim().is_empty() || destination.trim().is_empty() {
         return None;
     }
     if require_signed_receipt && adapter_pubkey.is_none() {
+        return None;
+    }
+    if !verifier_ready {
         return None;
     }
 
@@ -291,6 +299,7 @@ fn shielded_config_from_env() -> Option<ShieldedStablecoinConfig> {
         adapter_url,
         require_signed_receipt,
         adapter_pubkey,
+        verifier_ready,
     })
 }
 
@@ -303,6 +312,12 @@ fn shielded_adapter_signature_required() -> bool {
 fn shielded_adapter_pubkey_from_env() -> Option<VerifyingKey> {
     let raw = std::env::var("SHIELDED_STABLECOIN_ADAPTER_PUBKEY").ok()?;
     parse_ed25519_verifying_key(raw.trim()).ok()
+}
+
+fn shielded_verifier_ready() -> bool {
+    std::env::var("SHIELDED_STABLECOIN_VERIFIER_READY")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
 }
 
 fn parse_ed25519_verifying_key(raw: &str) -> Result<VerifyingKey, CloudError> {
@@ -334,6 +349,7 @@ pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
         .is_some_and(|s| !s.trim().is_empty());
     let adapter_signature_required = shielded_adapter_signature_required();
     let adapter_signature_configured = shielded_adapter_pubkey_from_env().is_some();
+    let verifier_ready = shielded_verifier_ready();
     let provider =
         std::env::var("SHIELDED_STABLECOIN_PROVIDER").unwrap_or_else(|_| "aleo".to_string());
     let network =
@@ -341,7 +357,8 @@ pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
     let asset = std::env::var("SHIELDED_STABLECOIN_ASSET").unwrap_or_else(|_| "USDC".to_string());
     let configured = adapter_configured
         && destination_configured
-        && (!adapter_signature_required || adapter_signature_configured);
+        && (!adapter_signature_required || adapter_signature_configured)
+        && verifier_ready;
     let unavailable_reason = if configured {
         None
     } else if !adapter_configured {
@@ -350,6 +367,8 @@ pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
         Some(SHIELDED_RECIPIENT_MISSING_REASON)
     } else if adapter_signature_required && !adapter_signature_configured {
         Some(SHIELDED_ADAPTER_PUBKEY_MISSING_REASON)
+    } else if !verifier_ready {
+        Some(SHIELDED_VERIFIER_NOT_READY_REASON)
     } else {
         Some(SHIELDED_UNCONFIGURED_REASON)
     };
@@ -360,6 +379,7 @@ pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
         destination_configured,
         adapter_signature_required,
         adapter_signature_configured,
+        verifier_ready,
         provider,
         network,
         asset,
@@ -1504,6 +1524,7 @@ mod tests {
             adapter_url: "https://adapter.example".to_string(),
             require_signed_receipt: true,
             adapter_pubkey: Some(pubkey),
+            verifier_ready: true,
         }
     }
 

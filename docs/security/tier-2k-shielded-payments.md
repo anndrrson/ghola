@@ -36,6 +36,7 @@ SHIELDED_STABLECOIN_ASSET=USDC
 SHIELDED_STABLECOIN_RECIPIENT=<shielded-recipient-address>
 SHIELDED_STABLECOIN_ADAPTER_PUBKEY=<adapter-ed25519-pubkey-hex-or-base64>
 SHIELDED_STABLECOIN_REQUIRE_SIGNED_RECEIPT=true
+SHIELDED_STABLECOIN_VERIFIER_READY=false
 ```
 
 `render.yaml` and the live `thumper-cloud` Render service carry the non-secret
@@ -58,7 +59,9 @@ curl https://api.ghola.xyz/health/payments
 
 Expected before the adapter exists: `shielded_stablecoin.configured=false`.
 Expected after all verifier settings are set and the app redeploys:
-`shielded_stablecoin.configured=true`,
+`shielded_stablecoin.configured=false` until the adapter has a real
+on-chain verifier and `SHIELDED_STABLECOIN_VERIFIER_READY=true`. At that point
+the expected state is `shielded_stablecoin.configured=true`,
 `shielded_stablecoin.adapter_signature_required=true`, and
 `shielded_stablecoin.adapter_signature_configured=true`.
 
