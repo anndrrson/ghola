@@ -9,6 +9,7 @@ import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { LocalSetupBanner } from "@/components/chat/LocalSetupBanner";
 import { PrivateBalancePanel } from "@/components/private-balance";
+import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import { SovereigntyPicker } from "@/components/SovereigntyPicker";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
@@ -104,16 +105,17 @@ export default function ChatPage() {
     text: string;
     reason: string;
   } | null>(null);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<AuthMode>("signup");
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { setAuth, authenticated, loading: authLoading } = useThumperAuth();
+  const { setAuth, authenticated } = useThumperAuth();
   const { createWallet, walletAddress, signBytes } = useTurnkeyWallet();
 
-  // Tier 1A: anonymous visitors land on a working Local-mode chat
-  // (WebGPU in-browser inference). No redirect — modes that require
-  // an identity (Private, history persistence, Turnkey-signed receipts)
-  // surface a sign-in prompt at the point of use rather than blocking
-  // access to the chat surface entirely.
+  // Anonymous visitors can open the chat surface, but the default send
+  // path is Private and asks for an account before inference. Local mode
+  // remains available as an explicit choice for users who want on-device
+  // inference without an account.
 
   // Chat-side E2E: when a Turnkey wallet is connected, build a vault
   // whose unlock key is gated on a Turnkey signature. Sealing happens
@@ -338,6 +340,12 @@ export default function ChatPage() {
     }
     const effectiveMode = modeOverride ?? sovereigntyMode;
 
+    if (!authenticated && effectiveMode !== "local") {
+      setAuthModalMode("signup");
+      setAuthModalOpen(true);
+      return;
+    }
+
     const route = await selectRoute(effectiveMode);
     if (route.caveat) {
       // eslint-disable-next-line no-console
@@ -561,14 +569,22 @@ export default function ChatPage() {
           setIsStreaming(false);
         },
         onError: (errMsg) => {
+          const displayError =
+            !authenticated
+              ? `${errMsg}\n\nThis phone could not start the on-device model. Create an account to use Private cloud inference, or try Local on a desktop browser.`
+              : errMsg;
           updateSession(currentSessionId, (s) => {
             const msgs = [...s.messages];
             msgs[msgs.length - 1] = {
               ...msgs[msgs.length - 1],
-              content: errMsg,
+              content: displayError,
             };
             return { ...s, messages: msgs };
           });
+          if (!authenticated) {
+            setAuthModalMode("signup");
+            setAuthModalOpen(true);
+          }
           setIsStreaming(false);
         },
       });
@@ -773,6 +789,13 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-full">
+      <AuthModal
+        mode={authModalMode}
+        open={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        onModeChange={setAuthModalMode}
+        redirectTo={null}
+      />
       {/* Sidebar */}
       <div
         className={`${
