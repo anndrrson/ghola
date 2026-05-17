@@ -88,6 +88,13 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS privacy_mode TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS network_scope TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS user_approved_at TIMESTAMPTZ;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS approval_nonce TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS approval_summary TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_user_approval_nonce
+    ON tasks(user_id, approval_nonce) WHERE approval_nonce IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS task_steps (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -137,6 +144,13 @@ CREATE TABLE IF NOT EXISTS email_actions (
     sent_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_email_actions_user ON email_actions(user_id);
+ALTER TABLE email_actions ADD COLUMN IF NOT EXISTS privacy_mode TEXT;
+ALTER TABLE email_actions ADD COLUMN IF NOT EXISTS network_scope TEXT;
+ALTER TABLE email_actions ADD COLUMN IF NOT EXISTS user_approved_at TIMESTAMPTZ;
+ALTER TABLE email_actions ADD COLUMN IF NOT EXISTS approval_nonce TEXT;
+ALTER TABLE email_actions ADD COLUMN IF NOT EXISTS approval_summary TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_email_actions_user_approval_nonce
+    ON email_actions(user_id, approval_nonce) WHERE approval_nonce IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS sms_actions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -363,6 +377,13 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_wallet_txns_user ON wallet_transactions(user_id);
+ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS privacy_mode TEXT;
+ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS network_scope TEXT;
+ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS user_approved_at TIMESTAMPTZ;
+ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS approval_nonce TEXT;
+ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS approval_summary TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_txns_user_approval_nonce
+    ON wallet_transactions(user_id, approval_nonce) WHERE approval_nonce IS NOT NULL;
 
 -- Extend task_type to include crypto
 ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_task_type_check;
@@ -720,6 +741,91 @@ CREATE TABLE IF NOT EXISTS device_handshakes (
 );
 CREATE INDEX IF NOT EXISTS idx_device_handshakes_expires
     ON device_handshakes(expires_at);
+
+-- Native E2EE messaging relay.
+--
+-- These tables are deliberately server-blind. Device rows hold only an
+-- opaque public key bundle published by a user's device DID. Envelope rows
+-- hold only sealed ciphertext addressed to a recipient DID. The cloud never
+-- stores message body/content/subject/text/plaintext or privacy approval
+-- nonces for native messaging.
+CREATE TABLE IF NOT EXISTS native_message_devices (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    did         TEXT NOT NULL,
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id   TEXT NOT NULL,
+    key_bundle  JSONB NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(did, device_id)
+);
+ALTER TABLE native_message_devices ADD COLUMN IF NOT EXISTS id UUID DEFAULT gen_random_uuid();
+ALTER TABLE native_message_devices ADD COLUMN IF NOT EXISTS device_id TEXT;
+UPDATE native_message_devices SET device_id = did WHERE device_id IS NULL;
+ALTER TABLE native_message_devices ALTER COLUMN id SET NOT NULL;
+ALTER TABLE native_message_devices ALTER COLUMN device_id SET NOT NULL;
+ALTER TABLE IF EXISTS native_message_envelopes DROP CONSTRAINT IF EXISTS native_message_envelopes_recipient_did_fkey;
+ALTER TABLE native_message_devices DROP CONSTRAINT IF EXISTS native_message_devices_pkey;
+ALTER TABLE native_message_devices ADD CONSTRAINT native_message_devices_pkey PRIMARY KEY (id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_native_message_devices_did_device
+    ON native_message_devices(did, device_id);
+CREATE INDEX IF NOT EXISTS idx_native_message_devices_user
+    ON native_message_devices(user_id);
+CREATE INDEX IF NOT EXISTS idx_native_message_devices_device
+    ON native_message_devices(device_id);
+
+CREATE TABLE IF NOT EXISTS native_message_envelopes (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    thread_id           UUID,
+    sender_user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sender_did          TEXT,
+    sender_device_id    TEXT,
+    recipient_did       TEXT NOT NULL,
+    recipient_device_id TEXT,
+    kind                TEXT NOT NULL DEFAULT 'human'
+                            CHECK (kind IN ('human', 'agent_approved', 'agent_generated')),
+    sealed_envelope_b64 TEXT NOT NULL,
+    approval_receipt_hash TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    acked_at            TIMESTAMPTZ
+);
+ALTER TABLE native_message_envelopes ADD COLUMN IF NOT EXISTS thread_id UUID;
+ALTER TABLE native_message_envelopes ADD COLUMN IF NOT EXISTS sender_device_id TEXT;
+ALTER TABLE native_message_envelopes ADD COLUMN IF NOT EXISTS recipient_device_id TEXT;
+ALTER TABLE native_message_envelopes ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'human';
+ALTER TABLE native_message_envelopes ADD COLUMN IF NOT EXISTS approval_receipt_hash TEXT;
+ALTER TABLE native_message_envelopes DROP CONSTRAINT IF EXISTS native_message_envelopes_recipient_did_fkey;
+ALTER TABLE native_message_envelopes DROP CONSTRAINT IF EXISTS native_message_envelopes_kind_check;
+ALTER TABLE native_message_envelopes ADD CONSTRAINT native_message_envelopes_kind_check
+    CHECK (kind IN ('human', 'agent_approved', 'agent_generated'));
+CREATE INDEX IF NOT EXISTS idx_native_message_envelopes_recipient
+    ON native_message_envelopes(recipient_did, acked_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_native_message_envelopes_sender
+    ON native_message_envelopes(sender_user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_native_message_envelopes_thread
+    ON native_message_envelopes(thread_id, created_at);
+
+CREATE TABLE IF NOT EXISTS native_message_delivery_receipts (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id  UUID NOT NULL REFERENCES native_message_envelopes(id) ON DELETE CASCADE,
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    acked_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(message_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_native_message_delivery_receipts_user
+    ON native_message_delivery_receipts(user_id, created_at);
+
+CREATE TABLE IF NOT EXISTS native_message_relay_audit_events (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID REFERENCES users(id) ON DELETE SET NULL,
+    event_type  TEXT NOT NULL,
+    message_id  UUID REFERENCES native_message_envelopes(id) ON DELETE SET NULL,
+    metadata    JSONB NOT NULL DEFAULT '{}',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_native_message_relay_audit_events_user
+    ON native_message_relay_audit_events(user_id, created_at);
 
 -- Refresh-token rotation (OAuth2-style, single-use).
 --

@@ -21,5 +21,6 @@ pub mod agents;
 pub mod swarm;
 pub mod x402;
 pub mod marketplace;
+pub mod messages;
 pub mod agent;
 pub mod did_snapshot;

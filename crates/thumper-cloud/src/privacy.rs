@@ -25,6 +25,7 @@ pub enum NetworkScope {
     CalendarExecution,
     WalletProvision,
     WalletTransfer,
+    NativeMessagingRelay,
     Billing,
     ProviderConfig,
 }
@@ -41,6 +42,7 @@ impl NetworkScope {
             Self::CalendarExecution => "calendarExecution",
             Self::WalletProvision => "walletProvision",
             Self::WalletTransfer => "walletTransfer",
+            Self::NativeMessagingRelay => "nativeMessagingRelay",
             Self::Billing => "billing",
             Self::ProviderConfig => "providerConfig",
         }
@@ -49,7 +51,11 @@ impl NetworkScope {
     pub fn boundary_label(self) -> &'static str {
         match self {
             Self::LocalServerChat => "Local network",
-            Self::CloudChat | Self::Auth | Self::Billing | Self::ProviderConfig => "Ghola Cloud",
+            Self::CloudChat
+            | Self::Auth
+            | Self::NativeMessagingRelay
+            | Self::Billing
+            | Self::ProviderConfig => "Ghola Cloud",
             Self::CallExecution
             | Self::EmailDraft
             | Self::EmailSend
@@ -70,6 +76,7 @@ impl NetworkScope {
             "calendarExecution" => Some(Self::CalendarExecution),
             "walletProvision" => Some(Self::WalletProvision),
             "walletTransfer" => Some(Self::WalletTransfer),
+            "nativeMessagingRelay" => Some(Self::NativeMessagingRelay),
             "billing" => Some(Self::Billing),
             "providerConfig" => Some(Self::ProviderConfig),
             _ => None,

@@ -232,6 +232,23 @@ pub fn build_router(state: AppState) -> Router {
             "/api/devices/handshake/{id}",
             get(routes::handshake::get_handshake),
         )
+        // Ghola-native E2EE messaging relay. The relay stores and returns
+        // ciphertext envelopes only; plaintext content is rejected at route
+        // boundaries.
+        .route(
+            "/api/messages/devices",
+            post(routes::messages::register_device),
+        )
+        .route(
+            "/api/messages/prekeys/{did}",
+            get(routes::messages::get_prekeys),
+        )
+        .route(
+            "/api/messages/envelopes",
+            post(routes::messages::post_envelope),
+        )
+        .route("/api/messages/sync", get(routes::messages::sync))
+        .route("/api/messages/{id}/ack", post(routes::messages::ack))
         // Billing
         .route(
             "/api/billing/checkout",
