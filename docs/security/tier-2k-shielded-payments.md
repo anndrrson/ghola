@@ -1,6 +1,8 @@
 # Tier 2K — Shielded Payment Rail
 
-Status: design, not yet implemented.
+Status: adapter boundary and runtime configuration implemented; shielded proof
+generation/provider adapter still required before production shielded
+settlement.
 Owner: payments + privacy.
 Targets the residual metadata leak from x402 USDC settlements on Solana.
 Pairs with Tier 2G (anonymity sets for the inference path) and Tier 1E
@@ -10,6 +12,60 @@ Tier 2K entry for the one-line scope this doc expands.
 This is the deep doc; tone and depth match
 [cryptographic-primitives.md](./cryptographic-primitives.md). All
 section references are to source files in this repo.
+
+## 0. Current implementation boundary
+
+As of the shielded rail adapter pass, anonymous agent x402 calls can request
+shielded-only settlement by sending:
+
+```
+x-ghola-payment-rail: shielded_stablecoin
+```
+
+The request fails closed when the adapter is not configured. Ghola does not
+silently downgrade shielded requests to public Solana USDC. Public x402 remains
+the default rail.
+
+Runtime configuration required to enable shielded verification:
+
+```
+SHIELDED_STABLECOIN_ADAPTER_URL=https://<adapter-host>
+SHIELDED_STABLECOIN_PROVIDER=aleo
+SHIELDED_STABLECOIN_NETWORK=aleo:mainnet
+SHIELDED_STABLECOIN_ASSET=USDC
+SHIELDED_STABLECOIN_RECIPIENT=<shielded-recipient-address>
+```
+
+`render.yaml` and the live `thumper-cloud` Render service carry the non-secret
+Aleo defaults. The rail remains
+disabled until the two deployment-specific values are present:
+
+```
+SHIELDED_STABLECOIN_ADAPTER_URL=https://<adapter-host> \
+SHIELDED_STABLECOIN_RECIPIENT=<shielded-recipient-address> \
+scripts/configure-shielded-rail.sh
+```
+
+Verify the live runtime state without exposing the adapter URL or recipient:
+
+```
+curl https://api.ghola.xyz/health/payments
+```
+
+Expected before the adapter exists: `shielded_stablecoin.configured=false`.
+Expected after both secrets are set and the app redeploys:
+`shielded_stablecoin.configured=true`.
+
+The adapter contract is deliberately small: `thumper-cloud` posts to
+`{SHIELDED_STABLECOIN_ADAPTER_URL}/verify` with the requested amount, provider
+metadata, destination, and the caller's shielded proof payload. The adapter must
+return `settled=true`, an amount at least equal to the required amount, and a
+stable receipt or nullifier reference. The nullifier/receipt is recorded in
+`x402_payments.tx_signature` under a `shielded:<provider>:...` replay key.
+
+This is not full RAILGUN/Aleo proof generation. It is the production safety
+boundary that prevents false privacy claims and gives us a concrete integration
+point for a real shielded verifier.
 
 ## 1. Threat model
 

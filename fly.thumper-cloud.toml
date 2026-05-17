@@ -8,6 +8,9 @@ primary_region = "iad"
   BASE_URL = "https://api.ghola.xyz"
   RUST_LOG = "thumper_cloud=info,tower_http=info"
   SOLANA_NETWORK = "mainnet-beta"
+  SHIELDED_STABLECOIN_PROVIDER = "aleo"
+  SHIELDED_STABLECOIN_NETWORK = "aleo:mainnet"
+  SHIELDED_STABLECOIN_ASSET = "USDC"
 
 # THUMPER_CLOUD_BIND=0.0.0.0:10000 is set in the Dockerfile, so this is the port
 # Fly should route external traffic to.

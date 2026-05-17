@@ -14,7 +14,9 @@ use uuid::Uuid;
 use crate::auth::{AuthUser, Claims};
 use crate::error::CloudError;
 use crate::services::{
-    agent_service, compute_service, llm_router::{self, ChatMsg}, x402_service,
+    agent_service, compute_service,
+    llm_router::{self, ChatMsg},
+    x402_service,
 };
 use crate::state::AppState;
 
@@ -206,9 +208,7 @@ async fn handle_x402_agent_request(
     let matched_agent = matched
         .iter()
         .find(|a| a.agent_id == agent_info.id)
-        .ok_or_else(|| {
-            CloudError::ServiceUnavailable("agent's provider is offline".into())
-        })?;
+        .ok_or_else(|| CloudError::ServiceUnavailable("agent's provider is offline".into()))?;
 
     let max_tokens = req.max_tokens.unwrap_or(matched_agent.max_tokens as u32);
     let required_amount = x402_service::estimate_agent_price(
@@ -216,6 +216,11 @@ async fn handle_x402_agent_request(
         matched_agent.price_per_1k_output,
         max_tokens,
     );
+    let requested_rail = x402_service::parse_requested_payment_rail(
+        headers
+            .get("x-ghola-payment-rail")
+            .and_then(|v| v.to_str().ok()),
+    )?;
 
     // Check for PAYMENT-SIGNATURE header
     let payment_header = headers
@@ -225,6 +230,11 @@ async fn handle_x402_agent_request(
     let payment_header = match payment_header {
         Some(h) => h,
         None => {
+            if requested_rail == x402_service::PaymentRailKind::ShieldedStablecoin
+                && !x402_service::shielded_stablecoin_configured()
+            {
+                return Ok(x402_service::build_shielded_unavailable_response());
+            }
             // No payment — return 402 with requirements
             let requirements = x402_service::build_payment_requirements(
                 state,
@@ -240,13 +250,17 @@ async fn handle_x402_agent_request(
     };
 
     // Decode and parse payment proof
-    let proof_bytes = STANDARD.decode(payment_header).map_err(|_| {
-        CloudError::PaymentRequired("invalid PAYMENT-SIGNATURE: bad base64".into())
-    })?;
-    let proof: x402_service::PaymentProof =
-        serde_json::from_slice(&proof_bytes).map_err(|e| {
-            CloudError::PaymentRequired(format!("invalid PAYMENT-SIGNATURE: {e}"))
-        })?;
+    let proof_bytes = STANDARD
+        .decode(payment_header)
+        .map_err(|_| CloudError::PaymentRequired("invalid PAYMENT-SIGNATURE: bad base64".into()))?;
+    let proof: x402_service::PaymentProof = serde_json::from_slice(&proof_bytes)
+        .map_err(|e| CloudError::PaymentRequired(format!("invalid PAYMENT-SIGNATURE: {e}")))?;
+
+    if requested_rail == x402_service::PaymentRailKind::ShieldedStablecoin
+        && proof.scheme != "shielded_stablecoin"
+    {
+        return Ok(x402_service::build_shielded_fallback_rejected_response());
+    }
 
     // Verify payment on-chain
     let verified = x402_service::verify_payment(
@@ -318,7 +332,11 @@ async fn handle_x402_agent_request(
     };
 
     // Build OpenAI-compatible response
-    let prompt_tokens = req.messages.iter().map(|m| m.content.len() / 4).sum::<usize>() as u32;
+    let prompt_tokens = req
+        .messages
+        .iter()
+        .map(|m| m.content.len() / 4)
+        .sum::<usize>() as u32;
     let completion_tokens = (inference_result.text.len() / 4) as u32;
 
     let completion = ChatCompletion {
@@ -362,13 +380,8 @@ async fn handle_x402_agent_request(
             price_out,
         )
         .await;
-        let _ = compute_service::update_reputation(
-            &db,
-            provider_id,
-            true,
-            Some(latency as i64),
-        )
-        .await;
+        let _ =
+            compute_service::update_reputation(&db, provider_id, true, Some(latency as i64)).await;
     });
 
     // Build PAYMENT-RESPONSE header
@@ -377,6 +390,9 @@ async fn handle_x402_agent_request(
         settled: true,
         actual_cost,
         tx_signature: verified.tx_signature,
+        settlement_rail: verified.settlement_rail,
+        privacy_disclosure: verified.privacy_disclosure,
+        currency: verified.currency,
     };
     let pr_json = serde_json::to_vec(&payment_response).unwrap_or_default();
     let pr_b64 = STANDARD.encode(&pr_json);
@@ -418,13 +434,8 @@ async fn chat_completions_non_stream(
     }
 
     // Generate using streaming internally, collect full response
-    let mut text_stream = llm_router::generate_stream(
-        &state,
-        claims.sub,
-        &messages,
-        system.as_deref(),
-    )
-    .await?;
+    let mut text_stream =
+        llm_router::generate_stream(&state, claims.sub, &messages, system.as_deref()).await?;
 
     let mut full_response = String::new();
     while let Some(result) = text_stream.next().await {
@@ -435,7 +446,11 @@ async fn chat_completions_non_stream(
     }
 
     // Rough token estimate
-    let prompt_tokens = req.messages.iter().map(|m| m.content.len() / 4).sum::<usize>() as u32;
+    let prompt_tokens = req
+        .messages
+        .iter()
+        .map(|m| m.content.len() / 4)
+        .sum::<usize>() as u32;
     let completion_tokens = (full_response.len() / 4) as u32;
 
     Ok(Json(ChatCompletion {
@@ -480,13 +495,8 @@ async fn chat_completions_stream(
         }
     }
 
-    let text_stream = llm_router::generate_stream(
-        &state,
-        claims.sub,
-        &messages,
-        system.as_deref(),
-    )
-    .await?;
+    let text_stream =
+        llm_router::generate_stream(&state, claims.sub, &messages, system.as_deref()).await?;
 
     let completion_id = format!("chatcmpl-{}", Uuid::new_v4());
     let created = Utc::now().timestamp();

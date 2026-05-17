@@ -141,6 +141,7 @@ pub fn build_router(state: AppState) -> Router {
         // Health
         .route("/health", get(health))
         .route("/health/providers", get(health_providers))
+        .route("/health/payments", get(health_payments))
         // Auth
         .route(
             "/api/auth/siws/challenge",
@@ -477,6 +478,21 @@ async fn health_providers(State(state): State<AppState>) -> Json<serde_json::Val
         "openrouter": state.config.openrouter_api_key.is_some(),
         "free_cascade": cascade_json,
         "community_providers": community_count,
+        "shielded_stablecoin": services::x402_service::shielded_stablecoin_runtime_status(),
+    }))
+}
+
+async fn health_payments() -> Json<serde_json::Value> {
+    Json(json!({
+        "default_rail": "solana_public_stablecoin",
+        "rails": {
+            "solana_public_stablecoin": {
+                "configured": true,
+                "fallback_allowed": true,
+                "privacy_disclosure": "Public Solana settlement reveals payer, provider, amount, asset, and timing on-chain."
+            },
+            "shielded_stablecoin": services::x402_service::shielded_stablecoin_runtime_status()
+        }
     }))
 }
 

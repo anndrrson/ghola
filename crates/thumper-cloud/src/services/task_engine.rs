@@ -1,7 +1,9 @@
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::CloudError;
+use crate::privacy::{log_addr, task_network_scope, PrivacyApproval};
 use crate::state::AppState;
 
 /// Execute a task. This is the server-side agentic loop.
@@ -20,21 +22,54 @@ pub async fn execute_task(
     // Fetch task details, including the optional agent_id (Phase M3).
     // When set, this task is owned by a cryptographically-distinct agent
     // (the SAID identity from said-cloud) acting on the user's behalf.
-    let task = sqlx::query_as::<_, (String, Option<String>, serde_json::Value, Option<Uuid>)>(
-        "SELECT task_type, template_id, params, agent_id FROM tasks WHERE id = $1",
+    let task = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            serde_json::Value,
+            Option<Uuid>,
+            Option<String>,
+            Option<String>,
+            Option<DateTime<Utc>>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT task_type, template_id, params, agent_id, privacy_mode, network_scope, user_approved_at, approval_nonce, approval_summary FROM tasks WHERE id = $1",
     )
     .bind(task_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(CloudError::NotFound("task not found".to_string()))?;
 
-    let (task_type, _template_id, params, agent_id) = task;
+    let (
+        task_type,
+        _template_id,
+        params,
+        agent_id,
+        privacy_mode,
+        network_scope,
+        user_approved_at,
+        approval_nonce,
+        approval_summary,
+    ) = task;
+    let approval = PrivacyApproval {
+        privacy_mode,
+        network_scope,
+        user_approved_at,
+        approval_nonce,
+        approval_summary,
+    };
+    if let Some(scope) = task_network_scope(&task_type, &params) {
+        approval.require_for(scope)?;
+    }
 
     let result = match task_type.as_str() {
         "call" => execute_call_task(state, user_id, task_id, agent_id, &params).await,
-        "email" => execute_email_task(state, user_id, task_id, agent_id, &params).await,
-        "calendar" => execute_calendar_task(state, user_id, task_id, &params).await,
-        "crypto" => execute_crypto_task(state, user_id, task_id, &params).await,
+        "email" => execute_email_task(state, user_id, task_id, agent_id, &params, &approval).await,
+        "calendar" => execute_calendar_task(state, user_id, task_id, &params, &approval).await,
+        "crypto" => execute_crypto_task(state, user_id, task_id, &params, &approval).await,
         _ => Err(CloudError::BadRequest(format!(
             "unsupported task type: {task_type}"
         ))),
@@ -62,7 +97,7 @@ pub async fn execute_task(
             // Refund bounty on failure
             let _ = crate::services::bounty_service::refund_bounty(&state.db, task_id).await;
 
-            tracing::error!(%task_id, %task_type, error = %e, "task failed");
+            tracing::error!(%task_id, %task_type, "task failed");
         }
     }
 
@@ -99,7 +134,7 @@ async fn execute_call_task(
         crate::services::llm_router::generate(state, user_id, &script_prompt, Some("json")).await?;
     let script_json: serde_json::Value = serde_json::from_str(&script).unwrap_or_default();
 
-    complete_step(state, task_id, 1, &script_json).await?;
+    complete_step(state, task_id, 1, &serde_json::json!({ "generated": true })).await?;
 
     // Step 2: Initiate the call
     add_step(state, task_id, 2, "initiate_call", "in_progress").await?;
@@ -107,7 +142,7 @@ async fn execute_call_task(
     let call_id: Uuid = sqlx::query_scalar(
         r#"
         INSERT INTO calls (user_id, task_id, phone_number, objective, script, outcome, agent_id)
-        VALUES ($1, $2, $3, $4, $5, 'in_progress', $6)
+        VALUES ($1, $2, $3, $4, NULL, 'in_progress', $5)
         RETURNING id
         "#,
     )
@@ -115,7 +150,6 @@ async fn execute_call_task(
     .bind(task_id)
     .bind(phone_number)
     .bind(objective)
-    .bind(&script_json)
     .bind(agent_id)
     .fetch_one(&state.db)
     .await?;
@@ -152,7 +186,7 @@ async fn execute_call_task(
         state,
         task_id,
         2,
-        &serde_json::json!({ "call_id": call_id, "bland_call_id": bland_call_id }),
+        &serde_json::json!({ "call_id": call_id, "provider": "Bland AI" }),
     )
     .await?;
 
@@ -165,6 +199,7 @@ async fn execute_email_task(
     task_id: Uuid,
     agent_id: Option<Uuid>,
     params: &serde_json::Value,
+    approval: &PrivacyApproval,
 ) -> Result<(), CloudError> {
     let intent = params["intent"]
         .as_str()
@@ -191,8 +226,8 @@ async fn execute_email_task(
     // v1 still uses the user's Gmail OAuth for sending.
     let email_action_id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO email_actions (user_id, task_id, to_address, subject, body, status, agent_id)
-        VALUES ($1, $2, $3, $4, $5, 'draft', $6)
+        INSERT INTO email_actions (user_id, task_id, to_address, subject, body, status, agent_id, privacy_mode, network_scope, user_approved_at, approval_nonce, approval_summary)
+        VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, $8, $9, $10, $11)
         RETURNING id
         "#,
     )
@@ -202,6 +237,11 @@ async fn execute_email_task(
     .bind(&draft.subject)
     .bind(&draft.body)
     .bind(agent_id)
+    .bind(approval.privacy_mode.as_deref())
+    .bind(approval.network_scope.as_deref())
+    .bind(approval.user_approved_at)
+    .bind(approval.approval_nonce.as_deref())
+    .bind(approval.approval_summary.as_deref())
     .fetch_one(&state.db)
     .await?;
 
@@ -239,7 +279,8 @@ pub async fn start_task_recovery_loop(state: AppState) {
     loop {
         interval.tick().await;
         if let Err(e) = recover_stale_tasks(&state).await {
-            tracing::warn!("task recovery loop failed: {e}");
+            let _ = e;
+            tracing::warn!("task recovery loop failed");
         }
     }
 }
@@ -267,7 +308,8 @@ async fn recover_stale_tasks(state: &AppState) -> Result<(), CloudError> {
         let state_clone = state.clone();
         tokio::spawn(async move {
             if let Err(e) = execute_task(&state_clone, user_id, task_id).await {
-                tracing::error!(%task_id, "recovered task execution failed: {e}");
+                let _ = e;
+                tracing::error!(%task_id, "recovered task execution failed");
             }
         });
     }
@@ -300,6 +342,7 @@ async fn execute_calendar_task(
     user_id: Uuid,
     task_id: Uuid,
     params: &serde_json::Value,
+    _approval: &PrivacyApproval,
 ) -> Result<(), CloudError> {
     add_step(state, task_id, 1, "calendar_action", "in_progress").await?;
 
@@ -318,6 +361,7 @@ async fn execute_crypto_task(
     user_id: Uuid,
     task_id: Uuid,
     params: &serde_json::Value,
+    approval: &PrivacyApproval,
 ) -> Result<(), CloudError> {
     let action = params["action"]
         .as_str()
@@ -353,7 +397,7 @@ async fn execute_crypto_task(
                 state,
                 task_id,
                 1,
-                &serde_json::json!({ "validated": true, "to": to, "amount": amount, "currency": currency }),
+                &serde_json::json!({ "validated": true, "to": log_addr(to), "amount": amount, "currency": currency }),
             )
             .await?;
 
@@ -364,6 +408,7 @@ async fn execute_crypto_task(
                 to: to.to_string(),
                 amount,
                 currency: currency.to_string(),
+                approval: approval.clone(),
             };
             let tx_result = crate::services::wallet_service::transfer(state, user_id, &req).await?;
 
@@ -383,7 +428,7 @@ async fn execute_crypto_task(
                 "explorer_url": tx_result.explorer_url,
                 "amount": amount,
                 "currency": currency,
-                "to": to,
+                "to": log_addr(to),
             });
 
             complete_step(state, task_id, 3, &result).await?;

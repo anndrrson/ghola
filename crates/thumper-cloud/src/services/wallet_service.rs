@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::error::CloudError;
+use crate::privacy::{NetworkScope, PrivacyApproval};
 use crate::services::llm_router::{decrypt_api_key, encrypt_api_key};
 use crate::state::AppState;
 
@@ -21,16 +22,14 @@ const HARDENED: u32 = 0x80000000;
 
 /// SPL Token Program ID: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
 const TOKEN_PROGRAM_ID: [u8; 32] = [
-    0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93, 0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79,
-    0xac, 0x1c, 0xb4, 0x85, 0xed, 0x5f, 0x5b, 0x37, 0x91, 0x3a, 0x8c, 0xf5, 0x85, 0x7e, 0xff,
-    0x00, 0xa9,
+    0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93, 0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79, 0xac,
+    0x1c, 0xb4, 0x85, 0xed, 0x5f, 0x5b, 0x37, 0x91, 0x3a, 0x8c, 0xf5, 0x85, 0x7e, 0xff, 0x00, 0xa9,
 ];
 
 /// Associated Token Account Program ID: ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL
 const ATA_PROGRAM_ID: [u8; 32] = [
-    0x8c, 0x97, 0x25, 0x8f, 0x4e, 0x24, 0x89, 0xf1, 0xbb, 0x3d, 0x10, 0x29, 0x14, 0x8e, 0x0d,
-    0x83, 0x0b, 0x5a, 0x13, 0x99, 0xda, 0xff, 0x10, 0x84, 0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9,
-    0xf8, 0x59,
+    0x8c, 0x97, 0x25, 0x8f, 0x4e, 0x24, 0x89, 0xf1, 0xbb, 0x3d, 0x10, 0x29, 0x14, 0x8e, 0x0d, 0x83,
+    0x0b, 0x5a, 0x13, 0x99, 0xda, 0xff, 0x10, 0x84, 0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9, 0xf8, 0x59,
 ];
 
 /// System Program ID: 11111111111111111111111111111111
@@ -38,16 +37,14 @@ const SYSTEM_PROGRAM_ID: [u8; 32] = [0u8; 32];
 
 /// USDC Mint (Mainnet): EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
 const USDC_MINT_MAINNET: [u8; 32] = [
-    0xc6, 0xfa, 0x7a, 0xf3, 0xbe, 0xdb, 0xad, 0x39, 0x22, 0x22, 0x76, 0x5e, 0x44, 0x70, 0x04,
-    0x64, 0xe3, 0xdf, 0x71, 0x23, 0xc0, 0x81, 0x5f, 0x84, 0xf4, 0x6f, 0xb3, 0x50, 0x8e, 0x97,
-    0xf8, 0xa7,
+    0xc6, 0xfa, 0x7a, 0xf3, 0xbe, 0xdb, 0xad, 0x39, 0x22, 0x22, 0x76, 0x5e, 0x44, 0x70, 0x04, 0x64,
+    0xe3, 0xdf, 0x71, 0x23, 0xc0, 0x81, 0x5f, 0x84, 0xf4, 0x6f, 0xb3, 0x50, 0x8e, 0x97, 0xf8, 0xa7,
 ];
 
 /// USDC Mint (Devnet): 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
 const USDC_MINT_DEVNET: [u8; 32] = [
-    0x3b, 0x44, 0x2c, 0xc7, 0x14, 0xf8, 0x4f, 0x7a, 0x4c, 0x3c, 0x09, 0x65, 0xf5, 0xc8, 0xac,
-    0x51, 0xdb, 0x35, 0xd5, 0x73, 0x45, 0x6e, 0x6e, 0x52, 0xb7, 0x05, 0x2b, 0xe7, 0x57, 0x3b,
-    0x15, 0x7f,
+    0x3b, 0x44, 0x2c, 0xc7, 0x14, 0xf8, 0x4f, 0x7a, 0x4c, 0x3c, 0x09, 0x65, 0xf5, 0xc8, 0xac, 0x51,
+    0xdb, 0x35, 0xd5, 0x73, 0x45, 0x6e, 0x6e, 0x52, 0xb7, 0x05, 0x2b, 0xe7, 0x57, 0x3b, 0x15, 0x7f,
 ];
 
 const USDC_DECIMALS: u8 = 6;
@@ -138,6 +135,7 @@ pub struct Balances {
     pub sol: f64,
     pub usdc: f64,
     pub address: String,
+    pub network: String,
 }
 
 #[derive(Deserialize)]
@@ -145,6 +143,8 @@ pub struct TransferRequest {
     pub to: String,
     pub amount: u64,
     pub currency: String,
+    #[serde(flatten)]
+    pub approval: PrivacyApproval,
 }
 
 #[derive(Serialize, Clone)]
@@ -177,9 +177,16 @@ pub async fn send_treasury_usdc(
     let is_devnet = rpc_url.contains("devnet");
     let client = reqwest::Client::new();
 
-    let signature =
-        send_usdc_transfer(&client, rpc_url, &signing_key, &payer, &to, amount, is_devnet)
-            .await?;
+    let signature = send_usdc_transfer(
+        &client,
+        rpc_url,
+        &signing_key,
+        &payer,
+        &to,
+        amount,
+        is_devnet,
+    )
+    .await?;
 
     let cluster = if is_devnet { "?cluster=devnet" } else { "" };
     let explorer_url = format!("https://explorer.solana.com/tx/{signature}{cluster}");
@@ -196,10 +203,14 @@ pub struct TxHistoryEntry {
     pub tx_type: String,
     pub currency: String,
     pub amount: i64,
-    pub to_address: Option<String>,
+    pub to_address_preview: Option<String>,
     pub signature: Option<String>,
     pub status: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn recipient_preview(address: Option<&str>) -> Option<String> {
+    address.map(crate::privacy::log_addr)
 }
 
 // ---------------------------------------------------------------------------
@@ -259,12 +270,11 @@ pub fn wallet_tool_definitions() -> Vec<serde_json::Value> {
 /// Provision a new Solana wallet for a user via BIP39 + BIP32-Ed25519.
 pub async fn generate_wallet(state: &AppState, user_id: Uuid) -> Result<WalletInfo, CloudError> {
     // Check if wallet already exists
-    let existing: Option<(String, String)> = sqlx::query_as(
-        "SELECT solana_address, network FROM user_wallets WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let existing: Option<(String, String)> =
+        sqlx::query_as("SELECT solana_address, network FROM user_wallets WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     if let Some((address, network)) = existing {
         return Ok(WalletInfo { address, network });
@@ -293,12 +303,11 @@ pub async fn generate_wallet(state: &AppState, user_id: Uuid) -> Result<WalletIn
     };
 
     // Set spending limit based on user tier
-    let tier: Option<String> =
-        sqlx::query_scalar("SELECT tier FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .flatten();
+    let tier: Option<String> = sqlx::query_scalar("SELECT tier FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .flatten();
     let daily_limit = spending_limit_daily(&tier.unwrap_or_else(|| "free".to_string()));
 
     sqlx::query(
@@ -330,13 +339,12 @@ pub async fn generate_wallet(state: &AppState, user_id: Uuid) -> Result<WalletIn
 
 /// Get the wallet address for a user (without decrypting the mnemonic).
 pub async fn get_address(state: &AppState, user_id: Uuid) -> Result<WalletInfo, CloudError> {
-    let row: (String, String) = sqlx::query_as(
-        "SELECT solana_address, network FROM user_wallets WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(CloudError::NotFound("wallet not provisioned".to_string()))?;
+    let row: (String, String) =
+        sqlx::query_as("SELECT solana_address, network FROM user_wallets WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(CloudError::NotFound("wallet not provisioned".to_string()))?;
 
     Ok(WalletInfo {
         address: row.0,
@@ -346,13 +354,12 @@ pub async fn get_address(state: &AppState, user_id: Uuid) -> Result<WalletInfo, 
 
 /// Fetch SOL and USDC balances for a user's wallet.
 pub async fn get_balances(state: &AppState, user_id: Uuid) -> Result<Balances, CloudError> {
-    let (address, network): (String, String) = sqlx::query_as(
-        "SELECT solana_address, network FROM user_wallets WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(CloudError::NotFound("wallet not provisioned".to_string()))?;
+    let (address, network): (String, String) =
+        sqlx::query_as("SELECT solana_address, network FROM user_wallets WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or(CloudError::NotFound("wallet not provisioned".to_string()))?;
 
     let pubkey_bytes = bs58::decode(&address)
         .into_vec()
@@ -377,10 +384,17 @@ pub async fn get_balances(state: &AppState, user_id: Uuid) -> Result<Balances, C
     };
     let ata = find_ata(&pubkey, &mint);
     let ata_b58 = bs58::encode(&ata).into_string();
-    let usdc_micro = rpc_get_token_balance(&client, rpc_url, &ata_b58).await.unwrap_or(0);
+    let usdc_micro = rpc_get_token_balance(&client, rpc_url, &ata_b58)
+        .await
+        .unwrap_or(0);
     let usdc = usdc_micro as f64 / 1_000_000.0;
 
-    Ok(Balances { sol, usdc, address })
+    Ok(Balances {
+        sol,
+        usdc,
+        address,
+        network,
+    })
 }
 
 /// Rate limit: max 1 transfer per 10 seconds per user.
@@ -462,6 +476,8 @@ pub async fn transfer(
     user_id: Uuid,
     req: &TransferRequest,
 ) -> Result<TxResult, CloudError> {
+    req.approval.require_for(NetworkScope::WalletTransfer)?;
+
     // Validate currency
     if req.currency != "SOL" && req.currency != "USDC" {
         return Err(CloudError::BadRequest(
@@ -516,8 +532,8 @@ pub async fn transfer(
     // Record pending transaction
     let tx_id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO wallet_transactions (user_id, wallet_id, tx_type, currency, amount, to_address, status)
-        VALUES ($1, $2, 'transfer', $3, $4, $5, 'pending')
+        INSERT INTO wallet_transactions (user_id, wallet_id, tx_type, currency, amount, to_address, status, privacy_mode, network_scope, user_approved_at, approval_nonce, approval_summary)
+        VALUES ($1, $2, 'transfer', $3, $4, $5, 'pending', $6, $7, $8, $9, $10)
         RETURNING id
         "#,
     )
@@ -526,14 +542,17 @@ pub async fn transfer(
     .bind(&req.currency)
     .bind(req.amount as i64)
     .bind(&req.to)
+    .bind(req.approval.privacy_mode.as_deref())
+    .bind(req.approval.network_scope.as_deref())
+    .bind(req.approval.user_approved_at)
+    .bind(req.approval.approval_nonce.as_deref())
+    .bind(req.approval.approval_summary.as_deref())
     .fetch_one(&state.db)
     .await?;
 
     // Build and send transaction
     let result = match req.currency.as_str() {
-        "SOL" => {
-            send_sol_transfer(&client, rpc_url, &signing_key, &payer, &to, req.amount).await
-        }
+        "SOL" => send_sol_transfer(&client, rpc_url, &signing_key, &payer, &to, req.amount).await,
         "USDC" => {
             send_usdc_transfer(
                 &client,
@@ -552,26 +571,21 @@ pub async fn transfer(
     match result {
         Ok(signature) => {
             // Mark confirmed
-            sqlx::query("UPDATE wallet_transactions SET signature = $1, status = 'confirmed' WHERE id = $2")
-                .bind(&signature)
-                .bind(tx_id)
-                .execute(&state.db)
-                .await?;
+            sqlx::query(
+                "UPDATE wallet_transactions SET signature = $1, status = 'confirmed' WHERE id = $2",
+            )
+            .bind(&signature)
+            .bind(tx_id)
+            .execute(&state.db)
+            .await?;
 
             let cluster = if is_devnet { "?cluster=devnet" } else { "" };
-            let explorer_url =
-                format!("https://explorer.solana.com/tx/{signature}{cluster}");
+            let explorer_url = format!("https://explorer.solana.com/tx/{signature}{cluster}");
 
             tracing::info!(
                 user = %crate::privacy::log_id(&user_id),
                 currency = %req.currency,
-                amount = %req.amount,
                 "transfer confirmed"
-            );
-            tracing::debug!(
-                user = %crate::privacy::log_id(&user_id),
-                %signature,
-                "transfer tx signature"
             );
 
             Ok(TxResult {
@@ -596,7 +610,19 @@ pub async fn get_history(
     user_id: Uuid,
     limit: i64,
 ) -> Result<Vec<TxHistoryEntry>, CloudError> {
-    let rows = sqlx::query_as::<_, (Uuid, String, String, i64, Option<String>, Option<String>, String, chrono::DateTime<chrono::Utc>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            i64,
+            Option<String>,
+            Option<String>,
+            String,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(
         r#"
         SELECT id, tx_type, currency, amount, to_address, signature, status, created_at
         FROM wallet_transactions
@@ -612,18 +638,20 @@ pub async fn get_history(
 
     Ok(rows
         .into_iter()
-        .map(|(id, tx_type, currency, amount, to_address, signature, status, created_at)| {
-            TxHistoryEntry {
-                id,
-                tx_type,
-                currency,
-                amount,
-                to_address,
-                signature,
-                status,
-                created_at,
-            }
-        })
+        .map(
+            |(id, tx_type, currency, amount, to_address, signature, status, created_at)| {
+                TxHistoryEntry {
+                    id,
+                    tx_type,
+                    currency,
+                    amount,
+                    to_address_preview: recipient_preview(to_address.as_deref()),
+                    signature,
+                    status,
+                    created_at,
+                }
+            },
+        )
         .collect())
 }
 
@@ -632,7 +660,7 @@ pub async fn execute_tool(
     state: &AppState,
     user_id: Uuid,
     tool_name: &str,
-    tool_input: &serde_json::Value,
+    _tool_input: &serde_json::Value,
 ) -> Result<serde_json::Value, CloudError> {
     match tool_name {
         "check_wallet_balance" => {
@@ -641,6 +669,7 @@ pub async fn execute_tool(
                 "sol": balances.sol,
                 "usdc": balances.usdc,
                 "address": balances.address,
+                "network": balances.network,
             }))
         }
         "get_wallet_address" => {
@@ -650,30 +679,10 @@ pub async fn execute_tool(
                 "network": info.network,
             }))
         }
-        "send_crypto" => {
-            let to = tool_input["to"]
-                .as_str()
-                .ok_or(CloudError::BadRequest("missing 'to' address".into()))?
-                .to_string();
-            let amount = tool_input["amount"]
-                .as_u64()
-                .ok_or(CloudError::BadRequest("missing 'amount'".into()))?;
-            let currency = tool_input["currency"]
-                .as_str()
-                .ok_or(CloudError::BadRequest("missing 'currency'".into()))?
-                .to_string();
-
-            let req = TransferRequest {
-                to,
-                amount,
-                currency,
-            };
-            let result = transfer(state, user_id, &req).await?;
-            Ok(serde_json::json!({
-                "signature": result.signature,
-                "explorer_url": result.explorer_url,
-            }))
-        }
+        "send_crypto" => Err(CloudError::BadRequest(
+            "wallet transfers require explicit in-app approval via the dedicated transfer flow"
+                .into(),
+        )),
         _ => Err(CloudError::BadRequest(format!(
             "unknown wallet tool: {tool_name}"
         ))),
@@ -797,19 +806,19 @@ pub async fn send_via_intermediate(
 
 fn spending_limit_daily(tier: &str) -> i64 {
     match tier {
-        "pro" => 100_000_000,       // $100 in micro-USDC
+        "pro" => 100_000_000,         // $100 in micro-USDC
         "unlimited" => 1_000_000_000, // $1,000 in micro-USDC
         "enterprise" => i64::MAX,
-        _ => 500_000,                // $0.50 free tier
+        _ => 500_000, // $0.50 free tier
     }
 }
 
 fn spending_limit_per_tx(tier: &str) -> i64 {
     match tier {
         "pro" => 50_000_000,        // $50
-        "unlimited" => 500_000_000,  // $500
+        "unlimited" => 500_000_000, // $500
         "enterprise" => i64::MAX,
-        _ => 250_000,                // $0.25 free tier
+        _ => 250_000, // $0.25 free tier
     }
 }
 
@@ -820,12 +829,11 @@ async fn check_spending_limit(
     daily_limit: i64,
 ) -> Result<(), CloudError> {
     // Check per-tx limit
-    let tier: Option<String> =
-        sqlx::query_scalar("SELECT tier FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?
-            .flatten();
+    let tier: Option<String> = sqlx::query_scalar("SELECT tier FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .flatten();
     let tier = tier.unwrap_or_else(|| "free".to_string());
     let per_tx = spending_limit_per_tx(&tier);
 
@@ -883,13 +891,14 @@ async fn rpc_call(
         .json(&body)
         .send()
         .await
-        .map_err(|e| CloudError::Internal(format!("Solana RPC request failed: {e}")))?
+        .map_err(|_| CloudError::Internal("Solana RPC request failed".to_string()))?
         .json()
         .await
-        .map_err(|e| CloudError::Internal(format!("Solana RPC response parse failed: {e}")))?;
+        .map_err(|_| CloudError::Internal("Solana RPC response parse failed".to_string()))?;
 
-    if let Some(error) = resp.get("error") {
-        return Err(CloudError::Internal(format!("Solana RPC error: {error}")));
+    if resp.get("error").is_some() {
+        tracing::warn!(method = %method, "Solana RPC returned an error");
+        return Err(CloudError::Internal("Solana RPC error".to_string()));
     }
     resp.get("result")
         .cloned()
@@ -1143,11 +1152,7 @@ fn is_on_curve(bytes: &[u8; 32]) -> bool {
     compressed.decompress().is_some()
 }
 
-fn build_create_ata_ix(
-    payer: &[u8; 32],
-    wallet: &[u8; 32],
-    mint: &[u8; 32],
-) -> RawInstruction {
+fn build_create_ata_ix(payer: &[u8; 32], wallet: &[u8; 32], mint: &[u8; 32]) -> RawInstruction {
     let ata = find_ata(wallet, mint);
     RawInstruction {
         program_id: ATA_PROGRAM_ID,
@@ -1194,10 +1199,7 @@ fn build_sol_transfer_ix(from: &[u8; 32], to: &[u8; 32], lamports: u64) -> RawIn
 
     RawInstruction {
         program_id: SYSTEM_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(*from, true),
-            AccountMeta::new(*to, false),
-        ],
+        accounts: vec![AccountMeta::new(*from, true), AccountMeta::new(*to, false)],
         data,
     }
 }
@@ -1247,4 +1249,57 @@ async fn send_usdc_transfer(
     let msg = build_message(&[create_ata_ix, transfer_ix], payer, &blockhash);
     let tx_bytes = sign_and_serialize(&msg, signing_key);
     rpc_send_transaction(client, rpc_url, &tx_bytes).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::privacy::STRICT_LOCAL;
+    use chrono::Utc;
+
+    #[test]
+    fn recipient_preview_masks_raw_wallet_address() {
+        assert_eq!(
+            recipient_preview(Some("11111111111111111111111111111111")).as_deref(),
+            Some("1111...1111")
+        );
+        assert_eq!(recipient_preview(None), None);
+    }
+
+    #[test]
+    fn history_entry_serializes_masked_recipient_only() {
+        let entry = TxHistoryEntry {
+            id: Uuid::nil(),
+            tx_type: "transfer".to_string(),
+            currency: "USDC".to_string(),
+            amount: 1_250_000,
+            to_address_preview: recipient_preview(Some("11111111111111111111111111111111")),
+            signature: None,
+            status: "confirmed".to_string(),
+            created_at: Utc::now(),
+        };
+
+        let value = serde_json::to_value(entry).expect("history entry serializes");
+        assert!(value.get("to_address").is_none());
+        assert!(value.get("approval_nonce").is_none());
+        assert_eq!(value["to_address_preview"], "1111...1111");
+    }
+
+    #[test]
+    fn wallet_transfer_requires_matching_approval_metadata() {
+        assert!(PrivacyApproval::default()
+            .require_for(NetworkScope::WalletTransfer)
+            .is_err());
+
+        let approval = PrivacyApproval {
+            privacy_mode: Some(STRICT_LOCAL.to_string()),
+            network_scope: Some(NetworkScope::WalletTransfer.as_str().to_string()),
+            user_approved_at: Some(Utc::now()),
+            approval_nonce: Some("wallet-transfer-nonce-123".to_string()),
+            approval_summary: Some("User approved a public Solana USDC transfer.".to_string()),
+        };
+
+        assert!(approval.require_for(NetworkScope::WalletTransfer).is_ok());
+        assert!(approval.require_for(NetworkScope::WalletProvision).is_err());
+    }
 }
