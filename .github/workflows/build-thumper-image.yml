@@ -1,0 +1,32 @@
+name: Build thumper-cloud image
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref_to_build:
+        description: "Git ref/SHA to build"
+        required: true
+      image:
+        description: "Image tag to push"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref_to_build }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.thumper
+          platforms: linux/amd64
+          push: true
+          tags: ${{ inputs.image }}
