@@ -14,6 +14,7 @@ export interface ShieldedStablecoinHealth {
   destination_configured?: boolean;
   adapter_signature_required?: boolean;
   adapter_signature_configured?: boolean;
+  recipient?: string | null;
   verifier_ready?: boolean;
   fallback_allowed?: boolean;
   privacy_disclosure?: string;
