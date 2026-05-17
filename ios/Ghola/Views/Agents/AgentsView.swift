@@ -32,12 +32,12 @@ struct AgentsView: View {
                     VStack(spacing: 16) {
                         Image(systemName: "sparkles")
                             .font(.system(size: 48))
-                            .foregroundStyle(.tint)
+                            .foregroundStyle(Theme.accent)
                         Text("No agents yet")
                             .font(.title2.bold())
                         Text("Create your first AI agent. We'll generate its DID, provision a Solana wallet, and you're live.")
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Theme.textSecondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 32)
                         Button("Create agent") { showCreate = true }
@@ -53,8 +53,10 @@ struct AgentsView: View {
                         }
                     }
                     .listStyle(.insetGrouped)
+                    .scrollContentBackground(.hidden)
                 }
             }
+            .background(Theme.appBackgroundGradient.ignoresSafeArea())
             .navigationTitle("My Agents")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -107,17 +109,17 @@ private struct AgentRow: View {
             }
             Text("@\(agent.slug)")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.textSecondary)
             if let bio = agent.bio, !bio.isEmpty {
                 Text(bio)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
                     .lineLimit(2)
                     .padding(.top, 2)
             }
             Text(truncatedDid(agent.did))
                 .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Theme.textSecondary.opacity(0.72))
                 .padding(.top, 4)
         }
         .padding(.vertical, 4)
@@ -125,9 +127,9 @@ private struct AgentRow: View {
 
     private var statusColor: Color {
         switch agent.status {
-        case "active": return .green
-        case "paused": return .yellow
-        default: return .secondary
+        case "active": return Theme.success
+        case "paused": return Theme.warning
+        default: return Theme.textSecondary
         }
     }
 

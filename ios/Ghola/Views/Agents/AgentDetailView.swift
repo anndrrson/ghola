@@ -18,7 +18,7 @@ struct AgentDetailView: View {
                         .font(.largeTitle.bold())
                     Text("@\(d.slug)")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textSecondary)
                     if let bio = d.bio, !bio.isEmpty {
                         Text(bio)
                             .font(.body)
@@ -36,6 +36,7 @@ struct AgentDetailView: View {
             }
             .padding()
         }
+        .background(Theme.appBackgroundGradient.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .alert("Error", isPresented: .constant(errorMessage != nil)) {
@@ -50,12 +51,12 @@ struct AgentDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("CRYPTOGRAPHIC IDENTITY")
                 .font(.caption.bold())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.textSecondary)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("DID")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
                 Text(did)
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
@@ -64,18 +65,18 @@ struct AgentDetailView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SOLANA ADDRESS")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
                 Text(address)
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
             }
         }
         .padding()
-        .background(Color(.systemBackground))
+        .background(Theme.surfaceGradient)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color(.separator), lineWidth: 0.5)
+                .stroke(Theme.cardBorder, lineWidth: 1)
         )
     }
 
@@ -99,17 +100,17 @@ struct AgentDetailView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.caption2.bold())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.textSecondary)
             Text(value)
                 .font(.title2.bold())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(Color(.systemBackground))
+        .background(Theme.surfaceGradient)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color(.separator), lineWidth: 0.5)
+                .stroke(Theme.cardBorder, lineWidth: 1)
         )
     }
 

@@ -47,7 +47,7 @@ struct ModelPickerView: View {
                     if let config = currentConfig, config.hasApiKey {
                         Text("Key is set")
                             .font(Theme.captionFont)
-                            .foregroundStyle(.green)
+                            .foregroundStyle(Theme.success)
                     }
                 }
             }
@@ -71,13 +71,15 @@ struct ModelPickerView: View {
                 if !savedMessage.isEmpty {
                     Text(savedMessage)
                         .font(Theme.captionFont)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(Theme.success)
                 }
             }
         }
         .navigationTitle("AI Model")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        .scrollContentBackground(.hidden)
+        .background(Theme.appBackgroundGradient.ignoresSafeArea())
         #endif
         .task {
             await loadConfig()

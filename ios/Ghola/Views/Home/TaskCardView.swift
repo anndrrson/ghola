@@ -6,29 +6,42 @@ struct TaskCardView: View {
     var body: some View {
         HStack(spacing: Theme.paddingMd) {
             Image(systemName: task.typeIcon)
-                .font(.title2)
+                .font(.title3.weight(.semibold))
                 .foregroundStyle(colorForType)
-                .frame(width: 44, height: 44)
+                .frame(width: 40, height: 40)
                 .background(colorForType.opacity(0.15))
                 .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSm))
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(task.taskType.capitalized)
-                    .font(.headline)
+                    .font(.headline.weight(.semibold))
 
                 Text(statusText)
                     .font(Theme.captionFont)
                     .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(2)
             }
 
             Spacer()
 
-            Image(systemName: task.statusEmoji)
+            Text(statusLabel)
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(statusColor)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(statusColor.opacity(0.14))
+                .clipShape(Capsule())
         }
-        .padding()
-        .background(Theme.cardBg)
-        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerMd))
+        .padding(Theme.paddingMd)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.cornerMd)
+                .fill(Theme.surfaceGradient)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cornerMd)
+                .stroke(Theme.cardBorder, lineWidth: 1)
+        )
+        .shadow(color: Theme.cardShadow, radius: 6, x: 0, y: 3)
         .padding(.horizontal)
     }
 
@@ -55,11 +68,23 @@ struct TaskCardView: View {
 
     private var statusColor: Color {
         switch task.status {
-        case "completed": return .green
-        case "failed": return .red
-        case "awaiting_approval": return .orange
-        case "in_progress": return .blue
+        case "completed": return Theme.success
+        case "failed": return Theme.danger
+        case "awaiting_approval": return Theme.warning
+        case "in_progress": return Theme.accent
         default: return Theme.textSecondary
+        }
+    }
+
+    private var statusLabel: String {
+        switch task.status {
+        case "pending": return "Queued"
+        case "in_progress": return "In progress"
+        case "awaiting_approval": return "Approval"
+        case "completed": return "Done"
+        case "failed": return "Failed"
+        case "cancelled": return "Cancelled"
+        default: return task.status.capitalized
         }
     }
 }

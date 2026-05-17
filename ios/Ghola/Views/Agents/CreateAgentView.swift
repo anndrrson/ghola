@@ -39,7 +39,7 @@ struct CreateAgentView: View {
                 if let err = errorMessage {
                     Section {
                         Text(err)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(Theme.danger)
                             .font(.callout)
                     }
                 }
@@ -47,11 +47,13 @@ struct CreateAgentView: View {
                 Section {
                     Text("We'll generate a fresh ed25519 keypair, derive your agent's DID, and provision a dedicated Solana wallet — all in one tap.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textSecondary)
                 }
             }
             .navigationTitle("New agent")
             .navigationBarTitleDisplayMode(.inline)
+            .scrollContentBackground(.hidden)
+            .background(Theme.appBackgroundGradient.ignoresSafeArea())
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

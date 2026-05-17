@@ -59,6 +59,7 @@ final class MLXLlamaBackend: LlmBackend, @unchecked Sendable {
     /// directory, so by the time `generate(...)` runs we know the bytes
     /// are local.
     let requiresInternet: Bool = false
+    let runtimeBoundary: LlmRuntimeBoundary = .onDevice
 
     // MARK: - State
 
@@ -310,11 +311,14 @@ final class MLXLlamaBackend: LlmBackend, @unchecked Sendable {
     /// LiteRT `InterpreterApi` handle.
     func shutdown() {
         containerLock.lock()
+        let hadLoadedContainer = modelContainer != nil
         modelContainer = nil
         containerLock.unlock()
-        // Hint MLX to release Metal buffers from its allocation cache.
-        // Safe to call when no container is loaded — it's a no-op on
-        // an empty cache.
+
+        guard hadLoadedContainer else { return }
+
+        // Hint MLX to release Metal buffers from its allocation cache
+        // after dropping a real model container.
         MLX.GPU.clearCache()
     }
 

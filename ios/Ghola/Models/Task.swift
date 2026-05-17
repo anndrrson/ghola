@@ -8,6 +8,10 @@ struct TaskResponse: Codable, Identifiable {
     let params: [String: AnyCodable]?
     let result: [String: AnyCodable]?
     let errorMessage: String?
+    let privacyMode: String?
+    let networkScope: String?
+    let approvalSummary: String?
+    let privacyBoundary: String?
     let createdAt: String
     let updatedAt: String
     let completedAt: String?
@@ -17,6 +21,10 @@ struct TaskResponse: Codable, Identifiable {
         case taskType = "task_type"
         case templateId = "template_id"
         case errorMessage = "error_message"
+        case privacyMode = "privacy_mode"
+        case networkScope = "network_scope"
+        case approvalSummary = "approval_summary"
+        case privacyBoundary = "privacy_boundary"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case completedAt = "completed_at"
@@ -57,6 +65,65 @@ struct TaskStepResponse: Codable, Identifiable {
         case id, status, input, output
         case stepNumber = "step_number"
         case actionType = "action_type"
+    }
+}
+
+struct EmailResponse: Codable, Identifiable {
+    let id: UUID
+    let taskId: UUID?
+    let toAddress: String
+    let subject: String
+    let body: String
+    let status: String
+    let createdAt: String
+    let sentAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, subject, body, status
+        case taskId = "task_id"
+        case toAddress = "to_address"
+        case createdAt = "created_at"
+        case sentAt = "sent_at"
+    }
+}
+
+struct WalletInfoResponse: Codable {
+    let address: String
+    let network: String
+}
+
+struct WalletBalancesResponse: Codable {
+    let sol: Double
+    let usdc: Double
+    let address: String
+    let network: String?
+}
+
+struct WalletTransactionResponse: Codable, Identifiable {
+    let id: UUID
+    let txType: String
+    let currency: String
+    let amount: Int64
+    let toAddressPreview: String?
+    let signature: String?
+    let status: String
+    let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, currency, amount, signature, status
+        case txType = "tx_type"
+        case toAddressPreview = "to_address_preview"
+        case createdAt = "created_at"
+    }
+}
+
+struct WalletTransferResponse: Codable {
+    let signature: String
+    let explorerURL: String
+
+    enum CodingKeys: String, CodingKey {
+        case signature
+        case explorerURL = "explorer_url"
     }
 }
 

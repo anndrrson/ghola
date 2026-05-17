@@ -1,15 +1,108 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Turnkey } from "@turnkey/sdk-server";
-import { ApiKeyStamper } from "@turnkey/api-key-stamper";
-import { logger } from "@/lib/logger";
 
 const TURNKEY_API_BASE_URL = "https://api.turnkey.com";
+
+type TurnkeyApiClient = ReturnType<InstanceType<typeof Turnkey>["apiClient"]>;
+
+function serverControlledWalletsEnabled() {
+  return process.env.TURNKEY_SERVER_CONTROLLED_WALLETS_ENABLED === "true";
+}
+
+function subOrgNameForEmail(email: string) {
+  const slug = email
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return `ghola-${slug || "user"}-${Date.now()}`;
+}
+
+function serverApiKey(apiPublicKey: string) {
+  return {
+    apiKeyName: "ghola-server",
+    publicKey: apiPublicKey,
+    curveType: "API_KEY_CURVE_P256" as const,
+  };
+}
+
+function getErrorValue(err: unknown, key: string): unknown {
+  if (!err || typeof err !== "object") return undefined;
+  return (err as Record<string, unknown>)[key];
+}
+
+function getTurnkeyErrorInfo(err: unknown) {
+  const response = getErrorValue(err, "response");
+  const responseRecord = response && typeof response === "object"
+    ? response as Record<string, unknown>
+    : {};
+  const status = getErrorValue(err, "status")
+    ?? getErrorValue(err, "statusCode")
+    ?? responseRecord.status
+    ?? responseRecord.statusCode;
+  const code = getErrorValue(err, "code");
+  const name = getErrorValue(err, "name");
+  const message = getErrorValue(err, "message");
+
+  return {
+    name: typeof name === "string" ? name : "TurnkeyError",
+    code: typeof code === "string" || typeof code === "number" ? String(code) : undefined,
+    status: typeof status === "number" || typeof status === "string" ? status : undefined,
+    message: typeof message === "string" ? message.slice(0, 500) : "Turnkey request failed",
+  };
+}
+
+async function getUsableWallet(
+  client: TurnkeyApiClient,
+  subOrgId: string
+) {
+  const users = await client.getUsers({ organizationId: subOrgId });
+  const hasApiKey = users.users?.some((user) => user.apiKeys?.length);
+  if (!hasApiKey) return null;
+
+  const wallets = await client.getWallets({
+    organizationId: subOrgId,
+  });
+  if (!wallets?.wallets?.length) return null;
+
+  const wallet = wallets.wallets[0];
+  const accounts = await client.getWalletAccounts({
+    organizationId: subOrgId,
+    walletId: wallet.walletId,
+  });
+  const solanaAccount = accounts?.accounts?.find(
+    (a: { addressFormat?: string }) =>
+      a.addressFormat === "ADDRESS_FORMAT_SOLANA"
+  );
+  if (!solanaAccount) return null;
+
+  return {
+    subOrgId,
+    walletAddress: solanaAccount.address,
+    walletId: wallet.walletId,
+  };
+}
 
 export async function POST(req: NextRequest) {
   try {
     const { email } = await req.json();
-    if (!email || typeof email !== "string") {
+    const normalizedEmail = typeof email === "string"
+      ? email.trim().toLowerCase()
+      : "";
+    if (!normalizedEmail || !normalizedEmail.includes("@") || normalizedEmail.length > 254) {
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
+    }
+
+    if (!serverControlledWalletsEnabled()) {
+      return NextResponse.json(
+        {
+          error: "Server-controlled Turnkey wallet creation is disabled",
+          code: "turnkey_server_controlled_wallets_disabled",
+          remediation:
+            "Use Turnkey Swift SDK/Auth Proxy so wallet credentials are created and held by the user's device.",
+        },
+        { status: 403 }
+      );
     }
 
     const orgId = process.env.TURNKEY_ORG_ID;
@@ -35,44 +128,28 @@ export async function POST(req: NextRequest) {
     const existing = await client.getSubOrgIds({
       organizationId: orgId,
       filterType: "EMAIL",
-      filterValue: email,
+      filterValue: normalizedEmail,
     });
 
     if (existing?.organizationIds?.length) {
-      // Sub-org exists — get its wallets
-      const subOrgId = existing.organizationIds[0];
-      const wallets = await client.getWallets({
-        organizationId: subOrgId,
-      });
-      if (wallets?.wallets?.length) {
-        const wallet = wallets.wallets[0];
-        const accounts = await client.getWalletAccounts({
-          organizationId: subOrgId,
-          walletId: wallet.walletId,
-        });
-        const solanaAccount = accounts?.accounts?.find(
-          (a: { addressFormat?: string }) =>
-            a.addressFormat === "ADDRESS_FORMAT_SOLANA"
-        );
-        if (solanaAccount) {
-          return NextResponse.json({
-            subOrgId,
-            walletAddress: solanaAccount.address,
-            walletId: wallet.walletId,
-          });
-        }
+      // Old sub-orgs may not contain the server API key, which makes
+      // signing fail with ORGANIZATION_MISMATCH. Reuse only usable ones.
+      for (const subOrgId of existing.organizationIds) {
+        const wallet = await getUsableWallet(client, subOrgId);
+        if (wallet) return NextResponse.json(wallet);
       }
     }
 
     // Create new sub-org with Solana wallet
     const result = await client.createSubOrganization({
-      subOrganizationName: `ghola-${email}-${Date.now()}`,
+      organizationId: orgId,
+      subOrganizationName: subOrgNameForEmail(normalizedEmail),
       rootQuorumThreshold: 1,
       rootUsers: [
         {
-          userName: email,
-          userEmail: email,
-          apiKeys: [],
+          userName: normalizedEmail,
+          userEmail: normalizedEmail,
+          apiKeys: [serverApiKey(apiPublicKey)],
           authenticators: [],
           oauthProviders: [],
         },
@@ -95,17 +172,30 @@ export async function POST(req: NextRequest) {
     const walletAddress = result.wallet?.addresses?.[0];
 
     if (!subOrgId || !walletId || !walletAddress) {
+      console.error("Turnkey create-wallet missing expected result fields", {
+        hasSubOrgId: Boolean(subOrgId),
+        hasWalletId: Boolean(walletId),
+        hasWalletAddress: Boolean(walletAddress),
+      });
       return NextResponse.json(
-        { error: "Failed to create wallet" },
+        {
+          error: "Failed to create wallet",
+          code: "turnkey_create_wallet_incomplete_result",
+        },
         { status: 500 }
       );
     }
 
     return NextResponse.json({ subOrgId, walletAddress, walletId });
   } catch (err) {
-    logger.error("Turnkey create-wallet error:", err);
+    const info = getTurnkeyErrorInfo(err);
+    console.error("Turnkey create-wallet error", info);
     return NextResponse.json(
-      { error: "Failed to create wallet" },
+      {
+        error: "Failed to create wallet",
+        code: "turnkey_create_wallet_failed",
+        turnkey: info,
+      },
       { status: 500 }
     );
   }

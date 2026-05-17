@@ -14,8 +14,14 @@ final class CloudLlmBackend: LlmBackend, @unchecked Sendable {
 
     // MARK: LlmBackend
 
-    let displayName: String
+    private let cloudDisplayName: String
     let requiresInternet: Bool = true
+    var displayName: String {
+        CloudClient.isLocalMode ? "Local AI Server" : cloudDisplayName
+    }
+    var runtimeBoundary: LlmRuntimeBoundary {
+        CloudClient.isLocalMode ? .localNetwork : .gholaCloud
+    }
 
     // MARK: State
 
@@ -44,7 +50,7 @@ final class CloudLlmBackend: LlmBackend, @unchecked Sendable {
     private let sseClient: SSEClient
 
     init(displayName: String = "Claude (Cloud)", sseClient: SSEClient = SSEClient()) {
-        self.displayName = displayName
+        self.cloudDisplayName = displayName
         self.sseClient = sseClient
     }
 

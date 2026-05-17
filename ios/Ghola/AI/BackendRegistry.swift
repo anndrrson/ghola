@@ -4,8 +4,36 @@ import Foundation
 /// backends land. The string raw value is also used as the persisted
 /// UserDefaults value for the user's preference.
 public enum BackendMode: String, CaseIterable, Sendable {
+    case onDeviceFirst
+    case appleFoundation
     case cloud
     case mlxLocal
+
+    var title: String {
+        switch self {
+        case .onDeviceFirst: return "On-device first"
+        case .appleFoundation: return "Apple on-device"
+        case .mlxLocal: return "MLX local"
+        case .cloud: return "Cloud"
+        }
+    }
+
+    var privacyDescription: String {
+        switch self {
+        case .onDeviceFirst:
+            return "Uses Apple Foundation Models when available, then local MLX. It never silently falls back to cloud."
+        case .appleFoundation:
+            return "Runs Apple's system language model on this device when supported."
+        case .mlxLocal:
+            return "Runs downloaded model weights on this device with MLX."
+        case .cloud:
+            return "Sends prompts to Ghola Cloud and the configured model provider."
+        }
+    }
+
+    var sendsPromptsOffDevice: Bool {
+        self == .cloud
+    }
 }
 
 /// Central factory for `LlmBackend` instances.
@@ -15,6 +43,7 @@ public enum BackendMode: String, CaseIterable, Sendable {
 /// enum into a concrete backend, so the rest of the app never knows
 /// which backend it's talking to.
 public enum BackendRegistry {
+    public static let selectedModeKey = "ghola.inference.backend_mode"
 
     /// Build a backend for the given mode.
     ///
@@ -23,6 +52,15 @@ public enum BackendRegistry {
     ///   reserved but not yet wired (currently `.mlxLocal`).
     public static func make(for mode: BackendMode) throws -> LlmBackend {
         switch mode {
+        case .onDeviceFirst:
+            return try makeOnDevicePreferred()
+        case .appleFoundation:
+            guard FoundationModelsBackend.isAvailable else {
+                throw LlmBackendError.modelNotReady(
+                    FoundationModelsBackend.availabilityDescription
+                )
+            }
+            return FoundationModelsBackend()
         case .cloud:
             return CloudLlmBackend()
         case .mlxLocal:
@@ -50,9 +88,42 @@ public enum BackendRegistry {
         }
     }
 
+    /// Privacy-preserving default. This path never silently falls back to
+    /// cloud: it uses an available on-device system model first, then a
+    /// locally installed MLX model, otherwise it asks the UI to show setup.
+    public static func makeOnDevicePreferred() throws -> LlmBackend {
+        if FoundationModelsBackend.isAvailable {
+            return FoundationModelsBackend()
+        }
+
+        let mlxPath = defaultMLXModelPath()
+        if FileManager.default.fileExists(atPath: mlxPath.path) {
+            do {
+                return try MLXLlamaBackend(modelPath: mlxPath)
+            } catch {
+                throw LlmBackendError.modelNotReady(error.localizedDescription)
+            }
+        }
+
+        throw LlmBackendError.modelNotReady(
+            FoundationModelsBackend.availabilityDescription +
+            " No verified MLX model is installed. Cloud inference is available only when selected explicitly."
+        )
+    }
+
     /// The mode the app boots into when the user hasn't picked one.
-    /// Cloud is the only working backend today.
-    public static let defaultMode: BackendMode = .cloud
+    /// On-device inference is the default privacy boundary.
+    public static let defaultMode: BackendMode = .onDeviceFirst
+
+    public static var selectedMode: BackendMode {
+        get {
+            let raw = UserDefaults.standard.string(forKey: selectedModeKey)
+            return raw.flatMap(BackendMode.init(rawValue:)) ?? defaultMode
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: selectedModeKey)
+        }
+    }
 
     // MARK: - MLX feature flag (ζ-iOS.1)
 

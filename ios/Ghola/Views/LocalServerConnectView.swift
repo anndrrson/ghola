@@ -20,6 +20,8 @@ struct LocalServerConnectView: View {
             }
         }
         .navigationTitle("Local AI Server")
+        .scrollContentBackground(.hidden)
+        .background(Theme.appBackgroundGradient.ignoresSafeArea())
         .onAppear {
             if !isConnected {
                 browser.startBrowsing()
@@ -36,11 +38,11 @@ struct LocalServerConnectView: View {
         Section {
             HStack {
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Theme.success)
                 Text("Connected")
                 Spacer()
                 Text(CloudClient.localServerName ?? "Local Server")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
             }
 
             Button("Disconnect", role: .destructive) {
@@ -57,39 +59,38 @@ struct LocalServerConnectView: View {
 
     // MARK: - Discovery
 
+    @ViewBuilder
     private var discoverySection: some View {
-        Group {
-            if browser.discoveredServers.isEmpty {
-                Section {
-                    HStack {
-                        ProgressView()
-                            .padding(.trailing, 8)
-                        Text("Searching for Ghola Home servers...")
-                            .foregroundStyle(.secondary)
-                    }
-                } footer: {
-                    Text("Make sure Ghola Home is running on your Mac and both devices are on the same WiFi network.")
+        if browser.discoveredServers.isEmpty {
+            Section {
+                HStack {
+                    ProgressView()
+                        .padding(.trailing, 8)
+                    Text("Searching for Ghola Home servers...")
+                        .foregroundStyle(Theme.textSecondary)
                 }
-            } else {
-                Section("Available Servers") {
-                    ForEach(browser.discoveredServers) { server in
-                        Button {
-                            selectedServer = server
-                        } label: {
-                            HStack {
-                                Image(systemName: "desktopcomputer")
-                                    .foregroundStyle(.accent)
-                                VStack(alignment: .leading) {
-                                    Text(server.name)
-                                        .foregroundStyle(.primary)
-                                    Text(server.host)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .foregroundStyle(.secondary)
+            } footer: {
+                Text("Make sure Ghola Home is running on your Mac and both devices are on the same WiFi network.")
+            }
+        } else {
+            Section("Available Servers") {
+                ForEach(browser.discoveredServers) { server in
+                    Button {
+                        selectedServer = server
+                    } label: {
+                        HStack {
+                            Image(systemName: "desktopcomputer")
+                                .foregroundStyle(Theme.accent)
+                            VStack(alignment: .leading) {
+                                Text(server.name)
+                                    .foregroundStyle(Theme.textPrimary)
+                                Text(server.host)
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.textSecondary)
                             }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(Theme.textSecondary)
                         }
                     }
                 }
@@ -104,13 +105,13 @@ struct LocalServerConnectView: View {
             VStack(spacing: 16) {
                 Image(systemName: "desktopcomputer")
                     .font(.system(size: 40))
-                    .foregroundStyle(.accent)
+                    .foregroundStyle(Theme.accent)
 
                 Text(selectedServer?.name ?? "")
                     .font(.headline)
 
                 Text("Enter the PIN shown on your Mac")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
 
                 TextField("PIN", text: $pin)
                     .keyboardType(.numberPad)
@@ -131,7 +132,7 @@ struct LocalServerConnectView: View {
 
                 if let error = errorMessage {
                     Text(error)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Theme.danger)
                         .font(.caption)
                 }
 
