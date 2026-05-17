@@ -8,6 +8,7 @@ import { ChatMessages } from "@/components/chat/ChatMessages";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { LocalSetupBanner } from "@/components/chat/LocalSetupBanner";
+import { PrivateBalancePanel } from "@/components/private-balance";
 import { SovereigntyPicker } from "@/components/SovereigntyPicker";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
@@ -885,6 +886,11 @@ export default function ChatPage() {
                 privateUnavailableReason={privateUnavailableReason}
               />
             </div>
+            {sovereigntyMode === "private" && (
+              <div className="mb-6 w-full max-w-xl">
+                <PrivateBalancePanel compact />
+              </div>
+            )}
             <button
               onClick={handleNewChat}
               className="rounded-xl bg-[#3da8ff] px-6 py-2.5 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors cursor-pointer"

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Cpu, LockKeyhole, ReceiptText } from "lucide-react";
+import { ArrowRight, Cpu, LockKeyhole, ReceiptText, Wallet } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { mark } from "@/lib/perf-marks";
@@ -31,6 +31,12 @@ const modes = [
     title: "Receipt",
     meta: "signed proof",
     desc: "Each reply exposes mode, provider identity, and prompt/output hashes.",
+  },
+  {
+    icon: Wallet,
+    title: "Balance",
+    meta: "private spend",
+    desc: "USDC-backed settlement is abstracted into one balance with no public fallback in Private Mode.",
   },
 ] as const;
 
@@ -131,6 +137,12 @@ export default function Home() {
               className="inline-flex h-12 items-center justify-center rounded-full border border-[#eef1f8]/16 bg-[#eef1f8]/5 px-6 text-sm font-medium text-[#eef1f8] backdrop-blur transition hover:bg-[#eef1f8]/10"
             >
               Security model
+            </Link>
+            <Link
+              href="/private-balance"
+              className="inline-flex h-12 items-center justify-center rounded-full border border-[#eef1f8]/16 bg-[#eef1f8]/5 px-6 text-sm font-medium text-[#eef1f8] backdrop-blur transition hover:bg-[#eef1f8]/10"
+            >
+              Private Balance
             </Link>
           </div>
         </div>

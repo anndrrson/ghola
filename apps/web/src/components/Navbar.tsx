@@ -9,7 +9,7 @@ import { useWalletAuth } from "@/lib/wallet-provider";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { getBalance } from "@/lib/api";
 import { GholaLogo } from "@/components/GholaLogo";
-import { Menu, X } from "lucide-react";
+import { Menu, ShieldCheck, X } from "lucide-react";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
 
 // Consumer-altitude framing: the public site is a chat product. No
@@ -142,16 +142,29 @@ export function Navbar() {
 
             {/* Vault is the account hub — always reachable when authed */}
             {isAuthed && (
-              <Link
-                href="/vault"
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  pathname.startsWith("/vault")
-                    ? "bg-[#3da8ff]/10 text-[#3da8ff]"
-                    : "text-[#8b95a8] hover:text-[#eef1f8]"
-                }`}
-              >
-                Vault
-              </Link>
+              <>
+                <Link
+                  href="/private-balance"
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    pathname.startsWith("/private-balance")
+                      ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                      : "text-[#8b95a8] hover:text-[#eef1f8]"
+                  }`}
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  Private
+                </Link>
+                <Link
+                  href="/vault"
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    pathname.startsWith("/vault")
+                      ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                      : "text-[#8b95a8] hover:text-[#eef1f8]"
+                  }`}
+                >
+                  Vault
+                </Link>
+              </>
             )}
 
             {/* Account menu: collapses Chat / Settings / Developers / Identity Dashboard / Sign Out */}
@@ -269,6 +282,13 @@ export function Navbar() {
                 {item.label}
               </Link>
             ))}
+            <Link
+              href="/private-balance"
+              onClick={() => setMobileOpen(false)}
+              className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+            >
+              Private Balance
+            </Link>
             <Link
               href="/vault"
               onClick={() => setMobileOpen(false)}
