@@ -9,12 +9,17 @@ import {
   Copy,
   CreditCard,
   ExternalLink,
+  KeyRound,
   Loader2,
   ShieldCheck,
+  UserRound,
   Wallet,
   X,
 } from "lucide-react";
+import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import { getBalance } from "@/lib/api";
+import { useThumperAuth } from "@/lib/thumper-auth-context";
+import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { useWalletAuth } from "@/lib/wallet-provider";
 import {
   formatMicroUsd,
@@ -29,6 +34,7 @@ interface PrivateBalancePanelProps {
 
 const TOP_UP_AMOUNTS = [5, 10, 25] as const;
 const SHIELD_URL = "https://aleo.org/shield/";
+type TopUpMode = "easy" | "advanced";
 
 async function fetchPaymentHealth(): Promise<PaymentHealth | null> {
   const res = await fetch("/api/payments/health", {
@@ -55,6 +61,8 @@ function shortAddress(address: string | null | undefined): string {
 }
 
 export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProps) {
+  const thumperAuth = useThumperAuth();
+  const turnkeyWallet = useTurnkeyWallet();
   const walletAuth = useWalletAuth();
   const [paymentHealth, setPaymentHealth] = useState<PaymentHealth | null>(null);
   const [shieldedHealth, setShieldedHealth] =
@@ -63,6 +71,12 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
   const [selectedAmount, setSelectedAmount] =
     useState<(typeof TOP_UP_AMOUNTS)[number]>(10);
   const [notice, setNotice] = useState<string | null>(null);
+  const [topUpMode, setTopUpMode] = useState<TopUpMode>("easy");
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<AuthMode>("signup");
+  const [easyState, setEasyState] = useState<"idle" | "working" | "ready" | "failed">(
+    "idle",
+  );
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [txId, setTxId] = useState("");
   const [verifyState, setVerifyState] = useState<
@@ -119,6 +133,10 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
     shieldedHealth?.recipient ||
     paymentHealth?.rails?.shielded_stablecoin?.recipient ||
     null;
+  const easyReady =
+    thumperAuth.authenticated &&
+    !!turnkeyWallet.walletAddress &&
+    summary.privateSpendReady;
 
   const statusClass =
     summary.status === "private_ready"
@@ -140,6 +158,32 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
     setNotice(null);
     setVerifyState("idle");
     setVerifyMessage(null);
+  }
+
+  async function handleEasySetup() {
+    setNotice(null);
+    if (!summary.privateSpendReady) {
+      setNotice("Private routing is still coming online. Account setup can continue, but private spend will wait for the rail.");
+    }
+    if (!thumperAuth.authenticated) {
+      setAuthMode("signup");
+      setAuthOpen(true);
+      return;
+    }
+    if (!turnkeyWallet.walletAddress) {
+      setEasyState("working");
+      try {
+        await turnkeyWallet.createWallet(thumperAuth.user?.email || "ghola-user");
+        setEasyState("ready");
+        setNotice("Private account created. Normal top ups can route privately once the on-ramp is connected.");
+      } catch (err) {
+        setEasyState("failed");
+        setNotice(err instanceof Error ? err.message : "Could not create the embedded wallet.");
+      }
+      return;
+    }
+    setEasyState("ready");
+    setNotice("Private account is ready. Advanced Shield deposits stay available for self-custody users.");
   }
 
   async function copyText(value: string | null | undefined, label: string) {
@@ -211,6 +255,13 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
           : "rounded-lg border border-[#1e2a3a] bg-[#0a0b10] p-5 sm:p-6"
       }
     >
+      <AuthModal
+        mode={authMode}
+        open={authOpen}
+        onClose={() => setAuthOpen(false)}
+        onModeChange={setAuthMode}
+        redirectTo={null}
+      />
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div
@@ -294,51 +345,113 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
               {summary.privateSpendReady ? "Private rail ready" : "Public USDC live"}
             </span>
           </div>
-          <div className="mt-4 grid grid-cols-3 gap-2">
-            {TOP_UP_AMOUNTS.map((amount) => (
+
+          <div className="mt-4 grid grid-cols-2 gap-2 rounded-md border border-[#151b26] bg-black/30 p-1">
+            {(["easy", "advanced"] as const).map((mode) => (
               <button
-                key={amount}
+                key={mode}
                 type="button"
-                onClick={() => setSelectedAmount(amount)}
-                className={`rounded-md border px-3 py-2 text-sm transition ${
-                  selectedAmount === amount
-                    ? "border-[#eef1f8] bg-[#eef1f8] text-[#08090d]"
-                    : "border-[#1e2a3a] bg-[#0f1117] text-[#8b95a8] hover:text-[#eef1f8]"
+                onClick={() => setTopUpMode(mode)}
+                className={`rounded px-3 py-2 text-xs font-medium transition ${
+                  topUpMode === mode
+                    ? "bg-[#eef1f8] text-[#08090d]"
+                    : "text-[#8b95a8] hover:bg-[#10131a] hover:text-[#eef1f8]"
                 }`}
               >
-                ${amount}
+                {mode === "easy" ? "Easy mode" : "Advanced"}
               </button>
             ))}
           </div>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <button
-              type="button"
-              onClick={() => setTopUpOpen(true)}
-              disabled={!summary.privateSpendReady}
-              className="inline-flex items-center justify-center gap-2 rounded-md border border-[#1e2a3a] bg-[#0f1117] px-3 py-2 text-sm text-[#8b95a8] transition hover:text-[#eef1f8] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Wallet className="h-4 w-4" />
-              Shield
-            </button>
-            <button
-              type="button"
-              disabled
-              className="inline-flex cursor-not-allowed items-center justify-center gap-2 rounded-md border border-[#1e2a3a] bg-[#0f1117] px-3 py-2 text-sm text-[#8b95a8] opacity-50"
-            >
-              <CreditCard className="h-4 w-4" />
-              Card next
-            </button>
-          </div>
-          <button
-            type="button"
-            onClick={handleTopUp}
-            className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md bg-[#eef1f8] px-4 py-2.5 text-sm font-medium text-[#08090d] transition hover:bg-white"
-          >
-            {summary.privateSpendReady
-              ? "Top up Private Balance"
-              : "Prepare Private Balance"}
-            <ArrowRight className="h-4 w-4" />
-          </button>
+
+          {topUpMode === "easy" ? (
+            <>
+              <div className="mt-4 grid gap-2">
+                <div className="flex items-center justify-between gap-3 rounded-md border border-[#151b26] bg-black/30 px-3 py-2">
+                  <span className="inline-flex items-center gap-2 text-xs text-[#8b95a8]">
+                    <UserRound className="h-3.5 w-3.5" />
+                    Account
+                  </span>
+                  <span className={thumperAuth.authenticated ? "text-xs text-emerald-200" : "text-xs text-[#5f6c81]"}>
+                    {thumperAuth.authenticated ? "ready" : "needed"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-3 rounded-md border border-[#151b26] bg-black/30 px-3 py-2">
+                  <span className="inline-flex items-center gap-2 text-xs text-[#8b95a8]">
+                    <KeyRound className="h-3.5 w-3.5" />
+                    Embedded wallet
+                  </span>
+                  <span className={turnkeyWallet.walletAddress ? "text-xs text-emerald-200" : "text-xs text-[#5f6c81]"}>
+                    {turnkeyWallet.walletAddress ? shortAddress(turnkeyWallet.walletAddress) : "automatic"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-3 rounded-md border border-[#151b26] bg-black/30 px-3 py-2">
+                  <span className="inline-flex items-center gap-2 text-xs text-[#8b95a8]">
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    Private routing
+                  </span>
+                  <span className={summary.privateSpendReady ? "text-xs text-emerald-200" : "text-xs text-amber-100"}>
+                    {summary.privateSpendReady ? "ready" : "pending"}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleEasySetup}
+                disabled={easyState === "working" || thumperAuth.loading || turnkeyWallet.loading}
+                className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md bg-[#eef1f8] px-4 py-2.5 text-sm font-medium text-[#08090d] transition hover:bg-white disabled:cursor-wait disabled:opacity-70"
+              >
+                {easyState === "working" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : easyReady ? (
+                  <CheckCircle2 className="h-4 w-4" />
+                ) : (
+                  <ArrowRight className="h-4 w-4" />
+                )}
+                {!thumperAuth.authenticated
+                  ? "Create private account"
+                  : turnkeyWallet.walletAddress
+                    ? "Private Balance ready"
+                    : "Create embedded wallet"}
+              </button>
+              <button
+                type="button"
+                disabled
+                className="mt-2 inline-flex w-full cursor-not-allowed items-center justify-center gap-2 rounded-md border border-[#1e2a3a] bg-[#0f1117] px-3 py-2 text-sm text-[#8b95a8] opacity-55"
+              >
+                <CreditCard className="h-4 w-4" />
+                Card and USDC on-ramp next
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="mt-4 grid grid-cols-3 gap-2">
+                {TOP_UP_AMOUNTS.map((amount) => (
+                  <button
+                    key={amount}
+                    type="button"
+                    onClick={() => setSelectedAmount(amount)}
+                    className={`rounded-md border px-3 py-2 text-sm transition ${
+                      selectedAmount === amount
+                        ? "border-[#eef1f8] bg-[#eef1f8] text-[#08090d]"
+                        : "border-[#1e2a3a] bg-[#0f1117] text-[#8b95a8] hover:text-[#eef1f8]"
+                    }`}
+                  >
+                    ${amount}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={handleTopUp}
+                disabled={!summary.privateSpendReady}
+                className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md bg-[#eef1f8] px-4 py-2.5 text-sm font-medium text-[#08090d] transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Wallet className="h-4 w-4" />
+                Open Shield deposit
+              </button>
+            </>
+          )}
           {notice && (
             <p className="mt-3 rounded-md border border-[#1e2a3a] bg-[#0f1117] px-3 py-2 text-xs leading-5 text-[#8b95a8]">
               {notice}

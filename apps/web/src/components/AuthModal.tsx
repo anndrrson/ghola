@@ -15,6 +15,7 @@ type AuthModalProps = {
   open: boolean;
   onClose: () => void;
   onModeChange: (mode: AuthMode) => void;
+  redirectTo?: string | null;
 };
 
 function passwordStrength(password: string) {
@@ -32,7 +33,13 @@ function passwordStrength(password: string) {
   return { label: "Fair", score: 2, color: "bg-orange-500" };
 }
 
-export function AuthModal({ mode, open, onClose, onModeChange }: AuthModalProps) {
+export function AuthModal({
+  mode,
+  open,
+  onClose,
+  onModeChange,
+  redirectTo = "/chat",
+}: AuthModalProps) {
   const router = useRouter();
   const { setAuth } = useThumperAuth();
   const { createWallet, walletAddress } = useTurnkeyWallet();
@@ -95,7 +102,7 @@ export function AuthModal({ mode, open, onClose, onModeChange }: AuthModalProps)
         }
       }
       onClose();
-      router.push("/chat");
+      if (redirectTo) router.push(redirectTo);
     } catch (err) {
       setError(err instanceof Error ? err.message : isSignup ? "Sign up failed" : "Sign in failed");
     } finally {
