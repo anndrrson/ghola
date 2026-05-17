@@ -28,6 +28,8 @@ pub struct GenerateEmailRequest {
 #[derive(Serialize)]
 pub struct EmailResponse {
     pub id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<Uuid>,
     pub to_address: String,
     pub subject: String,
     pub body: String,
@@ -42,11 +44,11 @@ pub async fn create_draft(
     AuthUser(claims): AuthUser,
     Json(req): Json<DraftEmailRequest>,
 ) -> Result<Json<EmailResponse>, CloudError> {
-    let row = sqlx::query_as::<_, (Uuid, String, String, String, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+    let row = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, String, String, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
         r#"
         INSERT INTO email_actions (user_id, task_id, to_address, cc_addresses, subject, body, status)
         VALUES ($1, $2, $3, $4, $5, $6, 'draft')
-        RETURNING id, to_address, subject, body, status, created_at, sent_at
+        RETURNING id, task_id, to_address, subject, body, status, created_at, sent_at
         "#,
     )
     .bind(claims.sub)
@@ -60,12 +62,13 @@ pub async fn create_draft(
 
     Ok(Json(EmailResponse {
         id: row.0,
-        to_address: row.1,
-        subject: row.2,
-        body: row.3,
-        status: row.4,
-        created_at: row.5,
-        sent_at: row.6,
+        task_id: row.1,
+        to_address: row.2,
+        subject: row.3,
+        body: row.4,
+        status: row.5,
+        created_at: row.6,
+        sent_at: row.7,
     }))
 }
 
@@ -85,11 +88,23 @@ pub async fn generate_email(
     )
     .await?;
 
-    let row = sqlx::query_as::<_, (Uuid, String, String, String, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Option<Uuid>,
+            String,
+            String,
+            String,
+            String,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+        ),
+    >(
         r#"
         INSERT INTO email_actions (user_id, task_id, to_address, subject, body, status)
         VALUES ($1, $2, $3, $4, $5, 'draft')
-        RETURNING id, to_address, subject, body, status, created_at, sent_at
+        RETURNING id, task_id, to_address, subject, body, status, created_at, sent_at
         "#,
     )
     .bind(claims.sub)
@@ -102,12 +117,13 @@ pub async fn generate_email(
 
     Ok(Json(EmailResponse {
         id: row.0,
-        to_address: row.1,
-        subject: row.2,
-        body: row.3,
-        status: row.4,
-        created_at: row.5,
-        sent_at: row.6,
+        task_id: row.1,
+        to_address: row.2,
+        subject: row.3,
+        body: row.4,
+        status: row.5,
+        created_at: row.6,
+        sent_at: row.7,
     }))
 }
 
@@ -121,8 +137,8 @@ pub async fn send_email(
     check_email_limit(&state, claims.sub, &claims.tier).await?;
 
     // Fetch the draft
-    let draft = sqlx::query_as::<_, (String, Option<Vec<String>>, String, String)>(
-        "SELECT to_address, cc_addresses, subject, body FROM email_actions WHERE id = $1 AND user_id = $2 AND status = 'draft'",
+    let draft = sqlx::query_as::<_, (String, Option<Vec<String>>, String, String, Option<Uuid>)>(
+        "SELECT to_address, cc_addresses, subject, body, task_id FROM email_actions WHERE id = $1 AND user_id = $2 AND status = 'draft'",
     )
     .bind(email_id)
     .bind(claims.sub)
@@ -142,11 +158,23 @@ pub async fn send_email(
     .await?;
 
     // Update status
-    let row = sqlx::query_as::<_, (Uuid, String, String, String, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Option<Uuid>,
+            String,
+            String,
+            String,
+            String,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+        ),
+    >(
         r#"
         UPDATE email_actions SET status = 'sent', gmail_message_id = $1, sent_at = now()
         WHERE id = $2
-        RETURNING id, to_address, subject, body, status, created_at, sent_at
+        RETURNING id, task_id, to_address, subject, body, status, created_at, sent_at
         "#,
     )
     .bind(&gmail_message_id)
@@ -154,8 +182,36 @@ pub async fn send_email(
     .fetch_one(&state.db)
     .await?;
 
+    if let Some(task_id) = draft.4 {
+        let result = serde_json::json!({
+            "email_action_id": email_id,
+            "status": "sent",
+            "to_address": row.2,
+            "subject": row.3,
+            "summary": format!("Email sent to {}", row.2),
+        });
+        sqlx::query(
+            r#"
+            UPDATE tasks SET
+                status = 'completed',
+                result = $1,
+                updated_at = now(),
+                completed_at = now()
+            WHERE id = $2 AND user_id = $3
+            "#,
+        )
+        .bind(result)
+        .bind(task_id)
+        .bind(claims.sub)
+        .execute(&state.db)
+        .await?;
+    }
+
     // Update usage
-    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let period_start = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-01")
+        .to_string();
     sqlx::query(
         r#"
         INSERT INTO usage_tracking (user_id, period_start, email_count)
@@ -170,7 +226,9 @@ pub async fn send_email(
     .await?;
 
     // Notify via Telegram if linked
-    if let Ok(Some(tg_link)) = crate::services::telegram::get_telegram_link(&state.db, claims.sub).await {
+    if let Ok(Some(tg_link)) =
+        crate::services::telegram::get_telegram_link(&state.db, claims.sub).await
+    {
         if let Some(ref token) = state.config.telegram_bot_token {
             let summary = format!("Email sent!\n\nTo: {}\nSubject: {}", &draft.0, &draft.2);
             let _ = crate::services::telegram::notify_user(token, tg_link.0, &summary).await;
@@ -179,12 +237,13 @@ pub async fn send_email(
 
     Ok(Json(EmailResponse {
         id: row.0,
-        to_address: row.1,
-        subject: row.2,
-        body: row.3,
-        status: row.4,
-        created_at: row.5,
-        sent_at: row.6,
+        task_id: row.1,
+        to_address: row.2,
+        subject: row.3,
+        body: row.4,
+        status: row.5,
+        created_at: row.6,
+        sent_at: row.7,
     }))
 }
 
@@ -231,11 +290,23 @@ pub async fn send_email_direct(
     .await?;
 
     // Update status to sent
-    let row = sqlx::query_as::<_, (Uuid, String, String, String, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Option<Uuid>,
+            String,
+            String,
+            String,
+            String,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+        ),
+    >(
         r#"
         UPDATE email_actions SET status = 'sent', gmail_message_id = $1, sent_at = now()
         WHERE id = $2
-        RETURNING id, to_address, subject, body, status, created_at, sent_at
+        RETURNING id, task_id, to_address, subject, body, status, created_at, sent_at
         "#,
     )
     .bind(&gmail_message_id)
@@ -244,7 +315,10 @@ pub async fn send_email_direct(
     .await?;
 
     // Update usage
-    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let period_start = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-01")
+        .to_string();
     sqlx::query(
         r#"
         INSERT INTO usage_tracking (user_id, period_start, email_count)
@@ -259,7 +333,9 @@ pub async fn send_email_direct(
     .await?;
 
     // Notify via Telegram if linked
-    if let Ok(Some(tg_link)) = crate::services::telegram::get_telegram_link(&state.db, claims.sub).await {
+    if let Ok(Some(tg_link)) =
+        crate::services::telegram::get_telegram_link(&state.db, claims.sub).await
+    {
         if let Some(ref token) = state.config.telegram_bot_token {
             let summary = format!("Email sent!\n\nTo: {}\nSubject: {}", &req.to, &req.subject);
             let _ = crate::services::telegram::notify_user(token, tg_link.0, &summary).await;
@@ -268,12 +344,13 @@ pub async fn send_email_direct(
 
     Ok(Json(EmailResponse {
         id: row.0,
-        to_address: row.1,
-        subject: row.2,
-        body: row.3,
-        status: row.4,
-        created_at: row.5,
-        sent_at: row.6,
+        task_id: row.1,
+        to_address: row.2,
+        subject: row.3,
+        body: row.4,
+        status: row.5,
+        created_at: row.6,
+        sent_at: row.7,
     }))
 }
 
@@ -285,7 +362,10 @@ async fn check_email_limit(state: &AppState, user_id: Uuid, tier: &str) -> Resul
         _ => 10, // free
     };
 
-    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let period_start = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-01")
+        .to_string();
     let count: i64 = sqlx::query_scalar(
         "SELECT COALESCE(email_count, 0) FROM usage_tracking WHERE user_id = $1 AND period_start = $2::date",
     )
@@ -308,9 +388,21 @@ pub async fn list_emails(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<Vec<EmailResponse>>, CloudError> {
-    let rows = sqlx::query_as::<_, (Uuid, String, String, String, String, DateTime<Utc>, Option<DateTime<Utc>>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Option<Uuid>,
+            String,
+            String,
+            String,
+            String,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+        ),
+    >(
         r#"
-        SELECT id, to_address, subject, body, status, created_at, sent_at
+        SELECT id, task_id, to_address, subject, body, status, created_at, sent_at
         FROM email_actions WHERE user_id = $1
         ORDER BY created_at DESC LIMIT 50
         "#,
@@ -323,12 +415,13 @@ pub async fn list_emails(
         .into_iter()
         .map(|r| EmailResponse {
             id: r.0,
-            to_address: r.1,
-            subject: r.2,
-            body: r.3,
-            status: r.4,
-            created_at: r.5,
-            sent_at: r.6,
+            task_id: r.1,
+            to_address: r.2,
+            subject: r.3,
+            body: r.4,
+            status: r.5,
+            created_at: r.6,
+            sent_at: r.7,
         })
         .collect();
 

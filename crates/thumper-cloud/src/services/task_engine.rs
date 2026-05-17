@@ -35,9 +35,9 @@ pub async fn execute_task(
         "email" => execute_email_task(state, user_id, task_id, agent_id, &params).await,
         "calendar" => execute_calendar_task(state, user_id, task_id, &params).await,
         "crypto" => execute_crypto_task(state, user_id, task_id, &params).await,
-        _ => {
-            Err(CloudError::BadRequest(format!("unsupported task type: {task_type}")))
-        }
+        _ => Err(CloudError::BadRequest(format!(
+            "unsupported task type: {task_type}"
+        ))),
     };
 
     match result {
@@ -95,7 +95,8 @@ async fn execute_call_task(
         objective,
         serde_json::to_string(params).unwrap_or_default()
     );
-    let script = crate::services::llm_router::generate(state, user_id, &script_prompt, Some("json")).await?;
+    let script =
+        crate::services::llm_router::generate(state, user_id, &script_prompt, Some("json")).await?;
     let script_json: serde_json::Value = serde_json::from_str(&script).unwrap_or_default();
 
     complete_step(state, task_id, 1, &script_json).await?;
@@ -103,45 +104,56 @@ async fn execute_call_task(
     // Step 2: Initiate the call
     add_step(state, task_id, 2, "initiate_call", "in_progress").await?;
 
+    let call_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO calls (user_id, task_id, phone_number, objective, script, outcome, agent_id)
+        VALUES ($1, $2, $3, $4, $5, 'in_progress', $6)
+        RETURNING id
+        "#,
+    )
+    .bind(user_id)
+    .bind(task_id)
+    .bind(phone_number)
+    .bind(objective)
+    .bind(&script_json)
+    .bind(agent_id)
+    .fetch_one(&state.db)
+    .await?;
+
     let bland_call_id = crate::services::call_service::start_call(
         state,
         user_id,
-        task_id, // Use task_id as our internal reference
+        call_id,
         phone_number,
         objective,
         Some(&script_json),
     )
     .await?;
 
-    // Create call record linked to this task. agent_id is stamped (Phase M3)
-    // so the agent's call history is queryable; v1 still uses the user's
-    // Bland account for billing.
-    sqlx::query(
-        r#"
-        INSERT INTO calls (user_id, task_id, bland_call_id, phone_number, objective, script, outcome, agent_id)
-        VALUES ($1, $2, $3, $4, $5, $6, 'in_progress', $7)
-        "#,
-    )
-    .bind(user_id)
-    .bind(task_id)
-    .bind(&bland_call_id)
-    .bind(phone_number)
-    .bind(objective)
-    .bind(&script_json)
-    .bind(agent_id)
-    .execute(&state.db)
-    .await?;
+    sqlx::query("UPDATE calls SET bland_call_id = $1 WHERE id = $2")
+        .bind(&bland_call_id)
+        .bind(call_id)
+        .execute(&state.db)
+        .await?;
 
-    complete_step(state, task_id, 2, &serde_json::json!({ "bland_call_id": bland_call_id })).await?;
-
-    // Task stays in_progress — webhook will complete it when call finishes
-    // Update status to reflect we're waiting on the call
     sqlx::query(
         "UPDATE tasks SET status = 'in_progress', result = $1, updated_at = now() WHERE id = $2",
     )
-    .bind(serde_json::json!({ "status": "call_in_progress", "bland_call_id": bland_call_id }))
+    .bind(serde_json::json!({
+        "status": "call_in_progress",
+        "call_id": call_id,
+        "bland_call_id": bland_call_id,
+    }))
     .bind(task_id)
     .execute(&state.db)
+    .await?;
+
+    complete_step(
+        state,
+        task_id,
+        2,
+        &serde_json::json!({ "call_id": call_id, "bland_call_id": bland_call_id }),
+    )
     .await?;
 
     Ok(())
@@ -165,40 +177,42 @@ async fn execute_email_task(
     // Step 1: Generate email draft
     add_step(state, task_id, 1, "generate_draft", "in_progress").await?;
 
-    let draft = crate::services::email_service::generate_email_draft(
-        state,
-        user_id,
-        intent,
-        context,
-        tone,
+    let draft =
+        crate::services::email_service::generate_email_draft(state, user_id, intent, context, tone)
+            .await?;
+    let to_address = params["to_address"]
+        .as_str()
+        .or_else(|| params["email"].as_str())
+        .or_else(|| params["to"].as_str())
+        .unwrap_or(&draft.to_address);
+
+    // Step 2: Create email record and set task to awaiting_approval.
+    // agent_id stamped (Phase M3) so the agent's email history is queryable;
+    // v1 still uses the user's Gmail OAuth for sending.
+    let email_action_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO email_actions (user_id, task_id, to_address, subject, body, status, agent_id)
+        VALUES ($1, $2, $3, $4, $5, 'draft', $6)
+        RETURNING id
+        "#,
     )
+    .bind(user_id)
+    .bind(task_id)
+    .bind(to_address)
+    .bind(&draft.subject)
+    .bind(&draft.body)
+    .bind(agent_id)
+    .fetch_one(&state.db)
     .await?;
 
     let draft_json = serde_json::json!({
-        "to_address": draft.to_address,
+        "email_action_id": email_action_id,
+        "to_address": to_address,
         "subject": draft.subject,
         "body": draft.body,
     });
 
     complete_step(state, task_id, 1, &draft_json).await?;
-
-    // Step 2: Create email record and set task to awaiting_approval.
-    // agent_id stamped (Phase M3) so the agent's email history is queryable;
-    // v1 still uses the user's Gmail OAuth for sending.
-    sqlx::query(
-        r#"
-        INSERT INTO email_actions (user_id, task_id, to_address, subject, body, status, agent_id)
-        VALUES ($1, $2, $3, $4, $5, 'draft', $6)
-        "#,
-    )
-    .bind(user_id)
-    .bind(task_id)
-    .bind(&draft.to_address)
-    .bind(&draft.subject)
-    .bind(&draft.body)
-    .bind(agent_id)
-    .execute(&state.db)
-    .await?;
 
     sqlx::query(
         r#"
@@ -218,6 +232,69 @@ async fn execute_email_task(
     Ok(())
 }
 
+/// Recover non-marketplace tasks that were inserted but never reached the engine
+/// because the process died after POST /api/tasks returned.
+pub async fn start_task_recovery_loop(state: AppState) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    loop {
+        interval.tick().await;
+        if let Err(e) = recover_stale_tasks(&state).await {
+            tracing::warn!("task recovery loop failed: {e}");
+        }
+    }
+}
+
+async fn recover_stale_tasks(state: &AppState) -> Result<(), CloudError> {
+    let pending: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        r#"
+        UPDATE tasks
+        SET updated_at = now()
+        WHERE id IN (
+            SELECT id FROM tasks
+            WHERE status = 'pending'
+              AND COALESCE(is_open, false) = false
+              AND created_at < now() - interval '15 seconds'
+            ORDER BY created_at ASC
+            LIMIT 10
+        )
+        RETURNING id, user_id
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    for (task_id, user_id) in pending {
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = execute_task(&state_clone, user_id, task_id).await {
+                tracing::error!(%task_id, "recovered task execution failed: {e}");
+            }
+        });
+    }
+
+    let timed_out = sqlx::query(
+        r#"
+        UPDATE tasks
+        SET status = 'failed',
+            error_message = COALESCE(error_message, 'task timed out before provider completion'),
+            updated_at = now(),
+            completed_at = now()
+        WHERE status = 'in_progress'
+          AND task_type IN ('call', 'email', 'calendar')
+          AND updated_at < now() - interval '15 minutes'
+        "#,
+    )
+    .execute(&state.db)
+    .await?;
+
+    let count = timed_out.rows_affected();
+    if count > 0 {
+        tracing::warn!(count, "timed out stale in-progress tasks");
+    }
+
+    Ok(())
+}
+
 async fn execute_calendar_task(
     state: &AppState,
     user_id: Uuid,
@@ -226,12 +303,8 @@ async fn execute_calendar_task(
 ) -> Result<(), CloudError> {
     add_step(state, task_id, 1, "calendar_action", "in_progress").await?;
 
-    let result = crate::services::calendar_service::handle_calendar_request(
-        state,
-        user_id,
-        params,
-    )
-    .await?;
+    let result =
+        crate::services::calendar_service::handle_calendar_request(state, user_id, params).await?;
 
     complete_step(state, task_id, 1, &result).await?;
 
@@ -266,12 +339,11 @@ async fn execute_crypto_task(
                 .ok_or(CloudError::BadRequest("missing 'currency'".to_string()))?;
 
             // Check wallet exists
-            let wallet_exists: Option<(Uuid,)> = sqlx::query_as(
-                "SELECT id FROM user_wallets WHERE user_id = $1",
-            )
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await?;
+            let wallet_exists: Option<(Uuid,)> =
+                sqlx::query_as("SELECT id FROM user_wallets WHERE user_id = $1")
+                    .bind(user_id)
+                    .fetch_optional(&state.db)
+                    .await?;
 
             if wallet_exists.is_none() {
                 return Err(CloudError::BadRequest("wallet not provisioned".to_string()));
@@ -405,7 +477,9 @@ async fn complete_task(
     if let Ok(Some(bounty)) = crate::services::bounty_service::get_bounty(db, task_id).await {
         if bounty.status == "held" {
             let executor_id = bounty.executor_id.unwrap_or(bounty.funder_id);
-            if let Err(e) = crate::services::bounty_service::settle_bounty(db, task_id, executor_id).await {
+            if let Err(e) =
+                crate::services::bounty_service::settle_bounty(db, task_id, executor_id).await
+            {
                 tracing::warn!(%task_id, error = %e, "failed to settle bounty");
             }
         }
