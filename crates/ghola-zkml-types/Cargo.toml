@@ -1,0 +1,12 @@
+[package]
+name = "ghola-zkml-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Schema types for verifiable inference (zkML) proofs anchored in ghola receipts."
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }

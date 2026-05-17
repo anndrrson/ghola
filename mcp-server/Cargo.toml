@@ -1,0 +1,40 @@
+[package]
+name = "said-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "said_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "said-mcp"
+path = "src/main.rs"
+
+[dependencies]
+said-core = { workspace = true }
+said-types = { workspace = true }
+said-solana = { workspace = true }
+said-x402 = { workspace = true }
+rmcp = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+dirs = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+bs58 = { workspace = true }
+sha2 = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }
+base64 = { workspace = true }
+borsh = "0.10"
+curve25519-dalek = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+

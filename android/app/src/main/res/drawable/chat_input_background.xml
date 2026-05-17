@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Composer input field. Subtle elevated surface with a 1dp border. Hard edges
+  match the home grid's command cards. Focused state inherits the parent's
+  Material focus ring — no explicit colorControlHighlight override.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/ghola_surface" />
+    <stroke android:width="1dp" android:color="@color/ghola_border" />
+</shape>

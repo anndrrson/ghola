@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Phase η — IntegrityBadge dot palette.
+
+        Kept in a dedicated file so the Phase γ.3 wiring agent (touching
+        ChatActivity / SettingsActivity) doesn't collide with renames in
+        the base colors.xml. These are semantic aliases that point at the
+        existing brand palette plus a neutral grey for the
+        NOT_DOWNLOADED state (which has no equivalent in the base
+        success/warning/error trio).
+
+        Visual correspondence with the web counterpart at
+        apps/web/src/components/chat/ModelIntegrityBadge.tsx:
+          - VERIFIED              → emerald-300        → ghola_success
+          - DOWNLOADED_UNVERIFIED → amber-300/yellow   → ghola_warning
+          - TAMPERED              → red-300            → ghola_error
+          - NOT_DOWNLOADED        → muted text colour  → integrity_dot_idle
+    -->
+    <color name="integrity_dot_verified">#34d399</color>
+    <color name="integrity_dot_unverified">#fbbf24</color>
+    <color name="integrity_dot_tampered">#ef4444</color>
+    <color name="integrity_dot_idle">#6f798c</color>
+</resources>

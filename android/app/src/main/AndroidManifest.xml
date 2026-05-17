@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- v0.6 P7: WorkManager promotes PersonalFineTuneWorker to foreground
+         during the 1-2h fine-tune; Android 14+ requires a typed
+         FOREGROUND_SERVICE_* permission alongside the generic one. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:name=".GholaApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:largeHeap="true"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Ghola">
+
+        <!-- New Home Screen (launcher) -->
+        <activity
+            android:name=".ui.HomeActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Debug demo hook — lets adb broadcast trigger DemoScript directly
+             without needing to speak into the mic. Exported=true so the
+             component can be targeted from outside the app, but scoped to
+             xyz.ghola.app.DEMO action so nothing else can invoke it. -->
+        <receiver
+            android:name=".demo.DemoBroadcastReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="xyz.ghola.app.DEMO" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Chat (demoted from launcher, still accessible) -->
+        <activity
+            android:name=".ui.ChatActivity"
+            android:exported="false" />
+
+        <!-- Legacy relay setup -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ui.SettingsActivity"
+            android:exported="false" />
+
+        <!-- v0.6 P7: WorkManager's foreground service for the
+             PersonalFineTuneWorker. Android 14+ requires the explicit
+             foregroundServiceType. dataSync is the closest match for
+             our 1-2h CPU-bound training pass. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
+        <!-- v0.6 voice-compare A/B (P9). Deep-linked from the post-finetune
+             notification at ghola://voice-compare so the user can land
+             directly on the pitch artifact without navigating through
+             Settings. -->
+        <activity
+            android:name=".ui.VoiceCompareActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Ghola">
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="ghola" android:host="voice-compare" />
+            </intent-filter>
+        </activity>
+
+        <!-- Onboarding -->
+        <activity
+            android:name=".ui.OnboardingActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Ghola" />
+
+        <!-- Task detail -->
+        <activity
+            android:name=".ui.TaskDetailActivity"
+            android:exported="false" />
+
+        <!-- Agent ownership (Phase M5) -->
+        <activity
+            android:name=".ui.AgentsActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ui.AgentDetailActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ui.CreateAgentActivity"
+            android:exported="false" />
+
+        <!-- Bottom nav tabs (Phase M6) -->
+        <activity
+            android:name=".ui.WalletActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ui.ActivityFeedActivity"
+            android:exported="false" />
+
+        <!-- Pair Device (Phase 0.3 — wallet-to-wallet vault sync) -->
+        <activity
+            android:name=".ui.PairDeviceReceiverActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ui.PairDeviceSenderActivity"
+            android:exported="false" />
+
+        <!-- Accessibility Service (device control) -->
+        <service
+            android:name=".service.ThumperAccessibilityService"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- Notification Listener -->
+        <service
+            android:name=".service.NotificationListener"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- Proactive monitoring foreground service -->
+        <service
+            android:name=".service.ProactiveService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+    </application>
+
+</manifest>

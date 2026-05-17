@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/tab_assistant"
+        android:title="Home"
+        android:icon="@drawable/ic_nav_assistant" />
+    <item
+        android:id="@+id/tab_agents"
+        android:title="Agents"
+        android:icon="@drawable/ic_nav_agents" />
+    <item
+        android:id="@+id/tab_activity"
+        android:title="Activity"
+        android:icon="@drawable/ic_nav_activity" />
+    <item
+        android:id="@+id/tab_wallet"
+        android:title="Wallet"
+        android:icon="@drawable/ic_nav_wallet" />
+</menu>

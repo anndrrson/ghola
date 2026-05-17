@@ -1,0 +1,31 @@
+name: open_dapp_store
+description: "Open the Solana dApp Store on the device and wait for it to load. Optionally search for a specific dApp by name."
+category: crypto
+params:
+  - name: search
+    description: "Optional dApp name to search for after opening the store"
+    required: false
+steps:
+  - label: "Launch dApp Store"
+    action:
+      type: LaunchApp
+      data:
+        package: "com.solanamobile.dappstore"
+    wait_for:
+      selector:
+        text_contains: "dApp"
+      timeout_ms: 8000
+    on_failure: !retry
+      max_attempts: 2
+      delay_ms: 2000
+
+  - label: "Wait for store to fully load"
+    action:
+      type: Delay
+      data:
+        ms: 2000
+
+  - label: "Read store screen"
+    action:
+      type: ReadScreen
+    timeout_ms: 3000

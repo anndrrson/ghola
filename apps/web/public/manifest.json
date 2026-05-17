@@ -1,0 +1,24 @@
+{
+  "name": "ghola",
+  "short_name": "ghola",
+  "description": "Your AI assistant that actually does things. Make calls, send emails, manage your calendar, send crypto — all from chat.",
+  "start_url": "/chat",
+  "display": "standalone",
+  "background_color": "#08090d",
+  "theme_color": "#08090d",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

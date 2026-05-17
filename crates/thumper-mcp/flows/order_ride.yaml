@@ -1,0 +1,22 @@
+name: order_ride
+description: Order a ride via Uber or Lyft
+category: transport
+params:
+  destination: string
+  app: string  # "uber" or "lyft", default "uber"
+steps:
+  - action: launch_app
+    package: "{{app_package}}"
+  - action: delay
+    duration_ms: 2000
+  - action: read_screen
+  - action: tap
+    selector:
+      text_contains: "Where to?"
+  - action: type_text
+    selector:
+      text_contains: "Search"
+    text: "{{destination}}"
+  - action: delay
+    duration_ms: 1500
+  - action: read_screen

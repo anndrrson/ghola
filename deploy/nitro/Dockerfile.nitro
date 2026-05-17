@@ -1,0 +1,152 @@
+# syntax=docker/dockerfile:1.6
+#
+# Ghola v2 — thumper-gpu-provider Nitro Enclave image.
+#
+# This Dockerfile produces the Docker image that `nitro-cli build-enclave`
+# turns into an EIF. The image is NOT meant to be run directly under
+# `docker run` in production — it's a packaging step. (You can run it
+# locally for smoke tests by passing `--features mock-nitro` instead of
+# the real NSM feature, see deploy/runbook.md.)
+#
+# Build context: the repo root. Run from there:
+#
+#   docker build -f deploy/nitro/Dockerfile.nitro -t ghola-provider:latest .
+#
+# Two stages:
+#   1. `builder` — Rust toolchain on amazonlinux 2023, compiles the
+#      provider crate with the real Nitro NSM bindings turned on. We
+#      intentionally do NOT enable `mock-nitro`; this binary is supposed
+#      to talk to /dev/nsm inside the enclave.
+#   2. `runtime` — minimal amazonlinux 2023 with the binary + Ollama
+#      installed (Ollama lives inside the enclave alongside the provider
+#      so the model weights are never exposed to the host).
+#
+# The EIF init system enters `/usr/local/bin/thumper-gpu-provider`.
+
+# -------- Stage 1: builder --------
+FROM amazonlinux:2023 AS builder
+
+# Rust 1.79 — matches workspace toolchain. amazonlinux:2023 ships
+# pkgconfig + openssl-devel which a handful of indirect deps need.
+RUN dnf -y update && dnf -y install \
+    gcc \
+    gcc-c++ \
+    make \
+    pkgconfig \
+    openssl-devel \
+    git \
+    tar \
+    gzip \
+    ca-certificates \
+    && dnf clean all
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH \
+    RUST_VERSION=1.85.0
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --default-toolchain ${RUST_VERSION} --profile minimal \
+    && rustc --version
+
+WORKDIR /src
+
+# Copy the workspace. We copy everything because the workspace Cargo.toml
+# enumerates members and cargo refuses to build if any member directory
+# is missing. This is the same pattern used by Dockerfile.relay.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY mcp-server/ mcp-server/
+COPY cli/ cli/
+COPY daemon/ daemon/
+COPY integration-tests/ integration-tests/
+COPY migrations/ migrations/
+COPY migrations-receipts/ migrations-receipts/
+COPY programs/ programs/
+COPY apps/ apps/
+COPY packages/ packages/
+
+# Build the provider binary with the real NSM feature. Inside the EIF
+# this binary calls /dev/nsm to mint the attestation quote — without
+# this feature it would hard-error on boot in production. For local
+# smoke tests use deploy/nitro/Dockerfile.nitro.mock (or just run the
+# binary on the host with --features mock-nitro).
+RUN cargo build --release \
+        -p thumper-gpu-provider \
+        --features aws-nitro-enclaves-nsm-api
+
+# Build the in-enclave vsock client. It lives in a standalone Cargo
+# project under deploy/nitro/vsock-proxy/ (not part of the workspace
+# because vsock is Linux-only and we don't want that dep entangling
+# the rest of the tree). The runtime stage copies the binary in.
+COPY deploy/nitro/vsock-proxy/ /vsock-proxy/
+RUN cd /vsock-proxy && cargo build --release --bin enclave-vsock-client --bin vsock-env-client
+
+# -------- Stage 2: runtime --------
+FROM amazonlinux:2023 AS runtime
+
+# Ollama is the inference engine of choice for the v2 enclave. It runs
+# entirely inside the EIF and serves /api/generate on 127.0.0.1:11434.
+# An alternative is vLLM — swap the install line here if you prefer.
+#
+# The Ollama install script wants curl + tar. --allowerasing lets the
+# explicit `curl` package replace the pre-installed `curl-minimal` on
+# AL2023 (introduced 2024) — without it dnf errors with a conflict.
+RUN dnf -y update && dnf -y install --allowerasing \
+    ca-certificates \
+    curl \
+    tar \
+    gzip \
+    openssl \
+    iproute \
+    && dnf clean all
+
+# Install Ollama. Pinned to a known-good release; bump when needed.
+ARG OLLAMA_VERSION=0.3.12
+RUN curl -fsSL https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-amd64.tgz \
+      -o /tmp/ollama.tgz \
+    && tar -xzf /tmp/ollama.tgz -C /usr/local \
+    && rm /tmp/ollama.tgz \
+    && /usr/local/bin/ollama --version
+
+# Provider binary.
+COPY --from=builder /src/target/release/thumper-gpu-provider /usr/local/bin/thumper-gpu-provider
+
+# Enclave-side vsock env-channel client. Pulls PROVIDER_AUTH_KEY +
+# ALLOWLIST_SIG_B64 from the host's vsock-env-server (port 8444) so the
+# entrypoint can populate them before exec'ing the provider. Nitro
+# enclaves don't inherit host env, so this side-channel is required for
+# attestation to send a non-empty allowlist sig.
+COPY --from=builder /vsock-proxy/target/release/vsock-env-client /usr/local/bin/vsock-env-client
+
+# In-enclave vsock client. Listens on 127.0.0.1:8443 and tunnels to
+# the host's vsock-proxy (CID=3, port=8443). The provider connects to
+# 127.0.0.1:8443 via rustls with SNI overridden to the relay's
+# hostname — TLS terminates end-to-end at the relay, the host vsock
+# proxy never sees plaintext.
+COPY --from=builder /vsock-proxy/target/release/enclave-vsock-client /usr/local/bin/enclave-vsock-client
+
+# Entrypoint shim — starts Ollama in the background, then execs the
+# provider. We intentionally don't use a process supervisor (s6, tini)
+# because the EIF init replaces PID 1 anyway; the provider crashing is
+# enough to tear the enclave down and trigger a respawn.
+COPY deploy/nitro/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Ports inside the enclave (visible only via vsock-forwarded TCP from
+# the host). The EIF wraps these in vsock; the WS connection to the
+# relay is outbound, so nothing is "listened on" externally.
+EXPOSE 11434
+
+# Health: provider logs to stdout/stderr; nitro-cli captures both.
+# No HEALTHCHECK directive — Nitro's enclave heartbeat replaces it.
+
+ENV RUST_LOG=info \
+    OLLAMA_URL=http://127.0.0.1:11434 \
+    RELAY_URL=wss://127.0.0.1:8443/ws \
+    RELAY_SNI_OVERRIDE=ghola-relay.onrender.com \
+    TEE_KIND=nitro \
+    PROVIDER_NAME=ghola-nitro \
+    MODELS=llama3.2:3b
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

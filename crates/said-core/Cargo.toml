@@ -1,0 +1,32 @@
+[package]
+name = "said-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+said-types = { workspace = true }
+said-noncecache = { workspace = true }
+ed25519-bip32 = { workspace = true }
+bip39 = { workspace = true }
+aes-gcm = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+argon2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+dirs = { workspace = true }
+base64 = { workspace = true }
+bs58 = { workspace = true }
+x25519-dalek = { workspace = true }
+curve25519-dalek = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

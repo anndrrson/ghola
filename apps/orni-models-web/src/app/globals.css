@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: #0a0a0a;
+  --color-foreground: #fafafa;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /* Surface palette */
+  --color-surface-0: #0a0a0a;
+  --color-surface-1: #141414;
+  --color-surface-2: #1a1a1a;
+  --color-surface-3: #222222;
+
+  /* Accent: Mint Green */
+  --color-accent: #00E5A0;
+}
+
+body {
+  background: var(--color-surface-0);
+  color: var(--color-foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Drifting dot grid */
+@keyframes drift-dots {
+  0% {
+    transform: translate(0, 0);
+  }
+  100% {
+    transform: translate(32px, 32px);
+  }
+}
+
+@keyframes drift-dots-slow {
+  0% {
+    transform: translate(0, 0);
+  }
+  100% {
+    transform: translate(-64px, 64px);
+  }
+}
+
+.animate-drift-dots {
+  animation: drift-dots 8s linear infinite;
+}
+
+.animate-drift-dots-slow {
+  animation: drift-dots-slow 20s linear infinite;
+}
+
+/* Streaming dots */
+@keyframes streaming-bounce {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  40% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
+}
+
+.streaming-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #a1a1a1;
+  animation: streaming-bounce 1.4s ease-in-out infinite;
+}
+
+.streaming-dot:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.streaming-dot:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+/* Wallet adapter overrides */
+.wallet-adapter-button {
+  background: #fafafa !important;
+  color: #0a0a0a !important;
+  border-radius: 0.5rem !important;
+  font-size: 0.875rem !important;
+  height: 2.5rem !important;
+}
+
+.wallet-adapter-button:hover {
+  background: #e5e5e5 !important;
+}
+
+.wallet-adapter-modal-wrapper {
+  background: #141414 !important;
+  border: 1px solid #262626 !important;
+  border-radius: 1rem !important;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 2px;
+}

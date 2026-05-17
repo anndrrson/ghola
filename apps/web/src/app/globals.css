@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: #08090d;
+  --color-foreground: #eef1f8;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-display);
+  --color-ghola-50: #e6f3ff;
+  --color-ghola-100: #cce7ff;
+  --color-ghola-200: #99cfff;
+  --color-ghola-300: #6db7ff;
+  --color-ghola-400: #3da8ff;
+  --color-ghola-500: #3da8ff;
+  --color-ghola-600: #2b96f0;
+  --color-ghola-700: #1a7dd4;
+  --color-ghola-800: #1466b0;
+  --color-ghola-900: #0f4f8c;
+}
+
+.font-display {
+  letter-spacing: -0.02em;
+}
+
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e2a3a;
+  border-radius: 3px;
+}
+
+/* Wallet adapter overrides */
+.wallet-adapter-button {
+  background: #3da8ff !important;
+  border-radius: 0.75rem !important;
+  font-size: 0.875rem !important;
+  height: 2.5rem !important;
+}
+
+.wallet-adapter-modal-wrapper {
+  background: #0f1117 !important;
+  border-radius: 1rem !important;
+}
+
+/* Provide page animations */
+@keyframes float-slow {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(30px, -20px) scale(1.05); }
+  66% { transform: translate(-20px, 15px) scale(0.95); }
+}
+
+@keyframes float-slow-reverse {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(-25px, 15px) scale(0.95); }
+  66% { transform: translate(20px, -25px) scale(1.05); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes terminal-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(28px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#0f1117"
+    android:padding="24dp">
+
+    <!-- Step indicator -->
+    <TextView
+        android:id="@+id/stepIndicator"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Step 1 of 2"
+        android:textSize="14sp"
+        android:textColor="#4a5568"
+        android:textAlignment="center"
+        android:layout_marginBottom="32dp"
+        android:layout_marginTop="16dp" />
+
+    <!-- Step 1: Wallet Sign-In -->
+    <LinearLayout
+        android:id="@+id/stepSignIn"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:visibility="visible">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Welcome to Ghola"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:textColor="#eef1f8"
+            android:textAlignment="center"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Sign in with your Solana wallet — that's it. Call, email, chat, and agents are wallet-bound."
+            android:textSize="16sp"
+            android:textColor="#8b95a8"
+            android:textAlignment="center"
+            android:layout_marginBottom="48dp" />
+
+        <Button
+            android:id="@+id/btnWalletSignIn"
+            android:layout_width="280dp"
+            android:layout_height="48dp"
+            android:text="Sign in with wallet"
+            android:layout_marginBottom="16dp"
+            style="@style/Widget.MaterialComponents.Button" />
+    </LinearLayout>
+
+    <!-- Step 2: Accessibility -->
+    <LinearLayout
+        android:id="@+id/stepAccessibility"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Enable Device Control"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:textColor="#eef1f8"
+            android:textAlignment="center"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Ghola can control your phone with Accessibility to open apps, tap buttons, and type text. Optional — you can enable this now or later."
+            android:textSize="16sp"
+            android:textColor="#8b95a8"
+            android:textAlignment="center"
+            android:layout_marginBottom="48dp" />
+
+        <Button
+            android:id="@+id/btnEnableAccessibility"
+            android:layout_width="280dp"
+            android:layout_height="48dp"
+            android:text="Open Accessibility Settings"
+            android:layout_marginBottom="16dp"
+            style="@style/Widget.MaterialComponents.Button" />
+
+        <Button
+            android:id="@+id/btnCheckAccessibility"
+            android:layout_width="280dp"
+            android:layout_height="48dp"
+            android:text="I've enabled it"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <Button
+            android:id="@+id/btnFinish"
+            android:layout_width="280dp"
+            android:layout_height="48dp"
+            android:text="Skip for now"
+            android:layout_marginTop="16dp"
+            style="@style/Widget.MaterialComponents.Button.TextButton" />
+
+        <Button
+            android:id="@+id/btnDone"
+            android:layout_width="280dp"
+            android:layout_height="48dp"
+            android:text="Get Started"
+            style="@style/Widget.MaterialComponents.Button" />
+    </LinearLayout>
+
+</LinearLayout>

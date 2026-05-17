@@ -1,0 +1,27 @@
+/target
+**/target
+.DS_Store
+node_modules
+.next
+*.tsbuildinfo
+android/.gradle/
+android/build/
+android/app/build/
+# CMake build cache — was accidentally committed historically, now ignored
+android/app/.cxx/
+*.apk
+# Release signing (never commit)
+android/keystore/
+*.keystore
+*.jks
+# Solana dApp Store publisher keypair and built APK
+android/dapp-store/publisher.json
+android/dapp-store/app-release.apk
+# Firebase config (if added in a future phase)
+android/app/google-services.json
+.idea/
+*.iml
+local.properties
+.claude/
+.vercel
+.dev/

@@ -1,0 +1,22 @@
+[package]
+name = "said-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "said-daemon"
+path = "src/main.rs"
+
+[dependencies]
+said-core = { workspace = true }
+said-types = { workspace = true }
+said-mcp = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tracing-appender = "0.2"

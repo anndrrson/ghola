@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingHorizontal="8dp"
+    android:paddingVertical="4dp">
+
+    <TextView
+        android:id="@+id/messageText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="start"
+        android:maxWidth="300dp"
+        android:background="@drawable/bubble_assistant"
+        android:padding="12dp"
+        android:textColor="@color/ghola_text_primary"
+        android:fontFamily="@font/geist"
+        android:textSize="14sp"
+        android:textIsSelectable="true"
+        android:lineSpacingExtra="2dp" />
+
+</FrameLayout>

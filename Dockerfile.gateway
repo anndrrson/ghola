@@ -1,0 +1,62 @@
+# ghola-gateway — stateless HTTP proxy. The hot path for headless merchants.
+#
+# Separate from the said-cloud Dockerfile so we can deploy and scale it
+# independently. Shares DATABASE_URL + GHOLA_VAULT_KEY with said-cloud via
+# Render's env group — same Postgres, same vault KEK, different binary.
+FROM rust:slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Workspace manifests first for layer caching.
+COPY Cargo.toml Cargo.lock ./
+COPY crates/said-types/Cargo.toml crates/said-types/Cargo.toml
+COPY crates/said-core/Cargo.toml crates/said-core/Cargo.toml
+COPY crates/said-solana/Cargo.toml crates/said-solana/Cargo.toml
+COPY crates/said-cloud/Cargo.toml crates/said-cloud/Cargo.toml
+COPY crates/said-wasm/Cargo.toml crates/said-wasm/Cargo.toml
+COPY crates/said-x402/Cargo.toml crates/said-x402/Cargo.toml
+COPY crates/said-turnkey/Cargo.toml crates/said-turnkey/Cargo.toml
+COPY crates/ghola-gateway/Cargo.toml crates/ghola-gateway/Cargo.toml
+COPY crates/thumper-types/Cargo.toml crates/thumper-types/Cargo.toml
+COPY crates/thumper-relay/Cargo.toml crates/thumper-relay/Cargo.toml
+COPY crates/thumper-mcp/Cargo.toml crates/thumper-mcp/Cargo.toml
+COPY crates/thumper-cli/Cargo.toml crates/thumper-cli/Cargo.toml
+COPY crates/thumper-cloud/Cargo.toml crates/thumper-cloud/Cargo.toml
+COPY crates/ghola-home/Cargo.toml crates/ghola-home/Cargo.toml
+COPY mcp-server/Cargo.toml mcp-server/Cargo.toml
+COPY cli/Cargo.toml cli/Cargo.toml
+COPY daemon/Cargo.toml daemon/Cargo.toml
+COPY integration-tests/Cargo.toml integration-tests/Cargo.toml
+
+# Source.
+COPY crates/ crates/
+COPY mcp-server/ mcp-server/
+COPY cli/ cli/
+COPY daemon/ daemon/
+COPY integration-tests/ integration-tests/
+COPY migrations/cloud/ migrations/cloud/
+
+RUN cargo build --release -p ghola-gateway
+
+# Stage 2 — runtime.
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/ghola-gateway /usr/local/bin/ghola-gateway
+
+ENV BIND_ADDR=0.0.0.0:8090
+
+RUN useradd --system --no-create-home --uid 65532 nonroot
+USER nonroot
+
+EXPOSE 8090
+
+CMD ["ghola-gateway"]

@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ghola Android — Network Security Config (release/default)
+
+  Rationale.
+  This file is the network "deny by default" boundary for the ghola
+  Android app. Per the audit posture documented in
+  docs/security/native-models.md ("Honest gaps"), the previous version
+  of this file permitted cleartext + had no per-host allowlist, which
+  meant a runtime library that decided to phone home would have been
+  silently allowed to do so. This rewrite inverts that:
+
+    1. base-config disallows cleartext globally
+       (`cleartextTrafficPermitted="false"`).
+    2. system trust anchors only — no `user` certificates. This blocks
+       enterprise MITM and Charles Proxy in the release build (the
+       debug variant relaxes this — see src/debug/.../network_security_config.xml).
+    3. Each `<domain-config>` below is one host the app is allowed to
+       talk to, with an inline comment explaining why. If a runtime
+       library tries to contact something not on this list, the
+       Android platform blocks the request before it reaches the
+       network stack. That is the dApp Store / a16z audit posture for
+       telemetry.
+
+  Runtime libraries audited as part of this commit:
+    - llama.cpp (NDK build, pinned git SHA in app/src/main/cpp/CMakeLists.txt)
+        Pure C++; no telemetry path. No known phone-home in upstream releases.
+    - MediaPipe Tasks GenAI (com.google.mediapipe:tasks-genai)
+        No known phone-home in release notes; loads on-device .task bundles.
+    - LiteRT-LM (com.google.ai.edge.litert:litert-lm)
+        v0.11.0 release notes do not document any telemetry endpoint.
+    - NeuroPilot (MediaTek APU runtime, loaded by LiteRT-LM on MT6878+)
+        Bundled by LiteRT-LM; same audit posture as LiteRT-LM.
+    - ONNX Runtime (com.microsoft.onnxruntime:onnxruntime-mobile, used by EmbedderClient)
+        No known phone-home; inference is in-process.
+    - BouncyCastle (org.bouncycastle:bcprov-jdk18on)
+        Pure crypto library; no network code.
+
+  This audit is a static one (release-notes review + per-host
+  allowlist). We have NOT done a dynamic traffic capture against each
+  library in isolation. See docs/security/native-models.md for the
+  residual-gap framing.
+
+  When adding a new host.
+  If you add a Kotlin call to a new HTTPS endpoint, add a matching
+  <domain-config> block here. Forgetting to do so will produce a
+  CertPathValidatorException / "Cleartext HTTP traffic to X not
+  permitted" at runtime — which is the desired failure mode.
+-->
+<network-security-config>
+
+    <!-- Global default: HTTPS only, system CAs only. -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- ghola.xyz: web origin used as MWA identityUri (handed to the
+         wallet for app identification) and as the static-asset host
+         used by EmbedderClient for the MiniLM ONNX weights + vocab. -->
+    <domain-config>
+        <domain includeSubdomains="true">ghola.xyz</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+
+    <!-- onrender.com hosts: SAID cloud (`ghola-api.onrender.com`) and
+         thumper-cloud (`thumper-cloud.onrender.com`). v0.4.0 ships
+         against Render directly because the Render Hobby tier caps the
+         team at 2 custom domains; v0.4.1 will move both behind
+         api.ghola.xyz (see app/build.gradle.kts release block). Scoped
+         to includeSubdomains=false to avoid implicitly trusting all of
+         Render's tenants. -->
+    <domain-config>
+        <domain includeSubdomains="false">ghola-api.onrender.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+    <domain-config>
+        <domain includeSubdomains="false">thumper-cloud.onrender.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+
+    <!-- huggingface.co: model weight downloads. Subdomains included to
+         cover the LFS CDN (cdn-lfs.huggingface.co,
+         cdn-lfs-us-1.huggingface.co) that Hugging Face redirects large
+         file fetches to. Endpoints in use:
+           - llama.cpp GGUF (ai/llama/ModelManager.kt)
+           - MediaPipe .task bundle (email/LocalLlm.kt)
+           - LiteRT-LM .litertlm bundle (ai/litert/LiteRtModelManager.kt)
+         The first-run download is the only network event in the Local
+         mode inference path; see docs/security/native-models.md §4. -->
+    <domain-config>
+        <domain includeSubdomains="true">huggingface.co</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+
+    <!-- api.anthropic.com: Claude API for the cloud (non-Local) chat
+         backend (ai/ClaudeApiClient.kt). Used only when the user has
+         explicitly entered their own Anthropic API key in Settings;
+         Local mode does NOT touch this host. -->
+    <domain-config>
+        <domain includeSubdomains="false">api.anthropic.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+
+    <!-- dashscope-intl.aliyuncs.com: Alibaba DashScope OpenAI-compatible
+         endpoint for cloud Qwen inference (ai/OpenAIApiClient.kt).
+         Optional cloud backend; user-selected. -->
+    <domain-config>
+        <domain includeSubdomains="false">dashscope-intl.aliyuncs.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+
+    <!-- accounts.google.com: Google OAuth consent + OpenID Connect
+         discovery doc (gmail/GmailOAuth.kt). Used only on the optional
+         Gmail integration path. -->
+    <domain-config>
+        <domain includeSubdomains="false">accounts.google.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+
+    <!-- googleapis.com (with subdomains): covers gmail.googleapis.com
+         (Gmail REST API), oauth2.googleapis.com (token + refresh,
+         called by AppAuth), www.googleapis.com (scope endpoints), and
+         storage.googleapis.com (LiteRT-LM model bucket referenced in
+         ai/litert/LiteRtModelManager.kt). All of these are Google-
+         operated; subdomain inclusion keeps us robust to AppAuth/
+         Google adding new sibling hosts on the discovery doc. -->
+    <domain-config>
+        <domain includeSubdomains="true">googleapis.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+
+</network-security-config>

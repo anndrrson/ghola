@@ -1,0 +1,35 @@
+app = "ghola-thumper-cloud"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.thumper"
+
+[env]
+  BASE_URL = "https://api.ghola.xyz"
+  RUST_LOG = "thumper_cloud=info,tower_http=info"
+  SOLANA_NETWORK = "mainnet-beta"
+  SHIELDED_STABLECOIN_PROVIDER = "aleo"
+  SHIELDED_STABLECOIN_NETWORK = "aleo:mainnet"
+  SHIELDED_STABLECOIN_ASSET = "USDC"
+
+# THUMPER_CLOUD_BIND=0.0.0.0:10000 is set in the Dockerfile, so this is the port
+# Fly should route external traffic to.
+[http_service]
+  internal_port = 10000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[checks]]
+  name = "health"
+  type = "http"
+  port = 10000
+  path = "/health"
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "20s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

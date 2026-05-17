@@ -1,0 +1,13 @@
+Ghola 0.4.0 — Wallet-only auth
+
+• Sign in with your Solana wallet — that's it.
+• New SIWS challenge/response auth route on thumper-cloud:
+  wallet pubkey + Ed25519 signature => standard Ghola JWT.
+• Fresh installs no longer require Google Sign-In or any third-party API key.
+• Call, email, chat, and device-action planning now share the same
+  wallet-authenticated cloud session.
+• End-to-end encrypted chat stays default; envelope ciphertext is persisted
+  server-side and plaintext never lands in chat storage.
+• Google is now optional in Settings:
+  "Connect Google for Gmail integration."
+• Android user-facing rename cleanup: Thumper → Ghola.

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  User message bubble — accent fill with hard edges. Text on top should use
+  @color/ghola_bg for contrast against the bright accent.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/ghola_accent" />
+</shape>

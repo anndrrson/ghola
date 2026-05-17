@@ -1,0 +1,532 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- Assistant Mode Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Assistant Mode"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#eef1f8"
+            android:layout_marginBottom="12dp" />
+
+        <RadioGroup
+            android:id="@+id/backendRadioGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginBottom="16dp">
+
+            <RadioButton
+                android:id="@+id/radioE2eCloud"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Wallet-only cloud (Recommended)"
+                android:textSize="14sp"
+                android:padding="4dp" />
+
+            <RadioButton
+                android:id="@+id/radioCloud"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Power user (BYOM): Claude"
+                android:textSize="14sp"
+                android:padding="4dp" />
+
+            <RadioButton
+                android:id="@+id/radioQwenCloud"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Power user (BYOM): Qwen"
+                android:textSize="14sp"
+                android:padding="4dp" />
+
+            <RadioButton
+                android:id="@+id/radioLocal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Power user: On-device model"
+                android:textSize="14sp"
+                android:padding="4dp" />
+
+            <RadioButton
+                android:id="@+id/radioLitertNpu"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/litert_npu_radio_label"
+                android:textSize="14sp"
+                android:padding="4dp" />
+
+        </RadioGroup>
+
+        <!-- Cloud Configuration Section -->
+        <LinearLayout
+            android:id="@+id/cloudSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Power user / BYOM (Claude)"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="8dp" />
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Anthropic API Key"
+                app:endIconMode="password_toggle"
+                android:layout_marginBottom="16dp">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/apiKeyInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPassword" />
+
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Model"
+                android:textSize="14sp"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="4dp" />
+
+            <Spinner
+                android:id="@+id/modelSpinner"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginBottom="16dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:padding="8dp" />
+
+        </LinearLayout>
+
+        <!-- Qwen Cloud Configuration Section -->
+        <LinearLayout
+            android:id="@+id/qwenCloudSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Power user / BYOM (Qwen)"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="8dp" />
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="DashScope API Key"
+                app:endIconMode="password_toggle"
+                android:layout_marginBottom="16dp">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/qwenApiKeyInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPassword" />
+
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Model"
+                android:textSize="14sp"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="4dp" />
+
+            <Spinner
+                android:id="@+id/qwenModelSpinner"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginBottom="16dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:padding="8dp" />
+
+        </LinearLayout>
+
+        <!-- Local Model Section -->
+        <LinearLayout
+            android:id="@+id/localSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="On-Device Model"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:id="@+id/modelStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Model: Not downloaded"
+                android:textSize="14sp"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="8dp" />
+
+            <ProgressBar
+                android:id="@+id/downloadProgress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:visibility="gone"
+                android:layout_marginBottom="4dp" />
+
+            <TextView
+                android:id="@+id/downloadPercent"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="12sp"
+                android:textColor="#4a5568"
+                android:gravity="center"
+                android:visibility="gone"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/downloadButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Download Model (~2.5 GB)"
+                android:layout_marginBottom="8dp"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+            <Button
+                android:id="@+id/deleteModelButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Delete Model"
+                android:textColor="#ef4444"
+                android:visibility="gone"
+                android:layout_marginBottom="16dp"
+                style="@style/Widget.MaterialComponents.Button.TextButton" />
+
+        </LinearLayout>
+
+        <!-- LiteRT-LM NPU Section (Phase γ.3) -->
+        <LinearLayout
+            android:id="@+id/litertNpuSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/litert_npu_section_title"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/litert_npu_section_caption"
+                android:textSize="13sp"
+                android:textColor="#4a5568"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:id="@+id/litertNpuStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/litert_npu_status_not_downloaded"
+                android:textSize="14sp"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="8dp" />
+
+            <ProgressBar
+                android:id="@+id/litertNpuDownloadProgress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:visibility="gone"
+                android:layout_marginBottom="4dp" />
+
+            <TextView
+                android:id="@+id/litertNpuDownloadPercent"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="12sp"
+                android:textColor="#4a5568"
+                android:gravity="center"
+                android:visibility="gone"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/litertNpuDownloadButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/litert_npu_download_cta"
+                android:layout_marginBottom="8dp"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+            <Button
+                android:id="@+id/litertNpuDeleteButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/litert_npu_delete_cta"
+                android:textColor="#ef4444"
+                android:visibility="gone"
+                android:layout_marginBottom="16dp"
+                style="@style/Widget.MaterialComponents.Button.TextButton" />
+
+            <!-- HuggingFace Bearer token (Phase γ.4 / L3) — nested inside the
+                 NPU section because the gated repo it unlocks is the only
+                 download path that consumes it today. -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#1e2a3a"
+                android:layout_marginBottom="12dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/hf_token_section_title"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/hf_token_section_caption"
+                android:textSize="13sp"
+                android:textColor="#4a5568"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:id="@+id/hfTokenStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/hf_token_status_not_set"
+                android:textSize="14sp"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="8dp" />
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/hf_token_input_hint"
+                app:endIconMode="password_toggle"
+                android:layout_marginBottom="8dp">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/hfTokenInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPassword" />
+
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <Button
+                android:id="@+id/hfTokenSaveButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/hf_token_save"
+                android:layout_marginBottom="8dp"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+            <Button
+                android:id="@+id/hfTokenClearButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/hf_token_clear"
+                android:textColor="#ef4444"
+                android:layout_marginBottom="8dp"
+                style="@style/Widget.MaterialComponents.Button.TextButton" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/hf_token_docs_link"
+                android:textSize="12sp"
+                android:textColor="#3da8ff"
+                android:autoLink="web"
+                android:layout_marginBottom="16dp" />
+
+        </LinearLayout>
+
+        <!-- Divider -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#1e2a3a"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Google Integration -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Google Integration"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#eef1f8"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Optional: connect Google for Gmail/Calendar automation. Wallet sign-in remains your primary login."
+            android:textSize="13sp"
+            android:textColor="#4a5568"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/connectGoogleButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Connect Google for Gmail integration"
+            android:layout_marginBottom="24dp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <!-- Divider -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#1e2a3a"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Accessibility Service Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Accessibility Service"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#eef1f8"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:id="@+id/a11yStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Status: Unknown"
+            android:textSize="14sp"
+            android:textColor="#8b95a8"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/enableA11yButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Enable Accessibility Service"
+            android:layout_marginBottom="24dp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <!-- Divider -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#1e2a3a"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Relay Mode Section -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Relay Mode"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#eef1f8"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Advanced: Connect to desktop relay"
+            android:textSize="13sp"
+            android:textColor="#4a5568"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/openRelayButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Open Relay Setup"
+            android:layout_marginBottom="24dp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <!-- Pair Device (Phase 0.3) -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Pair Device"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#eef1f8"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Move encrypted chat sessions between two devices that share your wallet."
+            android:textSize="13sp"
+            android:textColor="#4a5568"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/pairDeviceReceiveButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Add this device from another"
+            android:layout_marginBottom="8dp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <Button
+            android:id="@+id/pairDeviceSendButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Send my sessions to a new device"
+            android:layout_marginBottom="32dp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <!-- Save Button -->
+        <Button
+            android:id="@+id/saveButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Save Settings"
+            android:backgroundTint="#3da8ff" />
+
+    </LinearLayout>
+
+</ScrollView>

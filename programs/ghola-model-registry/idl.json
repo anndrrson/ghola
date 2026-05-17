@@ -1,0 +1,379 @@
+{
+  "address": "7hZ9oxHyFRpKHtH3jsa8NeH4HYGrPT7ZttDFtUX9naNS",
+  "metadata": {
+    "name": "ghola_model_registry",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Ghola on-chain model registry — content-addressed open-weight model metadata"
+  },
+  "instructions": [
+    {
+      "name": "register_model",
+      "docs": [
+        "Register a new model. The signer becomes the entry's creator",
+        "and is the only key that can update the entry afterwards.",
+        "Fails if the entry already exists (Anchor's `init` does the",
+        "uniqueness enforcement via the PDA seed collision)."
+      ],
+      "discriminator": [
+        111,
+        236,
+        93,
+        31,
+        195,
+        210,
+        142,
+        125
+      ],
+      "accounts": [
+        {
+          "name": "model",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  104,
+                  111,
+                  108,
+                  97,
+                  45,
+                  109,
+                  111,
+                  100,
+                  101,
+                  108
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "model_id_hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "model_id_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "model_id",
+          "type": "string"
+        },
+        {
+          "name": "weights_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "model_lib_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "config_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "tokenizer_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "ipfs_cid",
+          "type": "string"
+        },
+        {
+          "name": "license_spdx",
+          "type": "string"
+        },
+        {
+          "name": "price_micro_usdc",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "update_model",
+      "docs": [
+        "Update fields that can drift over a model's lifetime (license",
+        "terms, pricing, new IPFS pin location). Hash fields are",
+        "**immutable** — content-addressed records must not allow the",
+        "creator to retroactively swap weights under the same model id."
+      ],
+      "discriminator": [
+        76,
+        230,
+        44,
+        16,
+        103,
+        83,
+        24,
+        73
+      ],
+      "accounts": [
+        {
+          "name": "model",
+          "writable": true
+        },
+        {
+          "name": "creator",
+          "signer": true,
+          "relations": [
+            "model"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "ipfs_cid",
+          "type": "string"
+        },
+        {
+          "name": "license_spdx",
+          "type": "string"
+        },
+        {
+          "name": "price_micro_usdc",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "ModelRecord",
+      "discriminator": [
+        92,
+        244,
+        128,
+        84,
+        47,
+        6,
+        149,
+        241
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "ModelRegistered",
+      "discriminator": [
+        220,
+        196,
+        19,
+        71,
+        42,
+        237,
+        219,
+        138
+      ]
+    },
+    {
+      "name": "ModelUpdated",
+      "discriminator": [
+        176,
+        73,
+        246,
+        100,
+        211,
+        248,
+        16,
+        248
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "ModelIdTooLong",
+      "msg": "model_id exceeds maximum length"
+    },
+    {
+      "code": 6001,
+      "name": "IpfsCidTooLong",
+      "msg": "ipfs_cid exceeds maximum length"
+    },
+    {
+      "code": 6002,
+      "name": "LicenseTooLong",
+      "msg": "license_spdx exceeds maximum length"
+    },
+    {
+      "code": 6003,
+      "name": "ModelIdHashMismatch",
+      "msg": "model_id_hash does not equal sha256(model_id)"
+    },
+    {
+      "code": 6004,
+      "name": "NotCreator",
+      "msg": "signer is not the creator of this model record"
+    }
+  ],
+  "types": [
+    {
+      "name": "ModelRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "weights_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "model_lib_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "config_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "tokenizer_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "price_micro_usdc",
+            "type": "u64"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "updated_at",
+            "type": "i64"
+          },
+          {
+            "name": "version",
+            "type": "u16"
+          },
+          {
+            "name": "model_id",
+            "type": "string"
+          },
+          {
+            "name": "ipfs_cid",
+            "type": "string"
+          },
+          {
+            "name": "license_spdx",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ModelRegistered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "model_id",
+            "type": "string"
+          },
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "weights_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "ipfs_cid",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ModelUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "model_id",
+            "type": "string"
+          },
+          {
+            "name": "version",
+            "type": "u16"
+          },
+          {
+            "name": "price_micro_usdc",
+            "type": "u64"
+          },
+          {
+            "name": "ipfs_cid",
+            "type": "string"
+          }
+        ]
+      }
+    }
+  ]
+}

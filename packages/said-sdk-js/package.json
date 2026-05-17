@@ -1,0 +1,22 @@
+{
+  "name": "@said-id/sdk",
+  "version": "0.1.0",
+  "description": "SAID Identity SDK — Resolve identities and discover agent-friendly businesses",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "test": "vitest run",
+    "lint": "eslint src/"
+  },
+  "files": ["dist"],
+  "keywords": ["said", "identity", "agents", "ai", "did"],
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "tsup": "^8",
+    "typescript": "^5",
+    "vitest": "^3"
+  }
+}

@@ -1,0 +1,9 @@
+# RFC 9116 security disclosure policy for ghola.xyz.
+# See SECURITY.md in the source tree for the full threat model.
+
+Contact: mailto:security@ghola.xyz
+Expires: 2027-05-15T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://ghola.xyz/.well-known/security.txt
+Policy: https://github.com/anndrrson/ghola/blob/main/SECURITY.md
+Acknowledgments: https://github.com/anndrrson/ghola/blob/main/SECURITY.md#reporting-a-vulnerability

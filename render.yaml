@@ -1,0 +1,98 @@
+databases:
+  - name: ghola-db
+    plan: free
+    databaseName: ghola
+    user: ghola
+
+services:
+  - type: web
+    name: ghola-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ghola-db
+          property: connectionString
+      - key: BIND_ADDR
+        value: "0.0.0.0:8080"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: BASE_URL
+        value: "https://ghola-api.onrender.com"
+      - key: FRONTEND_URL
+        value: "https://ghola.xyz"
+      - key: ALLOWED_ORIGINS
+        value: "https://ghola.xyz,https://www.ghola.xyz"
+      - key: GATEWAY_BASE_URL
+        value: "https://ghola-gateway.onrender.com"
+      # Shared KEK — said-cloud encrypts, ghola-gateway decrypts. MUST match.
+      # Generate with: openssl rand -hex 32
+      - key: GHOLA_VAULT_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_CONSUMER_PRO
+        sync: false
+      - key: STRIPE_PRICE_BUSINESS
+        sync: false
+      - key: ADMIN_EMAILS
+        sync: false
+      # Helius enhanced-webhook integration. All three must be set together;
+      # if any are missing the integration silently no-ops (config.helius_enabled()).
+      # Register the webhook first via scripts/helius/register-webhook.sh,
+      # then paste the three values into the Render dashboard.
+      - key: HELIUS_API_KEY
+        sync: false
+      - key: HELIUS_WEBHOOK_ID
+        sync: false
+      - key: HELIUS_WEBHOOK_AUTH
+        sync: false
+      - key: SHIELDED_STABLECOIN_PROVIDER
+        value: "aleo"
+      - key: SHIELDED_STABLECOIN_NETWORK
+        value: "aleo:mainnet"
+      - key: SHIELDED_STABLECOIN_ASSET
+        value: "USDC"
+      - key: SHIELDED_STABLECOIN_ADAPTER_URL
+        sync: false
+      - key: SHIELDED_STABLECOIN_RECIPIENT
+        sync: false
+      - key: SHIELDED_STABLECOIN_ADAPTER_PUBKEY
+        sync: false
+      - key: SHIELDED_STABLECOIN_REQUIRE_SIGNED_RECEIPT
+        value: "true"
+      - key: SHIELDED_STABLECOIN_VERIFIER_READY
+        value: "false"
+    healthCheckPath: /health
+
+  - type: web
+    name: ghola-gateway
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.gateway
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ghola-db
+          property: connectionString
+      - key: BIND_ADDR
+        value: "0.0.0.0:8090"
+      # MUST match said-cloud's GHOLA_VAULT_KEY — both services decrypt
+      # credentials envelope-encrypted by said-cloud's /v1/m/new handler.
+      - key: GHOLA_VAULT_KEY
+        sync: false
+      - key: ROUTE_CACHE_TTL_SECS
+        value: "30"
+      - key: UPSTREAM_TIMEOUT_SECS
+        value: "30"
+      - key: CIRCUIT_FAILURE_THRESHOLD
+        value: "3"
+      - key: CIRCUIT_OPEN_SECS
+        value: "60"
+      - key: PLATFORM_FEE_BPS
+        value: "300"
+    healthCheckPath: /health

@@ -1,0 +1,82 @@
+# Phase M9: Solana dApp Store publishing config.
+#
+# Consumed by `npx @solana-mobile/dapp-store-cli publish create|submit`.
+# See https://docs.solanamobile.com/dapp-publishing/overview for the full
+# schema. Fields marked TODO must be filled in before submission:
+#   - Asset paths (icons, screenshots) need to be added to /android/dapp-store/assets/
+#   - Publisher on-chain account must be funded with a small amount of SOL
+#   - Copy any final marketing strings from /android/dapp-store/release-notes.txt
+
+publisher:
+  name: Ghola
+  website: https://ghola.xyz
+  email: hello@ghola.xyz
+
+app:
+  android_package: xyz.ghola.app
+
+release:
+  address: # populated by the CLI on first `publish create`
+  media:
+    # TODO: add a 512x512 app icon PNG at assets/icon.png
+    - purpose: icon
+      uri: assets/icon.png
+      mime: image/png
+    # TODO: add 6-8 screenshots at the Seeker resolution (1080x2400 recommended)
+    - purpose: screenshot
+      uri: assets/screenshots/01_agents.png
+      mime: image/png
+    - purpose: screenshot
+      uri: assets/screenshots/02_detail.png
+      mime: image/png
+    - purpose: screenshot
+      uri: assets/screenshots/03_create.png
+      mime: image/png
+    - purpose: screenshot
+      uri: assets/screenshots/04_wallet.png
+      mime: image/png
+
+  catalog:
+    en-US:
+      name: Ghola
+      short_description: |
+        Sign in with your Solana wallet — that's it.
+      long_description: |
+        Ghola is wallet-first AI on mobile.
+
+        • One login: your Solana wallet (SIWS). No Google sign-in required.
+        • Call, email, chat, and agent planning now run through the same
+          wallet-authenticated cloud session.
+        • End-to-end encrypted chat remains default — envelope ciphertext is
+          persisted server-side, so even we can't read your messages.
+        • Optional Google connection for Gmail/Calendar lives in Settings as
+          a secondary integration unlock.
+        • On Solana Seeker, wallet pairing and signing are native through MWA.
+      new_in_version: |
+        0.4.0 — Wallet-only auth unification.
+          • Sign in with your Solana wallet — that's it.
+          • SIWS challenge/response auth now mints the same Ghola JWT used by
+            calls, emails, chat, and agent planning.
+          • First-run onboarding no longer requires Google or third-party API keys.
+          • Direct BYOM providers are now explicit power-user opt-in only.
+          • Branding cleanup across Android surfaces: Thumper → Ghola.
+
+      saga_features: |
+        • Hardware-backed agent keys via Seed Vault (coming in Phase M4)
+        • Mobile Wallet Adapter integration for agent funding
+        • Solana dApp Store exclusive features
+
+      google_store_package: xyz.ghola.app
+
+  files:
+    # TODO: the CLI will substitute the actual APK path on `publish create`
+    - purpose: install
+      uri: app-release.apk
+
+solana_mobile_dapp_publisher_portal:
+  google_store_package: xyz.ghola.app
+
+# Targeted categories; the CLI will validate these against the supported list.
+categories:
+  - productivity
+  - social

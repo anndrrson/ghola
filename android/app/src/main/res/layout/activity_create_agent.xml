@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Create Agent — text-first, crumb header "ghola / agents / new", eyebrow sections,
+  mono slug input, hard-edged primary action. No Toolbar, no rounded fields.
+  Widget IDs: displayNameInput, slugInput, bioInput, createButton, errorText, loading.
+-->
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:clipToPadding="false"
+    android:paddingTop="24dp"
+    android:paddingStart="24dp"
+    android:paddingEnd="24dp"
+    android:paddingBottom="48dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <!-- Crumb header: ghola / agents / new -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="56dp">
+            <TextView
+                android:id="@+id/crumbBack"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="ghola"
+                android:textColor="#4a5568"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist"
+                android:padding="4dp"
+                android:background="?attr/selectableItemBackgroundBorderless" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="  /  "
+                android:textColor="#4a5568"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist_mono" />
+            <TextView
+                android:id="@+id/crumbAgents"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="agents"
+                android:textColor="#4a5568"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist"
+                android:padding="4dp"
+                android:background="?attr/selectableItemBackgroundBorderless" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="  /  "
+                android:textColor="#4a5568"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist_mono" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="new"
+                android:textColor="#eef1f8"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist"
+                android:textFontWeight="500" />
+        </LinearLayout>
+
+        <!-- Page title: oversized display -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="New agent."
+            android:textColor="#eef1f8"
+            android:textSize="40sp"
+            android:fontFamily="@font/geist"
+            android:textFontWeight="500"
+            android:letterSpacing="-0.03"
+            android:includeFontPadding="false"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Fresh ed25519 keypair. DID derived on-device. Dedicated Solana wallet provisioned in one step."
+            android:textColor="#8b95a8"
+            android:textSize="15sp"
+            android:fontFamily="@font/geist"
+            android:lineSpacingMultiplier="1.4"
+            android:layout_marginBottom="56dp" />
+
+        <!-- DISPLAY NAME -->
+        <TextView
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="› DISPLAY NAME"
+            android:layout_marginBottom="8dp" />
+        <EditText
+            android:id="@+id/displayNameInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@null"
+            android:textColor="#eef1f8"
+            android:textColorHint="#4a5568"
+            android:textSize="20sp"
+            android:fontFamily="@font/geist"
+            android:textFontWeight="500"
+            android:letterSpacing="-0.01"
+            android:hint="alpha"
+            android:inputType="textCapWords"
+            android:maxLength="64"
+            android:padding="0dp"
+            android:layout_marginBottom="8dp" />
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#1e2a3a"
+            android:layout_marginBottom="48dp" />
+
+        <!-- SLUG -->
+        <TextView
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="› SLUG"
+            android:layout_marginBottom="8dp" />
+        <EditText
+            android:id="@+id/slugInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@null"
+            android:textColor="#eef1f8"
+            android:textColorHint="#4a5568"
+            android:textSize="18sp"
+            android:fontFamily="@font/geist_mono"
+            android:hint="alpha-01"
+            android:inputType="text"
+            android:maxLength="64"
+            android:padding="0dp"
+            android:layout_marginBottom="8dp" />
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#1e2a3a"
+            android:layout_marginBottom="8dp" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Used in URLs and DID derivation. Lowercase, dashes only."
+            android:textColor="#4a5568"
+            android:textSize="12sp"
+            android:fontFamily="@font/geist"
+            android:layout_marginBottom="48dp" />
+
+        <!-- BIO -->
+        <TextView
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="› BIO — OPTIONAL"
+            android:layout_marginBottom="8dp" />
+        <EditText
+            android:id="@+id/bioInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@null"
+            android:textColor="#eef1f8"
+            android:textColorHint="#4a5568"
+            android:textSize="15sp"
+            android:fontFamily="@font/geist"
+            android:lineSpacingMultiplier="1.4"
+            android:hint="What does this agent do?"
+            android:inputType="textMultiLine"
+            android:maxLines="4"
+            android:maxLength="500"
+            android:padding="0dp"
+            android:layout_marginBottom="8dp" />
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#1e2a3a"
+            android:layout_marginBottom="56dp" />
+
+        <!-- Error text -->
+        <TextView
+            android:id="@+id/errorText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#ef4444"
+            android:textSize="13sp"
+            android:fontFamily="@font/geist_mono"
+            android:layout_marginBottom="16dp"
+            android:visibility="gone" />
+
+        <!-- Primary action — hard-edged -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/createButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="CREATE AGENT  →"
+            android:textColor="#000000"
+            android:textSize="12sp"
+            android:letterSpacing="0.12"
+            android:fontFamily="@font/geist"
+            android:textFontWeight="500"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:paddingTop="16dp"
+            android:paddingBottom="16dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            app:backgroundTint="#3da8ff"
+            app:cornerRadius="0dp"
+            app:elevation="0dp" />
+
+        <ProgressBar
+            android:id="@+id/loading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:indeterminateTint="#3da8ff"
+            android:visibility="gone" />
+    </LinearLayout>
+</ScrollView>

@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Activity — text-first, crumb header "ghola / activity", hard-edged list.
+  Widget IDs: activityRecycler, activityEmptyState, activityLoading, bottomNav.
+-->
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:paddingTop="24dp"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp">
+
+        <!-- Crumb header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="40dp">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="ghola"
+                android:textColor="#4a5568"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="  /  "
+                android:textColor="#4a5568"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist_mono" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="activity"
+                android:textColor="#eef1f8"
+                android:textSize="14sp"
+                android:fontFamily="@font/geist"
+                android:textFontWeight="500" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/activityRecycler"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:paddingBottom="96dp" />
+
+            <!-- Empty state — typographic -->
+            <LinearLayout
+                android:id="@+id/activityEmptyState"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:layout_marginTop="64dp"
+                android:visibility="gone">
+
+                <TextView
+                    style="@style/Ghola.Text.Eyebrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="› IDLE"
+                    android:layout_marginBottom="12dp" />
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Nothing yet."
+                    android:textColor="#eef1f8"
+                    android:textSize="32sp"
+                    android:fontFamily="@font/geist"
+                    android:textFontWeight="500"
+                    android:letterSpacing="-0.03"
+                    android:includeFontPadding="false"
+                    android:layout_marginBottom="16dp" />
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Your agents&apos; earnings, transactions, and tool invocations will stream here in real time."
+                    android:textColor="#8b95a8"
+                    android:textSize="15sp"
+                    android:fontFamily="@font/geist"
+                    android:lineSpacingMultiplier="1.4" />
+            </LinearLayout>
+
+            <ProgressBar
+                android:id="@+id/activityLoading"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:indeterminateTint="#3da8ff"
+                android:visibility="gone" />
+        </FrameLayout>
+    </LinearLayout>
+
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNav"
+        android:layout_width="match_parent"
+        android:layout_height="72dp"
+        android:layout_gravity="bottom"
+        android:background="#000000"
+        app:elevation="0dp"
+        app:menu="@menu/bottom_nav" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="72dp"
+        android:background="#1e2a3a" />
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

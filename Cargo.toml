@@ -1,0 +1,160 @@
+[workspace]
+members = [
+    # Identity (SAID)
+    "crates/said-types",
+    "crates/said-core",
+    "crates/said-envelope",
+    "crates/said-noncecache",
+    "crates/said-solana",
+    "crates/said-cloud",
+    "crates/said-wasm",
+    "crates/said-x402",
+    "crates/said-turnkey",
+    "crates/said-attest",
+    "crates/said-receipts-service",
+    "crates/ghola-gateway",
+    "mcp-server",
+    "cli",
+    "daemon",
+
+    # Tests
+    "integration-tests",
+
+    # Assistant (Thumper)
+    "crates/thumper-types",
+    "crates/thumper-relay",
+    "crates/thumper-mcp",
+    "crates/thumper-cli",
+    "crates/thumper-cloud",
+    "crates/thumper-gpu-provider",
+    "crates/ghola-home",
+
+    # Marketplace (Orni Models)
+    "crates/orni-models-types",
+    "crates/orni-models-api",
+
+    # Tier 2 schema-only first PRs (no behavior change; types only)
+    "crates/ghola-zkml-types",
+    "crates/said-bbs-types",
+    "crates/said-pir-types",
+]
+exclude = [
+    "programs/said-registry",
+    "programs/said-receipts",
+    "programs/ghola-model-registry",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+# Pinned to 2021. Bumping to 2024 surfaces pattern-binding-modifier
+# changes across many existing crates (thumper-cloud, etc.). Until
+# those are migrated as a focused pass, the simple_asn1/time/time-macros
+# lockfile pin keeps modern dep-graphs compatible.
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Crypto
+ed25519-bip32 = "0.4"
+bip39 = { version = "2", features = ["rand"] }
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+rand = "0.8"
+zeroize = { version = "1.3", features = ["derive"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+curve25519-dalek = { version = "4", features = ["digest"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+ciborium = "0.2"
+coset = "0.3"
+
+# Attestation / X.509
+der = "0.7"
+p384 = { version = "0.13", features = ["ecdsa", "pem"] }
+x509-cert = { version = "0.2", features = ["pem", "std"] }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-stream = "0.3"
+
+# MCP
+rmcp = { version = "0.15", features = ["server", "transport-io", "transport-streamable-http-server"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+rpassword = "7"
+argon2 = "0.5"
+
+# Error handling
+thiserror = "2"
+
+# Schema
+schemars = { version = "1", features = ["uuid1", "chrono04"] }
+
+# HTTP
+axum = { version = "0.8", features = ["ws"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "set-header"] }
+tokio-stream = "0.1"
+async-trait = "0.1"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
+jsonwebtoken = "9"
+
+# Misc
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "6"
+base64 = "0.22"
+bs58 = "0.5"
+dashmap = "6"
+qrcode = "0.14"
+open = "5"
+hex = "0.4"
+hmac = "0.12"
+urlencoding = "2"
+dotenvy = "0.15"
+anyhow = "1"
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+
+# WebSocket
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+
+# Internal — SAID
+said-types = { path = "crates/said-types" }
+said-core = { path = "crates/said-core" }
+said-envelope = { path = "crates/said-envelope" }
+said-noncecache = { path = "crates/said-noncecache" }
+said-solana = { path = "crates/said-solana" }
+said-x402 = { path = "crates/said-x402" }
+said-turnkey = { path = "crates/said-turnkey" }
+said-attest = { path = "crates/said-attest" }
+said-mcp = { path = "mcp-server" }
+said-daemon = { path = "daemon" }
+
+# Internal — Thumper
+thumper-types = { path = "crates/thumper-types" }
+thumper-relay = { path = "crates/thumper-relay" }
+thumper-mcp = { path = "crates/thumper-mcp" }
+
+# Internal — Orni Models marketplace
+orni-models-types = { path = "crates/orni-models-types" }
+
+[profile.release]
+overflow-checks = true

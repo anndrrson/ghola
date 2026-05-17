@@ -1,0 +1,26 @@
+[package]
+name = "said-envelope"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sealed envelope v1 — server-blind end-to-end encrypted frames shared across the Ghola monorepo (web chat, agent chat, MCP HTTP, relay)."
+
+[dependencies]
+aes-gcm = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true }
+curve25519-dalek = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+bs58 = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[[example]]
+name = "gen_vectors"
+path = "examples/gen_vectors.rs"

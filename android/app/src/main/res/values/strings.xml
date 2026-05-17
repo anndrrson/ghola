@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ghola</string>
+    <string name="accessibility_service_description">Ghola agent — gives your AI agent permission to read the screen and tap, type, and navigate other apps on your behalf.</string>
+
+    <!-- Phase 0.3 — End-to-end encrypted chat copy -->
+    <string name="e2e_backend_label">End-to-end encrypted</string>
+    <string name="e2e_backend_caption">Your wallet unlocks the encrypted vault. Even Ghola can\'t read your chat.</string>
+    <string name="pair_device_section_title">Pair Device</string>
+    <string name="pair_device_section_caption">Move encrypted chat sessions between two devices that share your wallet.</string>
+    <string name="pair_device_receive_button">Add this device from another</string>
+    <string name="pair_device_send_button">Send my sessions to a new device</string>
+
+    <!-- Quick-action tile prerequisites. Shown when a user taps Call/Email
+         on the home grid without an active cloud session. -->
+    <string name="cloud_required_for_call">Connect your wallet to enable calls.</string>
+    <string name="cloud_required_for_email">Connect your wallet to enable email.</string>
+
+    <!-- Onboarding hero -->
+    <string name="onboarding_step_1">› 01 / 02</string>
+    <string name="onboarding_step_2">› 02 / 02</string>
+    <string name="onboarding_title_wallet">Wallet-bound</string>
+    <string name="onboarding_title_a11y">Accessibility</string>
+    <string name="onboarding_body_wallet">Your wallet is your identity. One signature unlocks call, email, chat, and your owned agents.</string>
+    <string name="onboarding_body_a11y">Grant accessibility access so Ghola can read the screen and act on your behalf inside other apps.</string>
+    <string name="onboarding_cta_idle">Sign in with wallet</string>
+    <string name="onboarding_cta_requesting">Requesting challenge…</string>
+    <string name="onboarding_cta_hint_wallet">Approve in your wallet…</string>
+    <string name="onboarding_cta_enable_a11y">Enable accessibility</string>
+    <string name="onboarding_cta_check_a11y">I\'ve enabled it</string>
+    <string name="onboarding_cta_finish">Finish</string>
+    <string name="onboarding_cta_done">Done</string>
+
+    <!-- Phase γ.3 — LiteRT-LM NPU backend (Gemma-3-1B on APU 655) -->
+    <string name="litert_npu_radio_label">On-device NPU (Gemma-3-1B)</string>
+    <string name="litert_npu_section_title">On-Device NPU Model</string>
+    <string name="litert_npu_section_caption">Runs Gemma-3-1B on the Solana Seeker\'s APU 655 NPU. Around 7–12× more battery efficient than CPU or GPU inference. Nothing leaves the device.</string>
+    <string name="litert_npu_status_not_downloaded">Model: Not downloaded</string>
+    <string name="litert_npu_status_downloaded">Model: Downloaded (%1$s)</string>
+    <string name="litert_npu_status_verified">Model: Verified (%1$s)</string>
+    <string name="litert_npu_status_unverified">Model: Downloaded, unverified (%1$s)</string>
+    <string name="litert_npu_status_tampered">Model: Integrity check failed — re-download required</string>
+    <string name="litert_npu_download_cta">Download model (~600 MB)</string>
+    <string name="litert_npu_download_cancel">Cancel download</string>
+    <string name="litert_npu_redownload_cta">Re-download model</string>
+    <string name="litert_npu_delete_cta">Delete model</string>
+    <string name="litert_npu_error_missing_model">NPU model isn\'t downloaded yet. Open Settings to download Gemma-3-1B, or pick a different backend.</string>
+    <string name="litert_npu_error_tampered">NPU model failed integrity check. Delete and re-download it in Settings before using the on-device NPU backend.</string>
+    <string name="litert_npu_save_requires_download">Download the NPU model first before saving this selection.</string>
+
+    <!-- Phase γ.4 / L3 — HuggingFace Bearer token (gated litert-community repo) -->
+    <string name="hf_token_section_title">HuggingFace access</string>
+    <string name="hf_token_section_caption">Required to download NPU-accelerated model bundles from the gated litert-community repo. Create a read-only token at huggingface.co/settings/tokens — ghola stores it encrypted on this device only.</string>
+    <string name="hf_token_input_hint">hf_…</string>
+    <string name="hf_token_save">Save token</string>
+    <string name="hf_token_clear">Clear token</string>
+    <string name="hf_token_status_set">Token set ✓</string>
+    <string name="hf_token_status_not_set">No token set</string>
+    <string name="hf_token_format_warning">Token doesn\'t look like a HuggingFace token (expected to start with \'hf_\')</string>
+    <string name="hf_token_confirm_clear">Remove the saved HuggingFace token?</string>
+    <string name="hf_token_saved_toast">HuggingFace token saved</string>
+    <string name="hf_token_removed_toast">HuggingFace token removed</string>
+    <string name="hf_token_empty_toast">Paste a token first</string>
+    <string name="hf_token_docs_link">Create a token at huggingface.co/settings/tokens</string>
+    <string name="hf_token_docs_url">https://huggingface.co/settings/tokens</string>
+</resources>

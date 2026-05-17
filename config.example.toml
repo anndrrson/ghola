@@ -1,0 +1,20 @@
+# Thumper MCP Server Configuration
+# Copy to ~/.thumper/config.toml and fill in your values
+
+# WebSocket URL for the relay server
+relay_url = "ws://localhost:8080/ws"
+
+# Your MCP client's base58 public key (can be any string in dev mode)
+mcp_pubkey = "mcp_dev_key"
+
+# Target device's base58 public key (must match what the Android app sends)
+device_pubkey = "device_pubkey_placeholder"
+
+# Command timeout in seconds (default: 10)
+timeout_secs = 10
+
+# --- Relay server env vars ---
+# THUMPER_RELAY_BIND=0.0.0.0:8080    # Bind address
+# THUMPER_DEV_MODE=true               # Skip Ed25519 signature verification
+# THUMPER_RATE_LIMIT=30               # Max messages per second per connection
+# THUMPER_MAX_MSG_SIZE=131072         # Max WebSocket message size (128 KiB)
