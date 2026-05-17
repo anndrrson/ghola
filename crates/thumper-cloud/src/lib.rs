@@ -78,6 +78,12 @@ pub async fn run_cloud() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         tokio::spawn(services::proactive::start_monitor_loop(state));
     }
 
+    // Recover queued task executions after process restarts and fail stale provider waits.
+    {
+        let state = state.clone();
+        tokio::spawn(services::task_engine::start_task_recovery_loop(state));
+    }
+
     // Rate limiter cleanup (every 5 minutes)
     {
         let limiter = state.rate_limiter.clone();
@@ -118,8 +124,7 @@ pub async fn run_cloud() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         });
     }
 
-    let app = build_router(state)
-        .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let app = build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>();
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     tracing::info!("thumper-cloud listening on {}", bind_addr);
@@ -137,7 +142,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/health/providers", get(health_providers))
         // Auth
-        .route("/api/auth/siws/challenge", get(routes::auth::siws_challenge))
+        .route(
+            "/api/auth/siws/challenge",
+            get(routes::auth::siws_challenge),
+        )
         .route("/api/auth/siws", post(routes::auth::siws_sign_in))
         .route("/api/auth/google", post(routes::auth::google_sign_in))
         .route("/api/auth/apple", post(routes::auth::apple_sign_in))
@@ -151,17 +159,35 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/tasks/{id}", get(routes::tasks::get_task))
         .route("/api/tasks/{id}/steps", get(routes::tasks::get_task_steps))
         .route("/api/tasks/{id}/cancel", post(routes::tasks::cancel_task))
-        .route("/api/tasks/{id}/bounty", get(routes::tasks::get_task_bounty))
+        .route(
+            "/api/tasks/{id}/bounty",
+            get(routes::tasks::get_task_bounty),
+        )
         // Bounties
         .route("/api/bounties", get(routes::tasks::list_bounties))
         // Marketplace
         .route("/api/marketplace", get(routes::marketplace::browse))
         .route("/api/marketplace/{id}", get(routes::marketplace::get_task))
-        .route("/api/marketplace/{id}/claim", post(routes::marketplace::claim_task))
-        .route("/api/marketplace/{id}/submit", post(routes::marketplace::submit_task))
-        .route("/api/marketplace/{id}/release", post(routes::marketplace::release_task))
-        .route("/api/marketplace/{id}/reject", post(routes::marketplace::reject_task))
-        .route("/api/marketplace/{id}/unclaim", post(routes::marketplace::unclaim_task))
+        .route(
+            "/api/marketplace/{id}/claim",
+            post(routes::marketplace::claim_task),
+        )
+        .route(
+            "/api/marketplace/{id}/submit",
+            post(routes::marketplace::submit_task),
+        )
+        .route(
+            "/api/marketplace/{id}/release",
+            post(routes::marketplace::release_task),
+        )
+        .route(
+            "/api/marketplace/{id}/reject",
+            post(routes::marketplace::reject_task),
+        )
+        .route(
+            "/api/marketplace/{id}/unclaim",
+            post(routes::marketplace::unclaim_task),
+        )
         // Calls
         .route("/api/calls", post(routes::calls::initiate_call))
         .route("/api/calls/initiate", post(routes::calls::initiate_call))
@@ -190,7 +216,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/devices", post(routes::devices::register_device))
         .route("/api/devices", get(routes::devices::list_devices))
         .route("/api/devices/{id}", delete(routes::devices::remove_device))
-        .route("/api/devices/{id}/push-token", post(routes::devices::update_push_token))
+        .route(
+            "/api/devices/{id}/push-token",
+            post(routes::devices::update_push_token),
+        )
         // Pair Device handshake mailbox — unauthenticated (the receiving
         // device is fresh and has no auth yet); confidentiality comes
         // from the sealed envelope, not from any header check.
@@ -203,8 +232,14 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::handshake::get_handshake),
         )
         // Billing
-        .route("/api/billing/checkout", post(routes::billing::create_checkout))
-        .route("/api/billing/webhook", post(routes::billing::billing_webhook))
+        .route(
+            "/api/billing/checkout",
+            post(routes::billing::create_checkout),
+        )
+        .route(
+            "/api/billing/webhook",
+            post(routes::billing::billing_webhook),
+        )
         .route("/api/billing/status", get(routes::billing::billing_status))
         // Templates
         .route("/api/templates", get(routes::templates::list_templates))
@@ -216,11 +251,23 @@ pub fn build_router(state: AppState) -> Router {
         // Chat (SSE streaming)
         .route("/api/chat", post(routes::chat::chat))
         // Accounts (Gmail OAuth)
-        .route("/api/accounts/authorize/gmail", get(routes::accounts::authorize_gmail))
-        .route("/api/accounts/callback/gmail", get(routes::accounts::callback_gmail))
-        .route("/api/accounts/status", get(routes::accounts::accounts_status))
+        .route(
+            "/api/accounts/authorize/gmail",
+            get(routes::accounts::authorize_gmail),
+        )
+        .route(
+            "/api/accounts/callback/gmail",
+            get(routes::accounts::callback_gmail),
+        )
+        .route(
+            "/api/accounts/status",
+            get(routes::accounts::accounts_status),
+        )
         // Telegram
-        .route("/api/telegram/link-code", post(routes::telegram::create_link_code))
+        .route(
+            "/api/telegram/link-code",
+            post(routes::telegram::create_link_code),
+        )
         .route("/api/telegram/status", get(routes::telegram::get_status))
         .route("/api/telegram/unlink", delete(routes::telegram::unlink))
         // API Keys (Developer Platform)
@@ -228,39 +275,82 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/keys", get(routes::api_keys::list_keys))
         .route("/api/keys/{id}", delete(routes::api_keys::revoke_key))
         // Provider key (one-click onboarding)
-        .route("/api/auth/provider-key", post(routes::api_keys::create_provider_key))
+        .route(
+            "/api/auth/provider-key",
+            post(routes::api_keys::create_provider_key),
+        )
         // Wallet (crypto)
-        .route("/api/wallet/provision", post(routes::wallet::provision_wallet))
+        .route(
+            "/api/wallet/provision",
+            post(routes::wallet::provision_wallet),
+        )
         .route("/api/wallet/address", get(routes::wallet::get_address))
         .route("/api/wallet/balances", get(routes::wallet::get_balances))
         .route("/api/wallet/transfer", post(routes::wallet::transfer))
         .route("/api/wallet/history", get(routes::wallet::get_history))
         .route("/api/wallet/earnings", get(routes::wallet::get_earnings))
-        .route("/api/wallet/withdraw-earnings", post(routes::wallet::withdraw_earnings))
+        .route(
+            "/api/wallet/withdraw-earnings",
+            post(routes::wallet::withdraw_earnings),
+        )
         // Compute (GPU marketplace)
-        .route("/api/compute/providers/register", post(routes::compute::register_provider))
-        .route("/api/compute/providers/me", get(routes::compute::get_my_provider).patch(routes::compute::update_my_provider))
-        .route("/api/compute/providers", get(routes::compute::list_providers))
+        .route(
+            "/api/compute/providers/register",
+            post(routes::compute::register_provider),
+        )
+        .route(
+            "/api/compute/providers/me",
+            get(routes::compute::get_my_provider).patch(routes::compute::update_my_provider),
+        )
+        .route(
+            "/api/compute/providers",
+            get(routes::compute::list_providers),
+        )
         .route("/api/compute/models", get(routes::compute::list_models))
         .route("/api/compute/stats", get(routes::compute::get_stats))
         .route("/api/compute/jobs", get(routes::compute::get_recent_jobs))
         .route("/api/compute/escrow", get(routes::compute::get_escrow))
-        .route("/api/compute/providers/me/withdraw", post(routes::compute::withdraw_earnings))
-        .route("/api/compute/providers/me/payouts", get(routes::compute::get_payouts))
+        .route(
+            "/api/compute/providers/me/withdraw",
+            post(routes::compute::withdraw_earnings),
+        )
+        .route(
+            "/api/compute/providers/me/payouts",
+            get(routes::compute::get_payouts),
+        )
         // Agent Rental
-        .route("/api/agents", post(routes::agents::create_agent).get(routes::agents::list_agents))
+        .route(
+            "/api/agents",
+            post(routes::agents::create_agent).get(routes::agents::list_agents),
+        )
         .route("/api/agents/mine", get(routes::agents::list_my_agents))
-        .route("/api/agents/{slug_or_id}", get(routes::agents::get_agent)
-            .patch(routes::agents::update_agent).delete(routes::agents::delete_agent))
-        .route("/api/agents/{slug_or_id}/sessions", get(routes::agents::list_sessions))
-        .route("/api/agents/{slug_or_id}/rate", post(routes::agents::rate_agent))
+        .route(
+            "/api/agents/{slug_or_id}",
+            get(routes::agents::get_agent)
+                .patch(routes::agents::update_agent)
+                .delete(routes::agents::delete_agent),
+        )
+        .route(
+            "/api/agents/{slug_or_id}/sessions",
+            get(routes::agents::list_sessions),
+        )
+        .route(
+            "/api/agents/{slug_or_id}/rate",
+            post(routes::agents::rate_agent),
+        )
         // Swarm (elastic agent dispatch)
         .route("/api/swarm/estimate", post(routes::swarm::estimate_swarm))
-        .route("/api/swarm", post(routes::swarm::create_swarm).get(routes::swarm::list_swarms))
+        .route(
+            "/api/swarm",
+            post(routes::swarm::create_swarm).get(routes::swarm::list_swarms),
+        )
         .route("/api/swarm/{id}", get(routes::swarm::get_swarm))
         .route("/api/swarm/{id}/units", get(routes::swarm::get_work_units))
         .route("/api/swarm/{id}/results", get(routes::swarm::get_results))
-        .route("/api/swarm/{id}/stream", get(routes::swarm::stream_progress))
+        .route(
+            "/api/swarm/{id}/stream",
+            get(routes::swarm::stream_progress),
+        )
         .route("/api/swarm/{id}/cancel", post(routes::swarm::cancel_swarm))
         // x402 Discovery (unauthenticated)
         .route("/x402/agents", get(routes::x402::list_agents))
@@ -270,14 +360,20 @@ pub fn build_router(state: AppState) -> Router {
         // from *some* registered Ghola DID" without learning which user.
         .route("/v1/did-set", get(routes::did_snapshot::get_did_set))
         // OpenAI-compatible endpoints
-        .route("/v1/chat/completions", post(routes::openai_compat::chat_completions))
+        .route(
+            "/v1/chat/completions",
+            post(routes::openai_compat::chat_completions),
+        )
         .route("/v1/models", get(routes::openai_compat::list_models))
         // Middleware
-        .layer(axum::middleware::from_fn_with_state(state.clone(), |
-            State(state): State<AppState>,
-            request: axum::extract::Request,
-            next: axum::middleware::Next,
-        | middleware::track_api_usage(state, request, next)))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            |State(state): State<AppState>,
+             request: axum::extract::Request,
+             next: axum::middleware::Next| {
+                middleware::track_api_usage(state, request, next)
+            },
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(build_cors_layer(&state.config.base_url))
         .with_state(state)
@@ -359,9 +455,7 @@ async fn health_providers(State(state): State<AppState>) -> Json<serde_json::Val
     let cascade_stats = state.free_cascade.stats().await;
     let cascade_json: serde_json::Value = cascade_stats
         .into_iter()
-        .map(|(name, (used, limit))| {
-            (name, json!({ "used": used, "limit": limit }))
-        })
+        .map(|(name, (used, limit))| (name, json!({ "used": used, "limit": limit })))
         .collect::<serde_json::Map<String, serde_json::Value>>()
         .into();
 

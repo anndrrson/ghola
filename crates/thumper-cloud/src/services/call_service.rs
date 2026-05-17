@@ -39,7 +39,9 @@ pub async fn start_call(
         .config
         .bland_api_key
         .as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Bland AI not configured".to_string()))?;
+        .ok_or(CloudError::ServiceUnavailable(
+            "Bland AI not configured".to_string(),
+        ))?;
 
     let default_webhook = format!("{}/api/calls/webhook", state.config.base_url);
     let webhook_url = state
@@ -48,6 +50,12 @@ pub async fn start_call(
         .as_deref()
         .unwrap_or(&default_webhook);
 
+    if webhook_url.contains("localhost") || webhook_url.contains("127.0.0.1") {
+        return Err(CloudError::ServiceUnavailable(
+            "Bland webhook URL must be public; set BLAND_WEBHOOK_URL or BASE_URL".to_string(),
+        ));
+    }
+
     // Generate a call script via LLM if not provided
     let call_script = if let Some(s) = script {
         s.clone()
@@ -55,7 +63,10 @@ pub async fn start_call(
         generate_call_script(state, user_id, objective).await?
     };
 
-    let task = call_script.get("task").and_then(|v| v.as_str()).unwrap_or(objective);
+    let task = call_script
+        .get("task")
+        .and_then(|v| v.as_str())
+        .unwrap_or(objective);
     let first_sentence = call_script
         .get("first_sentence")
         .and_then(|v| v.as_str())
@@ -75,7 +86,10 @@ pub async fn start_call(
         "model": "enhanced",
     });
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| CloudError::Internal(format!("Bland AI client setup failed: {e}")))?;
     let resp = client
         .post("https://api.bland.ai/v1/calls")
         .header("Authorization", api_key)
@@ -129,7 +143,8 @@ Return a JSON object with:
 Be professional, friendly, and concise. The caller should sound natural, not robotic."#
     );
 
-    let result = crate::services::llm_router::generate(state, user_id, &prompt, Some("json")).await?;
+    let result =
+        crate::services::llm_router::generate(state, user_id, &prompt, Some("json")).await?;
 
     Ok(serde_json::from_str(&result).unwrap_or_else(|_| {
         serde_json::json!({
@@ -181,13 +196,15 @@ Return a JSON object with:
 - "follow_up_needed": boolean — does the user need to take any action?"#
     );
 
-    let parsed = crate::services::llm_router::generate(state, user_id, &prompt, Some("json")).await?;
+    let parsed =
+        crate::services::llm_router::generate(state, user_id, &prompt, Some("json")).await?;
 
-    let result: serde_json::Value =
-        serde_json::from_str(&parsed).unwrap_or_else(|_| serde_json::json!({
+    let result: serde_json::Value = serde_json::from_str(&parsed).unwrap_or_else(|_| {
+        serde_json::json!({
             "success": outcome == "success",
             "summary": format!("Call {outcome}"),
-        }));
+        })
+    });
 
     let status = if result["success"].as_bool().unwrap_or(false) {
         "completed"

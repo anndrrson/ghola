@@ -95,31 +95,52 @@ pub struct BlandWebhookPayload {
     pub answered_by: Option<String>,
     pub concatenated_transcript: Option<String>,
     pub completed: Option<bool>,
+    pub metadata: Option<serde_json::Value>,
 }
 
 pub async fn call_webhook(
     State(state): State<AppState>,
     Json(payload): Json<BlandWebhookPayload>,
 ) -> Result<Json<serde_json::Value>, CloudError> {
-    let bland_call_id = payload.call_id
+    let bland_call_id = payload
+        .call_id
         .ok_or(CloudError::BadRequest("missing call_id".to_string()))?;
 
     // Verify this call_id exists in our DB (prevents forged webhook payloads
     // from creating or mutating arbitrary records)
-    let known: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM calls WHERE bland_call_id = $1)",
-    )
-    .bind(&bland_call_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(false);
+    let mut known: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM calls WHERE bland_call_id = $1)")
+            .bind(&bland_call_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(false);
 
     if !known {
-        tracing::warn!(%bland_call_id, "webhook for unknown call_id — ignoring");
-        return Ok(Json(serde_json::json!({ "status": "ignored" })));
+        if let Some(call_id) = payload
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("call_id"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+        {
+            let updated = sqlx::query(
+                "UPDATE calls SET bland_call_id = $1 WHERE id = $2 AND bland_call_id IS NULL",
+            )
+            .bind(&bland_call_id)
+            .bind(call_id)
+            .execute(&state.db)
+            .await?;
+            known = updated.rows_affected() > 0;
+        }
+
+        if !known {
+            tracing::warn!(%bland_call_id, "webhook for unknown call_id; ignoring");
+            return Ok(Json(serde_json::json!({ "status": "ignored" })));
+        }
     }
 
-    let transcript = payload.concatenated_transcript
+    let transcript = payload
+        .concatenated_transcript
         .or(payload.transcript)
         .unwrap_or_default();
 
@@ -165,30 +186,34 @@ pub async fn call_webhook(
     .await?;
 
     // Update usage tracking
-    if let Some(row) = sqlx::query_as::<_, (Uuid,)>(
-        "SELECT user_id FROM calls WHERE bland_call_id = $1",
-    )
-    .bind(&bland_call_id)
-    .fetch_optional(&state.db)
-    .await?
+    if let Some(row) =
+        sqlx::query_as::<_, (Uuid,)>("SELECT user_id FROM calls WHERE bland_call_id = $1")
+            .bind(&bland_call_id)
+            .fetch_optional(&state.db)
+            .await?
     {
         let minutes = duration_seconds.map(|d| (d + 59) / 60).unwrap_or(0);
         update_usage(&state, row.0, 1, minutes).await?;
     }
 
     // Notify via Telegram if user has linked account
-    if let Some(row) = sqlx::query_as::<_, (Uuid,)>(
-        "SELECT user_id FROM calls WHERE bland_call_id = $1",
-    )
-    .bind(&bland_call_id)
-    .fetch_optional(&state.db)
-    .await?
+    if let Some(row) =
+        sqlx::query_as::<_, (Uuid,)>("SELECT user_id FROM calls WHERE bland_call_id = $1")
+            .bind(&bland_call_id)
+            .fetch_optional(&state.db)
+            .await?
     {
         let call_user_id = row.0;
-        if let Ok(Some(tg_link)) = crate::services::telegram::get_telegram_link(&state.db, call_user_id).await {
+        if let Ok(Some(tg_link)) =
+            crate::services::telegram::get_telegram_link(&state.db, call_user_id).await
+        {
             if let Some(ref token) = state.config.telegram_bot_token {
                 let summary = match outcome {
-                    "success" => format!("Call completed! Duration: {}s\n\nTranscript:\n{}", duration_seconds.unwrap_or(0), &transcript[..transcript.len().min(3000)]),
+                    "success" => format!(
+                        "Call completed! Duration: {}s\n\nTranscript:\n{}",
+                        duration_seconds.unwrap_or(0),
+                        &transcript[..transcript.len().min(3000)]
+                    ),
                     "voicemail" => "Call went to voicemail.".to_string(),
                     "no_answer" => "No answer on the call.".to_string(),
                     "busy" => "Line was busy.".to_string(),
@@ -237,7 +262,10 @@ async fn check_call_limit(state: &AppState, user_id: Uuid, tier: &str) -> Result
         _ => 5, // free
     };
 
-    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let period_start = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-01")
+        .to_string();
     let count: i64 = sqlx::query_scalar(
         "SELECT COALESCE(call_count, 0) FROM usage_tracking WHERE user_id = $1 AND period_start = $2::date",
     )
@@ -255,8 +283,16 @@ async fn check_call_limit(state: &AppState, user_id: Uuid, tier: &str) -> Result
     Ok(())
 }
 
-async fn update_usage(state: &AppState, user_id: Uuid, calls: i32, minutes: i32) -> Result<(), CloudError> {
-    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+async fn update_usage(
+    state: &AppState,
+    user_id: Uuid,
+    calls: i32,
+    minutes: i32,
+) -> Result<(), CloudError> {
+    let period_start = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-01")
+        .to_string();
     sqlx::query(
         r#"
         INSERT INTO usage_tracking (user_id, period_start, call_count, call_minutes)
