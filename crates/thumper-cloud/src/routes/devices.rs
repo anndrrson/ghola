@@ -32,7 +32,9 @@ pub async fn register_device(
     Json(req): Json<RegisterDeviceRequest>,
 ) -> Result<Json<DeviceResponse>, CloudError> {
     if !["android", "ios", "macos"].contains(&req.platform.as_str()) {
-        return Err(CloudError::BadRequest("platform must be 'android', 'ios', or 'macos'".to_string()));
+        return Err(CloudError::BadRequest(
+            "platform must be 'android', 'ios', or 'macos'".to_string(),
+        ));
     }
 
     let row = sqlx::query_as::<_, (Uuid, String, Option<String>, DateTime<Utc>, DateTime<Utc>)>(

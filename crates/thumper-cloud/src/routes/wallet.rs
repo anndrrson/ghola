@@ -98,6 +98,15 @@ pub async fn submit_signed_private_transfer(
     Ok(Json(result))
 }
 
+/// GET /api/wallet/private/recipient — authenticated private USDCx recipient config.
+pub async fn get_private_rail_recipient(
+    AuthUser(_claims): AuthUser,
+) -> Result<Json<private_settlement_service::PrivateRailRecipientResponse>, CloudError> {
+    Ok(Json(
+        private_settlement_service::private_rail_recipient_status(),
+    ))
+}
+
 #[derive(Deserialize)]
 pub struct PrivateHistoryQuery {
     pub limit: Option<i64>,

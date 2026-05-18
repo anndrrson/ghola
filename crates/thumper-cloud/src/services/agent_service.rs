@@ -107,9 +107,14 @@ const ALLOWED_TOOLS: &[&str] = &["wallet", "web_search"];
 
 fn validate_slug(slug: &str) -> Result<(), CloudError> {
     if slug.is_empty() || slug.len() > 64 {
-        return Err(CloudError::BadRequest("slug must be 1-64 characters".into()));
+        return Err(CloudError::BadRequest(
+            "slug must be 1-64 characters".into(),
+        ));
     }
-    if !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         return Err(CloudError::BadRequest(
             "slug must contain only alphanumeric characters, hyphens, and underscores".into(),
         ));
@@ -149,13 +154,12 @@ pub async fn create_agent(
     let description = req.description.unwrap_or_default();
 
     // Validate model_id exists in provider's models JSONB
-    let models_json: serde_json::Value = sqlx::query_scalar(
-        "SELECT models FROM compute_providers WHERE id = $1",
-    )
-    .bind(provider_id)
-    .fetch_one(db)
-    .await
-    .map_err(|_| CloudError::NotFound("provider not found".into()))?;
+    let models_json: serde_json::Value =
+        sqlx::query_scalar("SELECT models FROM compute_providers WHERE id = $1")
+            .bind(provider_id)
+            .fetch_one(db)
+            .await
+            .map_err(|_| CloudError::NotFound("provider not found".into()))?;
 
     let model_exists = models_json
         .as_array()
@@ -249,12 +253,11 @@ pub async fn update_agent(
 
     // If model_id is changing, validate it exists
     if let Some(ref model_id) = req.model_id {
-        let models_json: serde_json::Value = sqlx::query_scalar(
-            "SELECT models FROM compute_providers WHERE id = $1",
-        )
-        .bind(provider_id)
-        .fetch_one(db)
-        .await?;
+        let models_json: serde_json::Value =
+            sqlx::query_scalar("SELECT models FROM compute_providers WHERE id = $1")
+                .bind(provider_id)
+                .fetch_one(db)
+                .await?;
 
         let model_exists = models_json
             .as_array()
@@ -349,7 +352,9 @@ pub async fn delete_agent(
     .await?;
 
     if result.rows_affected() == 0 {
-        return Err(CloudError::NotFound("agent not found or not owned by you".into()));
+        return Err(CloudError::NotFound(
+            "agent not found or not owned by you".into(),
+        ));
     }
     Ok(())
 }
@@ -832,13 +837,12 @@ pub async fn increment_agent_stats(
     cost_usdc: i64,
 ) -> Result<(), CloudError> {
     // Check if this is the first message in the session
-    let msg_count: i32 = sqlx::query_scalar(
-        "SELECT message_count FROM agent_sessions WHERE id = $1",
-    )
-    .bind(session_id)
-    .fetch_one(db)
-    .await
-    .unwrap_or(0);
+    let msg_count: i32 =
+        sqlx::query_scalar("SELECT message_count FROM agent_sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_one(db)
+            .await
+            .unwrap_or(0);
 
     let is_first = msg_count == 0;
 
@@ -892,7 +896,9 @@ pub async fn rate_agent(
     feedback: Option<String>,
 ) -> Result<(), CloudError> {
     if !(1..=5).contains(&rating) {
-        return Err(CloudError::BadRequest("rating must be between 1 and 5".into()));
+        return Err(CloudError::BadRequest(
+            "rating must be between 1 and 5".into(),
+        ));
     }
 
     // Verify session belongs to user and agent
@@ -907,7 +913,9 @@ pub async fn rate_agent(
     .unwrap_or(false);
 
     if !valid {
-        return Err(CloudError::BadRequest("invalid session for this agent".into()));
+        return Err(CloudError::BadRequest(
+            "invalid session for this agent".into(),
+        ));
     }
 
     // Upsert rating

@@ -122,7 +122,9 @@ pub async fn revoke_key(
     .await?;
 
     if result.rows_affected() == 0 {
-        return Err(CloudError::NotFound("API key not found or already revoked".to_string()));
+        return Err(CloudError::NotFound(
+            "API key not found or already revoked".to_string(),
+        ));
     }
 
     Ok(Json(serde_json::json!({ "revoked": true })))

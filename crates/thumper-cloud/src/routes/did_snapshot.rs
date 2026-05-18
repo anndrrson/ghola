@@ -37,11 +37,7 @@
 //! relay is supposed to poll this endpoint. If the env var is unset, the
 //! endpoint refuses all requests (failing closed).
 
-use axum::{
-    extract::State,
-    http::HeaderMap,
-    Json,
-};
+use axum::{extract::State, http::HeaderMap, Json};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -72,7 +68,10 @@ fn siws_pubkey_to_did_key(pubkey_b58: &str) -> Option<String> {
     prefixed.push(0xed);
     prefixed.push(0x01);
     prefixed.extend_from_slice(&raw);
-    Some(format!("did:key:z{}", bs58::encode(&prefixed).into_string()))
+    Some(format!(
+        "did:key:z{}",
+        bs58::encode(&prefixed).into_string()
+    ))
 }
 
 /// GET /v1/did-set — relay-only.

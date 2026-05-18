@@ -22,6 +22,8 @@ pub const SIGNING_MODE_TURNKEY_USER: &str = "turnkey_user";
 pub const SIGNING_MODE_ALEO_DEVICE: &str = "aleo_device";
 const SIGNING_MODE_MANUAL_PROOF: &str = "manual_proof";
 const SELECTIVE_DISCLOSURE_TEXT: &str = "Selective disclosure export includes redacted receipt metadata, amount, policy hash, verification time, and approval summary. Raw shielded recipient and proof payload are not exported by default.";
+const EXPORT_REASON_MAX_LEN: usize = 160;
+const EXPORT_AUDIENCE_MAX_LEN: usize = 160;
 
 #[derive(Debug, Deserialize)]
 pub struct CreatePrivateTransferIntentRequest {
@@ -119,6 +121,23 @@ pub struct PrivateTransferIntentResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub struct PrivateRailRecipientResponse {
+    pub configured: bool,
+    pub ready: bool,
+    pub provider: String,
+    pub network: String,
+    pub asset: String,
+    pub recipient_configured: bool,
+    pub recipient_preview: Option<String>,
+    pub recipient: Option<String>,
+    pub rail: &'static str,
+    pub canonical_rail: &'static str,
+    pub fallback_allowed: bool,
+    pub unavailable_reason: Option<&'static str>,
+    pub privacy_disclosure: &'static str,
+}
+
+#[derive(Debug, Serialize)]
 pub struct PrivateTransferHistoryEntry {
     pub id: Uuid,
     pub rail: String,
@@ -212,6 +231,25 @@ struct InstitutionalReadinessInputs {
     audit_export_enabled: bool,
     open_high_critical_findings: i64,
     last_canary_at: Option<String>,
+}
+
+pub fn private_rail_recipient_status() -> PrivateRailRecipientResponse {
+    let status = x402_service::shielded_stablecoin_runtime_status();
+    PrivateRailRecipientResponse {
+        configured: status.configured,
+        ready: status.ready,
+        provider: status.provider,
+        network: status.network,
+        asset: status.asset,
+        recipient_configured: status.recipient_configured,
+        recipient_preview: status.recipient_preview,
+        recipient: status.recipient,
+        rail: SHIELDED_STABLECOIN_RAIL,
+        canonical_rail: ALEO_USDCX_SHIELDED_RAIL,
+        fallback_allowed: false,
+        unavailable_reason: status.unavailable_reason,
+        privacy_disclosure: SHIELDED_STABLECOIN_DISCLOSURE,
+    }
 }
 
 fn assert_private_rail_ready() -> Result<x402_service::ShieldedStablecoinRuntimeStatus, CloudError>
@@ -369,6 +407,24 @@ fn selective_disclosure_receipt_hash(
 
 fn optional_hash(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim).filter(|s| !s.is_empty()).map(hash_text)
+}
+
+fn normalize_export_field(
+    raw: Option<&str>,
+    default_value: &str,
+    field_name: &str,
+    max_len: usize,
+) -> Result<String, CloudError> {
+    let value = raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(default_value);
+    if value.len() > max_len {
+        return Err(CloudError::BadRequest(format!(
+            "{field_name} must be {max_len} characters or fewer"
+        )));
+    }
+    Ok(value.to_string())
 }
 
 fn signer_did_to_verifying_key(signer_key_id: &str) -> Result<VerifyingKey, CloudError> {
@@ -530,12 +586,29 @@ fn recipient_preview(recipient: &str) -> String {
     }
 }
 
+fn ensure_supported_private_recipient(
+    status: &x402_service::ShieldedStablecoinRuntimeStatus,
+    recipient: &str,
+) -> Result<(), CloudError> {
+    if let Some(configured_recipient) = status.recipient.as_deref() {
+        if recipient != configured_recipient {
+            return Err(CloudError::BadRequest(
+                "current private USDCx verifier can only verify the configured Aleo recipient; arbitrary recipient sends require recipient-supplied receipt/view-proof support"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub async fn create_private_transfer_intent(
     state: &AppState,
     user_id: Uuid,
     req: CreatePrivateTransferIntentRequest,
 ) -> Result<PrivateTransferIntentResponse, CloudError> {
-    req.approval.require_for(NetworkScope::WalletTransfer)?;
+    let approval = req
+        .approval
+        .require_and_store_for(NetworkScope::WalletTransfer)?;
     normalize_private_rail(req.rail.as_deref())?;
     let status = assert_private_rail_ready()?;
     let signing_mode =
@@ -549,6 +622,7 @@ pub async fn create_private_transfer_intent(
     }
 
     let recipient = validate_aleo_recipient(&req.to_shielded_address)?;
+    ensure_supported_private_recipient(&status, &recipient)?;
     let recipient_hash = recipient_hash(&recipient);
     let recipient_preview = recipient_preview(&recipient);
     let expires_at = Utc::now() + Duration::minutes(INTENT_TTL_MINUTES);
@@ -582,11 +656,11 @@ pub async fn create_private_transfer_intent(
     .bind(req.amount_micro_usdc)
     .bind(&recipient_hash)
     .bind(&recipient_preview)
-    .bind(req.approval.privacy_mode.as_deref())
-    .bind(req.approval.network_scope.as_deref())
-    .bind(req.approval.user_approved_at)
-    .bind(req.approval.approval_nonce.as_deref())
-    .bind(req.approval.approval_summary.as_deref())
+    .bind(&approval.privacy_mode)
+    .bind(&approval.network_scope)
+    .bind(approval.user_approved_at)
+    .bind(&approval.approval_nonce_hash)
+    .bind(&approval.approval_summary)
     .bind(expires_at)
     .bind(signing_mode)
     .bind(&signer_key_id)
@@ -661,6 +735,7 @@ pub async fn submit_signed_private_transfer(
     allow_manual: bool,
 ) -> Result<PrivateTransferProofResponse, CloudError> {
     req.approval.require_for(NetworkScope::WalletTransfer)?;
+    assert_private_rail_ready()?;
     let signing_mode = normalize_signing_mode(Some(&req.signing_mode), allow_manual)?;
     let signer_key_id = normalize_signer_key_id(Some(&req.signer_key_id))?;
     let recipient = validate_aleo_recipient(&req.to_shielded_address)?;
@@ -782,7 +857,7 @@ pub async fn submit_signed_private_transfer(
         allow_manual,
     )?;
 
-    sqlx::query(
+    let update_result = sqlx::query(
         r#"
         UPDATE private_wallet_transfers
         SET status = 'verified',
@@ -795,7 +870,9 @@ pub async fn submit_signed_private_transfer(
             signer_attestation_hash = $5,
             selective_disclosure_receipt_hash = $6,
             institutional_readiness_version = $7
-        WHERE id = $8 AND user_id = $9
+        WHERE id = $8
+          AND user_id = $9
+          AND status IN ('intent_pending', 'submitted')
         "#,
     )
     .bind(&verified.receipt_ref)
@@ -818,6 +895,12 @@ pub async fn submit_signed_private_transfer(
             CloudError::Database(e)
         }
     })?;
+    if update_result.rows_affected() != 1 {
+        return Err(CloudError::PaymentRequired(
+            "private transfer intent is no longer pending; duplicate submission rejected"
+                .to_string(),
+        ));
+    }
 
     tracing::info!(
         user = %crate::privacy::log_id(&user_id),
@@ -954,7 +1037,9 @@ pub async fn export_private_transfer_receipt(
     transfer_id: Uuid,
     req: ExportPrivateTransferReceiptRequest,
 ) -> Result<PrivateTransferReceiptExportResponse, CloudError> {
-    req.approval.require_for(NetworkScope::WalletTransfer)?;
+    let approval = req
+        .approval
+        .require_and_store_for(NetworkScope::WalletTransfer)?;
     let transfer = fetch_private_transfer_receipt(state, user_id, transfer_id).await?;
     if transfer.status != "verified" {
         return Err(CloudError::BadRequest(
@@ -967,8 +1052,18 @@ pub async fn export_private_transfer_receipt(
         .ok_or_else(|| {
             CloudError::BadRequest("verified transfer is missing receipt hash".to_string())
         })?;
-    let reason = req.reason.as_deref().unwrap_or("user_export").trim();
-    let audience = req.audience.as_deref().unwrap_or("user").trim();
+    let reason = normalize_export_field(
+        req.reason.as_deref(),
+        "user_export",
+        "export reason",
+        EXPORT_REASON_MAX_LEN,
+    )?;
+    let audience = normalize_export_field(
+        req.audience.as_deref(),
+        "user",
+        "export audience",
+        EXPORT_AUDIENCE_MAX_LEN,
+    )?;
     let (export_id, created_at): (Uuid, chrono::DateTime<Utc>) = sqlx::query_as(
         r#"
         INSERT INTO private_wallet_receipt_exports
@@ -981,10 +1076,10 @@ pub async fn export_private_transfer_receipt(
     .bind(user_id)
     .bind(transfer_id)
     .bind(receipt_hash)
-    .bind(reason)
-    .bind(audience)
-    .bind(req.approval.approval_nonce.as_deref())
-    .bind(req.approval.approval_summary.as_deref())
+    .bind(&reason)
+    .bind(&audience)
+    .bind(&approval.approval_nonce_hash)
+    .bind(&approval.approval_summary)
     .fetch_one(&state.db)
     .await?;
 
@@ -1164,6 +1259,29 @@ mod tests {
         format!("did:key:z{}", bs58::encode(bytes).into_string())
     }
 
+    fn ready_test_status(recipient: Option<&str>) -> x402_service::ShieldedStablecoinRuntimeStatus {
+        x402_service::ShieldedStablecoinRuntimeStatus {
+            configured: true,
+            ready: true,
+            adapter_configured: true,
+            destination_configured: recipient.is_some(),
+            adapter_signature_required: true,
+            adapter_signature_configured: true,
+            verifier_ready: true,
+            provider: "aleo".to_string(),
+            network: "aleo:mainnet".to_string(),
+            asset: "USDCx".to_string(),
+            recipient_configured: recipient.is_some(),
+            recipient_preview: recipient.map(x402_service::shielded_recipient_preview),
+            recipient: recipient.map(ToOwned::to_owned),
+            rail: SHIELDED_STABLECOIN_RAIL,
+            canonical_rail: ALEO_USDCX_SHIELDED_RAIL,
+            fallback_allowed: false,
+            unavailable_reason: None,
+            privacy_disclosure: SHIELDED_STABLECOIN_DISCLOSURE,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn signed_test_attestation(
         signer: &SigningKey,
@@ -1230,6 +1348,26 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("valid Aleo shielded recipient"));
+    }
+
+    #[test]
+    fn configured_recipient_guard_rejects_arbitrary_private_send_targets() {
+        let configured = "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+        let other = "aleo1rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr";
+        let status = ready_test_status(Some(configured));
+
+        ensure_supported_private_recipient(&status, configured).unwrap();
+        let err = ensure_supported_private_recipient(&status, other)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("only verify the configured Aleo recipient"));
+    }
+
+    #[test]
+    fn configured_recipient_guard_allows_arbitrary_targets_only_without_static_recipient() {
+        let recipient = "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+        let status = ready_test_status(None);
+        ensure_supported_private_recipient(&status, recipient).unwrap();
     }
 
     #[test]
@@ -1511,6 +1649,44 @@ mod tests {
         assert_ne!(receipt, recipient);
         assert_eq!(policy.len(), 64);
         assert_eq!(receipt.len(), 64);
+    }
+
+    #[test]
+    fn export_fields_are_bounded_and_defaulted() {
+        assert_eq!(
+            normalize_export_field(None, "user_export", "export reason", EXPORT_REASON_MAX_LEN)
+                .unwrap(),
+            "user_export"
+        );
+        assert_eq!(
+            normalize_export_field(
+                Some("  compliance review  "),
+                "user_export",
+                "export reason",
+                EXPORT_REASON_MAX_LEN
+            )
+            .unwrap(),
+            "compliance review"
+        );
+
+        let too_long = "x".repeat(EXPORT_REASON_MAX_LEN + 1);
+        let err = normalize_export_field(
+            Some(&too_long),
+            "user_export",
+            "export reason",
+            EXPORT_REASON_MAX_LEN,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("export reason"));
+    }
+
+    #[test]
+    fn export_approval_nonce_is_hashed_before_storage() {
+        let nonce = "approval-nonce-1234567890";
+        let hashed = optional_hash(Some(nonce)).unwrap();
+        assert_eq!(hashed.len(), 64);
+        assert_ne!(hashed, nonce);
     }
 
     #[test]

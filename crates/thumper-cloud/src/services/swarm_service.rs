@@ -11,6 +11,7 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::error::CloudError;
+use crate::privacy::PrivacyApproval;
 use crate::services::{agent_service, compute_service};
 use crate::state::AppState;
 
@@ -31,6 +32,8 @@ pub struct CreateSwarmRequest {
     pub max_parallel: Option<i32>,
     pub max_retries: Option<i32>,
     pub timeout_secs: Option<i32>,
+    #[serde(flatten)]
+    pub approval: PrivacyApproval,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,13 +141,12 @@ pub async fn create_swarm(
     }
 
     // Verify wallet exists — escrow creation will fail without one
-    let has_wallet: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM user_wallets WHERE user_id = $1)",
-    )
-    .bind(user_id)
-    .fetch_one(db)
-    .await
-    .unwrap_or(false);
+    let has_wallet: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM user_wallets WHERE user_id = $1)")
+            .bind(user_id)
+            .fetch_one(db)
+            .await
+            .unwrap_or(false);
 
     if !has_wallet {
         return Err(CloudError::BadRequest(
@@ -319,12 +321,10 @@ async fn dispatch_loop(state: AppState, swarm_id: Uuid) -> Result<(), CloudError
     let agents = agent_service::match_agents(&state.db, &criteria).await?;
 
     if agents.is_empty() {
-        sqlx::query(
-            "UPDATE swarm_jobs SET status = 'failed', completed_at = now() WHERE id = $1",
-        )
-        .bind(swarm_id)
-        .execute(&state.db)
-        .await?;
+        sqlx::query("UPDATE swarm_jobs SET status = 'failed', completed_at = now() WHERE id = $1")
+            .bind(swarm_id)
+            .execute(&state.db)
+            .await?;
         emit_event(
             &state,
             swarm_id,
@@ -620,19 +620,14 @@ async fn try_dispatch_unit(
     timeout_secs: i32,
 ) -> Result<(String, i64, serde_json::Value), String> {
     // Estimate cost for escrow (500 tokens in + 500 out as rough estimate)
-    let estimated_cost = ((500 * agent.price_per_1k_input + 500 * agent.price_per_1k_output)
-        / 1000)
-        .max(1000); // min 1000 micro-USDC ($0.001) escrow
+    let estimated_cost =
+        ((500 * agent.price_per_1k_input + 500 * agent.price_per_1k_output) / 1000).max(1000); // min 1000 micro-USDC ($0.001) escrow
 
     // Create escrow hold
-    let escrow_id = compute_service::create_escrow(
-        &state.db,
-        user_id,
-        Some(agent.provider_id),
-        estimated_cost,
-    )
-    .await
-    .map_err(|e| format!("escrow failed: {e}"))?;
+    let escrow_id =
+        compute_service::create_escrow(&state.db, user_id, Some(agent.provider_id), estimated_cost)
+            .await
+            .map_err(|e| format!("escrow failed: {e}"))?;
 
     // Create compute job
     let job_id = compute_service::create_job(
@@ -727,7 +722,9 @@ async fn try_dispatch_unit(
         }
         Ok(Err(e)) => {
             // Inference failed — refund escrow, fail job
-            compute_service::refund_escrow(&state.db, escrow_id).await.ok();
+            compute_service::refund_escrow(&state.db, escrow_id)
+                .await
+                .ok();
             compute_service::fail_job(&state.db, job_id, &e.to_string())
                 .await
                 .ok();
@@ -738,8 +735,12 @@ async fn try_dispatch_unit(
         }
         Err(_) => {
             // Timeout — refund escrow, fail job
-            compute_service::refund_escrow(&state.db, escrow_id).await.ok();
-            compute_service::fail_job(&state.db, job_id, "timeout").await.ok();
+            compute_service::refund_escrow(&state.db, escrow_id)
+                .await
+                .ok();
+            compute_service::fail_job(&state.db, job_id, "timeout")
+                .await
+                .ok();
             compute_service::update_reputation(&state.db, agent.provider_id, false, None)
                 .await
                 .ok();
@@ -752,11 +753,7 @@ async fn try_dispatch_unit(
 // Cancel
 // ---------------------------------------------------------------------------
 
-pub async fn cancel_swarm(
-    db: &PgPool,
-    swarm_id: Uuid,
-    user_id: Uuid,
-) -> Result<(), CloudError> {
+pub async fn cancel_swarm(db: &PgPool, swarm_id: Uuid, user_id: Uuid) -> Result<(), CloudError> {
     // Verify ownership
     let result = sqlx::query(
         "UPDATE swarm_jobs SET status = 'cancelled', completed_at = now() WHERE id = $1 AND user_id = $2 AND status NOT IN ('completed', 'failed', 'cancelled')",
@@ -826,10 +823,7 @@ pub async fn get_swarm(
     Ok(row_to_swarm_info(&row))
 }
 
-pub async fn list_swarms(
-    db: &PgPool,
-    user_id: Uuid,
-) -> Result<Vec<SwarmJobInfo>, CloudError> {
+pub async fn list_swarms(db: &PgPool, user_id: Uuid) -> Result<Vec<SwarmJobInfo>, CloudError> {
     let rows = sqlx::query(
         r#"
         SELECT id, title, description, status,
@@ -1018,10 +1012,7 @@ async fn load_swarm_config(db: &PgPool, swarm_id: Uuid) -> Result<SwarmConfig, C
     })
 }
 
-async fn load_pending_units(
-    db: &PgPool,
-    swarm_id: Uuid,
-) -> Result<Vec<PendingUnit>, CloudError> {
+async fn load_pending_units(db: &PgPool, swarm_id: Uuid) -> Result<Vec<PendingUnit>, CloudError> {
     let rows = sqlx::query(
         r#"
         SELECT id, unit_index, prompt, context

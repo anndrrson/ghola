@@ -126,8 +126,8 @@ pub async fn post_handshake(
         .execute(&state.db)
         .await;
 
-    let expires_at = chrono::Utc::now()
-        + chrono::Duration::from_std(HANDSHAKE_TTL).expect("ttl fits");
+    let expires_at =
+        chrono::Utc::now() + chrono::Duration::from_std(HANDSHAKE_TTL).expect("ttl fits");
 
     // Write-once: ON CONFLICT DO NOTHING + RETURNING means we can detect
     // a duplicate id without a separate SELECT round-trip.
@@ -182,7 +182,9 @@ pub async fn get_handshake(
     .await?;
 
     let Some((envelope,)) = row else {
-        return Err(CloudError::NotFound("handshake not found or expired".into()));
+        return Err(CloudError::NotFound(
+            "handshake not found or expired".into(),
+        ));
     };
 
     Ok((

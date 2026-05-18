@@ -11,9 +11,10 @@ use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::CloudError;
+use crate::privacy::{log_id, NetworkScope, PrivacyApproval};
 use crate::services::agent_service;
-use crate::services::call_service;
 use crate::services::calendar_service;
+use crate::services::call_service;
 use crate::services::compute_service;
 use crate::services::email_service;
 use crate::services::llm_router::{self, ChatMsg};
@@ -55,6 +56,8 @@ pub struct ChatRequest {
     /// or a peer); it only round-trips the bytes.
     #[serde(default)]
     pub envelope_blob_b64: Option<String>,
+    #[serde(flatten)]
+    pub approval: PrivacyApproval,
 }
 
 /// Persist a user-role row, choosing the legacy plaintext path or the
@@ -202,7 +205,8 @@ fn friendly_llm_error(err: &CloudError) -> String {
     if msg.contains("api key not configured") || msg.contains("not configured") {
         "No AI model configured. Go to Settings > AI Model to set up your preferred provider and API key.".into()
     } else if msg.contains("decryption failed") || msg.contains("could not be decrypted") {
-        "Your saved API key could not be decrypted. Please re-enter it in Settings > AI Model.".into()
+        "Your saved API key could not be decrypted. Please re-enter it in Settings > AI Model."
+            .into()
     } else if msg.contains("401") || msg.contains("403") || msg.contains("unauthorized") {
         "Your API key was rejected. Please check it in Settings > AI Model.".into()
     } else if msg.contains("429") || msg.contains("rate limit") {
@@ -222,7 +226,10 @@ async fn check_chat_limit(state: &AppState, user_id: Uuid, tier: &str) -> Result
         _ => 50, // free
     };
 
-    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let period_start = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-01")
+        .to_string();
     let count: i64 = sqlx::query_scalar(
         r#"
         SELECT COUNT(*) FROM chat_messages
@@ -252,6 +259,7 @@ pub async fn chat(
     Json(req): Json<ChatRequest>,
 ) -> Result<Sse<SseStream>, CloudError> {
     let user_id = claims.sub;
+    req.approval.require_for(NetworkScope::CloudChat)?;
 
     // Agent chat branch — if agent_id or agent_slug is set, route to agent_chat()
     if req.agent_id.is_some() || req.agent_slug.is_some() {
@@ -306,8 +314,10 @@ pub async fn chat(
     // `detectAction` for action surfacing.
     let llm_config = llm_router::get_user_llm_config(&state, user_id).await.ok();
     let provider = llm_config.as_ref().map(|c| c.provider);
-    let tool_use_supported =
-        provider.as_ref().map(llm_router::supports_tool_use).unwrap_or(false);
+    let tool_use_supported = provider
+        .as_ref()
+        .map(llm_router::supports_tool_use)
+        .unwrap_or(false);
     let is_community = provider == Some(llm_router::LlmProvider::Community);
 
     if tool_use_supported {
@@ -379,7 +389,7 @@ pub async fn chat(
                 }
                 Err(e) => {
                     let friendly = friendly_llm_error(&e);
-                    tracing::warn!("chat tool-use error for user {user_id}: {e}");
+                    tracing::warn!(user = %log_id(&user_id), "chat tool-use error");
                     yield Ok(Event::default()
                         .event("error")
                         .data(serde_json::json!({ "error": friendly }).to_string()));
@@ -438,7 +448,7 @@ pub async fn chat(
                         }
                         Err(e) => {
                             let friendly = friendly_llm_error(&e);
-                            tracing::warn!("chat stream error for user {user_id}: {e}");
+                            tracing::warn!(user = %log_id(&user_id), "chat stream error");
                             yield Ok(Event::default()
                                 .event("error")
                                 .data(serde_json::json!({ "error": friendly }).to_string()));
@@ -449,7 +459,7 @@ pub async fn chat(
             }
             Err(e) => {
                 let friendly = friendly_llm_error(&e);
-                tracing::warn!("chat LLM init error for user {user_id}: {e}");
+                tracing::warn!(user = %log_id(&user_id), "chat LLM init error");
                 yield Ok(Event::default()
                     .event("error")
                     .data(serde_json::json!({ "error": friendly }).to_string()));
@@ -493,11 +503,15 @@ async fn agent_chat(
     } else if let Some(ref slug) = req.agent_slug {
         agent_service::get_agent_by_slug(&state.db, slug).await?
     } else {
-        return Err(CloudError::BadRequest("agent_id or agent_slug required".into()));
+        return Err(CloudError::BadRequest(
+            "agent_id or agent_slug required".into(),
+        ));
     };
 
     if !agent.is_active {
-        return Err(CloudError::BadRequest("this agent is currently inactive".into()));
+        return Err(CloudError::BadRequest(
+            "this agent is currently inactive".into(),
+        ));
     }
 
     // Check provider is online and get relay info + pricing
@@ -531,20 +545,21 @@ async fn agent_chat(
             })
         })
         .map(|m| {
-            let i = m.get("price_per_1k_input").and_then(|v| v.as_u64()).unwrap_or(0);
-            let o = m.get("price_per_1k_output").and_then(|v| v.as_u64()).unwrap_or(0);
+            let i = m
+                .get("price_per_1k_input")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let o = m
+                .get("price_per_1k_output")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             (i, o)
         })
         .unwrap_or((0, 0));
 
     // Get or create agent session
-    let session_id = agent_service::get_or_create_session(
-        &state.db,
-        user_id,
-        agent.id,
-        req.session_id,
-    )
-    .await?;
+    let session_id =
+        agent_service::get_or_create_session(&state.db, user_id, agent.id, req.session_id).await?;
 
     // Save user message with agent linkage — envelope-aware.
     insert_user_message(
@@ -574,12 +589,15 @@ async fn agent_chat(
 
     // Create escrow + job
     let estimated_cost = 100i64; // 100 micro-USDC
-    let escrow_id = compute_service::create_escrow(
-        &state.db, user_id, Some(agent.provider_id), estimated_cost,
-    )
-    .await?;
+    let escrow_id =
+        compute_service::create_escrow(&state.db, user_id, Some(agent.provider_id), estimated_cost)
+            .await?;
     let job_id = compute_service::create_job(
-        &state.db, user_id, agent.provider_id, escrow_id, &agent.model_id,
+        &state.db,
+        user_id,
+        agent.provider_id,
+        escrow_id,
+        &agent.model_id,
     )
     .await?;
 
@@ -672,7 +690,7 @@ async fn agent_chat(
                 }
                 Err(e) => {
                     let friendly = friendly_llm_error(&e);
-                    tracing::warn!("agent chat tool-use error for user {user_id}: {e}");
+                    tracing::warn!(user = %log_id(&user_id), "agent chat tool-use error");
                     yield Ok(Event::default()
                         .event("error")
                         .data(serde_json::json!({ "error": friendly }).to_string()));
@@ -749,7 +767,7 @@ async fn agent_chat(
                         }
                         Err(e) => {
                             let friendly = friendly_llm_error(&e);
-                            tracing::warn!("agent chat stream error for user {user_id}: {e}");
+                            tracing::warn!(user = %log_id(&user_id), "agent chat stream error");
                             yield Ok(Event::default()
                                 .event("error")
                                 .data(serde_json::json!({ "error": friendly }).to_string()));
@@ -760,7 +778,7 @@ async fn agent_chat(
             }
             Err(e) => {
                 let friendly = friendly_llm_error(&e);
-                tracing::warn!("agent chat dispatch error for user {user_id}: {e}");
+                tracing::warn!(user = %log_id(&user_id), "agent chat dispatch error");
                 yield Ok(Event::default()
                     .event("error")
                     .data(serde_json::json!({ "error": friendly }).to_string()));

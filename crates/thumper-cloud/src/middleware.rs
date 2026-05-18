@@ -86,11 +86,7 @@ impl RateLimiter {
 
 /// Middleware that tracks API usage for requests authenticated with API keys
 /// and enforces per-minute rate limits.
-pub async fn track_api_usage(
-    state: AppState,
-    request: Request,
-    next: Next,
-) -> Response {
+pub async fn track_api_usage(state: AppState, request: Request, next: Next) -> Response {
     // Check if this is an API-key-authenticated request
     let is_api_key = request
         .headers()
@@ -133,13 +129,14 @@ pub async fn track_api_usage(
     // Enforce rate limiting for API key users
     if let Some(uid) = user_id {
         // Look up tier
-        let tier: String = sqlx::query_scalar("SELECT COALESCE(tier, 'free') FROM users WHERE id = $1")
-            .bind(uid)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| "free".to_string());
+        let tier: String =
+            sqlx::query_scalar("SELECT COALESCE(tier, 'free') FROM users WHERE id = $1")
+                .bind(uid)
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "free".to_string());
 
         if let Err(e) = state.rate_limiter.check(uid, &tier).await {
             return e.into_response();
@@ -161,7 +158,10 @@ pub async fn track_api_usage(
     if let Some(uid) = user_id {
         let db = state.db.clone();
         tokio::spawn(async move {
-            let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+            let period_start = chrono::Utc::now()
+                .date_naive()
+                .format("%Y-%m-01")
+                .to_string();
             let _ = sqlx::query(
                 r#"
                 INSERT INTO usage_tracking (user_id, period_start, api_call_count)

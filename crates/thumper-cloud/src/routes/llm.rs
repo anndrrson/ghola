@@ -59,7 +59,10 @@ pub async fn update_config(
             // Empty string = clear the key
             None
         } else {
-            Some(llm_router::encrypt_api_key(key, &state.config.encryption_key)?)
+            Some(llm_router::encrypt_api_key(
+                key,
+                &state.config.encryption_key,
+            )?)
         }
     } else {
         // Not provided = don't change
@@ -172,7 +175,11 @@ pub async fn list_providers() -> Json<Vec<ProviderInfo>> {
                 LlmProvider::Community => "Community GPU",
             };
             let requires_api_key = p != LlmProvider::Ollama && p != LlmProvider::Community;
-            let models = p.available_models().into_iter().map(|s| s.to_string()).collect();
+            let models = p
+                .available_models()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect();
             ProviderInfo {
                 id,
                 name: name.to_string(),

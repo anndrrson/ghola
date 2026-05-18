@@ -118,8 +118,7 @@ pub async fn list_sessions(
     Path(slug_or_id): Path<String>,
 ) -> Result<Json<Vec<SessionInfo>>, CloudError> {
     let agent_id = resolve_agent_id(&state, &slug_or_id).await?;
-    let sessions =
-        agent_service::list_user_sessions(&state.db, claims.sub, Some(agent_id)).await?;
+    let sessions = agent_service::list_user_sessions(&state.db, claims.sub, Some(agent_id)).await?;
     Ok(Json(sessions))
 }
 
@@ -162,13 +161,12 @@ pub async fn rate_agent(
 async fn resolve_agent_id(state: &AppState, slug_or_id: &str) -> Result<Uuid, CloudError> {
     if let Ok(id) = slug_or_id.parse::<Uuid>() {
         // Verify it exists
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM rental_agents WHERE id = $1)",
-        )
-        .bind(id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(false);
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rental_agents WHERE id = $1)")
+                .bind(id)
+                .fetch_one(&state.db)
+                .await
+                .unwrap_or(false);
 
         if exists {
             return Ok(id);

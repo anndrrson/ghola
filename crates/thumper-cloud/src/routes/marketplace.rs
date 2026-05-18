@@ -35,13 +35,27 @@ pub struct MarketplaceTask {
 }
 
 type TaskRow12 = (
-    Uuid, String, Option<String>, Option<String>, String, serde_json::Value,
-    Option<i64>, Uuid, Option<Uuid>, Option<DateTime<Utc>>, Option<DateTime<Utc>>, DateTime<Utc>,
+    Uuid,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    serde_json::Value,
+    Option<i64>,
+    Uuid,
+    Option<Uuid>,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
 );
 
 type IdentityRow = (Option<String>, Option<f64>, Option<bool>, Option<i32>);
 
-fn marketplace_from_row(r: TaskRow12, identity: Option<IdentityRow>, min_rep: Option<f64>) -> MarketplaceTask {
+fn marketplace_from_row(
+    r: TaskRow12,
+    identity: Option<IdentityRow>,
+    min_rep: Option<f64>,
+) -> MarketplaceTask {
     let (fname, frep, fverified, ffunded) = identity.unwrap_or((None, None, None, None));
     MarketplaceTask {
         id: r.0,
@@ -64,8 +78,7 @@ fn marketplace_from_row(r: TaskRow12, identity: Option<IdentityRow>, min_rep: Op
     }
 }
 
-const MARKETPLACE_SELECT: &str =
-    "id, task_type, title, description, status, params, bounty_usdc, \
+const MARKETPLACE_SELECT: &str = "id, task_type, title, description, status, params, bounty_usdc, \
      user_id, executor_id, claimed_at, claim_expires_at, created_at";
 
 // =========================================================================
@@ -132,11 +145,9 @@ pub async fn get_task(
     State(state): State<AppState>,
     Path(task_id): Path<Uuid>,
 ) -> Result<Json<MarketplaceTask>, CloudError> {
-    let row = sqlx::query_as::<_, TaskRow12>(
-        &format!(
-            "SELECT {MARKETPLACE_SELECT} FROM tasks WHERE id = $1 AND is_open = true"
-        ),
-    )
+    let row = sqlx::query_as::<_, TaskRow12>(&format!(
+        "SELECT {MARKETPLACE_SELECT} FROM tasks WHERE id = $1 AND is_open = true"
+    ))
     .bind(task_id)
     .fetch_optional(&state.db)
     .await?
@@ -206,7 +217,12 @@ pub async fn browse(
     let rows = query.fetch_all(&state.db).await?;
 
     // Batch-fetch identities: 1 query instead of N
-    let funder_ids: Vec<Uuid> = rows.iter().map(|r| r.7).collect::<std::collections::HashSet<_>>().into_iter().collect();
+    let funder_ids: Vec<Uuid> = rows
+        .iter()
+        .map(|r| r.7)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
     let identities = fetch_identities_batch(&state.db, &funder_ids).await;
 
     // Batch-fetch min_reputation: read directly from the rows via a separate query
@@ -266,18 +282,19 @@ pub async fn claim_task(
 
     // Prevent self-claim
     if task_req.1 == claims.sub {
-        return Err(CloudError::BadRequest("cannot claim your own task".to_string()));
+        return Err(CloudError::BadRequest(
+            "cannot claim your own task".to_string(),
+        ));
     }
 
     // Enforce minimum reputation if set
     if let Some(min_rep) = task_req.0 {
-        let user_rep: Option<f64> = sqlx::query_scalar(
-            "SELECT reputation_score FROM users WHERE id = $1",
-        )
-        .bind(claims.sub)
-        .fetch_optional(&state.db)
-        .await?
-        .flatten();
+        let user_rep: Option<f64> =
+            sqlx::query_scalar("SELECT reputation_score FROM users WHERE id = $1")
+                .bind(claims.sub)
+                .fetch_optional(&state.db)
+                .await?
+                .flatten();
 
         let rep = user_rep.unwrap_or(0.5);
         if rep < min_rep {
@@ -404,14 +421,12 @@ pub async fn release_task(
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| {
-        CloudError::BadRequest(
-            "task not found, not yours, or not awaiting approval".to_string(),
-        )
+        CloudError::BadRequest("task not found, not yours, or not awaiting approval".to_string())
     })?;
 
-    let executor_id = row.0.ok_or_else(|| {
-        CloudError::Internal("task has no executor assigned".to_string())
-    })?;
+    let executor_id = row
+        .0
+        .ok_or_else(|| CloudError::Internal("task has no executor assigned".to_string()))?;
 
     // Mark task completed
     sqlx::query(
@@ -422,10 +437,8 @@ pub async fn release_task(
     .await?;
 
     // Settle the bounty to the executor
-    let settlement = crate::services::bounty_service::settle_bounty(
-        &state.db, task_id, executor_id,
-    )
-    .await?;
+    let settlement =
+        crate::services::bounty_service::settle_bounty(&state.db, task_id, executor_id).await?;
 
     tracing::info!(
         %task_id,
@@ -614,7 +627,9 @@ pub async fn auto_release_stale_approvals(db: &sqlx::PgPool) -> Result<u64, Clou
         .await;
 
         // Settle bounty
-        if let Err(e) = crate::services::bounty_service::settle_bounty(db, task_id, executor_id).await {
+        if let Err(e) =
+            crate::services::bounty_service::settle_bounty(db, task_id, executor_id).await
+        {
             tracing::warn!(%task_id, error = %e, "auto-release settlement failed");
         } else {
             tracing::info!(%task_id, %executor_id, "auto-released stale approval — executor paid");

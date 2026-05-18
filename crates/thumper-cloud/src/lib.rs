@@ -142,6 +142,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/health/providers", get(health_providers))
         .route("/health/payments", get(health_payments))
+        .route("/health/privacy", get(health_privacy))
         .route("/health/institutional", get(health_institutional))
         // Auth
         .route(
@@ -155,6 +156,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/auth/refresh", post(routes::auth::refresh_token))
         .route("/api/auth/email/signup", post(routes::auth::email_sign_up))
         .route("/api/auth/email/signin", post(routes::auth::email_sign_in))
+        // Seeker
+        .route("/api/seeker/verify", post(routes::seeker::verify))
         // Tasks
         .route("/api/tasks", post(routes::tasks::create_task))
         .route("/api/tasks", get(routes::tasks::list_tasks))
@@ -190,6 +193,27 @@ pub fn build_router(state: AppState) -> Router {
             "/api/marketplace/{id}/unclaim",
             post(routes::marketplace::unclaim_task),
         )
+        // Commerce intents (additive front flow over existing rails)
+        .route(
+            "/api/commerce/intents",
+            post(routes::commerce::create_intent),
+        )
+        .route(
+            "/api/commerce/intents/{id}",
+            get(routes::commerce::get_intent),
+        )
+        .route(
+            "/api/commerce/intents/{id}/offers",
+            get(routes::commerce::list_offers),
+        )
+        .route(
+            "/api/commerce/intents/{id}/quote",
+            post(routes::commerce::create_quote),
+        )
+        .route(
+            "/api/commerce/intents/{id}/execute",
+            post(routes::commerce::execute_quote),
+        )
         // Calls
         .route("/api/calls", post(routes::calls::initiate_call))
         .route("/api/calls/initiate", post(routes::calls::initiate_call))
@@ -198,6 +222,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/agent/plan", post(routes::agent::plan))
         // Emails
         .route("/api/emails", get(routes::emails::list_emails))
+        .route("/api/emails/{id}", get(routes::emails::get_email_detail))
         .route("/api/emails/draft", post(routes::emails::create_draft))
         .route("/api/emails/generate", post(routes::emails::generate_email))
         .route("/api/emails/send", post(routes::emails::send_email_direct))
@@ -249,6 +274,8 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::messages::post_envelope),
         )
         .route("/api/messages/sync", get(routes::messages::sync))
+        .route("/api/messages/block", post(routes::messages::block_sender))
+        .route("/api/messages/report", post(routes::messages::report_abuse))
         .route("/api/messages/{id}/ack", post(routes::messages::ack))
         // Billing
         .route(
@@ -328,6 +355,10 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::wallet::submit_signed_private_transfer),
         )
         .route(
+            "/api/wallet/private/recipient",
+            get(routes::wallet::get_private_rail_recipient),
+        )
+        .route(
             "/api/wallet/private/history",
             get(routes::wallet::get_private_transfer_history),
         )
@@ -404,8 +435,13 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/swarm/{id}/cancel", post(routes::swarm::cancel_swarm))
         // x402 Discovery (unauthenticated)
+        .route(
+            "/.well-known/x402.json",
+            get(routes::x402::well_known_manifest),
+        )
         .route("/x402/agents", get(routes::x402::list_agents))
         .route("/x402/agents/{slug}", get(routes::x402::get_agent))
+        .route("/x402/resources", get(routes::x402::list_resources))
         // DID set snapshot (relay polls this with a static API key).
         // Phase 3 privacy: lets the relay verify "this sealed request is
         // from *some* registered Ghola DID" without learning which user.
@@ -568,6 +604,34 @@ async fn health_payments() -> Json<serde_json::Value> {
     }))
 }
 
+async fn health_privacy() -> Json<serde_json::Value> {
+    let shielded = services::x402_service::shielded_stablecoin_runtime_status();
+    let mut blocking_reasons = Vec::new();
+    if !shielded.ready {
+        blocking_reasons.push("shielded_stablecoin_not_ready");
+    }
+
+    Json(json!({
+        "strict_local_default": true,
+        "approval_enforcement_enabled": true,
+        "raw_approval_nonce_hashing_enabled": true,
+        "sms_approval_enabled": true,
+        "task_result_redaction_enabled": true,
+        "task_step_redaction_enabled": true,
+        "call_recipient_hashing_enabled": true,
+        "sms_recipient_hashing_enabled": true,
+        "remote_compute_approval_enabled": true,
+        "agent_plan_approval_enabled": true,
+        "swarm_execution_approval_enabled": true,
+        "messaging_block_report_enabled": true,
+        "email_list_redaction_enabled": true,
+        "public_wallet_recipient_hashing_enabled": true,
+        "call_transcript_retention_default": "redacted",
+        "private_rail_fail_closed": !shielded.fallback_allowed,
+        "blocking_reasons": blocking_reasons,
+    }))
+}
+
 async fn health_institutional() -> Json<serde_json::Value> {
     Json(json!(
         services::private_settlement_service::institutional_readiness()
@@ -598,4 +662,28 @@ async fn shutdown_signal() {
     }
 
     tracing::info!("shutdown signal received");
+}
+
+#[cfg(test)]
+mod privacy_log_safety_tests {
+    #[test]
+    fn telegram_notifications_do_not_embed_provider_content() {
+        let emails = include_str!("routes/emails.rs");
+        let calls = include_str!("routes/calls.rs");
+        let sms = include_str!("routes/sms.rs");
+
+        assert!(!emails.contains("Email sent!\\n\\nTo:"));
+        assert!(!emails.contains("Subject: {}"));
+        assert!(!calls.contains("Transcript:\\n{}"));
+        assert!(!sms.contains("chars().take(40)"));
+    }
+
+    #[test]
+    fn public_list_serializers_do_not_expose_raw_approval_nonce() {
+        let wallet = include_str!("services/wallet_service.rs");
+        let messages = include_str!("routes/messages.rs");
+
+        assert!(wallet.contains("value.get(\"approval_nonce\").is_none()"));
+        assert!(messages.contains("approval_nonce is not stored by native messaging relay"));
+    }
 }

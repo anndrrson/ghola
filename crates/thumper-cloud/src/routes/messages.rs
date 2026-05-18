@@ -31,6 +31,10 @@ const MAX_RELAY_URLS: usize = 6;
 const MAX_RELAY_URL_LEN: usize = 512;
 const MAX_ENVELOPE_BYTES: usize = 128 * 1024;
 const MAX_APPROVAL_RECEIPT_HASH_LEN: usize = 128;
+const MAX_REPORT_REASON_LEN: usize = 160;
+const MAX_REPORT_METADATA_BYTES: usize = 4096;
+const MESSAGE_RATE_LIMIT_PER_MINUTE: i64 = 60;
+const MAX_UNACKED_QUEUE_PER_RECIPIENT: i64 = 500;
 const SEV1_MAGIC: &[u8; 4] = b"SEv1";
 const SEV1_VERSION: u8 = 0x01;
 const SEV1_SIGNATURE_LEN: usize = 64;
@@ -157,6 +161,32 @@ pub struct AckResponse {
     pub acked_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BlockSenderRequest {
+    pub sender_did: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BlockSenderResponse {
+    pub ok: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReportAbuseRequest {
+    pub message_id: Option<Uuid>,
+    pub sender_did: Option<String>,
+    pub reason: Option<String>,
+    pub ciphertext_metadata: Option<Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReportAbuseResponse {
+    pub ok: bool,
+    pub report_id: Uuid,
+}
+
 /// POST /api/messages/devices
 pub async fn register_device(
     State(state): State<AppState>,
@@ -278,17 +308,31 @@ pub async fn post_envelope(
             "sender messaging key is not registered for this account".to_string(),
         ));
     }
+    check_native_message_rate_limit(&state, claims.sub).await?;
 
-    let exists: Option<(String,)> =
-        sqlx::query_as("SELECT did FROM native_message_devices WHERE did = $1")
+    let recipient_owners: Vec<(Uuid,)> =
+        sqlx::query_as("SELECT DISTINCT user_id FROM native_message_devices WHERE did = $1")
             .bind(&req.recipient_did)
-            .fetch_optional(&state.db)
+            .fetch_all(&state.db)
             .await?;
-    if exists.is_none() {
+    if recipient_owners.is_empty() {
         return Err(CloudError::NotFound(
             "recipient messaging keys not found".to_string(),
         ));
     }
+    if recipient_owners.len() > 1 {
+        return Err(CloudError::BadRequest(
+            "recipient messaging DID is registered to multiple accounts".to_string(),
+        ));
+    }
+    let recipient_user_id = recipient_owners[0].0;
+    enforce_sender_not_blocked(&state, recipient_user_id, req.sender_did.trim()).await?;
+    check_native_message_queue_limit(
+        &state,
+        req.recipient_did.trim(),
+        req.recipient_device_id.as_deref().map(str::trim),
+    )
+    .await?;
 
     let message_id = req.message_id.unwrap_or_else(Uuid::new_v4);
     let row: Option<(Uuid, DateTime<Utc>)> = sqlx::query_as(
@@ -479,6 +523,101 @@ pub async fn ack(
         ok: true,
         message_id: id,
         acked_at,
+    }))
+}
+
+/// POST /api/messages/block
+pub async fn block_sender(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(value): Json<Value>,
+) -> Result<Json<BlockSenderResponse>, CloudError> {
+    reject_plaintext_value(&value)?;
+    let req: BlockSenderRequest = serde_json::from_value(value)
+        .map_err(|e| CloudError::BadRequest(format!("invalid block request: {e}")))?;
+    validate_did(&req.sender_did)?;
+    let sender_did_hash = hash_sensitive_text(req.sender_did.trim());
+
+    sqlx::query(
+        r#"
+        INSERT INTO native_message_blocks (user_id, sender_did_hash)
+        VALUES ($1, $2)
+        ON CONFLICT (user_id, sender_did_hash) DO NOTHING
+        "#,
+    )
+    .bind(claims.sub)
+    .bind(&sender_did_hash)
+    .execute(&state.db)
+    .await?;
+
+    write_audit_event(
+        &state,
+        Some(claims.sub),
+        "sender_blocked",
+        None,
+        json!({ "sender_did_hash": sender_did_hash }),
+    )
+    .await;
+
+    Ok(Json(BlockSenderResponse { ok: true }))
+}
+
+/// POST /api/messages/report
+pub async fn report_abuse(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(value): Json<Value>,
+) -> Result<Json<ReportAbuseResponse>, CloudError> {
+    reject_plaintext_value(&value)?;
+    let req: ReportAbuseRequest = serde_json::from_value(value)
+        .map_err(|e| CloudError::BadRequest(format!("invalid report request: {e}")))?;
+    reject_plaintext_keys(&req.extra)?;
+
+    if let Some(message_id) = req.message_id {
+        ensure_message_visible_to_user(&state, claims.sub, message_id).await?;
+    }
+
+    let sender_did_hash = req
+        .sender_did
+        .as_deref()
+        .map(str::trim)
+        .filter(|did| !did.is_empty())
+        .map(|did| {
+            validate_did(did)?;
+            Ok::<String, CloudError>(hash_sensitive_text(did))
+        })
+        .transpose()?;
+    let reason = normalize_report_reason(req.reason.as_deref())?;
+    let metadata = normalize_report_metadata(req.ciphertext_metadata)?;
+
+    let report_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO native_message_abuse_reports
+            (user_id, message_id, sender_did_hash, reason, ciphertext_metadata)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id
+        "#,
+    )
+    .bind(claims.sub)
+    .bind(req.message_id)
+    .bind(sender_did_hash.as_deref())
+    .bind(reason.as_deref())
+    .bind(&metadata)
+    .fetch_one(&state.db)
+    .await?;
+
+    write_audit_event(
+        &state,
+        Some(claims.sub),
+        "abuse_reported",
+        req.message_id,
+        json!({ "sender_did_hash": sender_did_hash }),
+    )
+    .await;
+
+    Ok(Json(ReportAbuseResponse {
+        ok: true,
+        report_id,
     }))
 }
 
@@ -783,10 +922,146 @@ fn validate_limited(field: &str, raw: &str, min: usize, max: usize) -> Result<()
     Ok(())
 }
 
+async fn check_native_message_rate_limit(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<(), CloudError> {
+    let count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM native_message_envelopes
+        WHERE sender_user_id = $1
+          AND created_at > now() - interval '1 minute'
+        "#,
+    )
+    .bind(user_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if count >= MESSAGE_RATE_LIMIT_PER_MINUTE {
+        return Err(CloudError::RateLimit);
+    }
+    Ok(())
+}
+
+async fn check_native_message_queue_limit(
+    state: &AppState,
+    recipient_did: &str,
+    recipient_device_id: Option<&str>,
+) -> Result<(), CloudError> {
+    let count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM native_message_envelopes
+        WHERE recipient_did = $1
+          AND ($2::text IS NULL OR recipient_device_id IS NULL OR recipient_device_id = $2)
+          AND acked_at IS NULL
+        "#,
+    )
+    .bind(recipient_did)
+    .bind(recipient_device_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if count >= MAX_UNACKED_QUEUE_PER_RECIPIENT {
+        return Err(CloudError::BadRequest(
+            "recipient native message queue is full".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+async fn enforce_sender_not_blocked(
+    state: &AppState,
+    recipient_user_id: Uuid,
+    sender_did: &str,
+) -> Result<(), CloudError> {
+    let sender_did_hash = hash_sensitive_text(sender_did);
+    let blocked: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM native_message_blocks
+            WHERE user_id = $1 AND sender_did_hash = $2
+        )
+        "#,
+    )
+    .bind(recipient_user_id)
+    .bind(sender_did_hash)
+    .fetch_one(&state.db)
+    .await?;
+
+    if blocked {
+        return Err(CloudError::BadRequest(
+            "recipient has blocked this sender".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+async fn ensure_message_visible_to_user(
+    state: &AppState,
+    user_id: Uuid,
+    message_id: Uuid,
+) -> Result<(), CloudError> {
+    let visible: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM native_message_envelopes e
+            INNER JOIN native_message_devices d
+                ON d.did = e.recipient_did
+               AND (e.recipient_device_id IS NULL OR d.device_id = e.recipient_device_id)
+            WHERE e.id = $1 AND d.user_id = $2
+        )
+        "#,
+    )
+    .bind(message_id)
+    .bind(user_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if !visible {
+        return Err(CloudError::NotFound("native message not found".to_string()));
+    }
+    Ok(())
+}
+
+fn normalize_report_reason(raw: Option<&str>) -> Result<Option<String>, CloudError> {
+    let Some(reason) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    validate_limited("reason", reason, 1, MAX_REPORT_REASON_LEN)?;
+    Ok(Some(reason.to_string()))
+}
+
+fn normalize_report_metadata(raw: Option<Value>) -> Result<Value, CloudError> {
+    let metadata = raw.unwrap_or_else(|| json!({}));
+    reject_plaintext_value(&metadata)?;
+    if !metadata.is_object() {
+        return Err(CloudError::BadRequest(
+            "ciphertext_metadata must be a JSON object".to_string(),
+        ));
+    }
+    let size = serde_json::to_vec(&metadata)
+        .map_err(|e| CloudError::BadRequest(format!("invalid ciphertext metadata: {e}")))?
+        .len();
+    if size > MAX_REPORT_METADATA_BYTES {
+        return Err(CloudError::BadRequest(
+            "ciphertext_metadata is too large".to_string(),
+        ));
+    }
+    Ok(metadata)
+}
+
 fn hash_text(raw: &str) -> String {
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(raw.as_bytes());
     hash[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hash_sensitive_text(raw: &str) -> String {
+    let hash = Sha256::digest(raw.trim().as_bytes());
+    hash.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 async fn write_audit_event(
@@ -893,6 +1168,22 @@ mod tests {
             }
         });
         assert!(reject_plaintext_value(&value).is_err());
+    }
+
+    #[test]
+    fn abuse_report_metadata_rejects_plaintext_fields() {
+        let metadata = serde_json::json!({
+            "sealed_envelope_hash": "abc123",
+            "body": "plaintext leak"
+        });
+        assert!(normalize_report_metadata(Some(metadata)).is_err());
+    }
+
+    #[test]
+    fn block_hash_uses_full_digest_not_raw_did() {
+        let hashed = hash_sensitive_text(PEER_SENDER_DID);
+        assert_eq!(hashed.len(), 64);
+        assert_ne!(hashed, PEER_SENDER_DID);
     }
 
     #[test]

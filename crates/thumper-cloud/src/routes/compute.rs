@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::auth::AuthUser;
 use crate::error::CloudError;
 use crate::services::compute_service::{
-    self, CommunityModel, DailyStats, EscrowInfo, ProviderInfo, PublicProviderInfo,
-    ProviderRegistration, ProviderUpdate, RecentJob, WithdrawalRequest, WithdrawalResponse,
+    self, CommunityModel, DailyStats, EscrowInfo, ProviderInfo, ProviderRegistration,
+    ProviderUpdate, PublicProviderInfo, RecentJob, WithdrawalRequest, WithdrawalResponse,
 };
 use crate::state::AppState;
 
@@ -125,7 +125,8 @@ pub async fn get_recent_jobs(
         .await?
         .ok_or_else(|| CloudError::NotFound("no provider profile found".to_string()))?;
 
-    let jobs = compute_service::get_recent_jobs(&state.db, provider.id, query.limit.min(100)).await?;
+    let jobs =
+        compute_service::get_recent_jobs(&state.db, provider.id, query.limit.min(100)).await?;
     Ok(Json(jobs))
 }
 
@@ -162,12 +163,10 @@ pub async fn get_payouts(
 
     let summary = compute_service::get_payout_summary(&state.db, provider.id).await?;
     let payouts =
-        compute_service::get_provider_payouts(&state.db, provider.id, query.limit.min(100))
-            .await?;
+        compute_service::get_provider_payouts(&state.db, provider.id, query.limit.min(100)).await?;
 
     Ok(Json(serde_json::json!({
         "summary": summary,
         "payouts": payouts,
     })))
 }
-
