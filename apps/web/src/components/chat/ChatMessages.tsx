@@ -6,6 +6,7 @@ import { ActionCard } from "@/components/actions/ActionCard";
 import { mapInlineActionToDraft } from "@/components/actions/types";
 import { ReceiptBadge } from "./ReceiptBadge";
 import type { ThumperChatMessage } from "@/lib/thumper-types";
+import type { SovereigntyMode } from "@/lib/sovereignty";
 
 function sanitizeHtml(html: string): string {
   return DOMPurify.sanitize(html, {
@@ -17,10 +18,18 @@ function sanitizeHtml(html: string): string {
 interface ChatMessagesProps {
   messages: ThumperChatMessage[];
   isStreaming: boolean;
+  mode: SovereigntyMode;
+  authenticated: boolean;
   providerInfo?: { type: string; model?: string; provider_name?: string } | null;
 }
 
-export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessagesProps) {
+export function ChatMessages({
+  messages,
+  isStreaming,
+  mode,
+  authenticated,
+  providerInfo,
+}: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -41,6 +50,7 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
     }
     return null;
   }, [messages]);
+  const emptyState = getEmptyStateCopy(mode, authenticated);
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4">
@@ -49,10 +59,9 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
           <div className="w-12 h-12 rounded-2xl bg-[#3da8ff]/10 flex items-center justify-center mb-4">
             <span className="text-xl">G</span>
           </div>
-          <p className="text-[#eef1f8] font-medium mb-1">Off the record.</p>
+          <p className="text-[#eef1f8] font-medium mb-1">{emptyState.title}</p>
           <p className="text-sm text-[#4a5568] max-w-sm">
-            What&apos;s on your mind? This chat is encrypted on your
-            device. The mode in the header decides where it runs.
+            {emptyState.body}
           </p>
         </div>
       )}
@@ -164,6 +173,34 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
       <div ref={bottomRef} />
     </div>
   );
+}
+
+function getEmptyStateCopy(
+  mode: SovereigntyMode,
+  authenticated: boolean,
+): { title: string; body: string } {
+  if (mode === "local") {
+    return {
+      title: "Local mode selected.",
+      body:
+        "Runs on this device only after a supported local model loads here. If the model is not loaded, no on-device claim applies.",
+    };
+  }
+
+  if (mode === "open") {
+    return {
+      title: "Open mode selected.",
+      body:
+        "Plain cloud inference. This is not private, not on-device, and not the default privacy path.",
+    };
+  }
+
+  return {
+    title: authenticated ? "Private mode selected." : "Create your account to start Private.",
+    body: authenticated
+      ? "Private cloud inference routes through Ghola's private relay and returns verifiable receipts."
+      : "Private cloud inference requires an account. Local is the explicit on-device option.",
+  };
 }
 
 function RenderMarkdown({ content }: { content: string }) {

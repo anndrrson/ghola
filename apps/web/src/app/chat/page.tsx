@@ -107,6 +107,7 @@ export default function ChatPage() {
   } | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<AuthMode>("signup");
+  const [promptedForEntryAuth, setPromptedForEntryAuth] = useState(false);
   const searchParams = useSearchParams();
   const router = useRouter();
   const { setAuth, authenticated } = useThumperAuth();
@@ -143,6 +144,15 @@ export default function ChatPage() {
   // is visible to anyone actually reading the network panel.
   const { mode: sovereigntyMode, setMode: setSovereigntyMode } =
     useSovereigntyMode(userDid);
+
+  useEffect(() => {
+    if (authenticated || promptedForEntryAuth || sovereigntyMode === "local") {
+      return;
+    }
+    setAuthModalMode("signup");
+    setAuthModalOpen(true);
+    setPromptedForEntryAuth(true);
+  }, [authenticated, promptedForEntryAuth, sovereigntyMode]);
 
   // Local-mode model selection. `/models/local` links into chat with a
   // `?model=…` query param so a user who opted into Phi-3 mini lands
@@ -860,7 +870,13 @@ export default function ChatPage() {
                 </div>
               </div>
             )}
-            <ChatMessages messages={messages} isStreaming={isStreaming} providerInfo={providerInfo} />
+            <ChatMessages
+              messages={messages}
+              isStreaming={isStreaming}
+              mode={sovereigntyMode}
+              authenticated={authenticated}
+              providerInfo={providerInfo}
+            />
             <ChatInput onSend={handleSend} disabled={isStreaming} />
           </>
         ) : (
@@ -895,11 +911,11 @@ export default function ChatPage() {
               <span className="text-2xl font-bold text-[#3da8ff]">G</span>
             </div>
             <h2 className="text-xl font-semibold text-[#eef1f8] mb-2">
-              Verifiably off the record.
+              Choose how this chat runs.
             </h2>
             <p className="text-sm text-[#8b95a8] text-center max-w-sm mb-6">
-              Pick where your chat runs. Every message ships with a
-              cryptographic receipt you can audit.
+              Private uses Ghola&apos;s protected cloud path. Local only applies
+              after a supported model loads on this device.
             </p>
             <div className="mb-6">
               <SovereigntyPicker
