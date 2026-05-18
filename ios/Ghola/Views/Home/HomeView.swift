@@ -4,11 +4,13 @@ struct HomeView: View {
     @EnvironmentObject var auth: AuthManager
     var onSelectChat: () -> Void = {}
     @State private var tasks: [TaskResponse] = []
+    @State private var providerHealth: ProviderHealthResponse?
     @State private var isLoading = false
     @State private var creatingTaskType: String?
     @State private var selectedTask: TaskResponse?
     @State private var isShowingSelectedTask = false
     @State private var actionError: String?
+    @State private var tasksLoadError: String?
     @State private var activePollTask: Task<Void, Never>?
     @State private var selectedQuickAction: QuickActionKind?
     @State private var isShowingSettings = false
@@ -47,7 +49,7 @@ struct HomeView: View {
                 Text(actionError ?? "Something went wrong.")
             }
             .sheet(item: $selectedQuickAction) { action in
-                QuickActionFormView(action: action) { params in
+                QuickActionFormView(action: action, providerHealth: providerHealth) { params in
                     selectedQuickAction = nil
                     createTask(
                         type: action.rawValue,
@@ -62,8 +64,12 @@ struct HomeView: View {
             .sheet(isPresented: $isShowingSettings) {
                 SettingsView()
             }
-            .refreshable { await loadTasks() }
+            .refreshable {
+                await loadProviderHealth()
+                await loadTasks()
+            }
             .task {
+                await loadProviderHealth()
                 await loadTasks()
                 startActiveTaskPolling()
             }
@@ -176,6 +182,19 @@ struct HomeView: View {
                 .font(Theme.headlineFont)
                 .padding(.horizontal)
 
+            if let tasksLoadError {
+                Label(tasksLoadError, systemImage: "wifi.exclamationmark")
+                    .font(Theme.captionFont)
+                    .foregroundStyle(Theme.warning)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.cornerMd)
+                            .fill(Theme.surfaceGradient)
+                    )
+                    .padding(.horizontal)
+            }
+
             if isLoading && tasks.isEmpty {
                 ProgressView("Loading tasks…")
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -224,9 +243,14 @@ struct HomeView: View {
         do {
             tasks = try await CloudClient.shared.listTasks()
                 .filter { ["pending", "in_progress", "awaiting_approval"].contains($0.status) }
+            tasksLoadError = nil
         } catch {
-            // Silently fail on refresh
+            tasksLoadError = error.localizedDescription
         }
+    }
+
+    private func loadProviderHealth() async {
+        providerHealth = try? await CloudClient.shared.getProviderHealth()
     }
 
     private func startActiveTaskPolling() {
@@ -379,6 +403,7 @@ private enum QuickActionKind: String, Identifiable {
 
 private struct QuickActionFormView: View {
     let action: QuickActionKind
+    let providerHealth: ProviderHealthResponse?
     let onSubmit: ([String: Any]) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -404,6 +429,28 @@ private struct QuickActionFormView: View {
                     Toggle("Approve network execution", isOn: $approvedNetworkExecution)
                 } header: {
                     Text("Privacy")
+                }
+
+                if let providerBlockMessage {
+                    Section {
+                        Label("Not live yet", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(Theme.warning)
+                        Text(providerBlockMessage)
+                            .font(Theme.captionFont)
+                            .foregroundStyle(Theme.textSecondary)
+                    } header: {
+                        Text("Availability")
+                    }
+                } else if action == .calendar {
+                    Section {
+                        Label("Google account required", systemImage: "calendar.badge.clock")
+                            .foregroundStyle(Theme.textSecondary)
+                        Text("Connect Google in Settings before creating calendar events.")
+                            .font(Theme.captionFont)
+                            .foregroundStyle(Theme.textSecondary)
+                    } header: {
+                        Text("Availability")
+                    }
                 }
 
                 switch action {
@@ -475,7 +522,19 @@ private struct QuickActionFormView: View {
     }
 
     private var canSubmit: Bool {
-        isValid && approvedNetworkExecution
+        isValid && approvedNetworkExecution && providerBlockMessage == nil
+    }
+
+    private var providerBlockMessage: String? {
+        guard let providerHealth else { return nil }
+        switch action {
+        case .call:
+            return providerHealth.blandAI == true ? nil : "Calling is blocked because the calling provider is not configured on this backend."
+        case .email:
+            return providerHealth.hasCloudModelProvider ? nil : "Email drafting is blocked because no cloud model provider is configured on this backend."
+        case .calendar:
+            return providerHealth.gmail == true ? nil : "Calendar is blocked because Google OAuth is not configured on this backend."
+        }
     }
 
     private var params: [String: Any] {

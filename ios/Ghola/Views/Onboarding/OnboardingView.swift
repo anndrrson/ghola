@@ -5,24 +5,6 @@ import AuthenticationServices
 
 struct OnboardingView: View {
     @EnvironmentObject var auth: AuthManager
-    @State private var email = ""
-    @FocusState private var focusedEmail: Bool
-
-    private var normalizedEmail: String {
-        email.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var emailLooksValid: Bool {
-        normalizedEmail.contains("@") && normalizedEmail.contains(".")
-    }
-
-    private var canSubmit: Bool {
-        emailLooksValid && !auth.isLoading
-    }
-
-    private var submitTitle: String {
-        "Continue"
-    }
 
     var body: some View {
         ZStack {
@@ -90,30 +72,10 @@ struct OnboardingView: View {
             .clipShape(RoundedRectangle(cornerRadius: Theme.cornerMd))
             .disabled(auth.isLoading)
 
-            HStack(spacing: Theme.paddingSm) {
-                Rectangle()
-                    .fill(Theme.cardBorder)
-                    .frame(height: 1)
-                Text("or")
-                    .font(Theme.captionFont)
-                    .foregroundStyle(Theme.textSecondary)
-                Rectangle()
-                    .fill(Theme.cardBorder)
-                    .frame(height: 1)
-            }
+            Label("Wallet sign-in is disabled until user-held signing is ready.", systemImage: "lock.shield")
+                .font(Theme.captionFont)
+                .foregroundStyle(Theme.textSecondary)
             #endif
-
-            TextField("Email", text: $email)
-                .textContentType(.emailAddress)
-                #if os(iOS)
-                .keyboardType(.emailAddress)
-                .textInputAutocapitalization(.never)
-                #endif
-                .autocorrectionDisabled(true)
-                .focused($focusedEmail)
-                .submitLabel(.go)
-                .onSubmit { submit() }
-                .authFieldStyle()
 
             if let error = auth.error {
                 Text(error)
@@ -124,26 +86,6 @@ struct OnboardingView: View {
                     .background(Theme.danger.opacity(0.10))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
             }
-
-            Button(action: submit) {
-                HStack {
-                    Spacer()
-                    if auth.isLoading {
-                        ProgressView()
-                            .tint(.white)
-                    } else {
-                        Text(submitTitle)
-                            .font(.headline)
-                    }
-                    Spacer()
-                }
-                .frame(height: 50)
-                .background(Theme.accentGradient)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.cornerMd))
-            }
-            .disabled(!canSubmit)
-            .opacity(canSubmit ? 1 : 0.5)
         }
         .padding(Theme.paddingLg)
         .background(
@@ -161,29 +103,5 @@ struct OnboardingView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .shadow(color: Theme.cardShadow, radius: 10, x: 0, y: 6)
-    }
-
-    private func submit() {
-        guard canSubmit else { return }
-        Task {
-            auth.error = nil
-            await auth.signInWithTurnkey(email: normalizedEmail)
-        }
-    }
-}
-
-private extension View {
-    func authFieldStyle() -> some View {
-        self
-            .padding(.horizontal, Theme.paddingMd)
-            .padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.cornerMd, style: .continuous)
-                    .fill(Theme.cardBg)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.cornerMd, style: .continuous)
-                    .stroke(Theme.cardBorder, lineWidth: 1)
-            )
     }
 }

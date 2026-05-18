@@ -6,6 +6,7 @@ struct TaskDetailView: View {
     @State private var currentTask: TaskResponse
     @State private var refreshTask: Task<Void, Never>?
     @State private var showCancel = false
+    @State private var showEmailSendApproval = false
     @State private var isSendingEmail = false
     @State private var actionError: String?
 
@@ -97,7 +98,7 @@ struct TaskDetailView: View {
                            currentTask.taskType == "email",
                            emailActionID != nil {
                             Button {
-                                Task { await sendEmailDraft() }
+                                showEmailSendApproval = true
                             } label: {
                                 Label(isSendingEmail ? "Sending..." : "Send Email", systemImage: "paperplane.fill")
                             }
@@ -135,6 +136,14 @@ struct TaskDetailView: View {
             }
             Button("Keep", role: .cancel) {}
         }
+        .alert("Send via Gmail?", isPresented: $showEmailSendApproval) {
+            Button("Send") {
+                Task { await sendEmailDraft() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(emailSendApprovalMessage)
+        }
     }
 
     private var statusTitle: String {
@@ -152,6 +161,13 @@ struct TaskDetailView: View {
     private var emailActionID: UUID? {
         guard let id = currentTask.result?["email_action_id"]?.value as? String else { return nil }
         return UUID(uuidString: id)
+    }
+
+    private var emailSendApprovalMessage: String {
+        if let to = currentTask.result?["to_address"]?.value as? String {
+            return "Recipient \(to), the subject, body, and approval metadata will leave Ghola for Gmail."
+        }
+        return "The recipient, subject, body, and approval metadata will leave Ghola for Gmail."
     }
 
     private var privacyBoundaryTitle: String {

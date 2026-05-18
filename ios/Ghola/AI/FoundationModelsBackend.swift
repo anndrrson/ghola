@@ -13,7 +13,7 @@ import FoundationModels
 /// backend that reports a precise `.notImplemented` error.
 final class FoundationModelsBackend: LlmBackend, @unchecked Sendable {
 
-    let displayName: String = "On-device (Apple Foundation Models)"
+    let displayName: String = "System on-device model"
     let requiresInternet: Bool = false
     let runtimeBoundary: LlmRuntimeBoundary = .onDevice
 
@@ -34,15 +34,15 @@ final class FoundationModelsBackend: LlmBackend, @unchecked Sendable {
         if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
             switch SystemLanguageModel.default.availability {
             case .available:
-                return "Apple Foundation Models is available."
+                return "System on-device model is available."
             case .unavailable(let reason):
-                return "Apple Foundation Models unavailable: \(reason.description)."
+                return "System on-device model unavailable: \(reason.description)."
             @unknown default:
-                return "Apple Foundation Models is unavailable."
+                return "System on-device model is unavailable."
             }
         }
         #endif
-        return "Apple Foundation Models requires iOS 26, macOS 26, or visionOS 26."
+        return "System on-device model requires iOS 26, macOS 26, or visionOS 26."
     }
 
     func generate(
@@ -53,14 +53,14 @@ final class FoundationModelsBackend: LlmBackend, @unchecked Sendable {
     ) async throws -> ApiResponse {
         if !tools.isEmpty || forceToolUse {
             throw LlmBackendError.notImplemented(
-                "Foundation Models tool use is not wired to Ghola's Tool schema yet."
+                "System on-device tool use is not wired to Ghola's Tool schema yet."
             )
         }
 
         let prompt = Self.prompt(from: messages)
         guard !prompt.isEmpty else {
             throw LlmBackendError.malformedResponse(
-                "FoundationModelsBackend.generate: no promptable chat messages"
+                "SystemOnDeviceBackend.generate: no promptable chat messages"
             )
         }
 
@@ -137,7 +137,7 @@ final class FoundationModelsBackend: LlmBackend, @unchecked Sendable {
     }
 
     private static func unavailable(_ reason: String) -> LlmBackendError {
-        .notImplemented("Apple Foundation Models unavailable: \(reason)")
+        .notImplemented("System on-device model unavailable: \(reason)")
     }
 }
 

@@ -127,6 +127,50 @@ struct WalletTransferResponse: Codable {
     }
 }
 
+struct ProviderHealthResponse: Codable {
+    let google: Bool?
+    let apple: Bool?
+    let stripe: Bool?
+    let blandAI: Bool?
+    let claude: Bool?
+    let gmail: Bool?
+    let telegram: Bool?
+    let groq: Bool?
+    let cerebras: Bool?
+    let gemini: Bool?
+    let openrouter: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case google, apple, stripe, claude, gmail, telegram, groq, cerebras, gemini, openrouter
+        case blandAI = "bland_ai"
+    }
+
+    var hasCloudModelProvider: Bool {
+        claude == true || groq == true || cerebras == true || gemini == true || openrouter == true
+    }
+}
+
+struct ConnectedAccountStatus: Codable, Identifiable {
+    let provider: String
+    let connected: Bool
+    let connectedAt: String?
+
+    var id: String { provider }
+
+    enum CodingKeys: String, CodingKey {
+        case provider, connected
+        case connectedAt = "connected_at"
+    }
+}
+
+struct AuthorizeAccountResponse: Codable {
+    let authorizeURL: String
+
+    enum CodingKeys: String, CodingKey {
+        case authorizeURL = "authorize_url"
+    }
+}
+
 struct PaymentHealthResponse: Codable {
     let defaultRail: String?
     let rails: [String: PaymentRailStatus]

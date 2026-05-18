@@ -49,6 +49,12 @@ enum NativeMessagingError: LocalizedError {
         case .privacyBlocked(let message):
             return message
         case .server(let code, let message):
+            if code == 404 {
+                return "Messaging relay is not available on this backend yet. Update Ghola and try again."
+            }
+            if code >= 500 {
+                return "Messaging relay is temporarily unavailable. Try again in a moment."
+            }
             return "Messaging error \(code): \(message)"
         }
     }

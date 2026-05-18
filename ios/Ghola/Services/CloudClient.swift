@@ -325,6 +325,22 @@ actor CloudClient {
         return try await get("/health/institutional", authenticated: false, scope: .auth)
     }
 
+    func getProviderHealth() async throws -> ProviderHealthResponse {
+        return try await get("/health/providers", authenticated: false, scope: .auth)
+    }
+
+    func getConnectedAccounts() async throws -> [ConnectedAccountStatus] {
+        return try await get("/api/accounts/status", scope: .providerConfig)
+    }
+
+    func getGmailAuthorizeURL() async throws -> URL {
+        let response: AuthorizeAccountResponse = try await get("/api/accounts/authorize/gmail", scope: .providerConfig)
+        guard let url = URL(string: response.authorizeURL) else {
+            throw CloudError.invalidURL
+        }
+        return url
+    }
+
     func sendUSDC(to address: String, amountMicroUSDC: Int64, approval: PrivacyApproval) async throws -> WalletTransferResponse {
         try PrivacyGate.authorize(scope: .walletTransfer, approval: approval)
         var body: [String: Any] = [
