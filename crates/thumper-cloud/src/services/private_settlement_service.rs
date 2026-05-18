@@ -167,6 +167,18 @@ pub struct InstitutionalReadinessResponse {
     pub blocking_reasons: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct InstitutionalReadinessInputs {
+    private_rail_ready: bool,
+    verifier_ready: bool,
+    signer_ready: bool,
+    funded_smoke_test_passed: bool,
+    server_held_signing_disabled: bool,
+    audit_export_enabled: bool,
+    open_high_critical_findings: i64,
+    last_canary_at: Option<String>,
+}
+
 fn assert_private_rail_ready() -> Result<x402_service::ShieldedStablecoinRuntimeStatus, CloudError>
 {
     let status = x402_service::shielded_stablecoin_runtime_status();
@@ -917,60 +929,71 @@ async fn fetch_private_transfer_receipt(
     })
 }
 
-pub fn institutional_readiness() -> InstitutionalReadinessResponse {
-    let shielded = x402_service::shielded_stablecoin_runtime_status();
-    let funded_smoke_test_passed = funded_smoke_test_passed();
-    let server_held_signing_disabled = server_held_signing_disabled();
-    let signer_ready = private_signer_ready();
-    let open_high_critical_findings = env_i64("GHOLA_OPEN_HIGH_CRITICAL_FINDINGS");
-    let audit_export_enabled = true;
-    let last_canary_at = std::env::var("GHOLA_PRIVATE_USDCX_LAST_CANARY_AT")
-        .ok()
-        .filter(|s| !s.trim().is_empty());
-
+fn institutional_readiness_from_inputs(
+    inputs: InstitutionalReadinessInputs,
+) -> InstitutionalReadinessResponse {
     let mut blocking_reasons = Vec::new();
-    if !shielded.ready {
+    if !inputs.private_rail_ready {
         blocking_reasons.push("private Aleo USDCx rail is not ready".to_string());
     }
-    if !shielded.verifier_ready {
+    if !inputs.verifier_ready {
         blocking_reasons.push("shielded verifier is not marked ready".to_string());
     }
-    if !signer_ready {
+    if !inputs.signer_ready {
         blocking_reasons.push("user-held private signer is not marked ready".to_string());
     }
-    if !funded_smoke_test_passed {
+    if !inputs.funded_smoke_test_passed {
         blocking_reasons.push("real funded USDCx smoke test has not passed".to_string());
     }
-    if !server_held_signing_disabled {
+    if !inputs.server_held_signing_disabled {
         blocking_reasons
             .push("server-controlled Turnkey signing or wallet creation is enabled".to_string());
     }
-    if open_high_critical_findings > 0 {
+    if inputs.open_high_critical_findings > 0 {
         blocking_reasons.push("open High/Critical security findings remain".to_string());
     }
+    if !inputs.audit_export_enabled {
+        blocking_reasons.push("selective disclosure audit export is disabled".to_string());
+    }
 
-    let ready = shielded.ready
-        && shielded.verifier_ready
-        && signer_ready
-        && funded_smoke_test_passed
-        && server_held_signing_disabled
-        && audit_export_enabled
-        && open_high_critical_findings == 0;
+    let ready = inputs.private_rail_ready
+        && inputs.verifier_ready
+        && inputs.signer_ready
+        && inputs.funded_smoke_test_passed
+        && inputs.server_held_signing_disabled
+        && inputs.audit_export_enabled
+        && inputs.open_high_critical_findings == 0;
 
     InstitutionalReadinessResponse {
         ready,
         version: INSTITUTIONAL_READINESS_VERSION,
         claim: "Designed for institutional pilots: fail-closed private USDCx settlement, user-held signing, explicit approvals, and selective disclosure receipts.",
-        private_rail_ready: shielded.ready,
-        verifier_ready: shielded.verifier_ready,
-        signer_ready,
-        funded_smoke_test_passed,
-        server_held_signing_disabled,
-        audit_export_enabled,
-        open_high_critical_findings,
-        last_canary_at,
+        private_rail_ready: inputs.private_rail_ready,
+        verifier_ready: inputs.verifier_ready,
+        signer_ready: inputs.signer_ready,
+        funded_smoke_test_passed: inputs.funded_smoke_test_passed,
+        server_held_signing_disabled: inputs.server_held_signing_disabled,
+        audit_export_enabled: inputs.audit_export_enabled,
+        open_high_critical_findings: inputs.open_high_critical_findings,
+        last_canary_at: inputs.last_canary_at,
         blocking_reasons,
     }
+}
+
+pub fn institutional_readiness() -> InstitutionalReadinessResponse {
+    let shielded = x402_service::shielded_stablecoin_runtime_status();
+    institutional_readiness_from_inputs(InstitutionalReadinessInputs {
+        private_rail_ready: shielded.ready,
+        verifier_ready: shielded.verifier_ready,
+        signer_ready: private_signer_ready(),
+        funded_smoke_test_passed: funded_smoke_test_passed(),
+        server_held_signing_disabled: server_held_signing_disabled(),
+        audit_export_enabled: true,
+        open_high_critical_findings: env_i64("GHOLA_OPEN_HIGH_CRITICAL_FINDINGS"),
+        last_canary_at: std::env::var("GHOLA_PRIVATE_USDCX_LAST_CANARY_AT")
+            .ok()
+            .filter(|s| !s.trim().is_empty()),
+    })
 }
 
 #[cfg(test)]
@@ -1069,5 +1092,89 @@ mod tests {
         assert_ne!(receipt, recipient);
         assert_eq!(policy.len(), 64);
         assert_eq!(receipt.len(), 64);
+    }
+
+    #[test]
+    fn institutional_readiness_requires_signer_and_funded_canary() {
+        let readiness = institutional_readiness_from_inputs(InstitutionalReadinessInputs {
+            private_rail_ready: true,
+            verifier_ready: true,
+            signer_ready: false,
+            funded_smoke_test_passed: false,
+            server_held_signing_disabled: true,
+            audit_export_enabled: true,
+            open_high_critical_findings: 0,
+            last_canary_at: None,
+        });
+
+        assert!(!readiness.ready);
+        assert!(readiness
+            .blocking_reasons
+            .iter()
+            .any(|reason| reason.contains("user-held private signer")));
+        assert!(readiness
+            .blocking_reasons
+            .iter()
+            .any(|reason| reason.contains("funded USDCx smoke test")));
+    }
+
+    #[test]
+    fn institutional_readiness_rejects_server_held_signing() {
+        let readiness = institutional_readiness_from_inputs(InstitutionalReadinessInputs {
+            private_rail_ready: true,
+            verifier_ready: true,
+            signer_ready: true,
+            funded_smoke_test_passed: true,
+            server_held_signing_disabled: false,
+            audit_export_enabled: true,
+            open_high_critical_findings: 0,
+            last_canary_at: Some("2026-05-18T00:00:00Z".to_string()),
+        });
+
+        assert!(!readiness.ready);
+        assert!(readiness.blocking_reasons.iter().any(|reason| {
+            reason.contains("server-controlled Turnkey signing or wallet creation")
+        }));
+    }
+
+    #[test]
+    fn institutional_readiness_passes_only_when_all_gates_pass() {
+        let readiness = institutional_readiness_from_inputs(InstitutionalReadinessInputs {
+            private_rail_ready: true,
+            verifier_ready: true,
+            signer_ready: true,
+            funded_smoke_test_passed: true,
+            server_held_signing_disabled: true,
+            audit_export_enabled: true,
+            open_high_critical_findings: 0,
+            last_canary_at: Some("2026-05-18T00:00:00Z".to_string()),
+        });
+
+        assert!(readiness.ready);
+        assert!(readiness.blocking_reasons.is_empty());
+        assert_eq!(
+            readiness.last_canary_at.as_deref(),
+            Some("2026-05-18T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn institutional_readiness_blocks_open_high_critical_findings() {
+        let readiness = institutional_readiness_from_inputs(InstitutionalReadinessInputs {
+            private_rail_ready: true,
+            verifier_ready: true,
+            signer_ready: true,
+            funded_smoke_test_passed: true,
+            server_held_signing_disabled: true,
+            audit_export_enabled: true,
+            open_high_critical_findings: 1,
+            last_canary_at: None,
+        });
+
+        assert!(!readiness.ready);
+        assert!(readiness
+            .blocking_reasons
+            .iter()
+            .any(|reason| reason.contains("High/Critical")));
     }
 }
