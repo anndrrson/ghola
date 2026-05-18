@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import Ghola
 
@@ -372,5 +373,74 @@ final class LlmBackendTests: XCTestCase {
             XCTAssertEqual(status.signingMode, .aleoDevice)
             XCTAssertNotNil(status.unavailableReason)
         }
+    }
+
+    func testPrivatePaymentSignerAttestationPayload_MatchesBackendShape() {
+        let attestation = PrivateUSDCxSignerAttestation(
+            version: PrivateUSDCxSignerAttestation.version,
+            intentID: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
+            signingMode: "aleo_device",
+            signerKeyID: "did:key:z6MkSigner",
+            recipientHash: "recipient-hash-1",
+            amountMicroUSDC: 1_000_000,
+            network: "aleo:mainnet",
+            asset: "USDCx",
+            policyHash: "policy-hash-1",
+            proofDigest: "proof-digest-1",
+            receiptRef: "receipt-ref-1",
+            signedAt: "2026-05-18T01:02:03+00:00",
+            signatureBase64: ""
+        )
+
+        let payload = String(
+            data: PrivatePaymentSigner.signerAttestationPayload(attestation),
+            encoding: .utf8
+        )
+
+        XCTAssertEqual(payload, """
+ghola-private-usdcx-signer-v1
+intent_id:00000000-0000-0000-0000-000000000003
+signing_mode:aleo_device
+signer_key_id:did:key:z6MkSigner
+recipient_hash:recipient-hash-1
+amount_micro_usdc:1000000
+network:aleo:mainnet
+asset:USDCx
+policy_hash:policy-hash-1
+proof_digest:proof-digest-1
+receipt_ref:receipt-ref-1
+signed_at:2026-05-18T01:02:03+00:00
+""")
+    }
+
+    func testPrivatePaymentSignerAttestation_RequiresIntentSignerMatch() throws {
+        let signingKey = Curve25519.Signing.PrivateKey()
+        let intent = PrivateTransferIntentResponse(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000004")!,
+            rail: "shielded_stablecoin",
+            canonicalRail: "aleo_usdcx_shielded",
+            provider: "aleo",
+            network: "aleo:mainnet",
+            asset: "USDCx",
+            amountMicroUSDC: 1_000_000,
+            recipientPreview: "aleo1qqq...qqqqqq",
+            status: "intent_pending",
+            expiresAt: "2026-05-18T01:12:03Z",
+            privacyDisclosure: "Private USDCx",
+            fallbackAllowed: false,
+            signingMode: "aleo_device",
+            signerKeyID: "did:key:zWrongSigner",
+            policyHash: "policy-hash-1",
+            institutionalReadinessVersion: "institutional-usdcx-v1"
+        )
+
+        XCTAssertThrowsError(try PrivatePaymentSigner.makeSignerAttestation(
+            intent: intent,
+            recipientHash: "recipient-hash-1",
+            proofDigest: "proof-digest-1",
+            receiptRef: "receipt-ref-1",
+            signingKey: signingKey,
+            signedAt: Date(timeIntervalSince1970: 1_779_058_923)
+        ))
     }
 }
