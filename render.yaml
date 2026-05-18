@@ -27,9 +27,37 @@ services:
         value: "https://ghola.xyz,https://www.ghola.xyz"
       - key: GATEWAY_BASE_URL
         value: "https://ghola-gateway.onrender.com"
+      # Thumper Cloud encrypts BYOM API keys and OAuth tokens with this key.
+      # Generate with: openssl rand -hex 32
+      - key: THUMPER_ENCRYPTION_KEY
+        sync: false
       # Shared KEK — said-cloud encrypts, ghola-gateway decrypts. MUST match.
       # Generate with: openssl rand -hex 32
       - key: GHOLA_VAULT_KEY
+        sync: false
+      - key: APPLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GMAIL_CLIENT_ID
+        sync: false
+      - key: GMAIL_CLIENT_SECRET
+        sync: false
+      - key: BLAND_API_KEY
+        sync: false
+      - key: BLAND_WEBHOOK_URL
+        sync: false
+      - key: CLAUDE_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: GOOGLE_GEMINI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
         sync: false
       - key: STRIPE_SECRET_KEY
         sync: false

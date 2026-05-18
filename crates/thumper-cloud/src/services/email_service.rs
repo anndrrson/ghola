@@ -77,11 +77,11 @@ Return a JSON object with:
 The email should be ready to send — professional, clear, and complete. Sign it with the sender's name."#
     );
 
-    let result = crate::services::llm_router::generate(state, user_id, &prompt, Some("json")).await?;
+    let result =
+        crate::services::llm_router::generate(state, user_id, &prompt, Some("json")).await?;
 
-    let parsed: serde_json::Value = serde_json::from_str(&result).map_err(|_| {
-        CloudError::Internal("failed to parse LLM response as JSON".to_string())
-    })?;
+    let parsed: serde_json::Value = serde_json::from_str(&result)
+        .map_err(|_| CloudError::Internal("failed to parse LLM response as JSON".to_string()))?;
 
     Ok(EmailDraft {
         to_address: parsed["to_address"]
@@ -92,10 +92,7 @@ The email should be ready to send — professional, clear, and complete. Sign it
             .as_str()
             .unwrap_or("(No subject)")
             .to_string(),
-        body: parsed["body"]
-            .as_str()
-            .unwrap_or("")
-            .to_string(),
+        body: parsed["body"].as_str().unwrap_or("").to_string(),
     })
 }
 
@@ -122,8 +119,7 @@ pub async fn send_via_gmail(
         "To: {to}\r\n{cc_header}Subject: {subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}"
     );
 
-    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(raw_message.as_bytes());
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_message.as_bytes());
 
     let client = reqwest::Client::new();
     let resp = client
@@ -136,7 +132,7 @@ pub async fn send_via_gmail(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let error_body = resp.text().await.unwrap_or_default();
+        let _ = resp.text().await;
 
         // If token expired, try refreshing
         if status.as_u16() == 401 {
@@ -146,17 +142,18 @@ pub async fn send_via_gmail(
         }
 
         return Err(CloudError::Internal(format!(
-            "Gmail API returned {status}: {error_body}"
+            "Gmail API returned status {status}"
         )));
     }
 
     let resp_body: serde_json::Value = resp.json().await.unwrap_or_default();
-    let message_id = resp_body["id"]
-        .as_str()
-        .unwrap_or("unknown")
-        .to_string();
+    let message_id = resp_body["id"].as_str().unwrap_or("unknown").to_string();
 
-    tracing::info!(%user_id, %message_id, %to, "email sent via Gmail");
+    tracing::info!(
+        user = %crate::privacy::log_id(&user_id),
+        %message_id,
+        "email sent via Gmail"
+    );
 
     Ok(message_id)
 }
@@ -200,10 +197,22 @@ async fn refresh_gmail_token(
     user_id: Uuid,
     refresh_token: &str,
 ) -> Result<GmailTokens, CloudError> {
-    let client_id = state.config.gmail_client_id.as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Gmail OAuth not configured".to_string()))?;
-    let client_secret = state.config.gmail_client_secret.as_deref()
-        .ok_or(CloudError::ServiceUnavailable("Gmail OAuth not configured".to_string()))?;
+    let client_id =
+        state
+            .config
+            .gmail_client_id
+            .as_deref()
+            .ok_or(CloudError::ServiceUnavailable(
+                "Gmail OAuth not configured".to_string(),
+            ))?;
+    let client_secret =
+        state
+            .config
+            .gmail_client_secret
+            .as_deref()
+            .ok_or(CloudError::ServiceUnavailable(
+                "Gmail OAuth not configured".to_string(),
+            ))?;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -218,10 +227,23 @@ async fn refresh_gmail_token(
         .await
         .map_err(|e| CloudError::Internal(format!("token refresh failed: {e}")))?;
 
+    let status = resp.status();
+    if !status.is_success() {
+        let _ = resp.text().await;
+        if status.as_u16() == 401 {
+            return Err(CloudError::Auth(
+                "Gmail token expired — user needs to re-authenticate".to_string(),
+            ));
+        }
+        return Err(CloudError::Internal(format!(
+            "Gmail token refresh failed with status {status}"
+        )));
+    }
+
     let body: serde_json::Value = resp.json().await.unwrap_or_default();
-    let new_access_token = body["access_token"]
-        .as_str()
-        .ok_or(CloudError::Internal("no access_token in refresh response".to_string()))?;
+    let new_access_token = body["access_token"].as_str().ok_or(CloudError::Internal(
+        "no access_token in refresh response".to_string(),
+    ))?;
     let expires_in = body["expires_in"].as_i64().unwrap_or(3600);
 
     // Update stored tokens

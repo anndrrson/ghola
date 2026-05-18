@@ -5,6 +5,7 @@ struct HomeView: View {
     var onSelectChat: () -> Void = {}
     @State private var tasks: [TaskResponse] = []
     @State private var providerHealth: ProviderHealthResponse?
+    @State private var connectedAccounts: [ConnectedAccountStatus] = []
     @State private var isLoading = false
     @State private var creatingTaskType: String?
     @State private var selectedTask: TaskResponse?
@@ -49,7 +50,11 @@ struct HomeView: View {
                 Text(actionError ?? "Something went wrong.")
             }
             .sheet(item: $selectedQuickAction) { action in
-                QuickActionFormView(action: action, providerHealth: providerHealth) { params in
+                QuickActionFormView(
+                    action: action,
+                    providerHealth: providerHealth,
+                    connectedAccounts: connectedAccounts
+                ) { params in
                     selectedQuickAction = nil
                     createTask(
                         type: action.rawValue,
@@ -250,7 +255,11 @@ struct HomeView: View {
     }
 
     private func loadProviderHealth() async {
-        providerHealth = try? await CloudClient.shared.getProviderHealth()
+        async let health = CloudClient.shared.getProviderHealth()
+        async let accounts = CloudClient.shared.getConnectedAccounts()
+
+        providerHealth = try? await health
+        connectedAccounts = (try? await accounts) ?? []
     }
 
     private func startActiveTaskPolling() {
@@ -404,6 +413,7 @@ private enum QuickActionKind: String, Identifiable {
 private struct QuickActionFormView: View {
     let action: QuickActionKind
     let providerHealth: ProviderHealthResponse?
+    let connectedAccounts: [ConnectedAccountStatus]
     let onSubmit: ([String: Any]) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -443,9 +453,9 @@ private struct QuickActionFormView: View {
                     }
                 } else if action == .calendar {
                     Section {
-                        Label("Google account required", systemImage: "calendar.badge.clock")
-                            .foregroundStyle(Theme.textSecondary)
-                        Text("Connect Google in Settings before creating calendar events.")
+                        Label("Google account connected", systemImage: "calendar.badge.checkmark")
+                            .foregroundStyle(Theme.success)
+                        Text("Calendar requests still require approval before anything leaves this device.")
                             .font(Theme.captionFont)
                             .foregroundStyle(Theme.textSecondary)
                     } header: {
@@ -533,7 +543,16 @@ private struct QuickActionFormView: View {
         case .email:
             return providerHealth.hasCloudModelProvider ? nil : "Email drafting is blocked because no cloud model provider is configured on this backend."
         case .calendar:
-            return providerHealth.gmail == true ? nil : "Calendar is blocked because Google OAuth is not configured on this backend."
+            if providerHealth.gmail != true {
+                return "Calendar is blocked because Google OAuth is not configured on this backend."
+            }
+            return isGmailConnected ? nil : "Calendar is blocked until you connect Google in Settings."
+        }
+    }
+
+    private var isGmailConnected: Bool {
+        connectedAccounts.contains { account in
+            account.provider == "gmail" && account.connected
         }
     }
 

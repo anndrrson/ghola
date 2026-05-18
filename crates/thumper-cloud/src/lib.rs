@@ -471,6 +471,8 @@ async fn health(State(state): State<AppState>) -> String {
     let user_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users")
         .fetch_one(&state.db)
         .await;
+    let gmail_configured =
+        state.config.gmail_client_id.is_some() && state.config.gmail_client_secret.is_some();
 
     let providers = format!(
         "google={} apple={} stripe={} bland={} claude={} gmail={} telegram={} groq={} cerebras={} gemini={} openrouter={}",
@@ -479,7 +481,7 @@ async fn health(State(state): State<AppState>) -> String {
         state.config.stripe_secret_key.is_some(),
         state.config.bland_api_key.is_some(),
         state.config.claude_api_key.is_some(),
-        state.config.gmail_client_id.is_some(),
+        gmail_configured,
         state.config.telegram_bot_token.is_some(),
         state.config.groq_api_key.is_some(),
         state.config.cerebras_api_key.is_some(),
@@ -503,6 +505,8 @@ async fn health(State(state): State<AppState>) -> String {
 }
 
 async fn health_providers(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let gmail_configured =
+        state.config.gmail_client_id.is_some() && state.config.gmail_client_secret.is_some();
     let cascade_stats = state.free_cascade.stats().await;
     let cascade_json: serde_json::Value = cascade_stats
         .into_iter()
@@ -520,7 +524,7 @@ async fn health_providers(State(state): State<AppState>) -> Json<serde_json::Val
         "stripe": state.config.stripe_secret_key.is_some(),
         "bland_ai": state.config.bland_api_key.is_some(),
         "claude": state.config.claude_api_key.is_some(),
-        "gmail": state.config.gmail_client_id.is_some(),
+        "gmail": gmail_configured,
         "telegram": state.config.telegram_bot_token.is_some(),
         "groq": state.config.groq_api_key.is_some(),
         "cerebras": state.config.cerebras_api_key.is_some(),

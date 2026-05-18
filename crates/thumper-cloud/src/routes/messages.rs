@@ -11,8 +11,10 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
@@ -29,6 +31,13 @@ const MAX_RELAY_URLS: usize = 6;
 const MAX_RELAY_URL_LEN: usize = 512;
 const MAX_ENVELOPE_BYTES: usize = 128 * 1024;
 const MAX_APPROVAL_RECEIPT_HASH_LEN: usize = 128;
+const SEV1_MAGIC: &[u8; 4] = b"SEv1";
+const SEV1_VERSION: u8 = 0x01;
+const SEV1_SIGNATURE_LEN: usize = 64;
+const SEV1_EPHEM_PUB_LEN: usize = 32;
+const SEV1_NONCE_LEN: usize = 12;
+const DID_KEY_PREFIX: &str = "did:key:z";
+const ED25519_MULTICODEC: [u8; 2] = [0xed, 0x01];
 
 const PLAINTEXT_KEYS: &[&str] = &[
     "body",
@@ -496,6 +505,16 @@ fn validate_device_bundle(req: &DeviceKeyBundleV1) -> Result<(), CloudError> {
             "device key bundle is expired".to_string(),
         ));
     }
+    if req.expires_at <= req.created_at {
+        return Err(CloudError::BadRequest(
+            "device key bundle expires_at must be after created_at".to_string(),
+        ));
+    }
+    if req.created_at > Utc::now() + chrono::Duration::minutes(5) {
+        return Err(CloudError::BadRequest(
+            "device key bundle created_at is too far in the future".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -526,6 +545,22 @@ fn validate_envelope_request(req: &PostEnvelopeRequest) -> Result<(), CloudError
         return Err(CloudError::BadRequest(format!(
             "sealed_envelope_b64 must decode to 1..={MAX_ENVELOPE_BYTES} bytes"
         )));
+    }
+    let envelope = parse_verified_sev1(&bytes)?;
+    if envelope.recipient_kind == 0x02 {
+        return Err(CloudError::BadRequest(
+            "model-bridge envelopes are not native E2EE messages".to_string(),
+        ));
+    }
+    if envelope.sender_did != req.sender_did.trim() {
+        return Err(CloudError::BadRequest(
+            "envelope sender_did does not match request sender_did".to_string(),
+        ));
+    }
+    if envelope.recipient_id != req.recipient_did.trim() {
+        return Err(CloudError::BadRequest(
+            "envelope recipient_id does not match request recipient_did".to_string(),
+        ));
     }
 
     if req.kind.requires_approval_receipt() {
@@ -577,7 +612,19 @@ fn reject_plaintext_value(value: &Value) -> Result<(), CloudError> {
 
 fn reject_plaintext_key(key: &str) -> Result<(), CloudError> {
     let normalized = key.to_ascii_lowercase();
-    if PLAINTEXT_KEYS.contains(&normalized.as_str()) || normalized.contains("plaintext") {
+    let compact: String = normalized
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect();
+    if PLAINTEXT_KEYS.contains(&normalized.as_str())
+        || compact.contains("plaintext")
+        || compact.contains("cleartext")
+        || compact == "rawmessage"
+        || compact == "messagetext"
+        || compact == "messagebody"
+        || compact == "bodytext"
+        || compact == "contenttext"
+    {
         return Err(CloudError::BadRequest(format!(
             "plaintext field '{key}' is not allowed on native messaging relay"
         )));
@@ -588,6 +635,131 @@ fn reject_plaintext_key(key: &str) -> Result<(), CloudError> {
         ));
     }
     Ok(())
+}
+
+struct Sev1PublicMetadata {
+    recipient_kind: u8,
+    sender_did: String,
+    recipient_id: String,
+}
+
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
+    }
+
+    fn take(&mut self, len: usize) -> Result<&'a [u8], CloudError> {
+        let end = self
+            .pos
+            .checked_add(len)
+            .ok_or_else(|| CloudError::BadRequest("SEv1 envelope is truncated".to_string()))?;
+        if end > self.bytes.len() {
+            return Err(CloudError::BadRequest(
+                "SEv1 envelope is truncated".to_string(),
+            ));
+        }
+        let slice = &self.bytes[self.pos..end];
+        self.pos = end;
+        Ok(slice)
+    }
+
+    fn take_u16(&mut self) -> Result<usize, CloudError> {
+        let bytes = self.take(2)?;
+        Ok(u16::from_be_bytes([bytes[0], bytes[1]]) as usize)
+    }
+
+    fn take_u32(&mut self) -> Result<usize, CloudError> {
+        let bytes = self.take(4)?;
+        Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize)
+    }
+}
+
+fn parse_verified_sev1(bytes: &[u8]) -> Result<Sev1PublicMetadata, CloudError> {
+    if bytes.len() < SEV1_SIGNATURE_LEN + SEV1_MAGIC.len() + 2 {
+        return Err(CloudError::BadRequest(
+            "sealed_envelope_b64 is too short for SEv1".to_string(),
+        ));
+    }
+
+    let body_end = bytes.len() - SEV1_SIGNATURE_LEN;
+    let body = &bytes[..body_end];
+    let sig_bytes = &bytes[body_end..];
+    let mut cur = Cursor::new(body);
+
+    if cur.take(SEV1_MAGIC.len())? != SEV1_MAGIC {
+        return Err(CloudError::BadRequest(
+            "sealed_envelope_b64 must contain an SEv1 envelope".to_string(),
+        ));
+    }
+    let version = cur.take(1)?[0];
+    if version != SEV1_VERSION {
+        return Err(CloudError::BadRequest(format!(
+            "unsupported SEv1 envelope version: {version}"
+        )));
+    }
+    let recipient_kind = cur.take(1)?[0];
+    if !matches!(recipient_kind, 0x00 | 0x01 | 0x02) {
+        return Err(CloudError::BadRequest(
+            "invalid SEv1 recipient kind".to_string(),
+        ));
+    }
+
+    let sender_did_len = cur.take_u16()?;
+    let sender_did = std::str::from_utf8(cur.take(sender_did_len)?)
+        .map_err(|_| CloudError::BadRequest("SEv1 sender_did is not UTF-8".to_string()))?
+        .to_string();
+
+    let recipient_id_len = cur.take_u16()?;
+    let recipient_id = std::str::from_utf8(cur.take(recipient_id_len)?)
+        .map_err(|_| CloudError::BadRequest("SEv1 recipient_id is not UTF-8".to_string()))?
+        .to_string();
+
+    cur.take(SEV1_EPHEM_PUB_LEN)?;
+    cur.take(SEV1_NONCE_LEN)?;
+    let ad_len = cur.take_u16()?;
+    cur.take(ad_len)?;
+    let ct_len = cur.take_u32()?;
+    cur.take(ct_len)?;
+    if cur.pos != body.len() {
+        return Err(CloudError::BadRequest(
+            "SEv1 envelope has trailing unsigned bytes".to_string(),
+        ));
+    }
+
+    let sender_vk = verifying_from_did_key(&sender_did)?;
+    let signature = Signature::from_slice(sig_bytes)
+        .map_err(|_| CloudError::BadRequest("SEv1 envelope signature is malformed".to_string()))?;
+    sender_vk
+        .verify(&Sha256::digest(body), &signature)
+        .map_err(|_| CloudError::BadRequest("SEv1 envelope signature failed".to_string()))?;
+
+    Ok(Sev1PublicMetadata {
+        recipient_kind,
+        sender_did,
+        recipient_id,
+    })
+}
+
+fn verifying_from_did_key(did: &str) -> Result<VerifyingKey, CloudError> {
+    let encoded = did.strip_prefix(DID_KEY_PREFIX).ok_or_else(|| {
+        CloudError::BadRequest("SEv1 sender_did must be an Ed25519 did:key".to_string())
+    })?;
+    let bytes = bs58::decode(encoded)
+        .into_vec()
+        .map_err(|_| CloudError::BadRequest("SEv1 sender_did is not base58".to_string()))?;
+    if bytes.len() != 34 || bytes[..2] != ED25519_MULTICODEC {
+        return Err(CloudError::BadRequest(
+            "SEv1 sender_did must encode an Ed25519 key".to_string(),
+        ));
+    }
+    let key_bytes: [u8; 32] = bytes[2..].try_into().expect("length checked");
+    VerifyingKey::from_bytes(&key_bytes)
+        .map_err(|_| CloudError::BadRequest("SEv1 sender_did key is invalid".to_string()))
 }
 
 fn validate_did(did: &str) -> Result<(), CloudError> {
@@ -647,16 +819,33 @@ async fn write_audit_event(
 mod tests {
     use super::*;
 
+    const PEER_SENDER_DID: &str = "did:key:z6MkgxFiZiRE1XJHX7dqZXGgcNWWrPirT2izosrtduZnAw4s";
+    const PEER_RECIPIENT_DID: &str = "did:key:z6MkuvajM3HoGhuQYPkyFDLeLADv6mfnLnbgFYnRH79jkKPJ";
+    const PEER_WIRE_HEX: &str = "53457631010100386469643a6b65793a7a364d6b677846695a69524531584a48583764715a584767634e5757725069725432697a6f73727464755a6e4177347300386469643a6b65793a7a364d6b7576616a4d33486f4768755159506b7946444c654c414476366d666e4c6e626746596e524837396a6b4b504a74dc56937dd7779ead2761e3fa04a6365e3f0898a16fb2a1ff41b957c084d53f9a019a9fad7c56bd2db2bf1f001973657373696f6e3d6162633b74733d3137303030303030303000000024349520e0660a3fed71a652f30d1fff9c2b8eee5214a95006051a9e7a81622800572cf02c40edeceaecf5bf589dc54e0167f05a0ec09b613140d10a30920a62c452f905c8e665d2d21fd6d8daae1de6b42b29e2059e8186def386dcdb2a90cd3512569602";
+    const MODEL_BRIDGE_WIRE_HEX: &str = "53457631010200386469643a6b65793a7a364d6b75335478346279746263437655574e7a65473141653752416351553462335a6466394e53536352706e734d61001b616e7468726f7069632f636c617564652d736f6e6e65742d342d36e07be2e3248463029f76fbbdfeb6392d8a2c78a6843356bc7f22a271ad1c094af8ba5071145e161a73aa98810016726f6c653d757365723b6d6f64656c2d6272696467650000002b15b0444283f0b45963c36d4652dc77f7b87c4f1233a7572bfec5a7e1ed89d41b1a23f984be72b993dd34f5e315106a98373faeb9533c38e121a47ca22cc7c93ad8bf7e0ffbafde98c520b4163ab30848f49b0a5ef1877765ac14552bb56812749b5569a24c99e97418ae08";
+
+    fn hex_to_bytes(hex: &str) -> Vec<u8> {
+        assert_eq!(hex.len() % 2, 0);
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("valid hex"))
+            .collect()
+    }
+
+    fn peer_wire_b64() -> String {
+        STANDARD.encode(hex_to_bytes(PEER_WIRE_HEX))
+    }
+
     fn base_request() -> PostEnvelopeRequest {
         PostEnvelopeRequest {
             message_id: Some(Uuid::new_v4()),
             thread_id: Some(Uuid::new_v4()),
-            sender_did: "did:key:zSenderDevice".to_string(),
+            sender_did: PEER_SENDER_DID.to_string(),
             sender_device_id: "device-a".to_string(),
-            recipient_did: "did:key:zRecipientDevice".to_string(),
+            recipient_did: PEER_RECIPIENT_DID.to_string(),
             recipient_device_id: Some("device-b".to_string()),
             kind: NativeMessageKind::Human,
-            sealed_envelope_b64: STANDARD.encode([1_u8, 2, 3, 4]),
+            sealed_envelope_b64: peer_wire_b64(),
             approval_receipt_hash: None,
             extra: BTreeMap::new(),
         }
@@ -671,7 +860,11 @@ mod tests {
     fn envelope_validation_rejects_plaintext_fields() {
         for key in [
             "body",
+            "body_text",
+            "clear_text",
             "content",
+            "content_text",
+            "message_text",
             "subject",
             "text",
             "plaintext",
@@ -703,6 +896,37 @@ mod tests {
     }
 
     #[test]
+    fn envelope_validation_binds_sender_and_recipient_to_sev1_header() {
+        let mut req = base_request();
+        req.sender_did = PEER_RECIPIENT_DID.to_string();
+        assert!(validate_envelope_request(&req).is_err());
+
+        let mut req = base_request();
+        req.recipient_did = PEER_SENDER_DID.to_string();
+        assert!(validate_envelope_request(&req).is_err());
+    }
+
+    #[test]
+    fn envelope_validation_rejects_tampered_sev1_signature() {
+        let mut wire = hex_to_bytes(PEER_WIRE_HEX);
+        let last = wire.len() - 1;
+        wire[last] ^= 0x01;
+
+        let mut req = base_request();
+        req.sealed_envelope_b64 = STANDARD.encode(wire);
+        assert!(validate_envelope_request(&req).is_err());
+    }
+
+    #[test]
+    fn envelope_validation_rejects_model_bridge_for_native_messages() {
+        let mut req = base_request();
+        req.sender_did = "did:key:z6Mku3Tx4bytbcCvUWNzeG1Ae7RAcQU4b3Zdf9NSScRpnsMa".to_string();
+        req.recipient_did = "anthropic/claude-sonnet-4-6".to_string();
+        req.sealed_envelope_b64 = STANDARD.encode(hex_to_bytes(MODEL_BRIDGE_WIRE_HEX));
+        assert!(validate_envelope_request(&req).is_err());
+    }
+
+    #[test]
     fn envelope_validation_requires_agent_approval_receipt_hash() {
         let mut req = base_request();
         req.kind = NativeMessageKind::AgentGenerated;
@@ -716,5 +940,47 @@ mod tests {
         let mut req = base_request();
         req.sealed_envelope_b64 = "not base64%%%%".to_string();
         assert!(validate_envelope_request(&req).is_err());
+    }
+
+    fn base_device_bundle() -> DeviceKeyBundleV1 {
+        DeviceKeyBundleV1 {
+            user_did: PEER_SENDER_DID.to_string(),
+            device_id: "device-a".to_string(),
+            device_label: "Alice iPhone".to_string(),
+            signing_pubkey: "a".repeat(64),
+            x25519_prekey_pub: "b".repeat(64),
+            relay_urls: vec!["https://relay.example.com".to_string()],
+            created_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::days(1),
+            signature: "c".repeat(128),
+        }
+    }
+
+    #[test]
+    fn device_bundle_validation_rejects_stale_or_inverted_dates() {
+        let mut expired = base_device_bundle();
+        expired.expires_at = Utc::now() - chrono::Duration::seconds(1);
+        assert!(validate_device_bundle(&expired).is_err());
+
+        let mut inverted = base_device_bundle();
+        inverted.created_at = Utc::now() + chrono::Duration::days(2);
+        inverted.expires_at = Utc::now() + chrono::Duration::days(1);
+        assert!(validate_device_bundle(&inverted).is_err());
+    }
+
+    #[test]
+    fn device_bundle_deserialization_rejects_non_rfc3339_dates() {
+        let value = serde_json::json!({
+            "user_did": PEER_SENDER_DID,
+            "device_id": "device-a",
+            "device_label": "Alice iPhone",
+            "signing_pubkey": "a".repeat(64),
+            "x25519_prekey_pub": "b".repeat(64),
+            "relay_urls": [],
+            "created_at": "2026/05/17 13:00:00",
+            "expires_at": "2026-06-17T13:00:00Z",
+            "signature": "c".repeat(128)
+        });
+        assert!(serde_json::from_value::<DeviceKeyBundleV1>(value).is_err());
     }
 }
