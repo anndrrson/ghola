@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::auth::{AuthUser, Claims};
 use crate::error::CloudError;
+use crate::privacy::{record_privacy_audit_event, NetworkScope, PrivacyApproval};
 use crate::services::{
     agent_service, compute_service,
     llm_router::{self, ChatMsg},
@@ -31,6 +32,8 @@ pub struct ChatCompletionRequest {
     pub stream: Option<bool>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f64>,
+    #[serde(flatten)]
+    pub approval: PrivacyApproval,
 }
 
 #[derive(Deserialize)]
@@ -112,6 +115,17 @@ pub async fn chat_completions(
 
     // Otherwise, require auth (JWT or API key) — existing flow
     let claims = extract_auth(&headers, &state).await?;
+    let approval = req
+        .approval
+        .require_and_store_for(NetworkScope::RemoteAgentCompute)?;
+    record_privacy_audit_event(
+        &state.db,
+        claims.sub,
+        NetworkScope::RemoteAgentCompute,
+        &approval,
+        "openai_compatible_chat",
+    )
+    .await;
 
     // If model is "agent:*" but user IS authenticated, auth takes priority
     // (cheaper via escrow for registered users)
@@ -210,17 +224,27 @@ async fn handle_x402_agent_request(
         .find(|a| a.agent_id == agent_info.id)
         .ok_or_else(|| CloudError::ServiceUnavailable("agent's provider is offline".into()))?;
 
-    let max_tokens = req.max_tokens.unwrap_or(matched_agent.max_tokens as u32);
+    if matched_agent.max_tokens <= 0 {
+        return Err(CloudError::ServiceUnavailable(
+            "agent has invalid token capacity".into(),
+        ));
+    }
+    let provider_max_tokens = matched_agent.max_tokens as u32;
+    let max_tokens = req.max_tokens.unwrap_or(provider_max_tokens);
+    if max_tokens == 0 || max_tokens > provider_max_tokens {
+        return Err(CloudError::BadRequest(format!(
+            "max_tokens must be between 1 and {provider_max_tokens}"
+        )));
+    }
     let required_amount = x402_service::estimate_agent_price(
         matched_agent.price_per_1k_input,
         matched_agent.price_per_1k_output,
         max_tokens,
     );
-    let requested_rail = x402_service::parse_requested_payment_rail(
-        headers
-            .get("x-ghola-payment-rail")
-            .and_then(|v| v.to_str().ok()),
-    )?;
+    let requested_rail_header = headers
+        .get("x-ghola-payment-rail")
+        .and_then(|v| v.to_str().ok());
+    let requested_rail = x402_service::parse_requested_payment_rail(requested_rail_header)?;
 
     // Check for PAYMENT-SIGNATURE header
     let payment_header = headers
@@ -230,13 +254,17 @@ async fn handle_x402_agent_request(
     let payment_header = match payment_header {
         Some(h) => h,
         None => {
-            if requested_rail == x402_service::PaymentRailKind::ShieldedStablecoin
-                && !x402_service::shielded_stablecoin_configured()
-            {
-                return Ok(x402_service::build_shielded_unavailable_response());
+            if requested_rail == x402_service::PaymentRailKind::ShieldedStablecoin {
+                let shielded = x402_service::shielded_stablecoin_runtime_status();
+                if !shielded.ready {
+                    return Ok(x402_service::build_no_payment_options_response(
+                        requested_rail,
+                        shielded.unavailable_reason,
+                    ));
+                }
             }
             // No payment — return 402 with requirements
-            let requirements = x402_service::build_payment_requirements(
+            let mut requirements = x402_service::build_payment_requirements(
                 state,
                 agent_info.id,
                 &agent_info.slug,
@@ -245,6 +273,18 @@ async fn handle_x402_agent_request(
                 matched_agent.price_per_1k_output,
                 max_tokens,
             );
+            if requested_rail_header.is_some() {
+                x402_service::filter_payment_requirements_for_rail(
+                    &mut requirements,
+                    requested_rail,
+                );
+            }
+            if !x402_service::payment_requirements_have_options(&requirements) {
+                return Ok(x402_service::build_no_payment_options_response(
+                    requested_rail,
+                    Some("no accepted payment option is currently available for this agent"),
+                ));
+            }
             return Ok(x402_service::build_402_response(&requirements));
         }
     };
@@ -256,10 +296,14 @@ async fn handle_x402_agent_request(
     let proof: x402_service::PaymentProof = serde_json::from_slice(&proof_bytes)
         .map_err(|e| CloudError::PaymentRequired(format!("invalid PAYMENT-SIGNATURE: {e}")))?;
 
-    if requested_rail == x402_service::PaymentRailKind::ShieldedStablecoin
-        && proof.scheme != "shielded_stablecoin"
+    if requested_rail_header.is_some() && !x402_service::proof_matches_rail(&proof, requested_rail)
     {
-        return Ok(x402_service::build_shielded_fallback_rejected_response());
+        if requested_rail == x402_service::PaymentRailKind::ShieldedStablecoin {
+            return Ok(x402_service::build_shielded_fallback_rejected_response());
+        }
+        return Err(CloudError::PaymentRequired(
+            "payment proof does not match requested payment rail".into(),
+        ));
     }
 
     // Verify payment on-chain
@@ -385,8 +429,11 @@ async fn handle_x402_agent_request(
     });
 
     // Build PAYMENT-RESPONSE header
-    let actual_cost = x402_service::estimate_agent_price(price_in, price_out, actual_output as u32);
+    let actual_cost = ((actual_input as i64 * price_in + actual_output as i64 * price_out) / 1000)
+        .max(1000)
+        .min(verified.amount_usdc);
     let payment_response = x402_service::PaymentResponse {
+        x402_version: 2,
         settled: true,
         actual_cost,
         tx_signature: verified.tx_signature,

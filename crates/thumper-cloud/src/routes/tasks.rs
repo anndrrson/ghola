@@ -6,6 +6,9 @@ use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::CloudError;
+use crate::privacy::{
+    redact_sensitive_json, safe_task_result, task_network_scope, NetworkScope, PrivacyApproval,
+};
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -33,6 +36,8 @@ pub struct CreateTaskRequest {
     /// Denormalized DID string for the same agent, so the task engine doesn't
     /// have to cross-DB lookup said-cloud just to know who's executing.
     pub agent_did: Option<String>,
+    #[serde(flatten)]
+    pub approval: PrivacyApproval,
 }
 
 #[derive(Serialize)]
@@ -44,6 +49,16 @@ pub struct TaskResponse {
     pub params: serde_json::Value,
     pub result: Option<serde_json::Value>,
     pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privacy_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_approved_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privacy_boundary: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -162,6 +177,10 @@ pub async fn create_task(
     validate_task_params(&req.task_type, &req.params)?;
 
     let is_open = req.is_open.unwrap_or(false);
+    let privacy_scope = task_network_scope(&req.task_type, &req.params);
+    let stored_approval = privacy_scope
+        .map(|scope| req.approval.require_and_store_for(scope))
+        .transpose()?;
 
     // Open marketplace tasks require a bounty
     if is_open && req.bounty_usdc.is_none() {
@@ -172,8 +191,8 @@ pub async fn create_task(
 
     let row = sqlx::query_as::<_, TaskRow>(
         &format!(
-            "INSERT INTO tasks (user_id, task_type, template_id, params, is_open, title, description, min_reputation, agent_id, agent_did) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+            "INSERT INTO tasks (user_id, task_type, template_id, params, is_open, title, description, min_reputation, agent_id, agent_did, privacy_mode, network_scope, user_approved_at, approval_nonce, approval_summary) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
              RETURNING {TASK_SELECT}"
         ),
     )
@@ -187,6 +206,11 @@ pub async fn create_task(
     .bind(req.min_reputation)
     .bind(req.agent_id)
     .bind(&req.agent_did)
+    .bind(stored_approval.as_ref().map(|a| a.privacy_mode.as_str()))
+    .bind(privacy_scope.map(NetworkScope::as_str))
+    .bind(stored_approval.as_ref().map(|a| a.user_approved_at))
+    .bind(stored_approval.as_ref().map(|a| a.approval_nonce_hash.as_str()))
+    .bind(stored_approval.as_ref().map(|a| a.approval_summary.as_str()))
     .fetch_one(&state.db)
     .await?;
 
@@ -217,25 +241,16 @@ pub async fn create_task(
             if let Err(e) =
                 crate::services::task_engine::execute_task(&state_clone, user_id, task_id).await
             {
-                tracing::error!(%task_id, "task execution failed: {e}");
+                let _ = e;
+                tracing::error!(%task_id, "task execution failed");
             }
         });
     }
 
-    Ok(Json(TaskResponse {
-        id: row.0,
-        task_type: row.1,
-        template_id: row.2,
-        status: row.3,
-        params: row.4,
-        result: row.5,
-        error_message: row.6,
-        created_at: row.7,
-        updated_at: row.8,
-        completed_at: row.9,
-        bounty_usdc: req.bounty_usdc,
-        bounty_status,
-    }))
+    let mut response = task_from_row(row, true);
+    response.bounty_usdc = req.bounty_usdc;
+    response.bounty_status = bounty_status;
+    Ok(Json(response))
 }
 
 type TaskRow = (
@@ -250,17 +265,37 @@ type TaskRow = (
     DateTime<Utc>,
     Option<DateTime<Utc>>,
     Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<String>,
 );
 
-fn task_from_row(r: TaskRow) -> TaskResponse {
+fn task_from_row(r: TaskRow, include_sensitive: bool) -> TaskResponse {
+    let params = if include_sensitive {
+        redact_sensitive_json(&r.4)
+    } else {
+        redact_task_params(&r.1)
+    };
+    let result = safe_task_result(&r.1, &r.3, r.5);
+    let privacy_boundary =
+        r.12.as_deref()
+            .and_then(NetworkScope::from_str)
+            .map(|scope| scope.boundary_label().to_string());
+
     TaskResponse {
         id: r.0,
         task_type: r.1,
         template_id: r.2,
         status: r.3,
-        params: r.4,
-        result: r.5,
+        params,
+        result,
         error_message: r.6,
+        privacy_mode: r.11,
+        network_scope: r.12,
+        user_approved_at: r.13,
+        approval_summary: r.14,
+        privacy_boundary,
         created_at: r.7,
         updated_at: r.8,
         completed_at: r.9,
@@ -269,7 +304,14 @@ fn task_from_row(r: TaskRow) -> TaskResponse {
     }
 }
 
-const TASK_SELECT: &str = "id, task_type, template_id, status, params, result, error_message, created_at, updated_at, completed_at, bounty_usdc";
+fn redact_task_params(task_type: &str) -> serde_json::Value {
+    serde_json::json!({
+        "redacted": true,
+        "task_type": task_type,
+    })
+}
+
+const TASK_SELECT: &str = "id, task_type, template_id, status, params, result, error_message, created_at, updated_at, completed_at, bounty_usdc, privacy_mode, network_scope, user_approved_at, approval_summary";
 
 /// GET /api/tasks
 pub async fn list_tasks(
@@ -301,7 +343,10 @@ pub async fn list_tasks(
         .await?
     };
 
-    let tasks: Vec<TaskResponse> = rows.into_iter().map(task_from_row).collect();
+    let tasks: Vec<TaskResponse> = rows
+        .into_iter()
+        .map(|row| task_from_row(row, false))
+        .collect();
     Ok(Json(tasks))
 }
 
@@ -320,7 +365,7 @@ pub async fn get_task(
     .await?
     .ok_or(CloudError::NotFound("task not found".to_string()))?;
 
-    let mut task = task_from_row(row);
+    let mut task = task_from_row(row, false);
 
     // Populate bounty status if this task has a bounty
     if task.bounty_usdc.is_some() {
@@ -382,7 +427,7 @@ pub async fn get_task_steps(
             action_type: r.2,
             status: r.3,
             input: r.4,
-            output: r.5,
+            output: r.5.map(|value| redact_sensitive_json(&value)),
         })
         .collect();
 
@@ -411,7 +456,7 @@ pub async fn cancel_task(
     // Refund bounty if one exists
     let _ = crate::services::bounty_service::refund_bounty(&state.db, task_id).await;
 
-    Ok(Json(task_from_row(row)))
+    Ok(Json(task_from_row(row, false)))
 }
 
 /// GET /api/tasks/:id/bounty

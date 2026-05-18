@@ -9,6 +9,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -92,35 +93,51 @@ fn active_tokens(rpc_url: &str) -> Vec<(StableToken, String)> {
     out
 }
 
-/// Look up a token by its on-chain base58 mint string for the active network.
-fn token_for_mint(rpc_url: &str, mint_b58: &str) -> Option<(StableToken, String)> {
-    active_tokens(rpc_url)
-        .into_iter()
-        .find(|(_, m)| m == mint_b58)
-}
-
 // ---------------------------------------------------------------------------
 // Types — x402 Protocol
 // ---------------------------------------------------------------------------
 
 /// Payment requirement sent in the PAYMENT-REQUIRED header (base64-encoded JSON).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PaymentRequirements {
+    #[serde(rename = "x402Version")]
+    pub x402_version: u8,
     pub accepts: Vec<PaymentOption>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<Value>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PaymentOption {
     pub scheme: String,
     pub network: String,
     pub amount: String,
     pub asset: String,
     pub destination: String,
+    pub price: String,
+    #[serde(rename = "payTo")]
+    pub pay_to: String,
+    #[serde(rename = "maxAmountRequired")]
+    pub max_amount_required: String,
     pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
     pub extra: PaymentExtra,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PaymentExtra {
     pub agent_id: String,
     pub agent_slug: String,
@@ -129,14 +146,38 @@ pub struct PaymentExtra {
     pub price_per_1k_input: i64,
     pub price_per_1k_output: i64,
     pub payment_rail: String,
+    pub canonical_rail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legacy_network: Option<String>,
+    pub token_decimals: u8,
+    pub payment_identifier_supported: bool,
     pub privacy_disclosure: String,
     pub shielded_available: bool,
     pub shielded_unavailable_reason: Option<String>,
 }
 
+fn de_string_or_number<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::String(s) => Ok(s),
+        Value::Number(n) => Ok(n.to_string()),
+        other => Err(serde::de::Error::custom(format!(
+            "expected string or number, got {other}"
+        ))),
+    }
+}
+
 /// Payment proof decoded from the PAYMENT-SIGNATURE header.
 #[derive(Debug, Deserialize)]
 pub struct PaymentProof {
+    #[serde(
+        rename = "x402Version",
+        alias = "x402_version",
+        deserialize_with = "de_string_or_number"
+    )]
     pub x402_version: String,
     pub scheme: String,
     pub network: String,
@@ -149,6 +190,8 @@ pub struct PaymentPayload {
     pub shielded_receipt_id: Option<String>,
     pub proof_b64: Option<String>,
     pub nullifier_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<Value>,
 }
 
 /// Result of successful on-chain verification.
@@ -187,6 +230,8 @@ pub struct AgentPricing {
 /// Settlement response included in PAYMENT-RESPONSE header.
 #[derive(Debug, Serialize)]
 pub struct PaymentResponse {
+    #[serde(rename = "x402Version")]
+    pub x402_version: u8,
     pub settled: bool,
     pub actual_cost: i64,
     pub tx_signature: String,
@@ -257,6 +302,10 @@ pub struct ShieldedStablecoinRuntimeStatus {
     pub provider: String,
     pub network: String,
     pub asset: String,
+    pub recipient_configured: bool,
+    pub recipient_preview: Option<String>,
+    #[serde(skip_serializing)]
+    pub recipient: Option<String>,
     pub rail: &'static str,
     pub canonical_rail: &'static str,
     pub fallback_allowed: bool,
@@ -354,6 +403,17 @@ pub fn shielded_stablecoin_configured() -> bool {
     shielded_config_from_env().is_some()
 }
 
+pub fn shielded_recipient_preview(recipient: &str) -> String {
+    if recipient.len() <= 18 {
+        return recipient.to_string();
+    }
+    format!(
+        "{}...{}",
+        &recipient[..8],
+        &recipient[recipient.len() - 6..]
+    )
+}
+
 pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
     let adapter_configured = std::env::var("SHIELDED_STABLECOIN_ADAPTER_URL")
         .ok()
@@ -369,6 +429,10 @@ pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
     let network =
         std::env::var("SHIELDED_STABLECOIN_NETWORK").unwrap_or_else(|_| "aleo:mainnet".to_string());
     let asset = std::env::var("SHIELDED_STABLECOIN_ASSET").unwrap_or_else(|_| "USDCx".to_string());
+    let recipient = std::env::var("SHIELDED_STABLECOIN_RECIPIENT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let configured = adapter_configured
         && destination_configured
         && (!adapter_signature_required || adapter_signature_configured)
@@ -398,6 +462,9 @@ pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
         provider,
         network,
         asset,
+        recipient_configured: recipient.is_some(),
+        recipient_preview: recipient.as_deref().map(shielded_recipient_preview),
+        recipient,
         rail: PaymentRailKind::ShieldedStablecoin.as_str(),
         canonical_rail: ALEO_USDCX_SHIELDED_RAIL,
         fallback_allowed: false,
@@ -445,6 +512,28 @@ pub fn build_shielded_fallback_rejected_response() -> axum::response::Response {
         .into_response()
 }
 
+pub fn build_no_payment_options_response(
+    rail: PaymentRailKind,
+    reason: Option<&str>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    (
+        StatusCode::PAYMENT_REQUIRED,
+        axum::Json(serde_json::json!({
+            "error": "payment unavailable",
+            "code": "payment_options_unavailable",
+            "rail": rail.as_str(),
+            "canonical_rail": rail.canonical_rail(),
+            "settled": false,
+            "fallback_allowed": false,
+            "remediation": reason.unwrap_or("no accepted payment option is currently available for the requested rail"),
+        })),
+    )
+        .into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Network / Mint helpers
 // ---------------------------------------------------------------------------
@@ -455,6 +544,25 @@ fn detect_network(rpc_url: &str) -> &'static str {
     } else {
         "solana:mainnet"
     }
+}
+
+const SOLANA_MAINNET_CAIP2: &str = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+const SOLANA_DEVNET_CAIP2: &str = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+
+fn detect_caip2_network(rpc_url: &str) -> &'static str {
+    if rpc_url.contains("devnet") {
+        SOLANA_DEVNET_CAIP2
+    } else {
+        SOLANA_MAINNET_CAIP2
+    }
+}
+
+fn network_matches_active_solana(rpc_url: &str, proof_network: &str) -> bool {
+    proof_network == detect_caip2_network(rpc_url) || proof_network == detect_network(rpc_url)
+}
+
+fn payment_resource(state: &AppState, path: &str) -> String {
+    format!("{}{}", state.config.base_url.trim_end_matches('/'), path)
 }
 
 fn decode_mint_bytes(mint_b58: &str) -> Option<[u8; 32]> {
@@ -549,14 +657,57 @@ pub fn build_payment_requirements(
     price_per_1k_output: i64,
     max_tokens: u32,
 ) -> PaymentRequirements {
+    let resource = payment_resource(state, "/v1/chat/completions");
+    build_payment_requirements_for_resource(
+        state,
+        agent_id,
+        agent_slug,
+        model_id,
+        price_per_1k_input,
+        price_per_1k_output,
+        max_tokens,
+        &resource,
+        "POST",
+        None,
+    )
+}
+
+pub fn build_payment_requirements_for_resource(
+    state: &AppState,
+    agent_id: Uuid,
+    agent_slug: &str,
+    model_id: &str,
+    price_per_1k_input: i64,
+    price_per_1k_output: i64,
+    max_tokens: u32,
+    resource: &str,
+    method: &str,
+    payment_identifier: Option<&str>,
+) -> PaymentRequirements {
     let amount = estimate_agent_price(price_per_1k_input, price_per_1k_output, max_tokens);
     let rpc_url = &state.config.solana_rpc_url;
-    let network = detect_network(rpc_url).to_string();
+    let legacy_network = detect_network(rpc_url).to_string();
+    let network = detect_caip2_network(rpc_url).to_string();
     let destination = state
         .config
         .platform_wallet_address
         .clone()
         .unwrap_or_default();
+    let amount_s = amount.to_string();
+    let price = format!("${:.6}", amount as f64 / 1_000_000.0);
+    let mut extensions = serde_json::Map::new();
+    extensions.insert(
+        "bazaar".to_string(),
+        bazaar_discovery_extension(agent_slug, resource, method),
+    );
+    if payment_identifier.is_some() {
+        extensions.insert(
+            "payment-identifier".to_string(),
+            json!({
+                "required": false
+            }),
+        );
+    }
 
     // One PaymentOption per non-paused stablecoin. USDT comes first in the
     // SUPPORTED_TOKENS slice; agents reading `accepts[0]` get the platform
@@ -570,13 +721,19 @@ pub fn build_payment_requirements(
         .map(|(token, mint)| PaymentOption {
             scheme: "exact".to_string(),
             network: network.clone(),
-            amount: amount.to_string(),
+            amount: amount_s.clone(),
             asset: mint,
             destination: destination.clone(),
+            price: price.clone(),
+            pay_to: destination.clone(),
+            max_amount_required: amount_s.clone(),
             description: format!(
                 "Agent: {agent_slug} — 1 inference request ({})",
                 token.symbol
             ),
+            resource: Some(resource.to_string()),
+            method: Some(method.to_string()),
+            mime_type: Some("application/json".to_string()),
             extra: PaymentExtra {
                 agent_id: agent_id.to_string(),
                 agent_slug: agent_slug.to_string(),
@@ -585,6 +742,12 @@ pub fn build_payment_requirements(
                 price_per_1k_input,
                 price_per_1k_output,
                 payment_rail: PaymentRailKind::SolanaPublicStablecoin.as_str().to_string(),
+                canonical_rail: PaymentRailKind::SolanaPublicStablecoin
+                    .canonical_rail()
+                    .to_string(),
+                legacy_network: Some(legacy_network.clone()),
+                token_decimals: token.decimals,
+                payment_identifier_supported: payment_identifier.is_some(),
                 privacy_disclosure: PUBLIC_STABLECOIN_DISCLOSURE.to_string(),
                 shielded_available,
                 shielded_unavailable_reason: if shielded_available {
@@ -600,10 +763,16 @@ pub fn build_payment_requirements(
         accepts.push(PaymentOption {
             scheme: "shielded_stablecoin".to_string(),
             network: config.network,
-            amount: amount.to_string(),
+            amount: amount_s.clone(),
             asset: config.asset,
-            destination: config.destination,
+            destination: config.destination.clone(),
+            price: price.clone(),
+            pay_to: config.destination,
+            max_amount_required: amount_s.clone(),
             description: format!("Agent: {agent_slug} — 1 private inference request"),
+            resource: Some(resource.to_string()),
+            method: Some(method.to_string()),
+            mime_type: Some("application/json".to_string()),
             extra: PaymentExtra {
                 agent_id: agent_id.to_string(),
                 agent_slug: agent_slug.to_string(),
@@ -612,6 +781,12 @@ pub fn build_payment_requirements(
                 price_per_1k_input,
                 price_per_1k_output,
                 payment_rail: PaymentRailKind::ShieldedStablecoin.as_str().to_string(),
+                canonical_rail: PaymentRailKind::ShieldedStablecoin
+                    .canonical_rail()
+                    .to_string(),
+                legacy_network: None,
+                token_decimals: 6,
+                payment_identifier_supported: payment_identifier.is_some(),
                 privacy_disclosure: SHIELDED_STABLECOIN_DISCLOSURE.to_string(),
                 shielded_available: true,
                 shielded_unavailable_reason: None,
@@ -619,7 +794,86 @@ pub fn build_payment_requirements(
         });
     }
 
-    PaymentRequirements { accepts }
+    PaymentRequirements {
+        x402_version: 2,
+        accepts,
+        resource: Some(resource.to_string()),
+        method: Some(method.to_string()),
+        mime_type: Some("application/json".to_string()),
+        description: Some(format!("Agent: {agent_slug} — 1 inference request")),
+        extensions: Some(Value::Object(extensions)),
+    }
+}
+
+pub fn bazaar_discovery_extension(agent_slug: &str, resource: &str, method: &str) -> Value {
+    json!({
+        "type": "api",
+        "serviceName": "Ghola Agent Marketplace",
+        "name": format!("ghola.agent.{agent_slug}"),
+        "description": format!("Run the public Ghola agent '{agent_slug}' through the OpenAI-compatible paid x402 endpoint."),
+        "transport": "http",
+        "method": method,
+        "url": resource,
+        "input": {
+            "model": format!("agent:{agent_slug}"),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Describe what you can do."
+                }
+            ]
+        },
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "const": format!("agent:{agent_slug}")
+                },
+                "messages": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "role": {
+                                "type": "string",
+                                "enum": ["system", "user", "assistant"]
+                            },
+                            "content": {
+                                "type": "string"
+                            }
+                        },
+                        "required": ["role", "content"]
+                    }
+                },
+                "max_tokens": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "required": ["model", "messages"]
+        }
+    })
+}
+
+pub fn filter_payment_requirements_for_rail(
+    requirements: &mut PaymentRequirements,
+    rail: PaymentRailKind,
+) {
+    requirements
+        .accepts
+        .retain(|option| option.extra.payment_rail == rail.as_str());
+}
+
+pub fn payment_requirements_have_options(requirements: &PaymentRequirements) -> bool {
+    !requirements.accepts.is_empty()
+}
+
+pub fn proof_matches_rail(proof: &PaymentProof, rail: PaymentRailKind) -> bool {
+    match rail {
+        PaymentRailKind::SolanaPublicStablecoin => proof.scheme == "exact",
+        PaymentRailKind::ShieldedStablecoin => proof.scheme == "shielded_stablecoin",
+    }
 }
 
 /// Build the HTTP 402 response with payment requirements.
@@ -652,6 +906,12 @@ pub async fn verify_payment(
     provider_id: Uuid,
     model_id: &str,
 ) -> Result<VerifiedPayment, CloudError> {
+    if proof.x402_version != "1" && proof.x402_version != "2" {
+        return Err(CloudError::PaymentRequired(format!(
+            "unsupported x402 version: {}",
+            proof.x402_version
+        )));
+    }
     if proof.scheme == "shielded_stablecoin" {
         return verify_shielded_payment(
             state,
@@ -672,11 +932,12 @@ pub async fn verify_payment(
 
     let rpc_url = &state.config.solana_rpc_url;
     let expected_network = detect_network(rpc_url);
+    let expected_caip2_network = detect_caip2_network(rpc_url);
 
     // Check network matches
-    if proof.network != expected_network {
+    if !network_matches_active_solana(rpc_url, &proof.network) {
         return Err(CloudError::PaymentRequired(format!(
-            "network mismatch: expected {expected_network}, got {}",
+            "network mismatch: expected {expected_caip2_network} or {expected_network}, got {}",
             proof.network
         )));
     }
@@ -1362,7 +1623,12 @@ pub async fn settle_x402_payment(
     let actual_cost = (input_tokens as i64 * price_per_1k_input
         + output_tokens as i64 * price_per_1k_output)
         / 1000;
-    let actual_cost = actual_cost.max(1000); // minimum $0.001
+    let paid_amount: i64 =
+        sqlx::query_scalar("SELECT amount_usdc FROM x402_payments WHERE id = $1")
+            .bind(payment_id)
+            .fetch_one(db)
+            .await?;
+    let actual_cost = actual_cost.max(1000).min(paid_amount); // minimum $0.001, capped at prepaid amount
 
     let provider_amount = actual_cost * 85 / 100;
     let platform_fee = actual_cost - provider_amount;
@@ -1423,7 +1689,7 @@ pub async fn list_agent_pricing(
     sort: Option<&str>,
 ) -> Result<Vec<AgentPricing>, CloudError> {
     let rpc_url = &state.config.solana_rpc_url;
-    let network = detect_network(rpc_url).to_string();
+    let network = detect_caip2_network(rpc_url).to_string();
     // Discovery summary surfaces the platform's *primary* (first non-paused)
     // stablecoin mint. Per-agent detail responses can return the full
     // accepts-array via `build_payment_requirements`.
@@ -1543,7 +1809,7 @@ pub async fn get_agent_pricing(
         price_per_request_usdc: price_estimate,
         price_per_1k_input: price_in,
         price_per_1k_output: price_out,
-        payment_network: detect_network(rpc_url).to_string(),
+        payment_network: detect_caip2_network(rpc_url).to_string(),
         payment_asset: active_tokens(rpc_url)
             .first()
             .map(|(_, m)| m.clone())
@@ -1628,6 +1894,163 @@ mod tests {
         assert!(parse_requested_payment_rail(Some("public_fallback_allowed")).is_err());
     }
 
+    #[test]
+    fn shielded_runtime_status_serializes_preview_not_full_recipient() {
+        let recipient = "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+        let status = ShieldedStablecoinRuntimeStatus {
+            configured: true,
+            ready: true,
+            adapter_configured: true,
+            destination_configured: true,
+            adapter_signature_required: true,
+            adapter_signature_configured: true,
+            verifier_ready: true,
+            provider: "aleo".to_string(),
+            network: "aleo:mainnet".to_string(),
+            asset: "USDCx".to_string(),
+            recipient_configured: true,
+            recipient_preview: Some(shielded_recipient_preview(recipient)),
+            recipient: Some(recipient.to_string()),
+            rail: SHIELDED_STABLECOIN_RAIL,
+            canonical_rail: ALEO_USDCX_SHIELDED_RAIL,
+            fallback_allowed: false,
+            unavailable_reason: None,
+            privacy_disclosure: SHIELDED_STABLECOIN_DISCLOSURE,
+        };
+
+        let serialized = serde_json::to_value(&status).unwrap();
+        assert!(serialized.get("recipient").is_none());
+        assert_eq!(serialized["recipient_configured"], true);
+        assert_eq!(serialized["recipient_preview"], "aleo1qqq...qqqqqq");
+        assert!(!serialized.to_string().contains(recipient));
+    }
+
+    #[test]
+    fn payment_requirements_filter_to_requested_rail() {
+        let mut requirements = PaymentRequirements {
+            x402_version: 2,
+            accepts: vec![
+                PaymentOption {
+                    scheme: "exact".to_string(),
+                    network: "solana:mainnet".to_string(),
+                    amount: "1000".to_string(),
+                    asset: "USDC".to_string(),
+                    destination: "platform".to_string(),
+                    price: "$0.001000".to_string(),
+                    pay_to: "platform".to_string(),
+                    max_amount_required: "1000".to_string(),
+                    description: "public".to_string(),
+                    resource: Some("https://example.com/v1/chat/completions".to_string()),
+                    method: Some("POST".to_string()),
+                    mime_type: Some("application/json".to_string()),
+                    extra: PaymentExtra {
+                        agent_id: Uuid::nil().to_string(),
+                        agent_slug: "agent".to_string(),
+                        model_id: "model".to_string(),
+                        max_tokens: 100,
+                        price_per_1k_input: 1000,
+                        price_per_1k_output: 1000,
+                        payment_rail: PaymentRailKind::SolanaPublicStablecoin.as_str().to_string(),
+                        canonical_rail: PaymentRailKind::SolanaPublicStablecoin
+                            .canonical_rail()
+                            .to_string(),
+                        legacy_network: Some("solana:mainnet".to_string()),
+                        token_decimals: 6,
+                        payment_identifier_supported: false,
+                        privacy_disclosure: PUBLIC_STABLECOIN_DISCLOSURE.to_string(),
+                        shielded_available: true,
+                        shielded_unavailable_reason: None,
+                    },
+                },
+                PaymentOption {
+                    scheme: "shielded_stablecoin".to_string(),
+                    network: "aleo:mainnet".to_string(),
+                    amount: "1000".to_string(),
+                    asset: "USDCx".to_string(),
+                    destination: "aleo1recipient".to_string(),
+                    price: "$0.001000".to_string(),
+                    pay_to: "aleo1recipient".to_string(),
+                    max_amount_required: "1000".to_string(),
+                    description: "shielded".to_string(),
+                    resource: Some("https://example.com/v1/chat/completions".to_string()),
+                    method: Some("POST".to_string()),
+                    mime_type: Some("application/json".to_string()),
+                    extra: PaymentExtra {
+                        agent_id: Uuid::nil().to_string(),
+                        agent_slug: "agent".to_string(),
+                        model_id: "model".to_string(),
+                        max_tokens: 100,
+                        price_per_1k_input: 1000,
+                        price_per_1k_output: 1000,
+                        payment_rail: PaymentRailKind::ShieldedStablecoin.as_str().to_string(),
+                        canonical_rail: PaymentRailKind::ShieldedStablecoin
+                            .canonical_rail()
+                            .to_string(),
+                        legacy_network: None,
+                        token_decimals: 6,
+                        payment_identifier_supported: false,
+                        privacy_disclosure: SHIELDED_STABLECOIN_DISCLOSURE.to_string(),
+                        shielded_available: true,
+                        shielded_unavailable_reason: None,
+                    },
+                },
+            ],
+            resource: Some("https://example.com/v1/chat/completions".to_string()),
+            method: Some("POST".to_string()),
+            mime_type: Some("application/json".to_string()),
+            description: Some("test".to_string()),
+            extensions: None,
+        };
+
+        filter_payment_requirements_for_rail(
+            &mut requirements,
+            PaymentRailKind::ShieldedStablecoin,
+        );
+
+        assert!(payment_requirements_have_options(&requirements));
+        assert_eq!(requirements.accepts.len(), 1);
+        assert_eq!(requirements.accepts[0].scheme, "shielded_stablecoin");
+    }
+
+    #[test]
+    fn proof_must_match_requested_rail() {
+        let public_proof = PaymentProof {
+            x402_version: "1".to_string(),
+            scheme: "exact".to_string(),
+            network: "solana:mainnet".to_string(),
+            payload: PaymentPayload {
+                tx_signature: Some("sig".to_string()),
+                shielded_receipt_id: None,
+                proof_b64: None,
+                nullifier_hex: None,
+                extensions: None,
+            },
+        };
+        let shielded_proof = PaymentProof {
+            x402_version: "1".to_string(),
+            scheme: "shielded_stablecoin".to_string(),
+            network: "aleo:mainnet".to_string(),
+            payload: test_shielded_proof(),
+        };
+
+        assert!(proof_matches_rail(
+            &public_proof,
+            PaymentRailKind::SolanaPublicStablecoin
+        ));
+        assert!(!proof_matches_rail(
+            &public_proof,
+            PaymentRailKind::ShieldedStablecoin
+        ));
+        assert!(proof_matches_rail(
+            &shielded_proof,
+            PaymentRailKind::ShieldedStablecoin
+        ));
+        assert!(!proof_matches_rail(
+            &shielded_proof,
+            PaymentRailKind::SolanaPublicStablecoin
+        ));
+    }
+
     fn test_shielded_config(pubkey: VerifyingKey) -> ShieldedStablecoinConfig {
         ShieldedStablecoinConfig {
             provider: "aleo".to_string(),
@@ -1647,6 +2070,7 @@ mod tests {
             shielded_receipt_id: Some("receipt-1".to_string()),
             proof_b64: Some(STANDARD.encode("proof bytes")),
             nullifier_hex: Some("abc123".to_string()),
+            extensions: None,
         }
     }
 

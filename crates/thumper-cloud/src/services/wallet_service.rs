@@ -209,8 +209,20 @@ pub struct TxHistoryEntry {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-fn recipient_preview(address: Option<&str>) -> Option<String> {
-    address.map(crate::privacy::log_addr)
+fn recipient_hash(address: &str) -> String {
+    let hash = Sha256::digest(address.trim().as_bytes());
+    hash.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn recipient_preview(address: &str) -> String {
+    crate::privacy::log_addr(address.trim())
+}
+
+fn history_recipient_preview(
+    stored_preview: Option<String>,
+    legacy_address: Option<String>,
+) -> Option<String> {
+    stored_preview.or_else(|| legacy_address.as_deref().map(recipient_preview))
 }
 
 // ---------------------------------------------------------------------------
@@ -425,22 +437,27 @@ async fn check_duplicate_transfer(
     user_id: Uuid,
     req: &TransferRequest,
 ) -> Result<(), CloudError> {
+    let to_hash = recipient_hash(&req.to);
     let exists: bool = sqlx::query_scalar(
         r#"
         SELECT EXISTS(
             SELECT 1 FROM wallet_transactions
             WHERE user_id = $1
-              AND to_address = $2
-              AND amount = $3
-              AND currency = $4
+              AND amount = $2
+              AND currency = $3
               AND created_at > now() - interval '30 seconds'
+              AND (
+                  (to_address_hash IS NOT NULL AND to_address_hash = $4)
+                  OR (to_address_hash IS NULL AND to_address = $5)
+              )
         )
         "#,
     )
     .bind(user_id)
-    .bind(&req.to)
     .bind(req.amount as i64)
     .bind(&req.currency)
+    .bind(&to_hash)
+    .bind(&req.to)
     .fetch_one(&state.db)
     .await?;
 
@@ -476,7 +493,9 @@ pub async fn transfer(
     user_id: Uuid,
     req: &TransferRequest,
 ) -> Result<TxResult, CloudError> {
-    req.approval.require_for(NetworkScope::WalletTransfer)?;
+    let approval = req
+        .approval
+        .require_and_store_for(NetworkScope::WalletTransfer)?;
 
     // Validate currency
     if req.currency != "SOL" && req.currency != "USDC" {
@@ -530,10 +549,15 @@ pub async fn transfer(
     let is_devnet = network == "devnet";
 
     // Record pending transaction
+    let to_address_hash = recipient_hash(&req.to);
+    let to_address_preview = recipient_preview(&req.to);
     let tx_id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO wallet_transactions (user_id, wallet_id, tx_type, currency, amount, to_address, status, privacy_mode, network_scope, user_approved_at, approval_nonce, approval_summary)
-        VALUES ($1, $2, 'transfer', $3, $4, $5, 'pending', $6, $7, $8, $9, $10)
+        INSERT INTO wallet_transactions
+            (user_id, wallet_id, tx_type, currency, amount, to_address, to_address_hash,
+             to_address_preview, status, privacy_mode, network_scope, user_approved_at,
+             approval_nonce, approval_summary)
+        VALUES ($1, $2, 'transfer', $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11, $12)
         RETURNING id
         "#,
     )
@@ -541,12 +565,14 @@ pub async fn transfer(
     .bind(wallet_id)
     .bind(&req.currency)
     .bind(req.amount as i64)
-    .bind(&req.to)
-    .bind(req.approval.privacy_mode.as_deref())
-    .bind(req.approval.network_scope.as_deref())
-    .bind(req.approval.user_approved_at)
-    .bind(req.approval.approval_nonce.as_deref())
-    .bind(req.approval.approval_summary.as_deref())
+    .bind(Option::<String>::None)
+    .bind(&to_address_hash)
+    .bind(&to_address_preview)
+    .bind(&approval.privacy_mode)
+    .bind(&approval.network_scope)
+    .bind(approval.user_approved_at)
+    .bind(&approval.approval_nonce_hash)
+    .bind(&approval.approval_summary)
     .fetch_one(&state.db)
     .await?;
 
@@ -619,12 +645,14 @@ pub async fn get_history(
             i64,
             Option<String>,
             Option<String>,
+            Option<String>,
             String,
             chrono::DateTime<chrono::Utc>,
         ),
     >(
         r#"
-        SELECT id, tx_type, currency, amount, to_address, signature, status, created_at
+        SELECT id, tx_type, currency, amount, to_address, to_address_preview,
+               signature, status, created_at
         FROM wallet_transactions
         WHERE user_id = $1
         ORDER BY created_at DESC
@@ -639,13 +667,23 @@ pub async fn get_history(
     Ok(rows
         .into_iter()
         .map(
-            |(id, tx_type, currency, amount, to_address, signature, status, created_at)| {
+            |(
+                id,
+                tx_type,
+                currency,
+                amount,
+                to_address,
+                to_address_preview,
+                signature,
+                status,
+                created_at,
+            )| {
                 TxHistoryEntry {
                     id,
                     tx_type,
                     currency,
                     amount,
-                    to_address_preview: recipient_preview(to_address.as_deref()),
+                    to_address_preview: history_recipient_preview(to_address_preview, to_address),
                     signature,
                     status,
                     created_at,
@@ -1260,10 +1298,21 @@ mod tests {
     #[test]
     fn recipient_preview_masks_raw_wallet_address() {
         assert_eq!(
-            recipient_preview(Some("11111111111111111111111111111111")).as_deref(),
-            Some("1111...1111")
+            recipient_preview("11111111111111111111111111111111"),
+            "1111...1111"
         );
-        assert_eq!(recipient_preview(None), None);
+        assert_eq!(
+            history_recipient_preview(None, Some("11111111111111111111111111111111".into())),
+            Some("1111...1111".to_string())
+        );
+    }
+
+    #[test]
+    fn recipient_hash_does_not_expose_raw_wallet_address() {
+        let raw = "11111111111111111111111111111111";
+        let hashed = recipient_hash(raw);
+        assert_eq!(hashed.len(), 64);
+        assert_ne!(hashed, raw);
     }
 
     #[test]
@@ -1273,7 +1322,7 @@ mod tests {
             tx_type: "transfer".to_string(),
             currency: "USDC".to_string(),
             amount: 1_250_000,
-            to_address_preview: recipient_preview(Some("11111111111111111111111111111111")),
+            to_address_preview: Some(recipient_preview("11111111111111111111111111111111")),
             signature: None,
             status: "confirmed".to_string(),
             created_at: Utc::now(),

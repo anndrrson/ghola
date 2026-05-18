@@ -29,7 +29,7 @@ pub fn call_tool_definition() -> serde_json::Value {
 /// Start a phone call via Bland AI.
 pub async fn start_call(
     state: &AppState,
-    user_id: Uuid,
+    _user_id: Uuid,
     call_id: Uuid,
     phone_number: &str,
     objective: &str,
@@ -56,11 +56,13 @@ pub async fn start_call(
         ));
     }
 
-    // Generate a call script via LLM if not provided
     let call_script = if let Some(s) = script {
         s.clone()
     } else {
-        generate_call_script(state, user_id, objective).await?
+        serde_json::json!({
+            "task": objective,
+            "first_sentence": "Hi, I'm calling on behalf of my client.",
+        })
     };
 
     let task = call_script
@@ -77,7 +79,7 @@ pub async fn start_call(
         "task": task,
         "first_sentence": first_sentence,
         "wait_for_greeting": true,
-        "record": true,
+        "record": false,
         "webhook": webhook_url,
         "metadata": {
             "call_id": call_id.to_string(),
@@ -123,94 +125,24 @@ pub async fn start_call(
     Ok(bland_call_id)
 }
 
-/// Generate a call script using the user's configured LLM.
-async fn generate_call_script(
-    state: &AppState,
-    user_id: Uuid,
-    objective: &str,
-) -> Result<serde_json::Value, CloudError> {
-    let prompt = format!(
-        r#"Generate a phone call script for the following objective:
-
-Objective: {objective}
-
-Return a JSON object with:
-- "task": A detailed instruction for the AI caller (what to say, what information to gather, how to handle objections)
-- "first_sentence": The opening line of the call
-- "success_criteria": What constitutes a successful call
-- "fallback_responses": Common objections and how to handle them
-
-Be professional, friendly, and concise. The caller should sound natural, not robotic."#
-    );
-
-    let result =
-        crate::services::llm_router::generate(state, user_id, &prompt, Some("json")).await?;
-
-    Ok(serde_json::from_str(&result).unwrap_or_else(|_| {
-        serde_json::json!({
-            "task": objective,
-            "first_sentence": format!("Hi, I'm calling to {}", objective.to_lowercase()),
-        })
-    }))
-}
-
 /// Process the result of a completed call. Updates the linked task with parsed outcome.
 pub async fn process_call_result(
     state: &AppState,
-    user_id: Uuid,
+    _user_id: Uuid,
     task_id: Uuid,
     transcript: &str,
     outcome: &str,
 ) -> Result<(), CloudError> {
-    if transcript.is_empty() {
-        sqlx::query(
-            r#"
-            UPDATE tasks SET
-                status = 'completed',
-                result = $1,
-                updated_at = now(),
-                completed_at = now()
-            WHERE id = $2
-            "#,
-        )
-        .bind(serde_json::json!({ "outcome": outcome, "details": "no transcript" }))
-        .bind(task_id)
-        .execute(&state.db)
-        .await?;
-        return Ok(());
-    }
-
-    // Use LLM to parse the transcript
-    let prompt = format!(
-        r#"Parse this phone call transcript and extract the result.
-
-Transcript:
-{transcript}
-
-Call outcome status: {outcome}
-
-Return a JSON object with:
-- "success": boolean — was the objective achieved?
-- "summary": string — one-sentence summary of the outcome
-- "details": object — any specific details extracted (confirmation number, appointment time, etc.)
-- "follow_up_needed": boolean — does the user need to take any action?"#
-    );
-
-    let parsed =
-        crate::services::llm_router::generate(state, user_id, &prompt, Some("json")).await?;
-
-    let result: serde_json::Value = serde_json::from_str(&parsed).unwrap_or_else(|_| {
-        serde_json::json!({
-            "success": outcome == "success",
-            "summary": format!("Call {outcome}"),
-        })
+    let success = outcome == "success";
+    let result = serde_json::json!({
+        "success": success,
+        "outcome": outcome,
+        "status": if success { "completed" } else { "failed" },
+        "transcript_retained": false,
+        "transcript_present": !transcript.is_empty(),
+        "redacted": true,
     });
-
-    let status = if result["success"].as_bool().unwrap_or(false) {
-        "completed"
-    } else {
-        "failed"
-    };
+    let status = if success { "completed" } else { "failed" };
 
     sqlx::query(
         r#"

@@ -32,3 +32,6 @@ CREATE INDEX IF NOT EXISTS idx_private_wallet_transfers_user
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_private_wallet_transfers_user_approval_nonce
     ON private_wallet_transfers(user_id, approval_nonce) WHERE approval_nonce IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_private_wallet_transfers_proof_digest
+    ON private_wallet_transfers(proof_digest) WHERE proof_digest IS NOT NULL;

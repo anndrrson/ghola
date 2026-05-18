@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::CloudError;
+use crate::privacy::{record_privacy_audit_event, NetworkScope};
 use crate::services::swarm_service::{
     self, CreateSwarmRequest, SwarmEstimate, SwarmJobInfo, WorkUnitInfo, WorkUnitResult,
 };
@@ -48,6 +49,17 @@ pub async fn create_swarm(
     AuthUser(claims): AuthUser,
     Json(req): Json<CreateSwarmRequest>,
 ) -> Result<Json<SwarmJobInfo>, CloudError> {
+    let approval = req
+        .approval
+        .require_and_store_for(NetworkScope::SwarmExecution)?;
+    record_privacy_audit_event(
+        &state.db,
+        claims.sub,
+        NetworkScope::SwarmExecution,
+        &approval,
+        "swarm_execution",
+    )
+    .await;
     let info = swarm_service::create_swarm(&state.db, claims.sub, req).await?;
 
     // Start the dispatch loop in the background
@@ -99,13 +111,8 @@ pub async fn get_work_units(
     Path(id): Path<Uuid>,
     Query(query): Query<UnitsQuery>,
 ) -> Result<Json<Vec<WorkUnitInfo>>, CloudError> {
-    let units = swarm_service::get_work_units(
-        &state.db,
-        id,
-        claims.sub,
-        query.status.as_deref(),
-    )
-    .await?;
+    let units =
+        swarm_service::get_work_units(&state.db, id, claims.sub, query.status.as_deref()).await?;
     Ok(Json(units))
 }
 

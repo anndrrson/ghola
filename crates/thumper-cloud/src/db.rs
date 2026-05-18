@@ -128,6 +128,18 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 CREATE INDEX IF NOT EXISTS idx_calls_user ON calls(user_id);
 CREATE INDEX IF NOT EXISTS idx_calls_bland ON calls(bland_call_id);
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS phone_number_hash TEXT;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS phone_number_preview TEXT;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS privacy_mode TEXT;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS network_scope TEXT;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS user_approved_at TIMESTAMPTZ;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS approval_nonce TEXT;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS approval_summary TEXT;
+CREATE INDEX IF NOT EXISTS idx_calls_user_phone_hash
+    ON calls(user_id, phone_number_hash, created_at DESC)
+    WHERE phone_number_hash IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_calls_user_approval_nonce
+    ON calls(user_id, approval_nonce) WHERE approval_nonce IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS email_actions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -166,6 +178,18 @@ CREATE TABLE IF NOT EXISTS sms_actions (
     sent_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_sms_actions_user ON sms_actions(user_id);
+ALTER TABLE sms_actions ADD COLUMN IF NOT EXISTS privacy_mode TEXT;
+ALTER TABLE sms_actions ADD COLUMN IF NOT EXISTS network_scope TEXT;
+ALTER TABLE sms_actions ADD COLUMN IF NOT EXISTS user_approved_at TIMESTAMPTZ;
+ALTER TABLE sms_actions ADD COLUMN IF NOT EXISTS approval_nonce TEXT;
+ALTER TABLE sms_actions ADD COLUMN IF NOT EXISTS approval_summary TEXT;
+ALTER TABLE sms_actions ADD COLUMN IF NOT EXISTS to_number_hash TEXT;
+ALTER TABLE sms_actions ADD COLUMN IF NOT EXISTS to_number_preview TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sms_actions_user_approval_nonce
+    ON sms_actions(user_id, approval_nonce) WHERE approval_nonce IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sms_actions_user_to_hash
+    ON sms_actions(user_id, to_number_hash, created_at DESC)
+    WHERE to_number_hash IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS connected_accounts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -318,12 +342,16 @@ UPDATE users SET tier = 'free' WHERE tier IS NULL;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS siws_pubkey TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS seeker_verified_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS seeker_wallet_pubkey TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS seeker_sgt_mint TEXT;
 DROP INDEX IF EXISTS idx_users_google_id;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
 DROP INDEX IF EXISTS idx_users_apple_id;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_id ON users(apple_id);
 DROP INDEX IF EXISTS idx_users_siws_pubkey;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_siws_pubkey ON users(siws_pubkey);
+CREATE INDEX IF NOT EXISTS idx_users_seeker_sgt_mint ON users(seeker_sgt_mint);
 
 -- Ensure columns from CREATE TABLE exist (live DB may predate them)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
@@ -382,8 +410,13 @@ ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS network_scope TEXT;
 ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS user_approved_at TIMESTAMPTZ;
 ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS approval_nonce TEXT;
 ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS approval_summary TEXT;
+ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS to_address_hash TEXT;
+ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS to_address_preview TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_txns_user_approval_nonce
     ON wallet_transactions(user_id, approval_nonce) WHERE approval_nonce IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_wallet_txns_user_to_address_hash
+    ON wallet_transactions(user_id, to_address_hash, currency, amount, created_at DESC)
+    WHERE to_address_hash IS NOT NULL;
 
 -- Private Balance top-ups.
 -- Stripe settles the consumer-facing payment; this ledger records the funded
@@ -409,6 +442,99 @@ CREATE INDEX IF NOT EXISTS idx_private_balance_deposits_user
     ON private_balance_deposits(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_private_balance_deposits_status
     ON private_balance_deposits(status);
+
+-- Agentic commerce intent console. These tables are additive orchestration
+-- state over the existing agent marketplace, x402 discovery, MCP surfaces, and
+-- private-balance funding ledger.
+CREATE TABLE IF NOT EXISTS commerce_intents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    goal TEXT NOT NULL CHECK (length(goal) > 0 AND length(goal) <= 1200),
+    budget_micro_usdc BIGINT NOT NULL CHECK (budget_micro_usdc > 0),
+    privacy_mode TEXT NOT NULL DEFAULT 'private' CHECK (privacy_mode IN ('private', 'open')),
+    preferred_rail TEXT NOT NULL DEFAULT 'ghola_balance',
+    allowed_adapters TEXT[] NOT NULL DEFAULT ARRAY['x402','mcp']::TEXT[],
+    deadline_at TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT 'created'
+        CHECK (status IN ('created', 'offered', 'quoted', 'approved', 'awaiting_payment', 'completed', 'failed', 'cancelled')),
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_commerce_intents_user
+    ON commerce_intents(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_commerce_intents_status
+    ON commerce_intents(status);
+
+CREATE TABLE IF NOT EXISTS commerce_quotes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    intent_id UUID NOT NULL REFERENCES commerce_intents(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    adapter TEXT NOT NULL CHECK (adapter IN ('x402', 'mcp')),
+    offer_id TEXT NOT NULL,
+    provider_slug TEXT,
+    provider_label TEXT,
+    amount_micro_usdc BIGINT NOT NULL CHECK (amount_micro_usdc > 0),
+    currency TEXT NOT NULL DEFAULT 'USDC',
+    rail TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'quoted' CHECK (status IN ('quoted', 'expired', 'accepted', 'cancelled')),
+    payment_requirements JSONB NOT NULL DEFAULT '{}',
+    policy JSONB NOT NULL DEFAULT '{}',
+    raw_offer JSONB NOT NULL DEFAULT '{}',
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_commerce_quotes_intent
+    ON commerce_quotes(intent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_commerce_quotes_user
+    ON commerce_quotes(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS commerce_executions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    intent_id UUID NOT NULL REFERENCES commerce_intents(id) ON DELETE CASCADE,
+    quote_id UUID NOT NULL REFERENCES commerce_quotes(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved', 'awaiting_payment', 'completed', 'failed')),
+    handoff JSONB NOT NULL DEFAULT '{}',
+    error_message TEXT,
+    privacy_mode TEXT,
+    network_scope TEXT,
+    user_approved_at TIMESTAMPTZ,
+    approval_nonce TEXT,
+    approval_summary TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_commerce_executions_intent
+    ON commerce_executions(intent_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_commerce_executions_quote
+    ON commerce_executions(quote_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_commerce_executions_user_approval_nonce
+    ON commerce_executions(user_id, approval_nonce) WHERE approval_nonce IS NOT NULL;
+ALTER TABLE commerce_executions DROP CONSTRAINT IF EXISTS commerce_executions_status_check;
+ALTER TABLE commerce_executions ADD CONSTRAINT commerce_executions_status_check
+    CHECK (status IN ('reserved', 'awaiting_payment', 'completed', 'failed'));
+
+CREATE TABLE IF NOT EXISTS commerce_receipts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    execution_id UUID NOT NULL REFERENCES commerce_executions(id) ON DELETE CASCADE,
+    intent_id UUID NOT NULL REFERENCES commerce_intents(id) ON DELETE CASCADE,
+    quote_id UUID NOT NULL REFERENCES commerce_quotes(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved', 'handoff', 'completed', 'failed')),
+    adapter TEXT NOT NULL,
+    amount_micro_usdc BIGINT NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'USDC',
+    rail TEXT NOT NULL,
+    receipt JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_commerce_receipts_user
+    ON commerce_receipts(user_id, created_at DESC);
+ALTER TABLE commerce_receipts DROP CONSTRAINT IF EXISTS commerce_receipts_status_check;
+ALTER TABLE commerce_receipts ADD CONSTRAINT commerce_receipts_status_check
+    CHECK (status IN ('reserved', 'handoff', 'completed', 'failed'));
 
 -- Private USDCx settlement intents. The server stores hashes/previews of
 -- shielded recipients and signed adapter receipt references, not plaintext
@@ -447,6 +573,8 @@ CREATE INDEX IF NOT EXISTS idx_private_wallet_transfers_user
     ON private_wallet_transfers(user_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_private_wallet_transfers_user_approval_nonce
     ON private_wallet_transfers(user_id, approval_nonce) WHERE approval_nonce IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_private_wallet_transfers_proof_digest
+    ON private_wallet_transfers(proof_digest) WHERE proof_digest IS NOT NULL;
 ALTER TABLE private_wallet_transfers ADD COLUMN IF NOT EXISTS signing_mode TEXT;
 ALTER TABLE private_wallet_transfers ADD COLUMN IF NOT EXISTS signer_key_id TEXT;
 ALTER TABLE private_wallet_transfers ADD COLUMN IF NOT EXISTS signer_attestation_hash TEXT;
@@ -482,6 +610,19 @@ CREATE TABLE IF NOT EXISTS private_wallet_receipt_exports (
 );
 CREATE INDEX IF NOT EXISTS idx_private_wallet_receipt_exports_transfer
     ON private_wallet_receipt_exports(transfer_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS privacy_audit_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    request_kind TEXT NOT NULL,
+    privacy_mode TEXT NOT NULL,
+    network_scope TEXT NOT NULL,
+    approval_nonce_hash TEXT NOT NULL,
+    approval_summary TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_privacy_audit_events_user
+    ON privacy_audit_events(user_id, created_at DESC);
 
 -- Extend task_type to include crypto
 ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_task_type_check;
@@ -913,6 +1054,31 @@ CREATE TABLE IF NOT EXISTS native_message_delivery_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_native_message_delivery_receipts_user
     ON native_message_delivery_receipts(user_id, created_at);
+
+CREATE TABLE IF NOT EXISTS native_message_blocks (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sender_did_hash TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(user_id, sender_did_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_native_message_blocks_user
+    ON native_message_blocks(user_id, created_at);
+
+CREATE TABLE IF NOT EXISTS native_message_abuse_reports (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    message_id          UUID REFERENCES native_message_envelopes(id) ON DELETE SET NULL,
+    sender_did_hash     TEXT,
+    reason              TEXT,
+    ciphertext_metadata JSONB NOT NULL DEFAULT '{}',
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_native_message_abuse_reports_user
+    ON native_message_abuse_reports(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_native_message_abuse_reports_sender_hash
+    ON native_message_abuse_reports(sender_did_hash, created_at)
+    WHERE sender_did_hash IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS native_message_relay_audit_events (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),

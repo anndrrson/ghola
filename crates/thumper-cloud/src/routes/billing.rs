@@ -1,6 +1,6 @@
-use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
+use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
@@ -427,7 +427,11 @@ fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static s
     let amount = event["data"]["object"]["amount_total"]
         .as_i64()
         .unwrap_or(0);
-    if amount >= 2999 { "unlimited" } else { "pro" }
+    if amount >= 2999 {
+        "unlimited"
+    } else {
+        "pro"
+    }
 }
 
 async fn mark_private_balance_top_up_paid(

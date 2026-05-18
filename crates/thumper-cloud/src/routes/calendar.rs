@@ -4,6 +4,7 @@ use serde::Deserialize;
 
 use crate::auth::AuthUser;
 use crate::error::CloudError;
+use crate::privacy::{NetworkScope, PrivacyApproval};
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -14,6 +15,8 @@ pub struct CreateEventRequest {
     pub description: Option<String>,
     pub location: Option<String>,
     pub timezone: Option<String>,
+    #[serde(flatten)]
+    pub approval: PrivacyApproval,
 }
 
 #[derive(Deserialize)]
@@ -29,6 +32,8 @@ pub async fn create_event(
     AuthUser(claims): AuthUser,
     Json(req): Json<CreateEventRequest>,
 ) -> Result<Json<serde_json::Value>, CloudError> {
+    req.approval.require_for(NetworkScope::CalendarExecution)?;
+
     let params = serde_json::json!({
         "action": "create_event",
         "title": req.title,

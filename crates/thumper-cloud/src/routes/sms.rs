@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::CloudError;
+use crate::privacy::{phone_preview, sensitive_text_hash, NetworkScope, PrivacyApproval};
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -12,6 +13,8 @@ pub struct SendSmsRequest {
     pub to: String,
     pub body: String,
     pub task_id: Option<Uuid>,
+    #[serde(flatten)]
+    pub approval: PrivacyApproval,
 }
 
 #[derive(Serialize)]
@@ -30,19 +33,30 @@ pub async fn send_sms(
     AuthUser(claims): AuthUser,
     Json(req): Json<SendSmsRequest>,
 ) -> Result<Json<SmsResponse>, CloudError> {
+    let approval = req.approval.require_and_store_for(NetworkScope::SmsSend)?;
     check_sms_limit(&state, claims.sub, &claims.tier).await?;
+    let to_preview = phone_preview(&req.to);
 
     let sms_id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO sms_actions (user_id, task_id, to_number, body, vendor, status)
-        VALUES ($1, $2, $3, $4, 'bland', 'sending')
+        INSERT INTO sms_actions
+            (user_id, task_id, to_number, to_number_hash, to_number_preview, body, vendor, status,
+             privacy_mode, network_scope, user_approved_at, approval_nonce, approval_summary)
+        VALUES ($1, $2, $3, $4, $5, $6, 'bland', 'sending', $7, $8, $9, $10, $11)
         RETURNING id
         "#,
     )
     .bind(claims.sub)
     .bind(req.task_id)
-    .bind(&req.to)
-    .bind(&req.body)
+    .bind(&to_preview)
+    .bind(sensitive_text_hash(&req.to))
+    .bind(&to_preview)
+    .bind("")
+    .bind(&approval.privacy_mode)
+    .bind(&approval.network_scope)
+    .bind(approval.user_approved_at)
+    .bind(&approval.approval_nonce_hash)
+    .bind(&approval.approval_summary)
     .fetch_one(&state.db)
     .await?;
 
@@ -57,12 +71,15 @@ pub async fn send_sms(
                 UPDATE sms_actions SET
                     vendor_message_id = $1,
                     status = 'sent',
-                    sent_at = $2
-                WHERE id = $3
+                    sent_at = $2,
+                    to_number = $3,
+                    body = ''
+                WHERE id = $4
                 "#,
             )
             .bind(&vendor_message_id)
             .bind(now)
+            .bind(&to_preview)
             .bind(sms_id)
             .execute(&state.db)
             .await?;
@@ -73,15 +90,15 @@ pub async fn send_sms(
                 crate::services::telegram::get_telegram_link(&state.db, claims.sub).await
             {
                 if let Some(ref token) = state.config.telegram_bot_token {
-                    let summary = format!("📱 SMS sent to {} ({}…)", req.to, &req.body.chars().take(40).collect::<String>());
-                    let _ = crate::services::telegram::notify_user(token, tg_link.0, &summary).await;
+                    let summary = "SMS sent through external provider.";
+                    let _ = crate::services::telegram::notify_user(token, tg_link.0, summary).await;
                 }
             }
 
             Ok(Json(SmsResponse {
                 id: sms_id,
-                to: req.to,
-                body: req.body,
+                to: to_preview,
+                body: String::new(),
                 status: "sent".to_string(),
                 sent_at: Some(now),
                 vendor_message_id: Some(vendor_message_id),
@@ -89,13 +106,11 @@ pub async fn send_sms(
         }
         Err(e) => {
             let err_msg = e.to_string();
-            sqlx::query(
-                "UPDATE sms_actions SET status = 'failed', error = $1 WHERE id = $2",
-            )
-            .bind(&err_msg)
-            .bind(sms_id)
-            .execute(&state.db)
-            .await?;
+            sqlx::query("UPDATE sms_actions SET status = 'failed', error = $1 WHERE id = $2")
+                .bind(&err_msg)
+                .bind(sms_id)
+                .execute(&state.db)
+                .await?;
             Err(e)
         }
     }
@@ -182,4 +197,43 @@ async fn update_usage(state: &AppState, user_id: Uuid) -> Result<(), CloudError>
     .execute(&state.db)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::privacy::STRICT_LOCAL;
+    use chrono::Utc;
+
+    #[test]
+    fn sms_send_requires_matching_approval_scope_and_hashes_nonce() {
+        assert!(PrivacyApproval::default()
+            .require_and_store_for(NetworkScope::SmsSend)
+            .is_err());
+
+        let wrong_scope = PrivacyApproval {
+            privacy_mode: Some(STRICT_LOCAL.to_string()),
+            network_scope: Some(NetworkScope::EmailSend.as_str().to_string()),
+            user_approved_at: Some(Utc::now()),
+            approval_nonce: Some("sms-send-nonce-123456789".to_string()),
+            approval_summary: Some("User approved an SMS send.".to_string()),
+        };
+        assert!(wrong_scope
+            .require_and_store_for(NetworkScope::SmsSend)
+            .is_err());
+
+        let raw_nonce = "sms-send-nonce-123456789";
+        let approval = PrivacyApproval {
+            privacy_mode: Some(STRICT_LOCAL.to_string()),
+            network_scope: Some(NetworkScope::SmsSend.as_str().to_string()),
+            user_approved_at: Some(Utc::now()),
+            approval_nonce: Some(raw_nonce.to_string()),
+            approval_summary: Some("User approved an SMS send.".to_string()),
+        };
+        let stored = approval
+            .require_and_store_for(NetworkScope::SmsSend)
+            .expect("approval should validate");
+        assert_ne!(stored.approval_nonce_hash, raw_nonce);
+        assert_eq!(stored.approval_nonce_hash.len(), 64);
+    }
 }

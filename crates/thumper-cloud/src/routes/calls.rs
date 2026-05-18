@@ -5,16 +5,19 @@ use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::CloudError;
+use crate::privacy::{phone_preview, sensitive_text_hash, NetworkScope, PrivacyApproval};
 use crate::state::AppState;
 
 #[derive(Deserialize)]
 pub struct InitiateCallRequest {
     pub phone_number: String,
     pub objective: String,
-    /// Optional pre-generated script. If absent, LLM generates one.
+    /// Optional pre-generated script. If absent, a local minimal script is used.
     pub script: Option<serde_json::Value>,
     /// Optional task_id to link this call to.
     pub task_id: Option<Uuid>,
+    #[serde(flatten)]
+    pub approval: PrivacyApproval,
 }
 
 #[derive(Serialize)]
@@ -35,38 +38,70 @@ pub async fn initiate_call(
     AuthUser(claims): AuthUser,
     Json(req): Json<InitiateCallRequest>,
 ) -> Result<Json<CallResponse>, CloudError> {
+    let approval = req
+        .approval
+        .require_and_store_for(NetworkScope::CallExecution)?;
+
     // Check usage limits
     check_call_limit(&state, claims.sub, &claims.tier).await?;
 
     // Create call record
     let call_id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO calls (user_id, task_id, phone_number, objective, script, outcome)
-        VALUES ($1, $2, $3, $4, $5, 'in_progress')
+        INSERT INTO calls
+            (user_id, task_id, phone_number, phone_number_hash, phone_number_preview,
+             objective, script, outcome, privacy_mode, network_scope,
+             user_approved_at, approval_nonce, approval_summary)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'in_progress', $8, $9, $10, $11, $12)
         RETURNING id
         "#,
     )
     .bind(claims.sub)
     .bind(req.task_id)
     .bind(&req.phone_number)
+    .bind(sensitive_text_hash(&req.phone_number))
+    .bind(phone_preview(&req.phone_number))
     .bind(&req.objective)
-    .bind(&req.script)
+    .bind(Option::<serde_json::Value>::None)
+    .bind(&approval.privacy_mode)
+    .bind(&approval.network_scope)
+    .bind(approval.user_approved_at)
+    .bind(&approval.approval_nonce_hash)
+    .bind(&approval.approval_summary)
     .fetch_one(&state.db)
     .await?;
 
     // Initiate call via Bland AI
-    let bland_call_id = crate::services::call_service::start_call(
+    let local_script = serde_json::json!({
+        "task": req.objective,
+        "first_sentence": "Hi, I'm calling on behalf of my client.",
+    });
+    let bland_call_id = match crate::services::call_service::start_call(
         &state,
         claims.sub,
         call_id,
         &req.phone_number,
         &req.objective,
-        req.script.as_ref(),
+        req.script.as_ref().or(Some(&local_script)),
     )
-    .await?;
+    .await
+    {
+        Ok(id) => id,
+        Err(err) => {
+            let _ = sqlx::query(
+                "UPDATE calls SET phone_number = '', objective = '[redacted after provider attempt]', outcome = 'failed' WHERE id = $1",
+            )
+            .bind(call_id)
+            .execute(&state.db)
+            .await;
+            return Err(err);
+        }
+    };
 
     // Update with Bland call ID
-    sqlx::query("UPDATE calls SET bland_call_id = $1 WHERE id = $2")
+    sqlx::query(
+        "UPDATE calls SET bland_call_id = $1, phone_number = '', objective = '[redacted after provider handoff]' WHERE id = $2",
+    )
         .bind(&bland_call_id)
         .bind(call_id)
         .execute(&state.db)
@@ -74,9 +109,9 @@ pub async fn initiate_call(
 
     Ok(Json(CallResponse {
         id: call_id,
-        bland_call_id: Some(bland_call_id),
-        phone_number: req.phone_number,
-        objective: req.objective,
+        bland_call_id: None,
+        phone_number: phone_preview(&req.phone_number),
+        objective: "[redacted after provider handoff]".to_string(),
         outcome: Some("in_progress".to_string()),
         transcript: None,
         duration_seconds: None,
@@ -162,6 +197,17 @@ pub async fn call_webhook(
 
     // Estimate cost: $0.09/min
     let cost_cents = duration_seconds.map(|d| ((d as f64 / 60.0) * 9.0).ceil() as i32);
+    let retain_artifacts = retain_call_artifacts();
+    let stored_transcript = if retain_artifacts {
+        transcript.clone()
+    } else {
+        call_outcome_summary(outcome, duration_seconds)
+    };
+    let stored_recording_url = if retain_artifacts {
+        payload.recording_url.as_deref()
+    } else {
+        None
+    };
 
     // Update call record
     sqlx::query(
@@ -176,11 +222,11 @@ pub async fn call_webhook(
         WHERE bland_call_id = $6
         "#,
     )
-    .bind(&transcript)
+    .bind(&stored_transcript)
     .bind(outcome)
     .bind(duration_seconds)
     .bind(cost_cents)
-    .bind(&payload.recording_url)
+    .bind(stored_recording_url)
     .bind(&bland_call_id)
     .execute(&state.db)
     .await?;
@@ -210,9 +256,8 @@ pub async fn call_webhook(
             if let Some(ref token) = state.config.telegram_bot_token {
                 let summary = match outcome {
                     "success" => format!(
-                        "Call completed! Duration: {}s\n\nTranscript:\n{}",
-                        duration_seconds.unwrap_or(0),
-                        &transcript[..transcript.len().min(3000)]
+                        "Call completed through external provider. Duration: {}s.",
+                        duration_seconds.unwrap_or(0)
                     ),
                     "voicemail" => "Call went to voicemail.".to_string(),
                     "no_answer" => "No answer on the call.".to_string(),
@@ -281,6 +326,62 @@ async fn check_call_limit(state: &AppState, user_id: Uuid, tier: &str) -> Result
         ));
     }
     Ok(())
+}
+
+fn call_outcome_summary(outcome: &str, duration_seconds: Option<i32>) -> String {
+    match duration_seconds {
+        Some(duration) => format!(
+            "Call outcome: {outcome}; duration_seconds={duration}. Transcript not retained."
+        ),
+        None => format!("Call outcome: {outcome}. Transcript not retained."),
+    }
+}
+
+fn retain_call_artifacts() -> bool {
+    call_artifact_retention_allowed(
+        std::env::var("GHOLA_ENV").ok().as_deref(),
+        std::env::var("GHOLA_RETAIN_CALL_ARTIFACTS").ok().as_deref(),
+    )
+}
+
+fn call_artifact_retention_allowed(env: Option<&str>, flag: Option<&str>) -> bool {
+    let enabled = matches!(
+        flag.unwrap_or_default().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes"
+    );
+    let non_production = matches!(
+        env.unwrap_or_default().to_ascii_lowercase().as_str(),
+        "dev" | "development" | "local" | "test"
+    );
+    enabled && non_production
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn call_artifact_retention_is_env_gated_and_non_production_only() {
+        assert!(call_artifact_retention_allowed(
+            Some("development"),
+            Some("true")
+        ));
+        assert!(!call_artifact_retention_allowed(
+            Some("production"),
+            Some("true")
+        ));
+        assert!(!call_artifact_retention_allowed(
+            Some("local"),
+            Some("false")
+        ));
+    }
+
+    #[test]
+    fn call_outcome_summary_does_not_include_transcript_or_recording_url() {
+        let summary = call_outcome_summary("success", Some(12));
+        assert!(summary.contains("Transcript not retained"));
+        assert!(!summary.contains("recording"));
+    }
 }
 
 async fn update_usage(

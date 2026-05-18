@@ -3,7 +3,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::CloudError;
-use crate::privacy::{log_addr, task_network_scope, PrivacyApproval};
+use crate::privacy::{
+    log_addr, phone_preview, redact_sensitive_json, sensitive_text_hash,
+    stored_approval_nonce_hash, task_network_scope, PrivacyApproval,
+};
 use crate::state::AppState;
 
 /// Execute a task. This is the server-side agentic loop.
@@ -66,7 +69,7 @@ pub async fn execute_task(
     }
 
     let result = match task_type.as_str() {
-        "call" => execute_call_task(state, user_id, task_id, agent_id, &params).await,
+        "call" => execute_call_task(state, user_id, task_id, agent_id, &params, &approval).await,
         "email" => execute_email_task(state, user_id, task_id, agent_id, &params, &approval).await,
         "calendar" => execute_calendar_task(state, user_id, task_id, &params, &approval).await,
         "crypto" => execute_crypto_task(state, user_id, task_id, &params, &approval).await,
@@ -110,6 +113,7 @@ async fn execute_call_task(
     task_id: Uuid,
     agent_id: Option<Uuid>,
     params: &serde_json::Value,
+    approval: &PrivacyApproval,
 ) -> Result<(), CloudError> {
     let phone_number = params["phone_number"]
         .as_str()
@@ -122,17 +126,14 @@ async fn execute_call_task(
     // If no phone number but we have a business name, look it up
     // TODO: integrate Google Places API for phone number lookup
 
-    // Step 1: Generate call script
-    add_step(state, task_id, 1, "generate_script", "in_progress").await?;
+    // Step 1: Prepare a minimal call payload locally. Do not send the call
+    // objective/context to a second LLM provider before the actual call handoff.
+    add_step(state, task_id, 1, "prepare_call", "in_progress").await?;
 
-    let script_prompt = format!(
-        "Generate a phone call script. Objective: {}. Additional context: {}",
-        objective,
-        serde_json::to_string(params).unwrap_or_default()
-    );
-    let script =
-        crate::services::llm_router::generate(state, user_id, &script_prompt, Some("json")).await?;
-    let script_json: serde_json::Value = serde_json::from_str(&script).unwrap_or_default();
+    let script_json = serde_json::json!({
+        "task": objective,
+        "first_sentence": "Hi, I'm calling on behalf of my client.",
+    });
 
     complete_step(state, task_id, 1, &serde_json::json!({ "generated": true })).await?;
 
@@ -141,20 +142,35 @@ async fn execute_call_task(
 
     let call_id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO calls (user_id, task_id, phone_number, objective, script, outcome, agent_id)
-        VALUES ($1, $2, $3, $4, NULL, 'in_progress', $5)
+        INSERT INTO calls
+            (user_id, task_id, phone_number, phone_number_hash, phone_number_preview,
+             objective, script, outcome, agent_id, privacy_mode, network_scope,
+             user_approved_at, approval_nonce, approval_summary)
+        VALUES ($1, $2, $3, $4, $5, $6, NULL, 'in_progress', $7, $8, $9, $10, $11, $12)
         RETURNING id
         "#,
     )
     .bind(user_id)
     .bind(task_id)
     .bind(phone_number)
+    .bind(sensitive_text_hash(phone_number))
+    .bind(phone_preview(phone_number))
     .bind(objective)
     .bind(agent_id)
+    .bind(approval.privacy_mode.as_deref())
+    .bind(approval.network_scope.as_deref())
+    .bind(approval.user_approved_at)
+    .bind(
+        approval
+            .approval_nonce
+            .as_deref()
+            .map(stored_approval_nonce_hash),
+    )
+    .bind(approval.approval_summary.as_deref())
     .fetch_one(&state.db)
     .await?;
 
-    let bland_call_id = crate::services::call_service::start_call(
+    let bland_call_id = match crate::services::call_service::start_call(
         state,
         user_id,
         call_id,
@@ -162,9 +178,23 @@ async fn execute_call_task(
         objective,
         Some(&script_json),
     )
-    .await?;
+    .await
+    {
+        Ok(id) => id,
+        Err(err) => {
+            let _ = sqlx::query(
+                "UPDATE calls SET phone_number = '', objective = '[redacted after provider attempt]', outcome = 'failed' WHERE id = $1",
+            )
+            .bind(call_id)
+            .execute(&state.db)
+            .await;
+            return Err(err);
+        }
+    };
 
-    sqlx::query("UPDATE calls SET bland_call_id = $1 WHERE id = $2")
+    sqlx::query(
+        "UPDATE calls SET bland_call_id = $1, phone_number = '', objective = '[redacted after provider handoff]' WHERE id = $2",
+    )
         .bind(&bland_call_id)
         .bind(call_id)
         .execute(&state.db)
@@ -175,8 +205,8 @@ async fn execute_call_task(
     )
     .bind(serde_json::json!({
         "status": "call_in_progress",
-        "call_id": call_id,
-        "bland_call_id": bland_call_id,
+        "privacy_boundary": "External provider",
+        "redacted": true,
     }))
     .bind(task_id)
     .execute(&state.db)
@@ -186,7 +216,7 @@ async fn execute_call_task(
         state,
         task_id,
         2,
-        &serde_json::json!({ "call_id": call_id, "provider": "Bland AI" }),
+        &serde_json::json!({ "status": "call_started", "provider": "Bland AI", "redacted": true }),
     )
     .await?;
 
@@ -240,16 +270,21 @@ async fn execute_email_task(
     .bind(approval.privacy_mode.as_deref())
     .bind(approval.network_scope.as_deref())
     .bind(approval.user_approved_at)
-    .bind(approval.approval_nonce.as_deref())
+    .bind(
+        approval
+            .approval_nonce
+            .as_deref()
+            .map(stored_approval_nonce_hash),
+    )
     .bind(approval.approval_summary.as_deref())
     .fetch_one(&state.db)
     .await?;
 
     let draft_json = serde_json::json!({
         "email_action_id": email_action_id,
-        "to_address": to_address,
-        "subject": draft.subject,
-        "body": draft.body,
+        "status": "draft",
+        "privacy_boundary": "External provider",
+        "redacted": true,
     });
 
     complete_step(state, task_id, 1, &draft_json).await?;
@@ -348,10 +383,16 @@ async fn execute_calendar_task(
 
     let result =
         crate::services::calendar_service::handle_calendar_request(state, user_id, params).await?;
+    let safe_result = serde_json::json!({
+        "action": result.get("action").and_then(serde_json::Value::as_str).unwrap_or("calendar_action"),
+        "status": result.get("status").and_then(serde_json::Value::as_str).unwrap_or("completed"),
+        "privacy_boundary": "External provider",
+        "redacted": true,
+    });
 
-    complete_step(state, task_id, 1, &result).await?;
+    complete_step(state, task_id, 1, &safe_result).await?;
 
-    complete_task(&state.db, task_id, &result).await?;
+    complete_task(&state.db, task_id, &safe_result).await?;
 
     Ok(())
 }
@@ -442,7 +483,7 @@ async fn execute_crypto_task(
             let result = serde_json::json!({
                 "sol": balances.sol,
                 "usdc": balances.usdc,
-                "address": balances.address,
+                "address_preview": log_addr(&balances.address),
             });
 
             complete_step(state, task_id, 1, &result).await?;
@@ -496,7 +537,7 @@ async fn complete_step(
         WHERE task_id = $2 AND step_number = $3
         "#,
     )
-    .bind(output)
+    .bind(redact_sensitive_json(output))
     .bind(task_id)
     .bind(step_number)
     .execute(&state.db)
