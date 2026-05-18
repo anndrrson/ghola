@@ -40,7 +40,7 @@ impl CloudConfig {
     pub fn from_env() -> Self {
         let encryption_hex = env::var("THUMPER_ENCRYPTION_KEY").expect(
             "THUMPER_ENCRYPTION_KEY must be set (generate with `openssl rand -hex 32`). \
-             Without it, BYOM API keys and Gmail tokens cannot be encrypted."
+             Without it, BYOM API keys and Gmail tokens cannot be encrypted.",
         );
 
         let encryption_key = parse_hex_key(&encryption_hex);
@@ -63,10 +63,8 @@ impl CloudConfig {
                     let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
                     format!("0.0.0.0:{port}").parse().expect("invalid PORT")
                 }),
-            database_url: env::var("DATABASE_URL")
-                .expect("DATABASE_URL must be set"),
-            jwt_secret: env::var("JWT_SECRET")
-                .expect("JWT_SECRET must be set"),
+            database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
+            jwt_secret: env::var("JWT_SECRET").expect("JWT_SECRET must be set"),
             bland_api_key: env::var("BLAND_API_KEY").ok(),
             bland_webhook_url: env::var("BLAND_WEBHOOK_URL").ok(),
             claude_api_key,
@@ -79,15 +77,20 @@ impl CloudConfig {
             stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET").ok(),
             stripe_price_pro: env::var("STRIPE_PRICE_PRO").ok(),
             stripe_price_unlimited: env::var("STRIPE_PRICE_UNLIMITED").ok(),
-            base_url: env::var("BASE_URL")
-                .unwrap_or_else(|_| "http://localhost:3000".to_string()),
+            base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
             encryption_key,
             telegram_bot_token: env::var("TELEGRAM_BOT_TOKEN").ok(),
-            solana_rpc_url: env::var("SOLANA_RPC_URL").ok()
+            solana_rpc_url: env::var("SOLANA_RPC_URL")
+                .ok()
                 .or_else(|| {
                     env::var("HELIUS_API_KEY").ok().map(|key| {
-                        let network = env::var("SOLANA_NETWORK").unwrap_or_else(|_| "mainnet-beta".to_string());
-                        let host = if network == "devnet" { "devnet" } else { "mainnet" };
+                        let network = env::var("SOLANA_NETWORK")
+                            .unwrap_or_else(|_| "mainnet-beta".to_string());
+                        let host = if network == "devnet" {
+                            "devnet"
+                        } else {
+                            "mainnet"
+                        };
                         format!("https://{host}.helius-rpc.com/?api-key={key}")
                     })
                 })
@@ -130,12 +133,16 @@ impl CloudConfig {
 }
 
 fn parse_hex_key(hex_str: &str) -> [u8; 32] {
-    let bytes: Vec<u8> = (0..hex_str.len())
-        .step_by(2)
-        .filter_map(|i| hex_str.get(i..i + 2).and_then(|s| u8::from_str_radix(s, 16).ok()))
-        .collect();
+    let hex_str = hex_str.trim();
+    assert!(
+        hex_str.len() == 64 && hex_str.bytes().all(|b| b.is_ascii_hexdigit()),
+        "THUMPER_ENCRYPTION_KEY must be exactly 64 hex characters"
+    );
+
     let mut key = [0u8; 32];
-    let len = bytes.len().min(32);
-    key[..len].copy_from_slice(&bytes[..len]);
+    for (i, chunk) in hex_str.as_bytes().chunks_exact(2).enumerate() {
+        let byte = std::str::from_utf8(chunk).expect("validated hex key contains UTF-8");
+        key[i] = u8::from_str_radix(byte, 16).expect("validated hex key contains only hex");
+    }
     key
 }

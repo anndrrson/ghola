@@ -156,6 +156,7 @@ struct WalletView: View {
     @State private var showReceiveSheet = false
     @State private var showRailInfo = false
     @State private var showAddContact = false
+    @State private var showProvisionApproval = false
     @State private var selectedSendContact: WalletContact?
     @State private var proofIntent: PendingPrivateTransfer?
     @State private var noticeMessage: String?
@@ -303,6 +304,18 @@ struct WalletView: View {
                     try contactsStore.saveContact(displayName: name, handle: handle, address: address, shieldedAddress: shieldedAddress)
                 }
             }
+            .confirmationDialog(
+                "Create USDC wallet?",
+                isPresented: $showProvisionApproval,
+                titleVisibility: .visible
+            ) {
+                Button("Approve and Create Wallet") {
+                    provisionWallet()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Ghola Cloud will provision or reuse a public Solana USDC wallet. Wallet setup requires network access and is not shielded.")
+            }
             .alert("Wallet", isPresented: noticeBinding) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -329,7 +342,7 @@ struct WalletView: View {
                 .font(Theme.bodyFont)
                 .foregroundStyle(Theme.textSecondary)
             Button {
-                provisionWallet()
+                showProvisionApproval = true
             } label: {
                 Label(isProvisioning ? "Creating..." : "Create Wallet", systemImage: "plus.circle.fill")
                     .frame(maxWidth: .infinity)
@@ -534,7 +547,7 @@ struct WalletView: View {
 
     private var sendDisabled: Bool {
         if selectedRail == .privateUSDCx {
-            return false
+            return !privateRailReady || !privateSignerReady
         }
         return walletInfo == nil || balances == nil
     }

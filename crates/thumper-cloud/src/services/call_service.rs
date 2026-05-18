@@ -100,9 +100,9 @@ pub async fn start_call(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let error_body = resp.text().await.unwrap_or_default();
+        let _ = resp.text().await;
         return Err(CloudError::Internal(format!(
-            "Bland AI returned {status}: {error_body}"
+            "Bland AI returned status {status}"
         )));
     }
 
@@ -118,7 +118,7 @@ pub async fn start_call(
         ))?
         .to_string();
 
-    tracing::info!(%call_id, %bland_call_id, %phone_number, "call initiated via Bland AI");
+    tracing::info!(%call_id, %bland_call_id, "call initiated via Bland AI");
 
     Ok(bland_call_id)
 }

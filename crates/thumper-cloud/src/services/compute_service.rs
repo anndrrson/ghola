@@ -219,12 +219,11 @@ pub async fn register_provider(
     req: ProviderRegistration,
 ) -> Result<ProviderInfo, CloudError> {
     // Verify user has a wallet first
-    let has_wallet: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM user_wallets WHERE user_id = $1)",
-    )
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await?;
+    let has_wallet: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM user_wallets WHERE user_id = $1)")
+            .bind(user_id)
+            .fetch_one(&state.db)
+            .await?;
 
     if !has_wallet {
         return Err(CloudError::BadRequest(
@@ -232,15 +231,27 @@ pub async fn register_provider(
         ));
     }
 
-    let row = sqlx::query_as::<_, (
-        Uuid, String, String, serde_json::Value,
-        i32, i32, String,
-        i64, i64, i64,
-        f64, f64, f64,
-        Option<chrono::DateTime<Utc>>,
-        chrono::DateTime<Utc>,
-        i64,
-    )>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            serde_json::Value,
+            i32,
+            i32,
+            String,
+            i64,
+            i64,
+            i64,
+            f64,
+            f64,
+            f64,
+            Option<chrono::DateTime<Utc>>,
+            chrono::DateTime<Utc>,
+            i64,
+        ),
+    >(
         r#"
         INSERT INTO compute_providers (
             user_id, relay_pubkey, display_name, models, vram_mb,
@@ -313,13 +324,12 @@ pub async fn update_provider_status(
     provider_id: Uuid,
     status: &str,
 ) -> Result<(), CloudError> {
-    let result = sqlx::query(
-        "UPDATE compute_providers SET status = $1, updated_at = now() WHERE id = $2",
-    )
-    .bind(status)
-    .bind(provider_id)
-    .execute(db)
-    .await?;
+    let result =
+        sqlx::query("UPDATE compute_providers SET status = $1, updated_at = now() WHERE id = $2")
+            .bind(status)
+            .bind(provider_id)
+            .execute(db)
+            .await?;
 
     if result.rows_affected() == 0 {
         return Err(CloudError::NotFound("provider not found".to_string()));
@@ -430,12 +440,20 @@ pub async fn get_provider_by_id(
 // =========================================================================
 
 pub async fn list_online_providers(db: &PgPool) -> Result<Vec<PublicProviderInfo>, CloudError> {
-    let rows = sqlx::query_as::<_, (
-        Uuid, String, serde_json::Value,
-        i32, String,
-        i64,
-        f64, f64, f64,
-    )>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            serde_json::Value,
+            i32,
+            String,
+            i64,
+            f64,
+            f64,
+            f64,
+        ),
+    >(
         r#"
         SELECT
             id, display_name, models,
@@ -488,11 +506,10 @@ fn quantize_f64(val: f64, step: f64) -> f64 {
 
 /// Aggregate models across all online providers, returning per-model stats.
 pub async fn list_community_models(db: &PgPool) -> Result<Vec<CommunityModel>, CloudError> {
-    let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
-        "SELECT models FROM compute_providers WHERE status = 'online'",
-    )
-    .fetch_all(db)
-    .await?;
+    let rows: Vec<(serde_json::Value,)> =
+        sqlx::query_as("SELECT models FROM compute_providers WHERE status = 'online'")
+            .fetch_all(db)
+            .await?;
 
     // model_id -> (count, min_input, min_output)
     let mut aggregated: HashMap<String, (usize, u64, u64)> = HashMap::new();
@@ -586,13 +603,11 @@ pub async fn update_provider(
         .await?;
     }
     if let Some(vram_mb) = update.vram_mb {
-        sqlx::query(
-            "UPDATE compute_providers SET vram_mb = $1, updated_at = now() WHERE id = $2",
-        )
-        .bind(vram_mb)
-        .bind(provider_id)
-        .execute(db)
-        .await?;
+        sqlx::query("UPDATE compute_providers SET vram_mb = $1, updated_at = now() WHERE id = $2")
+            .bind(vram_mb)
+            .bind(provider_id)
+            .execute(db)
+            .await?;
     }
 
     // If nothing was set, just touch updated_at
@@ -706,9 +721,13 @@ pub async fn select_provider(
     let best = candidates
         .iter()
         .max_by(|a, b| {
-            let score_a = compute_score(a.reputation, a.load_ratio, a.price_per_1k_input, max_price);
-            let score_b = compute_score(b.reputation, b.load_ratio, b.price_per_1k_input, max_price);
-            score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+            let score_a =
+                compute_score(a.reputation, a.load_ratio, a.price_per_1k_input, max_price);
+            let score_b =
+                compute_score(b.reputation, b.load_ratio, b.price_per_1k_input, max_price);
+            score_a
+                .partial_cmp(&score_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
         })
         .unwrap(); // candidates is non-empty
 
@@ -792,12 +811,11 @@ pub async fn create_escrow(
     estimated_cost_usdc: i64,
 ) -> Result<Uuid, CloudError> {
     // Fetch user's daily spending limit
-    let spending_limit: Option<i64> = sqlx::query_scalar(
-        "SELECT spending_limit_daily_usdc FROM user_wallets WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(db)
-    .await?;
+    let spending_limit: Option<i64> =
+        sqlx::query_scalar("SELECT spending_limit_daily_usdc FROM user_wallets WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?;
 
     let daily_limit = spending_limit.ok_or_else(|| {
         CloudError::BadRequest("wallet not provisioned — cannot create escrow".to_string())
@@ -949,10 +967,7 @@ pub async fn refund_escrow(db: &PgPool, escrow_id: Uuid) -> Result<(), CloudErro
 // =========================================================================
 
 /// Expire escrow holds older than `max_age_secs`. Returns the count expired.
-pub async fn expire_stale_escrows(
-    db: &PgPool,
-    max_age_secs: u64,
-) -> Result<u64, CloudError> {
+pub async fn expire_stale_escrows(db: &PgPool, max_age_secs: u64) -> Result<u64, CloudError> {
     let interval_str = format!("{max_age_secs} seconds");
 
     let result = sqlx::query(
@@ -1061,11 +1076,7 @@ pub async fn complete_job(
 // 15. fail_job
 // =========================================================================
 
-pub async fn fail_job(
-    db: &PgPool,
-    job_id: Uuid,
-    error_message: &str,
-) -> Result<(), CloudError> {
+pub async fn fail_job(db: &PgPool, job_id: Uuid, error_message: &str) -> Result<(), CloudError> {
     sqlx::query(
         r#"
         UPDATE compute_jobs
@@ -1138,23 +1149,22 @@ pub async fn dispatch_inference(
         .timeout(std::time::Duration::from_secs(120))
         .send()
         .await
-        .map_err(|e| {
-            CloudError::ServiceUnavailable(format!("relay request failed: {e}"))
-        })?;
+        .map_err(|e| CloudError::ServiceUnavailable(format!("relay request failed: {e}")))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let _ = resp.text().await;
         return Err(CloudError::ServiceUnavailable(format!(
-            "relay returned {status}: {text}"
+            "relay returned status {status}"
         )));
     }
 
     let latency_ms = start.elapsed().as_millis() as u64;
 
-    let result: serde_json::Value = resp.json().await.map_err(|e| {
-        CloudError::Internal(format!("failed to parse relay response: {e}"))
-    })?;
+    let result: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| CloudError::Internal(format!("failed to parse relay response: {e}")))?;
 
     let text = result
         .get("text")
@@ -1215,15 +1225,13 @@ pub async fn dispatch_inference_stream(
         .timeout(std::time::Duration::from_secs(300))
         .send()
         .await
-        .map_err(|e| {
-            CloudError::ServiceUnavailable(format!("relay stream request failed: {e}"))
-        })?;
+        .map_err(|e| CloudError::ServiceUnavailable(format!("relay stream request failed: {e}")))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let _ = resp.text().await;
         return Err(CloudError::ServiceUnavailable(format!(
-            "relay returned {status}: {text}"
+            "relay returned status {status}"
         )));
     }
 
@@ -1488,15 +1496,17 @@ pub async fn get_provider_stats(
 
     Ok(rows
         .into_iter()
-        .map(|(stat_date, total, success, failed, tokens, earned, latency)| DailyStats {
-            stat_date,
-            requests_total: total,
-            requests_success: success,
-            requests_failed: failed,
-            tokens_served: tokens,
-            earned_usdc: earned,
-            avg_latency_ms: latency,
-        })
+        .map(
+            |(stat_date, total, success, failed, tokens, earned, latency)| DailyStats {
+                stat_date,
+                requests_total: total,
+                requests_success: success,
+                requests_failed: failed,
+                tokens_served: tokens,
+                earned_usdc: earned,
+                avg_latency_ms: latency,
+            },
+        )
         .collect())
 }
 
@@ -1509,7 +1519,19 @@ pub async fn get_recent_jobs(
     provider_id: Uuid,
     limit: i64,
 ) -> Result<Vec<RecentJob>, CloudError> {
-    let rows = sqlx::query_as::<_, (Uuid, String, String, i32, i32, Option<i32>, Option<Uuid>, chrono::DateTime<Utc>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            i32,
+            i32,
+            Option<i32>,
+            Option<Uuid>,
+            chrono::DateTime<Utc>,
+        ),
+    >(
         r#"
         SELECT id, model_id, status, input_tokens, output_tokens, latency_ms, agent_id, created_at
         FROM compute_jobs
@@ -1525,16 +1547,27 @@ pub async fn get_recent_jobs(
 
     Ok(rows
         .into_iter()
-        .map(|(id, model_id, status, input_tokens, output_tokens, latency_ms, agent_id, created_at)| RecentJob {
-            id,
-            model_id,
-            status,
-            input_tokens,
-            output_tokens,
-            latency_ms,
-            agent_id,
-            created_at,
-        })
+        .map(
+            |(
+                id,
+                model_id,
+                status,
+                input_tokens,
+                output_tokens,
+                latency_ms,
+                agent_id,
+                created_at,
+            )| RecentJob {
+                id,
+                model_id,
+                status,
+                input_tokens,
+                output_tokens,
+                latency_ms,
+                agent_id,
+                created_at,
+            },
+        )
         .collect())
 }
 
@@ -1542,10 +1575,7 @@ pub async fn get_recent_jobs(
 // 23. get_active_escrows
 // =========================================================================
 
-pub async fn get_active_escrows(
-    db: &PgPool,
-    user_id: Uuid,
-) -> Result<Vec<EscrowInfo>, CloudError> {
+pub async fn get_active_escrows(db: &PgPool, user_id: Uuid) -> Result<Vec<EscrowInfo>, CloudError> {
     let rows = sqlx::query_as::<_, (Uuid, Uuid, i64, chrono::DateTime<Utc>)>(
         r#"
         SELECT id, provider_id, amount_usdc, created_at
@@ -1590,17 +1620,19 @@ pub async fn refresh_provider_cache(state: &AppState) -> Result<(), CloudError> 
 
     let providers: Vec<CommunityProviderInfo> = rows
         .into_iter()
-        .map(|(id, relay_pubkey, display_name, models, reputation, max_concurrent)| {
-            CommunityProviderInfo {
-                provider_id: id,
-                relay_pubkey,
-                display_name,
-                models,
-                reputation_score: reputation,
-                current_load: 0, // reset on refresh; heartbeats update this
-                max_concurrent,
-            }
-        })
+        .map(
+            |(id, relay_pubkey, display_name, models, reputation, max_concurrent)| {
+                CommunityProviderInfo {
+                    provider_id: id,
+                    relay_pubkey,
+                    display_name,
+                    models,
+                    reputation_score: reputation,
+                    current_load: 0, // reset on refresh; heartbeats update this
+                    max_concurrent,
+                }
+            },
+        )
         .collect();
 
     let count = providers.len();
@@ -1646,8 +1678,7 @@ pub fn start_escrow_expiry_task(state: AppState) {
 /// Background task: decay reputation for offline providers every 24 hours.
 pub fn start_reputation_decay_task(db: PgPool) {
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
         interval.tick().await; // skip immediate tick
 
         loop {
@@ -1691,13 +1722,9 @@ pub async fn withdraw_provider_earnings(
     req: WithdrawalRequest,
 ) -> Result<WithdrawalResponse, CloudError> {
     // 1. Check treasury mnemonic is configured
-    let mnemonic = state
-        .config
-        .treasury_mnemonic
-        .as_deref()
-        .ok_or_else(|| {
-            CloudError::ServiceUnavailable("withdrawals are not configured yet".to_string())
-        })?;
+    let mnemonic = state.config.treasury_mnemonic.as_deref().ok_or_else(|| {
+        CloudError::ServiceUnavailable("withdrawals are not configured yet".to_string())
+    })?;
 
     // 2. Load provider
     let provider = get_provider_by_user(&state.db, user_id)
@@ -1724,7 +1751,9 @@ pub async fn withdraw_provider_earnings(
 
     // 6. Validate
     if amount <= 0 {
-        return Err(CloudError::BadRequest("amount must be positive".to_string()));
+        return Err(CloudError::BadRequest(
+            "amount must be positive".to_string(),
+        ));
     }
     if amount < MIN_WITHDRAWAL_USDC {
         return Err(CloudError::BadRequest(format!(
@@ -1755,12 +1784,11 @@ pub async fn withdraw_provider_earnings(
 
     // 7b. Assign payout_index if not yet set (for HD intermediate wallet derivation)
     let payout_index: i32 = {
-        let existing: Option<Option<i32>> = sqlx::query_scalar(
-            "SELECT payout_index FROM compute_providers WHERE id = $1",
-        )
-        .bind(provider.id)
-        .fetch_optional(&state.db)
-        .await?;
+        let existing: Option<Option<i32>> =
+            sqlx::query_scalar("SELECT payout_index FROM compute_providers WHERE id = $1")
+                .bind(provider.id)
+                .fetch_optional(&state.db)
+                .await?;
 
         match existing.flatten() {
             Some(idx) => idx,
@@ -1875,7 +1903,9 @@ pub async fn withdraw_provider_earnings(
                 "withdrawal error detail"
             );
 
-            Err(CloudError::Internal(format!("withdrawal failed: {err_msg}")))
+            Err(CloudError::Internal(format!(
+                "withdrawal failed: {err_msg}"
+            )))
         }
     }
 }
@@ -1886,10 +1916,19 @@ pub async fn get_provider_payouts(
     provider_id: Uuid,
     limit: i64,
 ) -> Result<Vec<PayoutInfo>, CloudError> {
-    let rows = sqlx::query_as::<_, (
-        Uuid, i64, String, Option<String>, String,
-        Option<String>, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>,
-    )>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            i64,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            chrono::DateTime<Utc>,
+            Option<chrono::DateTime<Utc>>,
+        ),
+    >(
         r#"
         SELECT id, amount_usdc, to_address, signature, status,
                error_message, created_at, completed_at

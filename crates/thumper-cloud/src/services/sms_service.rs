@@ -39,16 +39,14 @@ pub async fn send_sms(
         .map_err(|e| CloudError::Internal(format!("Bland SMS request failed: {e}")))?;
 
     let status = resp.status();
-    let resp_body: serde_json::Value = resp
-        .json()
-        .await
-        .unwrap_or_else(|_| serde_json::json!({}));
-
     if !status.is_success() {
+        let _ = resp.text().await;
         return Err(CloudError::Internal(format!(
-            "Bland SMS returned {status}: {resp_body}"
+            "Bland SMS returned status {status}"
         )));
     }
+
+    let resp_body: serde_json::Value = resp.json().await.unwrap_or_else(|_| serde_json::json!({}));
 
     let message_id = resp_body
         .get("message_id")
@@ -57,7 +55,11 @@ pub async fn send_sms(
         .unwrap_or("unknown")
         .to_string();
 
-    tracing::info!(%user_id, to = %to, %message_id, "sms sent via Bland AI");
+    tracing::info!(
+        user = %crate::privacy::log_id(&user_id),
+        %message_id,
+        "sms sent via Bland AI"
+    );
 
     Ok(message_id)
 }
