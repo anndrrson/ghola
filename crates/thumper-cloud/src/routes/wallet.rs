@@ -86,6 +86,18 @@ pub async fn submit_private_transfer_proof(
     Ok(Json(result))
 }
 
+/// POST /api/wallet/private/submit-signed-transfer — verify a user-held signed Aleo USDCx transfer.
+pub async fn submit_signed_private_transfer(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<private_settlement_service::SubmitSignedPrivateTransferRequest>,
+) -> Result<Json<private_settlement_service::PrivateTransferProofResponse>, CloudError> {
+    let result =
+        private_settlement_service::submit_signed_private_transfer(&state, claims.sub, req, false)
+            .await?;
+    Ok(Json(result))
+}
+
 #[derive(Deserialize)]
 pub struct PrivateHistoryQuery {
     pub limit: Option<i64>,
@@ -101,6 +113,30 @@ pub async fn get_private_transfer_history(
     let history =
         private_settlement_service::private_transfer_history(&state, claims.sub, limit).await?;
     Ok(Json(history))
+}
+
+/// GET /api/wallet/private/receipts/:id — redacted private settlement receipt metadata.
+pub async fn get_private_transfer_receipt(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+) -> Result<Json<private_settlement_service::PrivateTransferReceiptResponse>, CloudError> {
+    let receipt =
+        private_settlement_service::private_transfer_receipt(&state, claims.sub, id).await?;
+    Ok(Json(receipt))
+}
+
+/// POST /api/wallet/private/receipts/:id/export — user-approved selective disclosure export.
+pub async fn export_private_transfer_receipt(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+    Json(req): Json<private_settlement_service::ExportPrivateTransferReceiptRequest>,
+) -> Result<Json<private_settlement_service::PrivateTransferReceiptExportResponse>, CloudError> {
+    let export =
+        private_settlement_service::export_private_transfer_receipt(&state, claims.sub, id, req)
+            .await?;
+    Ok(Json(export))
 }
 
 #[derive(Deserialize)]

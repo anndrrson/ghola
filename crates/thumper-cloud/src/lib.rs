@@ -142,6 +142,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/health/providers", get(health_providers))
         .route("/health/payments", get(health_payments))
+        .route("/health/institutional", get(health_institutional))
         // Auth
         .route(
             "/api/auth/siws/challenge",
@@ -323,8 +324,20 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::wallet::submit_private_transfer_proof),
         )
         .route(
+            "/api/wallet/private/submit-signed-transfer",
+            post(routes::wallet::submit_signed_private_transfer),
+        )
+        .route(
             "/api/wallet/private/history",
             get(routes::wallet::get_private_transfer_history),
+        )
+        .route(
+            "/api/wallet/private/receipts/{id}",
+            get(routes::wallet::get_private_transfer_receipt),
+        )
+        .route(
+            "/api/wallet/private/receipts/{id}/export",
+            post(routes::wallet::export_private_transfer_receipt),
         )
         .route("/api/wallet/earnings", get(routes::wallet::get_earnings))
         .route(
@@ -549,6 +562,12 @@ async fn health_payments() -> Json<serde_json::Value> {
             "shielded_stablecoin": shielded
         }
     }))
+}
+
+async fn health_institutional() -> Json<serde_json::Value> {
+    Json(json!(
+        services::private_settlement_service::institutional_readiness()
+    ))
 }
 
 async fn shutdown_signal() {

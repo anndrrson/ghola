@@ -337,6 +337,9 @@ final class LlmBackendTests: XCTestCase {
             amountMicroUSDC: 1_000_000,
             network: "aleo:mainnet",
             asset: "USDCx",
+            signingMode: "aleo_device",
+            signerKeyID: "ios-device-key",
+            policyHash: "policy-hash",
             createdAt: Date(timeIntervalSince1970: 3_000),
             expiresAt: Date(timeIntervalSince1970: 3_600)
         )
@@ -359,5 +362,15 @@ final class LlmBackendTests: XCTestCase {
             summary: "User approved wallet provisioning."
         )
         XCTAssertNoThrow(try PrivacyGate.authorize(scope: .walletProvision, approval: provisionApproval))
+    }
+
+    func testPrivatePaymentSigner_BlocksProductionUntilConfigured() {
+        let status = PrivatePaymentSigner.status
+        if status.ready {
+            XCTAssertNotNil(status.signerKeyID)
+        } else {
+            XCTAssertEqual(status.signingMode, .aleoDevice)
+            XCTAssertNotNil(status.unavailableReason)
+        }
     }
 }

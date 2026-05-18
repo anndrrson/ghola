@@ -321,6 +321,10 @@ actor CloudClient {
         return try await get("/health/payments", authenticated: false, scope: .auth)
     }
 
+    func getInstitutionalReadiness() async throws -> InstitutionalReadinessResponse {
+        return try await get("/health/institutional", authenticated: false, scope: .auth)
+    }
+
     func sendUSDC(to address: String, amountMicroUSDC: Int64, approval: PrivacyApproval) async throws -> WalletTransferResponse {
         try PrivacyGate.authorize(scope: .walletTransfer, approval: approval)
         var body: [String: Any] = [
@@ -332,15 +336,47 @@ actor CloudClient {
         return try await post("/api/wallet/transfer", body: body, scope: .walletTransfer, approval: approval)
     }
 
-    func createPrivateUSDCxIntent(to shieldedAddress: String, amountMicroUSDC: Int64, approval: PrivacyApproval) async throws -> PrivateTransferIntentResponse {
+    func createPrivateUSDCxIntent(
+        to shieldedAddress: String,
+        amountMicroUSDC: Int64,
+        signingMode: PrivatePaymentSigningMode,
+        signerKeyID: String,
+        approval: PrivacyApproval
+    ) async throws -> PrivateTransferIntentResponse {
         try PrivacyGate.authorize(scope: .walletTransfer, approval: approval)
         var body: [String: Any] = [
             "rail": "aleo_usdcx_shielded",
             "to_shielded_address": shieldedAddress,
             "amount_micro_usdc": amountMicroUSDC,
+            "signing_mode": signingMode.rawValue,
+            "signer_key_id": signerKeyID,
         ]
         body.merge(approval.jsonFields) { _, new in new }
         return try await post("/api/wallet/private/intent", body: body, scope: .walletTransfer, approval: approval)
+    }
+
+    func submitSignedPrivateUSDCxTransfer(
+        intentId: UUID,
+        to shieldedAddress: String,
+        proof: ShieldedPaymentProof,
+        signingMode: PrivatePaymentSigningMode,
+        signerKeyID: String,
+        signerAttestation: String?,
+        approval: PrivacyApproval
+    ) async throws -> PrivateTransferProofResponse {
+        try PrivacyGate.authorize(scope: .walletTransfer, approval: approval)
+        var body: [String: Any] = [
+            "intent_id": intentId.uuidString,
+            "to_shielded_address": shieldedAddress,
+            "proof": proof.jsonFields,
+            "signing_mode": signingMode.rawValue,
+            "signer_key_id": signerKeyID,
+        ]
+        if let signerAttestation {
+            body["signer_attestation"] = signerAttestation
+        }
+        body.merge(approval.jsonFields) { _, new in new }
+        return try await post("/api/wallet/private/submit-signed-transfer", body: body, scope: .walletTransfer, approval: approval)
     }
 
     func submitPrivateUSDCxProof(intentId: UUID, to shieldedAddress: String, proof: ShieldedPaymentProof, approval: PrivacyApproval) async throws -> PrivateTransferProofResponse {
@@ -356,6 +392,20 @@ actor CloudClient {
 
     func getPrivateTransferHistory(limit: Int = 25) async throws -> [PrivateTransferHistoryResponse] {
         return try await get("/api/wallet/private/history?limit=\(limit)", scope: .auth)
+    }
+
+    func getPrivateTransferReceipt(id: UUID) async throws -> PrivateTransferReceiptResponse {
+        return try await get("/api/wallet/private/receipts/\(id.uuidString)", scope: .auth)
+    }
+
+    func exportPrivateTransferReceipt(id: UUID, reason: String, approval: PrivacyApproval) async throws -> PrivateTransferReceiptExportResponse {
+        try PrivacyGate.authorize(scope: .walletTransfer, approval: approval)
+        var body: [String: Any] = [
+            "reason": reason,
+            "audience": "user",
+        ]
+        body.merge(approval.jsonFields) { _, new in new }
+        return try await post("/api/wallet/private/receipts/\(id.uuidString)/export", body: body, scope: .walletTransfer, approval: approval)
     }
 
     // MARK: - User

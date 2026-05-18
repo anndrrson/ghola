@@ -225,6 +225,9 @@ struct PendingPrivateTransfer: Codable, Identifiable, Equatable {
     let amountMicroUSDC: Int64
     let network: String
     let asset: String
+    let signingMode: String?
+    let signerKeyID: String?
+    let policyHash: String?
     let createdAt: Date
     let expiresAt: Date?
 }
@@ -256,6 +259,9 @@ final class PrivateTransferIntentStore: ObservableObject {
             amountMicroUSDC: response.amountMicroUSDC,
             network: response.network,
             asset: response.asset,
+            signingMode: response.signingMode,
+            signerKeyID: response.signerKeyID,
+            policyHash: response.policyHash,
             createdAt: Date(),
             expiresAt: ISO8601DateFormatter().date(from: response.expiresAt)
         )

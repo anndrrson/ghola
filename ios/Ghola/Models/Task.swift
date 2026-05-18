@@ -170,6 +170,60 @@ struct PaymentRailStatus: Codable {
     }
 }
 
+enum PrivatePaymentSigningMode: String, Codable, CaseIterable {
+    case turnkeyUser = "turnkey_user"
+    case aleoDevice = "aleo_device"
+
+    var title: String {
+        switch self {
+        case .turnkeyUser: return "Turnkey user-held signer"
+        case .aleoDevice: return "Aleo device signer"
+        }
+    }
+}
+
+struct PrivateSignerStatus: Codable, Equatable {
+    let ready: Bool
+    let signingMode: PrivatePaymentSigningMode
+    let signerKeyID: String?
+    let unavailableReason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ready
+        case signingMode = "signing_mode"
+        case signerKeyID = "signer_key_id"
+        case unavailableReason = "unavailable_reason"
+    }
+}
+
+struct InstitutionalReadinessResponse: Codable {
+    let ready: Bool
+    let version: String
+    let claim: String
+    let privateRailReady: Bool
+    let verifierReady: Bool
+    let signerReady: Bool
+    let fundedSmokeTestPassed: Bool
+    let serverHeldSigningDisabled: Bool
+    let auditExportEnabled: Bool
+    let openHighCriticalFindings: Int
+    let lastCanaryAt: String?
+    let blockingReasons: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case ready, version, claim
+        case privateRailReady = "private_rail_ready"
+        case verifierReady = "verifier_ready"
+        case signerReady = "signer_ready"
+        case fundedSmokeTestPassed = "funded_smoke_test_passed"
+        case serverHeldSigningDisabled = "server_held_signing_disabled"
+        case auditExportEnabled = "audit_export_enabled"
+        case openHighCriticalFindings = "open_high_critical_findings"
+        case lastCanaryAt = "last_canary_at"
+        case blockingReasons = "blocking_reasons"
+    }
+}
+
 struct PrivateTransferIntentResponse: Codable, Identifiable {
     let id: UUID
     let rail: String
@@ -183,6 +237,10 @@ struct PrivateTransferIntentResponse: Codable, Identifiable {
     let expiresAt: String
     let privacyDisclosure: String
     let fallbackAllowed: Bool
+    let signingMode: String?
+    let signerKeyID: String?
+    let policyHash: String?
+    let institutionalReadinessVersion: String?
 
     enum CodingKeys: String, CodingKey {
         case id, rail, provider, network, asset, status
@@ -192,6 +250,10 @@ struct PrivateTransferIntentResponse: Codable, Identifiable {
         case expiresAt = "expires_at"
         case privacyDisclosure = "privacy_disclosure"
         case fallbackAllowed = "fallback_allowed"
+        case signingMode = "signing_mode"
+        case signerKeyID = "signer_key_id"
+        case policyHash = "policy_hash"
+        case institutionalReadinessVersion = "institutional_readiness_version"
     }
 }
 
@@ -250,6 +312,11 @@ struct PrivateTransferProofResponse: Codable, Identifiable {
     let adapterReceiptRef: String
     let status: String
     let privacyDisclosure: String
+    let signingMode: String?
+    let signerKeyID: String?
+    let policyHash: String?
+    let selectiveDisclosureReceiptHash: String?
+    let institutionalReadinessVersion: String?
 
     enum CodingKeys: String, CodingKey {
         case id, rail, provider, network, asset, status
@@ -258,6 +325,11 @@ struct PrivateTransferProofResponse: Codable, Identifiable {
         case recipientPreview = "recipient_preview"
         case adapterReceiptRef = "adapter_receipt_ref"
         case privacyDisclosure = "privacy_disclosure"
+        case signingMode = "signing_mode"
+        case signerKeyID = "signer_key_id"
+        case policyHash = "policy_hash"
+        case selectiveDisclosureReceiptHash = "selective_disclosure_receipt_hash"
+        case institutionalReadinessVersion = "institutional_readiness_version"
     }
 }
 
@@ -271,6 +343,11 @@ struct PrivateTransferHistoryResponse: Codable, Identifiable {
     let recipientPreview: String
     let status: String
     let adapterReceiptRef: String?
+    let signingMode: String?
+    let signerKeyID: String?
+    let policyHash: String?
+    let selectiveDisclosureReceiptHash: String?
+    let institutionalReadinessVersion: String?
     let createdAt: String
     let verifiedAt: String?
 
@@ -279,8 +356,60 @@ struct PrivateTransferHistoryResponse: Codable, Identifiable {
         case amountMicroUSDC = "amount_micro_usdc"
         case recipientPreview = "recipient_preview"
         case adapterReceiptRef = "adapter_receipt_ref"
+        case signingMode = "signing_mode"
+        case signerKeyID = "signer_key_id"
+        case policyHash = "policy_hash"
+        case selectiveDisclosureReceiptHash = "selective_disclosure_receipt_hash"
+        case institutionalReadinessVersion = "institutional_readiness_version"
         case createdAt = "created_at"
         case verifiedAt = "verified_at"
+    }
+}
+
+struct PrivateTransferReceiptResponse: Codable, Identifiable {
+    let id: UUID
+    let rail: String
+    let provider: String
+    let network: String
+    let asset: String
+    let amountMicroUSDC: Int64
+    let recipientPreview: String
+    let status: String
+    let adapterReceiptRef: String?
+    let signingMode: String?
+    let signerKeyID: String?
+    let policyHash: String?
+    let selectiveDisclosureReceiptHash: String?
+    let institutionalReadinessVersion: String?
+    let verifiedAt: String?
+    let privacyDisclosure: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, rail, provider, network, asset, status
+        case amountMicroUSDC = "amount_micro_usdc"
+        case recipientPreview = "recipient_preview"
+        case adapterReceiptRef = "adapter_receipt_ref"
+        case signingMode = "signing_mode"
+        case signerKeyID = "signer_key_id"
+        case policyHash = "policy_hash"
+        case selectiveDisclosureReceiptHash = "selective_disclosure_receipt_hash"
+        case institutionalReadinessVersion = "institutional_readiness_version"
+        case verifiedAt = "verified_at"
+        case privacyDisclosure = "privacy_disclosure"
+    }
+}
+
+struct PrivateTransferReceiptExportResponse: Codable {
+    let exportID: UUID
+    let transfer: PrivateTransferReceiptResponse
+    let exportDisclosure: String
+    let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case transfer
+        case exportID = "export_id"
+        case exportDisclosure = "export_disclosure"
+        case createdAt = "created_at"
     }
 }
 
