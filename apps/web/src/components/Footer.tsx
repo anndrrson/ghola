@@ -41,9 +41,10 @@ export function Footer() {
               href="https://x.com/GholaXYZ"
               target="_blank"
               rel="noreferrer"
-              className="hover:text-[#8b95a8] transition-colors"
+              aria-label="Ghola on X"
+              className="text-base font-semibold leading-none text-[#8b95a8] transition-colors hover:text-[#eef1f8]"
             >
-              X
+              𝕏
             </a>
           </div>
         </div>
