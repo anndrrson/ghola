@@ -1,4 +1,6 @@
-use chrono::{Duration, Utc};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use chrono::{DateTime, Duration, Utc};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -12,6 +14,9 @@ use crate::services::x402_service::{
 use crate::state::AppState;
 
 const INTENT_TTL_MINUTES: i64 = 10;
+const SIGNER_ATTESTATION_VERSION: &str = "ghola-private-usdcx-signer-v1";
+const SIGNER_ATTESTATION_MAX_AGE_MINUTES: i64 = 15;
+const SIGNER_ATTESTATION_FUTURE_SKEW_SECONDS: i64 = 120;
 pub const INSTITUTIONAL_READINESS_VERSION: &str = "institutional-usdcx-v1";
 pub const SIGNING_MODE_TURNKEY_USER: &str = "turnkey_user";
 pub const SIGNING_MODE_ALEO_DEVICE: &str = "aleo_device";
@@ -53,6 +58,36 @@ pub struct SubmitSignedPrivateTransferRequest {
     pub signer_attestation: Option<String>,
     #[serde(flatten)]
     pub approval: PrivacyApproval,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PrivateTransferSignerAttestation {
+    version: String,
+    intent_id: Uuid,
+    signing_mode: String,
+    signer_key_id: String,
+    recipient_hash: String,
+    amount_micro_usdc: i64,
+    network: String,
+    asset: String,
+    policy_hash: String,
+    proof_digest: String,
+    receipt_ref: String,
+    signed_at: DateTime<Utc>,
+    signature_b64: String,
+}
+
+struct PrivateTransferSignerAttestationExpected<'a> {
+    intent_id: Uuid,
+    signing_mode: &'a str,
+    signer_key_id: &'a str,
+    recipient_hash: &'a str,
+    amount_micro_usdc: i64,
+    network: &'a str,
+    asset: &'a str,
+    policy_hash: &'a str,
+    proof_digest: &'a str,
+    receipt_ref: &'a str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -334,6 +369,112 @@ fn selective_disclosure_receipt_hash(
 
 fn optional_hash(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim).filter(|s| !s.is_empty()).map(hash_text)
+}
+
+fn signer_did_to_verifying_key(signer_key_id: &str) -> Result<VerifyingKey, CloudError> {
+    let encoded = signer_key_id
+        .strip_prefix("did:key:z")
+        .ok_or_else(|| CloudError::BadRequest("signer_key_id must be an Ed25519 did:key".into()))?;
+    let bytes = bs58::decode(encoded)
+        .into_vec()
+        .map_err(|_| CloudError::BadRequest("signer_key_id did:key is not base58".into()))?;
+    if bytes.len() != 34 || bytes[0] != 0xed || bytes[1] != 0x01 {
+        return Err(CloudError::BadRequest(
+            "signer_key_id did:key must encode an Ed25519 public key".into(),
+        ));
+    }
+    let key_bytes: [u8; 32] = bytes[2..]
+        .try_into()
+        .map_err(|_| CloudError::BadRequest("signer_key_id public key is invalid".into()))?;
+    VerifyingKey::from_bytes(&key_bytes)
+        .map_err(|_| CloudError::BadRequest("signer_key_id public key is invalid".into()))
+}
+
+fn signer_attestation_payload(attestation: &PrivateTransferSignerAttestation) -> String {
+    [
+        SIGNER_ATTESTATION_VERSION.to_string(),
+        format!("intent_id:{}", attestation.intent_id),
+        format!("signing_mode:{}", attestation.signing_mode),
+        format!("signer_key_id:{}", attestation.signer_key_id),
+        format!("recipient_hash:{}", attestation.recipient_hash),
+        format!("amount_micro_usdc:{}", attestation.amount_micro_usdc),
+        format!("network:{}", attestation.network),
+        format!("asset:{}", attestation.asset),
+        format!("policy_hash:{}", attestation.policy_hash),
+        format!("proof_digest:{}", attestation.proof_digest),
+        format!("receipt_ref:{}", attestation.receipt_ref),
+        format!("signed_at:{}", attestation.signed_at.to_rfc3339()),
+    ]
+    .join("\n")
+}
+
+fn validate_private_transfer_signer_attestation(
+    raw: Option<&str>,
+    expected: PrivateTransferSignerAttestationExpected<'_>,
+    allow_manual: bool,
+) -> Result<Option<String>, CloudError> {
+    if allow_manual && expected.signing_mode == SIGNING_MODE_MANUAL_PROOF {
+        return Ok(optional_hash(raw));
+    }
+
+    let raw = raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            CloudError::BadRequest(
+                "signed private transfer requires signer_attestation".to_string(),
+            )
+        })?;
+    let attestation: PrivateTransferSignerAttestation = serde_json::from_str(raw)
+        .map_err(|_| CloudError::BadRequest("signer_attestation must be valid JSON".to_string()))?;
+
+    if attestation.version != SIGNER_ATTESTATION_VERSION {
+        return Err(CloudError::BadRequest(
+            "signer_attestation version is unsupported".to_string(),
+        ));
+    }
+    if attestation.intent_id != expected.intent_id
+        || attestation.signing_mode != expected.signing_mode
+        || attestation.signer_key_id != expected.signer_key_id
+        || attestation.recipient_hash != expected.recipient_hash
+        || attestation.amount_micro_usdc != expected.amount_micro_usdc
+        || attestation.network != expected.network
+        || attestation.asset != expected.asset
+        || attestation.policy_hash != expected.policy_hash
+        || attestation.proof_digest != expected.proof_digest
+        || attestation.receipt_ref != expected.receipt_ref
+    {
+        return Err(CloudError::BadRequest(
+            "signer_attestation does not match the approved transfer intent and verified receipt"
+                .to_string(),
+        ));
+    }
+
+    let now = Utc::now();
+    if attestation.signed_at > now + Duration::seconds(SIGNER_ATTESTATION_FUTURE_SKEW_SECONDS) {
+        return Err(CloudError::BadRequest(
+            "signer_attestation signed_at is too far in the future".to_string(),
+        ));
+    }
+    if attestation.signed_at < now - Duration::minutes(SIGNER_ATTESTATION_MAX_AGE_MINUTES) {
+        return Err(CloudError::BadRequest(
+            "signer_attestation is stale".to_string(),
+        ));
+    }
+
+    let verifying_key = signer_did_to_verifying_key(expected.signer_key_id)?;
+    let signature_bytes = STANDARD.decode(&attestation.signature_b64).map_err(|_| {
+        CloudError::BadRequest("signer_attestation signature_b64 is not base64".to_string())
+    })?;
+    let signature = Signature::from_slice(&signature_bytes).map_err(|_| {
+        CloudError::BadRequest("signer_attestation signature is malformed".to_string())
+    })?;
+    let payload = signer_attestation_payload(&attestation);
+    verifying_key
+        .verify(payload.as_bytes(), &signature)
+        .map_err(|_| CloudError::BadRequest("signer_attestation signature failed".to_string()))?;
+
+    Ok(Some(hash_text(raw)))
 }
 
 fn validate_aleo_recipient(raw: &str) -> Result<String, CloudError> {
@@ -624,7 +765,22 @@ pub async fn submit_signed_private_transfer(
         &verified.proof_digest,
         &policy_hash,
     );
-    let signer_attestation_hash = optional_hash(req.signer_attestation.as_deref());
+    let signer_attestation_hash = validate_private_transfer_signer_attestation(
+        req.signer_attestation.as_deref(),
+        PrivateTransferSignerAttestationExpected {
+            intent_id: req.intent_id,
+            signing_mode,
+            signer_key_id: &signer_key_id,
+            recipient_hash: &stored_recipient_hash,
+            amount_micro_usdc: amount,
+            network: &network,
+            asset: &asset,
+            policy_hash: &policy_hash,
+            proof_digest: &verified.proof_digest,
+            receipt_ref: &verified.receipt_ref,
+        },
+        allow_manual,
+    )?;
 
     sqlx::query(
         r#"
@@ -999,6 +1155,50 @@ pub fn institutional_readiness() -> InstitutionalReadinessResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn did_key_from_verifying_key(vk: &VerifyingKey) -> String {
+        let mut bytes = Vec::with_capacity(34);
+        bytes.extend_from_slice(&[0xed, 0x01]);
+        bytes.extend_from_slice(&vk.to_bytes());
+        format!("did:key:z{}", bs58::encode(bytes).into_string())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn signed_test_attestation(
+        signer: &SigningKey,
+        signer_key_id: &str,
+        intent_id: Uuid,
+        signing_mode: &str,
+        recipient_hash: &str,
+        amount_micro_usdc: i64,
+        network: &str,
+        asset: &str,
+        policy_hash: &str,
+        proof_digest: &str,
+        receipt_ref: &str,
+        signed_at: DateTime<Utc>,
+    ) -> String {
+        let mut attestation = PrivateTransferSignerAttestation {
+            version: SIGNER_ATTESTATION_VERSION.to_string(),
+            intent_id,
+            signing_mode: signing_mode.to_string(),
+            signer_key_id: signer_key_id.to_string(),
+            recipient_hash: recipient_hash.to_string(),
+            amount_micro_usdc,
+            network: network.to_string(),
+            asset: asset.to_string(),
+            policy_hash: policy_hash.to_string(),
+            proof_digest: proof_digest.to_string(),
+            receipt_ref: receipt_ref.to_string(),
+            signed_at,
+            signature_b64: String::new(),
+        };
+        let payload = signer_attestation_payload(&attestation);
+        let signature = signer.sign(payload.as_bytes());
+        attestation.signature_b64 = STANDARD.encode(signature.to_bytes());
+        serde_json::to_string(&attestation).unwrap()
+    }
 
     #[test]
     fn private_rail_accepts_canonical_and_legacy_names() {
@@ -1042,6 +1242,225 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("manual private proof"));
+    }
+
+    #[test]
+    fn signer_attestation_verifies_intent_bound_ed25519_signature() {
+        let signer = SigningKey::from_bytes(&[7u8; 32]);
+        let signer_key_id = did_key_from_verifying_key(&signer.verifying_key());
+        let intent_id = Uuid::new_v4();
+        let recipient_hash = "recipient-hash-1";
+        let policy_hash = "policy-hash-1";
+        let proof_digest = "proof-digest-1";
+        let receipt_ref = "receipt-ref-1";
+        let raw = signed_test_attestation(
+            &signer,
+            &signer_key_id,
+            intent_id,
+            SIGNING_MODE_ALEO_DEVICE,
+            recipient_hash,
+            1_000_000,
+            "aleo:mainnet",
+            "USDCx",
+            policy_hash,
+            proof_digest,
+            receipt_ref,
+            Utc::now(),
+        );
+
+        let hash = validate_private_transfer_signer_attestation(
+            Some(&raw),
+            PrivateTransferSignerAttestationExpected {
+                intent_id,
+                signing_mode: SIGNING_MODE_ALEO_DEVICE,
+                signer_key_id: &signer_key_id,
+                recipient_hash,
+                amount_micro_usdc: 1_000_000,
+                network: "aleo:mainnet",
+                asset: "USDCx",
+                policy_hash,
+                proof_digest,
+                receipt_ref,
+            },
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(hash.unwrap().len(), 64);
+    }
+
+    #[test]
+    fn signer_attestation_is_required_for_production_signing_modes() {
+        let err = validate_private_transfer_signer_attestation(
+            None,
+            PrivateTransferSignerAttestationExpected {
+                intent_id: Uuid::new_v4(),
+                signing_mode: SIGNING_MODE_ALEO_DEVICE,
+                signer_key_id: "did:key:zmissing",
+                recipient_hash: "recipient-hash-1",
+                amount_micro_usdc: 1,
+                network: "aleo:mainnet",
+                asset: "USDCx",
+                policy_hash: "policy-hash-1",
+                proof_digest: "proof-digest-1",
+                receipt_ref: "receipt-ref-1",
+            },
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("signer_attestation"));
+    }
+
+    #[test]
+    fn signer_attestation_rejects_mismatched_receipt_binding() {
+        let signer = SigningKey::from_bytes(&[8u8; 32]);
+        let signer_key_id = did_key_from_verifying_key(&signer.verifying_key());
+        let intent_id = Uuid::new_v4();
+        let raw = signed_test_attestation(
+            &signer,
+            &signer_key_id,
+            intent_id,
+            SIGNING_MODE_ALEO_DEVICE,
+            "recipient-hash-1",
+            1_000_000,
+            "aleo:mainnet",
+            "USDCx",
+            "policy-hash-1",
+            "proof-digest-1",
+            "receipt-ref-1",
+            Utc::now(),
+        );
+
+        let err = validate_private_transfer_signer_attestation(
+            Some(&raw),
+            PrivateTransferSignerAttestationExpected {
+                intent_id,
+                signing_mode: SIGNING_MODE_ALEO_DEVICE,
+                signer_key_id: &signer_key_id,
+                recipient_hash: "recipient-hash-1",
+                amount_micro_usdc: 1_000_000,
+                network: "aleo:mainnet",
+                asset: "USDCx",
+                policy_hash: "policy-hash-1",
+                proof_digest: "different-proof-digest",
+                receipt_ref: "receipt-ref-1",
+            },
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("does not match"));
+    }
+
+    #[test]
+    fn signer_attestation_rejects_bad_signature() {
+        let signer = SigningKey::from_bytes(&[9u8; 32]);
+        let other_signer = SigningKey::from_bytes(&[10u8; 32]);
+        let signer_key_id = did_key_from_verifying_key(&signer.verifying_key());
+        let intent_id = Uuid::new_v4();
+        let raw = signed_test_attestation(
+            &other_signer,
+            &signer_key_id,
+            intent_id,
+            SIGNING_MODE_ALEO_DEVICE,
+            "recipient-hash-1",
+            1_000_000,
+            "aleo:mainnet",
+            "USDCx",
+            "policy-hash-1",
+            "proof-digest-1",
+            "receipt-ref-1",
+            Utc::now(),
+        );
+
+        let err = validate_private_transfer_signer_attestation(
+            Some(&raw),
+            PrivateTransferSignerAttestationExpected {
+                intent_id,
+                signing_mode: SIGNING_MODE_ALEO_DEVICE,
+                signer_key_id: &signer_key_id,
+                recipient_hash: "recipient-hash-1",
+                amount_micro_usdc: 1_000_000,
+                network: "aleo:mainnet",
+                asset: "USDCx",
+                policy_hash: "policy-hash-1",
+                proof_digest: "proof-digest-1",
+                receipt_ref: "receipt-ref-1",
+            },
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("signature failed"));
+    }
+
+    #[test]
+    fn signer_attestation_rejects_stale_signature() {
+        let signer = SigningKey::from_bytes(&[11u8; 32]);
+        let signer_key_id = did_key_from_verifying_key(&signer.verifying_key());
+        let intent_id = Uuid::new_v4();
+        let raw = signed_test_attestation(
+            &signer,
+            &signer_key_id,
+            intent_id,
+            SIGNING_MODE_ALEO_DEVICE,
+            "recipient-hash-1",
+            1_000_000,
+            "aleo:mainnet",
+            "USDCx",
+            "policy-hash-1",
+            "proof-digest-1",
+            "receipt-ref-1",
+            Utc::now() - Duration::minutes(SIGNER_ATTESTATION_MAX_AGE_MINUTES + 1),
+        );
+
+        let err = validate_private_transfer_signer_attestation(
+            Some(&raw),
+            PrivateTransferSignerAttestationExpected {
+                intent_id,
+                signing_mode: SIGNING_MODE_ALEO_DEVICE,
+                signer_key_id: &signer_key_id,
+                recipient_hash: "recipient-hash-1",
+                amount_micro_usdc: 1_000_000,
+                network: "aleo:mainnet",
+                asset: "USDCx",
+                policy_hash: "policy-hash-1",
+                proof_digest: "proof-digest-1",
+                receipt_ref: "receipt-ref-1",
+            },
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("stale"));
+    }
+
+    #[test]
+    fn manual_debug_proof_does_not_require_signer_attestation() {
+        let hash = validate_private_transfer_signer_attestation(
+            None,
+            PrivateTransferSignerAttestationExpected {
+                intent_id: Uuid::new_v4(),
+                signing_mode: SIGNING_MODE_MANUAL_PROOF,
+                signer_key_id: "debug-manual-proof",
+                recipient_hash: "recipient-hash-1",
+                amount_micro_usdc: 1,
+                network: "aleo:mainnet",
+                asset: "USDCx",
+                policy_hash: "policy-hash-1",
+                proof_digest: "proof-digest-1",
+                receipt_ref: "receipt-ref-1",
+            },
+            true,
+        )
+        .unwrap();
+
+        assert!(hash.is_none());
     }
 
     #[test]
