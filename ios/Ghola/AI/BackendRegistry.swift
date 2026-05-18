@@ -12,7 +12,7 @@ public enum BackendMode: String, CaseIterable, Sendable {
     var title: String {
         switch self {
         case .onDeviceFirst: return "On-device first"
-        case .appleFoundation: return "Apple on-device"
+        case .appleFoundation: return "System on-device"
         case .mlxLocal: return "MLX local"
         case .cloud: return "Cloud"
         }
@@ -21,9 +21,9 @@ public enum BackendMode: String, CaseIterable, Sendable {
     var privacyDescription: String {
         switch self {
         case .onDeviceFirst:
-            return "Uses Apple Foundation Models when available, then local MLX. It never silently falls back to cloud."
+            return "Uses the best available local model on this iPhone. It never silently falls back to cloud."
         case .appleFoundation:
-            return "Runs Apple's system language model on this device when supported."
+            return "Runs the supported system language model on this iPhone."
         case .mlxLocal:
             return "Runs downloaded model weights on this device with MLX."
         case .cloud:

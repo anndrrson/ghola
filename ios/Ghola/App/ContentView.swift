@@ -253,10 +253,17 @@ struct WalletView: View {
                 }
             }
             .sheet(isPresented: $showReceiveSheet) {
-                ReceiveUSDCSheet(
-                    address: walletInfo?.address ?? balances?.address ?? "",
-                    network: currentNetwork
-                )
+                if selectedRail == .privateUSDCx {
+                    ReceivePrivateUSDCxSheet(
+                        railStatus: paymentHealth?.privateUSDCx,
+                        signerStatus: privateSignerStatus
+                    )
+                } else {
+                    ReceiveUSDCSheet(
+                        address: walletInfo?.address ?? balances?.address ?? "",
+                        network: currentNetwork
+                    )
+                }
             }
             .sheet(isPresented: $showRailInfo) {
                 WalletRailInfoSheet(
@@ -1499,6 +1506,62 @@ private struct ReceiveUSDCSheet: View {
         NSPasteboard.general.setString(address, forType: .string)
         #endif
         copied = true
+    }
+}
+
+private struct ReceivePrivateUSDCxSheet: View {
+    let railStatus: PaymentRailStatus?
+    let signerStatus: PrivateSignerStatus
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var railReady: Bool {
+        railStatus?.isReady == true
+    }
+
+    private var signerReady: Bool {
+        signerStatus.ready && signerStatus.signerKeyID != nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Receive USDCx") {
+                    Label(railReady && signerReady ? "Private receive ready" : "Private receive setup required", systemImage: "lock.shield")
+                        .foregroundStyle(railReady && signerReady ? Theme.success : Theme.warning)
+                    Text(statusText)
+                        .font(Theme.captionFont)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+
+                Section {
+                    LabeledContent("Rail", value: "Aleo USDCx")
+                    LabeledContent("Network", value: railStatus?.network ?? "not configured")
+                    LabeledContent("Asset", value: "USDCx")
+                }
+            }
+            .navigationTitle("Receive")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            .scrollContentBackground(.hidden)
+            .background(Theme.appBackgroundGradient.ignoresSafeArea())
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private var statusText: String {
+        if !railReady {
+            return railStatus?.unavailableReason ?? "Private USDCx receive is blocked until the Aleo rail is configured."
+        }
+        if !signerReady {
+            return signerStatus.unavailableReason ?? "Private USDCx receive is blocked until user-held signing is configured."
+        }
+        return "Use your verified Aleo USDCx address. Ghola will not show a public Solana address for this rail."
     }
 }
 

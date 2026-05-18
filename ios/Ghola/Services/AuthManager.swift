@@ -62,19 +62,7 @@ class AuthManager: ObservableObject {
     }
 
     func signInWithTurnkey(email: String) async {
-        isLoading = true
-        error = nil
-        defer { isLoading = false }
-
-        do {
-            let response = try await CloudClient.shared.turnkeySignIn(email: email)
-            await CloudClient.shared.setToken(response.token)
-            await loadProfile()
-            await registerDevice()
-            isAuthenticated = true
-        } catch {
-            self.error = error.localizedDescription
-        }
+        error = "Wallet sign-in requires user-held Turnkey device signing and is disabled in this TestFlight. Use Sign in with Apple."
     }
 
     #if os(iOS)
