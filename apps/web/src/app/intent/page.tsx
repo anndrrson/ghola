@@ -10,6 +10,7 @@ import {
   Search,
   ShieldCheck,
   ShoppingBag,
+  Wallet,
 } from "lucide-react";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import {
@@ -25,6 +26,7 @@ import type {
   CommerceQuote,
 } from "@/lib/thumper-types";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
+import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import {
   type PaymentHealth,
   formatMicroUsd,
@@ -54,6 +56,11 @@ function stringValue(value: unknown) {
   return typeof value === "string" ? value : null;
 }
 
+function shortAddress(address: string) {
+  if (address.length <= 12) return address;
+  return `${address.slice(0, 4)}...${address.slice(-4)}`;
+}
+
 async function fetchPaymentHealth(): Promise<PaymentHealth | null> {
   const res = await fetch("/api/payments/health", { cache: "no-store" });
   if (!res.ok) return null;
@@ -62,6 +69,7 @@ async function fetchPaymentHealth(): Promise<PaymentHealth | null> {
 
 export default function IntentPage() {
   const thumperAuth = useThumperAuth();
+  const turnkeyWallet = useTurnkeyWallet();
   const [goal, setGoal] = useState(
     "Find a privacy-friendly AI service I can pay for."
   );
@@ -78,10 +86,22 @@ export default function IntentPage() {
   const [error, setError] = useState<string | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
+  const [walletCreating, setWalletCreating] = useState(false);
 
   useEffect(() => {
     void fetchPaymentHealth().then(setPaymentHealth).catch(() => setPaymentHealth(null));
   }, []);
+
+  useEffect(() => {
+    if (thumperAuth.loading || turnkeyWallet.loading) return;
+    if (thumperAuth.authenticated && turnkeyWallet.walletAddress) return;
+    setIntent(null);
+    setOffers([]);
+    setSelectedOfferId(null);
+    setQuote(null);
+    setExecution(null);
+    setApproved(false);
+  }, [thumperAuth.loading, thumperAuth.authenticated, turnkeyWallet.loading, turnkeyWallet.walletAddress]);
 
   const privateSummary = summarizePrivateBalance(paymentHealth);
   const selectedOffer = useMemo(
@@ -99,12 +119,36 @@ export default function IntentPage() {
       ? "Private payments ready"
       : "Private payments paused";
   const needsAuth = !thumperAuth.loading && !thumperAuth.authenticated;
+  const walletReady = !!turnkeyWallet.walletAddress;
+  const accountReady = thumperAuth.authenticated && walletReady;
+  const formLocked = !accountReady;
+  const walletStatusLabel = thumperAuth.loading || turnkeyWallet.loading
+    ? "Checking wallet"
+    : walletReady
+      ? `Wallet ${shortAddress(turnkeyWallet.walletAddress!)}`
+      : "Turnkey wallet required";
+  const primaryLabel = thumperAuth.loading || turnkeyWallet.loading
+    ? "Checking account"
+    : needsAuth
+      ? "Create account + wallet"
+      : !walletReady
+        ? "Create Turnkey wallet"
+        : "Find options";
 
   async function submitIntent() {
     setError(null);
     setExecution(null);
     setQuote(null);
     setApproved(false);
+    if (!thumperAuth.authenticated) {
+      setAuthMode("signup");
+      setAuthOpen(true);
+      return;
+    }
+    if (!turnkeyWallet.walletAddress) {
+      setError("Create a Turnkey wallet before starting checkout.");
+      return;
+    }
     const budget = Math.round(Number(budgetUsd || "0") * 1_000_000);
     if (!goal.trim()) {
       setError("Tell Ghola what you want to buy or pay for.");
@@ -136,13 +180,25 @@ export default function IntentPage() {
     }
   }
 
-  function handlePrimaryAction() {
+  async function handlePrimaryAction() {
     if (needsAuth) {
       setAuthMode("signup");
       setAuthOpen(true);
       return;
     }
-    void submitIntent();
+    if (!walletReady) {
+      setError(null);
+      setWalletCreating(true);
+      try {
+        await turnkeyWallet.createWallet(thumperAuth.user?.email || "ghola-user");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not create Turnkey wallet.");
+      } finally {
+        setWalletCreating(false);
+      }
+      return;
+    }
+    await submitIntent();
   }
 
   async function quoteOffer() {
@@ -223,6 +279,10 @@ export default function IntentPage() {
                 <LockKeyhole className="h-3.5 w-3.5" />
                 You approve before payment
               </span>
+              <span className="inline-flex items-center gap-1.5">
+                <Wallet className="h-3.5 w-3.5" />
+                {walletStatusLabel}
+              </span>
             </div>
           </div>
         </div>
@@ -249,10 +309,20 @@ export default function IntentPage() {
                     <span>{error}</span>
                   </div>
                 )}
+                {formLocked && (
+                  <div className="rounded-md border border-[#1e2a3a] bg-[#090d13] px-4 py-3 text-sm text-[#9fb2cc]">
+                    <span className="font-medium text-[#d6deec]">
+                      Account + Turnkey wallet required.
+                    </span>{" "}
+                    Ghola binds checkout approvals, receipts, and payment authority to
+                    your wallet before any options or quotes are created.
+                  </div>
+                )}
                 <textarea
                   value={goal}
                   onChange={(event) => setGoal(event.target.value)}
-                  className="min-h-24 resize-y rounded-md border border-[#263449] bg-[#08090d] px-3 py-3 text-base leading-6 text-[#eef1f8] outline-none transition placeholder:text-[#5b6880] focus:border-[#3da8ff]"
+                  disabled={formLocked}
+                  className="min-h-24 resize-y rounded-md border border-[#263449] bg-[#08090d] px-3 py-3 text-base leading-6 text-[#eef1f8] outline-none transition placeholder:text-[#5b6880] focus:border-[#3da8ff] disabled:cursor-not-allowed disabled:text-[#64748b]"
                   maxLength={1200}
                   placeholder="Example: Find a privacy-friendly AI tool under $5."
                 />
@@ -265,7 +335,8 @@ export default function IntentPage() {
                       value={budgetUsd}
                       onChange={(event) => setBudgetUsd(event.target.value)}
                       inputMode="decimal"
-                      className="h-10 rounded-md border border-[#263449] bg-[#08090d] px-3 text-sm text-[#eef1f8] outline-none transition focus:border-[#3da8ff]"
+                      disabled={formLocked}
+                      className="h-10 rounded-md border border-[#263449] bg-[#08090d] px-3 text-sm text-[#eef1f8] outline-none transition focus:border-[#3da8ff] disabled:cursor-not-allowed disabled:text-[#64748b]"
                     />
                   </label>
                   <div className="grid gap-2">
@@ -278,6 +349,7 @@ export default function IntentPage() {
                           key={mode}
                           type="button"
                           onClick={() => setPrivacyMode(mode)}
+                          disabled={formLocked}
                           className={`text-sm font-medium transition ${
                             privacyMode === mode
                               ? "bg-[#3da8ff] text-[#05080d]"
@@ -292,15 +364,15 @@ export default function IntentPage() {
                   <button
                     type="button"
                     onClick={handlePrimaryAction}
-                    disabled={!!loading || thumperAuth.loading}
+                    disabled={!!loading || thumperAuth.loading || turnkeyWallet.loading || walletCreating}
                     className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#3da8ff] px-4 text-sm font-semibold text-[#05080d] shadow-[0_10px_28px_-14px_rgba(61,168,255,0.9)] transition hover:bg-[#67bbff] active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-[#1a2635] disabled:text-[#64748b] disabled:shadow-none"
                   >
-                    {loading === "ask" || loading === "offers" ? (
+                    {loading === "ask" || loading === "offers" || walletCreating ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <Search className="h-4 w-4" />
                     )}
-                    {needsAuth ? "Sign in to find options" : "Find options"}
+                    {primaryLabel}
                   </button>
                 </div>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-[#151b26] pt-3 text-xs text-[#7f8ca3]">
