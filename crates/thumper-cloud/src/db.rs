@@ -492,6 +492,9 @@ CREATE INDEX IF NOT EXISTS idx_commerce_quotes_intent
     ON commerce_quotes(intent_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_commerce_quotes_user
     ON commerce_quotes(user_id, created_at DESC);
+ALTER TABLE commerce_quotes DROP CONSTRAINT IF EXISTS commerce_quotes_adapter_check;
+ALTER TABLE commerce_quotes ADD CONSTRAINT commerce_quotes_adapter_check
+    CHECK (adapter IN ('x402', 'x402_agent', 'mcp', 'fixture_catalog', 'merchant_checkout'));
 
 CREATE TABLE IF NOT EXISTS commerce_executions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

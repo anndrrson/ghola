@@ -214,6 +214,18 @@ pub fn build_router(state: AppState) -> Router {
             "/api/commerce/intents/{id}/execute",
             post(routes::commerce::execute_quote),
         )
+        .route(
+            "/api/commerce/executions/{id}",
+            get(routes::commerce::get_execution),
+        )
+        .route(
+            "/api/commerce/receipts/{id}",
+            get(routes::commerce::get_receipt),
+        )
+        .route(
+            "/api/commerce/receipts/{id}/export",
+            post(routes::commerce::export_receipt),
+        )
         // Calls
         .route("/api/calls", post(routes::calls::initiate_call))
         .route("/api/calls/initiate", post(routes::calls::initiate_call))

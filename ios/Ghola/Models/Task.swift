@@ -595,6 +595,172 @@ struct PrivateTransferReceiptExportResponse: Codable {
     }
 }
 
+struct CommerceIntentResponse: Codable, Identifiable {
+    let id: UUID
+    let userID: UUID
+    let goal: String
+    let budgetMicroUSDC: Int64
+    let privacyMode: String
+    let preferredRail: String
+    let allowedAdapters: [String]
+    let deadlineAt: String?
+    let status: String
+    let createdAt: String
+    let updatedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, goal, status
+        case userID = "user_id"
+        case budgetMicroUSDC = "budget_micro_usdc"
+        case privacyMode = "privacy_mode"
+        case preferredRail = "preferred_rail"
+        case allowedAdapters = "allowed_adapters"
+        case deadlineAt = "deadline_at"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct CommerceRailOptionResponse: Codable, Identifiable {
+    let rail: String
+    let label: String
+    let available: Bool
+    let privacyDisclosure: String
+    let unavailableReason: String?
+
+    var id: String { rail }
+
+    enum CodingKeys: String, CodingKey {
+        case rail, label, available
+        case privacyDisclosure = "privacy_disclosure"
+        case unavailableReason = "unavailable_reason"
+    }
+}
+
+struct CommerceOfferResponse: Codable, Identifiable {
+    let offerID: String
+    let adapter: String
+    let title: String
+    let description: String
+    let merchantLabel: String
+    let merchantType: String
+    let offerImageURL: String?
+    let fulfillmentKind: String
+    let trustSummary: String
+    let providerSlug: String
+    let modelID: String
+    let tags: [String]
+    let tools: [String]
+    let providerReputation: Double
+    let amountMicroUSDC: Int64
+    let currency: String
+    let rail: String
+    let railOptions: [CommerceRailOptionResponse]
+    let privacyDisclosure: String
+    let available: Bool
+    let unavailableReason: String?
+    let rawOffer: [String: AnyCodable]
+
+    var id: String { offerID }
+
+    enum CodingKeys: String, CodingKey {
+        case adapter, title, description, tags, tools, currency, rail, available
+        case offerID = "offer_id"
+        case merchantLabel = "merchant_label"
+        case merchantType = "merchant_type"
+        case offerImageURL = "offer_image_url"
+        case fulfillmentKind = "fulfillment_kind"
+        case trustSummary = "trust_summary"
+        case providerSlug = "provider_slug"
+        case modelID = "model_id"
+        case providerReputation = "provider_reputation"
+        case amountMicroUSDC = "amount_micro_usdc"
+        case railOptions = "rail_options"
+        case privacyDisclosure = "privacy_disclosure"
+        case unavailableReason = "unavailable_reason"
+        case rawOffer = "raw_offer"
+    }
+}
+
+struct CommerceQuoteResponse: Codable, Identifiable {
+    let id: UUID
+    let intentID: UUID
+    let adapter: String
+    let offerID: String
+    let providerSlug: String?
+    let providerLabel: String?
+    let amountMicroUSDC: Int64
+    let currency: String
+    let rail: String
+    let status: String
+    let paymentRequirements: [String: AnyCodable]
+    let policy: [String: AnyCodable]
+    let rawOffer: [String: AnyCodable]
+    let expiresAt: String
+    let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, adapter, currency, rail, status, policy
+        case intentID = "intent_id"
+        case offerID = "offer_id"
+        case providerSlug = "provider_slug"
+        case providerLabel = "provider_label"
+        case amountMicroUSDC = "amount_micro_usdc"
+        case paymentRequirements = "payment_requirements"
+        case rawOffer = "raw_offer"
+        case expiresAt = "expires_at"
+        case createdAt = "created_at"
+    }
+}
+
+struct CommerceReceiptResponse: Codable, Identifiable {
+    let id: UUID
+    let executionID: UUID
+    let status: String
+    let adapter: String
+    let amountMicroUSDC: Int64
+    let currency: String
+    let rail: String
+    let receipt: [String: AnyCodable]
+    let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, status, adapter, currency, rail, receipt
+        case executionID = "execution_id"
+        case amountMicroUSDC = "amount_micro_usdc"
+        case createdAt = "created_at"
+    }
+}
+
+struct CommerceExecutionResponse: Codable, Identifiable {
+    let id: UUID
+    let intentID: UUID
+    let quoteID: UUID
+    let status: String
+    let handoff: [String: AnyCodable]
+    let receipt: CommerceReceiptResponse
+    let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, status, handoff, receipt
+        case intentID = "intent_id"
+        case quoteID = "quote_id"
+        case createdAt = "created_at"
+    }
+}
+
+struct CommerceReceiptExportResponse: Codable {
+    let receipt: CommerceReceiptResponse
+    let exportedAt: String
+    let audience: String
+    let reason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case receipt, audience, reason
+        case exportedAt = "exported_at"
+    }
+}
+
 struct CreateTaskRequest: Codable {
     let taskType: String
     let templateId: String?

@@ -24,6 +24,8 @@ import type {
   CommerceIntent,
   CommerceOffer,
   CommerceQuote,
+  CommerceReceipt,
+  CommerceReceiptExport,
 } from "./thumper-types";
 
 const THUMPER_API_BASE =
@@ -452,6 +454,32 @@ export async function executeCommerceQuote(
   }
 ): Promise<CommerceExecution> {
   return thumperFetch<CommerceExecution>(`/api/commerce/intents/${intentId}/execute`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getCommerceExecution(id: string): Promise<CommerceExecution> {
+  return thumperFetch<CommerceExecution>(`/api/commerce/executions/${id}`);
+}
+
+export async function getCommerceReceipt(id: string): Promise<CommerceReceipt> {
+  return thumperFetch<CommerceReceipt>(`/api/commerce/receipts/${id}`);
+}
+
+export async function exportCommerceReceipt(
+  id: string,
+  data: {
+    reason?: string;
+    audience?: string;
+    privacy_mode: "strictLocal";
+    network_scope: "commerceExecution";
+    user_approved_at: string;
+    approval_nonce: string;
+    approval_summary: string;
+  }
+): Promise<CommerceReceiptExport> {
+  return thumperFetch<CommerceReceiptExport>(`/api/commerce/receipts/${id}/export`, {
     method: "POST",
     body: JSON.stringify(data),
   });
