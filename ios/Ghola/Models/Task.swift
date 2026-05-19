@@ -150,6 +150,36 @@ struct ProviderHealthResponse: Codable {
     }
 }
 
+struct PrivacyHealthResponse: Codable {
+    let strictLocalDefault: Bool?
+    let approvalEnforcementEnabled: Bool?
+    let rawApprovalNonceHashingEnabled: Bool?
+    let smsApprovalEnabled: Bool?
+    let taskResultRedactionEnabled: Bool?
+    let taskStepRedactionEnabled: Bool?
+    let callRecipientHashingEnabled: Bool?
+    let smsRecipientHashingEnabled: Bool?
+    let remoteComputeApprovalEnabled: Bool?
+    let messagingBlockReportEnabled: Bool?
+    let privateRailFailClosed: Bool?
+    let blockingReasons: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case strictLocalDefault = "strict_local_default"
+        case approvalEnforcementEnabled = "approval_enforcement_enabled"
+        case rawApprovalNonceHashingEnabled = "raw_approval_nonce_hashing_enabled"
+        case smsApprovalEnabled = "sms_approval_enabled"
+        case taskResultRedactionEnabled = "task_result_redaction_enabled"
+        case taskStepRedactionEnabled = "task_step_redaction_enabled"
+        case callRecipientHashingEnabled = "call_recipient_hashing_enabled"
+        case smsRecipientHashingEnabled = "sms_recipient_hashing_enabled"
+        case remoteComputeApprovalEnabled = "remote_compute_approval_enabled"
+        case messagingBlockReportEnabled = "messaging_block_report_enabled"
+        case privateRailFailClosed = "private_rail_fail_closed"
+        case blockingReasons = "blocking_reasons"
+    }
+}
+
 struct ConnectedAccountStatus: Codable, Identifiable {
     let provider: String
     let connected: Bool
@@ -195,6 +225,10 @@ struct PaymentRailStatus: Codable {
     let provider: String?
     let network: String?
     let asset: String?
+    let recipientConfigured: Bool?
+    let recipientPreview: String?
+    let recipient: String?
+    let arbitraryRecipientProofsEnabled: Bool?
     let rail: String?
     let canonicalRail: String?
     let fallbackAllowed: Bool?
@@ -202,7 +236,10 @@ struct PaymentRailStatus: Codable {
     let privacyDisclosure: String?
 
     enum CodingKeys: String, CodingKey {
-        case configured, ready, provider, network, asset, rail
+        case configured, ready, provider, network, asset, recipient, rail
+        case recipientConfigured = "recipient_configured"
+        case recipientPreview = "recipient_preview"
+        case arbitraryRecipientProofsEnabled = "arbitrary_recipient_proofs_enabled"
         case canonicalRail = "canonical_rail"
         case fallbackAllowed = "fallback_allowed"
         case unavailableReason = "unavailable_reason"
@@ -211,6 +248,32 @@ struct PaymentRailStatus: Codable {
 
     var isReady: Bool {
         ready ?? configured ?? false
+    }
+}
+
+struct PrivateRailRecipientResponse: Codable {
+    let configured: Bool
+    let ready: Bool
+    let provider: String
+    let network: String
+    let asset: String
+    let recipientConfigured: Bool
+    let recipientPreview: String?
+    let recipient: String?
+    let rail: String
+    let canonicalRail: String
+    let fallbackAllowed: Bool
+    let unavailableReason: String?
+    let privacyDisclosure: String
+
+    enum CodingKeys: String, CodingKey {
+        case configured, ready, provider, network, asset, recipient, rail
+        case recipientConfigured = "recipient_configured"
+        case recipientPreview = "recipient_preview"
+        case canonicalRail = "canonical_rail"
+        case fallbackAllowed = "fallback_allowed"
+        case unavailableReason = "unavailable_reason"
+        case privacyDisclosure = "privacy_disclosure"
     }
 }
 
@@ -301,17 +364,89 @@ struct PrivateTransferIntentResponse: Codable, Identifiable {
     }
 }
 
+struct ShieldedRecipientReceiptV1: Codable {
+    let version: String
+    let recipient: String
+    let network: String
+    let asset: String
+    let amountMicroUSDC: Int64
+    let txSignature: String
+    let receiptRef: String
+    let proofDigest: String
+    let signedAtUnix: Int64
+    let expiresAtUnix: Int64
+    let signature: String
+
+    enum CodingKeys: String, CodingKey {
+        case version, recipient, network, asset, signature
+        case amountMicroUSDC = "amount_micro_usdc"
+        case txSignature = "tx_signature"
+        case receiptRef = "receipt_ref"
+        case proofDigest = "proof_digest"
+        case signedAtUnix = "signed_at_unix"
+        case expiresAtUnix = "expires_at_unix"
+    }
+
+    var jsonFields: [String: Any] {
+        [
+            "version": version,
+            "recipient": recipient,
+            "network": network,
+            "asset": asset,
+            "amount_micro_usdc": amountMicroUSDC,
+            "tx_signature": txSignature,
+            "receipt_ref": receiptRef,
+            "proof_digest": proofDigest,
+            "signed_at_unix": signedAtUnix,
+            "expires_at_unix": expiresAtUnix,
+            "signature": signature,
+        ]
+    }
+}
+
+struct ShieldedPaymentProofExtensions: Codable {
+    let recipientReceipt: ShieldedRecipientReceiptV1?
+
+    enum CodingKeys: String, CodingKey {
+        case recipientReceipt = "recipient_receipt"
+    }
+
+    var jsonFields: [String: Any] {
+        var fields: [String: Any] = [:]
+        if let recipientReceipt {
+            fields["recipient_receipt"] = recipientReceipt.jsonFields
+        }
+        return fields
+    }
+}
+
 struct ShieldedPaymentProofPayload: Codable {
     let txSignature: String?
     let shieldedReceiptId: String?
     let proofB64: String?
     let nullifierHex: String?
+    let extensions: ShieldedPaymentProofExtensions?
+
+    init(
+        txSignature: String?,
+        shieldedReceiptId: String?,
+        proofB64: String?,
+        nullifierHex: String?,
+        extensions: ShieldedPaymentProofExtensions? = nil
+    ) {
+        self.txSignature = txSignature
+        self.shieldedReceiptId = shieldedReceiptId
+        self.proofB64 = proofB64
+        self.nullifierHex = nullifierHex
+        self.extensions = extensions
+    }
 
     enum CodingKeys: String, CodingKey {
         case txSignature = "tx_signature"
         case shieldedReceiptId = "shielded_receipt_id"
         case proofB64 = "proof_b64"
         case nullifierHex = "nullifier_hex"
+        case extensions
     }
 
     var jsonFields: [String: Any] {
@@ -320,6 +455,9 @@ struct ShieldedPaymentProofPayload: Codable {
         if let shieldedReceiptId { fields["shielded_receipt_id"] = shieldedReceiptId }
         if let proofB64 { fields["proof_b64"] = proofB64 }
         if let nullifierHex { fields["nullifier_hex"] = nullifierHex }
+        if let extensions {
+            fields["extensions"] = extensions.jsonFields
+        }
         return fields
     }
 }

@@ -272,6 +272,8 @@ pub const SHIELDED_STABLECOIN_DISCLOSURE: &str = "Private USDCx settlement on Al
 const SHIELDED_UNCONFIGURED_REASON: &str = "shielded stablecoin adapter is not configured";
 const SHIELDED_ADAPTER_URL_MISSING_REASON: &str =
     "shielded stablecoin adapter URL is not configured";
+const SHIELDED_ADAPTER_AUTH_MISSING_REASON: &str =
+    "shielded stablecoin adapter auth token is not configured";
 const SHIELDED_RECIPIENT_MISSING_REASON: &str = "shielded stablecoin recipient is not configured";
 const SHIELDED_ADAPTER_PUBKEY_MISSING_REASON: &str =
     "shielded adapter signing public key is not configured";
@@ -296,9 +298,11 @@ pub struct ShieldedStablecoinRuntimeStatus {
     pub ready: bool,
     pub adapter_configured: bool,
     pub destination_configured: bool,
+    pub adapter_auth_configured: bool,
     pub adapter_signature_required: bool,
     pub adapter_signature_configured: bool,
     pub verifier_ready: bool,
+    pub arbitrary_recipient_proofs_enabled: bool,
     pub provider: String,
     pub network: String,
     pub asset: String,
@@ -344,9 +348,12 @@ fn shielded_config_from_env() -> Option<ShieldedStablecoinConfig> {
     let adapter_pubkey = shielded_adapter_pubkey_from_env();
     let verifier_ready = shielded_verifier_ready();
 
-    if adapter_url.trim().is_empty() || destination.trim().is_empty() {
+    if adapter_url.trim().is_empty()
+        || (destination.trim().is_empty() && !shielded_arbitrary_recipient_proofs_enabled())
+    {
         return None;
     }
+    shielded_adapter_auth_token_from_env()?;
     if require_signed_receipt && adapter_pubkey.is_none() {
         return None;
     }
@@ -372,9 +379,22 @@ fn shielded_adapter_signature_required() -> bool {
         .unwrap_or(true)
 }
 
+fn shielded_arbitrary_recipient_proofs_enabled() -> bool {
+    std::env::var("SHIELDED_STABLECOIN_ARBITRARY_RECIPIENTS_ENABLED")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 fn shielded_adapter_pubkey_from_env() -> Option<VerifyingKey> {
     let raw = std::env::var("SHIELDED_STABLECOIN_ADAPTER_PUBKEY").ok()?;
     parse_ed25519_verifying_key(raw.trim()).ok()
+}
+
+fn shielded_adapter_auth_token_from_env() -> Option<String> {
+    std::env::var("SHIELDED_STABLECOIN_ADAPTER_AUTH_TOKEN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn shielded_verifier_ready() -> bool {
@@ -418,6 +438,8 @@ pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
     let adapter_configured = std::env::var("SHIELDED_STABLECOIN_ADAPTER_URL")
         .ok()
         .is_some_and(|s| !s.trim().is_empty());
+    let adapter_auth_configured = shielded_adapter_auth_token_from_env().is_some();
+    let arbitrary_recipient_proofs_enabled = shielded_arbitrary_recipient_proofs_enabled();
     let destination_configured = std::env::var("SHIELDED_STABLECOIN_RECIPIENT")
         .ok()
         .is_some_and(|s| !s.trim().is_empty());
@@ -434,14 +456,17 @@ pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let configured = adapter_configured
-        && destination_configured
+        && adapter_auth_configured
+        && (destination_configured || arbitrary_recipient_proofs_enabled)
         && (!adapter_signature_required || adapter_signature_configured)
         && verifier_ready;
     let unavailable_reason = if configured {
         None
     } else if !adapter_configured {
         Some(SHIELDED_ADAPTER_URL_MISSING_REASON)
-    } else if !destination_configured {
+    } else if !adapter_auth_configured {
+        Some(SHIELDED_ADAPTER_AUTH_MISSING_REASON)
+    } else if !destination_configured && !arbitrary_recipient_proofs_enabled {
         Some(SHIELDED_RECIPIENT_MISSING_REASON)
     } else if adapter_signature_required && !adapter_signature_configured {
         Some(SHIELDED_ADAPTER_PUBKEY_MISSING_REASON)
@@ -456,9 +481,11 @@ pub fn shielded_stablecoin_runtime_status() -> ShieldedStablecoinRuntimeStatus {
         ready: configured,
         adapter_configured,
         destination_configured,
+        adapter_auth_configured,
         adapter_signature_required,
         adapter_signature_configured,
         verifier_ready,
+        arbitrary_recipient_proofs_enabled,
         provider,
         network,
         asset,
@@ -1187,9 +1214,18 @@ pub struct VerifiedShieldedSettlement {
 }
 
 fn shielded_proof_digest(proof: &PaymentPayload) -> Result<String, CloudError> {
-    let bytes = serde_json::to_vec(proof)
+    let tx_signature = serde_json::to_string(&proof.tx_signature)
         .map_err(|e| CloudError::Internal(format!("shielded proof serialization failed: {e}")))?;
-    Ok(hex::encode(Sha256::digest(&bytes)))
+    let shielded_receipt_id = serde_json::to_string(&proof.shielded_receipt_id)
+        .map_err(|e| CloudError::Internal(format!("shielded proof serialization failed: {e}")))?;
+    let proof_b64 = serde_json::to_string(&proof.proof_b64)
+        .map_err(|e| CloudError::Internal(format!("shielded proof serialization failed: {e}")))?;
+    let nullifier_hex = serde_json::to_string(&proof.nullifier_hex)
+        .map_err(|e| CloudError::Internal(format!("shielded proof serialization failed: {e}")))?;
+    let canonical = format!(
+        "{{\"tx_signature\":{tx_signature},\"shielded_receipt_id\":{shielded_receipt_id},\"proof_b64\":{proof_b64},\"nullifier_hex\":{nullifier_hex}}}"
+    );
+    Ok(hex::encode(Sha256::digest(canonical.as_bytes())))
 }
 
 fn require_matching_adapter_field(
@@ -1384,7 +1420,7 @@ pub async fn verify_shielded_stablecoin_settlement(
         })?;
 
     let client = reqwest::Client::new();
-    let adapter_response = client
+    let mut adapter_request = client
         .post(format!(
             "{}/verify",
             config.adapter_url.trim_end_matches('/')
@@ -1401,7 +1437,12 @@ pub async fn verify_shielded_stablecoin_settlement(
             provider_id: context.provider_id,
             model_id: context.model_id,
             proof: &proof.payload,
-        })
+        });
+    if let Some(token) = shielded_adapter_auth_token_from_env() {
+        adapter_request = adapter_request.bearer_auth(token);
+    }
+
+    let adapter_response = adapter_request
         .send()
         .await
         .map_err(|e| CloudError::PaymentRequired(format!("shielded adapter request failed: {e}")))?
@@ -1902,9 +1943,11 @@ mod tests {
             ready: true,
             adapter_configured: true,
             destination_configured: true,
+            adapter_auth_configured: true,
             adapter_signature_required: true,
             adapter_signature_configured: true,
             verifier_ready: true,
+            arbitrary_recipient_proofs_enabled: false,
             provider: "aleo".to_string(),
             network: "aleo:mainnet".to_string(),
             asset: "USDCx".to_string(),
@@ -2116,6 +2159,24 @@ mod tests {
         response.adapter_signature_b64 =
             Some(STANDARD.encode(signer.sign(payload.as_bytes()).to_bytes()));
         response
+    }
+
+    #[test]
+    fn shielded_proof_digest_ignores_extensions_for_recipient_receipt_binding() {
+        let proof = test_shielded_proof();
+        let mut proof_with_extension = test_shielded_proof();
+        proof_with_extension.extensions = Some(json!({
+            "recipient_receipt": {
+                "version": "ghola-aleo-usdcx-recipient-receipt-v1",
+                "recipient": "aleo1recipient",
+                "signature": "signature1example"
+            }
+        }));
+
+        assert_eq!(
+            shielded_proof_digest(&proof).unwrap(),
+            shielded_proof_digest(&proof_with_extension).unwrap()
+        );
     }
 
     #[test]

@@ -42,14 +42,73 @@ export interface ThumperTaskResponse {
   steps?: ThumperTaskStepResponse[];
 }
 
+export type ThumperNetworkScope =
+  | "auth"
+  | "cloudChat"
+  | "localServerChat"
+  | "callExecution"
+  | "emailDraft"
+  | "emailSend"
+  | "calendarExecution"
+  | "walletProvision"
+  | "walletTransfer"
+  | "smsSend"
+  | "nativeMessagingRelay"
+  | "agentPlan"
+  | "remoteAgentCompute"
+  | "swarmExecution"
+  | "billing"
+  | "commerceExecution"
+  | "providerConfig";
+
+export interface ThumperPrivacyApproval {
+  privacy_mode: "strictLocal";
+  network_scope: ThumperNetworkScope;
+  user_approved_at: string;
+  approval_nonce: string;
+  approval_summary: string;
+}
+
+export interface ThumperPrivacyHealthResponse {
+  strict_local_default: boolean;
+  approval_enforcement_enabled: boolean;
+  raw_approval_nonce_hashing_enabled: boolean;
+  sms_approval_enabled: boolean;
+  task_result_redaction_enabled: boolean;
+  task_step_redaction_enabled: boolean;
+  call_recipient_hashing_enabled: boolean;
+  sms_recipient_hashing_enabled: boolean;
+  remote_compute_approval_enabled: boolean;
+  messaging_block_report_enabled: boolean;
+  private_rail_fail_closed: boolean;
+  blocking_reasons: string[];
+}
+
+export interface ThumperPrivateRailRecipientResponse {
+  configured: boolean;
+  ready: boolean;
+  provider: string;
+  network: string;
+  asset: string;
+  recipient_configured: boolean;
+  recipient_preview?: string | null;
+  recipient?: string | null;
+  arbitrary_recipient_proofs_enabled?: boolean;
+  recipient_receipts_enabled?: boolean;
+  rail: string;
+  canonical_rail: string;
+  fallback_allowed: boolean;
+  unavailable_reason?: string | null;
+  privacy_disclosure: string;
+}
+
 export interface ThumperTaskStepResponse {
   id: string;
-  task_id: string;
   step_number: number;
-  action: string;
+  action_type: string;
   status: string;
-  result: Record<string, unknown> | null;
-  created_at: string;
+  input: Record<string, unknown> | null;
+  output: Record<string, unknown> | null;
 }
 
 export interface ThumperCallResponse {
@@ -335,6 +394,79 @@ export interface BountyWithdrawResponse {
   to_address: string;
   signature: string | null;
   status: string;
+}
+
+export interface CommerceIntent {
+  id: string;
+  user_id: string;
+  goal: string;
+  budget_micro_usdc: number;
+  privacy_mode: "private" | "open";
+  preferred_rail: string;
+  allowed_adapters: string[];
+  deadline_at: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CommerceOffer {
+  offer_id: string;
+  adapter: "x402" | "mcp";
+  title: string;
+  description: string;
+  provider_slug: string;
+  model_id: string;
+  tags: string[];
+  tools: string[];
+  provider_reputation: number;
+  amount_micro_usdc: number;
+  currency: string;
+  rail: string;
+  privacy_disclosure: string;
+  available: boolean;
+  unavailable_reason: string | null;
+  raw_offer: Record<string, unknown>;
+}
+
+export interface CommerceQuote {
+  id: string;
+  intent_id: string;
+  adapter: "x402" | "mcp";
+  offer_id: string;
+  provider_slug: string | null;
+  provider_label: string | null;
+  amount_micro_usdc: number;
+  currency: string;
+  rail: string;
+  status: string;
+  payment_requirements: Record<string, unknown>;
+  policy: Record<string, unknown>;
+  raw_offer: Record<string, unknown>;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface CommerceReceipt {
+  id: string;
+  execution_id: string;
+  status: string;
+  adapter: "x402" | "mcp";
+  amount_micro_usdc: number;
+  currency: string;
+  rail: string;
+  receipt: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface CommerceExecution {
+  id: string;
+  intent_id: string;
+  quote_id: string;
+  status: string;
+  handoff: Record<string, unknown>;
+  receipt: CommerceReceipt;
+  created_at: string;
 }
 
 export const BOUNTY_TASK_TYPES = [

@@ -147,6 +147,7 @@ struct WalletView: View {
     @State private var history: [WalletTransactionResponse] = []
     @State private var privateHistory: [PrivateTransferHistoryResponse] = []
     @State private var paymentHealth: PaymentHealthResponse?
+    @State private var privateRecipient: PrivateRailRecipientResponse?
     @State private var institutionalReadiness: InstitutionalReadinessResponse?
     @State private var selectedRail: WalletRailSelection = .publicUSDC
     @State private var isLoading = false
@@ -200,6 +201,8 @@ struct WalletView: View {
                     SendPrivateUSDCxSheet(
                         railStatus: paymentHealth?.privateUSDCx,
                         signerStatus: privateSignerStatus,
+                        configuredRecipient: privateConfiguredRecipient,
+                        configuredRecipientPreview: privateConfiguredRecipientPreview,
                         selectedContact: selectedSendContact
                     ) { recipient, amountMicroUSDC, signingMode, signerKeyID, approval in
                         let intent = try await CloudClient.shared.createPrivateUSDCxIntent(
@@ -210,26 +213,9 @@ struct WalletView: View {
                             approval: approval
                         )
                         privateIntentStore.save(intent: intent, recipientAddress: recipient)
-                        let authorization = try await PrivatePaymentSigner.authorizeUSDCxTransfer(
-                            intent: intent,
-                            recipientAddress: recipient
-                        )
-                        let submitApproval = PrivacyGate.makeApproval(
-                            scope: .walletTransfer,
-                            summary: "Submit signed private USDCx transfer receipt for \(formatMicroUSDC(amountMicroUSDC)) on \(intent.network). No public USDC fallback."
-                        )
-                        let verified = try await CloudClient.shared.submitSignedPrivateUSDCxTransfer(
-                            intentId: intent.id,
-                            to: recipient,
-                            proof: authorization.proof,
-                            signingMode: signingMode,
-                            signerKeyID: signerKeyID,
-                            signerAttestation: authorization.signerAttestation,
-                            approval: submitApproval
-                        )
-                        privateIntentStore.remove(id: intent.id)
                         await refresh()
-                        noticeMessage = "Private USDCx verified for \(verified.recipientPreview)."
+                        proofIntent = privateIntentStore.intent(for: intent.id)
+                        noticeMessage = "Private USDCx intent approved. Send USDCx from your Aleo wallet, then verify the transaction in Ghola."
                         return intent
                     }
                 } else if let walletInfo, let balances {
@@ -257,7 +243,9 @@ struct WalletView: View {
                 if selectedRail == .privateUSDCx {
                     ReceivePrivateUSDCxSheet(
                         railStatus: paymentHealth?.privateUSDCx,
-                        signerStatus: privateSignerStatus
+                        signerStatus: privateSignerStatus,
+                        configuredRecipient: privateConfiguredRecipient,
+                        configuredRecipientPreview: privateConfiguredRecipientPreview
                     )
                 } else {
                     ReceiveUSDCSheet(
@@ -270,26 +258,43 @@ struct WalletView: View {
                 WalletRailInfoSheet(
                     network: currentNetwork,
                     privateStatus: paymentHealth?.privateUSDCx,
+                    configuredRecipient: privateConfiguredRecipient,
+                    configuredRecipientPreview: privateConfiguredRecipientPreview,
                     signerStatus: privateSignerStatus,
                     institutionalReadiness: institutionalReadiness
                 )
             }
-            #if DEBUG
             .sheet(item: $proofIntent) { intent in
-                SubmitPrivateUSDCxProofSheet(intent: intent) { txID, approval in
+                SubmitPrivateUSDCxProofSheet(intent: intent) { txID, recipientReceipt, approval in
+                    let proofExtensions = recipientReceipt.map {
+                        ShieldedPaymentProofExtensions(recipientReceipt: $0)
+                    }
                     let proof = ShieldedPaymentProof(
                         network: intent.network,
                         payload: ShieldedPaymentProofPayload(
                             txSignature: txID,
                             shieldedReceiptId: txID,
                             proofB64: nil,
-                            nullifierHex: nil
+                            nullifierHex: nil,
+                            extensions: proofExtensions
                         )
                     )
-                    let result = try await CloudClient.shared.submitPrivateUSDCxProof(
+                    guard let signingModeRaw = intent.signingMode,
+                          let signingMode = PrivatePaymentSigningMode(rawValue: signingModeRaw),
+                          let signerKeyID = intent.signerKeyID else {
+                        throw CloudError.privacyBlocked("Private transfer intent is missing local signer metadata.")
+                    }
+                    let signerAttestation = try PrivatePaymentSigner.makeExternalUSDCxSignerAttestation(
+                        intent: intent,
+                        proof: proof
+                    )
+                    let result = try await CloudClient.shared.submitSignedPrivateUSDCxTransfer(
                         intentId: intent.id,
                         to: intent.recipientAddress,
                         proof: proof,
+                        signingMode: signingMode,
+                        signerKeyID: signerKeyID,
+                        signerAttestation: signerAttestation,
                         approval: approval
                     )
                     privateIntentStore.remove(intent)
@@ -298,7 +303,6 @@ struct WalletView: View {
                     return result
                 }
             }
-            #endif
             .sheet(isPresented: $showAddContact) {
                 AddWalletContactSheet { name, handle, address, shieldedAddress in
                     try contactsStore.saveContact(displayName: name, handle: handle, address: address, shieldedAddress: shieldedAddress)
@@ -509,6 +513,14 @@ struct WalletView: View {
         paymentHealth?.privateUSDCx
     }
 
+    private var privateConfiguredRecipient: String? {
+        privateRecipient?.recipient ?? privateRailStatus?.recipient
+    }
+
+    private var privateConfiguredRecipientPreview: String? {
+        privateRecipient?.recipientPreview ?? privateRailStatus?.recipientPreview
+    }
+
     private var privateSignerStatus: PrivateSignerStatus {
         PrivatePaymentSigner.status
     }
@@ -593,28 +605,24 @@ struct WalletView: View {
             ForEach(privateHistory) { item in
                 PrivateTransferHistoryRow(item: item, hasLocalIntent: privateIntentStore.intent(for: item.id) != nil)
                     .padding(.horizontal)
-                    #if DEBUG
                     .onTapGesture {
                         if let pending = privateIntentStore.intent(for: item.id),
                            item.status == "intent_pending" || item.status == "submitted" {
                             proofIntent = pending
                         }
                     }
-                    #endif
                     .contextMenu {
                         if item.status == "verified" {
                             Button("Export Receipt") {
                                 exportPrivateReceipt(item)
                             }
                         }
-                        #if DEBUG
                         if let pending = privateIntentStore.intent(for: item.id),
                            item.status == "intent_pending" || item.status == "submitted" {
-                            Button("Debug Verify Aleo Transaction") {
+                            Button("Verify Aleo Transaction") {
                                 proofIntent = pending
                             }
                         }
-                        #endif
                     }
             }
         }
@@ -636,6 +644,7 @@ struct WalletView: View {
             history = []
             privateHistory = []
             paymentHealth = nil
+            privateRecipient = nil
             institutionalReadiness = nil
             privateIntentStore.reload()
             return
@@ -646,6 +655,7 @@ struct WalletView: View {
 
         do {
             paymentHealth = try? await CloudClient.shared.getPaymentHealth()
+            privateRecipient = try? await CloudClient.shared.getPrivateUSDCxRecipient()
             institutionalReadiness = try? await CloudClient.shared.getInstitutionalReadiness()
             async let info = CloudClient.shared.getWalletAddress()
             async let currentBalances = CloudClient.shared.getWalletBalances()
@@ -661,6 +671,7 @@ struct WalletView: View {
             balances = nil
             history = []
             privateHistory = []
+            privateRecipient = nil
             institutionalReadiness = nil
         } catch {
             noticeMessage = error.localizedDescription
@@ -998,6 +1009,8 @@ private struct SendUSDCSheet: View {
 private struct SendPrivateUSDCxSheet: View {
     let railStatus: PaymentRailStatus?
     let signerStatus: PrivateSignerStatus
+    let configuredRecipient: String?
+    let configuredRecipientPreview: String?
     let selectedContact: WalletContact?
     let onCreateIntent: (String, Int64, PrivatePaymentSigningMode, String, PrivacyApproval) async throws -> PrivateTransferIntentResponse
 
@@ -1011,14 +1024,18 @@ private struct SendPrivateUSDCxSheet: View {
     init(
         railStatus: PaymentRailStatus?,
         signerStatus: PrivateSignerStatus,
+        configuredRecipient: String?,
+        configuredRecipientPreview: String?,
         selectedContact: WalletContact?,
         onCreateIntent: @escaping (String, Int64, PrivatePaymentSigningMode, String, PrivacyApproval) async throws -> PrivateTransferIntentResponse
     ) {
         self.railStatus = railStatus
         self.signerStatus = signerStatus
+        self.configuredRecipient = configuredRecipient
+        self.configuredRecipientPreview = configuredRecipientPreview
         self.selectedContact = selectedContact
         self.onCreateIntent = onCreateIntent
-        _recipient = State(initialValue: selectedContact?.shieldedAddress ?? "")
+        _recipient = State(initialValue: selectedContact?.shieldedAddress ?? configuredRecipient ?? "")
     }
 
     private var trimmedRecipient: String {
@@ -1046,6 +1063,11 @@ private struct SendPrivateUSDCxSheet: View {
         }
         guard trimmedRecipient.starts(with: "aleo1"), trimmedRecipient.count >= 32 else {
             return "Enter a valid Aleo private recipient address."
+        }
+        if let configuredRecipient,
+           !configuredRecipient.isEmpty,
+           trimmedRecipient != configuredRecipient {
+            return "This USDCx verifier currently supports only the configured Aleo recipient."
         }
         guard let amountMicroUSDC, amountMicroUSDC > 0 else {
             return "Enter a USDCx amount greater than zero."
@@ -1125,6 +1147,11 @@ private struct SendPrivateUSDCxSheet: View {
             LabeledContent("Network", value: railStatus?.network ?? "not configured")
             LabeledContent("Provider", value: railStatus?.provider ?? "aleo")
             LabeledContent("Signer", value: signerStatus.signingMode.title)
+            if let configuredRecipient {
+                LabeledContent("Verified recipient", value: maskWalletContactAddress(configuredRecipient))
+            } else if let configuredRecipientPreview {
+                LabeledContent("Verified recipient", value: configuredRecipientPreview)
+            }
             if !signerReady {
                 Text(signerStatus.unavailableReason ?? "Private signer is not ready.")
                     .font(Theme.captionFont)
@@ -1160,7 +1187,7 @@ private struct SendPrivateUSDCxSheet: View {
                 .font(Theme.captionFont)
                 .foregroundStyle(Theme.textSecondary)
             DisclosureGroup("What leaves the device?") {
-                Text("The shielded recipient address, amount, and approval create a transfer intent. The verifier later receives a shielded proof/nullifier, not a public Solana transfer.")
+                Text("The configured shielded recipient, amount, and approval create a transfer intent. The verifier later receives a shielded proof/nullifier, not a public Solana transfer.")
                     .font(Theme.captionFont)
                     .foregroundStyle(Theme.textSecondary)
             }
@@ -1195,13 +1222,13 @@ private struct SendPrivateUSDCxSheet: View {
     }
 }
 
-#if DEBUG
 private struct SubmitPrivateUSDCxProofSheet: View {
     let intent: PendingPrivateTransfer
-    let onSubmit: (String, PrivacyApproval) async throws -> PrivateTransferProofResponse
+    let onSubmit: (String, ShieldedRecipientReceiptV1?, PrivacyApproval) async throws -> PrivateTransferProofResponse
 
     @Environment(\.dismiss) private var dismiss
     @State private var transactionID = ""
+    @State private var recipientReceiptJSON = ""
     @State private var isReviewing = false
     @State private var isSubmitting = false
     @State private var errorMessage: String?
@@ -1210,12 +1237,19 @@ private struct SubmitPrivateUSDCxProofSheet: View {
         transactionID.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var trimmedRecipientReceiptJSON: String {
+        recipientReceiptJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var validationMessage: String? {
         guard !trimmedTransactionID.isEmpty else {
             return "Enter the Aleo transaction ID after sending USDCx."
         }
         guard trimmedTransactionID.count >= 16 else {
             return "Enter the full Aleo transaction ID."
+        }
+        if !trimmedRecipientReceiptJSON.isEmpty && (try? decodeRecipientReceipt()) == nil {
+            return "Recipient receipt JSON is invalid."
         }
         return nil
     }
@@ -1289,6 +1323,18 @@ private struct SubmitPrivateUSDCxProofSheet: View {
         } footer: {
             Text("After the Aleo USDCx transfer is sent, paste the transaction ID here so Ghola can verify it through the configured shielded adapter.")
         }
+
+        Section {
+            TextField("Recipient-signed receipt JSON", text: $recipientReceiptJSON, axis: .vertical)
+                .font(.system(.footnote, design: .monospaced))
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .lineLimit(4...8)
+        } header: {
+            Text("Recipient Receipt")
+        } footer: {
+            Text("Optional for the configured Ghola recipient. Required for arbitrary Private USDCx recipients so the recipient explicitly signs what they received.")
+        }
     }
 
     @ViewBuilder
@@ -1308,13 +1354,16 @@ private struct SubmitPrivateUSDCxProofSheet: View {
             LabeledContent("Rail", value: "Private USDCx")
             LabeledContent("Network", value: intent.network)
             LabeledContent("Transaction", value: shortLocalHash(trimmedTransactionID))
+            if !trimmedRecipientReceiptJSON.isEmpty {
+                LabeledContent("Recipient receipt", value: "Signed")
+            }
         }
 
         Section {
             Label("No public fallback", systemImage: "lock.shield.fill")
                 .foregroundStyle(Theme.success)
             DisclosureGroup("What leaves the device?") {
-                Text("The Aleo transaction ID, shielded recipient, amount, and approval metadata are sent to Ghola Cloud and the configured Aleo verifier adapter. Public Solana USDC is not used.")
+                Text("The Aleo transaction ID, shielded recipient, amount, approval metadata, and any recipient-signed receipt are sent to Ghola Cloud and the configured Aleo verifier adapter. Public Solana USDC is not used.")
                     .font(Theme.captionFont)
                     .foregroundStyle(Theme.textSecondary)
             }
@@ -1338,7 +1387,8 @@ private struct SubmitPrivateUSDCxProofSheet: View {
 
         Task {
             do {
-                _ = try await onSubmit(trimmedTransactionID, approval)
+                let recipientReceipt = try decodeRecipientReceipt()
+                _ = try await onSubmit(trimmedTransactionID, recipientReceipt, approval)
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription
@@ -1352,8 +1402,19 @@ private struct SubmitPrivateUSDCxProofSheet: View {
         guard raw.count > 12 else { return raw }
         return "\(raw.prefix(6))...\(raw.suffix(6))"
     }
+
+    private func decodeRecipientReceipt() throws -> ShieldedRecipientReceiptV1? {
+        guard !trimmedRecipientReceiptJSON.isEmpty else { return nil }
+        guard let data = trimmedRecipientReceiptJSON.data(using: .utf8) else {
+            throw CloudError.privacyBlocked("Recipient receipt JSON is invalid.")
+        }
+        do {
+            return try JSONDecoder().decode(ShieldedRecipientReceiptV1.self, from: data)
+        } catch {
+            throw CloudError.privacyBlocked("Recipient receipt JSON is invalid.")
+        }
+    }
 }
-#endif
 
 private struct AddWalletContactSheet: View {
     let initialAddress: String
@@ -1525,6 +1586,8 @@ private struct ReceiveUSDCSheet: View {
 private struct ReceivePrivateUSDCxSheet: View {
     let railStatus: PaymentRailStatus?
     let signerStatus: PrivateSignerStatus
+    let configuredRecipient: String?
+    let configuredRecipientPreview: String?
 
     @Environment(\.dismiss) private var dismiss
 
@@ -1551,6 +1614,11 @@ private struct ReceivePrivateUSDCxSheet: View {
                     LabeledContent("Rail", value: "Aleo USDCx")
                     LabeledContent("Network", value: railStatus?.network ?? "not configured")
                     LabeledContent("Asset", value: "USDCx")
+                    if let recipient = configuredRecipient {
+                        LabeledContent("Recipient", value: maskWalletContactAddress(recipient))
+                    } else if let configuredRecipientPreview {
+                        LabeledContent("Recipient", value: configuredRecipientPreview)
+                    }
                 }
             }
             .navigationTitle("Receive")
@@ -1574,13 +1642,21 @@ private struct ReceivePrivateUSDCxSheet: View {
         if !signerReady {
             return signerStatus.unavailableReason ?? "Private USDCx receive is blocked until user-held signing is configured."
         }
-        return "Use your verified Aleo USDCx address. Ghola will not show a public Solana address for this rail."
+        if let recipient = configuredRecipient {
+            return "Use the configured Aleo USDCx recipient \(maskWalletContactAddress(recipient)). Ghola will not show a public Solana address for this rail."
+        }
+        if let configuredRecipientPreview {
+            return "Use the configured Aleo USDCx recipient \(configuredRecipientPreview). Ghola will not show a public Solana address for this rail."
+        }
+        return "Use the configured Aleo USDCx recipient. Ghola will not show a public Solana address for this rail."
     }
 }
 
 private struct WalletRailInfoSheet: View {
     let network: String
     let privateStatus: PaymentRailStatus?
+    let configuredRecipient: String?
+    let configuredRecipientPreview: String?
     let signerStatus: PrivateSignerStatus
     let institutionalReadiness: InstitutionalReadinessResponse?
 
@@ -1641,6 +1717,11 @@ private struct WalletRailInfoSheet: View {
                     LabeledContent("Public network", value: network)
                     LabeledContent("Private rail", value: "Aleo USDCx")
                     LabeledContent("Private network", value: privateStatus?.network ?? "not configured")
+                    if let recipient = configuredRecipient {
+                        LabeledContent("Private recipient", value: maskWalletContactAddress(recipient))
+                    } else if let configuredRecipientPreview {
+                        LabeledContent("Private recipient", value: configuredRecipientPreview)
+                    }
                 }
             }
             .navigationTitle("Payment Privacy")

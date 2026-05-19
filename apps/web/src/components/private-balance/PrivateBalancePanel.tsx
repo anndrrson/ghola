@@ -22,6 +22,7 @@ import { useThumperAuth } from "@/lib/thumper-auth-context";
 import {
   createPrivateBalanceTopUp,
   getPrivateBalanceStatus,
+  getPrivateUSDCxRecipient,
   type PrivateBalanceStatusResponse,
 } from "@/lib/thumper-api";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
@@ -40,6 +41,7 @@ interface PrivateBalancePanelProps {
 const TOP_UP_AMOUNTS = [5, 10, 25] as const;
 const SHIELD_URL = "https://aleo.org/shield/";
 type TopUpMode = "easy" | "advanced";
+type PrivateRailRecipient = Awaited<ReturnType<typeof getPrivateUSDCxRecipient>>;
 
 async function fetchPaymentHealth(): Promise<PaymentHealth | null> {
   const res = await fetch("/api/payments/health", {
@@ -65,6 +67,14 @@ function shortAddress(address: string | null | undefined): string {
   return `${address.slice(0, 10)}...${address.slice(-8)}`;
 }
 
+function thumperToken() {
+  try {
+    return window.localStorage.getItem("thumper_token");
+  } catch {
+    return null;
+  }
+}
+
 export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProps) {
   const thumperAuth = useThumperAuth();
   const turnkeyWallet = useTurnkeyWallet();
@@ -72,6 +82,8 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
   const [paymentHealth, setPaymentHealth] = useState<PaymentHealth | null>(null);
   const [shieldedHealth, setShieldedHealth] =
     useState<ShieldedStablecoinHealth | null>(null);
+  const [privateRecipient, setPrivateRecipient] =
+    useState<PrivateRailRecipient | null>(null);
   const [balanceMicroUsd, setBalanceMicroUsd] = useState<number | null>(null);
   const [privateBalance, setPrivateBalance] =
     useState<PrivateBalanceStatusResponse | null>(null);
@@ -115,6 +127,26 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!thumperAuth.authenticated) {
+      setPrivateRecipient(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+    void getPrivateUSDCxRecipient()
+      .then((recipient) => {
+        if (!cancelled) setPrivateRecipient(recipient);
+      })
+      .catch(() => {
+        if (!cancelled) setPrivateRecipient(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [thumperAuth.authenticated]);
 
   useEffect(() => {
     const topUpResult = new URLSearchParams(window.location.search).get("topup");
@@ -178,8 +210,15 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
     [paymentHealth],
   );
   const recipient =
+    privateRecipient?.recipient ||
     shieldedHealth?.recipient ||
     paymentHealth?.rails?.shielded_stablecoin?.recipient ||
+    null;
+  const recipientPreview =
+    privateRecipient?.recipient_preview ||
+    shieldedHealth?.recipient_preview ||
+    paymentHealth?.rails?.aleo_usdcx_shielded?.recipient_preview ||
+    paymentHealth?.rails?.shielded_stablecoin?.recipient_preview ||
     null;
   const easyReady =
     thumperAuth.authenticated &&
@@ -275,7 +314,11 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
   async function verifyTopUp() {
     if (!recipient) {
       setVerifyState("failed");
-      setVerifyMessage("Private recipient is not available.");
+      setVerifyMessage(
+        thumperAuth.authenticated
+          ? "Private recipient is not available."
+          : "Sign in before revealing the private recipient."
+      );
       return;
     }
     if (!txId.trim()) {
@@ -287,9 +330,12 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
     setVerifyState("checking");
     setVerifyMessage(null);
     try {
+      const token = thumperToken();
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
       const res = await fetch("/api/aleo-shielded/verify", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers,
         body: JSON.stringify({
           provider: "aleo",
           network: summary.network,
@@ -407,7 +453,7 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
             <div className="rounded-md border border-[#151b26] bg-black/30 px-3 py-2">
               Recipient{" "}
               <span className="block font-mono text-[#eef1f8]">
-                {shortAddress(recipient)}
+                {recipient ? shortAddress(recipient) : recipientPreview || "Hidden"}
               </span>
             </div>
             <div className="rounded-md border border-[#151b26] bg-black/30 px-3 py-2">
@@ -599,6 +645,7 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
                   <button
                     type="button"
                     onClick={() => copyText(recipient, "Recipient")}
+                    disabled={!recipient}
                     className="inline-flex items-center gap-1 text-xs text-[#a8d8ff] hover:text-[#eef1f8]"
                   >
                     <Copy className="h-3.5 w-3.5" />
@@ -606,7 +653,7 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
                   </button>
                 </div>
                 <p className="mt-2 break-all font-mono text-xs leading-5 text-[#eef1f8]">
-                  {recipient || "Recipient loading"}
+                  {recipient || recipientPreview || "Sign in to reveal recipient"}
                 </p>
               </div>
 

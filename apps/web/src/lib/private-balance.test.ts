@@ -10,12 +10,13 @@ describe("private balance", () => {
     expect(summary.label).toBe("Checking rails");
   });
 
-  it("shows private ready only when the shielded rail is configured", () => {
+  it("shows private ready only when the shielded rail is configured and ready", () => {
     const summary = summarizePrivateBalance({
       rails: {
         solana_public_stablecoin: { configured: true },
         shielded_stablecoin: {
           configured: true,
+          ready: true,
           asset: "USDC",
           network: "aleo:mainnet",
           fallback_allowed: false,
@@ -27,6 +28,40 @@ describe("private balance", () => {
     expect(summary.privateSpendReady).toBe(true);
     expect(summary.fallbackAllowed).toBe(false);
     expect(summary.asset).toBe("USDC");
+  });
+
+  it("keeps private balance gated when fallback or verifier readiness is unsafe", () => {
+    const fallbackSummary = summarizePrivateBalance({
+      rails: {
+        solana_public_stablecoin: { configured: true },
+        shielded_stablecoin: {
+          configured: true,
+          ready: true,
+          asset: "USDCx",
+          network: "aleo:mainnet",
+          fallback_allowed: true,
+        },
+      },
+    });
+    expect(fallbackSummary.status).toBe("setup_required");
+    expect(fallbackSummary.privateSpendReady).toBe(false);
+
+    const verifierSummary = summarizePrivateBalance({
+      rails: {
+        solana_public_stablecoin: { configured: true },
+        shielded_stablecoin: {
+          configured: true,
+          verifier_ready: false,
+          adapter_signature_required: true,
+          adapter_signature_configured: true,
+          asset: "USDCx",
+          network: "aleo:mainnet",
+          fallback_allowed: false,
+        },
+      },
+    });
+    expect(verifierSummary.status).toBe("setup_required");
+    expect(verifierSummary.privateSpendReady).toBe(false);
   });
 
   it("keeps private balance gated when only public USDC is configured", () => {

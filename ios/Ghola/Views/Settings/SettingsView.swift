@@ -12,6 +12,7 @@ struct SettingsView: View {
     @EnvironmentObject var auth: AuthManager
     @State private var usage: UsageResponse?
     @State private var providerHealth: ProviderHealthResponse?
+    @State private var privacyHealth: PrivacyHealthResponse?
     @State private var connectedAccounts: [ConnectedAccountStatus] = []
     @State private var accountMessage: String?
     @State private var isOpeningGoogleConnect = false
@@ -87,6 +88,27 @@ struct SettingsView: View {
                         Label("Privacy mode", systemImage: "iphone.gen3")
                         Spacer()
                         Text("Strict local")
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+
+                    HStack {
+                        Label("Task detail redaction", systemImage: "eye.slash")
+                        Spacer()
+                        Text(privacyHealth?.taskResultRedactionEnabled == true ? "On" : "Checking")
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+
+                    HStack {
+                        Label("Remote compute approval", systemImage: "cloud")
+                        Spacer()
+                        Text(privacyHealth?.remoteComputeApprovalEnabled == true ? "Required" : "Checking")
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+
+                    HStack {
+                        Label("Message abuse controls", systemImage: "hand.raised")
+                        Spacer()
+                        Text(privacyHealth?.messagingBlockReportEnabled == true ? "On" : "Checking")
                             .foregroundStyle(Theme.textSecondary)
                     }
                 }
@@ -249,10 +271,12 @@ struct SettingsView: View {
     private func refreshSettings() async {
         async let currentUsage = CloudClient.shared.getUsage()
         async let health = CloudClient.shared.getProviderHealth()
+        async let privacy = CloudClient.shared.getPrivacyHealth()
         async let accounts = CloudClient.shared.getConnectedAccounts()
 
         usage = try? await currentUsage
         providerHealth = try? await health
+        privacyHealth = try? await privacy
         connectedAccounts = (try? await accounts) ?? connectedAccounts
     }
 

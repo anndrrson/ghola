@@ -9,6 +9,7 @@ struct TaskDetailView: View {
     @State private var showEmailSendApproval = false
     @State private var isSendingEmail = false
     @State private var actionError: String?
+    @State private var emailDraft: EmailResponse?
 
     init(task: TaskResponse) {
         self.task = task
@@ -67,6 +68,20 @@ struct TaskDetailView: View {
                         .font(.headline)
 
                     resultView(result)
+                }
+
+                if let emailDraft {
+                    Divider()
+                    Text("Email Draft")
+                        .font(.headline)
+                    VStack(alignment: .leading, spacing: Theme.paddingSm) {
+                        Text("To: \(emailDraft.toAddress)")
+                            .font(.subheadline.weight(.semibold))
+                        Text(emailDraft.subject)
+                            .font(.subheadline.weight(.semibold))
+                        Text(emailDraft.body)
+                            .font(Theme.bodyFont)
+                    }
                 }
 
                 // Error
@@ -164,7 +179,7 @@ struct TaskDetailView: View {
     }
 
     private var emailSendApprovalMessage: String {
-        if let to = currentTask.result?["to_address"]?.value as? String {
+        if let to = emailDraft?.toAddress {
             return "Recipient \(to), the subject, body, and approval metadata will leave Ghola for Gmail."
         }
         return "The recipient, subject, body, and approval metadata will leave Ghola for Gmail."
@@ -177,9 +192,9 @@ struct TaskDetailView: View {
         switch currentTask.networkScope {
         case "localServerChat":
             return "Local network"
-        case "cloudChat", "auth", "billing", "providerConfig":
+        case "cloudChat", "auth", "billing", "providerConfig", "agentPlan", "remoteAgentCompute", "swarmExecution":
             return "Ghola Cloud"
-        case "callExecution", "emailDraft", "emailSend", "calendarExecution", "walletProvision", "walletTransfer":
+        case "callExecution", "emailDraft", "emailSend", "calendarExecution", "walletProvision", "walletTransfer", "smsSend":
             return "External provider"
         default:
             return "On device"
@@ -201,32 +216,7 @@ struct TaskDetailView: View {
 
     @ViewBuilder
     private func resultView(_ result: [String: AnyCodable]) -> some View {
-        if let summary = result["summary"]?.value as? String {
-            Text(summary)
-                .font(Theme.bodyFont)
-        } else if let to = result["to_address"]?.value as? String,
-                  let subject = result["subject"]?.value as? String,
-                  let body = result["body"]?.value as? String {
-            VStack(alignment: .leading, spacing: Theme.paddingSm) {
-                Text("To: \(to)")
-                    .font(.subheadline.weight(.semibold))
-                Text(subject)
-                    .font(.subheadline.weight(.semibold))
-                Text(body)
-                    .font(Theme.bodyFont)
-            }
-        } else if let event = result["event"]?.value as? [String: AnyCodable],
-                  let title = event["title"]?.value as? String {
-            VStack(alignment: .leading, spacing: Theme.paddingSm) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                if let start = event["start"]?.value as? String {
-                    Text(start)
-                        .font(Theme.captionFont)
-                        .foregroundStyle(Theme.textSecondary)
-                }
-            }
-        } else if let status = result["status"]?.value as? String {
+        if let status = result["status"]?.value as? String {
             Text(status.replacingOccurrences(of: "_", with: " ").capitalized)
                 .font(Theme.bodyFont)
         } else {
@@ -255,13 +245,25 @@ struct TaskDetailView: View {
             async let steps = CloudClient.shared.getTaskSteps(taskId: currentTask.id)
             let refreshed = try await task
             let refreshedSteps = (try? await steps) ?? []
+            let draft = await loadEmailDraftIfNeeded(from: refreshed)
             await MainActor.run {
                 currentTask = refreshed
                 self.steps = refreshedSteps
+                self.emailDraft = draft
             }
         } catch {
             // Keep displaying the last-known task state if refresh fails.
         }
+    }
+
+    private func loadEmailDraftIfNeeded(from task: TaskResponse) async -> EmailResponse? {
+        guard task.taskType == "email",
+              task.status == "awaiting_approval",
+              let idString = task.result?["email_action_id"]?.value as? String,
+              let id = UUID(uuidString: idString) else {
+            return nil
+        }
+        return try? await CloudClient.shared.getEmailDetail(id: id)
     }
 
     private func sendEmailDraft() async {

@@ -16,7 +16,11 @@ enum NetworkScope: String, CaseIterable, Sendable {
     case calendarExecution
     case walletProvision
     case walletTransfer
+    case smsSend
     case nativeMessagingRelay
+    case agentPlan
+    case remoteAgentCompute
+    case swarmExecution
     case billing
     case providerConfig
 
@@ -31,7 +35,11 @@ enum NetworkScope: String, CaseIterable, Sendable {
         case .calendarExecution: return "Calendar execution"
         case .walletProvision: return "Wallet provision"
         case .walletTransfer: return "Wallet transfer"
+        case .smsSend: return "SMS send"
         case .nativeMessagingRelay: return "Native messaging relay"
+        case .agentPlan: return "Agent planning"
+        case .remoteAgentCompute: return "Remote agent compute"
+        case .swarmExecution: return "Swarm execution"
         case .billing: return "Billing"
         case .providerConfig: return "Provider config"
         }
@@ -41,16 +49,16 @@ enum NetworkScope: String, CaseIterable, Sendable {
         switch self {
         case .localServerChat:
             return "Local network"
-        case .cloudChat, .auth, .nativeMessagingRelay, .billing, .providerConfig:
+        case .cloudChat, .auth, .nativeMessagingRelay, .agentPlan, .remoteAgentCompute, .swarmExecution, .billing, .providerConfig:
             return "Ghola Cloud"
-        case .callExecution, .emailDraft, .emailSend, .calendarExecution, .walletProvision, .walletTransfer:
+        case .callExecution, .emailDraft, .emailSend, .calendarExecution, .walletProvision, .walletTransfer, .smsSend:
             return "External provider"
         }
     }
 
     var requiresExplicitApproval: Bool {
         switch self {
-        case .callExecution, .emailDraft, .emailSend, .calendarExecution, .walletProvision, .walletTransfer, .cloudChat:
+        case .callExecution, .emailDraft, .emailSend, .calendarExecution, .walletProvision, .walletTransfer, .smsSend, .cloudChat, .agentPlan, .remoteAgentCompute, .swarmExecution:
             return true
         case .auth, .localServerChat, .nativeMessagingRelay, .billing, .providerConfig:
             return false
@@ -298,6 +306,10 @@ actor CloudClient {
         return try await post("/api/emails/\(id)/send", body: approval.jsonFields, scope: .emailSend, approval: approval)
     }
 
+    func getEmailDetail(id: UUID) async throws -> EmailResponse {
+        return try await get("/api/emails/\(id)", scope: .auth)
+    }
+
     // MARK: - Wallet
 
     func provisionWallet(approval: PrivacyApproval) async throws -> WalletInfoResponse {
@@ -321,12 +333,20 @@ actor CloudClient {
         return try await get("/health/payments", authenticated: false, scope: .auth)
     }
 
+    func getPrivateUSDCxRecipient() async throws -> PrivateRailRecipientResponse {
+        return try await get("/api/wallet/private/recipient", scope: .auth)
+    }
+
     func getInstitutionalReadiness() async throws -> InstitutionalReadinessResponse {
         return try await get("/health/institutional", authenticated: false, scope: .auth)
     }
 
     func getProviderHealth() async throws -> ProviderHealthResponse {
         return try await get("/health/providers", authenticated: false, scope: .auth)
+    }
+
+    func getPrivacyHealth() async throws -> PrivacyHealthResponse {
+        return try await get("/health/privacy", authenticated: false, scope: .auth)
     }
 
     func getConnectedAccounts() async throws -> [ConnectedAccountStatus] {

@@ -597,6 +597,11 @@ fn ensure_supported_private_recipient(
                     .to_string(),
             ));
         }
+    } else if !status.arbitrary_recipient_proofs_enabled {
+        return Err(CloudError::BadRequest(
+            "private USDCx arbitrary recipients require recipient-supplied proof support"
+                .to_string(),
+        ));
     }
     Ok(())
 }
@@ -1265,9 +1270,11 @@ mod tests {
             ready: true,
             adapter_configured: true,
             destination_configured: recipient.is_some(),
+            adapter_auth_configured: true,
             adapter_signature_required: true,
             adapter_signature_configured: true,
             verifier_ready: true,
+            arbitrary_recipient_proofs_enabled: recipient.is_none(),
             provider: "aleo".to_string(),
             network: "aleo:mainnet".to_string(),
             asset: "USDCx".to_string(),
