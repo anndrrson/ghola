@@ -11,11 +11,17 @@ export interface ShieldedStablecoinHealth {
   network?: string;
   asset?: string;
   configured: boolean;
+  ready?: boolean;
   adapter_configured?: boolean;
+  adapter_auth_configured?: boolean;
   destination_configured?: boolean;
   adapter_signature_required?: boolean;
   adapter_signature_configured?: boolean;
+  recipient_configured?: boolean;
+  recipient_preview?: string | null;
   recipient?: string | null;
+  arbitrary_recipient_proofs_enabled?: boolean;
+  recipient_receipts_enabled?: boolean;
   verifier_ready?: boolean;
   fallback_allowed?: boolean;
   privacy_disclosure?: string;
@@ -78,8 +84,20 @@ export function summarizePrivateBalance(
   const shieldedRail =
     health?.rails?.aleo_usdcx_shielded || health?.rails?.shielded_stablecoin;
   const publicFundingReady = publicRail?.configured === true;
-  const privateSpendReady = shieldedRail?.configured === true;
   const fallbackAllowed = shieldedRail?.fallback_allowed === true;
+  const signatureReady =
+    shieldedRail?.adapter_signature_required === true
+      ? shieldedRail?.adapter_signature_configured === true
+      : true;
+  const verifierReady =
+    shieldedRail?.ready === true ||
+    (shieldedRail?.configured === true &&
+      shieldedRail?.verifier_ready === true &&
+      signatureReady);
+  const privateSpendReady =
+    shieldedRail?.configured === true &&
+    verifierReady &&
+    !fallbackAllowed;
   const asset = shieldedRail?.asset || "USDCx";
   const network = shieldedRail?.network || "shielded";
 

@@ -9,6 +9,10 @@ import type {
   ThumperCalendarEventResponse,
   ThumperLlmConfigResponse,
   ThumperProviderInfo,
+  ThumperNetworkScope,
+  ThumperPrivacyApproval,
+  ThumperPrivacyHealthResponse,
+  ThumperPrivateRailRecipientResponse,
   ThumperTemplateResponse,
   ThumperBillingStatusResponse,
   ThumperTelegramLinkCode,
@@ -16,6 +20,10 @@ import type {
   ComputeProviderInfo,
   ComputeDailyStats,
   ComputeRecentJob,
+  CommerceExecution,
+  CommerceIntent,
+  CommerceOffer,
+  CommerceQuote,
 } from "./thumper-types";
 
 const THUMPER_API_BASE =
@@ -46,6 +54,51 @@ function safeRemoveLocalStorage(key: string) {
   } catch {
     // Best-effort only.
   }
+}
+
+function approvalNonce(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `approval-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+export function createPrivacyApproval(
+  network_scope: ThumperNetworkScope,
+  approval_summary: string
+): ThumperPrivacyApproval {
+  return {
+    privacy_mode: "strictLocal",
+    network_scope,
+    user_approved_at: new Date().toISOString(),
+    approval_nonce: approvalNonce(),
+    approval_summary,
+  };
+}
+
+function taskScope(taskType: string, params: Record<string, unknown>): ThumperNetworkScope {
+  if (
+    [
+      "call",
+      "customer_service",
+      "cancel_service",
+      "request_refund",
+      "complaint",
+      "cancel_subscription",
+    ].includes(taskType)
+  ) {
+    return "callExecution";
+  }
+  if (taskType === "email" || taskType === "follow_up") return "emailDraft";
+  if (taskType === "calendar") return "calendarExecution";
+  if (
+    taskType === "crypto_transfer" ||
+    taskType === "send_crypto" ||
+    (taskType === "crypto" && params.action === "transfer")
+  ) {
+    return "walletTransfer";
+  }
+  return "auth";
 }
 
 function getThumperToken(): string | null {
@@ -159,10 +212,18 @@ export async function createTask(data: {
   template_id?: string;
   task_type: string;
   params: Record<string, unknown>;
+  approval?: ThumperPrivacyApproval;
 }): Promise<ThumperTaskResponse> {
+  const { approval: providedApproval, ...taskData } = data;
+  const scope = taskScope(data.task_type, data.params);
+  const approval =
+    providedApproval ??
+    (scope === "auth"
+      ? undefined
+      : createPrivacyApproval(scope, `User approved ${data.task_type} network execution.`));
   return thumperFetch<ThumperTaskResponse>("/api/tasks", {
     method: "POST",
-    body: JSON.stringify(data),
+    body: JSON.stringify({ ...taskData, ...(approval ?? {}) }),
   });
 }
 
@@ -184,9 +245,13 @@ export async function initiateCall(data: {
   phone_number: string;
   objective: string;
 }): Promise<ThumperCallResponse> {
+  const approval = createPrivacyApproval(
+    "callExecution",
+    "User approved a phone call through Ghola Cloud and the calling provider."
+  );
   return thumperFetch<ThumperCallResponse>("/api/calls", {
     method: "POST",
-    body: JSON.stringify(data),
+    body: JSON.stringify({ ...data, ...approval }),
   });
 }
 
@@ -196,9 +261,13 @@ export async function generateEmail(data: {
   to: string;
   objective: string;
 }): Promise<ThumperEmailResponse> {
+  const approval = createPrivacyApproval(
+    "emailDraft",
+    "User approved email draft generation through Ghola Cloud and the configured model provider."
+  );
   return thumperFetch<ThumperEmailResponse>("/api/emails/generate", {
     method: "POST",
-    body: JSON.stringify(data),
+    body: JSON.stringify({ ...data, ...approval }),
   });
 }
 
@@ -207,9 +276,13 @@ export async function sendEmail(data: {
   subject: string;
   body: string;
 }): Promise<ThumperEmailResponse> {
+  const approval = createPrivacyApproval(
+    "emailSend",
+    "User approved sending this email through Ghola Cloud and Gmail."
+  );
   return thumperFetch<ThumperEmailResponse>("/api/emails/send", {
     method: "POST",
-    body: JSON.stringify(data),
+    body: JSON.stringify({ ...data, ...approval }),
   });
 }
 
@@ -223,9 +296,13 @@ export async function sendSms(data: {
   to: string;
   body: string;
 }): Promise<ThumperSmsResponse> {
+  const approval = createPrivacyApproval(
+    "smsSend",
+    "User approved sending this SMS through Ghola Cloud and the SMS provider."
+  );
   return thumperFetch<ThumperSmsResponse>("/api/sms/send", {
     method: "POST",
-    body: JSON.stringify(data),
+    body: JSON.stringify({ ...data, ...approval }),
   });
 }
 
@@ -239,10 +316,22 @@ export async function createCalendarEvent(data: {
   location?: string;
   timezone?: string;
 }): Promise<ThumperCalendarEventResponse> {
+  const approval = createPrivacyApproval(
+    "calendarExecution",
+    "User approved creating this calendar event through Ghola Cloud and Google Calendar."
+  );
   return thumperFetch<ThumperCalendarEventResponse>("/api/calendar/events", {
     method: "POST",
-    body: JSON.stringify(data),
+    body: JSON.stringify({ ...data, ...approval }),
   });
+}
+
+export async function getPrivacyHealth(): Promise<ThumperPrivacyHealthResponse> {
+  return thumperFetch<ThumperPrivacyHealthResponse>("/health/privacy");
+}
+
+export async function getPrivateUSDCxRecipient(): Promise<ThumperPrivateRailRecipientResponse> {
+  return thumperFetch<ThumperPrivateRailRecipientResponse>("/api/wallet/private/recipient");
 }
 
 // LLM Config (BYOM)
@@ -315,6 +404,57 @@ export async function createPrivateBalanceTopUp(
 
 export async function getPrivateBalanceStatus(): Promise<PrivateBalanceStatusResponse> {
   return thumperFetch<PrivateBalanceStatusResponse>("/api/billing/private-balance");
+}
+
+// Commerce intents
+
+export async function createCommerceIntent(data: {
+  goal: string;
+  budget_micro_usdc?: number;
+  privacy_mode?: "private" | "open";
+  preferred_rail?: string;
+  allowed_adapters?: string[];
+  deadline_at?: string | null;
+}): Promise<CommerceIntent> {
+  return thumperFetch<CommerceIntent>("/api/commerce/intents", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getCommerceIntent(id: string): Promise<CommerceIntent> {
+  return thumperFetch<CommerceIntent>(`/api/commerce/intents/${id}`);
+}
+
+export async function listCommerceOffers(intentId: string): Promise<CommerceOffer[]> {
+  return thumperFetch<CommerceOffer[]>(`/api/commerce/intents/${intentId}/offers`);
+}
+
+export async function createCommerceQuote(
+  intentId: string,
+  data: { offer_id: string; rail?: string }
+): Promise<CommerceQuote> {
+  return thumperFetch<CommerceQuote>(`/api/commerce/intents/${intentId}/quote`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function executeCommerceQuote(
+  intentId: string,
+  data: {
+    quote_id: string;
+    privacy_mode: "strictLocal";
+    network_scope: "commerceExecution";
+    user_approved_at: string;
+    approval_nonce: string;
+    approval_summary: string;
+  }
+): Promise<CommerceExecution> {
+  return thumperFetch<CommerceExecution>(`/api/commerce/intents/${intentId}/execute`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
 }
 
 // Telegram
@@ -559,12 +699,19 @@ export async function createBountyTask(data: {
   params?: Record<string, unknown>;
   min_reputation?: number;
 }): Promise<ThumperTaskResponse> {
+  const params = data.params || {};
+  const scope = taskScope(data.task_type, params);
+  const approval =
+    scope === "auth"
+      ? undefined
+      : createPrivacyApproval(scope, `User approved posting a ${data.task_type} task.`);
   return thumperFetch("/api/tasks", {
     method: "POST",
     body: JSON.stringify({
       ...data,
-      params: data.params || {},
+      params,
       is_open: true,
+      ...(approval ?? {}),
     }),
   });
 }

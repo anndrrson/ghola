@@ -37,14 +37,25 @@ struct PrivateUSDCxSignerAttestation: Codable, Equatable {
 
 enum PrivatePaymentSigner {
     static let defaultMode: PrivatePaymentSigningMode = .aleoDevice
+    private static let signingKeychainKey = "private_usdcx_device_signing_key_v1"
 
     static var status: PrivateSignerStatus {
-        return PrivateSignerStatus(
-            ready: false,
-            signingMode: defaultMode,
-            signerKeyID: nil,
-            unavailableReason: "Device-held Aleo USDCx signing is not configured in this build."
-        )
+        do {
+            let key = try loadOrCreateSigningKey()
+            return PrivateSignerStatus(
+                ready: true,
+                signingMode: defaultMode,
+                signerKeyID: didKey(fromEd25519PublicKey: key.publicKey.rawRepresentation),
+                unavailableReason: nil
+            )
+        } catch {
+            return PrivateSignerStatus(
+                ready: false,
+                signingMode: defaultMode,
+                signerKeyID: nil,
+                unavailableReason: "Device-held private payment signer is unavailable."
+            )
+        }
     }
 
     static func didKey(fromEd25519PublicKey publicKey: Data) -> String {
@@ -132,6 +143,59 @@ enum PrivatePaymentSigner {
         return String(data: try encoder.encode(attestation), encoding: .utf8) ?? "{}"
     }
 
+    static func makeExternalUSDCxSignerAttestation(
+        intent: PendingPrivateTransfer,
+        proof: ShieldedPaymentProof,
+        signedAt: Date = Date()
+    ) throws -> String {
+        guard let signingMode = intent.signingMode,
+              let signerKeyID = intent.signerKeyID,
+              let policyHash = intent.policyHash else {
+            throw CloudError.privacyBlocked("Private transfer intent is missing signer metadata.")
+        }
+        let signingKey = try loadOrCreateSigningKey()
+        let localSignerKeyID = didKey(fromEd25519PublicKey: signingKey.publicKey.rawRepresentation)
+        guard localSignerKeyID == signerKeyID else {
+            throw CloudError.privacyBlocked("Private signer does not match the approved transfer intent.")
+        }
+        let proofDigest = try shieldedProofDigest(proof)
+        let receiptRef = try shieldedReceiptRef(proof)
+        var attestation = PrivateUSDCxSignerAttestation(
+            version: PrivateUSDCxSignerAttestation.version,
+            intentID: intent.id,
+            signingMode: signingMode,
+            signerKeyID: signerKeyID,
+            recipientHash: sha256Hex(Data(intent.recipientAddress.trimmingCharacters(in: .whitespacesAndNewlines).utf8)),
+            amountMicroUSDC: intent.amountMicroUSDC,
+            network: intent.network,
+            asset: intent.asset,
+            policyHash: policyHash,
+            proofDigest: proofDigest,
+            receiptRef: receiptRef,
+            signedAt: attestationTimestamp(for: signedAt),
+            signatureBase64: ""
+        )
+        let signature = try signingKey.signature(for: signerAttestationPayload(attestation))
+        attestation = PrivateUSDCxSignerAttestation(
+            version: attestation.version,
+            intentID: attestation.intentID,
+            signingMode: attestation.signingMode,
+            signerKeyID: attestation.signerKeyID,
+            recipientHash: attestation.recipientHash,
+            amountMicroUSDC: attestation.amountMicroUSDC,
+            network: attestation.network,
+            asset: attestation.asset,
+            policyHash: attestation.policyHash,
+            proofDigest: attestation.proofDigest,
+            receiptRef: attestation.receiptRef,
+            signedAt: attestation.signedAt,
+            signatureBase64: signature.base64EncodedString()
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(data: try encoder.encode(attestation), encoding: .utf8) ?? "{}"
+    }
+
     static func authorizeUSDCxTransfer(
         intent: PrivateTransferIntentResponse,
         recipientAddress: String
@@ -139,8 +203,58 @@ enum PrivatePaymentSigner {
         _ = intent
         _ = recipientAddress
         throw CloudError.privacyBlocked(
-            "Private USDCx signing is blocked until the user-held Aleo/Turnkey signer is configured."
+            "Automatic Aleo USDCx transaction construction is not available in this build. Create the intent, send USDCx from a user-held Aleo wallet, then verify the transaction in Ghola."
         )
+    }
+
+    static func shieldedProofDigest(_ proof: ShieldedPaymentProof) throws -> String {
+        let payload = proof.payload
+        let canonical = "{"
+            + "\"tx_signature\":\(try jsonStringLiteral(payload.txSignature)),"
+            + "\"shielded_receipt_id\":\(try jsonStringLiteral(payload.shieldedReceiptId)),"
+            + "\"proof_b64\":\(try jsonStringLiteral(payload.proofB64)),"
+            + "\"nullifier_hex\":\(try jsonStringLiteral(payload.nullifierHex))"
+            + "}"
+        return sha256Hex(Data(canonical.utf8))
+    }
+
+    private static func shieldedReceiptRef(_ proof: ShieldedPaymentProof) throws -> String {
+        if let value = proof.payload.nullifierHex?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            return value
+        }
+        if let value = proof.payload.shieldedReceiptId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            return value
+        }
+        throw CloudError.privacyBlocked("Private USDCx proof must include a shielded receipt ID or nullifier.")
+    }
+
+    private static func loadOrCreateSigningKey() throws -> Curve25519.Signing.PrivateKey {
+        if let data = KeychainHelper.load(signingKeychainKey),
+           let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: data) {
+            return key
+        }
+
+        let key = Curve25519.Signing.PrivateKey()
+        guard KeychainHelper.save(key.rawRepresentation, for: signingKeychainKey) else {
+            throw CloudError.privacyBlocked("Could not save private payment signing key to Keychain.")
+        }
+        return key
+    }
+
+    private static func jsonStringLiteral(_ raw: String?) throws -> String {
+        guard let raw else { return "null" }
+        let data = try JSONSerialization.data(withJSONObject: [raw], options: [])
+        guard let wrapped = String(data: data, encoding: .utf8),
+              wrapped.count >= 2 else {
+            throw CloudError.privacyBlocked("Could not encode shielded proof payload.")
+        }
+        return String(wrapped.dropFirst().dropLast())
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
 

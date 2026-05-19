@@ -106,12 +106,12 @@ struct NativeMessageThreadView: View {
             Text("Ghola will keep this contact locally, stop sending to it, and ignore new ciphertext from its DID.")
         }
         .confirmationDialog("Report abuse?", isPresented: $showReportConfirmation, titleVisibility: .visible) {
-            Button("Open Email Report", role: .destructive) {
-                openAbuseReportDraft()
+            Button("Report Metadata", role: .destructive) {
+                Task { await reportAbuseMetadata() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Ghola opens an email draft with sender metadata only. Add message text or screenshots only if you choose to disclose them.")
+            Text("Ghola sends ciphertext metadata only. Message text stays on this device unless you separately choose to disclose it.")
         }
         .alert("Messages", isPresented: noticeBinding) {
             Button("OK", role: .cancel) { notice = nil }
@@ -184,56 +184,45 @@ struct NativeMessageThreadView: View {
             )
             refreshContactFromStore()
             notice = state == .blocked ? "Sender blocked locally." : "Sender unblocked."
+            if state == .blocked, let did = contact.messagingDID {
+                Task {
+                    try? await NativeMessagingRelayClient.shared.block(senderDID: did)
+                }
+            }
         } catch {
             notice = error.localizedDescription
         }
     }
 
-    private func openAbuseReportDraft() {
-        #if os(iOS)
-        var components = URLComponents()
-        components.scheme = "mailto"
-        components.path = "privacy@ghola.xyz"
-        components.queryItems = [
-            URLQueryItem(name: "subject", value: "Ghola abuse report"),
-            URLQueryItem(name: "body", value: abuseReportBody()),
-        ]
-        guard let url = components.url else {
-            notice = "Could not create an abuse report draft."
-            return
-        }
-        UIApplication.shared.open(url) { opened in
-            if !opened {
-                notice = "No email app is configured. Email privacy@ghola.xyz to report abuse."
-            }
-        }
-        #else
-        notice = "Email privacy@ghola.xyz to report abuse."
-        #endif
-    }
-
-    private func abuseReportBody() -> String {
-        let latestRelayIds = controller.store.messages(for: contact)
-            .suffix(5)
+    private func reportAbuseMetadata() async {
+        let latestMessages = controller.store.messages(for: contact).suffix(5)
+        let latestRelayIds = latestMessages
             .compactMap { $0.envelope.relayMessageId?.uuidString }
-            .joined(separator: ", ")
+            .joined(separator: ",")
+        let latestMessageId = latestMessages.last?.envelope.relayMessageId
         let deviceIds = contact.messagingDeviceKeys
             .map(\.id)
-            .joined(separator: ", ")
+            .joined(separator: ",")
         let generatedAt = ISO8601DateFormatter().string(from: Date())
-        return """
-        Ghola abuse report
-
-        This draft is user-initiated. No message plaintext is attached automatically.
-
-        Contact: \(contact.displayName)
-        Sender DID: \(contact.messagingDID ?? "not set")
-        Sender device key IDs: \(deviceIds.isEmpty ? "not set" : deviceIds)
-        Recent relay message IDs: \(latestRelayIds.isEmpty ? "not available" : latestRelayIds)
-        Generated at: \(generatedAt)
-
-        Add only message text, screenshots, or context that you choose to disclose.
-        """
+        do {
+            let reportID = try await NativeMessagingRelayClient.shared.reportAbuse(
+                messageId: latestMessageId,
+                senderDID: contact.messagingDID,
+                reason: "user_reported_abuse",
+                ciphertextMetadata: [
+                    "relay_ids": latestRelayIds,
+                    "device_key_ids": deviceIds,
+                    "generated_at": generatedAt,
+                ]
+            )
+            await MainActor.run {
+                notice = "Abuse report sent without message text. Report \(reportID.uuidString.prefix(8))."
+            }
+        } catch {
+            await MainActor.run {
+                notice = error.localizedDescription
+            }
+        }
     }
 }
 

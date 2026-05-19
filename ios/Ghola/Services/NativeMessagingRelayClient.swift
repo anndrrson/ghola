@@ -87,6 +87,26 @@ final class NativeMessagingRelayClient: @unchecked Sendable {
         )
     }
 
+    func block(senderDID: String) async throws {
+        let _: BlockSenderResponse = try await post(
+            "/api/messages/block",
+            body: BlockSenderRequest(senderDID: senderDID)
+        )
+    }
+
+    func reportAbuse(messageId: UUID?, senderDID: String?, reason: String, ciphertextMetadata: [String: String]) async throws -> UUID {
+        let response: ReportAbuseResponse = try await post(
+            "/api/messages/report",
+            body: ReportAbuseRequest(
+                messageId: messageId,
+                senderDID: senderDID,
+                reason: reason,
+                ciphertextMetadata: ciphertextMetadata
+            )
+        )
+        return response.reportId
+    }
+
     private func get<T: Decodable>(_ path: String) async throws -> T {
         let request = try makeRequest(path: path, method: "GET")
         let (data, response) = try await session.data(for: request)
@@ -301,3 +321,39 @@ private struct AckResponse: Codable {
 }
 
 private struct EmptyBody: Codable {}
+
+private struct BlockSenderRequest: Codable {
+    let senderDID: String
+
+    enum CodingKeys: String, CodingKey {
+        case senderDID = "sender_did"
+    }
+}
+
+private struct BlockSenderResponse: Codable {
+    let ok: Bool
+}
+
+private struct ReportAbuseRequest: Codable {
+    let messageId: UUID?
+    let senderDID: String?
+    let reason: String
+    let ciphertextMetadata: [String: String]
+
+    enum CodingKeys: String, CodingKey {
+        case messageId = "message_id"
+        case senderDID = "sender_did"
+        case reason
+        case ciphertextMetadata = "ciphertext_metadata"
+    }
+}
+
+private struct ReportAbuseResponse: Codable {
+    let ok: Bool
+    let reportId: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case reportId = "report_id"
+    }
+}
