@@ -126,13 +126,13 @@ export default function IntentPage() {
     ? "Checking wallet"
     : walletReady
       ? `Wallet ${shortAddress(turnkeyWallet.walletAddress!)}`
-      : "Turnkey wallet required";
+      : "Sign in required";
   const primaryLabel = thumperAuth.loading || turnkeyWallet.loading
     ? "Checking account"
     : needsAuth
-      ? "Create account + wallet"
+      ? "Sign in to continue"
       : !walletReady
-        ? "Create Turnkey wallet"
+        ? "Set up account"
         : "Find options";
 
   async function submitIntent() {
@@ -146,7 +146,7 @@ export default function IntentPage() {
       return;
     }
     if (!turnkeyWallet.walletAddress) {
-      setError("Create a Turnkey wallet before starting checkout.");
+      setError("Finish account setup before starting checkout.");
       return;
     }
     const budget = Math.round(Number(budgetUsd || "0") * 1_000_000);
@@ -192,7 +192,7 @@ export default function IntentPage() {
       try {
         await turnkeyWallet.createWallet(thumperAuth.user?.email || "ghola-user");
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not create Turnkey wallet.");
+        setError(err instanceof Error ? err.message : "Could not finish account setup.");
       } finally {
         setWalletCreating(false);
       }
@@ -312,10 +312,10 @@ export default function IntentPage() {
                 {formLocked && (
                   <div className="rounded-md border border-[#1e2a3a] bg-[#090d13] px-4 py-3 text-sm text-[#9fb2cc]">
                     <span className="font-medium text-[#d6deec]">
-                      Account + Turnkey wallet required.
+                      Sign in required.
                     </span>{" "}
-                    Ghola binds checkout approvals, receipts, and payment authority to
-                    your wallet before any options or quotes are created.
+                    Ghola binds checkout approvals, receipts, and payment authority
+                    to your account before any options or quotes are created.
                   </div>
                 )}
                 <textarea
