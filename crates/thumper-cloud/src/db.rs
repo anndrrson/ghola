@@ -366,11 +366,15 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_name = 'users' AND column_name = 'username') THEN
+               WHERE table_schema = 'public'
+                 AND table_name = 'users'
+                 AND column_name = 'username') THEN
         ALTER TABLE users ALTER COLUMN username DROP NOT NULL;
     END IF;
     IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_name = 'users' AND column_name = 'wallet_spending') THEN
+               WHERE table_schema = 'public'
+                 AND table_name = 'users'
+                 AND column_name = 'wallet_spending') THEN
         ALTER TABLE users ALTER COLUMN wallet_spending DROP NOT NULL;
     END IF;
 END
