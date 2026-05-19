@@ -7,8 +7,9 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::error::CloudError;
 use crate::services::commerce_service::{
-    self, CommerceExecution, CommerceIntent, CommerceOffer, CommerceQuote, CreateIntentRequest,
-    CreateQuoteRequest, ExecuteQuoteRequest,
+    self, CommerceExecution, CommerceIntent, CommerceOffer, CommerceQuote, CommerceReceipt,
+    CommerceReceiptExport, CreateIntentRequest, CreateQuoteRequest, ExecuteQuoteRequest,
+    ExportCommerceReceiptRequest,
 };
 use crate::state::AppState;
 
@@ -57,4 +58,32 @@ pub async fn execute_quote(
 ) -> Result<Json<CommerceExecution>, CloudError> {
     let execution = commerce_service::execute_quote(&state, claims.sub, intent_id, req).await?;
     Ok(Json(execution))
+}
+
+pub async fn get_execution(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Path(execution_id): Path<Uuid>,
+) -> Result<Json<CommerceExecution>, CloudError> {
+    let execution = commerce_service::get_execution(&state.db, claims.sub, execution_id).await?;
+    Ok(Json(execution))
+}
+
+pub async fn get_receipt(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Path(receipt_id): Path<Uuid>,
+) -> Result<Json<CommerceReceipt>, CloudError> {
+    let receipt = commerce_service::get_receipt(&state.db, claims.sub, receipt_id).await?;
+    Ok(Json(receipt))
+}
+
+pub async fn export_receipt(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Path(receipt_id): Path<Uuid>,
+    Json(req): Json<ExportCommerceReceiptRequest>,
+) -> Result<Json<CommerceReceiptExport>, CloudError> {
+    let export = commerce_service::export_receipt(&state, claims.sub, receipt_id, req).await?;
+    Ok(Json(export))
 }

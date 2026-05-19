@@ -412,9 +412,14 @@ export interface CommerceIntent {
 
 export interface CommerceOffer {
   offer_id: string;
-  adapter: "x402" | "mcp";
+  adapter: "fixture_catalog" | "x402_agent" | "merchant_checkout" | "x402" | "mcp";
   title: string;
   description: string;
+  merchant_label: string;
+  merchant_type: string;
+  offer_image_url: string | null;
+  fulfillment_kind: string;
+  trust_summary: string;
   provider_slug: string;
   model_id: string;
   tags: string[];
@@ -423,16 +428,25 @@ export interface CommerceOffer {
   amount_micro_usdc: number;
   currency: string;
   rail: string;
+  rail_options: CommerceRailOption[];
   privacy_disclosure: string;
   available: boolean;
   unavailable_reason: string | null;
   raw_offer: Record<string, unknown>;
 }
 
+export interface CommerceRailOption {
+  rail: string;
+  label: string;
+  available: boolean;
+  privacy_disclosure: string;
+  unavailable_reason: string | null;
+}
+
 export interface CommerceQuote {
   id: string;
   intent_id: string;
-  adapter: "x402" | "mcp";
+  adapter: "fixture_catalog" | "x402_agent" | "merchant_checkout" | "x402" | "mcp";
   offer_id: string;
   provider_slug: string | null;
   provider_label: string | null;
@@ -451,7 +465,7 @@ export interface CommerceReceipt {
   id: string;
   execution_id: string;
   status: string;
-  adapter: "x402" | "mcp";
+  adapter: "fixture_catalog" | "x402_agent" | "merchant_checkout" | "x402" | "mcp";
   amount_micro_usdc: number;
   currency: string;
   rail: string;
@@ -467,6 +481,13 @@ export interface CommerceExecution {
   handoff: Record<string, unknown>;
   receipt: CommerceReceipt;
   created_at: string;
+}
+
+export interface CommerceReceiptExport {
+  receipt: CommerceReceipt;
+  exported_at: string;
+  audience: string;
+  reason: string | null;
 }
 
 export const BOUNTY_TASK_TYPES = [

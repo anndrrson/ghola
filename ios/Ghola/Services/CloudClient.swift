@@ -22,6 +22,7 @@ enum NetworkScope: String, CaseIterable, Sendable {
     case remoteAgentCompute
     case swarmExecution
     case billing
+    case commerceExecution
     case providerConfig
 
     var title: String {
@@ -41,6 +42,7 @@ enum NetworkScope: String, CaseIterable, Sendable {
         case .remoteAgentCompute: return "Remote agent compute"
         case .swarmExecution: return "Swarm execution"
         case .billing: return "Billing"
+        case .commerceExecution: return "Commerce execution"
         case .providerConfig: return "Provider config"
         }
     }
@@ -51,14 +53,14 @@ enum NetworkScope: String, CaseIterable, Sendable {
             return "Local network"
         case .cloudChat, .auth, .nativeMessagingRelay, .agentPlan, .remoteAgentCompute, .swarmExecution, .billing, .providerConfig:
             return "Ghola Cloud"
-        case .callExecution, .emailDraft, .emailSend, .calendarExecution, .walletProvision, .walletTransfer, .smsSend:
+        case .callExecution, .emailDraft, .emailSend, .calendarExecution, .walletProvision, .walletTransfer, .smsSend, .commerceExecution:
             return "External provider"
         }
     }
 
     var requiresExplicitApproval: Bool {
         switch self {
-        case .callExecution, .emailDraft, .emailSend, .calendarExecution, .walletProvision, .walletTransfer, .smsSend, .cloudChat, .agentPlan, .remoteAgentCompute, .swarmExecution:
+        case .callExecution, .emailDraft, .emailSend, .calendarExecution, .walletProvision, .walletTransfer, .smsSend, .cloudChat, .agentPlan, .remoteAgentCompute, .swarmExecution, .commerceExecution:
             return true
         case .auth, .localServerChat, .nativeMessagingRelay, .billing, .providerConfig:
             return false
@@ -442,6 +444,68 @@ actor CloudClient {
         ]
         body.merge(approval.jsonFields) { _, new in new }
         return try await post("/api/wallet/private/receipts/\(id.uuidString)/export", body: body, scope: .walletTransfer, approval: approval)
+    }
+
+    // MARK: - Commerce
+
+    func createCommerceIntent(
+        goal: String,
+        budgetMicroUSDC: Int64,
+        privacyMode: String = "private",
+        preferredRail: String = "aleo_usdcx_shielded",
+        allowedAdapters: [String] = ["fixture_catalog", "x402_agent", "merchant_checkout"]
+    ) async throws -> CommerceIntentResponse {
+        let body: [String: Any] = [
+            "goal": goal,
+            "budget_micro_usdc": budgetMicroUSDC,
+            "privacy_mode": privacyMode,
+            "preferred_rail": preferredRail,
+            "allowed_adapters": allowedAdapters,
+        ]
+        return try await post("/api/commerce/intents", body: body, scope: .auth)
+    }
+
+    func listCommerceOffers(intentId: UUID) async throws -> [CommerceOfferResponse] {
+        return try await get("/api/commerce/intents/\(intentId.uuidString)/offers", scope: .auth)
+    }
+
+    func createCommerceQuote(intentId: UUID, offerId: String, rail: String?) async throws -> CommerceQuoteResponse {
+        var body: [String: Any] = ["offer_id": offerId]
+        if let rail {
+            body["rail"] = rail
+        }
+        return try await post("/api/commerce/intents/\(intentId.uuidString)/quote", body: body, scope: .auth)
+    }
+
+    func executeCommerceQuote(intentId: UUID, quoteId: UUID, approval: PrivacyApproval) async throws -> CommerceExecutionResponse {
+        try PrivacyGate.authorize(scope: .commerceExecution, approval: approval)
+        var body = approval.jsonFields
+        body["quote_id"] = quoteId.uuidString
+        return try await post(
+            "/api/commerce/intents/\(intentId.uuidString)/execute",
+            body: body,
+            scope: .commerceExecution,
+            approval: approval
+        )
+    }
+
+    func getCommerceReceipt(id: UUID) async throws -> CommerceReceiptResponse {
+        return try await get("/api/commerce/receipts/\(id.uuidString)", scope: .auth)
+    }
+
+    func exportCommerceReceipt(id: UUID, reason: String, approval: PrivacyApproval) async throws -> CommerceReceiptExportResponse {
+        try PrivacyGate.authorize(scope: .commerceExecution, approval: approval)
+        var body: [String: Any] = [
+            "reason": reason,
+            "audience": "user",
+        ]
+        body.merge(approval.jsonFields) { _, new in new }
+        return try await post(
+            "/api/commerce/receipts/\(id.uuidString)/export",
+            body: body,
+            scope: .commerceExecution,
+            approval: approval
+        )
     }
 
     // MARK: - User

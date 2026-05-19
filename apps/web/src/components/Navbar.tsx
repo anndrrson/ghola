@@ -198,6 +198,13 @@ export function Navbar() {
                           Chat
                         </Link>
                         <Link
+                          href="/intent"
+                          onClick={() => setAccountOpen(false)}
+                          className="block px-3 py-2 text-sm text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#161822]"
+                        >
+                          Shop / Pay
+                        </Link>
+                        <Link
                           href="/settings"
                           onClick={() => setAccountOpen(false)}
                           className="block px-3 py-2 text-sm text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#161822]"
@@ -311,6 +318,13 @@ export function Navbar() {
                     className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
                   >
                     Chat
+                  </Link>
+                  <Link
+                    href="/intent"
+                    onClick={() => setMobileOpen(false)}
+                    className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
+                  >
+                    Shop / Pay
                   </Link>
                   <Link
                     href="/settings"

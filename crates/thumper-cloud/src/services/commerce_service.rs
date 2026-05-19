@@ -9,7 +9,9 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
 use crate::error::CloudError;
-use crate::privacy::{NetworkScope, PrivacyApproval};
+use crate::privacy::{
+    record_privacy_audit_event, sensitive_text_hash, NetworkScope, PrivacyApproval,
+};
 use crate::services::{agent_service, compute_service, x402_service};
 use crate::state::AppState;
 
@@ -49,6 +51,11 @@ pub struct CommerceOffer {
     pub adapter: String,
     pub title: String,
     pub description: String,
+    pub merchant_label: String,
+    pub merchant_type: String,
+    pub offer_image_url: Option<String>,
+    pub fulfillment_kind: String,
+    pub trust_summary: String,
     pub provider_slug: String,
     pub model_id: String,
     pub tags: Vec<String>,
@@ -57,10 +64,20 @@ pub struct CommerceOffer {
     pub amount_micro_usdc: i64,
     pub currency: String,
     pub rail: String,
+    pub rail_options: Vec<CommerceRailOption>,
     pub privacy_disclosure: String,
     pub available: bool,
     pub unavailable_reason: Option<String>,
     pub raw_offer: Value,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct CommerceRailOption {
+    pub rail: String,
+    pub label: String,
+    pub available: bool,
+    pub privacy_disclosure: String,
+    pub unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,6 +134,22 @@ pub struct CommerceReceipt {
     pub rail: String,
     pub receipt: Value,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExportCommerceReceiptRequest {
+    pub reason: Option<String>,
+    pub audience: Option<String>,
+    #[serde(flatten)]
+    pub approval: PrivacyApproval,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CommerceReceiptExport {
+    pub receipt: CommerceReceipt,
+    pub exported_at: DateTime<Utc>,
+    pub audience: String,
+    pub reason: Option<String>,
 }
 
 pub async fn create_intent(
@@ -202,11 +235,20 @@ pub async fn list_offers(
     let intent = get_intent(&state.db, user_id, intent_id).await?;
     let mut offers = Vec::new();
 
-    if intent.allowed_adapters.iter().any(|a| a == "x402") {
+    if intent.allowed_adapters.iter().any(|a| a == "fixture_catalog") {
+        offers.extend(fixture_catalog_offers(&intent));
+    }
+
+    if intent
+        .allowed_adapters
+        .iter()
+        .any(|a| a == "x402" || a == "x402_agent")
+    {
         let pricing =
             x402_service::list_agent_pricing(&state.db, state, None, Some("rating")).await?;
         let shielded = x402_service::shielded_stablecoin_runtime_status();
         let private_requested = intent.privacy_mode == "private";
+        let rail_options = rail_options(private_requested);
         for agent in pricing {
             let amount = agent.price_per_request_usdc;
             let available = !private_requested || shielded.ready;
@@ -230,9 +272,17 @@ pub async fn list_offers(
 
             offers.push(CommerceOffer {
                 offer_id: format!("x402:{}", agent.slug),
-                adapter: "x402".to_string(),
+                adapter: "x402_agent".to_string(),
                 title: agent.display_name.clone(),
                 description: agent.description.clone(),
+                merchant_label: agent.display_name.clone(),
+                merchant_type: "agent_service".to_string(),
+                offer_image_url: None,
+                fulfillment_kind: "agent_execution".to_string(),
+                trust_summary: format!(
+                    "x402 service · reputation {:.1}/5 · paid per successful run",
+                    agent.provider_reputation
+                ),
                 provider_slug: agent.slug.clone(),
                 model_id: agent.model_id.clone(),
                 tags: agent.tags.clone(),
@@ -241,12 +291,25 @@ pub async fn list_offers(
                 amount_micro_usdc: amount,
                 currency: "USDC".to_string(),
                 rail,
+                rail_options: rail_options.clone(),
                 privacy_disclosure,
                 available,
                 unavailable_reason: if available { None } else { unavailable_reason },
-                raw_offer: json!({ "x402_agent": agent }),
+                raw_offer: json!({
+                    "redacted": true,
+                    "source": "x402_agent",
+                    "provider_slug": agent.slug,
+                }),
             });
         }
+    }
+
+    if intent
+        .allowed_adapters
+        .iter()
+        .any(|a| a == "merchant_checkout")
+    {
+        offers.push(merchant_checkout_placeholder(&intent));
     }
 
     sqlx::query("UPDATE commerce_intents SET status = 'offered', updated_at = now() WHERE id = $1")
@@ -264,10 +327,13 @@ pub async fn create_quote(
     req: CreateQuoteRequest,
 ) -> Result<CommerceQuote, CloudError> {
     let intent = get_intent(&state.db, user_id, intent_id).await?;
-    let slug = req
-        .offer_id
-        .strip_prefix("x402:")
-        .ok_or_else(|| CloudError::BadRequest("only x402 offers are supported in v1".into()))?;
+    if req.offer_id.starts_with("fixture:") {
+        return create_fixture_quote(state, user_id, intent, req).await;
+    }
+
+    let slug = req.offer_id.strip_prefix("x402:").ok_or_else(|| {
+        CloudError::BadRequest("only fixture catalog and x402 offers are supported in v1".into())
+    })?;
 
     let pricing = x402_service::get_agent_pricing(&state.db, state, slug).await?;
     let public_agent = agent_service::get_public_agent(&state.db, slug).await?;
@@ -328,7 +394,7 @@ pub async fn create_quote(
     }
 
     let expires_at = Utc::now() + Duration::minutes(QUOTE_TTL_MINUTES);
-    let rail = rail_kind.as_str().to_string();
+    let rail = rail_kind.canonical_rail().to_string();
     let policy = json!({
         "intent_id": intent.id,
         "quote_id": quote_id,
@@ -341,14 +407,19 @@ pub async fn create_quote(
         "fail_closed": intent.privacy_mode == "private",
         "expires_at": expires_at,
     });
-    let raw_offer = json!({ "x402_agent": pricing });
+    let raw_offer = json!({
+        "redacted": true,
+        "source": "x402_agent",
+        "provider_slug": pricing.slug,
+        "model_id": pricing.model_id,
+    });
 
     let row = sqlx::query(
         r#"
         INSERT INTO commerce_quotes
             (id, intent_id, user_id, adapter, offer_id, provider_slug, provider_label,
              amount_micro_usdc, currency, rail, payment_requirements, policy, raw_offer, expires_at)
-        VALUES ($1, $2, $3, 'x402', $4, $5, $6, $7, 'USDC', $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, 'x402_agent', $4, $5, $6, $7, 'USDC', $8, $9, $10, $11, $12)
         RETURNING id, intent_id, adapter, offer_id, provider_slug, provider_label,
                   amount_micro_usdc, currency, rail, status, payment_requirements,
                   policy, raw_offer, expires_at, created_at
@@ -397,13 +468,15 @@ pub async fn execute_quote(
     }
     if intent.privacy_mode == "private" {
         let shielded = x402_service::shielded_stablecoin_runtime_status();
-        if !shielded.ready
-            || quote.rail != x402_service::PaymentRailKind::ShieldedStablecoin.as_str()
-        {
+        if !shielded.ready || !is_private_rail(&quote.rail) {
             return Err(CloudError::PaymentRequired(
                 "private settlement is unavailable; execution failed closed".into(),
             ));
         }
+    }
+
+    if quote.adapter == "fixture_catalog" {
+        return execute_fixture_quote(state, user_id, intent, quote, approval, &req.approval).await;
     }
 
     let reserve = json!({
@@ -416,7 +489,7 @@ pub async fn execute_quote(
         "amount_micro_usdc": quote.amount_micro_usdc,
         "currency": quote.currency,
         "rail": quote.rail,
-        "payment_requirements": quote.payment_requirements,
+        "payment_requirements_redacted": true,
         "policy": quote.policy,
         "next_action": "execute_agent",
         "expires_in_minutes": HOLD_TTL_MINUTES,
@@ -458,12 +531,13 @@ pub async fn execute_quote(
     let receipt_payload = json!({
         "kind": "commerce_reservation_receipt",
         "message": "Ghola reserved private balance for this approved commerce execution.",
-        "intent_goal": intent.goal,
+        "intent_goal_hash": sensitive_text_hash(&intent.goal),
         "adapter": quote.adapter,
         "offer_id": quote.offer_id,
         "provider_slug": quote.provider_slug,
         "policy": quote.policy,
         "approval_summary": req.approval.approval_summary,
+        "redacted": true,
     });
 
     let receipt_row = sqlx::query(
@@ -538,7 +612,10 @@ pub async fn execute_quote(
         "#,
     )
     .bind(format!("commerce:{execution_id}"))
-    .bind(format!("ghola_balance:{}", intent.user_id))
+    .bind(format!(
+        "ghola_balance:{}",
+        &sensitive_text_hash(&intent.user_id.to_string())[..12]
+    ))
     .bind(actual_cost)
     .bind(quote.amount_micro_usdc)
     .bind(completed.agent_id)
@@ -566,7 +643,7 @@ pub async fn execute_quote(
     let completed_receipt = json!({
         "kind": "commerce_execution_receipt",
         "message": "Ghola executed the approved intent using reserved private balance.",
-        "intent_goal": intent.goal,
+        "intent_goal_hash": sensitive_text_hash(&intent.goal),
         "adapter": quote.adapter,
         "offer_id": quote.offer_id,
         "provider_slug": quote.provider_slug,
@@ -575,13 +652,14 @@ pub async fn execute_quote(
         "provider_amount_micro_usdc": provider_amount,
         "platform_fee_micro_usdc": platform_fee,
         "result": {
-            "text": completed.text,
             "input_tokens": completed.input_tokens,
             "output_tokens": completed.output_tokens,
             "latency_ms": completed.latency_ms,
+            "text_redacted": true,
         },
         "policy": quote.policy,
         "approval_summary": req.approval.approval_summary,
+        "redacted": true,
     });
     let completed_handoff = json!({
         "kind": "ghola_balance_execution",
@@ -658,7 +736,6 @@ struct CompletedAgentExecution {
     model_id: String,
     price_per_1k_input: i64,
     price_per_1k_output: i64,
-    text: String,
     input_tokens: u32,
     output_tokens: u32,
     latency_ms: u64,
@@ -716,7 +793,6 @@ async fn execute_reserved_agent(
         model_id: matched_agent.model_id.clone(),
         price_per_1k_input: matched_agent.price_per_1k_input,
         price_per_1k_output: matched_agent.price_per_1k_output,
-        text: result.text,
         input_tokens,
         output_tokens,
         latency_ms: result.latency_ms,
@@ -826,11 +902,499 @@ async fn expire_stale_holds(
     Ok(())
 }
 
+fn rail_options(private_requested: bool) -> Vec<CommerceRailOption> {
+    let shielded = x402_service::shielded_stablecoin_runtime_status();
+    vec![
+        CommerceRailOption {
+            rail: x402_service::PaymentRailKind::ShieldedStablecoin
+                .canonical_rail()
+                .to_string(),
+            label: "Private USDCx".to_string(),
+            available: shielded.ready,
+            privacy_disclosure: shielded.privacy_disclosure.to_string(),
+            unavailable_reason: shielded.unavailable_reason.map(str::to_string),
+        },
+        CommerceRailOption {
+            rail: x402_service::PaymentRailKind::SolanaPublicStablecoin
+                .canonical_rail()
+                .to_string(),
+            label: "Public USDC".to_string(),
+            available: !private_requested,
+            privacy_disclosure: x402_service::PUBLIC_STABLECOIN_DISCLOSURE.to_string(),
+            unavailable_reason: if private_requested {
+                Some("Private mode does not silently downgrade to public USDC.".to_string())
+            } else {
+                None
+            },
+        },
+    ]
+}
+
+fn default_rail_for_intent(intent: &CommerceIntent) -> Result<(String, String, bool), CloudError> {
+    if intent.privacy_mode == "private" {
+        let shielded = x402_service::shielded_stablecoin_runtime_status();
+        if !shielded.ready {
+            return Err(CloudError::PaymentRequired(format!(
+                "private settlement unavailable: {}",
+                shielded
+                    .unavailable_reason
+                    .unwrap_or("shielded stablecoin adapter is unavailable")
+            )));
+        }
+        return Ok((
+            x402_service::PaymentRailKind::ShieldedStablecoin
+                .canonical_rail()
+                .to_string(),
+            shielded.privacy_disclosure.to_string(),
+            true,
+        ));
+    }
+
+    Ok((
+        x402_service::PaymentRailKind::SolanaPublicStablecoin
+            .canonical_rail()
+            .to_string(),
+        x402_service::PUBLIC_STABLECOIN_DISCLOSURE.to_string(),
+        true,
+    ))
+}
+
+fn fixture_catalog_offers(intent: &CommerceIntent) -> Vec<CommerceOffer> {
+    let (rail, privacy_disclosure, available) = match default_rail_for_intent(intent) {
+        Ok(values) => values,
+        Err(err) => (
+            x402_service::PaymentRailKind::ShieldedStablecoin
+                .canonical_rail()
+                .to_string(),
+            x402_service::shielded_stablecoin_runtime_status()
+                .privacy_disclosure
+                .to_string(),
+            matches!(err, CloudError::PaymentRequired(_)) && false,
+        ),
+    };
+    let unavailable_reason = if available {
+        None
+    } else {
+        Some("Private USDCx is not ready, and private mode cannot use public fallback.".to_string())
+    };
+
+    vec![
+        CommerceOffer {
+            offer_id: "fixture:private-checkout-demo".to_string(),
+            adapter: "fixture_catalog".to_string(),
+            title: "Private checkout demo".to_string(),
+            description:
+                "A curated end-to-end checkout proving Ghola can quote, approve, settle, and receipt a private purchase flow."
+                    .to_string(),
+            merchant_label: "Ghola Demo Merchant".to_string(),
+            merchant_type: "curated_demo".to_string(),
+            offer_image_url: None,
+            fulfillment_kind: "digital_receipt".to_string(),
+            trust_summary: "Curated demo · no raw provider payloads · explicit approval required"
+                .to_string(),
+            provider_slug: "ghola-demo-merchant".to_string(),
+            model_id: "fixture_catalog_v1".to_string(),
+            tags: vec!["demo".to_string(), "private".to_string(), "checkout".to_string()],
+            tools: vec!["quote".to_string(), "receipt".to_string()],
+            provider_reputation: 5.0,
+            amount_micro_usdc: 1_000,
+            currency: "USDC".to_string(),
+            rail,
+            rail_options: rail_options(intent.privacy_mode == "private"),
+            privacy_disclosure,
+            available,
+            unavailable_reason,
+            raw_offer: json!({
+                "redacted": true,
+                "source": "fixture_catalog",
+            }),
+        },
+        CommerceOffer {
+            offer_id: "fixture:merchant-discovery-demo".to_string(),
+            adapter: "fixture_catalog".to_string(),
+            title: "Find a verified merchant".to_string(),
+            description:
+                "Ghola compares merchant options, explains trust/privacy tradeoffs, and prepares a user-approved checkout."
+                    .to_string(),
+            merchant_label: "Ghola Verified Catalog".to_string(),
+            merchant_type: "curated_demo".to_string(),
+            offer_image_url: None,
+            fulfillment_kind: "merchant_recommendation".to_string(),
+            trust_summary: "Local-first discovery · explicit external handoff · receipt export ready"
+                .to_string(),
+            provider_slug: "ghola-verified-catalog".to_string(),
+            model_id: "fixture_catalog_v1".to_string(),
+            tags: vec!["merchant".to_string(), "discovery".to_string()],
+            tools: vec!["compare".to_string(), "quote".to_string()],
+            provider_reputation: 5.0,
+            amount_micro_usdc: 2_500,
+            currency: "USDC".to_string(),
+            rail: x402_service::PaymentRailKind::SolanaPublicStablecoin
+                .canonical_rail()
+                .to_string(),
+            rail_options: rail_options(false),
+            privacy_disclosure: x402_service::PUBLIC_STABLECOIN_DISCLOSURE.to_string(),
+            available: intent.privacy_mode != "private",
+            unavailable_reason: if intent.privacy_mode == "private" {
+                Some("This demo offer is public-only and blocked in private mode.".to_string())
+            } else {
+                None
+            },
+            raw_offer: json!({
+                "redacted": true,
+                "source": "fixture_catalog",
+            }),
+        },
+    ]
+}
+
+fn merchant_checkout_placeholder(intent: &CommerceIntent) -> CommerceOffer {
+    CommerceOffer {
+        offer_id: "merchant_checkout:coming-soon".to_string(),
+        adapter: "merchant_checkout".to_string(),
+        title: "External merchant checkout".to_string(),
+        description:
+            "Shopify, Stripe Payment Link, and direct merchant checkout adapters will plug in here."
+                .to_string(),
+        merchant_label: "Merchant checkout adapter".to_string(),
+        merchant_type: "external_checkout".to_string(),
+        offer_image_url: None,
+        fulfillment_kind: "external_checkout".to_string(),
+        trust_summary: "Planned adapter · blocked until a reviewed merchant integration is configured"
+            .to_string(),
+        provider_slug: "merchant-checkout".to_string(),
+        model_id: "merchant_checkout_v1".to_string(),
+        tags: vec!["merchant".to_string(), "checkout".to_string()],
+        tools: vec!["quote".to_string(), "checkout".to_string()],
+        provider_reputation: 0.0,
+        amount_micro_usdc: 1_000,
+        currency: "USDC".to_string(),
+        rail: if intent.privacy_mode == "private" {
+            x402_service::PaymentRailKind::ShieldedStablecoin.canonical_rail()
+        } else {
+            x402_service::PaymentRailKind::SolanaPublicStablecoin.canonical_rail()
+        }
+        .to_string(),
+        rail_options: rail_options(intent.privacy_mode == "private"),
+        privacy_disclosure:
+            "External merchant checkout is disabled until a reviewed adapter is configured."
+                .to_string(),
+        available: false,
+        unavailable_reason: Some("Merchant checkout adapter is not configured yet.".to_string()),
+        raw_offer: json!({
+            "redacted": true,
+            "source": "merchant_checkout",
+        }),
+    }
+}
+
+async fn create_fixture_quote(
+    state: &AppState,
+    user_id: Uuid,
+    intent: CommerceIntent,
+    req: CreateQuoteRequest,
+) -> Result<CommerceQuote, CloudError> {
+    let offer = fixture_catalog_offers(&intent)
+        .into_iter()
+        .find(|offer| offer.offer_id == req.offer_id)
+        .ok_or_else(|| CloudError::NotFound("fixture offer not found".into()))?;
+    if !offer.available {
+        return Err(CloudError::PaymentRequired(
+            offer
+                .unavailable_reason
+                .unwrap_or_else(|| "fixture offer unavailable".to_string()),
+        ));
+    }
+    if offer.amount_micro_usdc > intent.budget_micro_usdc {
+        return Err(CloudError::BadRequest(
+            "selected offer exceeds intent budget".into(),
+        ));
+    }
+
+    let quote_id = Uuid::new_v4();
+    let expires_at = Utc::now() + Duration::minutes(QUOTE_TTL_MINUTES);
+    let policy = json!({
+        "intent_id": intent.id,
+        "quote_id": quote_id,
+        "budget_micro_usdc": intent.budget_micro_usdc,
+        "privacy_mode": intent.privacy_mode,
+        "adapter": "fixture_catalog",
+        "rail": offer.rail,
+        "fail_closed": intent.privacy_mode == "private",
+        "funded_private_settlement_status": "funded_usdcx_proof_pending",
+        "expires_at": expires_at,
+    });
+    let payment_requirements = json!({
+        "redacted": true,
+        "kind": "fixture_catalog_quote",
+        "requires_user_approval": true,
+        "rail": offer.rail,
+    });
+    let raw_offer = json!({
+        "redacted": true,
+        "source": "fixture_catalog",
+        "offer_id": offer.offer_id,
+    });
+
+    let row = sqlx::query(
+        r#"
+        INSERT INTO commerce_quotes
+            (id, intent_id, user_id, adapter, offer_id, provider_slug, provider_label,
+             amount_micro_usdc, currency, rail, payment_requirements, policy, raw_offer, expires_at)
+        VALUES ($1, $2, $3, 'fixture_catalog', $4, $5, $6, $7, 'USDC', $8, $9, $10, $11, $12)
+        RETURNING id, intent_id, adapter, offer_id, provider_slug, provider_label,
+                  amount_micro_usdc, currency, rail, status, payment_requirements,
+                  policy, raw_offer, expires_at, created_at
+        "#,
+    )
+    .bind(quote_id)
+    .bind(intent.id)
+    .bind(user_id)
+    .bind(&offer.offer_id)
+    .bind(&offer.provider_slug)
+    .bind(&offer.merchant_label)
+    .bind(offer.amount_micro_usdc)
+    .bind(&offer.rail)
+    .bind(&payment_requirements)
+    .bind(&policy)
+    .bind(&raw_offer)
+    .bind(expires_at)
+    .fetch_one(&state.db)
+    .await?;
+
+    sqlx::query("UPDATE commerce_intents SET status = 'quoted', updated_at = now() WHERE id = $1")
+        .bind(intent.id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(row_to_quote(&row))
+}
+
+async fn execute_fixture_quote(
+    state: &AppState,
+    user_id: Uuid,
+    intent: CommerceIntent,
+    quote: CommerceQuote,
+    approval: crate::privacy::StoredPrivacyApproval,
+    raw_approval: &PrivacyApproval,
+) -> Result<CommerceExecution, CloudError> {
+    let handoff = json!({
+        "kind": "fixture_catalog_execution",
+        "intent_id": intent.id,
+        "quote_id": quote.id,
+        "adapter": quote.adapter,
+        "offer_id": quote.offer_id,
+        "provider_slug": quote.provider_slug,
+        "amount_micro_usdc": quote.amount_micro_usdc,
+        "currency": quote.currency,
+        "rail": quote.rail,
+        "settlement_status": "fixture_no_funds_canary",
+        "funded_private_settlement_status": "funded_usdcx_proof_pending",
+        "next_action": "receipt",
+    });
+    let receipt_payload = json!({
+        "kind": "commerce_fixture_receipt",
+        "message": "Ghola completed a curated private checkout demo without exposing raw provider payloads.",
+        "intent_goal_hash": sensitive_text_hash(&intent.goal),
+        "adapter": quote.adapter,
+        "offer_id": quote.offer_id,
+        "provider_slug": quote.provider_slug,
+        "amount_micro_usdc": quote.amount_micro_usdc,
+        "currency": quote.currency,
+        "rail": quote.rail,
+        "settlement_status": "fixture_no_funds_canary",
+        "funded_private_settlement_status": "funded_usdcx_proof_pending",
+        "approval_summary": raw_approval.approval_summary,
+        "redacted": true,
+    });
+
+    let mut tx = state.db.begin().await?;
+    let exec_row = sqlx::query(
+        r#"
+        INSERT INTO commerce_executions
+            (intent_id, quote_id, user_id, status, handoff, privacy_mode, network_scope,
+             user_approved_at, approval_nonce, approval_summary, completed_at)
+        VALUES ($1, $2, $3, 'completed', $4, $5, $6, $7, $8, $9, now())
+        RETURNING id, intent_id, quote_id, status, handoff, created_at
+        "#,
+    )
+    .bind(intent.id)
+    .bind(quote.id)
+    .bind(user_id)
+    .bind(&handoff)
+    .bind(&approval.privacy_mode)
+    .bind(&approval.network_scope)
+    .bind(approval.user_approved_at)
+    .bind(&approval.approval_nonce_hash)
+    .bind(&approval.approval_summary)
+    .fetch_one(&mut *tx)
+    .await?;
+    let execution_id: Uuid = exec_row.get("id");
+    let receipt_row = sqlx::query(
+        r#"
+        INSERT INTO commerce_receipts
+            (execution_id, intent_id, quote_id, user_id, status, adapter,
+             amount_micro_usdc, currency, rail, receipt)
+        VALUES ($1, $2, $3, $4, 'completed', $5, $6, $7, $8, $9)
+        RETURNING id, execution_id, status, adapter, amount_micro_usdc,
+                  currency, rail, receipt, created_at
+        "#,
+    )
+    .bind(execution_id)
+    .bind(intent.id)
+    .bind(quote.id)
+    .bind(user_id)
+    .bind(&quote.adapter)
+    .bind(quote.amount_micro_usdc)
+    .bind(&quote.currency)
+    .bind(&quote.rail)
+    .bind(&receipt_payload)
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE commerce_quotes SET status = 'accepted', updated_at = now() WHERE id = $1")
+        .bind(quote.id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE commerce_intents SET status = 'completed', updated_at = now() WHERE id = $1",
+    )
+    .bind(intent.id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    record_privacy_audit_event(
+        &state.db,
+        user_id,
+        NetworkScope::CommerceExecution,
+        &approval,
+        "commerce_fixture_execution",
+    )
+    .await;
+
+    Ok(CommerceExecution {
+        id: exec_row.get("id"),
+        intent_id: exec_row.get("intent_id"),
+        quote_id: exec_row.get("quote_id"),
+        status: exec_row.get("status"),
+        handoff: exec_row.get("handoff"),
+        receipt: row_to_receipt(&receipt_row),
+        created_at: exec_row.get("created_at"),
+    })
+}
+
+pub async fn get_execution(
+    db: &PgPool,
+    user_id: Uuid,
+    execution_id: Uuid,
+) -> Result<CommerceExecution, CloudError> {
+    let exec_row = sqlx::query(
+        r#"
+        SELECT id, intent_id, quote_id, status, handoff, created_at
+        FROM commerce_executions
+        WHERE id = $1 AND user_id = $2
+        "#,
+    )
+    .bind(execution_id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| CloudError::NotFound("commerce execution not found".into()))?;
+    let receipt_row = sqlx::query(
+        r#"
+        SELECT id, execution_id, status, adapter, amount_micro_usdc,
+               currency, rail, receipt, created_at
+        FROM commerce_receipts
+        WHERE execution_id = $1 AND user_id = $2
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(execution_id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| CloudError::NotFound("commerce receipt not found".into()))?;
+
+    Ok(CommerceExecution {
+        id: exec_row.get("id"),
+        intent_id: exec_row.get("intent_id"),
+        quote_id: exec_row.get("quote_id"),
+        status: exec_row.get("status"),
+        handoff: exec_row.get("handoff"),
+        receipt: row_to_receipt(&receipt_row),
+        created_at: exec_row.get("created_at"),
+    })
+}
+
+pub async fn get_receipt(
+    db: &PgPool,
+    user_id: Uuid,
+    receipt_id: Uuid,
+) -> Result<CommerceReceipt, CloudError> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, execution_id, status, adapter, amount_micro_usdc,
+               currency, rail, receipt, created_at
+        FROM commerce_receipts
+        WHERE id = $1 AND user_id = $2
+        "#,
+    )
+    .bind(receipt_id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| CloudError::NotFound("commerce receipt not found".into()))?;
+    Ok(row_to_receipt(&row))
+}
+
+pub async fn export_receipt(
+    state: &AppState,
+    user_id: Uuid,
+    receipt_id: Uuid,
+    req: ExportCommerceReceiptRequest,
+) -> Result<CommerceReceiptExport, CloudError> {
+    let approval = req
+        .approval
+        .require_and_store_for(NetworkScope::CommerceExecution)?;
+    let receipt = get_receipt(&state.db, user_id, receipt_id).await?;
+    record_privacy_audit_event(
+        &state.db,
+        user_id,
+        NetworkScope::CommerceExecution,
+        &approval,
+        "commerce_receipt_export",
+    )
+    .await;
+    Ok(CommerceReceiptExport {
+        receipt,
+        exported_at: Utc::now(),
+        audience: req.audience.unwrap_or_else(|| "user".to_string()),
+        reason: req.reason,
+    })
+}
+
 fn normalize_adapters(adapters: Option<Vec<String>>) -> Vec<String> {
-    let mut out = adapters.unwrap_or_else(|| vec!["x402".to_string(), "mcp".to_string()]);
-    out.retain(|adapter| adapter == "x402" || adapter == "mcp");
+    let mut out = adapters.unwrap_or_else(|| {
+        vec![
+            "fixture_catalog".to_string(),
+            "x402_agent".to_string(),
+            "merchant_checkout".to_string(),
+        ]
+    });
+    for adapter in &mut out {
+        if adapter == "x402" {
+            *adapter = "x402_agent".to_string();
+        }
+    }
+    out.retain(|adapter| {
+        adapter == "fixture_catalog"
+            || adapter == "x402_agent"
+            || adapter == "merchant_checkout"
+            || adapter == "mcp"
+    });
     if out.is_empty() {
-        out.push("x402".to_string());
+        out.push("fixture_catalog".to_string());
     }
     out.sort();
     out.dedup();
@@ -851,6 +1415,13 @@ fn retain_payment_rail(payment_requirements: &mut Value, rail: &str) {
             .and_then(Value::as_str)
             == Some(rail)
     });
+}
+
+fn is_private_rail(rail: &str) -> bool {
+    matches!(
+        rail,
+        x402_service::SHIELDED_STABLECOIN_RAIL | x402_service::ALEO_USDCX_SHIELDED_RAIL
+    )
 }
 
 async fn get_quote(
@@ -952,5 +1523,270 @@ fn row_to_receipt(row: &sqlx::postgres::PgRow) -> CommerceReceipt {
         rail: row.get("rail"),
         receipt: row.get("receipt"),
         created_at: row.get("created_at"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::CloudConfig;
+    use std::sync::{Mutex, OnceLock};
+
+    static COMMERCE_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvRestore {
+        previous: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvRestore {
+        fn set(overrides: &[(&'static str, String)]) -> Self {
+            let previous = overrides
+                .iter()
+                .map(|(key, _)| (*key, std::env::var(key).ok()))
+                .collect::<Vec<_>>();
+            for (key, value) in overrides {
+                std::env::set_var(key, value);
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in self.previous.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    fn test_intent(privacy_mode: &str) -> CommerceIntent {
+        let now = Utc::now();
+        CommerceIntent {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            goal: "Find a private checkout option".to_string(),
+            budget_micro_usdc: 5_000_000,
+            privacy_mode: privacy_mode.to_string(),
+            preferred_rail: "ghola_balance".to_string(),
+            allowed_adapters: vec![],
+            deadline_at: None,
+            status: "created".to_string(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn test_config(database_url: String) -> CloudConfig {
+        CloudConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            database_url,
+            jwt_secret: "test-jwt-secret".into(),
+            bland_api_key: None,
+            bland_webhook_url: None,
+            claude_api_key: None,
+            google_client_id: None,
+            google_client_secret: None,
+            apple_client_id: None,
+            gmail_client_id: None,
+            gmail_client_secret: None,
+            stripe_secret_key: None,
+            stripe_webhook_secret: None,
+            stripe_price_pro: None,
+            stripe_price_unlimited: None,
+            base_url: "http://localhost".into(),
+            encryption_key: [0u8; 32],
+            telegram_bot_token: None,
+            solana_rpc_url: "http://localhost".into(),
+            groq_api_key: None,
+            cerebras_api_key: None,
+            google_gemini_api_key: None,
+            openrouter_api_key: None,
+            relay_url: "http://localhost".into(),
+            platform_wallet_address: None,
+            treasury_mnemonic: None,
+            min_provider_reputation: 0.0,
+            max_escrow_age_secs: 300,
+            provider_payout_interval_secs: 3600,
+        }
+    }
+
+    fn commerce_approval(summary: &str) -> PrivacyApproval {
+        PrivacyApproval {
+            privacy_mode: Some(crate::privacy::STRICT_LOCAL.to_string()),
+            network_scope: Some(NetworkScope::CommerceExecution.as_str().to_string()),
+            user_approved_at: Some(Utc::now()),
+            approval_nonce: Some(format!("commerce-e2e-{}", Uuid::new_v4())),
+            approval_summary: Some(summary.to_string()),
+        }
+    }
+
+    #[test]
+    fn default_commerce_adapters_include_consumer_catalog() {
+        let adapters = normalize_adapters(None);
+        assert!(adapters.contains(&"fixture_catalog".to_string()));
+        assert!(adapters.contains(&"x402_agent".to_string()));
+        assert!(adapters.contains(&"merchant_checkout".to_string()));
+    }
+
+    #[test]
+    fn legacy_x402_adapter_alias_normalizes_to_x402_agent() {
+        let adapters = normalize_adapters(Some(vec!["x402".to_string(), "bad".to_string()]));
+        assert_eq!(adapters, vec!["x402_agent".to_string()]);
+    }
+
+    #[test]
+    fn fixture_catalog_offers_are_redacted_for_list_responses() {
+        let offers = fixture_catalog_offers(&test_intent("open"));
+        assert!(!offers.is_empty());
+        for offer in offers {
+            assert_eq!(
+                offer.raw_offer.get("redacted").and_then(Value::as_bool),
+                Some(true)
+            );
+            assert!(offer.raw_offer.get("provider_payload").is_none());
+            assert!(offer.raw_offer.get("wallet_address").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn commerce_fixture_flow_completes_with_redacted_receipt_when_e2e_db_configured() {
+        let Ok(database_url) = std::env::var("THUMPER_COMMERCE_E2E_DATABASE_URL") else {
+            eprintln!("skipping commerce e2e: THUMPER_COMMERCE_E2E_DATABASE_URL is not set");
+            return;
+        };
+
+        let _lock = COMMERCE_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("commerce env lock poisoned");
+        let _env = EnvRestore::set(&[
+            (
+                "SHIELDED_STABLECOIN_ADAPTER_URL",
+                "http://localhost:9/aleo-usdcx-fixture".to_string(),
+            ),
+            ("SHIELDED_STABLECOIN_PROVIDER", "aleo".to_string()),
+            ("SHIELDED_STABLECOIN_NETWORK", "aleo:mainnet".to_string()),
+            ("SHIELDED_STABLECOIN_ASSET", "USDCx".to_string()),
+            ("SHIELDED_STABLECOIN_RECIPIENT", "aleo1fixture".to_string()),
+            (
+                "SHIELDED_STABLECOIN_ADAPTER_AUTH_TOKEN",
+                "test-adapter-token".to_string(),
+            ),
+            (
+                "SHIELDED_STABLECOIN_REQUIRE_SIGNED_RECEIPT",
+                "false".to_string(),
+            ),
+            ("SHIELDED_STABLECOIN_VERIFIER_READY", "true".to_string()),
+        ]);
+
+        let pool = crate::db::create_pool(&database_url)
+            .await
+            .expect("connect commerce e2e database");
+        crate::db::run_migrations(&pool)
+            .await
+            .expect("run commerce e2e migrations");
+        let state = AppState::new(test_config(database_url), pool.clone());
+        let email = format!("commerce-e2e-{}@example.test", Uuid::new_v4());
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(email)
+        .bind("Commerce E2E")
+        .fetch_one(&pool)
+        .await
+        .expect("insert commerce e2e user");
+
+        let intent = create_intent(
+            &pool,
+            user_id,
+            CreateIntentRequest {
+                goal: "Buy a private AI service without leaking raw checkout details".to_string(),
+                budget_micro_usdc: Some(10_000),
+                privacy_mode: Some("private".to_string()),
+                preferred_rail: Some("aleo_usdcx_shielded".to_string()),
+                allowed_adapters: Some(vec!["fixture_catalog".to_string()]),
+                deadline_at: None,
+            },
+        )
+        .await
+        .expect("create commerce intent");
+
+        let offers = list_offers(&state, user_id, intent.id)
+            .await
+            .expect("list fixture offers");
+        let offer = offers
+            .iter()
+            .find(|offer| offer.offer_id == "fixture:private-checkout-demo")
+            .expect("private fixture offer exists");
+        assert!(offer.available);
+        assert_eq!(
+            offer.rail,
+            x402_service::PaymentRailKind::ShieldedStablecoin.canonical_rail()
+        );
+        assert_eq!(
+            offer.raw_offer.get("redacted").and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let quote = create_quote(
+            &state,
+            user_id,
+            intent.id,
+            CreateQuoteRequest {
+                offer_id: offer.offer_id.clone(),
+                rail: Some(offer.rail.clone()),
+            },
+        )
+        .await
+        .expect("create fixture quote");
+        assert_eq!(quote.adapter, "fixture_catalog");
+        assert_eq!(
+            quote.rail,
+            x402_service::PaymentRailKind::ShieldedStablecoin.canonical_rail()
+        );
+
+        let execution = execute_quote(
+            &state,
+            user_id,
+            intent.id,
+            ExecuteQuoteRequest {
+                quote_id: quote.id,
+                approval: commerce_approval("Approve private fixture commerce execution."),
+            },
+        )
+        .await
+        .expect("execute fixture quote");
+        assert_eq!(execution.status, "completed");
+        assert_eq!(execution.receipt.status, "completed");
+
+        let fetched = get_receipt(&pool, user_id, execution.receipt.id)
+            .await
+            .expect("fetch receipt");
+        let receipt_json = serde_json::to_string(&fetched.receipt).expect("serialize receipt");
+        assert!(receipt_json.contains("intent_goal_hash"));
+        assert!(receipt_json.contains("funded_usdcx_proof_pending"));
+        assert!(!receipt_json.contains("Buy a private AI service"));
+        assert!(!receipt_json.contains("approval_nonce"));
+        assert!(!receipt_json.contains("wallet_address"));
+        assert!(!receipt_json.contains("provider_payload"));
+
+        let export = export_receipt(
+            &state,
+            user_id,
+            execution.receipt.id,
+            ExportCommerceReceiptRequest {
+                reason: Some("user export".to_string()),
+                audience: Some("user".to_string()),
+                approval: commerce_approval("Approve commerce receipt export."),
+            },
+        )
+        .await
+        .expect("export commerce receipt");
+        assert_eq!(export.receipt.id, execution.receipt.id);
+        assert_eq!(export.audience, "user");
     }
 }
