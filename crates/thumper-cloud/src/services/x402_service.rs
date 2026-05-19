@@ -1169,7 +1169,7 @@ struct ShieldedVerifyRequest<'a> {
     proof: &'a PaymentPayload,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ShieldedVerifyResponse {
     settled: bool,
     receipt_id: Option<String>,
@@ -1200,6 +1200,7 @@ pub struct ShieldedSettlementContext<'a> {
     pub model_id: Option<&'a str>,
 }
 
+#[derive(Debug)]
 pub struct VerifiedShieldedSettlement {
     pub replay_key: String,
     pub receipt_ref: String,
@@ -1892,7 +1893,83 @@ fn extract_model_pricing(models: &serde_json::Value, model_id: &str) -> (i64, i6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CloudConfig;
     use ed25519_dalek::{Signer, SigningKey};
+    use std::sync::{Mutex, OnceLock};
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    static SHIELDED_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvRestore {
+        previous: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvRestore {
+        fn set(overrides: &[(&'static str, String)]) -> Self {
+            let previous = overrides
+                .iter()
+                .map(|(key, _)| (*key, std::env::var(key).ok()))
+                .collect::<Vec<_>>();
+            for (key, value) in overrides {
+                std::env::set_var(key, value);
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in self.previous.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    fn minimal_cloud_config() -> CloudConfig {
+        CloudConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            database_url: "postgres://user:pass@localhost/test".into(),
+            jwt_secret: "test-jwt-secret".into(),
+            bland_api_key: None,
+            bland_webhook_url: None,
+            claude_api_key: None,
+            google_client_id: None,
+            google_client_secret: None,
+            apple_client_id: None,
+            gmail_client_id: None,
+            gmail_client_secret: None,
+            stripe_secret_key: None,
+            stripe_webhook_secret: None,
+            stripe_price_pro: None,
+            stripe_price_unlimited: None,
+            base_url: "http://localhost".into(),
+            encryption_key: [0u8; 32],
+            telegram_bot_token: None,
+            solana_rpc_url: "http://localhost".into(),
+            groq_api_key: None,
+            cerebras_api_key: None,
+            google_gemini_api_key: None,
+            openrouter_api_key: None,
+            relay_url: "http://localhost".into(),
+            platform_wallet_address: None,
+            treasury_mnemonic: None,
+            min_provider_reputation: 0.0,
+            max_escrow_age_secs: 0,
+            provider_payout_interval_secs: 0,
+        }
+    }
+
+    fn test_app_state() -> AppState {
+        let config = minimal_cloud_config();
+        let db = PgPool::connect_lazy(&config.database_url)
+            .expect("connect_lazy never opens a connection");
+        AppState::new(config, db)
+    }
 
     #[test]
     fn requested_payment_rail_defaults_to_public_solana() {
@@ -2159,6 +2236,141 @@ mod tests {
         response.adapter_signature_b64 =
             Some(STANDARD.encode(signer.sign(payload.as_bytes()).to_bytes()));
         response
+    }
+
+    fn shielded_fixture_env(
+        server_uri: &str,
+        signer: &SigningKey,
+        token: &str,
+    ) -> EnvRestore {
+        EnvRestore::set(&[
+            ("SHIELDED_STABLECOIN_ADAPTER_URL", server_uri.to_string()),
+            ("SHIELDED_STABLECOIN_PROVIDER", "aleo".to_string()),
+            ("SHIELDED_STABLECOIN_NETWORK", "aleo:mainnet".to_string()),
+            ("SHIELDED_STABLECOIN_ASSET", "USDCx".to_string()),
+            ("SHIELDED_STABLECOIN_RECIPIENT", "aleo1recipient".to_string()),
+            (
+                "SHIELDED_STABLECOIN_ADAPTER_AUTH_TOKEN",
+                token.to_string(),
+            ),
+            (
+                "SHIELDED_STABLECOIN_ADAPTER_PUBKEY",
+                hex::encode(VerifyingKey::from(signer).to_bytes()),
+            ),
+            (
+                "SHIELDED_STABLECOIN_REQUIRE_SIGNED_RECEIPT",
+                "true".to_string(),
+            ),
+            ("SHIELDED_STABLECOIN_VERIFIER_READY", "true".to_string()),
+            (
+                "SHIELDED_STABLECOIN_ARBITRARY_RECIPIENTS_ENABLED",
+                "false".to_string(),
+            ),
+        ])
+    }
+
+    fn shielded_fixture_proof(payload: PaymentPayload) -> PaymentProof {
+        PaymentProof {
+            x402_version: "1".to_string(),
+            scheme: SHIELDED_STABLECOIN_RAIL.to_string(),
+            network: "aleo:mainnet".to_string(),
+            payload,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shielded_fixture_canary_verifies_signed_adapter_response_without_funds() {
+        let _guard = SHIELDED_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let server = MockServer::start().await;
+        let signer = SigningKey::from_bytes(&[13u8; 32]);
+        let config = ShieldedStablecoinConfig {
+            adapter_url: server.uri(),
+            ..test_shielded_config(VerifyingKey::from(&signer))
+        };
+        let proof_payload = test_shielded_proof();
+        let response = signed_shielded_response(&config, &signer, &proof_payload, 1500);
+        let token = "fixture-adapter-token";
+        let _env = shielded_fixture_env(&server.uri(), &signer, token);
+
+        Mock::given(method("POST"))
+            .and(path("/verify"))
+            .and(header("authorization", format!("Bearer {token}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let verified = verify_shielded_stablecoin_settlement(
+            &test_app_state(),
+            &shielded_fixture_proof(proof_payload),
+            ShieldedSettlementContext {
+                required_amount: 1000,
+                purpose: "no-funds fixture canary",
+                destination: None,
+                intent_id: None,
+                agent_id: None,
+                provider_id: None,
+                model_id: Some("fixture-model"),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.amount, 1500);
+        assert_eq!(verified.asset, "USDCx");
+        assert_eq!(verified.network, "aleo:mainnet");
+        assert_eq!(verified.destination, "aleo1recipient");
+        assert_eq!(verified.receipt_ref, "abc123");
+        assert!(verified.replay_key.starts_with("shielded:aleo:"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shielded_fixture_canary_rejects_tampered_adapter_receipt() {
+        let _guard = SHIELDED_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let server = MockServer::start().await;
+        let signer = SigningKey::from_bytes(&[14u8; 32]);
+        let config = ShieldedStablecoinConfig {
+            adapter_url: server.uri(),
+            ..test_shielded_config(VerifyingKey::from(&signer))
+        };
+        let proof_payload = test_shielded_proof();
+        let mut response = signed_shielded_response(&config, &signer, &proof_payload, 1500);
+        response.amount = Some(2500);
+        let token = "fixture-adapter-token";
+        let _env = shielded_fixture_env(&server.uri(), &signer, token);
+
+        Mock::given(method("POST"))
+            .and(path("/verify"))
+            .and(header("authorization", format!("Bearer {token}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let err = verify_shielded_stablecoin_settlement(
+            &test_app_state(),
+            &shielded_fixture_proof(proof_payload),
+            ShieldedSettlementContext {
+                required_amount: 1000,
+                purpose: "tamper fixture canary",
+                destination: None,
+                intent_id: None,
+                agent_id: None,
+                provider_id: None,
+                model_id: Some("fixture-model"),
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("signature verification failed"));
     }
 
     #[test]
