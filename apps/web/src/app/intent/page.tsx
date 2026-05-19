@@ -1,11 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
-  CheckCircle2,
-  CircleDollarSign,
   FileCheck2,
   Loader2,
   LockKeyhole,
@@ -14,6 +11,7 @@ import {
   ShieldCheck,
   ShoppingBag,
 } from "lucide-react";
+import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import {
   createCommerceIntent,
   createCommerceQuote,
@@ -34,14 +32,6 @@ import {
 } from "@/lib/private-balance";
 
 type Step = "ask" | "offers" | "quote" | "approval" | "receipt";
-
-const steps: Array<{ id: Step; label: string }> = [
-  { id: "ask", label: "Ask" },
-  { id: "offers", label: "Options" },
-  { id: "quote", label: "Quote" },
-  { id: "approval", label: "Approve" },
-  { id: "receipt", label: "Receipt" },
-];
 
 function approvalNonce() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -86,6 +76,8 @@ export default function IntentPage() {
   const [paymentHealth, setPaymentHealth] = useState<PaymentHealth | null>(null);
   const [loading, setLoading] = useState<Step | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<AuthMode>("signup");
 
   useEffect(() => {
     void fetchPaymentHealth().then(setPaymentHealth).catch(() => setPaymentHealth(null));
@@ -96,15 +88,6 @@ export default function IntentPage() {
     () => offers.find((offer) => offer.offer_id === selectedOfferId) ?? null,
     [offers, selectedOfferId]
   );
-  const activeStep: Step = execution
-    ? "receipt"
-    : quote
-      ? "approval"
-      : selectedOffer
-        ? "quote"
-        : offers.length
-          ? "offers"
-          : "ask";
   const receipt = execution?.receipt.receipt ?? {};
   const fundedStatus =
     stringValue(receipt.funded_private_settlement_status) ??
@@ -115,16 +98,7 @@ export default function IntentPage() {
     : privateSummary.privateSpendReady
       ? "Private payments ready"
       : "Private payments paused";
-  const railDetail = !railStatusKnown
-    ? "Checking private rail status."
-    : privateSummary.privateSpendReady
-      ? "USDCx is configured. Private checkout will not fall back to public USDC."
-      : privateSummary.detail;
-  const railPillClass = !railStatusKnown
-    ? "border-[#263449] bg-[#0c0f15] text-[#9fb2cc]"
-    : privateSummary.privateSpendReady
-      ? "border-[#24452d] bg-[#0d1510] text-[#a7f3b5]"
-      : "border-[#4d2e22] bg-[#1a100d] text-[#ffc7aa]";
+  const needsAuth = !thumperAuth.loading && !thumperAuth.authenticated;
 
   async function submitIntent() {
     setError(null);
@@ -160,6 +134,15 @@ export default function IntentPage() {
     } finally {
       setLoading(null);
     }
+  }
+
+  function handlePrimaryAction() {
+    if (needsAuth) {
+      setAuthMode("signup");
+      setAuthOpen(true);
+      return;
+    }
+    void submitIntent();
   }
 
   async function quoteOffer() {
@@ -208,51 +191,57 @@ export default function IntentPage() {
 
   return (
     <main className="min-h-screen bg-[#08090d] pt-16 text-[#eef1f8]">
+      <AuthModal
+        mode={authMode}
+        open={authOpen}
+        onClose={() => setAuthOpen(false)}
+        onModeChange={setAuthMode}
+        redirectTo={null}
+      />
       <section className="border-b border-[#151b26] px-4 py-5 sm:px-6 lg:px-8">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mx-auto flex max-w-5xl flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-[#203149] bg-[#0d121c] px-3 py-1 text-xs text-[#9fb2cc]">
+            <div className="inline-flex items-center gap-2 text-xs font-medium text-[#8ea2c1]">
               <ShoppingBag className="h-3.5 w-3.5 text-[#3da8ff]" />
               Shop / Pay
             </div>
             <h1 className="mt-3 max-w-2xl text-2xl font-medium tracking-tight text-[#f6f8ff] sm:text-3xl">
               Find it. Approve it. Pay privately.
             </h1>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span
-              className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 ${railPillClass}`}
-            >
-              <ShieldCheck className="h-3.5 w-3.5" />
-              {railReadyLabel}
-            </span>
-            <span className="inline-flex items-center gap-2 rounded-full border border-[#263449] bg-[#0c0f15] px-3 py-1.5 text-[#9fb2cc]">
-              <LockKeyhole className="h-3.5 w-3.5" />
-              Approval required
-            </span>
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-[#8b95a8]">
+              <span className="inline-flex items-center gap-2">
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    railStatusKnown && privateSummary.privateSpendReady
+                      ? "bg-[#7ee787]"
+                      : "bg-[#3da8ff]"
+                  }`}
+                />
+                {railReadyLabel}
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <LockKeyhole className="h-3.5 w-3.5" />
+                You approve before payment
+              </span>
+            </div>
           </div>
         </div>
       </section>
 
       <section className="px-4 py-6 sm:px-6 lg:px-8">
-        <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-[minmax(0,1fr)_21rem]">
+        <div className="mx-auto max-w-5xl">
           <div className="space-y-5">
             <section className="rounded-md border border-[#1e2a3a] bg-[#0c0f15] shadow-[0_24px_80px_rgba(0,0,0,0.25)]">
               <div className="grid gap-4 p-4 sm:p-5">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h2 className="text-sm font-medium text-[#f6f8ff]">
-                      What do you want to buy or pay for?
+                      What are you buying?
                     </h2>
                     <p className="mt-1 text-xs text-[#7f8ca3]">
-                      Ghola shows options first. Nothing is paid until you approve.
+                      Ghola finds options and prepares a quote. Payment waits for your approval.
                     </p>
                   </div>
-                  {!thumperAuth.loading && !thumperAuth.authenticated && (
-                    <span className="inline-flex rounded-full border border-[#4d2e22] bg-[#1a100d] px-3 py-1.5 text-xs text-[#ffc7aa]">
-                      Sign in to continue
-                    </span>
-                  )}
                 </div>
                 {error && (
                   <div className="flex items-start gap-3 rounded-md border border-[#5a2430] bg-[#1b0d13] px-4 py-3 text-sm text-[#ffb4c0]">
@@ -291,8 +280,8 @@ export default function IntentPage() {
                           onClick={() => setPrivacyMode(mode)}
                           className={`text-sm font-medium transition ${
                             privacyMode === mode
-                              ? "bg-[#182536] text-[#eef1f8]"
-                              : "text-[#7f8ca3] hover:text-[#eef1f8]"
+                              ? "bg-[#3da8ff] text-[#05080d]"
+                              : "text-[#7f8ca3] hover:bg-[#101722] hover:text-[#eef1f8]"
                           }`}
                         >
                           {mode === "private" ? "Private USDCx" : "Public USDC"}
@@ -302,17 +291,24 @@ export default function IntentPage() {
                   </div>
                   <button
                     type="button"
-                    onClick={submitIntent}
-                    disabled={!!loading || !thumperAuth.authenticated}
-                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#3da8ff] px-4 text-sm font-medium text-[#07111d] transition hover:bg-[#67bbff] disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={handlePrimaryAction}
+                    disabled={!!loading || thumperAuth.loading}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#3da8ff] px-4 text-sm font-semibold text-[#05080d] shadow-[0_10px_28px_-14px_rgba(61,168,255,0.9)] transition hover:bg-[#67bbff] active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-[#1a2635] disabled:text-[#64748b] disabled:shadow-none"
                   >
                     {loading === "ask" || loading === "offers" ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <Search className="h-4 w-4" />
                     )}
-                    Find options
+                    {needsAuth ? "Sign in to find options" : "Find options"}
                   </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-[#151b26] pt-3 text-xs text-[#7f8ca3]">
+                  <span className="text-[#9fb2cc]">
+                    {privacyMode === "private" ? "Private USDCx selected" : "Public USDC selected"}
+                  </span>
+                  <span>{privacyMode === "private" ? "No public fallback" : "Public on-chain rail"}</span>
+                  <span>{railStatusKnown ? "Funded proof pending" : "Checking rail status"}</span>
                 </div>
               </div>
             </section>
@@ -324,15 +320,10 @@ export default function IntentPage() {
               </div>
               <div className="divide-y divide-[#151b26]">
                 {offers.length === 0 ? (
-                  <div className="grid gap-3 px-4 py-6 text-sm text-[#7f8ca3] sm:px-5 sm:grid-cols-3">
-                    <span className="rounded-md border border-[#1a2635] bg-[#090d13] p-3">
-                      Search private checkout offers
-                    </span>
-                    <span className="rounded-md border border-[#1a2635] bg-[#090d13] p-3">
-                      Compare rail and provider details
-                    </span>
-                    <span className="rounded-md border border-[#1a2635] bg-[#090d13] p-3">
-                      Approve before payment
+                  <div className="px-4 py-8 text-sm text-[#7f8ca3] sm:px-5">
+                    <span className="block text-[#d6deec]">Options will appear here.</span>
+                    <span className="mt-1 block">
+                      Search once, compare quotes, then approve the exact payment.
                     </span>
                   </div>
                 ) : (
@@ -369,21 +360,23 @@ export default function IntentPage() {
                   ))
                 )}
               </div>
-              <div className="border-t border-[#1e2a3a] px-4 py-3 sm:px-5">
-                <button
-                  type="button"
-                  onClick={quoteOffer}
-                  disabled={!selectedOffer || !!loading}
-                  className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[#2f435c] px-4 text-sm font-medium text-[#d6deec] transition hover:border-[#3da8ff]/60 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {loading === "quote" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <FileCheck2 className="h-4 w-4" />
-                  )}
-                  Create quote
-                </button>
-              </div>
+              {offers.length > 0 && (
+                <div className="border-t border-[#1e2a3a] px-4 py-3 sm:px-5">
+                  <button
+                    type="button"
+                    onClick={quoteOffer}
+                    disabled={!selectedOffer || !!loading}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[#2f435c] px-4 text-sm font-medium text-[#d6deec] transition hover:border-[#3da8ff]/60 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {loading === "quote" ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <FileCheck2 className="h-4 w-4" />
+                    )}
+                    Create quote
+                  </button>
+                </div>
+              )}
             </section>
 
             {quote && (
@@ -426,7 +419,7 @@ export default function IntentPage() {
                     type="button"
                     onClick={approveAndPay}
                     disabled={!approved || !!loading}
-                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#d9f99d] px-4 text-sm font-medium text-[#142000] transition hover:bg-[#e5ffb7] disabled:cursor-not-allowed disabled:opacity-50 sm:w-fit"
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#3da8ff] px-4 text-sm font-semibold text-[#05080d] transition hover:bg-[#67bbff] disabled:cursor-not-allowed disabled:bg-[#1a2635] disabled:text-[#64748b] sm:w-fit"
                   >
                     {loading === "approval" ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -476,78 +469,6 @@ export default function IntentPage() {
               </section>
             )}
           </div>
-
-          <aside className="space-y-5">
-            <section className="rounded-md border border-[#1e2a3a] bg-[#0c0f15] p-5">
-              <h2 className="text-sm font-medium text-[#f6f8ff]">Checkout path</h2>
-              <div className="mt-5 space-y-4">
-                {steps.map((step) => {
-                  const done =
-                    step.id === "ask"
-                      ? !!intent
-                      : step.id === "offers"
-                        ? offers.length > 0
-                        : step.id === "quote"
-                          ? !!quote
-                          : step.id === "approval"
-                            ? !!execution
-                            : step.id === "receipt"
-                              ? !!execution
-                              : false;
-                  const active = activeStep === step.id;
-                  return (
-                    <div key={step.id} className="flex items-center gap-3">
-                      <span
-                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border ${
-                          done
-                            ? "border-[#69d58b] bg-[#14301e] text-[#a7f3b5]"
-                            : active
-                              ? "border-[#3da8ff] bg-[#122236] text-[#a8d8ff]"
-                              : "border-[#263449] text-[#6f7d9a]"
-                        }`}
-                      >
-                        {done ? <CheckCircle2 className="h-4 w-4" /> : null}
-                      </span>
-                      <span
-                        className={`text-sm ${
-                          active || done ? "text-[#eef1f8]" : "text-[#7f8ca3]"
-                        }`}
-                      >
-                        {step.label}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            <section className="rounded-md border border-[#1e2a3a] bg-[#0c0f15] p-5">
-              <div className="flex items-center gap-2">
-                <CircleDollarSign className="h-4 w-4 text-[#3da8ff]" />
-                <h2 className="text-sm font-medium text-[#f6f8ff]">Payment rail</h2>
-              </div>
-              <p className="mt-3 text-sm font-medium text-[#eef1f8]">{railReadyLabel}</p>
-              <p className="mt-2 text-xs leading-5 text-[#8b95a8]">{railDetail}</p>
-              <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded-md border border-[#1a2635] bg-[#090d13] p-3">
-                  <p className="text-[#6f7d9a]">Private</p>
-                  <p className="mt-1 text-[#d6deec]">USDCx</p>
-                </div>
-                <div className="rounded-md border border-[#1a2635] bg-[#090d13] p-3">
-                  <p className="text-[#6f7d9a]">Funded proof</p>
-                  <p className="mt-1 text-[#d6deec]">
-                    {fundedStatus === "funded_usdcx_proof_verified" ? "Verified" : "Pending"}
-                  </p>
-                </div>
-              </div>
-              <Link
-                href="/private-balance"
-                className="mt-4 inline-flex items-center gap-2 text-xs text-[#3da8ff] hover:text-[#67bbff]"
-              >
-                View Private Balance
-              </Link>
-            </section>
-          </aside>
         </div>
       </section>
     </main>
