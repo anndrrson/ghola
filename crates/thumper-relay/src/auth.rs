@@ -40,7 +40,9 @@ pub fn verify_auth(
     // Check nonce for replay prevention
     if let Some(cache) = nonce_cache {
         if cache.check_and_insert(&payload.message.nonce) {
-            return Err(RelayError::Auth("nonce already used (replay detected)".into()));
+            return Err(RelayError::Auth(
+                "nonce already used (replay detected)".into(),
+            ));
         }
     }
 
@@ -238,9 +240,7 @@ pub(crate) fn validate_sealed_envelope_bytes(
 ) -> Result<EnvelopeHeader, axum::http::StatusCode> {
     // -- fail-closed if the holder hasn't bootstrapped yet ----------------
     if !state.did_set().is_bootstrapped() {
-        tracing::warn!(
-            "sealed-inference auth rejecting: did_set not yet bootstrapped"
-        );
+        tracing::warn!("sealed-inference auth rejecting: did_set not yet bootstrapped");
         return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
     }
 
@@ -304,7 +304,6 @@ pub(crate) fn validate_sealed_envelope_bytes(
 
     Ok(header)
 }
-
 
 /// Header fields the middleware needs from the wire envelope.
 ///
@@ -403,4 +402,3 @@ fn verify_envelope_signature(wire: &[u8], sender_did: &str) -> bool {
 // middleware function signature in this module-attached helper layer.
 #[allow(unused_imports)]
 use axum as _axum_for_doc;
-

@@ -77,10 +77,7 @@ async fn post_then_pending_then_anchored_flow() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
     // Run a batcher tick -> assigns the batch + publishes via stub.
-    let batcher = Batcher::new(
-        store.clone(),
-        publisher.clone() as Arc<dyn SolanaPublisher>,
-    );
+    let batcher = Batcher::new(store.clone(), publisher.clone() as Arc<dyn SolanaPublisher>);
     let assigned = batcher.tick().await.unwrap();
     assert!(assigned.is_some());
     assert_eq!(publisher.calls().len(), 1);
@@ -110,6 +107,85 @@ async fn post_then_pending_then_anchored_flow() {
     // Single-leaf tree -> proof is empty (the leaf is the root).
     let proof = parsed["merkle_proof"].as_array().unwrap();
     assert!(proof.is_empty());
+}
+
+#[tokio::test]
+async fn get_receipt_returns_stored_body_and_status() {
+    let store: Arc<dyn ReceiptsStore> = Arc::new(MemoryStore::new());
+    let publisher = Arc::new(InMemoryPublisher::new());
+    let state = AppState {
+        store: store.clone(),
+        batcher_interval_secs: 60,
+    };
+    let app = router(state);
+
+    let receipt = sample_receipt("job-body");
+    let body_value = serde_json::to_value(&receipt).unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/receipts")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body_value).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let hash_hex = parsed["receipt_hash"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/receipts/{hash_hex}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(parsed["receipt_hash"].as_str().unwrap(), hash_hex);
+    assert_eq!(parsed["status"].as_str().unwrap(), "pending");
+    assert_eq!(parsed["receipt"], body_value);
+
+    // Existing proof behavior is unchanged: pending receipts still
+    // return 202 from the proof endpoint.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/receipts/{hash_hex}/proof"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    let batcher = Batcher::new(store.clone(), publisher.clone() as Arc<dyn SolanaPublisher>);
+    batcher.tick().await.unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/receipts/{hash_hex}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(parsed["status"].as_str().unwrap(), "anchored");
+    assert_eq!(parsed["receipt"], body_value);
 }
 
 #[tokio::test]
@@ -144,10 +220,7 @@ async fn multi_leaf_batch_proof_round_trip() {
         hashes.push(parsed["receipt_hash"].as_str().unwrap().to_string());
     }
 
-    let batcher = Batcher::new(
-        store.clone(),
-        publisher.clone() as Arc<dyn SolanaPublisher>,
-    );
+    let batcher = Batcher::new(store.clone(), publisher.clone() as Arc<dyn SolanaPublisher>);
     batcher.tick().await.unwrap();
     assert_eq!(publisher.calls()[0].count, 5);
 
@@ -203,10 +276,7 @@ async fn solana_failure_retries_next_tick() {
 
     publisher.fail_next();
 
-    let batcher = Batcher::new(
-        store.clone(),
-        publisher.clone() as Arc<dyn SolanaPublisher>,
-    );
+    let batcher = Batcher::new(store.clone(), publisher.clone() as Arc<dyn SolanaPublisher>);
 
     // First tick: batch row created, publish fails, signature stays None.
     batcher.tick().await.unwrap();
@@ -343,4 +413,36 @@ async fn cross_origin_resource_policy_header_present() {
         .get("cross-origin-resource-policy")
         .and_then(|v| v.to_str().ok());
     assert_eq!(corp, Some("cross-origin"));
+}
+
+#[tokio::test]
+async fn health_alias_matches_healthz() {
+    let store: Arc<dyn ReceiptsStore> = Arc::new(MemoryStore::new());
+    let state = AppState {
+        store,
+        batcher_interval_secs: 60,
+    };
+    let app = router(state);
+
+    for uri in ["/health", "/healthz"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{uri} should return 200");
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ok", "{uri} should return JSON health");
+        assert_eq!(
+            json["service"], "said-receipts-service",
+            "{uri} should identify service"
+        );
+    }
 }

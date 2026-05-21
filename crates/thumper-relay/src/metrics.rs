@@ -64,7 +64,12 @@ impl RelayMetrics {
         self.inner.response_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn snapshot(&self, device_count: usize, mcp_client_count: usize, gpu_provider_count: usize) -> MetricsSnapshot {
+    pub fn snapshot(
+        &self,
+        device_count: usize,
+        mcp_client_count: usize,
+        gpu_provider_count: usize,
+    ) -> MetricsSnapshot {
         let total = self.inner.commands_total.load(Ordering::Relaxed);
         let errors = self.inner.errors_total.load(Ordering::Relaxed);
         let resp_sum = self.inner.response_time_sum_ms.load(Ordering::Relaxed);

@@ -76,6 +76,9 @@ fn test_config() -> RelayConfig {
         did_set_api_key: None,
         did_set_max_staleness_secs: 300,
         sealed_rate_limit_per_did: 1000,
+        max_body_size_bytes: 1_048_576,
+        max_sealed_body_size_bytes: 4 * 1_048_576,
+        cors_allowed_origins: vec!["https://ghola.xyz".to_string()],
     }
 }
 
@@ -87,8 +90,7 @@ fn test_config() -> RelayConfig {
 fn build_sealed_request_body(sender: &SigningKey) -> (Vec<u8>, String) {
     // Pretend recipient is an enclave at some X25519 pubkey.
     let recipient_signing = fresh_signing_key();
-    let recipient_x25519 =
-        ed25519_verifying_to_x25519(&recipient_signing.verifying_key()).unwrap();
+    let recipient_x25519 = ed25519_verifying_to_x25519(&recipient_signing.verifying_key()).unwrap();
 
     let recipient_id = "test-enclave-id";
     let ad = b"ghola-inference-v1|test-session|test-job";
@@ -104,10 +106,7 @@ fn build_sealed_request_body(sender: &SigningKey) -> (Vec<u8>, String) {
     })
     .expect("seal");
 
-    let sealed_b64 = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        &envelope,
-    );
+    let sealed_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &envelope);
 
     let body = json!({
         "enclave_key_id": recipient_id,
@@ -129,7 +128,13 @@ async fn post_to(app: &Router, body_bytes: Vec<u8>) -> (StatusCode, Vec<u8>) {
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
-    let body = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
     (status, body)
 }
 

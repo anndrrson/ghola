@@ -204,9 +204,7 @@ pub fn spawn_refresh_task(holder: DidSet, url: Option<String>, api_key: Option<S
                 }
                 Err(e) => {
                     if holder.is_bootstrapped() {
-                        tracing::warn!(
-                            "did_set refresh failed; keeping previous snapshot: {e}"
-                        );
+                        tracing::warn!("did_set refresh failed; keeping previous snapshot: {e}");
                     } else {
                         tracing::error!(
                             "did_set initial fetch failed: {e}. \

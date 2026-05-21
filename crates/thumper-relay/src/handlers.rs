@@ -25,18 +25,67 @@ use crate::state::{AppState, RateLimiter};
 
 /// Health check endpoint.
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
-    let ready = state.private_readiness();
+    Json(relay_health_body(&state, true))
+}
+
+/// Liveness only. If this handler runs, the process is alive.
+pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
     Json(json!({
         "status": "ok",
+        "service": "thumper-relay",
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_secs": state.uptime_secs(),
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+/// General relay readiness probe. This covers process-local dependencies
+/// needed to serve production relay traffic; private provider capacity
+/// remains visible in `/ready/private` so Open/WS routing does not get
+/// confused with zero private enclaves.
+pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
+    let readiness = state.private_readiness();
+    let status = if readiness.private_ready {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status,
+        Json(relay_health_body(&state, readiness.private_ready)),
+    )
+}
+
+fn relay_health_body(state: &AppState, ready_status: bool) -> serde_json::Value {
+    let ready = state.private_readiness();
+    let attested_provider_count = state.list_attested_enclaves().len();
+    let private_capacity_ready = ready.private_ready && attested_provider_count > 0;
+    let capacity_reason_codes: Vec<&str> = if private_capacity_ready {
+        Vec::new()
+    } else if ready.private_ready {
+        vec!["no_attested_private_providers"]
+    } else {
+        vec!["private_stack_not_ready"]
+    };
+    json!({
+        "status": if ready_status { "ok" } else { "degraded" },
+        "service": "thumper-relay",
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_secs": state.uptime_secs(),
         "devices": state.device_count(),
         "mcp_clients": state.mcp_client_count(),
         "gpu_providers": state.gpu_provider_count(),
+        "attested_provider_count": attested_provider_count,
         "ohttp_enabled": ready.ohttp_enabled,
         "did_set_bootstrapped": ready.did_set_bootstrapped,
         "did_set_fresh": ready.did_set_fresh,
         "private_ready": ready.private_ready,
         "private_reason_codes": ready.reason_codes,
-    }))
+        "private_capacity_ready": private_capacity_ready,
+        "capacity_reason_codes": capacity_reason_codes,
+        "degraded": !ready_status || !private_capacity_ready,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    })
 }
 
 /// Private-path readiness probe.
@@ -46,6 +95,15 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
 /// - `503` when private stack is not ready, with reason codes.
 pub async fn ready_private(State(state): State<AppState>) -> impl IntoResponse {
     let ready = state.private_readiness();
+    let attested_provider_count = state.list_attested_enclaves().len();
+    let private_capacity_ready = ready.private_ready && attested_provider_count > 0;
+    let capacity_reason_codes: Vec<&str> = if private_capacity_ready {
+        Vec::new()
+    } else if ready.private_ready {
+        vec!["no_attested_private_providers"]
+    } else {
+        vec!["private_stack_not_ready"]
+    };
     let status = if ready.private_ready {
         axum::http::StatusCode::OK
     } else {
@@ -63,6 +121,9 @@ pub async fn ready_private(State(state): State<AppState>) -> impl IntoResponse {
             "did_set_bootstrapped": ready.did_set_bootstrapped,
             "did_set_fresh": ready.did_set_fresh,
             "reason_codes": ready.reason_codes,
+            "attested_provider_count": attested_provider_count,
+            "private_capacity_ready": private_capacity_ready,
+            "capacity_reason_codes": capacity_reason_codes,
         })),
     )
 }
@@ -128,10 +189,7 @@ fn message_type_name(msg: &MessageType) -> &'static str {
 }
 
 /// WebSocket upgrade handler.
-pub async fn ws_upgrade(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.max_message_size(state.config().max_message_size_bytes)
         .on_upgrade(move |socket| handle_ws(socket, state))
 }
@@ -244,30 +302,26 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
         ConnectionRole::GpuProvider => {
             // GPU provider must send ProviderAdvertise as second message
             let advertise = match ws_receiver.next().await {
-                Some(Ok(Message::Text(text))) => {
-                    match serde_json::from_str::<Envelope>(&text) {
-                        Ok(env) => match env.message {
-                            MessageType::ProviderAdvertise(adv) => adv,
-                            _ => {
-                                let _ = ws_sender
-                                    .send(text_msg(
-                                        json!({"error": "expected ProviderAdvertise message"})
-                                            .to_string(),
-                                    ))
-                                    .await;
-                                return;
-                            }
-                        },
-                        Err(_) => {
+                Some(Ok(Message::Text(text))) => match serde_json::from_str::<Envelope>(&text) {
+                    Ok(env) => match env.message {
+                        MessageType::ProviderAdvertise(adv) => adv,
+                        _ => {
                             let _ = ws_sender
                                 .send(text_msg(
-                                    json!({"error": "invalid envelope"}).to_string(),
+                                    json!({"error": "expected ProviderAdvertise message"})
+                                        .to_string(),
                                 ))
                                 .await;
                             return;
                         }
+                    },
+                    Err(_) => {
+                        let _ = ws_sender
+                            .send(text_msg(json!({"error": "invalid envelope"}).to_string()))
+                            .await;
+                        return;
                     }
-                }
+                },
                 _ => return,
             };
 
@@ -294,9 +348,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                 message: Some("registered".to_string()),
             }));
             let _ = ws_sender
-                .send(text_msg(
-                    serde_json::to_string(&ack).unwrap_or_default(),
-                ))
+                .send(text_msg(serde_json::to_string(&ack).unwrap_or_default()))
                 .await;
 
             device_pubkey_for_mcp = None;
@@ -367,10 +419,9 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                                 .map(|(pubkey, label)| ConnectedDevice { pubkey, label })
                                 .collect();
 
-                            let response =
-                                envelope.response(MessageType::ConnectedDevicesResult(
-                                    ConnectedDevicesResult { devices },
-                                ));
+                            let response = envelope.response(MessageType::ConnectedDevicesResult(
+                                ConnectedDevicesResult { devices },
+                            ));
                             let _ = tx_clone.send(text_msg(
                                 serde_json::to_string(&response).unwrap_or_default(),
                             ));
@@ -378,7 +429,9 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                         }
 
                         // Record command in metrics
-                        state.metrics().record_command(message_type_name(&envelope.message));
+                        state
+                            .metrics()
+                            .record_command(message_type_name(&envelope.message));
 
                         // MCP client → device: forward command to the target device
                         if let Some(ref target) = device_target {
@@ -415,8 +468,10 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                     ConnectionRole::Device => {
                         // If the device sends a DeviceInfoResult, extract the label
                         if let MessageType::DeviceInfoResult(ref info) = envelope.message {
-                            let label =
-                                format!("{} {} (Android {})", info.manufacturer, info.model, info.android_version);
+                            let label = format!(
+                                "{} {} (Android {})",
+                                info.manufacturer, info.model, info.android_version
+                            );
                             state.set_device_label(&auth_pubkey_clone, label);
                         }
 
@@ -601,30 +656,26 @@ pub async fn dispatch_inference(
 
     // Await response with 120s timeout
     match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
-        Ok(Ok(response_envelope)) => {
-            match response_envelope.message {
-                MessageType::InferenceResponse(resp) => {
-                    Json(json!({
-                        "job_id": resp.job_id,
-                        "text": resp.text,
-                        "input_tokens": resp.input_tokens,
-                        "output_tokens": resp.output_tokens,
-                        "latency_ms": resp.latency_ms,
-                    }))
-                    .into_response()
-                }
-                MessageType::Error(err) => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": err.message, "code": err.code})),
-                )
-                    .into_response(),
-                _ => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "unexpected response type from provider"})),
-                )
-                    .into_response(),
-            }
-        }
+        Ok(Ok(response_envelope)) => match response_envelope.message {
+            MessageType::InferenceResponse(resp) => Json(json!({
+                "job_id": resp.job_id,
+                "text": resp.text,
+                "input_tokens": resp.input_tokens,
+                "output_tokens": resp.output_tokens,
+                "latency_ms": resp.latency_ms,
+            }))
+            .into_response(),
+            MessageType::Error(err) => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": err.message, "code": err.code})),
+            )
+                .into_response(),
+            _ => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "unexpected response type from provider"})),
+            )
+                .into_response(),
+        },
         Ok(Err(_)) => {
             // Oneshot sender was dropped (provider disconnected)
             state.decrement_gpu_provider_jobs(&req.provider_pubkey);
@@ -856,8 +907,8 @@ pub(crate) fn handle_provider_attest(
             Ok(mut enclave) => {
                 enclave.provider_id = provider_id.to_string();
                 let expires_at = enclave.expires_at_unix;
-                let key_id = state
-                    .insert_attested_enclave(enclave, payload.vendor_quote_b64.clone());
+                let key_id =
+                    state.insert_attested_enclave(enclave, payload.vendor_quote_b64.clone());
                 return ProviderAttestAckPayload {
                     accepted: true,
                     enclave_key_id: Some(key_id),
@@ -888,9 +939,7 @@ pub(crate) fn handle_provider_attest(
             accepted: false,
             enclave_key_id: None,
             expires_at: None,
-            reason: Some(
-                "GHOLA_ATTEST_SIGNING_PUB unset; refusing to accept attestation".into(),
-            ),
+            reason: Some("GHOLA_ATTEST_SIGNING_PUB unset; refusing to accept attestation".into()),
         };
     }
 
@@ -1084,11 +1133,7 @@ pub async fn provider_attest_http(
     if ack.accepted {
         (axum::http::StatusCode::OK, Json(json!(ack))).into_response()
     } else {
-        (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(json!(ack)),
-        )
-            .into_response()
+        (axum::http::StatusCode::BAD_REQUEST, Json(json!(ack))).into_response()
     }
 }
 
@@ -1233,43 +1278,41 @@ pub async fn ohttp_gateway(
     // DID membership + nonce replay + per-DID rate limit). The status
     // code from the validator is forwarded inside the BHTTP response so
     // the client surfaces the real failure through the encrypted tunnel.
-    let (resp_status, resp_json) = if bhttp_req.method.eq_ignore_ascii_case("POST")
-        && bhttp_req.path == "/inference/sealed"
-    {
-        match serde_json::from_slice::<SealedInferenceDispatchRequest>(&bhttp_req.body) {
-            Ok(parsed) => match base64::Engine::decode(
-                &base64::engine::general_purpose::STANDARD,
-                &parsed.sealed_request_b64,
-            ) {
-                Ok(sealed_bytes) => match crate::auth::validate_sealed_envelope_bytes(
-                    &state,
-                    &sealed_bytes,
+    let (resp_status, resp_json) =
+        if bhttp_req.method.eq_ignore_ascii_case("POST") && bhttp_req.path == "/inference/sealed" {
+            match serde_json::from_slice::<SealedInferenceDispatchRequest>(&bhttp_req.body) {
+                Ok(parsed) => match base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &parsed.sealed_request_b64,
                 ) {
-                    Ok(_header) => handle_sealed_inference(&state, parsed).await,
-                    Err(status) => (
-                        status,
-                        json!({
-                            "error": "sealed inference rejected by gateway auth",
-                            "status": status.as_u16(),
-                        }),
+                    Ok(sealed_bytes) => {
+                        match crate::auth::validate_sealed_envelope_bytes(&state, &sealed_bytes) {
+                            Ok(_header) => handle_sealed_inference(&state, parsed).await,
+                            Err(status) => (
+                                status,
+                                json!({
+                                    "error": "sealed inference rejected by gateway auth",
+                                    "status": status.as_u16(),
+                                }),
+                            ),
+                        }
+                    }
+                    Err(e) => (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        json!({"error": format!("bad sealed_request_b64: {e}")}),
                     ),
                 },
                 Err(e) => (
                     axum::http::StatusCode::BAD_REQUEST,
-                    json!({"error": format!("bad sealed_request_b64: {e}")}),
+                    json!({"error": format!("invalid sealed inference body: {e}")}),
                 ),
-            },
-            Err(e) => (
-                axum::http::StatusCode::BAD_REQUEST,
-                json!({"error": format!("invalid sealed inference body: {e}")}),
-            ),
-        }
-    } else {
-        (
-            axum::http::StatusCode::NOT_FOUND,
-            json!({"error": "OHTTP gateway: unsupported inner path", "path": bhttp_req.path}),
-        )
-    };
+            }
+        } else {
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                json!({"error": "OHTTP gateway: unsupported inner path", "path": bhttp_req.path}),
+            )
+        };
 
     let body_bytes = serde_json::to_vec(&resp_json).unwrap_or_default();
     let bhttp_resp = ohttp::BhttpResponse {

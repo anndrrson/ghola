@@ -9,11 +9,13 @@ pub mod services;
 pub mod state;
 
 use axum::extract::State;
-use axum::http::HeaderValue;
+use axum::http::{HeaderValue, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::{delete, get, patch, post};
 use axum::Json;
 use axum::Router;
-use serde_json::json;
+use serde_json::{json, Map, Value};
+use std::time::Duration;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -140,6 +142,8 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         // Health
         .route("/health", get(health))
+        .route("/healthz", get(healthz))
+        .route("/ready", get(ready))
         .route("/health/providers", get(health_providers))
         .route("/health/payments", get(health_payments))
         .route("/health/privacy", get(health_privacy))
@@ -515,41 +519,281 @@ fn build_cors_layer(base_url: &str) -> CorsLayer {
         .allow_credentials(true)
 }
 
-async fn health(State(state): State<AppState>) -> String {
-    let user_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users")
-        .fetch_one(&state.db)
-        .await;
-    let gmail_configured =
-        state.config.gmail_client_id.is_some() && state.config.gmail_client_secret.is_some();
+async fn health(State(state): State<AppState>) -> Json<Value> {
+    let snapshot = readiness_snapshot(&state).await;
+    Json(standard_health_body(&state, snapshot))
+}
 
-    let providers = format!(
-        "google={} apple={} stripe={} bland={} claude={} gmail={} telegram={} groq={} cerebras={} gemini={} openrouter={}",
-        state.config.google_client_id.is_some(),
-        state.config.apple_client_id.is_some(),
-        state.config.stripe_secret_key.is_some(),
-        state.config.bland_api_key.is_some(),
-        state.config.claude_api_key.is_some(),
-        gmail_configured,
-        state.config.telegram_bot_token.is_some(),
-        state.config.groq_api_key.is_some(),
-        state.config.cerebras_api_key.is_some(),
-        state.config.google_gemini_api_key.is_some(),
-        state.config.openrouter_api_key.is_some(),
+async fn healthz() -> &'static str {
+    "ok"
+}
+
+async fn ready(State(state): State<AppState>) -> impl IntoResponse {
+    let snapshot = readiness_snapshot(&state).await;
+    let status = if snapshot.ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (status, Json(standard_health_body(&state, snapshot)))
+}
+
+struct ReadinessSnapshot {
+    ready: bool,
+    degraded: bool,
+    checks: Map<String, Value>,
+    reason_codes: Vec<String>,
+}
+
+fn standard_health_body(state: &AppState, snapshot: ReadinessSnapshot) -> Value {
+    json!({
+        "status": if snapshot.ready { "ok" } else { "degraded" },
+        "service": "thumper-cloud",
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_secs": state.uptime_secs(),
+        "checks": snapshot.checks,
+        "degraded": snapshot.degraded,
+        "reason_codes": snapshot.reason_codes,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+async fn readiness_snapshot(state: &AppState) -> ReadinessSnapshot {
+    let mut checks = Map::new();
+    let mut reason_codes = Vec::new();
+    let mut degraded = false;
+
+    add_check(
+        &mut checks,
+        &mut reason_codes,
+        &mut degraded,
+        "db",
+        check_db(&state.db).await,
+        true,
+        "db_readiness_failed",
     );
 
-    let cascade_stats = state.free_cascade.stats().await;
-    let cascade_info: Vec<String> = cascade_stats
-        .iter()
-        .map(|(name, (used, limit))| format!("{name}={used}/{limit}"))
-        .collect();
+    let llm_configured = llm_provider_configured(&state.config);
+    add_check(
+        &mut checks,
+        &mut reason_codes,
+        &mut degraded,
+        "llm_provider_configured",
+        json!({
+            "ok": llm_configured,
+            "configured": llm_provider_names(&state.config),
+        }),
+        true,
+        "no_llm_provider_configured",
+    );
+
+    add_check(
+        &mut checks,
+        &mut reason_codes,
+        &mut degraded,
+        "relay_private",
+        probe_json_endpoint(format!(
+            "{}/ready/private",
+            state.config.relay_url.trim_end_matches('/')
+        ))
+        .await,
+        true,
+        "relay_readiness_failed",
+    );
+
+    add_check(
+        &mut checks,
+        &mut reason_codes,
+        &mut degraded,
+        "receipts",
+        probe_json_endpoint(format!(
+            "{}/health",
+            receipts_base_url().trim_end_matches('/')
+        ))
+        .await,
+        true,
+        "receipts_readiness_failed",
+    );
+
+    let shielded = services::x402_service::shielded_stablecoin_runtime_status();
+    let shielded_ready = shielded.ready;
+    add_check(
+        &mut checks,
+        &mut reason_codes,
+        &mut degraded,
+        "payment_private_rail",
+        json!({
+            "ok": shielded_ready,
+            "required": false,
+            "shielded_stablecoin": shielded,
+        }),
+        false,
+        "private_rail_not_ready",
+    );
+
+    add_check(
+        &mut checks,
+        &mut reason_codes,
+        &mut degraded,
+        "migrations",
+        json!({
+            "ok": true,
+            "detail": "startup migrations completed before server bind",
+        }),
+        true,
+        "migrations_not_applied",
+    );
 
     let community_count = state.compute_cache.lock().await.len();
+    checks.insert(
+        "community_provider_cache".to_string(),
+        json!({
+            "ok": true,
+            "required": false,
+            "provider_count": community_count,
+        }),
+    );
 
-    format!(
-        "ok users={:?} providers=[{providers}] cascade=[{}] community={community_count}",
-        user_count,
-        cascade_info.join(" "),
-    )
+    let ready = reason_codes.is_empty();
+    ReadinessSnapshot {
+        ready,
+        degraded,
+        checks,
+        reason_codes,
+    }
+}
+
+fn add_check(
+    checks: &mut Map<String, Value>,
+    reason_codes: &mut Vec<String>,
+    degraded: &mut bool,
+    name: &'static str,
+    mut check: Value,
+    required: bool,
+    failure_code: &'static str,
+) {
+    let ok = check.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    if let Some(obj) = check.as_object_mut() {
+        obj.entry("required".to_string()).or_insert(json!(required));
+    }
+    if !ok {
+        *degraded = true;
+        if required {
+            reason_codes.push(failure_code.to_string());
+        }
+    }
+    checks.insert(name.to_string(), check);
+}
+
+async fn check_db(pool: &sqlx::PgPool) -> Value {
+    match sqlx::query_scalar::<_, i64>("SELECT 1")
+        .fetch_one(pool)
+        .await
+    {
+        Ok(1) => json!({ "ok": true }),
+        Ok(other) => {
+            json!({ "ok": false, "detail": format!("unexpected SELECT 1 result: {other}") })
+        }
+        Err(err) => {
+            tracing::warn!("cloud readiness DB probe failed: {err}");
+            json!({ "ok": false, "detail": "database_unreachable" })
+        }
+    }
+}
+
+async fn probe_json_endpoint(url: String) -> Value {
+    let public_url = public_probe_url(&url);
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(client) => client,
+        Err(err) => {
+            tracing::warn!(url = %public_url, "readiness HTTP client build failed: {err}");
+            return json!({ "ok": false, "url": public_url, "detail": "http_client_unavailable" });
+        }
+    };
+
+    match client.get(&url).send().await {
+        Ok(response) => {
+            let status = response.status();
+            let summary = response
+                .json::<Value>()
+                .await
+                .ok()
+                .map(dependency_body_summary);
+            json!({
+                "ok": status.is_success(),
+                "url": public_url,
+                "status_code": status.as_u16(),
+                "summary": summary,
+            })
+        }
+        Err(err) => {
+            tracing::warn!(url = %public_url, "readiness dependency probe failed: {err}");
+            json!({
+                "ok": false,
+                "url": public_url,
+                "detail": "dependency_probe_failed",
+            })
+        }
+    }
+}
+
+fn public_probe_url(raw: &str) -> String {
+    match reqwest::Url::parse(raw) {
+        Ok(mut parsed) => {
+            parsed.set_query(None);
+            parsed.set_fragment(None);
+            parsed.to_string()
+        }
+        Err(_) => "invalid_url".to_string(),
+    }
+}
+
+fn dependency_body_summary(body: Value) -> Value {
+    json!({
+        "service": body.get("service").and_then(Value::as_str),
+        "status": body.get("status").and_then(Value::as_str),
+        "private_ready": body.get("private_ready").and_then(Value::as_bool),
+        "private_capacity_ready": body.get("private_capacity_ready").and_then(Value::as_bool),
+        "attested_provider_count": body.get("attested_provider_count").and_then(Value::as_u64),
+        "capacity_reason_codes": body.get("capacity_reason_codes").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn receipts_base_url() -> String {
+    std::env::var("RECEIPTS_BASE_URL")
+        .or_else(|_| std::env::var("SAID_RECEIPTS_BASE_URL"))
+        .unwrap_or_else(|_| "https://ghola-receipts.onrender.com".to_string())
+}
+
+fn llm_provider_configured(config: &CloudConfig) -> bool {
+    config.claude_api_key.is_some()
+        || config.groq_api_key.is_some()
+        || config.cerebras_api_key.is_some()
+        || config.google_gemini_api_key.is_some()
+        || config.openrouter_api_key.is_some()
+}
+
+fn llm_provider_names(config: &CloudConfig) -> Vec<&'static str> {
+    let mut providers = Vec::new();
+    if config.claude_api_key.is_some() {
+        providers.push("claude");
+    }
+    if config.groq_api_key.is_some() {
+        providers.push("groq");
+    }
+    if config.cerebras_api_key.is_some() {
+        providers.push("cerebras");
+    }
+    if config.google_gemini_api_key.is_some() {
+        providers.push("gemini");
+    }
+    if config.openrouter_api_key.is_some() {
+        providers.push("openrouter");
+    }
+    providers
 }
 
 async fn health_providers(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -678,6 +922,95 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod privacy_log_safety_tests {
+    use super::*;
+
+    fn test_config() -> CloudConfig {
+        CloudConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            database_url: "postgres://user:pass@localhost/test".to_string(),
+            jwt_secret: "test-secret".to_string(),
+            bland_api_key: None,
+            bland_webhook_url: None,
+            claude_api_key: Some("claude-test".to_string()),
+            google_client_id: None,
+            google_client_secret: None,
+            apple_client_id: None,
+            gmail_client_id: None,
+            gmail_client_secret: None,
+            stripe_secret_key: None,
+            stripe_webhook_secret: None,
+            stripe_price_pro: None,
+            stripe_price_unlimited: None,
+            base_url: "http://localhost:3000".to_string(),
+            encryption_key: [7u8; 32],
+            telegram_bot_token: None,
+            solana_rpc_url: "https://api.devnet.solana.com".to_string(),
+            groq_api_key: None,
+            cerebras_api_key: None,
+            google_gemini_api_key: None,
+            openrouter_api_key: None,
+            relay_url: "http://localhost:8080".to_string(),
+            platform_wallet_address: None,
+            treasury_mnemonic: None,
+            min_provider_reputation: 0.3,
+            max_escrow_age_secs: 300,
+            provider_payout_interval_secs: 3600,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cloud_health_body_uses_standard_json_contract() {
+        let config = test_config();
+        let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pool");
+        let state = AppState::new(config, pool);
+        let body = standard_health_body(
+            &state,
+            ReadinessSnapshot {
+                ready: true,
+                degraded: false,
+                checks: Map::new(),
+                reason_codes: Vec::new(),
+            },
+        );
+
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["service"], "thumper-cloud");
+        assert!(body.get("version").is_some());
+        assert!(body.get("uptime_secs").is_some());
+        assert!(body.get("checks").is_some());
+        assert_eq!(body["degraded"], false);
+        assert!(body.get("timestamp").is_some());
+    }
+
+    #[test]
+    fn llm_provider_config_check_tracks_configured_provider() {
+        let mut config = test_config();
+        assert!(llm_provider_configured(&config));
+        assert_eq!(llm_provider_names(&config), vec!["claude"]);
+
+        config.claude_api_key = None;
+        assert!(!llm_provider_configured(&config));
+        assert!(llm_provider_names(&config).is_empty());
+    }
+
+    #[test]
+    fn dependency_probe_summary_redacts_query_and_raw_body() {
+        assert_eq!(
+            public_probe_url("https://example.test/ready?api-key=secret#frag"),
+            "https://example.test/ready"
+        );
+
+        let summary = dependency_body_summary(json!({
+            "service": "relay",
+            "status": "ok",
+            "private_ready": true,
+            "secret": "must-not-leak",
+        }));
+        assert_eq!(summary["service"], "relay");
+        assert_eq!(summary["private_ready"], true);
+        assert!(summary.get("secret").is_none());
+    }
+
     #[test]
     fn telegram_notifications_do_not_embed_provider_content() {
         let emails = include_str!("routes/emails.rs");

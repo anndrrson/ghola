@@ -98,7 +98,11 @@ impl OhttpKeypair {
     pub fn from_secret_bytes(key_id: u8, secret: [u8; NSK]) -> Self {
         let secret = StaticSecret::from(secret);
         let public = PublicKey::from(&secret);
-        Self { key_id, secret, public }
+        Self {
+            key_id,
+            secret,
+            public,
+        }
     }
 
     /// Mint a fresh keypair using the OS RNG.
@@ -167,7 +171,8 @@ fn suite_id_hpke() -> [u8; 10] {
 
 /// RFC 9180 §4 LabeledExtract.
 fn labeled_extract(suite_id: &[u8], salt: &[u8], label: &[u8], ikm: &[u8]) -> [u8; NH] {
-    let mut labeled_ikm = Vec::with_capacity(HPKE_VERSION.len() + suite_id.len() + label.len() + ikm.len());
+    let mut labeled_ikm =
+        Vec::with_capacity(HPKE_VERSION.len() + suite_id.len() + label.len() + ikm.len());
     labeled_ikm.extend_from_slice(HPKE_VERSION);
     labeled_ikm.extend_from_slice(suite_id);
     labeled_ikm.extend_from_slice(label);
@@ -186,7 +191,8 @@ fn labeled_expand(
     info: &[u8],
     length: usize,
 ) -> Result<Vec<u8>, OhttpError> {
-    let mut labeled_info = Vec::with_capacity(2 + HPKE_VERSION.len() + suite_id.len() + label.len() + info.len());
+    let mut labeled_info =
+        Vec::with_capacity(2 + HPKE_VERSION.len() + suite_id.len() + label.len() + info.len());
     labeled_info.extend_from_slice(&(length as u16).to_be_bytes());
     labeled_info.extend_from_slice(HPKE_VERSION);
     labeled_info.extend_from_slice(suite_id);
@@ -194,7 +200,8 @@ fn labeled_expand(
     labeled_info.extend_from_slice(info);
     let hkdf = Hkdf::<Sha256>::from_prk(prk).map_err(|_| OhttpError::HkdfExpand)?;
     let mut out = vec![0u8; length];
-    hkdf.expand(&labeled_info, &mut out).map_err(|_| OhttpError::HkdfExpand)?;
+    hkdf.expand(&labeled_info, &mut out)
+        .map_err(|_| OhttpError::HkdfExpand)?;
     Ok(out)
 }
 
@@ -234,7 +241,8 @@ fn key_schedule_base(
     let mut secret = labeled_extract(&suite, shared_secret, b"secret", &[]);
 
     let mut key_v = labeled_expand(&suite, &secret, b"key", &key_schedule_context, NK)?;
-    let mut base_nonce_v = labeled_expand(&suite, &secret, b"base_nonce", &key_schedule_context, NN)?;
+    let mut base_nonce_v =
+        labeled_expand(&suite, &secret, b"base_nonce", &key_schedule_context, NN)?;
     let mut exporter_v = labeled_expand(&suite, &secret, b"exp", &key_schedule_context, NH)?;
 
     let mut key = Zeroizing::new([0u8; NK]);
@@ -255,8 +263,18 @@ fn key_schedule_base(
     Ok((key, base_nonce, exporter))
 }
 
-fn export(exporter_secret: &[u8; NH], exporter_context: &[u8], length: usize) -> Result<Vec<u8>, OhttpError> {
-    labeled_expand(&suite_id_hpke(), exporter_secret, b"sec", exporter_context, length)
+fn export(
+    exporter_secret: &[u8; NH],
+    exporter_context: &[u8],
+    length: usize,
+) -> Result<Vec<u8>, OhttpError> {
+    labeled_expand(
+        &suite_id_hpke(),
+        exporter_secret,
+        b"sec",
+        exporter_context,
+        length,
+    )
 }
 
 // ── Capsule encode / decode ────────────────────────────────────────────
@@ -330,7 +348,10 @@ pub fn decapsulate_request(
 
 /// Encapsulate an outbound OHTTP response. Returns the wire capsule
 /// `enc_nonce || ct` ready to ship back to the client.
-pub fn encapsulate_response(ctx: &ResponseContext, response_plaintext: &[u8]) -> Result<Vec<u8>, OhttpError> {
+pub fn encapsulate_response(
+    ctx: &ResponseContext,
+    response_plaintext: &[u8],
+) -> Result<Vec<u8>, OhttpError> {
     // RFC 9458 §4.4: response key + nonce derived from HPKE Export with
     // label "message/bhttp response", context = enc || enc_nonce, plus
     // a per-message random salt (response_nonce) of Nk_resp = max(Nk,Nn)
@@ -406,7 +427,13 @@ pub fn encapsulate_request_for_test(
     let (key, base_nonce, exporter_secret) = key_schedule_base(&shared_secret, &info)?;
     let cipher = Aes256Gcm::new_from_slice(&key[..]).map_err(|_| OhttpError::AeadSeal)?;
     let ct = cipher
-        .encrypt(Nonce::from_slice(&base_nonce[..]), Payload { msg: plaintext, aad: &[] })
+        .encrypt(
+            Nonce::from_slice(&base_nonce[..]),
+            Payload {
+                msg: plaintext,
+                aad: &[],
+            },
+        )
         .map_err(|_| OhttpError::AeadSeal)?;
 
     let mut capsule = Vec::with_capacity(7 + NPK + ct.len());
@@ -450,7 +477,10 @@ pub fn decapsulate_response_for_test(
 
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| OhttpError::AeadOpen)?;
     let pt = cipher
-        .decrypt(Nonce::from_slice(&nonce_bytes), Payload { msg: ct, aad: &[] })
+        .decrypt(
+            Nonce::from_slice(&nonce_bytes),
+            Payload { msg: ct, aad: &[] },
+        )
         .map_err(|_| OhttpError::AeadOpen)?;
     Ok(pt)
 }
@@ -677,8 +707,8 @@ mod tests {
 
         let mut enc_arr = [0u8; NPK];
         enc_arr.copy_from_slice(&capsule[7..7 + NPK]);
-        let decoded_resp =
-            decapsulate_response_for_test(&exporter, &enc_arr, &response_capsule).expect("open resp");
+        let decoded_resp = decapsulate_response_for_test(&exporter, &enc_arr, &response_capsule)
+            .expect("open resp");
         assert_eq!(decoded_resp, response_plaintext);
     }
 
@@ -710,7 +740,10 @@ mod tests {
             path: "/inference/sealed".to_string(),
             headers: vec![
                 ("content-type".to_string(), "application/json".to_string()),
-                ("authorization".to_string(), "Bearer abc.def.ghi".to_string()),
+                (
+                    "authorization".to_string(),
+                    "Bearer abc.def.ghi".to_string(),
+                ),
             ],
             body: b"{\"job_id\":\"x\"}".to_vec(),
         };
@@ -813,8 +846,7 @@ mod proptest_ohttp {
 
             let mut enc_arr = [0u8; NPK];
             enc_arr.copy_from_slice(&capsule[7..7 + NPK]);
-            let opened =
-                decapsulate_response_for_test(&exporter, &enc_arr, &resp_capsule).unwrap();
+            let opened = decapsulate_response_for_test(&exporter, &enc_arr, &resp_capsule).unwrap();
             assert_eq!(opened, resp_pt, "response round-trip mismatch on iter {i}");
         }
     }
@@ -957,7 +989,10 @@ mod proptest_ohttp {
                 decapsulate_request(&kp, &buf)
             }));
             assert!(res.is_ok(), "panicked on random {len}-byte capsule");
-            assert!(res.unwrap().is_err(), "random {len}-byte capsule somehow opened");
+            assert!(
+                res.unwrap().is_err(),
+                "random {len}-byte capsule somehow opened"
+            );
         }
     }
 

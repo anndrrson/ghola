@@ -34,11 +34,11 @@ use std::path::PathBuf;
 
 use ed25519_dalek::SigningKey;
 use rand::rngs::StdRng;
-use rand::SeedableRng;
 use rand::RngCore;
+use rand::SeedableRng;
 use said_envelope::{
-    did_key_from_verifying, ed25519_signing_to_x25519, ed25519_verifying_to_x25519,
-    seal_with_rng, RecipientKind, SealParams,
+    did_key_from_verifying, ed25519_signing_to_x25519, ed25519_verifying_to_x25519, seal_with_rng,
+    RecipientKind, SealParams,
 };
 use serde::Serialize;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret};

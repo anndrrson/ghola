@@ -124,8 +124,10 @@ fn verify_auth_valid_ed25519_signature() {
 
     let canonical = message.canonical_bytes();
     let signature = signing_key.sign(&canonical);
-    let sig_b64 =
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, signature.to_bytes());
+    let sig_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        signature.to_bytes(),
+    );
 
     let payload = AuthPayload {
         message,
@@ -156,8 +158,10 @@ fn verify_auth_invalid_signature_rejected() {
     let wrong_key = SigningKey::generate(&mut OsRng);
     let canonical = message.canonical_bytes();
     let bad_sig = wrong_key.sign(&canonical);
-    let sig_b64 =
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bad_sig.to_bytes());
+    let sig_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        bad_sig.to_bytes(),
+    );
 
     let payload = AuthPayload {
         message,
@@ -318,7 +322,10 @@ fn private_preflight_accepts_valid_production_config() {
     cfg.did_set_api_key = Some("relay-secret".to_string());
 
     let reasons = cfg.private_preflight_failures();
-    assert!(reasons.is_empty(), "unexpected preflight failures: {reasons:?}");
+    assert!(
+        reasons.is_empty(),
+        "unexpected preflight failures: {reasons:?}"
+    );
 }
 
 fn mock_attest_payload() -> ProviderAttestPayload {
@@ -496,8 +503,8 @@ async fn dispatch_inference_sealed_forwards_opaque_bytes() {
     let dispatcher = tokio::spawn(async move {
         use crate::handlers::{dispatch_inference_sealed, SealedInferenceDispatchRequest};
         use axum::extract::State;
-        use axum::Json;
         use axum::response::IntoResponse;
+        use axum::Json;
         let resp = dispatch_inference_sealed(
             State(dispatch_state),
             Json(SealedInferenceDispatchRequest {
@@ -569,9 +576,12 @@ async fn list_attested_providers_returns_inserted_enclaves() {
     use crate::handlers::{list_attested_providers, ListAttestedQuery};
     use axum::extract::{Query, State};
     use axum::response::IntoResponse;
-    let response = list_attested_providers(State(state.clone()), Query(ListAttestedQuery { model: None }))
-        .await
-        .into_response();
+    let response = list_attested_providers(
+        State(state.clone()),
+        Query(ListAttestedQuery { model: None }),
+    )
+    .await
+    .into_response();
     let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
         .await
         .unwrap();
@@ -600,7 +610,10 @@ async fn ready_private_returns_503_when_private_stack_not_ready() {
     use axum::extract::State;
     use axum::response::IntoResponse;
     let response = ready_private(State(state)).await.into_response();
-    assert_eq!(response.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
     let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
         .await
         .expect("read body");
@@ -633,6 +646,48 @@ async fn ready_private_returns_200_when_private_stack_ready() {
     assert_eq!(json["ohttp_enabled"], true);
     assert_eq!(json["did_set_bootstrapped"], true);
     assert_eq!(json["did_set_fresh"], true);
+    assert_eq!(json["attested_provider_count"], 0);
+    assert_eq!(json["private_capacity_ready"], false);
+    let capacity_reasons = json["capacity_reason_codes"]
+        .as_array()
+        .expect("capacity_reason_codes array");
+    let capacity_reasons: Vec<&str> = capacity_reasons.iter().filter_map(|v| v.as_str()).collect();
+    assert!(capacity_reasons.contains(&"no_attested_private_providers"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ready_private_reports_capacity_ready_with_attested_provider() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = EnvGuard::set(&[
+        ("THUMPER_ALLOW_UNATTESTED", Some("1")),
+        ("GHOLA_ATTEST_SIGNING_PUB", None),
+    ]);
+
+    let mut cfg = test_config();
+    cfg.ohttp_key_secret_hex =
+        Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string());
+    let did_set = crate::did_set::DidSet::new();
+    did_set.insert_for_test("did:key:ztest".to_string());
+    let state = AppState::new_with_did_set(cfg, did_set);
+    let ack = handle_provider_attest(&state, "provider-ready", mock_attest_payload());
+    assert!(ack.accepted, "provider attest rejected: {:?}", ack.reason);
+
+    use crate::handlers::ready_private;
+    use axum::extract::State;
+    use axum::response::IntoResponse;
+    let response = ready_private(State(state)).await.into_response();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(json["private_ready"], true);
+    assert_eq!(json["attested_provider_count"], 1);
+    assert_eq!(json["private_capacity_ready"], true);
+    assert!(json["capacity_reason_codes"]
+        .as_array()
+        .expect("capacity_reason_codes array")
+        .is_empty());
 }
 
 // -- H100 CC + TDX dispatch tests ----------------------------------
@@ -689,7 +744,10 @@ fn provider_attest_accepts_well_formed_h100_jwt() {
     );
     let mut h = <sha2::Sha256 as sha2::Digest>::new();
     sha2::Digest::update(&mut h, &measurement);
-    let allow_sig = allow_sk.sign(&sha2::Digest::finalize(h)).to_bytes().to_vec();
+    let allow_sig = allow_sk
+        .sign(&sha2::Digest::finalize(h))
+        .to_bytes()
+        .to_vec();
 
     let payload = ProviderAttestPayload {
         tee_kind: TeeKind::H100Cc,
@@ -733,7 +791,10 @@ fn provider_attest_rejects_h100_with_cc_off() {
     );
     let mut h = <sha2::Sha256 as sha2::Digest>::new();
     sha2::Digest::update(&mut h, &measurement);
-    let allow_sig = allow_sk.sign(&sha2::Digest::finalize(h)).to_bytes().to_vec();
+    let allow_sig = allow_sk
+        .sign(&sha2::Digest::finalize(h))
+        .to_bytes()
+        .to_vec();
 
     let payload = ProviderAttestPayload {
         tee_kind: TeeKind::H100Cc,
@@ -808,7 +869,10 @@ fn provider_attest_accepts_well_formed_tdx_quote() {
     );
     let mut h = <sha2::Sha256 as sha2::Digest>::new();
     sha2::Digest::update(&mut h, &measurement);
-    let allow_sig = allow_sk.sign(&sha2::Digest::finalize(h)).to_bytes().to_vec();
+    let allow_sig = allow_sk
+        .sign(&sha2::Digest::finalize(h))
+        .to_bytes()
+        .to_vec();
 
     let payload = ProviderAttestPayload {
         tee_kind: TeeKind::Tdx,
@@ -839,11 +903,17 @@ async fn health_includes_private_readiness_fields() {
         .await
         .expect("read body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(json["service"], "thumper-relay");
+    assert!(json.get("version").is_some());
+    assert!(json.get("uptime_secs").is_some());
     assert!(json.get("ohttp_enabled").is_some());
     assert!(json.get("did_set_bootstrapped").is_some());
     assert!(json.get("did_set_fresh").is_some());
     assert!(json.get("private_ready").is_some());
     assert!(json.get("private_reason_codes").is_some());
+    assert!(json.get("attested_provider_count").is_some());
+    assert!(json.get("private_capacity_ready").is_some());
+    assert!(json.get("capacity_reason_codes").is_some());
 }
 
 // -- AFK hardening sprint: body-size + CORS + COR-P tests -------------
@@ -936,7 +1006,11 @@ async fn cors_preflight_allows_known_origin() {
         .unwrap();
 
     // CORS layer answers preflights with 200 OK + headers.
-    assert!(resp.status().is_success(), "preflight status: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "preflight status: {}",
+        resp.status()
+    );
     let allow_origin = resp
         .headers()
         .get("access-control-allow-origin")

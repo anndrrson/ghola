@@ -2,7 +2,10 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(name = "thumper-relay", about = "Ghola relay server (OHTTP gateway + WS hub)")]
+#[command(
+    name = "thumper-relay",
+    about = "Ghola relay server (OHTTP gateway + WS hub)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -43,8 +46,14 @@ async fn main() {
             // secret line into a secret store immediately.
             println!("# OHTTP gateway keypair (RFC 9458)");
             println!("# key_id = {key_id}");
-            println!("GHOLA_OHTTP_KEY_SECRET_HEX={}", hex::encode(kp.secret.to_bytes()));
-            println!("GHOLA_OHTTP_KEY_PUBLIC_HEX={}", hex::encode(kp.public.as_bytes()));
+            println!(
+                "GHOLA_OHTTP_KEY_SECRET_HEX={}",
+                hex::encode(kp.secret.to_bytes())
+            );
+            println!(
+                "GHOLA_OHTTP_KEY_PUBLIC_HEX={}",
+                hex::encode(kp.public.as_bytes())
+            );
             println!("GHOLA_OHTTP_KEYCONFIG_HEX={}", hex::encode(kp.key_config()));
             return;
         }

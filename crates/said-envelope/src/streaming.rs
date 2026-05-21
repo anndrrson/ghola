@@ -39,7 +39,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey, SIGNA
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{EnvelopeError, NONCE_LEN, Result};
+use crate::{EnvelopeError, Result, NONCE_LEN};
 
 /// Derive the AES-GCM nonce for chunk `index` of a stream keyed on `dek`.
 ///
@@ -213,8 +213,8 @@ impl EnvelopeReceipt {
 
         let vk = crate::verifying_from_did_key(&self.producer_did)?;
         let sig_bytes = hex_decode_64(&self.signature_hex)?;
-        let signature = Signature::from_slice(&sig_bytes)
-            .map_err(|_| EnvelopeError::BadSignature)?;
+        let signature =
+            Signature::from_slice(&sig_bytes).map_err(|_| EnvelopeError::BadSignature)?;
 
         let body = ReceiptSigningInput {
             stream_id: &self.stream_id,
@@ -400,12 +400,18 @@ mod tests {
         // Verifying with a wrong transcript fails.
         let mut wrong = tx;
         wrong[0] ^= 0x01;
-        assert!(matches!(receipt.verify(wrong), Err(EnvelopeError::BadSignature)));
+        assert!(matches!(
+            receipt.verify(wrong),
+            Err(EnvelopeError::BadSignature)
+        ));
 
         // Tampering output_tokens after signing must fail verification.
         let mut tampered = receipt.clone();
         tampered.output_tokens = 999;
-        assert!(matches!(tampered.verify(tx), Err(EnvelopeError::BadSignature)));
+        assert!(matches!(
+            tampered.verify(tx),
+            Err(EnvelopeError::BadSignature)
+        ));
     }
 
     #[test]

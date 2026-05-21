@@ -5,6 +5,7 @@ use axum::extract::ws::Message;
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use std::sync::RwLock;
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 use said_attest::AttestedEnclave;
@@ -88,6 +89,7 @@ struct AppStateInner {
     config: RelayConfig,
     nonce_cache: NonceCache,
     metrics: RelayMetrics,
+    started_at: Instant,
     /// In-memory set of registered Ghola DIDs, refreshed from
     /// thumper-cloud. Used by the sealed-inference auth middleware to
     /// reject requests whose `sender_did` is not a registered user
@@ -173,9 +175,14 @@ impl AppState {
                 config,
                 nonce_cache: NonceCache::new(nonce_ttl),
                 metrics: RelayMetrics::new(),
+                started_at: Instant::now(),
                 did_set,
             }),
         }
+    }
+
+    pub fn uptime_secs(&self) -> u64 {
+        self.inner.started_at.elapsed().as_secs()
     }
 
     /// Cloneable handle to the in-memory DID set holder.
@@ -451,7 +458,9 @@ impl AppState {
         models: Vec<String>,
     ) {
         if let Some(entry) = self.inner.gpu_providers.get(pubkey) {
-            entry.last_activity.store(now_epoch_secs(), Ordering::Relaxed);
+            entry
+                .last_activity
+                .store(now_epoch_secs(), Ordering::Relaxed);
             entry.active_jobs.store(active_jobs, Ordering::Relaxed);
             // `models` from heartbeat is a Vec<String> of model IDs — used for logging/monitoring.
             // The full ProviderModelInfo list stays as advertised.
@@ -471,9 +480,10 @@ impl AppState {
 
     /// Increment active_jobs for a provider. Returns the new count.
     pub fn increment_gpu_provider_jobs(&self, pubkey: &str) -> Option<u32> {
-        self.inner.gpu_providers.get(pubkey).map(|entry| {
-            entry.active_jobs.fetch_add(1, Ordering::Relaxed) + 1
-        })
+        self.inner
+            .gpu_providers
+            .get(pubkey)
+            .map(|entry| entry.active_jobs.fetch_add(1, Ordering::Relaxed) + 1)
     }
 
     /// Decrement active_jobs for a provider.
@@ -665,9 +675,9 @@ impl AppState {
         }
 
         // Clean up rate limiters for devices that are no longer connected
-        self.inner.device_rate_limiters.retain(|key, _| {
-            self.inner.devices.contains_key(key)
-        });
+        self.inner
+            .device_rate_limiters
+            .retain(|key, _| self.inner.devices.contains_key(key));
     }
 
     // -- Attested enclaves --
@@ -707,10 +717,13 @@ impl AppState {
 
     /// Get a clone of the attested enclave with the given key id.
     pub fn get_attested_enclave(&self, key_id: &EnclaveKeyId) -> Option<AttestedEnclave> {
-        self.inner
-            .attested_enclaves
-            .get(key_id)
-            .map(|entry| entry.value().read().unwrap_or_else(|e| e.into_inner()).clone())
+        self.inner.attested_enclaves.get(key_id).map(|entry| {
+            entry
+                .value()
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        })
     }
 
     /// List all currently attested enclaves (clones).
@@ -718,7 +731,13 @@ impl AppState {
         self.inner
             .attested_enclaves
             .iter()
-            .map(|entry| entry.value().read().unwrap_or_else(|e| e.into_inner()).clone())
+            .map(|entry| {
+                entry
+                    .value()
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+            })
             .collect()
     }
 
@@ -773,9 +792,13 @@ impl AppState {
     /// Look up the provider WebSocket session id (long-lived auth pubkey)
     /// bound to an enclave_key_id. Returns `None` if the enclave is unknown.
     pub fn provider_for_enclave(&self, key_id: &EnclaveKeyId) -> Option<String> {
-        self.inner
-            .attested_enclaves
-            .get(key_id)
-            .map(|entry| entry.value().read().unwrap_or_else(|e| e.into_inner()).provider_id.clone())
+        self.inner.attested_enclaves.get(key_id).map(|entry| {
+            entry
+                .value()
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .provider_id
+                .clone()
+        })
     }
 }

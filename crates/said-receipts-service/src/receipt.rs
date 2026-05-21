@@ -63,8 +63,8 @@ impl ReceiptV1 {
     /// 32-byte sha256 digest of the canonicalised receipt body. This
     /// is the Merkle leaf and the primary lookup key in Postgres.
     pub fn hash(&self) -> [u8; 32] {
-        let bytes = serde_json::to_vec(&self.body())
-            .expect("ReceiptBody is plain serde, infallible");
+        let bytes =
+            serde_json::to_vec(&self.body()).expect("ReceiptBody is plain serde, infallible");
         let mut h = Sha256::new();
         h.update(&bytes);
         h.finalize().into()

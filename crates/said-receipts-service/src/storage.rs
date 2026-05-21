@@ -43,6 +43,12 @@ pub struct ReceiptLookup {
     pub created_at_unix: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct StoredReceipt {
+    pub lookup: ReceiptLookup,
+    pub body: Value,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     #[error("not found")]
@@ -64,6 +70,11 @@ pub trait ReceiptsStore: Send + Sync + 'static {
         &self,
         receipt_hash: [u8; 32],
     ) -> Result<Option<ReceiptLookup>, StorageError>;
+
+    async fn get_receipt(
+        &self,
+        receipt_hash: [u8; 32],
+    ) -> Result<Option<StoredReceipt>, StorageError>;
 
     async fn batch_for_id(&self, batch_id: i64) -> Result<Batch, StorageError>;
 
@@ -114,6 +125,7 @@ struct MemoryInner {
 struct MemoryReceipt {
     id: i64,
     receipt_hash: [u8; 32],
+    body: Value,
     batch_id: Option<i64>,
     leaf_index: Option<i32>,
     created_at_unix: i64,
@@ -130,7 +142,7 @@ impl ReceiptsStore for MemoryStore {
     async fn insert_receipt(
         &self,
         receipt_hash: [u8; 32],
-        _body: &Value,
+        body: &Value,
     ) -> Result<(), StorageError> {
         let mut g = self.inner.lock().unwrap();
         if g.receipts.iter().any(|r| r.receipt_hash == receipt_hash) {
@@ -142,6 +154,7 @@ impl ReceiptsStore for MemoryStore {
         g.receipts.push(MemoryReceipt {
             id,
             receipt_hash,
+            body: body.clone(),
             batch_id: None,
             leaf_index: None,
             created_at_unix: now,
@@ -163,6 +176,26 @@ impl ReceiptsStore for MemoryStore {
                 batch_id: r.batch_id,
                 leaf_index: r.leaf_index,
                 created_at_unix: r.created_at_unix,
+            }))
+    }
+
+    async fn get_receipt(
+        &self,
+        receipt_hash: [u8; 32],
+    ) -> Result<Option<StoredReceipt>, StorageError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.receipts
+            .iter()
+            .find(|r| r.receipt_hash == receipt_hash)
+            .map(|r| StoredReceipt {
+                lookup: ReceiptLookup {
+                    id: r.id,
+                    receipt_hash: r.receipt_hash,
+                    batch_id: r.batch_id,
+                    leaf_index: r.leaf_index,
+                    created_at_unix: r.created_at_unix,
+                },
+                body: r.body.clone(),
             }))
     }
 
@@ -323,17 +356,57 @@ impl ReceiptsStore for PgStore {
         .await
         .map_err(map_sqlx)?;
 
-        Ok(row.map(|(id, hash, batch_id, leaf_index, created_at_unix)| {
-            let mut h = [0u8; 32];
-            h.copy_from_slice(&hash[..32]);
-            ReceiptLookup {
-                id,
-                receipt_hash: h,
-                batch_id,
-                leaf_index,
-                created_at_unix,
-            }
-        }))
+        Ok(
+            row.map(|(id, hash, batch_id, leaf_index, created_at_unix)| {
+                let mut h = [0u8; 32];
+                h.copy_from_slice(&hash[..32]);
+                ReceiptLookup {
+                    id,
+                    receipt_hash: h,
+                    batch_id,
+                    leaf_index,
+                    created_at_unix,
+                }
+            }),
+        )
+    }
+
+    async fn get_receipt(
+        &self,
+        receipt_hash: [u8; 32],
+    ) -> Result<Option<StoredReceipt>, StorageError> {
+        let row: Option<(
+            i64,
+            Vec<u8>,
+            serde_json::Value,
+            Option<i64>,
+            Option<i32>,
+            i64,
+        )> = sqlx::query_as(
+            "SELECT id, receipt_hash, body, batch_id, leaf_index, created_at_unix \
+                 FROM receipts WHERE receipt_hash = $1",
+        )
+        .bind(&receipt_hash[..])
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+
+        Ok(
+            row.map(|(id, hash, body, batch_id, leaf_index, created_at_unix)| {
+                let mut h = [0u8; 32];
+                h.copy_from_slice(&hash[..32]);
+                StoredReceipt {
+                    lookup: ReceiptLookup {
+                        id,
+                        receipt_hash: h,
+                        batch_id,
+                        leaf_index,
+                        created_at_unix,
+                    },
+                    body,
+                }
+            }),
+        )
     }
 
     async fn batch_for_id(&self, batch_id: i64) -> Result<Batch, StorageError> {
@@ -397,15 +470,13 @@ impl ReceiptsStore for PgStore {
         .map_err(map_sqlx)?;
 
         for (idx, l) in leaves.iter().enumerate() {
-            sqlx::query(
-                "UPDATE receipts SET batch_id = $1, leaf_index = $2 WHERE id = $3",
-            )
-            .bind(batch_id)
-            .bind(idx as i32)
-            .bind(l.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_sqlx)?;
+            sqlx::query("UPDATE receipts SET batch_id = $1, leaf_index = $2 WHERE id = $3")
+                .bind(batch_id)
+                .bind(idx as i32)
+                .bind(l.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_sqlx)?;
         }
 
         tx.commit().await.map_err(map_sqlx)?;

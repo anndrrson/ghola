@@ -324,12 +324,20 @@ pub fn parse_requested_payment_rail(raw: Option<&str>) -> Result<PaymentRailKind
         .to_ascii_lowercase()
         .as_str()
     {
-        "" | "solana" | "solana_x402" | "solana_public_stablecoin" | "solana_public_usdc" => {
-            Ok(PaymentRailKind::SolanaPublicStablecoin)
-        }
-        "shielded" | "shielded_stablecoin" | "aleo_usdcx_shielded" => {
-            Ok(PaymentRailKind::ShieldedStablecoin)
-        }
+        ""
+        | "public"
+        | "usdc"
+        | "public_usdc"
+        | "solana"
+        | "solana_x402"
+        | "solana_public_stablecoin"
+        | "solana_public_usdc" => Ok(PaymentRailKind::SolanaPublicStablecoin),
+        "private"
+        | "usdcx"
+        | "private_usdcx"
+        | "shielded"
+        | "shielded_stablecoin"
+        | "aleo_usdcx_shielded" => Ok(PaymentRailKind::ShieldedStablecoin),
         other => Err(CloudError::BadRequest(format!(
             "unsupported payment rail '{other}'"
         ))),
@@ -918,7 +926,13 @@ pub fn build_402_response(requirements: &PaymentRequirements) -> axum::response:
 
     (
         StatusCode::PAYMENT_REQUIRED,
-        [(header::HeaderName::from_static("payment-required"), b64)],
+        [
+            (
+                header::HeaderName::from_static("payment-required"),
+                b64.clone(),
+            ),
+            (header::HeaderName::from_static("x-payment-required"), b64),
+        ],
         axum::Json(body),
     )
         .into_response()
@@ -1986,6 +2000,14 @@ mod tests {
             PaymentRailKind::SolanaPublicStablecoin
         );
         assert_eq!(
+            parse_requested_payment_rail(Some("USDC")).unwrap(),
+            PaymentRailKind::SolanaPublicStablecoin
+        );
+        assert_eq!(
+            parse_requested_payment_rail(Some("public_usdc")).unwrap(),
+            PaymentRailKind::SolanaPublicStablecoin
+        );
+        assert_eq!(
             PaymentRailKind::SolanaPublicStablecoin.canonical_rail(),
             SOLANA_PUBLIC_USDC_RAIL
         );
@@ -1999,6 +2021,14 @@ mod tests {
         );
         assert_eq!(
             parse_requested_payment_rail(Some("aleo_usdcx_shielded")).unwrap(),
+            PaymentRailKind::ShieldedStablecoin
+        );
+        assert_eq!(
+            parse_requested_payment_rail(Some("USDCx")).unwrap(),
+            PaymentRailKind::ShieldedStablecoin
+        );
+        assert_eq!(
+            parse_requested_payment_rail(Some("private_usdcx")).unwrap(),
             PaymentRailKind::ShieldedStablecoin
         );
         assert_eq!(
@@ -2238,21 +2268,17 @@ mod tests {
         response
     }
 
-    fn shielded_fixture_env(
-        server_uri: &str,
-        signer: &SigningKey,
-        token: &str,
-    ) -> EnvRestore {
+    fn shielded_fixture_env(server_uri: &str, signer: &SigningKey, token: &str) -> EnvRestore {
         EnvRestore::set(&[
             ("SHIELDED_STABLECOIN_ADAPTER_URL", server_uri.to_string()),
             ("SHIELDED_STABLECOIN_PROVIDER", "aleo".to_string()),
             ("SHIELDED_STABLECOIN_NETWORK", "aleo:mainnet".to_string()),
             ("SHIELDED_STABLECOIN_ASSET", "USDCx".to_string()),
-            ("SHIELDED_STABLECOIN_RECIPIENT", "aleo1recipient".to_string()),
             (
-                "SHIELDED_STABLECOIN_ADAPTER_AUTH_TOKEN",
-                token.to_string(),
+                "SHIELDED_STABLECOIN_RECIPIENT",
+                "aleo1recipient".to_string(),
             ),
+            ("SHIELDED_STABLECOIN_ADAPTER_AUTH_TOKEN", token.to_string()),
             (
                 "SHIELDED_STABLECOIN_ADAPTER_PUBKEY",
                 hex::encode(VerifyingKey::from(signer).to_bytes()),

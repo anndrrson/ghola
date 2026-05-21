@@ -25,10 +25,7 @@ pub struct Batcher {
 }
 
 impl Batcher {
-    pub fn new(
-        store: Arc<dyn ReceiptsStore>,
-        publisher: Arc<dyn SolanaPublisher>,
-    ) -> Self {
+    pub fn new(store: Arc<dyn ReceiptsStore>, publisher: Arc<dyn SolanaPublisher>) -> Self {
         Self { store, publisher }
     }
 
@@ -76,9 +73,7 @@ impl Batcher {
             match self.publisher.publish_root(req).await {
                 Ok(sig) => {
                     let now = chrono::Utc::now().timestamp();
-                    self.store
-                        .mark_batch_published(batch.id, &sig, now)
-                        .await?;
+                    self.store.mark_batch_published(batch.id, &sig, now).await?;
                     tracing::info!(batch_id = batch.id, %sig, "published batch on-chain");
                 }
                 Err(err) => {
