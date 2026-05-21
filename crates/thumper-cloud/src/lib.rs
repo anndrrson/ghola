@@ -606,10 +606,7 @@ async fn readiness_snapshot(state: &AppState) -> ReadinessSnapshot {
         &mut reason_codes,
         &mut degraded,
         "receipts",
-        probe_json_endpoint(format!(
-            "{}/health",
-            receipts_base_url().trim_end_matches('/')
-        ))
+        probe_receipts_health(receipts_base_url())
         .await,
         true,
         "receipts_readiness_failed",
@@ -686,7 +683,7 @@ fn add_check(
 }
 
 async fn check_db(pool: &sqlx::PgPool) -> Value {
-    match sqlx::query_scalar::<_, i64>("SELECT 1")
+    match sqlx::query_scalar::<_, i64>("SELECT 1::BIGINT")
         .fetch_one(pool)
         .await
     {
@@ -699,6 +696,33 @@ async fn check_db(pool: &sqlx::PgPool) -> Value {
             json!({ "ok": false, "detail": "database_unreachable" })
         }
     }
+}
+
+async fn probe_receipts_health(base_url: String) -> Value {
+    let base_url = base_url.trim_end_matches('/');
+    let primary = probe_json_endpoint(format!("{base_url}/health")).await;
+    if primary.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        return primary;
+    }
+
+    let fallback = probe_json_endpoint(format!("{base_url}/healthz")).await;
+    if fallback.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        tracing::warn!(
+            url = %fallback
+                .get("url")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown"),
+            "receipts service still serves legacy /healthz; accepting fallback until /health alias deploys"
+        );
+        let mut fallback = fallback;
+        if let Some(obj) = fallback.as_object_mut() {
+            obj.insert("fallback".to_string(), json!("healthz"));
+            obj.insert("primary".to_string(), primary);
+        }
+        return fallback;
+    }
+
+    primary
 }
 
 async fn probe_json_endpoint(url: String) -> Value {
