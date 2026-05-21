@@ -47,7 +47,8 @@ fn db_connect_options_from_env() -> anyhow::Result<PgConnectOptions> {
     let host = std::env::var("PGHOST").context("missing PGHOST for Postgres fallback")?;
     let user = std::env::var("PGUSER").context("missing PGUSER for Postgres fallback")?;
     let password = std::env::var("PGPASSWORD").unwrap_or_default();
-    let database = std::env::var("PGDATABASE").context("missing PGDATABASE for Postgres fallback")?;
+    let database =
+        std::env::var("PGDATABASE").context("missing PGDATABASE for Postgres fallback")?;
     let port = std::env::var("PGPORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
@@ -87,7 +88,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let connect_options = db_connect_options_from_env().context("resolve Postgres configuration")?;
+    let connect_options =
+        db_connect_options_from_env().context("resolve Postgres configuration")?;
     let interval_secs: u64 = std::env::var("RECEIPTS_BATCH_INTERVAL_SECS")
         .ok()
         .and_then(|s| s.parse().ok())

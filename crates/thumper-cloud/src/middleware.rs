@@ -183,13 +183,18 @@ pub async fn track_api_usage(state: AppState, request: Request, next: Next) -> R
 use axum::response::IntoResponse;
 
 fn extract_client_ip(request: &Request) -> Option<std::net::IpAddr> {
-    // Check x-forwarded-for first (behind reverse proxy)
+    // Reverse proxies that append to X-Forwarded-For leave user-controlled
+    // values on the left. Prefer the rightmost valid address to avoid trivial
+    // unauthenticated rate-limit spoofing.
     request
         .headers()
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse().ok())
+        .and_then(|s| {
+            s.split(',')
+                .rev()
+                .find_map(|part| part.trim().parse().ok())
+        })
         // Fallback: ConnectInfo (direct connection)
         .or_else(|| {
             request
@@ -197,4 +202,47 @@ fn extract_client_ip(request: &Request) -> Option<std::net::IpAddr> {
                 .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
                 .map(|ci| ci.0.ip())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    fn request_with_headers(headers: &[(&str, &str)]) -> Request {
+        let mut builder = Request::builder().uri("https://ghola.test/");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        builder.body(Body::empty()).expect("request")
+    }
+
+    #[test]
+    fn client_ip_uses_rightmost_valid_forwarded_address() {
+        let request = request_with_headers(&[(
+            "x-forwarded-for",
+            "203.0.113.10, not-an-ip, 198.51.100.25",
+        )]);
+
+        assert_eq!(
+            extract_client_ip(&request),
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 25))),
+        );
+    }
+
+    #[test]
+    fn client_ip_falls_back_to_connect_info() {
+        let mut request = request_with_headers(&[("x-forwarded-for", "not-an-ip")]);
+        request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 44)),
+            443,
+        )));
+
+        assert_eq!(
+            extract_client_ip(&request),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 44))),
+        );
+    }
 }

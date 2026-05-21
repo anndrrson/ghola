@@ -2,6 +2,7 @@ use dashmap::DashMap;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 use crate::config::CloudConfig;
@@ -30,6 +31,7 @@ pub type SiwsChallengeStore = Arc<Mutex<HashMap<String, i64>>>;
 pub struct AppState {
     pub config: CloudConfig,
     pub db: PgPool,
+    pub started_at: Instant,
     pub rate_limiter: RateLimiter,
     pub ip_rate_limiter: IpRateLimiter,
     pub free_cascade: FreeCascade,
@@ -44,6 +46,7 @@ impl AppState {
         Self {
             config,
             db,
+            started_at: Instant::now(),
             rate_limiter: RateLimiter::default(),
             ip_rate_limiter: IpRateLimiter::default(),
             free_cascade,
@@ -51,5 +54,9 @@ impl AppState {
             swarm_channels: Arc::new(DashMap::new()),
             siws_challenges: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn uptime_secs(&self) -> u64 {
+        self.started_at.elapsed().as_secs()
     }
 }

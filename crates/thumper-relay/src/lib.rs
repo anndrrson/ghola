@@ -42,12 +42,7 @@ fn build_cors_layer(config: &RelayConfig) -> CorsLayer {
 
     CorsLayer::new()
         .allow_origin(origins)
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::OPTIONS,
-        ])
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::OPTIONS])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
@@ -67,7 +62,10 @@ pub fn build_app(state: AppState) -> Router {
     // + history blobs run bigger than the general 1 MiB ceiling) and
     // also carries the auth middleware that's already attached.
     let sealed_router = Router::new()
-        .route("/inference/sealed", post(handlers::dispatch_inference_sealed))
+        .route(
+            "/inference/sealed",
+            post(handlers::dispatch_inference_sealed),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_sealed_envelope_auth,
@@ -88,13 +86,21 @@ pub fn build_app(state: AppState) -> Router {
 
     let mut app = Router::new()
         .route("/health", get(handlers::health))
+        .route("/healthz", get(handlers::healthz))
+        .route("/ready", get(handlers::ready))
         .route("/ready/private", get(handlers::ready_private))
         .route("/metrics", get(handlers::metrics_handler))
         .route("/ws", get(handlers::ws_upgrade))
         .route("/inference", post(handlers::dispatch_inference))
-        .route("/inference-stream", post(handlers::dispatch_inference_stream))
+        .route(
+            "/inference-stream",
+            post(handlers::dispatch_inference_stream),
+        )
         .route("/providers/attest", post(handlers::provider_attest_http))
-        .route("/providers/attested", get(handlers::list_attested_providers))
+        .route(
+            "/providers/attested",
+            get(handlers::list_attested_providers),
+        )
         .merge(public_verifier_router)
         .merge(sealed_router);
 

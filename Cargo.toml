@@ -86,7 +86,7 @@ futures = "0.3"
 async-stream = "0.3"
 
 # MCP
-rmcp = { version = "0.15", features = ["server", "transport-io", "transport-streamable-http-server"] }
+rmcp = { version = "1.7", features = ["server", "transport-io", "transport-streamable-http-server"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -112,7 +112,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
 jsonwebtoken = "9"
 
 # Misc

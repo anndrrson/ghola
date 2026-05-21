@@ -8,6 +8,10 @@ license.workspace = true
 name = "said"
 path = "src/main.rs"
 
+[[bin]]
+name = "ghola"
+path = "src/main.rs"
+
 [dependencies]
 said-core = { workspace = true }
 said-types = { workspace = true }

@@ -1,0 +1,10 @@
+[advisories]
+ignore = [
+  # sqlx-mysql is present in sqlx metadata, but Ghola services compile with
+  # explicit Postgres/SQLite SQLx features and do not use MySQL TLS auth.
+  # RustSec also lists no fixed rsa upgrade for this advisory.
+  "RUSTSEC-2023-0071",
+  # time 0.3.47 fixes this, but time-macros 0.2.27 currently requires a
+  # newer Rust compiler/edition than this workspace is building with.
+  "RUSTSEC-2026-0009",
+]

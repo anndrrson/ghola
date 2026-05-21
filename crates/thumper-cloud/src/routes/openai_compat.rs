@@ -11,7 +11,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::{AuthUser, Claims};
+use crate::auth::Claims;
 use crate::error::CloudError;
 use crate::privacy::{record_privacy_audit_event, NetworkScope, PrivacyApproval};
 use crate::services::{
@@ -20,6 +20,62 @@ use crate::services::{
     x402_service,
 };
 use crate::state::AppState;
+
+const PAYMENT_PROOF_HEADER_ALIASES: &[&str] = &["payment-signature", "x-payment", "x402-payment"];
+
+fn payment_proof_header(headers: &HeaderMap) -> Option<&str> {
+    PAYMENT_PROOF_HEADER_ALIASES
+        .iter()
+        .find_map(|name| headers.get(*name).and_then(|v| v.to_str().ok()))
+}
+
+const PAYMENT_RAIL_HEADER_ALIASES: &[&str] =
+    &["x-ghola-payment-rail", "x-payment-rail", "payment-rail"];
+
+fn payment_rail_header(headers: &HeaderMap) -> Option<&str> {
+    PAYMENT_RAIL_HEADER_ALIASES
+        .iter()
+        .find_map(|name| headers.get(*name).and_then(|v| v.to_str().ok()))
+}
+
+const CREATED_AT: i64 = 1_700_000_000;
+const GHOLA_PRIVATE_MODEL: &str = "ghola-private";
+const GHOLA_LOCAL_MODEL: &str = "ghola-local";
+const AGENT_MODEL_NAMESPACE: &str = "agent:";
+const PRIVATE_PAYMENT_RAIL: &str = "private_usdcx";
+
+fn is_agent_model(model: Option<&str>) -> bool {
+    model
+        .map(|m| m.starts_with(AGENT_MODEL_NAMESPACE))
+        .unwrap_or(false)
+}
+
+fn is_local_model(model: Option<&str>) -> bool {
+    model == Some(GHOLA_LOCAL_MODEL)
+}
+
+fn is_supported_public_model(model: Option<&str>) -> bool {
+    match model {
+        None | Some(GHOLA_PRIVATE_MODEL) | Some(GHOLA_LOCAL_MODEL) => true,
+        Some(model) => model.starts_with(AGENT_MODEL_NAMESPACE),
+    }
+}
+
+fn response_model_name(requested: Option<&str>, configured: &str) -> String {
+    match requested {
+        None => GHOLA_PRIVATE_MODEL.to_string(),
+        Some(GHOLA_PRIVATE_MODEL) => GHOLA_PRIVATE_MODEL.to_string(),
+        Some(model) if model.starts_with(AGENT_MODEL_NAMESPACE) => model.to_string(),
+        _ => configured.to_string(),
+    }
+}
+
+fn request_declares_private_intent(approval: &PrivacyApproval) -> bool {
+    matches!(
+        approval.privacy_mode.as_deref(),
+        Some("private") | Some(crate::privacy::STRICT_LOCAL)
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Request/Response types (OpenAI-compatible)
@@ -84,32 +140,88 @@ pub struct ModelInfo {
     pub object: &'static str,
     pub created: i64,
     pub owned_by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ghola: Option<ModelMetadata>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ModelMetadata {
+    pub privacy_modes: Vec<&'static str>,
+    pub payment_rails: Vec<&'static str>,
+    pub receipts: bool,
+    pub description: &'static str,
+}
+
+fn canonical_models() -> Vec<ModelInfo> {
+    vec![
+        ModelInfo {
+            id: GHOLA_PRIVATE_MODEL.to_string(),
+            object: "model",
+            created: CREATED_AT,
+            owned_by: "ghola".to_string(),
+            ghola: Some(ModelMetadata {
+                privacy_modes: vec!["private", "open"],
+                payment_rails: vec!["private_usdcx", "public_usdc"],
+                receipts: true,
+                description: "Default private Ghola chat route with receipt support.",
+            }),
+        },
+        ModelInfo {
+            id: GHOLA_LOCAL_MODEL.to_string(),
+            object: "model",
+            created: CREATED_AT,
+            owned_by: "ghola".to_string(),
+            ghola: Some(ModelMetadata {
+                privacy_modes: vec!["local"],
+                payment_rails: vec![],
+                receipts: true,
+                description: "On-device local model route for prompts that should stay on the user's hardware.",
+            }),
+        },
+        ModelInfo {
+            id: "agent:*".to_string(),
+            object: "model",
+            created: CREATED_AT,
+            owned_by: "ghola".to_string(),
+            ghola: Some(ModelMetadata {
+                privacy_modes: vec!["private", "open"],
+                payment_rails: vec!["private_usdcx", "public_usdc"],
+                receipts: true,
+                description: "Paid agent execution namespace. Use model ids like agent:research-bot.",
+            }),
+        },
+    ]
 }
 
 // ---------------------------------------------------------------------------
 // POST /v1/chat/completions
 // ---------------------------------------------------------------------------
 
-/// Handles three auth paths:
-/// 1. Authorization: Bearer <jwt> → existing BYOM/cascade flow
-/// 2. Authorization: Bearer <api-key> → existing API key flow
-/// 3. model starts with "agent:" + no auth → x402 payment flow
+/// Handles three paths:
+/// 1. model starts with "agent:" → x402 payment flow
+/// 2. Authorization: Bearer <jwt> → existing BYOM/cascade flow
+/// 3. Authorization: Bearer <api-key> → existing API key flow
 pub async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Result<axum::response::Response, CloudError> {
-    // Check if this is an x402 agent request (model starts with "agent:")
-    let is_agent_request = req
-        .model
-        .as_deref()
-        .map(|m| m.starts_with("agent:"))
-        .unwrap_or(false);
+    if !is_supported_public_model(req.model.as_deref()) {
+        return Err(CloudError::BadRequest(
+            "unsupported model id; use ghola-private, ghola-local, or agent:<slug>".into(),
+        ));
+    }
 
-    let has_auth = headers.get("authorization").is_some();
+    if is_local_model(req.model.as_deref()) {
+        return Err(CloudError::BadRequest(
+            "ghola-local runs on the user's device and is not available through the cloud API"
+                .into(),
+        ));
+    }
 
-    // If model is "agent:*" and no auth header, use x402 flow
-    if is_agent_request && !has_auth {
+    // Agent model ids always mean paid agent execution. Do not silently
+    // treat them as a normal BYOM model override for authenticated users.
+    if is_agent_model(req.model.as_deref()) {
         return handle_x402_agent_request(&state, &headers, req).await;
     }
 
@@ -126,9 +238,6 @@ pub async fn chat_completions(
         "openai_compatible_chat",
     )
     .await;
-
-    // If model is "agent:*" but user IS authenticated, auth takes priority
-    // (cheaper via escrow for registered users)
 
     if req.stream == Some(true) {
         let sse = chat_completions_stream(state, claims, req).await?;
@@ -241,15 +350,20 @@ async fn handle_x402_agent_request(
         matched_agent.price_per_1k_output,
         max_tokens,
     );
-    let requested_rail_header = headers
-        .get("x-ghola-payment-rail")
-        .and_then(|v| v.to_str().ok());
-    let requested_rail = x402_service::parse_requested_payment_rail(requested_rail_header)?;
+    let requested_rail_header = payment_rail_header(headers);
+    let requested_rail_preference = requested_rail_header.or_else(|| {
+        if request_declares_private_intent(&req.approval) {
+            Some(PRIVATE_PAYMENT_RAIL)
+        } else {
+            None
+        }
+    });
+    let requested_rail = x402_service::parse_requested_payment_rail(requested_rail_preference)?;
 
-    // Check for PAYMENT-SIGNATURE header
-    let payment_header = headers
-        .get("payment-signature")
-        .and_then(|v| v.to_str().ok());
+    // Accept canonical x402 and existing Ghola header aliases. Verification
+    // normalizes the decoded proof, so replay protection is rail/proof based,
+    // not header-name based.
+    let payment_header = payment_proof_header(headers);
 
     let payment_header = match payment_header {
         Some(h) => h,
@@ -273,7 +387,7 @@ async fn handle_x402_agent_request(
                 matched_agent.price_per_1k_output,
                 max_tokens,
             );
-            if requested_rail_header.is_some() {
+            if requested_rail_preference.is_some() {
                 x402_service::filter_payment_requirements_for_rail(
                     &mut requirements,
                     requested_rail,
@@ -292,11 +406,12 @@ async fn handle_x402_agent_request(
     // Decode and parse payment proof
     let proof_bytes = STANDARD
         .decode(payment_header)
-        .map_err(|_| CloudError::PaymentRequired("invalid PAYMENT-SIGNATURE: bad base64".into()))?;
+        .map_err(|_| CloudError::PaymentRequired("invalid payment proof: bad base64".into()))?;
     let proof: x402_service::PaymentProof = serde_json::from_slice(&proof_bytes)
-        .map_err(|e| CloudError::PaymentRequired(format!("invalid PAYMENT-SIGNATURE: {e}")))?;
+        .map_err(|e| CloudError::PaymentRequired(format!("invalid payment proof: {e}")))?;
 
-    if requested_rail_header.is_some() && !x402_service::proof_matches_rail(&proof, requested_rail)
+    if requested_rail_preference.is_some()
+        && !x402_service::proof_matches_rail(&proof, requested_rail)
     {
         if requested_rail == x402_service::PaymentRailKind::ShieldedStablecoin {
             return Ok(x402_service::build_shielded_fallback_rejected_response());
@@ -445,10 +560,16 @@ async fn handle_x402_agent_request(
     let pr_b64 = STANDARD.encode(&pr_json);
 
     Ok((
-        [(
-            axum::http::header::HeaderName::from_static("payment-response"),
-            pr_b64,
-        )],
+        [
+            (
+                axum::http::header::HeaderName::from_static("payment-response"),
+                pr_b64.clone(),
+            ),
+            (
+                axum::http::header::HeaderName::from_static("x-payment-response"),
+                pr_b64,
+            ),
+        ],
         Json(completion),
     )
         .into_response())
@@ -464,7 +585,7 @@ async fn chat_completions_non_stream(
     req: ChatCompletionRequest,
 ) -> Result<Json<ChatCompletion>, CloudError> {
     let config = llm_router::get_user_llm_config(&state, claims.sub).await?;
-    let model_name = config.model.clone();
+    let model_name = response_model_name(req.model.as_deref(), &config.model);
 
     // Build messages for the LLM
     let mut system = None;
@@ -527,7 +648,7 @@ async fn chat_completions_stream(
     req: ChatCompletionRequest,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, CloudError> {
     let config = llm_router::get_user_llm_config(&state, claims.sub).await?;
-    let model_name = config.model.clone();
+    let model_name = response_model_name(req.model.as_deref(), &config.model);
 
     let mut system = None;
     let mut messages: Vec<ChatMsg> = Vec::new();
@@ -593,26 +714,113 @@ async fn chat_completions_stream(
 // GET /v1/models
 // ---------------------------------------------------------------------------
 
-pub async fn list_models(
-    State(state): State<AppState>,
-    AuthUser(claims): AuthUser,
-) -> Result<Json<ModelList>, CloudError> {
-    let config = llm_router::get_user_llm_config(&state, claims.sub).await?;
-
-    let models: Vec<ModelInfo> = config
-        .provider
-        .available_models()
-        .into_iter()
-        .map(|m| ModelInfo {
-            id: m.to_string(),
-            object: "model",
-            created: 1700000000,
-            owned_by: format!("{:?}", config.provider).to_lowercase(),
-        })
-        .collect();
-
+pub async fn list_models() -> Result<Json<ModelList>, CloudError> {
     Ok(Json(ModelList {
         object: "list",
-        data: models,
+        data: canonical_models(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue};
+    use serde_json::Value;
+
+    use super::*;
+
+    #[test]
+    fn payment_proof_header_accepts_x402_aliases() {
+        for name in PAYMENT_PROOF_HEADER_ALIASES {
+            let mut headers = HeaderMap::new();
+            headers.insert(*name, HeaderValue::from_static("proof"));
+            assert_eq!(payment_proof_header(&headers), Some("proof"));
+        }
+    }
+
+    #[test]
+    fn payment_rail_header_accepts_rail_aliases() {
+        for name in PAYMENT_RAIL_HEADER_ALIASES {
+            let mut headers = HeaderMap::new();
+            headers.insert(*name, HeaderValue::from_static("private_usdcx"));
+            assert_eq!(payment_rail_header(&headers), Some("private_usdcx"));
+        }
+    }
+
+    #[test]
+    fn canonical_models_advertise_private_local_and_agent_routes() {
+        let models = canonical_models();
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, vec![GHOLA_PRIVATE_MODEL, GHOLA_LOCAL_MODEL, "agent:*"]);
+
+        let payload = serde_json::to_value(ModelList {
+            object: "list",
+            data: models,
+        })
+        .unwrap();
+        let data = payload["data"].as_array().unwrap();
+        let private = data
+            .iter()
+            .find(|model| model["id"] == GHOLA_PRIVATE_MODEL)
+            .unwrap();
+
+        assert_eq!(private["object"], "model");
+        assert_eq!(private["owned_by"], "ghola");
+        assert_eq!(private["ghola"]["receipts"], true);
+        assert_eq!(
+            private["ghola"]["payment_rails"],
+            Value::Array(vec![
+                Value::String("private_usdcx".to_string()),
+                Value::String("public_usdc".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn ghola_model_helpers_preserve_contract_boundaries() {
+        assert!(is_agent_model(Some("agent:research-bot")));
+        assert!(!is_agent_model(Some(GHOLA_PRIVATE_MODEL)));
+        assert!(is_local_model(Some(GHOLA_LOCAL_MODEL)));
+        assert!(is_supported_public_model(None));
+        assert!(is_supported_public_model(Some(GHOLA_PRIVATE_MODEL)));
+        assert!(is_supported_public_model(Some(GHOLA_LOCAL_MODEL)));
+        assert!(is_supported_public_model(Some("agent:research-bot")));
+        assert!(!is_supported_public_model(Some("claude-sonnet-4")));
+        assert_eq!(
+            response_model_name(None, "claude-sonnet-4"),
+            GHOLA_PRIVATE_MODEL
+        );
+        assert_eq!(
+            response_model_name(Some(GHOLA_PRIVATE_MODEL), "claude-sonnet-4"),
+            GHOLA_PRIVATE_MODEL
+        );
+        assert_eq!(
+            response_model_name(Some("agent:research-bot"), "claude-sonnet-4"),
+            "agent:research-bot"
+        );
+        assert_eq!(
+            response_model_name(Some("claude-sonnet-4"), "claude-sonnet-4"),
+            "claude-sonnet-4"
+        );
+    }
+
+    #[test]
+    fn privacy_mode_declares_private_payment_intent() {
+        let private = PrivacyApproval {
+            privacy_mode: Some("private".to_string()),
+            ..Default::default()
+        };
+        let strict = PrivacyApproval {
+            privacy_mode: Some(crate::privacy::STRICT_LOCAL.to_string()),
+            ..Default::default()
+        };
+        let open = PrivacyApproval {
+            privacy_mode: Some("open".to_string()),
+            ..Default::default()
+        };
+
+        assert!(request_declares_private_intent(&private));
+        assert!(request_declares_private_intent(&strict));
+        assert!(!request_declares_private_intent(&open));
+        assert!(!request_declares_private_intent(&PrivacyApproval::default()));
+    }
 }

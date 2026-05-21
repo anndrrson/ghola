@@ -178,9 +178,13 @@ pub async fn create_intent(
         ));
     }
 
-    let preferred_rail = req
-        .preferred_rail
-        .unwrap_or_else(|| "ghola_balance".to_string());
+    let preferred_rail = req.preferred_rail.unwrap_or_else(|| {
+        if privacy_mode == "private" {
+            "aleo_usdcx_shielded".to_string()
+        } else {
+            "solana_public_usdc".to_string()
+        }
+    });
     let allowed_adapters = normalize_adapters(req.allowed_adapters);
 
     let row = sqlx::query(
@@ -235,7 +239,11 @@ pub async fn list_offers(
     let intent = get_intent(&state.db, user_id, intent_id).await?;
     let mut offers = Vec::new();
 
-    if intent.allowed_adapters.iter().any(|a| a == "fixture_catalog") {
+    if intent
+        .allowed_adapters
+        .iter()
+        .any(|a| a == "fixture_catalog")
+    {
         offers.extend(fixture_catalog_offers(&intent));
     }
 
@@ -405,6 +413,7 @@ pub async fn create_quote(
         "adapter": "x402",
         "rail": rail,
         "fail_closed": intent.privacy_mode == "private",
+        "fallback_allowed": intent.privacy_mode != "private",
         "expires_at": expires_at,
     });
     let raw_offer = json!({
@@ -1060,8 +1069,9 @@ fn merchant_checkout_placeholder(intent: &CommerceIntent) -> CommerceOffer {
         merchant_type: "external_checkout".to_string(),
         offer_image_url: None,
         fulfillment_kind: "external_checkout".to_string(),
-        trust_summary: "Planned adapter · blocked until a reviewed merchant integration is configured"
-            .to_string(),
+        trust_summary:
+            "Planned adapter · blocked until a reviewed merchant integration is configured"
+                .to_string(),
         provider_slug: "merchant-checkout".to_string(),
         model_id: "merchant_checkout_v1".to_string(),
         tags: vec!["merchant".to_string(), "checkout".to_string()],
@@ -1121,6 +1131,7 @@ async fn create_fixture_quote(
         "adapter": "fixture_catalog",
         "rail": offer.rail,
         "fail_closed": intent.privacy_mode == "private",
+        "fallback_allowed": intent.privacy_mode != "private",
         "funded_private_settlement_status": "funded_usdcx_proof_pending",
         "expires_at": expires_at,
     });
@@ -1129,6 +1140,7 @@ async fn create_fixture_quote(
         "kind": "fixture_catalog_quote",
         "requires_user_approval": true,
         "rail": offer.rail,
+        "fallback_allowed": intent.privacy_mode != "private",
     });
     let raw_offer = json!({
         "redacted": true,
@@ -1571,7 +1583,11 @@ mod tests {
             goal: "Find a private checkout option".to_string(),
             budget_micro_usdc: 5_000_000,
             privacy_mode: privacy_mode.to_string(),
-            preferred_rail: "ghola_balance".to_string(),
+            preferred_rail: if privacy_mode == "private" {
+                "aleo_usdcx_shielded".to_string()
+            } else {
+                "solana_public_usdc".to_string()
+            },
             allowed_adapters: vec![],
             deadline_at: None,
             status: "created".to_string(),

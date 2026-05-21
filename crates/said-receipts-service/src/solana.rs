@@ -300,7 +300,10 @@ impl RpcConfig {
         let program_id: [u8; 32] = bytes
             .try_into()
             .map_err(|_| SolanaError::Config("program id not 32 bytes".into()))?;
-        Ok(Self { program_id, rpc_url })
+        Ok(Self {
+            program_id,
+            rpc_url,
+        })
     }
 }
 

@@ -289,10 +289,7 @@ impl<'a> Cursor<'a> {
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let end = self
-            .pos
-            .checked_add(n)
-            .ok_or(EnvelopeError::Truncated)?;
+        let end = self.pos.checked_add(n).ok_or(EnvelopeError::Truncated)?;
         if end > self.buf.len() {
             return Err(EnvelopeError::Truncated);
         }
@@ -353,12 +350,16 @@ where
         MAGIC.len()
             + 1
             + 1
-            + 2 + sender_did.len()
-            + 2 + params.recipient_id.len()
+            + 2
+            + sender_did.len()
+            + 2
+            + params.recipient_id.len()
             + EPHEM_PUB_LEN
             + NONCE_LEN
-            + 2 + params.associated_data.len()
-            + 4 + ciphertext.len()
+            + 2
+            + params.associated_data.len()
+            + 4
+            + ciphertext.len()
             + SIGNATURE_LENGTH,
     );
 
@@ -394,10 +395,7 @@ where
 /// `recipient_id`. For peer/self envelopes this is derived from the
 /// recipient's Ed25519 wallet key (`ed25519_signing_to_x25519`). For
 /// model-bridge envelopes this is the cloud's per-session bridge secret.
-pub fn open(
-    wire: &[u8],
-    recipient_x25519_secret: &StaticSecret,
-) -> Result<OpenedEnvelope> {
+pub fn open(wire: &[u8], recipient_x25519_secret: &StaticSecret) -> Result<OpenedEnvelope> {
     if wire.len() < SIGNATURE_LENGTH + MAGIC.len() + 2 {
         return Err(EnvelopeError::Truncated);
     }
@@ -436,10 +434,7 @@ pub fn open(
         .map_err(|_| EnvelopeError::InvalidEphemPub)?;
     let ephem_pub = X25519Public::from(ephem_pub_bytes);
 
-    let nonce_bytes: [u8; NONCE_LEN] = cur
-        .take(NONCE_LEN)?
-        .try_into()
-        .expect("len checked");
+    let nonce_bytes: [u8; NONCE_LEN] = cur.take(NONCE_LEN)?.try_into().expect("len checked");
 
     let ad_len = cur.take_u16()?;
     let associated_data = cur.take(ad_len)?.to_vec();
@@ -454,8 +449,7 @@ pub fn open(
     // Verify signature first — cheaper to bail than to attempt AEAD on a
     // tampered frame.
     let sender_vk = verifying_from_did_key(&sender_did)?;
-    let signature = Signature::from_slice(sig_bytes)
-        .map_err(|_| EnvelopeError::BadSignature)?;
+    let signature = Signature::from_slice(sig_bytes).map_err(|_| EnvelopeError::BadSignature)?;
     let digest = Sha256::digest(body);
     sender_vk
         .verify(&digest, &signature)
@@ -545,7 +539,10 @@ mod tests {
         let opened = open_as_peer(&wire, &bob).unwrap();
 
         assert_eq!(opened.kind, RecipientKind::PeerDid);
-        assert_eq!(opened.sender_did, did_key_from_verifying(&alice.verifying_key()));
+        assert_eq!(
+            opened.sender_did,
+            did_key_from_verifying(&alice.verifying_key())
+        );
         assert_eq!(opened.recipient_id, bob_did);
         assert_eq!(opened.associated_data, ad);
         assert_eq!(opened.plaintext, pt);
@@ -601,6 +598,56 @@ mod tests {
     }
 
     #[test]
+    fn native_message_plaintext_not_visible_in_wire() {
+        let alice = fresh_signing_key();
+        let bob = fresh_signing_key();
+        let bob_did = did_key_from_verifying(&bob.verifying_key());
+
+        let ad = b"ghola-message-v1;conversation=conv_1;message=msg_1;sender_device=dev_1";
+        let pt =
+            br#"{"v":1,"type":"ghola.message","body":{"kind":"text","text":"native secret body"}}"#;
+        let wire = seal_to_peer(&alice, &bob_did, ad, pt).unwrap();
+
+        assert!(
+            !wire
+                .windows(b"native secret body".len())
+                .any(|window| window == b"native secret body"),
+            "SEv1 wire bytes must not expose message body plaintext"
+        );
+        assert!(
+            !wire
+                .windows(br#""body""#.len())
+                .any(|window| window == br#""body""#),
+            "SEv1 wire bytes must not expose plaintext JSON field names"
+        );
+        assert!(
+            wire.windows(b"ghola-message-v1".len())
+                .any(|window| window == b"ghola-message-v1"),
+            "routing/freshness associated data remains visible by design"
+        );
+    }
+
+    #[test]
+    fn replay_cache_is_external_to_open() {
+        let alice = fresh_signing_key();
+        let bob = fresh_signing_key();
+        let bob_did = did_key_from_verifying(&bob.verifying_key());
+
+        let wire = seal_to_peer(
+            &alice,
+            &bob_did,
+            b"ghola-message-v1;conversation=conv_1;message=msg_replay",
+            b"deliver once at the message layer",
+        )
+        .unwrap();
+
+        let first = open_as_peer(&wire, &bob).unwrap();
+        let second = open_as_peer(&wire, &bob).unwrap();
+        assert_eq!(first.plaintext, second.plaintext);
+        assert_eq!(first.associated_data, second.associated_data);
+    }
+
+    #[test]
     fn signature_strip_fails() {
         let alice = fresh_signing_key();
         let bob = fresh_signing_key();
@@ -634,11 +681,7 @@ mod tests {
             let mut bad = original.clone();
             bad[i] ^= 0x01;
             let r = open_as_peer(&bad, &bob);
-            assert!(
-                r.is_err(),
-                "tampering byte {} produced a valid envelope",
-                i
-            );
+            assert!(r.is_err(), "tampering byte {} produced a valid envelope", i);
         }
     }
 
