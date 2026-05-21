@@ -99,8 +99,7 @@ impl CloudConfig {
             cerebras_api_key: env::var("CEREBRAS_API_KEY").ok(),
             google_gemini_api_key: env::var("GOOGLE_GEMINI_API_KEY").ok(),
             openrouter_api_key: env::var("OPENROUTER_API_KEY").ok(),
-            relay_url: env::var("RELAY_URL")
-                .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            relay_url: env::var("RELAY_URL").unwrap_or_else(|_| default_relay_url()),
             platform_wallet_address: env::var("PLATFORM_WALLET_ADDRESS").ok(),
             treasury_mnemonic: env::var("TREASURY_MNEMONIC").ok(),
             min_provider_reputation: env::var("MIN_PROVIDER_REPUTATION")
@@ -129,6 +128,14 @@ impl CloudConfig {
             "openrouter" => self.openrouter_api_key.clone(),
             _ => None,
         }
+    }
+}
+
+fn default_relay_url() -> String {
+    if env::var("RENDER_SERVICE_ID").is_ok() || env::var("RENDER_EXTERNAL_URL").is_ok() {
+        "https://ghola-relay.onrender.com".to_string()
+    } else {
+        "http://localhost:8080".to_string()
     }
 }
 
