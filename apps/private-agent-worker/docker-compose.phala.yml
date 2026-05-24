@@ -1,0 +1,20 @@
+services:
+  private-agent-worker:
+    image: ghcr.io/anndrrson/ghola-private-agent-worker:latest
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      PORT: "8787"
+      PRIVATE_AGENT_PROVIDER_ID: "phala"
+      PRIVATE_AGENT_TEE_KIND: "phala"
+      PRIVATE_AGENT_EXECUTION_TOKEN: "${PRIVATE_AGENT_EXECUTION_TOKEN}"
+      PRIVATE_AGENT_ATTESTED_READY: "false"
+      PHALA_CVM_IMAGE_DIGEST: "${PHALA_CVM_IMAGE_DIGEST}"
+      PHALA_CVM_MEASUREMENT_HEX: "${PHALA_CVM_MEASUREMENT_HEX}"
+      PHALA_ATTESTATION_HASH: "${PHALA_ATTESTATION_HASH}"
+    volumes:
+      - private-agent-data:/data
+
+volumes:
+  private-agent-data:
