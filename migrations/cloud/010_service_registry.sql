@@ -76,12 +76,14 @@ CREATE TABLE IF NOT EXISTS service_listings (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Full-text search vector (auto-generated from name + description + tags)
+-- Full-text search vector (auto-generated from name + description).
+-- `array_to_string(tags, ...)` is only STABLE on Postgres, which makes the
+-- generated column invalid on stricter versions; tag filtering still uses
+-- the dedicated GIN index below.
 ALTER TABLE service_listings ADD COLUMN IF NOT EXISTS search_vector tsvector
     GENERATED ALWAYS AS (
-        setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
-        setweight(to_tsvector('english', coalesce(description, '')), 'B') ||
-        setweight(to_tsvector('english', coalesce(array_to_string(tags, ' '), '')), 'C')
+        setweight(to_tsvector('pg_catalog.english'::regconfig, coalesce(name, '')), 'A') ||
+        setweight(to_tsvector('pg_catalog.english'::regconfig, coalesce(description, '')), 'B')
     ) STORED;
 
 -- Indexes
