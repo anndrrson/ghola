@@ -50,6 +50,12 @@ gh workflow run build-private-agent-worker-image.yml \
   -f image=ghcr.io/anndrrson/ghola-private-agent-worker:<tag>
 ```
 
+Current built worker image:
+
+```text
+ghcr.io/anndrrson/ghola-private-agent-worker:private-agent-worker-58d0feb@sha256:11c02472d1c1ab85453fd0c887c5c1d917990a0e2ce28cfe748a1abc3dd0ed9f
+```
+
 Deploy `apps/private-agent-worker/docker-compose.phala.yml` as the Phala CVM
 payload, then fetch the worker recipient metadata:
 
