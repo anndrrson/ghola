@@ -1,6 +1,7 @@
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::Json;
+use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
@@ -54,6 +55,49 @@ pub struct BillingStatusResponse {
     pub tier: String,
     pub stripe_customer_id: Option<String>,
     pub portal_url: Option<String>,
+    pub limits: BillingLimits,
+    pub private_agent_compute: PrivateAgentComputeStatus,
+}
+
+#[derive(Serialize)]
+pub struct BillingLimits {
+    pub calls_per_month: i32,
+    pub emails_per_month: i32,
+    pub private_compute_seconds: i64,
+    pub active_private_agents: i64,
+}
+
+#[derive(Serialize)]
+pub struct PrivateAgentComputeStatus {
+    pub included_seconds: i64,
+    pub reserved_seconds: i64,
+    pub used_seconds: i64,
+    pub remaining_seconds: i64,
+    pub active_agent_limit: i64,
+    pub active_agent_count: i64,
+    pub period_start: String,
+    pub period_end: String,
+    pub metering_unit: &'static str,
+}
+
+#[derive(Deserialize)]
+pub struct ReservePrivateAgentComputeRequest {
+    pub session_id: String,
+    pub seconds: i64,
+}
+
+#[derive(Deserialize)]
+pub struct ReleasePrivateAgentComputeRequest {
+    pub session_id: String,
+    pub status: String,
+}
+
+#[derive(Serialize)]
+pub struct PrivateAgentComputeReservationResponse {
+    pub ok: bool,
+    pub reservation_id: String,
+    pub reserved_seconds: i64,
+    pub private_agent_compute: PrivateAgentComputeStatus,
 }
 
 /// POST /api/billing/checkout
@@ -472,6 +516,80 @@ fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static s
     }
 }
 
+fn private_agent_limits(tier: &str) -> (i64, i64) {
+    match tier {
+        "private_agent" => (30 * 60 * 60, 1),
+        "unlimited" => (100 * 60 * 60, 3),
+        "enterprise" => (500 * 60 * 60, 10),
+        _ => (0, 0),
+    }
+}
+
+fn billing_limits(tier: &str) -> BillingLimits {
+    let (calls_per_month, emails_per_month) = match tier {
+        "pro" | "private_agent" => (30, 50),
+        "unlimited" | "enterprise" => (999, 999),
+        _ => (5, 10),
+    };
+    let (private_compute_seconds, active_private_agents) = private_agent_limits(tier);
+    BillingLimits {
+        calls_per_month,
+        emails_per_month,
+        private_compute_seconds,
+        active_private_agents,
+    }
+}
+
+fn month_bounds() -> (String, String) {
+    let now = chrono::Utc::now().date_naive();
+    let period_start = now.format("%Y-%m-01").to_string();
+    let next_month = if now.month() == 12 {
+        chrono::NaiveDate::from_ymd_opt(now.year() + 1, 1, 1)
+    } else {
+        chrono::NaiveDate::from_ymd_opt(now.year(), now.month() + 1, 1)
+    }
+    .expect("valid next month");
+    (period_start, next_month.to_string())
+}
+
+async fn private_agent_compute_status_for(
+    state: &AppState,
+    user_id: uuid::Uuid,
+    tier: &str,
+) -> Result<PrivateAgentComputeStatus, CloudError> {
+    let (period_start, period_end) = month_bounds();
+    let (included_seconds, active_agent_limit) = private_agent_limits(tier);
+    let row = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT
+            COALESCE(SUM(seconds_reserved), 0)::BIGINT,
+            COALESCE(SUM(seconds_used), 0)::BIGINT,
+            COUNT(*) FILTER (WHERE status = 'active')::BIGINT
+        FROM private_agent_compute_usage
+        WHERE user_id = $1 AND period_start = $2::date
+        "#,
+    )
+    .bind(user_id)
+    .bind(&period_start)
+    .fetch_one(&state.db)
+    .await?;
+
+    let reserved_seconds = row.0;
+    let used_seconds = row.1;
+    let active_agent_count = row.2;
+    Ok(PrivateAgentComputeStatus {
+        included_seconds,
+        reserved_seconds,
+        used_seconds,
+        remaining_seconds: (included_seconds - reserved_seconds).max(0),
+        active_agent_limit,
+        active_agent_count,
+        period_start,
+        period_end,
+        metering_unit: "agent_second",
+    })
+}
+
 async fn mark_private_balance_top_up_paid(
     event: &serde_json::Value,
     state: &AppState,
@@ -753,9 +871,110 @@ pub async fn billing_status(
         None
     };
 
+    let private_agent_compute =
+        private_agent_compute_status_for(&state, claims.sub, &row.0).await?;
+
     Ok(Json(BillingStatusResponse {
+        limits: billing_limits(&row.0),
+        private_agent_compute,
         tier: row.0,
         stripe_customer_id: row.1,
         portal_url,
     }))
+}
+
+/// POST /api/billing/private-agent/compute/reserve
+pub async fn reserve_private_agent_compute(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<ReservePrivateAgentComputeRequest>,
+) -> Result<Json<PrivateAgentComputeReservationResponse>, CloudError> {
+    if req.session_id.trim().is_empty() {
+        return Err(CloudError::BadRequest("session_id is required".to_string()));
+    }
+    if !(60..=24 * 60 * 60).contains(&req.seconds) {
+        return Err(CloudError::BadRequest(
+            "seconds must be between 60 and 86400".to_string(),
+        ));
+    }
+
+    let tier: String = sqlx::query_scalar("SELECT tier FROM users WHERE id = $1")
+        .bind(claims.sub)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(CloudError::NotFound("user not found".to_string()))?;
+    let mut status = private_agent_compute_status_for(&state, claims.sub, &tier).await?;
+    if status.included_seconds <= 0 {
+        return Err(CloudError::PaymentRequired(
+            "private-agent plan required".to_string(),
+        ));
+    }
+    if status.active_agent_count >= status.active_agent_limit {
+        return Err(CloudError::PaymentRequired(
+            "active private-agent limit reached".to_string(),
+        ));
+    }
+    if status.remaining_seconds < req.seconds {
+        return Err(CloudError::PaymentRequired(
+            "private-agent compute allowance exhausted".to_string(),
+        ));
+    }
+
+    let (period_start, _) = month_bounds();
+    sqlx::query(
+        r#"
+        INSERT INTO private_agent_compute_usage
+            (user_id, session_id, seconds_reserved, period_start, metadata)
+        VALUES ($1, $2, $3, $4::date, $5)
+        ON CONFLICT (user_id, session_id) DO NOTHING
+        "#,
+    )
+    .bind(claims.sub)
+    .bind(&req.session_id)
+    .bind(req.seconds as i32)
+    .bind(&period_start)
+    .bind(serde_json::json!({
+        "source": "ghola_private_agent_session",
+        "metering": "reserved_upfront"
+    }))
+    .execute(&state.db)
+    .await?;
+
+    status = private_agent_compute_status_for(&state, claims.sub, &tier).await?;
+    Ok(Json(PrivateAgentComputeReservationResponse {
+        ok: true,
+        reservation_id: req.session_id,
+        reserved_seconds: req.seconds,
+        private_agent_compute: status,
+    }))
+}
+
+/// POST /api/billing/private-agent/compute/release
+pub async fn release_private_agent_compute(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<ReleasePrivateAgentComputeRequest>,
+) -> Result<Json<serde_json::Value>, CloudError> {
+    let status = match req.status.as_str() {
+        "paused" | "completed" | "failed" => req.status.as_str(),
+        _ => {
+            return Err(CloudError::BadRequest(
+                "status must be paused, completed, or failed".to_string(),
+            ));
+        }
+    };
+    sqlx::query(
+        r#"
+        UPDATE private_agent_compute_usage
+        SET status = $3, updated_at = now()
+        WHERE user_id = $1 AND session_id = $2
+        "#,
+    )
+    .bind(claims.sub)
+    .bind(req.session_id)
+    .bind(status)
+    .execute(&state.db)
+    .await?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
 }

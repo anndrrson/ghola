@@ -307,6 +307,14 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::billing::private_balance_status),
         )
         .route(
+            "/api/billing/private-agent/compute/reserve",
+            post(routes::billing::reserve_private_agent_compute),
+        )
+        .route(
+            "/api/billing/private-agent/compute/release",
+            post(routes::billing::release_private_agent_compute),
+        )
+        .route(
             "/api/billing/webhook",
             post(routes::billing::billing_webhook),
         )
