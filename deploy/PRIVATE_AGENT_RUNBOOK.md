@@ -53,7 +53,7 @@ gh workflow run build-private-agent-worker-image.yml \
 Current built worker image:
 
 ```text
-ghcr.io/anndrrson/ghola-private-agent-worker:private-agent-worker-58d0feb@sha256:11c02472d1c1ab85453fd0c887c5c1d917990a0e2ce28cfe748a1abc3dd0ed9f
+ghcr.io/anndrrson/ghola-private-agent-worker:private-agent-worker-128f9e8@sha256:9e2cb99b475ab193bfa5cc9c8c2dcd4b1ed314586ee4801aa217a2eeeb6c66f7
 ```
 
 Deploy `apps/private-agent-worker/docker-compose.phala.yml` as the Phala CVM
