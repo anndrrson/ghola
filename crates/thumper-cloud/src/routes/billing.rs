@@ -113,11 +113,11 @@ pub async fn create_checkout(
         ("line_items[0][quantity]", "1".to_string()),
         (
             "success_url",
-            format!("{}/billing/success", state.config.base_url),
+            format!("{}/settings?tab=plan&checkout=success", state.config.base_url),
         ),
         (
             "cancel_url",
-            format!("{}/billing/cancel", state.config.base_url),
+            format!("{}/settings?tab=plan&checkout=cancelled", state.config.base_url),
         ),
         ("client_reference_id", claims.sub.to_string()),
         ("metadata[ghola_kind]", "subscription".to_string()),
@@ -145,10 +145,18 @@ pub async fn create_checkout(
         .await
         .map_err(|e| CloudError::Internal(format!("stripe request failed: {e}")))?;
 
+    let status = resp.status();
     let body: serde_json::Value = resp
         .json()
         .await
         .map_err(|e| CloudError::Internal(format!("stripe response parse failed: {e}")))?;
+
+    if !status.is_success() {
+        tracing::warn!(?body, "Stripe subscription checkout could not be created");
+        return Err(CloudError::ServiceUnavailable(
+            "Stripe checkout could not be created".to_string(),
+        ));
+    }
 
     let checkout_url = body["url"]
         .as_str()
