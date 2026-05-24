@@ -12,13 +12,15 @@
 //! and `routes::chat::create_agent` (which creates encrypted chat persona configs).
 //! Always use the fully-qualified path `routes::agents::*` when wiring routes.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
+use base64::Engine;
 use chrono::{DateTime, Utc};
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -36,6 +38,13 @@ pub struct CreateAgentRequest {
     pub display_name: String,
     pub bio: Option<String>,
     pub avatar_url: Option<String>,
+    /// Optional client-owned Ed25519 public key, base58 encoded. When present,
+    /// said-cloud verifies `client_identity_signature` and uses this identity
+    /// instead of minting an agent key on the server.
+    pub client_pubkey: Option<String>,
+    pub client_did: Option<String>,
+    pub client_identity_message: Option<String>,
+    pub client_identity_signature: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,12 +68,20 @@ pub struct AgentResponse {
     pub wallet_id: Option<Uuid>,
     pub onchain_identity_pda: Option<String>,
     pub status: String,
+    pub identity_mode: String,
+    pub private_config_synced: bool,
+    pub private_chat_agent_id: Option<Uuid>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-impl From<DbAgent> for AgentResponse {
-    fn from(a: DbAgent) -> Self {
+impl AgentResponse {
+    fn from_agent(
+        a: DbAgent,
+        client_owned_identity: bool,
+        private_chat_agent_id: Option<Uuid>,
+    ) -> Self {
+        let private_config_synced = private_chat_agent_id.is_some();
         Self {
             id: a.id,
             user_id: a.user_id,
@@ -77,9 +94,22 @@ impl From<DbAgent> for AgentResponse {
             wallet_id: a.wallet_id,
             onchain_identity_pda: a.onchain_identity_pda,
             status: a.status,
+            identity_mode: if client_owned_identity || private_config_synced {
+                "seed_vault_derived".into()
+            } else {
+                "server_issued".into()
+            },
+            private_config_synced,
+            private_chat_agent_id,
             created_at: a.created_at,
             updated_at: a.updated_at,
         }
+    }
+}
+
+impl From<DbAgent> for AgentResponse {
+    fn from(a: DbAgent) -> Self {
+        Self::from_agent(a, false, None)
     }
 }
 
@@ -157,9 +187,7 @@ fn user_id_from_claims(claims: &Claims) -> AppResult<Uuid> {
 
 fn validate_slug(slug: &str) -> AppResult<()> {
     if slug.is_empty() || slug.len() > 64 {
-        return Err(AppError::BadRequest(
-            "slug must be 1-64 characters".into(),
-        ));
+        return Err(AppError::BadRequest("slug must be 1-64 characters".into()));
     }
     if !slug
         .chars()
@@ -183,6 +211,65 @@ fn encode_did_key(pubkey: &[u8; 32]) -> String {
 /// A Solana address is just the ed25519 public key encoded in base58.
 fn solana_address_from_pubkey(pubkey: &[u8; 32]) -> String {
     bs58::encode(pubkey).into_string()
+}
+
+fn client_owned_pubkey(req: &CreateAgentRequest) -> AppResult<Option<[u8; 32]>> {
+    let Some(client_pubkey) = req.client_pubkey.as_deref() else {
+        return Ok(None);
+    };
+    let pubkey_vec = bs58::decode(client_pubkey)
+        .into_vec()
+        .map_err(|e| AppError::BadRequest(format!("invalid client_pubkey: {e}")))?;
+    let pubkey_bytes: [u8; 32] = pubkey_vec
+        .as_slice()
+        .try_into()
+        .map_err(|_| AppError::BadRequest("client_pubkey must be 32 bytes".into()))?;
+
+    let expected_did = encode_did_key(&pubkey_bytes);
+    let expected_address = solana_address_from_pubkey(&pubkey_bytes);
+    if req.client_did.as_deref() != Some(expected_did.as_str()) {
+        return Err(AppError::BadRequest(
+            "client_did does not match client_pubkey".into(),
+        ));
+    }
+
+    let message = req
+        .client_identity_message
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("client_identity_message is required".into()))?;
+    let signature = req
+        .client_identity_signature
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("client_identity_signature is required".into()))?;
+    let signature = base64::engine::general_purpose::STANDARD
+        .decode(signature)
+        .map_err(|_| AppError::BadRequest("invalid client_identity_signature base64".into()))?;
+    let sig_bytes: [u8; 64] = signature
+        .as_slice()
+        .try_into()
+        .map_err(|_| AppError::BadRequest("client_identity_signature must be 64 bytes".into()))?;
+    let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
+        .map_err(|e| AppError::BadRequest(format!("invalid client_pubkey: {e}")))?;
+    let sig = Signature::from_bytes(&sig_bytes);
+    verifying_key
+        .verify(message.as_bytes(), &sig)
+        .map_err(|_| AppError::Unauthorized("client agent signature verification failed".into()))?;
+
+    let signed: serde_json::Value = serde_json::from_str(message)
+        .map_err(|_| AppError::BadRequest("client_identity_message must be JSON".into()))?;
+    if signed.get("domain").and_then(|v| v.as_str()) != Some("ghola-agent-create-v1")
+        || signed.get("slug").and_then(|v| v.as_str()) != Some(req.slug.as_str())
+        || signed.get("display_name").and_then(|v| v.as_str()) != Some(req.display_name.as_str())
+        || signed.get("bio").and_then(|v| v.as_str()) != Some(req.bio.as_deref().unwrap_or(""))
+        || signed.get("did").and_then(|v| v.as_str()) != Some(expected_did.as_str())
+        || signed.get("solana_address").and_then(|v| v.as_str()) != Some(expected_address.as_str())
+    {
+        return Err(AppError::BadRequest(
+            "client_identity_message does not match create-agent request".into(),
+        ));
+    }
+
+    Ok(Some(pubkey_bytes))
 }
 
 // ── Handlers ──
@@ -213,13 +300,12 @@ pub async fn create_agent(
     }
 
     // Reject duplicate slug for this user up front (unique constraint also enforces it)
-    let existing: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM agents WHERE user_id = $1 AND slug = $2",
-    )
-    .bind(user_id)
-    .bind(&req.slug)
-    .fetch_optional(&state.db)
-    .await?;
+    let existing: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM agents WHERE user_id = $1 AND slug = $2")
+            .bind(user_id)
+            .bind(&req.slug)
+            .fetch_optional(&state.db)
+            .await?;
     if existing.is_some() {
         return Err(AppError::Conflict(format!(
             "agent with slug '{}' already exists",
@@ -227,9 +313,13 @@ pub async fn create_agent(
         )));
     }
 
-    // Generate cryptographic identity
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let pub_bytes: [u8; 32] = signing_key.verifying_key().to_bytes();
+    // Generate cryptographic identity unless a Seeker/client-owned identity
+    // was supplied and proven by a detached Ed25519 signature.
+    let client_owned_identity = req.client_pubkey.is_some();
+    let pub_bytes: [u8; 32] = match client_owned_pubkey(&req)? {
+        Some(pubkey) => pubkey,
+        None => SigningKey::generate(&mut OsRng).verifying_key().to_bytes(),
+    };
     let did = encode_did_key(&pub_bytes);
     let solana_address = solana_address_from_pubkey(&pub_bytes);
 
@@ -278,13 +368,12 @@ pub async fn create_agent(
     .await?;
 
     // Link the wallet back into the agent row
-    let agent: DbAgent = sqlx::query_as(
-        "UPDATE agents SET wallet_id = $1 WHERE id = $2 RETURNING *",
-    )
-    .bind(wallet.id)
-    .bind(agent.id)
-    .fetch_one(&mut *tx)
-    .await?;
+    let agent: DbAgent =
+        sqlx::query_as("UPDATE agents SET wallet_id = $1 WHERE id = $2 RETURNING *")
+            .bind(wallet.id)
+            .bind(agent.id)
+            .fetch_one(&mut *tx)
+            .await?;
 
     tx.commit().await?;
 
@@ -307,7 +396,14 @@ pub async fn create_agent(
         });
     }
 
-    Ok((StatusCode::CREATED, Json(agent.into())))
+    Ok((
+        StatusCode::CREATED,
+        Json(AgentResponse::from_agent(
+            agent,
+            client_owned_identity,
+            None,
+        )),
+    ))
 }
 
 /// GET /v1/agents — list all agents owned by the authenticated user.
@@ -324,7 +420,26 @@ pub async fn list_agents(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(agents.into_iter().map(Into::into).collect()))
+    let private_rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        r#"SELECT public_agent_id, id
+           FROM chat_agents
+           WHERE user_id = $1 AND public_agent_id IS NOT NULL
+           ORDER BY created_at DESC"#,
+    )
+    .bind(user_id)
+    .fetch_all(&state.db)
+    .await?;
+    let private_by_agent: HashMap<Uuid, Uuid> = private_rows.into_iter().collect();
+
+    Ok(Json(
+        agents
+            .into_iter()
+            .map(|agent| {
+                let private_chat_agent_id = private_by_agent.get(&agent.id).copied();
+                AgentResponse::from_agent(agent, false, private_chat_agent_id)
+            })
+            .collect(),
+    ))
 }
 
 /// GET /v1/agents/:id — full detail with wallet, service count, and reputation.
@@ -335,14 +450,12 @@ pub async fn get_agent(
 ) -> AppResult<Json<AgentDetailResponse>> {
     let user_id = user_id_from_claims(&claims)?;
 
-    let agent: DbAgent = sqlx::query_as(
-        "SELECT * FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
+    let agent: DbAgent = sqlx::query_as("SELECT * FROM agents WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
 
     let wallet: Option<DbAgentWallet> = if let Some(wid) = agent.wallet_id {
         sqlx::query_as("SELECT * FROM agent_wallets WHERE id = $1")
@@ -353,22 +466,32 @@ pub async fn get_agent(
         None
     };
 
-    let service_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM service_listings WHERE agent_id = $1",
-    )
-    .bind(id)
-    .fetch_one(&state.db)
-    .await?;
+    let service_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM service_listings WHERE agent_id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
 
-    let reputation_score: Option<f32> = sqlx::query_scalar(
-        "SELECT overall_score FROM reputation_scores WHERE entity_did = $1",
+    let reputation_score: Option<f32> =
+        sqlx::query_scalar("SELECT overall_score FROM reputation_scores WHERE entity_did = $1")
+            .bind(&agent.did)
+            .fetch_optional(&state.db)
+            .await?;
+
+    let private_chat_agent_id: Option<Uuid> = sqlx::query_scalar(
+        r#"SELECT id
+           FROM chat_agents
+           WHERE user_id = $1 AND public_agent_id = $2
+           ORDER BY created_at DESC
+           LIMIT 1"#,
     )
-    .bind(&agent.did)
+    .bind(user_id)
+    .bind(id)
     .fetch_optional(&state.db)
     .await?;
 
     Ok(Json(AgentDetailResponse {
-        agent: agent.into(),
+        agent: AgentResponse::from_agent(agent, false, private_chat_agent_id),
         wallet,
         service_count,
         reputation_score,
@@ -385,13 +508,12 @@ pub async fn update_agent(
     let user_id = user_id_from_claims(&claims)?;
 
     // Verify ownership before any update
-    let existing: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let existing: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM agents WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
     if existing.is_none() {
         return Err(AppError::NotFound("agent not found".into()));
     }
@@ -438,21 +560,19 @@ pub async fn delete_agent(
 
     // Capture the wallet address before we flip the status so we can
     // remove it from the Helius watchlist after the DB commit succeeds.
-    let solana_address: Option<String> = sqlx::query_scalar(
-        "SELECT solana_address FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let solana_address: Option<String> =
+        sqlx::query_scalar("SELECT solana_address FROM agents WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
 
-    let result = sqlx::query(
-        "UPDATE agents SET status = 'archived' WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .execute(&state.db)
-    .await?;
+    let result =
+        sqlx::query("UPDATE agents SET status = 'archived' WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .execute(&state.db)
+            .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("agent not found".into()));
@@ -517,13 +637,12 @@ pub async fn list_agent_services(
     let user_id = user_id_from_claims(&claims)?;
 
     // Confirm ownership
-    let owns: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let owns: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM agents WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
     if owns.is_none() {
         return Err(AppError::NotFound("agent not found".into()));
     }
@@ -570,14 +689,12 @@ pub async fn create_agent_service(
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
     let user_id = user_id_from_claims(&claims)?;
 
-    let agent: DbAgent = sqlx::query_as(
-        "SELECT * FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
+    let agent: DbAgent = sqlx::query_as("SELECT * FROM agents WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
 
     if req.name.trim().is_empty() || req.slug.trim().is_empty() || req.base_url.trim().is_empty() {
         return Err(AppError::BadRequest(
@@ -637,21 +754,18 @@ pub async fn get_agent_reputation(
 ) -> AppResult<Json<serde_json::Value>> {
     let user_id = user_id_from_claims(&claims)?;
 
-    let agent: DbAgent = sqlx::query_as(
-        "SELECT * FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
+    let agent: DbAgent = sqlx::query_as("SELECT * FROM agents WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
 
-    let row: Option<serde_json::Value> = sqlx::query_scalar(
-        "SELECT to_jsonb(r.*) FROM reputation_scores r WHERE r.entity_did = $1",
-    )
-    .bind(&agent.did)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT to_jsonb(r.*) FROM reputation_scores r WHERE r.entity_did = $1")
+            .bind(&agent.did)
+            .fetch_optional(&state.db)
+            .await?;
 
     // No row yet → return a zeroed scaffold so the frontend always gets valid JSON
     let payload = row.unwrap_or_else(|| {
@@ -678,14 +792,12 @@ pub async fn get_agent_earnings(
 ) -> AppResult<Json<EarningsResponse>> {
     let user_id = user_id_from_claims(&claims)?;
 
-    let agent: DbAgent = sqlx::query_as(
-        "SELECT * FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
+    let agent: DbAgent = sqlx::query_as("SELECT * FROM agents WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
 
     let wallet_id = match agent.wallet_id {
         Some(w) => w,
@@ -718,12 +830,11 @@ pub async fn get_agent_earnings(
     .fetch_one(&state.db)
     .await?;
 
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM payment_transactions WHERE agent_wallet_id = $1",
-    )
-    .bind(wallet_id)
-    .fetch_one(&state.db)
-    .await?;
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM payment_transactions WHERE agent_wallet_id = $1")
+            .bind(wallet_id)
+            .fetch_one(&state.db)
+            .await?;
 
     let received = received.unwrap_or(0);
     let spent = spent.unwrap_or(0);
@@ -746,14 +857,12 @@ pub async fn get_agent_transactions(
 ) -> AppResult<Json<Vec<TransactionResponse>>> {
     let user_id = user_id_from_claims(&claims)?;
 
-    let agent: DbAgent = sqlx::query_as(
-        "SELECT * FROM agents WHERE id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
+    let agent: DbAgent = sqlx::query_as("SELECT * FROM agents WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("agent not found".into()))?;
 
     let wallet_id = match agent.wallet_id {
         Some(w) => w,
@@ -775,5 +884,7 @@ pub async fn get_agent_transactions(
     .fetch_all(&state.db)
     .await?;
 
-    Ok(Json(rows.into_iter().map(TransactionResponse::from).collect()))
+    Ok(Json(
+        rows.into_iter().map(TransactionResponse::from).collect(),
+    ))
 }

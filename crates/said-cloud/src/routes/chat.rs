@@ -19,6 +19,7 @@ use crate::state::AppState;
 pub struct CreateAgentRequest {
     pub encrypted_config: String,
     pub display_order: Option<i32>,
+    pub public_agent_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -82,10 +83,25 @@ pub async fn create_agent(
         .parse()
         .map_err(|_| AppError::BadRequest("Invalid user ID".into()))?;
 
+    if let Some(public_agent_id) = req.public_agent_id {
+        let owns: Option<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM agents WHERE id = $1 AND user_id = $2")
+                .bind(public_agent_id)
+                .bind(user_id)
+                .fetch_optional(&state.db)
+                .await?;
+        if owns.is_none() {
+            return Err(AppError::NotFound("public agent not found".into()));
+        }
+    }
+
     let agent = sqlx::query_as::<_, DbChatAgent>(
-        "INSERT INTO chat_agents (user_id, encrypted_config, display_order) VALUES ($1, $2, $3) RETURNING *",
+        r#"INSERT INTO chat_agents (user_id, public_agent_id, encrypted_config, display_order)
+           VALUES ($1, $2, $3, $4)
+           RETURNING *"#,
     )
     .bind(user_id)
+    .bind(req.public_agent_id)
     .bind(&req.encrypted_config)
     .bind(req.display_order.unwrap_or(0))
     .fetch_one(&state.db)
@@ -366,19 +382,23 @@ fn build_provider_request(req: &RelayRequest) -> AppResult<(String, String)> {
             });
             Ok((url, serde_json::to_string(&body).unwrap()))
         }
-        "groq" | "together" | "ollama" | "deepseek" | "cerebras" | "openrouter" | "kimi" | "qwen" | "glm" => {
-            let base = req.base_url.as_deref().unwrap_or(match req.provider.as_str() {
-                "groq" => "https://api.groq.com/openai",
-                "together" => "https://api.together.xyz",
-                "ollama" => "http://localhost:11434",
-                "deepseek" => "https://api.deepseek.com",
-                "cerebras" => "https://api.cerebras.ai",
-                "openrouter" => "https://openrouter.ai/api",
-                "kimi" => "https://api.moonshot.cn",
-                "qwen" => "https://dashscope.aliyuncs.com/compatible-mode",
-                "glm" => "https://open.bigmodel.cn/api/paas",
-                _ => unreachable!(),
-            });
+        "groq" | "together" | "ollama" | "deepseek" | "cerebras" | "openrouter" | "kimi"
+        | "qwen" | "glm" => {
+            let base = req
+                .base_url
+                .as_deref()
+                .unwrap_or(match req.provider.as_str() {
+                    "groq" => "https://api.groq.com/openai",
+                    "together" => "https://api.together.xyz",
+                    "ollama" => "http://localhost:11434",
+                    "deepseek" => "https://api.deepseek.com",
+                    "cerebras" => "https://api.cerebras.ai",
+                    "openrouter" => "https://openrouter.ai/api",
+                    "kimi" => "https://api.moonshot.cn",
+                    "qwen" => "https://dashscope.aliyuncs.com/compatible-mode",
+                    "glm" => "https://open.bigmodel.cn/api/paas",
+                    _ => unreachable!(),
+                });
             let url = format!("{base}/v1/chat/completions");
 
             let mut messages = req.messages.clone();
