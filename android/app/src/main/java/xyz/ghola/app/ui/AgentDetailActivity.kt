@@ -3,25 +3,28 @@ package xyz.ghola.app.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.res.ColorStateList
 import android.os.Bundle
 import android.view.View
+import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
+import xyz.ghola.app.cloud.CloudAuthManager
 import xyz.ghola.app.cloud.SaidCloudClient
 import java.util.concurrent.Executors
 
 /**
- * Drill-down detail screen for a single owned agent (Phase M5).
+ * Detail screen for a single owned agent.
  *
- * Displays the agent's cryptographic identity (DID + Solana address) and four
- * stat tiles (balance, services, reputation, earnings). The DID and address
- * are tap-to-copy. Data is loaded from /v1/agents/{id}, /v1/agents/{id}/earnings,
- * and /v1/agents/{id}/reputation in parallel.
+ * Shows an integrated profile view with private identity state, balances, and
+ * copyable cryptographic identifiers. Data is loaded from /v1/agents/{id},
+ * /v1/agents/{id}/earnings, and /v1/agents/{id}/reputation.
  */
 class AgentDetailActivity : AppCompatActivity() {
 
@@ -36,6 +39,11 @@ class AgentDetailActivity : AppCompatActivity() {
     private lateinit var displayNameView: TextView
     private lateinit var slugView: TextView
     private lateinit var bioView: TextView
+    private lateinit var agentInitialView: TextView
+    private lateinit var identityModeIcon: ImageView
+    private lateinit var identityModeView: TextView
+    private lateinit var identityModeDetailView: TextView
+    private lateinit var privateConfigStateView: TextView
     private lateinit var didView: TextView
     private lateinit var solanaAddressView: TextView
     private lateinit var balanceView: TextView
@@ -45,6 +53,8 @@ class AgentDetailActivity : AppCompatActivity() {
     private lateinit var loading: ProgressBar
 
     private var agentId: String = ""
+    private var privateIdentityKnown: Boolean = false
+    private var privateConfigSynced: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,12 +62,17 @@ class AgentDetailActivity : AppCompatActivity() {
 
         storage = SecureStorage(this)
 
-        // Crumb header: tapping "agents" acts as a back button.
+        findViewById<View?>(R.id.backButton)?.setOnClickListener { finish() }
         findViewById<TextView?>(R.id.crumbAgents)?.setOnClickListener { finish() }
 
         displayNameView = findViewById(R.id.displayName)
         slugView = findViewById(R.id.slug)
         bioView = findViewById(R.id.bio)
+        agentInitialView = findViewById(R.id.agentInitial)
+        identityModeIcon = findViewById(R.id.identityModeIcon)
+        identityModeView = findViewById(R.id.identityMode)
+        identityModeDetailView = findViewById(R.id.identityModeDetail)
+        privateConfigStateView = findViewById(R.id.privateConfigState)
         didView = findViewById(R.id.did)
         solanaAddressView = findViewById(R.id.solanaAddress)
         balanceView = findViewById(R.id.balance)
@@ -65,6 +80,21 @@ class AgentDetailActivity : AppCompatActivity() {
         reputationView = findViewById(R.id.reputation)
         earnedView = findViewById(R.id.earned)
         loading = findViewById(R.id.loading)
+
+        findViewById<com.google.android.material.bottomnavigation.BottomNavigationView?>(R.id.bottomNav)
+            ?.let { BottomNavHelper.attach(this, R.id.tab_agents, it) }
+
+        val copyDid = View.OnClickListener { copy("DID", didView.text?.toString().orEmpty()) }
+        didView.setOnClickListener(copyDid)
+        findViewById<View?>(R.id.didRow)?.setOnClickListener(copyDid)
+        findViewById<View?>(R.id.didCopy)?.setOnClickListener(copyDid)
+
+        val copyAddress = View.OnClickListener {
+            copy("Address", solanaAddressView.text?.toString().orEmpty())
+        }
+        solanaAddressView.setOnClickListener(copyAddress)
+        findViewById<View?>(R.id.addressRow)?.setOnClickListener(copyAddress)
+        findViewById<View?>(R.id.addressCopy)?.setOnClickListener(copyAddress)
 
         agentId = intent.getStringExtra(EXTRA_AGENT_ID).orEmpty()
         if (agentId.isEmpty()) {
@@ -86,19 +116,32 @@ class AgentDetailActivity : AppCompatActivity() {
     }
 
     private fun bind(agent: JSONObject) {
-        displayNameView.text = agent.optString("display_name", "Agent")
-        slugView.text = agent.optString("slug", "—")
+        val displayName = agent.optString("display_name", "Agent")
+        val slug = agent.optString("slug", "agent")
+        displayNameView.text = displayName
+        agentInitialView.text = displayName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "A"
+        slugView.text = "@$slug"
+
         val bio = agent.optString("bio", "")
         if (bio.isNotEmpty() && bio != "null") {
             bioView.text = bio
             bioView.visibility = View.VISIBLE
+        } else {
+            bioView.visibility = View.GONE
         }
         didView.text = agent.optString("did", "—")
         solanaAddressView.text = agent.optString("solana_address", "—")
 
-        // Tap-to-copy
-        didView.setOnClickListener { copy("DID", agent.optString("did", "")) }
-        solanaAddressView.setOnClickListener { copy("Address", agent.optString("solana_address", "")) }
+        if (
+            agent.optString("identity_mode") == "seed_vault_derived" ||
+            agent.optBoolean("private_config_synced", false)
+        ) {
+            privateIdentityKnown = true
+        }
+        if (agent.has("private_config_synced")) {
+            privateConfigSynced = agent.optBoolean("private_config_synced", false)
+        }
+        renderPrivacyState()
 
         val serviceCount = agent.optInt("service_count", -1)
         if (serviceCount >= 0) serviceCountView.text = serviceCount.toString()
@@ -113,7 +156,13 @@ class AgentDetailActivity : AppCompatActivity() {
 
         executor.execute {
             try {
-                val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
+                val authManager = CloudAuthManager(this)
+                val client = SaidCloudClient.withRefresh(
+                    baseUrl = storage.getSaidBaseUrl(),
+                    tokenProvider = { storage.getSaidToken() },
+                    tokenRefresher = { authManager.refreshSaidToken() },
+                    onAuthExhausted = { storage.clearSaidAuth() },
+                )
                 val agent = client.getAgent(agentId)
                 val earnings = client.getAgentEarnings(agentId)
                 val reputation = client.getAgentReputation(agentId)
@@ -139,10 +188,36 @@ class AgentDetailActivity : AppCompatActivity() {
     }
 
     private fun copy(label: String, value: String) {
-        if (value.isEmpty()) return
+        if (value.isEmpty() || value == "—") return
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText(label, value))
         Toast.makeText(this, "$label copied", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun renderPrivacyState() {
+        val success = ContextCompat.getColor(this, R.color.ghola_success)
+        val muted = ContextCompat.getColor(this, R.color.ghola_text_tertiary)
+        val secondary = ContextCompat.getColor(this, R.color.ghola_text_secondary)
+
+        if (privateIdentityKnown) {
+            identityModeIcon.imageTintList = ColorStateList.valueOf(success)
+            identityModeView.setTextColor(success)
+            identityModeView.text = "Private"
+            identityModeDetailView.text = "Seed Vault derived key"
+            privateConfigStateView.text = if (privateConfigSynced) {
+                "Encrypted config synced"
+            } else {
+                "Encrypted config pending"
+            }
+            privateConfigStateView.setTextColor(secondary)
+        } else {
+            identityModeIcon.imageTintList = ColorStateList.valueOf(muted)
+            identityModeView.setTextColor(secondary)
+            identityModeView.text = "Active"
+            identityModeDetailView.text = "Server-issued identity"
+            privateConfigStateView.text = "No private config attached"
+            privateConfigStateView.setTextColor(muted)
+        }
     }
 
     private fun formatUsdc(microUsdc: Long): String {
