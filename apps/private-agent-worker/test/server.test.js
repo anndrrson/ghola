@@ -26,7 +26,7 @@ function close(server) {
   });
 }
 
-function encryptedRequest(overrides = {}) {
+function encryptedRequest(recipientId, overrides = {}) {
   return {
     version: 1,
     strategy_id: "strategy_123",
@@ -36,11 +36,17 @@ function encryptedRequest(overrides = {}) {
     encrypted_strategy_bundle: {
       alg: "sealed-provider-v1",
       ciphertext: "sealed-ciphertext",
-      recipient: "phala:cvm:recipient",
+      recipient: recipientId,
       aad: "ghola/private-agent-session-v1",
     },
     ...overrides,
   };
+}
+
+async function recipientId(baseUrl) {
+  const response = await fetch(`${baseUrl}/.well-known/private-agent-recipient`);
+  const body = await response.json();
+  return body.recipient_id;
 }
 
 describe("private agent worker", () => {
@@ -84,7 +90,7 @@ describe("private agent worker", () => {
         "content-type": "application/json",
         "x-ghola-sealed-execution-required": "true",
       },
-      body: JSON.stringify(encryptedRequest()),
+      body: JSON.stringify(encryptedRequest(await recipientId(baseUrl))),
     });
 
     assert.equal(response.status, 401);
@@ -99,7 +105,7 @@ describe("private agent worker", () => {
         "x-ghola-sealed-execution-required": "true",
       },
       body: JSON.stringify(
-        encryptedRequest({
+        encryptedRequest(await recipientId(baseUrl), {
           nested: {
             prompt: "buy ETH every Friday",
           },
@@ -112,6 +118,22 @@ describe("private agent worker", () => {
     assert.match(body.details.join(" "), /plaintext/);
   });
 
+  it("rejects bundles sealed to a different recipient", async () => {
+    const response = await fetch(`${baseUrl}/private-agent/sessions`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(encryptedRequest("phala:cvm:wrong")),
+    });
+
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.match(body.details.join(" "), /worker recipient/);
+  });
+
   it("accepts encrypted sessions in explicit unattested dev mode only", async () => {
     const response = await fetch(`${baseUrl}/private-agent/sessions`, {
       method: "POST",
@@ -120,7 +142,7 @@ describe("private agent worker", () => {
         "content-type": "application/json",
         "x-ghola-sealed-execution-required": "true",
       },
-      body: JSON.stringify(encryptedRequest()),
+      body: JSON.stringify(encryptedRequest(await recipientId(baseUrl))),
     });
 
     assert.equal(response.status, 201);

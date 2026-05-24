@@ -174,7 +174,7 @@ function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function validateSessionRequest(body) {
+function validateSessionRequest(body, recipient) {
   const errors = [];
   if (!isObject(body)) return ["request body must be an object"];
   if (containsPlaintextLeakKey(body)) {
@@ -199,6 +199,8 @@ function validateSessionRequest(body) {
   }
   if (!isNonEmptyString(bundle.recipient)) {
     errors.push("encrypted_strategy_bundle.recipient is required");
+  } else if (bundle.recipient !== recipient.recipient_id) {
+    errors.push("encrypted_strategy_bundle.recipient must match worker recipient");
   }
   if (!isNonEmptyString(bundle.aad)) {
     errors.push("encrypted_strategy_bundle.aad is required");
@@ -280,7 +282,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         }
 
         const body = await readJson(req);
-        const errors = validateSessionRequest(body);
+        const errors = validateSessionRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
             error: "invalid private-agent session request",

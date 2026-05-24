@@ -9,6 +9,9 @@ echo "health $health"
 
 recipient="$(curl -fsS "$BASE_URL/.well-known/private-agent-recipient")"
 echo "recipient $recipient"
+recipient_id="$(
+  RECIPIENT_JSON="$recipient" node -e 'console.log(JSON.parse(process.env.RECIPIENT_JSON).recipient_id)'
+)"
 
 plaintext_status="$(
   curl -sS -o /tmp/ghola-private-agent-worker-plaintext.json -w "%{http_code}" \
@@ -16,7 +19,7 @@ plaintext_status="$(
     -H "authorization: Bearer $TOKEN" \
     -H "content-type: application/json" \
     -H "x-ghola-sealed-execution-required: true" \
-    --data '{"version":1,"strategy_id":"strategy_canary","policy_hash":"policy_hash","owner_did":"did:key:zcanary","mode":"capped_session_key","encrypted_strategy_bundle":{"alg":"sealed-provider-v1","ciphertext":"ciphertext","recipient":"phala:cvm:canary","aad":"ghola/private-agent-session-v1"},"prompt":"buy eth"}'
+    --data "{\"version\":1,\"strategy_id\":\"strategy_canary\",\"policy_hash\":\"policy_hash\",\"owner_did\":\"did:key:zcanary\",\"mode\":\"capped_session_key\",\"encrypted_strategy_bundle\":{\"alg\":\"sealed-provider-v1\",\"ciphertext\":\"ciphertext\",\"recipient\":\"$recipient_id\",\"aad\":\"ghola/private-agent-session-v1\"},\"prompt\":\"buy eth\"}"
 )"
 if [[ "$plaintext_status" != "400" ]]; then
   echo "expected plaintext rejection 400, got $plaintext_status"
@@ -31,7 +34,7 @@ accepted_status="$(
     -H "authorization: Bearer $TOKEN" \
     -H "content-type: application/json" \
     -H "x-ghola-sealed-execution-required: true" \
-    --data '{"version":1,"strategy_id":"strategy_canary","policy_hash":"policy_hash","owner_did":"did:key:zcanary","mode":"capped_session_key","encrypted_strategy_bundle":{"alg":"sealed-provider-v1","ciphertext":"ciphertext","recipient":"phala:cvm:canary","aad":"ghola/private-agent-session-v1"}}'
+    --data "{\"version\":1,\"strategy_id\":\"strategy_canary\",\"policy_hash\":\"policy_hash\",\"owner_did\":\"did:key:zcanary\",\"mode\":\"capped_session_key\",\"encrypted_strategy_bundle\":{\"alg\":\"sealed-provider-v1\",\"ciphertext\":\"ciphertext\",\"recipient\":\"$recipient_id\",\"aad\":\"ghola/private-agent-session-v1\"}}"
 )"
 if [[ "$accepted_status" != "201" ]]; then
   echo "expected encrypted acceptance 201 in dev/ready mode, got $accepted_status"
