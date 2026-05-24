@@ -9,7 +9,7 @@ use crate::state::AppState;
 
 #[derive(Deserialize)]
 pub struct CreateCheckoutRequest {
-    pub tier: String, // "pro" or "unlimited"
+    pub tier: String, // "pro", "private_agent", or "unlimited"
 }
 
 #[derive(Serialize)]
@@ -82,12 +82,17 @@ pub async fn create_checkout(
                         "pro price not configured".to_string(),
                     ))?
             }
+            "private_agent" => state.config.stripe_price_private_agent.as_deref().ok_or(
+                CloudError::ServiceUnavailable(
+                    "private agent price not configured".to_string(),
+                ),
+            )?,
             "unlimited" => state.config.stripe_price_unlimited.as_deref().ok_or(
                 CloudError::ServiceUnavailable("unlimited price not configured".to_string()),
             )?,
             _ => {
                 return Err(CloudError::BadRequest(
-                    "tier must be 'pro' or 'unlimited'".to_string(),
+                    "tier must be 'pro', 'private_agent', or 'unlimited'".to_string(),
                 ));
             }
         };
@@ -115,6 +120,17 @@ pub async fn create_checkout(
             format!("{}/billing/cancel", state.config.base_url),
         ),
         ("client_reference_id", claims.sub.to_string()),
+        ("metadata[ghola_kind]", "subscription".to_string()),
+        ("metadata[ghola_tier]", req.tier.clone()),
+        ("metadata[price_id]", price_id.to_string()),
+        (
+            "subscription_data[metadata][ghola_tier]",
+            req.tier.clone(),
+        ),
+        (
+            "subscription_data[metadata][price_id]",
+            price_id.to_string(),
+        ),
     ];
 
     if let Some(ref email) = email {
@@ -406,6 +422,13 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
 
 /// Determine tier from the Stripe price ID in the checkout session.
 fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static str {
+    match event["data"]["object"]["metadata"]["ghola_tier"].as_str() {
+        Some("private_agent") => return "private_agent",
+        Some("unlimited") => return "unlimited",
+        Some("pro") => return "pro",
+        _ => {}
+    }
+
     // Try to extract price ID from line_items or metadata
     let price_id = event["data"]["object"]["line_items"]["data"][0]["price"]["id"]
         .as_str()
@@ -415,6 +438,11 @@ fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static s
     if let Some(ref unlimited_price) = state.config.stripe_price_unlimited {
         if price_id == unlimited_price {
             return "unlimited";
+        }
+    }
+    if let Some(ref private_agent_price) = state.config.stripe_price_private_agent {
+        if price_id == private_agent_price {
+            return "private_agent";
         }
     }
     if let Some(ref pro_price) = state.config.stripe_price_pro {
@@ -429,6 +457,8 @@ fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static s
         .unwrap_or(0);
     if amount >= 2999 {
         "unlimited"
+    } else if amount >= 1999 {
+        "private_agent"
     } else {
         "pro"
     }

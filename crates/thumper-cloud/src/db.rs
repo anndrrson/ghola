@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT,
     phone_number TEXT,
     timezone TEXT DEFAULT 'America/New_York',
-    tier TEXT DEFAULT 'free' CHECK (tier IN ('free', 'pro', 'unlimited')),
+    tier TEXT DEFAULT 'free' CHECK (tier IN ('free', 'pro', 'private_agent', 'unlimited')),
     stripe_customer_id TEXT,
     said_identity_id TEXT,
     created_at TIMESTAMPTZ DEFAULT now(),
@@ -380,10 +380,10 @@ BEGIN
 END
 $$;
 
--- Enterprise tier support
+-- Paid tier support
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
 ALTER TABLE users ADD CONSTRAINT users_tier_check
-    CHECK (tier IN ('free', 'pro', 'unlimited', 'enterprise'));
+    CHECK (tier IN ('free', 'pro', 'private_agent', 'unlimited', 'enterprise'));
 
 -- Crypto wallet support
 CREATE TABLE IF NOT EXISTS user_wallets (
