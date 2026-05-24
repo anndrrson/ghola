@@ -1,282 +1,481 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  Agent Detail — text-first, crumb header "ghola / agents / [slug]", eyebrow sections,
-  no cards. Mono for DIDs and addresses. Stats as large inline numbers, not a grid of cards.
-  Widget IDs: displayName, slug, bio, did, solanaAddress, balance, reputation, serviceCount, earned, loading.
--->
-<ScrollView
+<androidx.coordinatorlayout.widget.CoordinatorLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000"
-    android:clipToPadding="false"
-    android:paddingTop="24dp"
-    android:paddingStart="24dp"
-    android:paddingEnd="24dp"
-    android:paddingBottom="48dp">
+    android:background="@color/ghola_bg">
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical">
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingTop="20dp"
+        android:paddingEnd="20dp">
 
-        <!-- Crumb header -->
         <LinearLayout
+            android:id="@+id/topBar"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
+            android:layout_height="60dp"
             android:gravity="center_vertical"
-            android:layout_marginTop="16dp"
-            android:layout_marginBottom="48dp">
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="ghola"
-                android:textColor="#4a5568"
-                android:textSize="14sp"
-                android:fontFamily="@font/geist" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="  /  "
-                android:textColor="#4a5568"
-                android:textSize="14sp"
-                android:fontFamily="@font/geist_mono" />
-            <TextView
-                android:id="@+id/crumbAgents"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="agents"
-                android:textColor="#4a5568"
-                android:textSize="14sp"
-                android:fontFamily="@font/geist"
-                android:padding="4dp"
-                android:background="?attr/selectableItemBackgroundBorderless" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="  /  "
-                android:textColor="#4a5568"
-                android:textSize="14sp"
-                android:fontFamily="@font/geist_mono" />
-            <TextView
-                android:id="@+id/slug"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="—"
-                android:textColor="#eef1f8"
-                android:textSize="14sp"
-                android:fontFamily="@font/geist_mono"
-                android:singleLine="true"
-                android:ellipsize="end" />
-        </LinearLayout>
+            android:orientation="horizontal">
 
-        <!-- Display name: hero -->
-        <TextView
-            android:id="@+id/displayName"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="#eef1f8"
-            android:textSize="40sp"
-            android:fontFamily="@font/geist"
-            android:textFontWeight="500"
-            android:letterSpacing="-0.03"
-            android:includeFontPadding="false"
-            android:layout_marginBottom="12dp" />
-
-        <TextView
-            android:id="@+id/bio"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="#8b95a8"
-            android:textSize="15sp"
-            android:fontFamily="@font/geist"
-            android:lineSpacingMultiplier="1.4"
-            android:layout_marginBottom="56dp"
-            android:visibility="gone" />
-
-        <!-- BALANCE — hero number -->
-        <TextView
-            style="@style/Ghola.Text.Eyebrow"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="› BALANCE"
-            android:layout_marginBottom="8dp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="bottom"
-            android:layout_marginBottom="8dp">
-            <TextView
-                android:id="@+id/balance"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="$0.00"
-                android:textColor="#eef1f8"
-                android:textSize="56sp"
-                android:fontFamily="@font/geist"
-                android:letterSpacing="-0.03"
-                android:includeFontPadding="false" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text=" USDC"
-                android:textColor="#4a5568"
-                android:textSize="14sp"
-                android:fontFamily="@font/geist_mono"
-                android:paddingBottom="12dp" />
-        </LinearLayout>
-
-        <View
-            android:layout_width="48dp"
-            android:layout_height="2dp"
-            android:background="#3da8ff"
-            android:layout_marginBottom="56dp" />
-
-        <!-- IDENTITY -->
-        <TextView
-            style="@style/Ghola.Text.Eyebrow"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="› IDENTITY"
-            android:layout_marginBottom="12dp" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="did"
-            android:textColor="#4a5568"
-            android:textSize="11sp"
-            android:fontFamily="@font/geist_mono"
-            android:layout_marginBottom="4dp" />
-        <TextView
-            android:id="@+id/did"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="#eef1f8"
-            android:textSize="13sp"
-            android:fontFamily="@font/geist_mono"
-            android:lineSpacingMultiplier="1.3"
-            android:layout_marginBottom="20dp" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="solana"
-            android:textColor="#4a5568"
-            android:textSize="11sp"
-            android:fontFamily="@font/geist_mono"
-            android:layout_marginBottom="4dp" />
-        <TextView
-            android:id="@+id/solanaAddress"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="#eef1f8"
-            android:textSize="13sp"
-            android:fontFamily="@font/geist_mono"
-            android:lineSpacingMultiplier="1.3"
-            android:layout_marginBottom="56dp" />
-
-        <!-- REPUTATION / SERVICES / EARNED — inline text stats -->
-        <TextView
-            style="@style/Ghola.Text.Eyebrow"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="› STATS"
-            android:layout_marginBottom="16dp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginBottom="56dp">
+            <ImageButton
+                android:id="@+id/backButton"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Back to agents"
+                android:padding="10dp"
+                android:src="@drawable/ic_arrow_back"
+                app:tint="@color/ghola_text_primary" />
 
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:orientation="vertical">
+
                 <TextView
+                    android:id="@+id/crumbAgents"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="rep"
-                    android:textColor="#4a5568"
-                    android:textSize="11sp"
-                    android:fontFamily="@font/geist_mono"
-                    android:layout_marginBottom="2dp" />
-                <TextView
-                    android:id="@+id/reputation"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="—"
-                    android:textColor="#eef1f8"
-                    android:textSize="32sp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
                     android:fontFamily="@font/geist"
-                    android:letterSpacing="-0.02"
-                    android:includeFontPadding="false" />
+                    android:paddingTop="2dp"
+                    android:paddingEnd="8dp"
+                    android:paddingBottom="2dp"
+                    android:text="Agents"
+                    android:textColor="@color/ghola_text_primary"
+                    android:textFontWeight="500"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/slug"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:fontFamily="@font/geist_mono"
+                    android:singleLine="true"
+                    android:text="@string/app_name"
+                    android:textColor="@color/ghola_text_tertiary"
+                    android:textSize="11sp" />
             </LinearLayout>
 
             <LinearLayout
-                android:layout_width="0dp"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="services"
-                    android:textColor="#4a5568"
-                    android:textSize="11sp"
-                    android:fontFamily="@font/geist_mono"
-                    android:layout_marginBottom="2dp" />
-                <TextView
-                    android:id="@+id/serviceCount"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="0"
-                    android:textColor="#eef1f8"
-                    android:textSize="32sp"
-                    android:fontFamily="@font/geist"
-                    android:letterSpacing="-0.02"
-                    android:includeFontPadding="false" />
-            </LinearLayout>
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
+                <ImageView
+                    android:id="@+id/identityModeIcon"
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@drawable/ic_shield_check"
+                    app:tint="@color/ghola_success" />
+
                 <TextView
+                    android:id="@+id/identityMode"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="earned"
-                    android:textColor="#4a5568"
-                    android:textSize="11sp"
-                    android:fontFamily="@font/geist_mono"
-                    android:layout_marginBottom="2dp" />
-                <TextView
-                    android:id="@+id/earned"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="$0"
-                    android:textColor="#eef1f8"
-                    android:textSize="32sp"
+                    android:layout_marginStart="6dp"
                     android:fontFamily="@font/geist"
-                    android:letterSpacing="-0.02"
-                    android:includeFontPadding="false" />
+                    android:text="Private"
+                    android:textColor="@color/ghola_success"
+                    android:textFontWeight="500"
+                    android:textSize="12sp" />
             </LinearLayout>
         </LinearLayout>
 
-        <ProgressBar
-            android:id="@+id/loading"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:indeterminateTint="#3da8ff"
-            android:visibility="gone" />
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:paddingBottom="104dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/agentInitial"
+                        android:layout_width="52dp"
+                        android:layout_height="52dp"
+                        android:background="@drawable/bg_agent_initial"
+                        android:fontFamily="@font/geist"
+                        android:gravity="center"
+                        android:text="A"
+                        android:textColor="@color/ghola_text_primary"
+                        android:textFontWeight="500"
+                        android:textSize="22sp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="14dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:id="@+id/displayName"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:ellipsize="end"
+                            android:fontFamily="@font/geist"
+                            android:includeFontPadding="false"
+                            android:maxLines="1"
+                            android:singleLine="true"
+                            android:textColor="@color/ghola_text_primary"
+                            android:textFontWeight="500"
+                            android:textSize="24sp" />
+
+                        <TextView
+                            android:id="@+id/bio"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:fontFamily="@font/geist"
+                            android:lineSpacingMultiplier="1.3"
+                            android:maxLines="3"
+                            android:textColor="@color/ghola_text_secondary"
+                            android:textSize="14sp"
+                            android:visibility="gone" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/privacyPanel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="22dp"
+                    android:background="@drawable/bg_agent_panel"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/geist"
+                        android:text="Private identity"
+                        android:textColor="@color/ghola_text_primary"
+                        android:textFontWeight="500"
+                        android:textSize="15sp" />
+
+                    <TextView
+                        android:id="@+id/identityModeDetail"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:fontFamily="@font/geist"
+                        android:text="Seed Vault derived key"
+                        android:textColor="@color/ghola_text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/privateConfigState"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:fontFamily="@font/geist"
+                        android:text="Encrypted config synced"
+                        android:textColor="@color/ghola_text_secondary"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="112dp"
+                        android:layout_weight="1.35"
+                        android:background="@drawable/bg_agent_panel"
+                        android:orientation="vertical"
+                        android:padding="16dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="@font/geist"
+                            android:text="Balance"
+                            android:textColor="@color/ghola_text_secondary"
+                            android:textSize="12sp" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:gravity="bottom"
+                            android:orientation="horizontal">
+
+                            <TextView
+                                android:id="@+id/balance"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:fontFamily="@font/geist"
+                                android:includeFontPadding="false"
+                                android:text="$0.00"
+                                android:textColor="@color/ghola_text_primary"
+                                android:textSize="34sp" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="5dp"
+                                android:fontFamily="@font/geist_mono"
+                                android:paddingBottom="4dp"
+                                android:text="USDC"
+                                android:textColor="@color/ghola_text_tertiary"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="112dp"
+                        android:layout_marginStart="10dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_agent_panel"
+                        android:orientation="vertical"
+                        android:padding="16dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="@font/geist"
+                            android:text="Earned"
+                            android:textColor="@color/ghola_text_secondary"
+                            android:textSize="12sp" />
+
+                        <TextView
+                            android:id="@+id/earned"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:fontFamily="@font/geist"
+                            android:gravity="bottom"
+                            android:includeFontPadding="false"
+                            android:text="$0.00"
+                            android:textColor="@color/ghola_text_primary"
+                            android:textSize="26sp" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="84dp"
+                    android:layout_marginTop="10dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_agent_panel"
+                        android:orientation="vertical"
+                        android:padding="16dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="@font/geist"
+                            android:text="Reputation"
+                            android:textColor="@color/ghola_text_secondary"
+                            android:textSize="12sp" />
+
+                        <TextView
+                            android:id="@+id/reputation"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:fontFamily="@font/geist"
+                            android:gravity="bottom"
+                            android:includeFontPadding="false"
+                            android:text="—"
+                            android:textColor="@color/ghola_text_primary"
+                            android:textSize="24sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_marginStart="10dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_agent_panel"
+                        android:orientation="vertical"
+                        android:padding="16dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="@font/geist"
+                            android:text="Services"
+                            android:textColor="@color/ghola_text_secondary"
+                            android:textSize="12sp" />
+
+                        <TextView
+                            android:id="@+id/serviceCount"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:fontFamily="@font/geist"
+                            android:gravity="bottom"
+                            android:includeFontPadding="false"
+                            android:text="0"
+                            android:textColor="@color/ghola_text_primary"
+                            android:textSize="24sp" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <TextView
+                    style="@style/Ghola.Text.Eyebrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="28dp"
+                    android:text="Identity" />
+
+                <LinearLayout
+                    android:id="@+id/didRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="64dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/bg_agent_panel"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:foreground="?attr/selectableItemBackground"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="12dp">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="@font/geist"
+                            android:text="DID"
+                            android:textColor="@color/ghola_text_secondary"
+                            android:textSize="12sp" />
+
+                        <TextView
+                            android:id="@+id/did"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:ellipsize="middle"
+                            android:fontFamily="@font/geist_mono"
+                            android:singleLine="true"
+                            android:textColor="@color/ghola_text_primary"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <ImageButton
+                        android:id="@+id/didCopy"
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Copy DID"
+                        android:padding="10dp"
+                        android:src="@drawable/ic_copy"
+                        app:tint="@color/ghola_text_secondary" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/addressRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="64dp"
+                    android:layout_marginTop="10dp"
+                    android:layout_marginBottom="28dp"
+                    android:background="@drawable/bg_agent_panel"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:foreground="?attr/selectableItemBackground"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="12dp">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="@font/geist"
+                            android:text="Solana"
+                            android:textColor="@color/ghola_text_secondary"
+                            android:textSize="12sp" />
+
+                        <TextView
+                            android:id="@+id/solanaAddress"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:ellipsize="middle"
+                            android:fontFamily="@font/geist_mono"
+                            android:singleLine="true"
+                            android:textColor="@color/ghola_text_primary"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <ImageButton
+                        android:id="@+id/addressCopy"
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Copy Solana address"
+                        android:padding="10dp"
+                        android:src="@drawable/ic_copy"
+                        app:tint="@color/ghola_text_secondary" />
+                </LinearLayout>
+
+                <ProgressBar
+                    android:id="@+id/loading"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_gravity="center_horizontal"
+                    android:indeterminateTint="@color/ghola_accent"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </ScrollView>
     </LinearLayout>
-</ScrollView>
+
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNav"
+        android:layout_width="match_parent"
+        android:layout_height="72dp"
+        android:layout_gravity="bottom"
+        android:background="@color/ghola_bg"
+        app:elevation="0dp"
+        app:menu="@menu/bottom_nav" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="72dp"
+        android:background="@color/ghola_border" />
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

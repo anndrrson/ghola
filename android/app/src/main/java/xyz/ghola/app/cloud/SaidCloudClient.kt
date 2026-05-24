@@ -119,16 +119,49 @@ class SaidCloudClient private constructor(
     /** GET /v1/agents/{id} — full detail with wallet, service count, reputation. */
     fun getAgent(id: String): JSONObject? = get("/agents/$id")
 
-    /** POST /v1/agents — create a new agent. Server generates ed25519 keypair,
-     *  derives DID, provisions a dedicated agent_wallets row in one transaction. */
-    fun createAgent(slug: String, displayName: String, bio: String? = null, avatarUrl: String? = null): JSONObject? {
+    /**
+     * POST /v1/agents.
+     *
+     * Legacy clients omit the client-owned identity fields and said-cloud
+     * generates the public identity. Seeker clients send a locally-derived
+     * public key plus a signature proof, so the agent secret never exists on
+     * the server.
+     */
+    fun createAgent(
+        slug: String,
+        displayName: String,
+        bio: String? = null,
+        avatarUrl: String? = null,
+        clientPubkey: String? = null,
+        clientDid: String? = null,
+        clientIdentityMessage: String? = null,
+        clientIdentitySignature: String? = null,
+    ): JSONObject? {
         val body = JSONObject().apply {
             put("slug", slug)
             put("display_name", displayName)
             if (bio != null) put("bio", bio)
             if (avatarUrl != null) put("avatar_url", avatarUrl)
+            if (clientPubkey != null) put("client_pubkey", clientPubkey)
+            if (clientDid != null) put("client_did", clientDid)
+            if (clientIdentityMessage != null) put("client_identity_message", clientIdentityMessage)
+            if (clientIdentitySignature != null) put("client_identity_signature", clientIdentitySignature)
         }
         return post("/agents", body)
+    }
+
+    /** POST /v1/chat/agents — stores opaque E2E-encrypted private agent config. */
+    fun createEncryptedChatAgent(
+        encryptedConfig: String,
+        publicAgentId: String? = null,
+        displayOrder: Int = 0,
+    ): JSONObject? {
+        val body = JSONObject().apply {
+            put("encrypted_config", encryptedConfig)
+            if (!publicAgentId.isNullOrEmpty()) put("public_agent_id", publicAgentId)
+            put("display_order", displayOrder)
+        }
+        return post("/chat/agents", body)
     }
 
     /** PATCH /v1/agents/{id} — update display fields and/or status. */

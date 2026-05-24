@@ -9,19 +9,27 @@ import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
+import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
+import kotlinx.coroutines.launch
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
+import xyz.ghola.app.cloud.CloudAuthManager
+import xyz.ghola.app.cloud.DeviceSignerProvider
 import xyz.ghola.app.cloud.SaidCloudClient
+import xyz.ghola.app.crypto.PrivateAgentIdentity
+import xyz.ghola.app.solana.SeedVaultNative
 import java.util.concurrent.Executors
 
 /**
  * Agent creation wizard (Phase M5).
  *
- * Two inputs: display_name (auto-derives slug) and optional bio. POSTs to
- * said-cloud's /v1/agents which generates a fresh ed25519 keypair, derives
- * the DID + Solana address, and provisions a dedicated agent_wallets row in
- * one transaction. On success, redirects to [AgentDetailActivity].
+ * Two inputs: display_name (auto-derives slug) and optional bio. On Seeker,
+ * the agent identity is derived locally from a Seed Vault signature and only
+ * the public DID/address plus signature proof are sent to said-cloud. Legacy
+ * clients keep the server-generated identity path.
  */
 class CreateAgentActivity : AppCompatActivity() {
 
@@ -33,8 +41,16 @@ class CreateAgentActivity : AppCompatActivity() {
     private lateinit var errorText: TextView
     private lateinit var loading: ProgressBar
     private val executor = Executors.newSingleThreadExecutor()
+    private val activityResultSender = ActivityResultSender(this)
+    private val seedVaultNative = SeedVaultNative(this)
 
     private var slugTouched = false
+
+    private data class AgentForm(
+        val displayName: String,
+        val slug: String,
+        val bio: String?,
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -91,20 +107,78 @@ class CreateAgentActivity : AppCompatActivity() {
         }
 
         if (!storage.hasSaidAuth()) {
-            showError("Wallet session missing for agents. Reconnect wallet in onboarding.")
+            signInForAgents()
             return
         }
+
+        val form = AgentForm(
+            displayName = displayName,
+            slug = slug,
+            bio = bio.takeIf { it.isNotEmpty() },
+        )
 
         loading.visibility = View.VISIBLE
         createButton.isEnabled = false
 
+        lifecycleScope.launch {
+            val privateIdentity = if (BuildConfig.GHOLA_SEEKER_BUILD) {
+                val session = ensureSeedVaultSession().getOrElse { err ->
+                    loading.visibility = View.GONE
+                    createButton.isEnabled = true
+                    showError(err.message ?: "Seed Vault connection failed")
+                    return@launch
+                }
+                PrivateAgentIdentity.derive(
+                    signer = seedVaultNative.signer(session),
+                    slug = form.slug,
+                    displayName = form.displayName,
+                    bio = form.bio,
+                ).getOrElse { err ->
+                    loading.visibility = View.GONE
+                    createButton.isEnabled = true
+                    showError(err.message ?: "Private agent identity derivation failed")
+                    return@launch
+                }
+            } else {
+                null
+            }
+
+            createAgent(form, privateIdentity)
+        }
+    }
+
+    private fun createAgent(
+        form: AgentForm,
+        privateIdentity: PrivateAgentIdentity.Derived?,
+    ) {
         executor.execute {
-            val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
-            val result = client.createAgent(
-                slug = slug,
-                displayName = displayName,
-                bio = if (bio.isNotEmpty()) bio else null
+            val authManager = CloudAuthManager(this@CreateAgentActivity)
+            val client = SaidCloudClient.withRefresh(
+                baseUrl = storage.getSaidBaseUrl(),
+                tokenProvider = { storage.getSaidToken() },
+                tokenRefresher = { authManager.refreshSaidToken() },
+                onAuthExhausted = { storage.clearSaidAuth() },
             )
+            val result = client.createAgent(
+                slug = form.slug,
+                displayName = form.displayName,
+                bio = form.bio,
+                clientPubkey = privateIdentity?.publicKeyBase58,
+                clientDid = privateIdentity?.did,
+                clientIdentityMessage = privateIdentity?.identityMessage,
+                clientIdentitySignature = privateIdentity?.identitySignatureBase64,
+            )
+            if (result != null && privateIdentity != null && result.optString("id", "").isNotEmpty()) {
+                val privateConfig = client.createEncryptedChatAgent(
+                    encryptedConfig = privateIdentity.encryptedConfig,
+                    publicAgentId = result.optString("id", ""),
+                )
+                result.put("identity_mode", "seed_vault_derived")
+                result.put("private_config_synced", privateConfig != null)
+                if (privateConfig != null) {
+                    result.put("private_chat_agent_id", privateConfig.optString("id", ""))
+                }
+            }
             runOnUiThread {
                 loading.visibility = View.GONE
                 createButton.isEnabled = true
@@ -134,6 +208,75 @@ class CreateAgentActivity : AppCompatActivity() {
                 finish()
             }
         }
+    }
+
+    private fun signInForAgents() {
+        errorText.visibility = View.GONE
+        loading.visibility = View.VISIBLE
+        createButton.isEnabled = false
+
+        lifecycleScope.launch {
+            val result = when {
+                BuildConfig.GHOLA_SEEKER_BUILD -> {
+                    val session = ensureSeedVaultSession().getOrElse {
+                        loading.visibility = View.GONE
+                        createButton.isEnabled = true
+                        showError(it.message ?: "Seed Vault connection failed")
+                        return@launch
+                    }
+                    CloudAuthManager(this@CreateAgentActivity)
+                        .signInSaidWithDeviceSigner(seedVaultNative.signer(session))
+                }
+                BuildConfig.GHOLA_PLAY_STORE_BUILD -> {
+                    val signer = DeviceSignerProvider.cached(this@CreateAgentActivity)
+                        ?: DeviceSignerProvider.signIn(this@CreateAgentActivity).getOrElse {
+                            loading.visibility = View.GONE
+                            createButton.isEnabled = true
+                            showError(it.message ?: "Turnkey sign-in failed")
+                            return@launch
+                        }
+                    CloudAuthManager(this@CreateAgentActivity).signInSaidWithDeviceSigner(signer)
+                }
+                else -> {
+                    val walletAddress = storage.getSolanaAddress()
+                    if (walletAddress.isNullOrBlank()) {
+                        loading.visibility = View.GONE
+                        createButton.isEnabled = true
+                        showError("Connect your wallet first.")
+                        return@launch
+                    }
+                    CloudAuthManager(this@CreateAgentActivity)
+                        .signInSaidWithWallet(activityResultSender, walletAddress)
+                }
+            }
+
+            loading.visibility = View.GONE
+            createButton.isEnabled = true
+
+            when (result) {
+                is CloudAuthManager.AuthResult.Success -> submit()
+                is CloudAuthManager.AuthResult.Error -> showError(result.message)
+            }
+        }
+    }
+
+    private suspend fun ensureSeedVaultSession(): Result<SeedVaultNative.Session> {
+        currentSeedVaultSession()?.let { return Result.success(it) }
+        return seedVaultNative.authorizeSession().map { session ->
+            storage.setSeedVaultSession(
+                address = session.address,
+                authToken = session.authToken,
+                derivationPathUri = session.derivationPathUri,
+            )
+            session
+        }
+    }
+
+    private fun currentSeedVaultSession(): SeedVaultNative.Session? {
+        val address = storage.getSeedVaultAddress() ?: return null
+        val token = storage.getSeedVaultAuthToken() ?: return null
+        val path = storage.getSeedVaultDerivationPathUri() ?: return null
+        return SeedVaultNative.Session(address, token, path)
     }
 
     private fun showError(msg: String) {
