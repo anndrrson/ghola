@@ -31,9 +31,10 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            EnvFilter::new("said_cloud=debug,tower_http=debug")
-        }))
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("said_cloud=debug,tower_http=debug")),
+        )
         .init();
 
     let config = Config::from_env();
@@ -45,8 +46,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Connected to database");
 
-    sqlx::migrate!("../../migrations/cloud").run(&db).await?;
-    tracing::info!("Migrations applied");
+    run_startup_migrations(&db).await?;
 
     let signing_key = Arc::new(AppState::build_signing_key(&config));
     tracing::info!(
@@ -54,9 +54,12 @@ async fn main() -> anyhow::Result<()> {
         "Response signing key loaded"
     );
 
-    let vault = said_turnkey::vault_from_env()
-        .map_err(|e| anyhow::anyhow!("vault init failed: {e}"))?;
-    tracing::info!(backend = vault.backend_name(), "Merchant gateway vault initialized");
+    let vault =
+        said_turnkey::vault_from_env().map_err(|e| anyhow::anyhow!("vault init failed: {e}"))?;
+    tracing::info!(
+        backend = vault.backend_name(),
+        "Merchant gateway vault initialized"
+    );
 
     let state = Arc::new(AppState {
         db,
@@ -149,7 +152,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/auth/google", post(routes::auth::google_sign_in))
         .route("/v1/auth/refresh", post(routes::auth::refresh_token))
         .route("/v1/consumer/register", post(routes::consumer::register))
-        .route("/v1/profile/{did}", get(routes::consumer::get_public_profile))
+        .route(
+            "/v1/profile/{did}",
+            get(routes::consumer::get_public_profile),
+        )
         .route("/v1/resolve/{did_or_handle}", get(routes::resolve::resolve))
         .route("/v1/discover", get(routes::resolve::discover))
         .route("/v1/billing/webhook", post(routes::billing::webhook))
@@ -164,10 +170,7 @@ async fn main() -> anyhow::Result<()> {
             "/v1/nodes/{id}/heartbeat",
             post(routes::nodes::node_heartbeat),
         )
-        .route(
-            "/v1/nodes/{id}/reviews",
-            get(routes::nodes::get_reviews),
-        )
+        .route("/v1/nodes/{id}/reviews", get(routes::nodes::get_reviews))
         .route(
             "/v1/nodes/{id}/payment",
             post(routes::nodes::record_payment),
@@ -250,16 +253,12 @@ async fn main() -> anyhow::Result<()> {
             get(routes::billing_service::list_settlements),
         )
         // OIDC agent provisioning (public — authenticates via id_token)
-        .route(
-            "/v1/oidc/provision",
-            post(routes::oidc::provision_agent),
-        )
+        .route("/v1/oidc/provision", post(routes::oidc::provision_agent))
         // Merchant gateway onboarding (public — zero-account 60-second flow)
         .route("/v1/m/new", post(routes::merchants::create_merchant))
         .route(
             "/v1/m/{slug}",
-            get(routes::merchants::get_public_listing)
-                .delete(routes::merchants::kill_switch),
+            get(routes::merchants::get_public_listing).delete(routes::merchants::kill_switch),
         )
         .route("/v1/m/{slug}/logs", get(routes::merchants::get_logs))
         .route(
@@ -290,8 +289,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route(
             "/v1/agents/{id}/services",
-            get(routes::agents::list_agent_services)
-                .post(routes::agents::create_agent_service),
+            get(routes::agents::list_agent_services).post(routes::agents::create_agent_service),
         )
         .route(
             "/v1/agents/{id}/reputation",
@@ -306,7 +304,10 @@ async fn main() -> anyhow::Result<()> {
             get(routes::agents::get_agent_transactions),
         )
         .route("/v1/business/profile", get(routes::business::get_profile))
-        .route("/v1/business/profile", put(routes::business::update_profile))
+        .route(
+            "/v1/business/profile",
+            put(routes::business::update_profile),
+        )
         .route(
             "/v1/business/verify-domain",
             post(routes::business::verify_domain),
@@ -316,56 +317,32 @@ async fn main() -> anyhow::Result<()> {
             post(routes::business::check_domain_verification),
         )
         .route("/v1/business/agents-txt", get(routes::business::agents_txt))
-        .route(
-            "/v1/business/well-known",
-            get(routes::business::well_known),
-        )
+        .route("/v1/business/well-known", get(routes::business::well_known))
         .route("/v1/consumer/profile", get(routes::consumer::get_profile))
-        .route("/v1/consumer/profile", put(routes::consumer::update_profile))
+        .route(
+            "/v1/consumer/profile",
+            put(routes::consumer::update_profile),
+        )
         .route("/v1/consumer/wallet", get(routes::consumer::get_wallet))
         .route("/v1/consumer/wallet", post(routes::consumer::upload_wallet))
-        .route(
-            "/v1/analytics/summary",
-            get(routes::analytics::summary),
-        )
+        .route("/v1/analytics/summary", get(routes::analytics::summary))
         .route(
             "/v1/billing/create-checkout",
             post(routes::billing::create_checkout),
         )
         .route("/v1/billing/status", get(routes::billing::status))
         .route("/v1/billing/portal", get(routes::billing::portal))
-        .route(
-            "/v1/analytics/timeline",
-            get(routes::analytics::timeline),
-        )
-        .route(
-            "/v1/analytics/agents",
-            get(routes::analytics::agents),
-        )
-        .route(
-            "/v1/analytics/funnel",
-            get(routes::analytics::funnel),
-        )
-        .route(
-            "/v1/badges/request",
-            post(routes::badges::request_badge),
-        )
-        .route(
-            "/v1/admin/badges/grant",
-            post(routes::badges::grant_badge),
-        )
-        .route(
-            "/v1/nodes/register",
-            post(routes::nodes::register_node),
-        )
+        .route("/v1/analytics/timeline", get(routes::analytics::timeline))
+        .route("/v1/analytics/agents", get(routes::analytics::agents))
+        .route("/v1/analytics/funnel", get(routes::analytics::funnel))
+        .route("/v1/badges/request", post(routes::badges::request_badge))
+        .route("/v1/admin/badges/grant", post(routes::badges::grant_badge))
+        .route("/v1/nodes/register", post(routes::nodes::register_node))
         .route(
             "/v1/nodes/manage/{id}",
             put(routes::nodes::update_node).delete(routes::nodes::delete_node),
         )
-        .route(
-            "/v1/nodes/{id}/review",
-            post(routes::nodes::submit_review),
-        )
+        .route("/v1/nodes/{id}/review", post(routes::nodes::submit_review))
         .route(
             "/v1/pay/agents",
             get(routes::payments::list_agents).post(routes::payments::create_agent),
@@ -380,15 +357,9 @@ async fn main() -> anyhow::Result<()> {
             "/v1/pay/spending/{id}",
             get(routes::payments::spending_summary),
         )
-        .route(
-            "/v1/pay/merchant",
-            post(routes::payments::upsert_merchant),
-        )
+        .route("/v1/pay/merchant", post(routes::payments::upsert_merchant))
         // Service registry (protected routes)
-        .route(
-            "/v1/services/mine",
-            get(routes::services::my_services),
-        )
+        .route("/v1/services/mine", get(routes::services::my_services))
         .route(
             "/v1/services/register",
             post(routes::services::register_service),
@@ -423,10 +394,7 @@ async fn main() -> anyhow::Result<()> {
             "/v1/credentials/share",
             post(routes::credentials::share_credential),
         )
-        .route(
-            "/v1/credentials/inbox",
-            get(routes::credentials::inbox),
-        )
+        .route("/v1/credentials/inbox", get(routes::credentials::inbox))
         .route(
             "/v1/credentials/accept/{id}",
             post(routes::credentials::accept_credential),
@@ -501,10 +469,7 @@ async fn main() -> anyhow::Result<()> {
         // ── Enterprise: Audit trail ───────────────────────────────────────────
         .route("/v1/audit", get(routes::audit::list_events))
         .route("/v1/audit/export", get(routes::audit::export_events))
-        .route(
-            "/v1/audit/verify-chain",
-            post(routes::audit::verify_chain),
-        )
+        .route("/v1/audit/verify-chain", post(routes::audit::verify_chain))
         // ── Enterprise: OIDC federation ───────────────────────────────────────
         .route(
             "/v1/oidc/providers",
@@ -585,6 +550,72 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_startup_migrations(db: &sqlx::PgPool) -> anyhow::Result<()> {
+    match sqlx::migrate!("../../migrations/cloud").run(db).await {
+        Ok(()) => {
+            tracing::info!("Migrations applied");
+            Ok(())
+        }
+        Err(err) if is_legacy_migration_drift(&err) => {
+            tracing::warn!(
+                error = %err,
+                "Historical migration metadata drift detected; applying additive startup migrations"
+            );
+            apply_private_agent_link_migration(db).await?;
+            tracing::info!("Additive startup migrations applied");
+            Ok(())
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn is_legacy_migration_drift(err: &sqlx::migrate::MigrateError) -> bool {
+    let msg = err.to_string();
+    msg.contains("previously applied but has been modified")
+        || msg.contains("previously applied but is missing")
+        || msg.contains("previously applied but is missing in the resolved migrations")
+}
+
+async fn apply_private_agent_link_migration(db: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"ALTER TABLE chat_agents
+           ADD COLUMN IF NOT EXISTS public_agent_id UUID REFERENCES agents(id) ON DELETE SET NULL"#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_chat_agents_public_agent
+           ON chat_agents(user_id, public_agent_id)
+           WHERE public_agent_id IS NOT NULL"#,
+    )
+    .execute(db)
+    .await?;
+
+    sqlx::query(
+        r#"WITH candidates AS (
+              SELECT
+                  ca.id AS chat_agent_id,
+                  a.id AS public_agent_id,
+                  COUNT(*) OVER (PARTITION BY ca.id) AS match_count
+              FROM chat_agents ca
+              JOIN agents a
+                ON a.user_id = ca.user_id
+               AND abs(extract(epoch FROM (ca.created_at - a.created_at))) <= 120
+              WHERE ca.public_agent_id IS NULL
+          )
+          UPDATE chat_agents ca
+          SET public_agent_id = candidates.public_agent_id
+          FROM candidates
+          WHERE ca.id = candidates.chat_agent_id
+            AND candidates.match_count = 1"#,
+    )
+    .execute(db)
+    .await?;
+
+    Ok(())
+}
+
 async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await
@@ -600,11 +631,10 @@ async fn reconcile_helius(state: &Arc<AppState>) -> anyhow::Result<()> {
     let Some(client) = helius::Helius::new(&state.http_client, &state.config) else {
         return Ok(());
     };
-    let addresses: Vec<String> = sqlx::query_scalar(
-        "SELECT solana_address FROM agent_wallets WHERE active = true",
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let addresses: Vec<String> =
+        sqlx::query_scalar("SELECT solana_address FROM agent_wallets WHERE active = true")
+            .fetch_all(&state.db)
+            .await?;
     tracing::info!(count = addresses.len(), "Reconciling Helius watchlist");
     client
         .set_addresses(&addresses)
