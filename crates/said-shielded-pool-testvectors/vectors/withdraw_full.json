@@ -11,11 +11,11 @@
       "1eedfe1bcefbf6c4d23b4feb2120d43c537d81e51b20437c107e69c6d38e61ae"
     ],
     "output_commitments": [],
-    "public_amount": "-2500",
+    "public_amount": "2500",
     "root": "25172dc2a92c9e8bebae6edbd279187e6d17fee06d8af3cc58e48a463326ff6e"
   },
   "name": "withdraw_full",
-  "notes": "Negative public_amount signals withdrawal to the pool program.",
+  "notes": "Positive public_amount signals withdrawal to the pool program (value leaves → positive).",
   "proof": null,
   "should_prove": true,
   "should_verify": true,
@@ -94,7 +94,7 @@
       }
     ],
     "output_notes": [],
-    "public_amount": "-2500",
+    "public_amount": "2500",
     "spending_key": "008f3f709fcad774e9bc0010e60c12b281a97cba8fc6c8e355c74093542b5aaf"
   }
 }

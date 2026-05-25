@@ -15,7 +15,7 @@
     "output_commitments": [
       "17d06c5d329432bdf6eb15090f132252e5728ee85ef237914d8237e8a2efe746"
     ],
-    "public_amount": "-500",
+    "public_amount": "500",
     "root": "04a59f9a232d0c07e7b338dcc3cbcaec8a3b4341ab2815f6ba7f2aa8c73a2b19"
   },
   "name": "partial_withdraw_with_change_note",
@@ -105,7 +105,7 @@
         "owner_pubkey": "00603b24c353b0cbcf508817d697f89cd14096525ba16557b5c1441478b1cc50"
       }
     ],
-    "public_amount": "-500",
+    "public_amount": "500",
     "spending_key": "00b936b84901f682ae2b2c17df9ce1724930e710ffe3ca5a8a193e7107f32bbb"
   }
 }

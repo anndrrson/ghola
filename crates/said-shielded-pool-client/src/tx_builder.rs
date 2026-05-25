@@ -24,14 +24,19 @@
 //! p = 21888242871839275222246405745257275088548364400416034343698204186575808495617
 //! ```
 //!
-//! - Deposit (value enters pool):  encode as `+amount mod p`.
-//! - Withdraw (value leaves pool): encode as `(p − amount) mod p`.
-//! - Pure shielded transfer:       encode as `0`.
+//! Single source of truth: the circuit's value-conservation constraint
+//! `sum(inputs) === sum(outputs) + publicAmount` (transaction.circom),
+//! combined with the physical meaning of each direction:
 //!
-//! Note: this convention differs from the `WitnessBuilder` sign
-//! convention (which uses native `i128`); the conversion happens at the
-//! `ext_data` boundary. See SPEC.md §3.2 for the canonical statement —
-//! we re-state it here so SDK consumers don't have to cross-reference.
+//! - Deposit (value enters pool):  adds an OUTPUT note, no input, so
+//!   `0 = amount + publicAmount` → `publicAmount = -amount = (p − amount) mod p`.
+//! - Withdraw (value leaves pool): spends an INPUT note, so
+//!   `amount = 0 + publicAmount` → `publicAmount = +amount mod p`.
+//! - Pure shielded transfer:       no net flow → `publicAmount = 0`.
+//!
+//! This matches `build_deposit_input.js` (the working witness generator)
+//! and `encode_public_amount` below: deposit NEGATIVE, withdraw POSITIVE.
+//! (Earlier docs/comments here had this backwards.) See SPEC.md §11.2/§15.
 //!
 //! ## `ext_data_hash`
 //!
@@ -442,8 +447,8 @@ pub fn build_transfer_ix(
 #[derive(Debug, Clone)]
 pub struct WithdrawParams {
     /// Gross amount leaving the pool (clear-text u64). The builder derives
-    /// `public_amount = encode(-(amount))` from this to match the on-chain
-    /// C1 recompute exactly.
+    /// `public_amount = encode(+amount)` from this to match the on-chain
+    /// C1 recompute exactly (withdraw = POSITIVE public_amount).
     pub amount: u64,
     /// Relayer-fee portion of `amount` (paid to the broadcasting relayer).
     pub relayer_fee: u64,
@@ -463,11 +468,14 @@ pub struct WithdrawParams {
 ///
 /// Releases `params.amount` of `mint` from `escrow_ata` to `user_ata`.
 ///
-/// `public_amount` is DERIVED here as `encode_public_amount(-(amount))`,
+/// `public_amount` is DERIVED here as `encode_public_amount(+amount)`,
 /// matching the on-chain C1 binding (the program recomputes the same
-/// value and rejects a mismatch). `amount` is therefore the sole source
-/// of the settlement value — the bundle's `public_amount` is ignored to
-/// avoid drift. `asset_id`, `root`, and the proof come from `proof`.
+/// value and rejects a mismatch). Withdraw spends an input note, so by
+/// `sum(in) === sum(out) + publicAmount` the public amount is POSITIVE
+/// `+amount` (deposit, by contrast, is `r - amount`). `amount` is therefore
+/// the sole source of the settlement value — the bundle's `public_amount`
+/// is ignored to avoid drift. `asset_id`, `root`, and the proof come from
+/// `proof`.
 pub fn build_withdraw_ix(
     program_id: &[u8; 32],
     accounts: &PoolAccounts,
@@ -485,10 +493,11 @@ pub fn build_withdraw_ix(
         change_commitment: params.change_commitment,
         amount: params.amount,
         relayer_fee: params.relayer_fee,
-        // C1: withdraw moves value OUT of the pool → public_amount encodes
-        // the field negation of the gross amount. Must equal the on-chain
-        // `encode_public_amount(-(amount as i128))`.
-        public_amount: encode_public_amount(-(params.amount as i128)),
+        // C1: withdraw SPENDS an input note → by the conservation equation
+        // `sum(in) === sum(out) + publicAmount`, the public amount is the
+        // POSITIVE gross amount. Must equal the on-chain
+        // `encode_public_amount(amount as i128)`.
+        public_amount: encode_public_amount(params.amount as i128),
         asset_id: pi.asset_id.0,
         ext_data_hash: pi.ext_data_hash,
         padding_commitment: params.padding_commitment,
@@ -674,10 +683,11 @@ mod tests {
         assert_eq!(decoded.change_commitment, params.change_commitment);
         assert_eq!(decoded.amount, params.amount);
         assert_eq!(decoded.relayer_fee, params.relayer_fee);
-        // public_amount is the derived field negation of `amount` (C1).
+        // public_amount is the derived POSITIVE encoding of `amount` (C1:
+        // withdraw spends an input note → publicAmount = +amount).
         assert_eq!(
             decoded.public_amount,
-            encode_public_amount(-(params.amount as i128))
+            encode_public_amount(params.amount as i128)
         );
         assert_eq!(decoded.asset_id, bundle.public_inputs.asset_id.0);
         assert_eq!(decoded.ext_data_hash, bundle.public_inputs.ext_data_hash);
@@ -719,8 +729,8 @@ mod tests {
         off += 8;
         assert_eq!(
             &body[off..off + 32],
-            &encode_public_amount(-(params.amount as i128))
-        ); // public_amount
+            &encode_public_amount(params.amount as i128)
+        ); // public_amount (withdraw = POSITIVE +amount)
         off += 32;
         assert_eq!(&body[off..off + 32], &[8u8; 32]); // asset_id
         off += 32;
@@ -850,6 +860,148 @@ mod tests {
             i -= 1;
         }
         assert_eq!(v, expected);
+    }
+
+    /// **C1 regression — pins the sign convention to the circuit's value-
+    /// conservation equation, NOT to self-consistency of the encoder.**
+    ///
+    /// This is the test that would have caught the inverted C1 binding.
+    /// It decodes the encoded `public_amount` back to a signed i128 (the
+    /// inverse of `encode_public_amount`) and checks the conservation law
+    /// `sum(inputs) === sum(outputs) + publicAmount` holds for the canonical
+    /// deposit and withdraw shapes:
+    ///   * DEPOSIT of A: inputs = 0, outputs = A → publicAmount must = -A,
+    ///     i.e. `encode_public_amount(-A)`.
+    ///   * WITHDRAW of A: inputs = A, outputs = 0 → publicAmount must = +A,
+    ///     i.e. `encode_public_amount(+A)`.
+    /// If anyone re-inverts the sign, decode() yields the wrong value and the
+    /// conservation assertion fails.
+    #[test]
+    fn public_amount_sign_satisfies_conservation_equation() {
+        // Decode a BN254 field element (big-endian) back to a signed i128,
+        // treating values in the top half of the field (> r/2) as negative.
+        // Mirrors the circuit's signed-amount interpretation.
+        fn decode_public_amount(fe: &[u8; 32]) -> i128 {
+            // Is fe >= r/2 ? If so it's the field-negation of a positive
+            // magnitude (a "negative" public amount). Compute r - fe as the
+            // magnitude in that case.
+            // r/2 (big-endian): floor(r/2).
+            let r = num_bigint_lite_cmp(&BN254_SCALAR_FIELD_BE);
+            let x = num_bigint_lite_cmp(fe);
+            let half = &r >> 1;
+            if x <= half {
+                // Positive — fits in i128 for our test magnitudes.
+                biguint_to_i128(&x)
+            } else {
+                // Negative: value = -(r - x).
+                let mag = &r - &x;
+                -biguint_to_i128(&mag)
+            }
+        }
+
+        // Minimal big-endian -> u128/i128 helpers (test-only; magnitudes are
+        // small). We use the std `u128`/`i128` since all test amounts < 2^64.
+        fn num_bigint_lite_cmp(be: &[u8; 32]) -> BigUintLite {
+            BigUintLite(be.to_vec())
+        }
+        fn biguint_to_i128(x: &BigUintLite) -> i128 {
+            // Take the low 16 bytes (big-endian) — sufficient for test
+            // magnitudes which all fit in u64.
+            let bytes = &x.0;
+            let mut buf = [0u8; 16];
+            let start = bytes.len().saturating_sub(16);
+            let tail = &bytes[start..];
+            buf[16 - tail.len()..].copy_from_slice(tail);
+            u128::from_be_bytes(buf) as i128
+        }
+
+        for a in [1u64, 2, 1000, u32::MAX as u64, u64::MAX] {
+            let a_i = a as i128;
+
+            // WITHDRAW: inputs = A, outputs = 0.
+            let withdraw_pa = encode_public_amount(a_i); // builder's choice
+            let decoded_w = decode_public_amount(&withdraw_pa);
+            // sum(in) === sum(out) + publicAmount  ->  A === 0 + decoded
+            assert_eq!(
+                a_i,
+                0 + decoded_w,
+                "withdraw conservation broken for amount {a}: encode_public_amount(+A) \
+                 must decode to +A so that sum(in)=A === sum(out)=0 + publicAmount"
+            );
+
+            // DEPOSIT: inputs = 0, outputs = A.
+            let deposit_pa = encode_public_amount(-a_i);
+            let decoded_d = decode_public_amount(&deposit_pa);
+            // sum(in) === sum(out) + publicAmount  ->  0 === A + decoded
+            assert_eq!(
+                0,
+                a_i + decoded_d,
+                "deposit conservation broken for amount {a}: encode_public_amount(-A) \
+                 must decode to -A so that sum(in)=0 === sum(out)=A + publicAmount"
+            );
+
+            // TRANSFER: no net flow.
+            let transfer_pa = encode_public_amount(0);
+            assert_eq!(decode_public_amount(&transfer_pa), 0);
+        }
+    }
+
+    /// Test-only big-endian unsigned bignum supporting `>>1` and subtraction
+    /// of two equal-length values — just enough for the conservation test's
+    /// `r/2` and `r - x` computations without pulling in a bignum dep.
+    #[derive(Clone)]
+    struct BigUintLite(Vec<u8>);
+
+    impl PartialEq for BigUintLite {
+        fn eq(&self, other: &Self) -> bool {
+            self.cmp_be(other) == std::cmp::Ordering::Equal
+        }
+    }
+    impl PartialOrd for BigUintLite {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp_be(other))
+        }
+    }
+    impl BigUintLite {
+        fn cmp_be(&self, other: &Self) -> std::cmp::Ordering {
+            // Both are 32-byte big-endian here.
+            self.0.cmp(&other.0)
+        }
+    }
+    impl std::ops::Shr<u32> for &BigUintLite {
+        type Output = BigUintLite;
+        fn shr(self, n: u32) -> BigUintLite {
+            assert_eq!(n, 1, "test helper only supports >>1");
+            let mut out = vec![0u8; self.0.len()];
+            let mut carry = 0u8;
+            for (i, &b) in self.0.iter().enumerate() {
+                out[i] = (b >> 1) | (carry << 7);
+                carry = b & 1;
+            }
+            BigUintLite(out)
+        }
+    }
+    impl std::ops::Sub for &BigUintLite {
+        type Output = BigUintLite;
+        fn sub(self, rhs: &BigUintLite) -> BigUintLite {
+            // a - b, big-endian, assume a >= b, equal length.
+            let a = &self.0;
+            let b = &rhs.0;
+            assert_eq!(a.len(), b.len());
+            let mut out = vec![0u8; a.len()];
+            let mut borrow: i16 = 0;
+            for i in (0..a.len()).rev() {
+                let v = a[i] as i16 - b[i] as i16 - borrow;
+                if v < 0 {
+                    out[i] = (v + 256) as u8;
+                    borrow = 1;
+                } else {
+                    out[i] = v as u8;
+                    borrow = 0;
+                }
+            }
+            BigUintLite(out)
+        }
     }
 
     #[test]

@@ -321,11 +321,16 @@ signal input  spendingKey;                // sk
 
 7. **Per-asset value conservation.** With `Σin = Σ inputAmounts[i]` and
    `Σout = Σ outputAmounts[j]`, constrain
-   `Σin + publicAmount == Σout`. Because all inputs and outputs share the
+   `Σin == Σout + publicAmount`. Because all inputs and outputs share the
    single public `assetId`, this is a per-asset constraint by construction.
-   Negative `publicAmount` (positive shield-in) accumulates; positive
-   `publicAmount` (unshield-out) drains. See §11 for the multi-asset model
-   spanning multiple transactions.
+   Sign convention follows directly from this equation:
+   **positive `publicAmount` = WITHDRAW** (Σin > Σout, value leaves the pool);
+   **negative `publicAmount` = DEPOSIT** (Σout > Σin, value enters the pool,
+   encoded as `r - amount`); zero = pure transfer. (This matches
+   `circuits/tools/build_deposit_input.js` and the on-chain C1 binding. An
+   earlier revision of this section wrote the equation as
+   `Σin + publicAmount == Σout` with the signs swapped — that was incorrect.)
+   See §11 for the multi-asset model spanning multiple transactions.
 
 8. **Ext-data binding.** `extDataHash` enters the constraint system as a
    public input that is *not* used arithmetically; it is bound to the proof
@@ -466,7 +471,8 @@ such that, with `nk := Poseidon(sk, DOMAIN_NK)`,
    `Poseidon(amount_j', assetId, owner_j', blinding_j')`.
 4. All `amount_i, amount_j' ∈ [0, 2^64)` and `publicAmount` ∈
    `(-2^64, 2^64)` (signed-field encoding).
-5. `Σ amount_i + publicAmount = Σ amount_j'`.
+5. `Σ amount_i = Σ amount_j' + publicAmount` (inputs === outputs +
+   publicAmount; positive publicAmount = withdraw, negative = deposit).
 6. `extDataHash` is consistent — by being a public input it is bound to the
    (proof, public-inputs) tuple; the on-chain program enforces the value.
 

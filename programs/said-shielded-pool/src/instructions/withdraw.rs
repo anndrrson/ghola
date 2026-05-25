@@ -123,7 +123,10 @@ pub struct WithdrawArgs {
     pub relayer_fee: u64,
     /// `public_amount` field element committed inside the proof.
     ///
-    /// **C1**: this MUST encode `-(amount)` modulo the BN254 scalar field.
+    /// **C1**: for a WITHDRAW this MUST encode `+(amount)` (positive) modulo
+    /// the BN254 scalar field — withdraw spends an input note, so the
+    /// conservation equation `sum(in) === sum(out) + publicAmount` gives
+    /// `publicAmount = +amount`. (Deposit, by contrast, encodes `r - amount`.)
     /// The handler now RECOMPUTES the expected encoding from `amount` and
     /// rejects on mismatch — it is no longer trusted as supplied. (Kept as
     /// an explicit arg so the on-chain public-input vector matches what
@@ -216,16 +219,35 @@ pub fn withdraw_handler(ctx: Context<Withdraw>, args: WithdrawArgs) -> Result<()
     }
 
     // 2b. **C1**: bind the clear-text `amount` to the proof's
-    //     `public_amount`. The withdraw direction encodes value LEAVING
-    //     the pool as the field negation `-(amount) mod r`. We recompute
-    //     that encoding from `args.amount` and require it to equal the
-    //     proof's committed `public_amount` — `amount` is therefore no
-    //     longer an independent, attacker-controlled input. Without this,
-    //     a valid proof for a 1-unit note could be submitted with
-    //     `amount = <entire escrow>` and drain the pool.
+    //     `public_amount`.
+    //
+    //     SIGN CONVENTION (single source of truth: the circuit's value-
+    //     conservation constraint `sum(inputs) === sum(outputs) +
+    //     publicAmount`, transaction.circom):
+    //       * WITHDRAW spends an INPUT note and produces (at most) a smaller
+    //         change output, so `sum(in) - sum(out) = amount > 0` and
+    //         therefore `publicAmount = +amount` (POSITIVE).
+    //       * DEPOSIT adds an OUTPUT note with no input, so
+    //         `publicAmount = -amount = r - amount` (NEGATIVE) — see
+    //         build_deposit_input.js (the working witness generator).
+    //       * TRANSFER has no net flow → `publicAmount = 0`.
+    //
+    //     We recompute `encode_public_amount(+amount)` from `args.amount`
+    //     and require it to equal the proof's committed `public_amount` —
+    //     `amount` is therefore no longer an independent, attacker-controlled
+    //     input. Without this, a valid proof for a 1-unit note could be
+    //     submitted with `amount = <entire escrow>` and drain the pool.
+    //
+    //     NOTE: a PRIOR version bound the NEGATIVE (deposit) encoding here.
+    //     That was INVERTED relative to the circuit: it reverted every honest
+    //     withdraw AND let an attacker satisfy the conservation equation with
+    //     all-dummy inputs (sum(in)=0, change output = amount, publicAmount =
+    //     r-amount), minting a fresh change note while paying out clear
+    //     tokens from escrow — a full drain. The positive binding below is
+    //     the corrected, load-bearing fix.
     {
         use crate::crypto::encode_public_amount;
-        let expected = encode_public_amount(-(args.amount as i128));
+        let expected = encode_public_amount(args.amount as i128);
         require!(
             expected == args.public_amount,
             ShieldedPoolError::PublicAmountMismatch
@@ -282,8 +304,20 @@ pub fn withdraw_handler(ctx: Context<Withdraw>, args: WithdrawArgs) -> Result<()
     //     on mismatch. Without this, a captured/forged proof could be
     //     redirected to an attacker-controlled recipient or have its
     //     relayer fee rewritten — the proof itself only commits to the
-    //     opaque hash. Note `fee` binds to the on-chain-derived
-    //     `protocol_fee`, so the prover MUST have used the same fee_bps.
+    //     opaque hash.
+    //
+    //     **INTEGRATION REQUIREMENT (C2 fee binding).** `fee` binds to the
+    //     ON-CHAIN-DERIVED `protocol_fee = amount * fee_bps / 10_000` using
+    //     EXACTLY this rounding (integer division, truncating toward zero).
+    //     The off-chain prover/client MUST:
+    //       (1) fetch the LIVE `pool_config.fee_bps` (do NOT hard-code it —
+    //           governance can change it via `migrate_config`/admin), and
+    //       (2) fold `protocol_fee` computed with the identical formula and
+    //           rounding into the `ExtData` it hashes for `ext_data_hash`.
+    //     A stale or mismatched `fee_bps` produces a different keccak here
+    //     and the withdraw reverts with `ExtDataHashMismatch` — i.e. a
+    //     fee-config drift surfaces as a CLEAR, attributable error, not a
+    //     silent fund loss. See `said-shielded-pool-client::tx_builder`.
     {
         use crate::crypto::{compute_ext_data_hash, ExtData};
         let ext = ExtData {

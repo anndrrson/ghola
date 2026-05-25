@@ -13,7 +13,10 @@
 //!     2   | in_nullifier_1    | written to NullifierAccount PDA
 //!     3   | out_commitment_0  | appended to CommitmentRecord queue
 //!     4   | out_commitment_1  | appended to CommitmentRecord queue
-//!     5   | public_amount     | signed amount (mod p); + = deposit, − = withdraw
+//!     5   | public_amount     | signed amount (mod p); + = withdraw, − = deposit
+//!         |                   | (conservation: sum(in) === sum(out) + public_amount;
+//!         |                   |  withdraw spends an input → +amount; deposit adds an
+//!         |                   |  output → −amount = r−amount; transfer = 0)
 //!     6   | asset_id          | Poseidon(mint_pubkey)
 //!     7   | ext_data_hash     | Poseidon of relayer/recipient/fee bindings
 //!

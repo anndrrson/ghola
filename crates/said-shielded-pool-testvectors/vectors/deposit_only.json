@@ -11,11 +11,11 @@
     "output_commitments": [
       "03ff2e5c10369291285c672df1e95606bca3101e4e54984f2e621302133b749b"
     ],
-    "public_amount": "1000",
+    "public_amount": "-1000",
     "root": "120c58f143d491e95902f7f5277778a2e0ad5168f6add75669932630ce611518"
   },
   "name": "deposit_only",
-  "notes": "public_amount > 0 indicates a public-side deposit into the pool.",
+  "notes": "public_amount < 0 indicates a public-side deposit into the pool (value enters → negative).",
   "proof": null,
   "should_prove": true,
   "should_verify": true,
@@ -33,7 +33,7 @@
         "owner_pubkey": "00d579d30ed32a92609ea4d7dfe30a1b8cb1aa9821b51fb0bcad1d940faa46f8"
       }
     ],
-    "public_amount": "1000",
+    "public_amount": "-1000",
     "spending_key": "00daead448f5a23c87b15bed64c73faa54ef061157cd14df758b3a2711e13a62"
   }
 }

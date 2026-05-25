@@ -36,9 +36,17 @@ include "./merkleProof.circom";
  * represented as `FIELD - |v|`, i.e. the field-element negation), matching
  * `said-shielded-pool-client::tx_builder::encode_public_amount` and the
  * prover's `encode_signed_public_amount`:
- *   * deposit  (value enters pool): publicAmount =  amount      ∈ [0, 2^64)
- *   * withdraw (value leaves pool): publicAmount = r - amount   ∈ (r-2^64, r)
+ *   * deposit  (value enters pool): publicAmount = r - amount   ∈ (r-2^64, r)
+ *   * withdraw (value leaves pool): publicAmount =  amount      ∈ [0, 2^64)
  *   * transfer (no net flow):       publicAmount =  0
+ *
+ * Derivation (the authoritative source — do NOT re-invert this): conservation
+ * is `sum(inputs) === sum(outputs) + publicAmount` (enforced below).
+ *   - deposit:  inputs=0, outputs=+amount → publicAmount = -amount = r-amount.
+ *   - withdraw: inputs=+amount, outputs=0 → publicAmount = +amount.
+ * This matches circuits/tools/build_deposit_input.js, the working witness
+ * generator. (An earlier version of THIS header had deposit/withdraw swapped
+ * — that was the documentation bug; the equation below is correct.)
  *
  * H1 (2026-05-25): the conservation check is now SOUND in-circuit:
  *   - `publicAmount` is range-constrained to the signed-64-bit envelope

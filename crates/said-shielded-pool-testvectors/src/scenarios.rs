@@ -127,7 +127,10 @@ pub fn scenario_deposit_only() -> ScenarioOutput {
         input_indices: vec![],
         output_notes: vec![out_note],
         spending_key: ctx.spending_key,
-        public_amount: 1000,
+        // DEPOSIT adds an output note with no input. Conservation
+        // `sum(in) === sum(out) + publicAmount` → `0 === 1000 + publicAmount`
+        // → publicAmount = -1000 (encoded on-chain as r - 1000).
+        public_amount: -1000,
         asset_id: ctx.asset_a,
         ext_data_hash: ext,
     };
@@ -136,7 +139,7 @@ pub fn scenario_deposit_only() -> ScenarioOutput {
         root,
         input_nullifiers: vec![],
         output_commitments: vec![out_c],
-        public_amount: 1000,
+        public_amount: -1000,
         asset_id: ctx.asset_a,
         ext_data_hash: ext,
     };
@@ -150,7 +153,7 @@ pub fn scenario_deposit_only() -> ScenarioOutput {
         expected_nullifiers: vec![],
         should_prove: true,
         should_verify: true,
-        notes: Some("public_amount > 0 indicates a public-side deposit into the pool.".into()),
+        notes: Some("public_amount < 0 indicates a public-side deposit into the pool (value enters → negative).".into()),
     }]
 }
 
@@ -334,7 +337,10 @@ pub fn scenario_withdraw_full() -> ScenarioOutput {
         input_indices: in_idxs,
         output_notes: vec![],
         spending_key: ctx.spending_key,
-        public_amount: -2500,
+        // WITHDRAW spends an input note. Conservation
+        // `sum(in) === sum(out) + publicAmount` → `2500 === 0 + publicAmount`
+        // → publicAmount = +2500 (positive).
+        public_amount: 2500,
         asset_id: ctx.asset_a,
         ext_data_hash: ext,
     };
@@ -342,7 +348,7 @@ pub fn scenario_withdraw_full() -> ScenarioOutput {
         root,
         input_nullifiers: vec![n0],
         output_commitments: vec![],
-        public_amount: -2500,
+        public_amount: 2500,
         asset_id: ctx.asset_a,
         ext_data_hash: ext,
     };
@@ -355,7 +361,7 @@ pub fn scenario_withdraw_full() -> ScenarioOutput {
         expected_nullifiers: vec![n0],
         should_prove: true,
         should_verify: true,
-        notes: Some("Negative public_amount signals withdrawal to the pool program.".into()),
+        notes: Some("Positive public_amount signals withdrawal to the pool program (value leaves → positive).".into()),
     }]
 }
 
@@ -379,7 +385,9 @@ pub fn scenario_partial_withdraw_with_change_note() -> ScenarioOutput {
         input_indices: in_idxs,
         output_notes: vec![change],
         spending_key: ctx.spending_key,
-        public_amount: -500,
+        // WITHDRAW with change. Conservation `sum(in) === sum(out) +
+        // publicAmount` → `2000 === 1500 + publicAmount` → publicAmount = +500.
+        public_amount: 500,
         asset_id: ctx.asset_a,
         ext_data_hash: ext,
     };
@@ -387,7 +395,7 @@ pub fn scenario_partial_withdraw_with_change_note() -> ScenarioOutput {
         root,
         input_nullifiers: vec![n0],
         output_commitments: vec![change_c],
-        public_amount: -500,
+        public_amount: 500,
         asset_id: ctx.asset_a,
         ext_data_hash: ext,
     };
