@@ -1,0 +1,61 @@
+[package]
+name = "malicious-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Malicious-actor scenario test suite for the Ghola Solana shielded pool (Stream 9, production-hardening pass). Exercises each attacker profile (relayer, forester, worker, prover, app, governance, griefing) against the off-chain crates and documents the on-chain mitigations the test relies on."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+# Gate the optional `said-shielded-pool-invariants` dep behind a feature so
+# this crate builds even before Stream 1 lands in the workspace. Enable
+# with `--features invariants` once Stream 1 is on `main`.
+invariants = ["dep:said-shielded-pool-invariants"]
+
+[dependencies]
+# Async
+tokio = { workspace = true, features = ["full"] }
+async-trait = { workspace = true }
+
+# HTTP / mocking
+axum = { workspace = true }
+reqwest = { workspace = true }
+wiremock = "0.6"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+bs58 = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Errors / utils
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+tempfile = "3"
+sled = "0.34"
+
+# Crates under test — the relayer is the primary attack surface for an
+# off-chain malicious profile.
+said-shielded-pool-types = { path = "../said-shielded-pool-types" }
+said-shielded-pool-client = { path = "../said-shielded-pool-client" }
+said-shielded-pool-relayer = { path = "../said-shielded-pool-relayer" }
+said-shielded-pool-indexer = { path = "../said-shielded-pool-indexer" }
+chaos-tests = { path = "../chaos-tests" }
+
+# Optional: Stream 1's formal-invariants crate. Loaded with the
+# `invariants` feature to keep this crate buildable in isolation.
+said-shielded-pool-invariants = { path = "../said-shielded-pool-invariants", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util", "macros", "rt-multi-thread"] }
+tracing-subscriber = { workspace = true }

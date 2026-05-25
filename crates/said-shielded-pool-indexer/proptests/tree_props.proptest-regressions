@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc cd7937fc9609c64c67bae2293f0895dcc207126b13db537b4166bdd7b2681635 # shrinks to leaves = [[49, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]
+cc 1c424845ab54a05cb4117b13e758c9544dc8ebf63eb70f9f20e72fe84aff54c1 # shrinks to leaves = [[48, 100, 78, 114, 225, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]
+cc c8a3a4532b27b6942b90624d45c2ebdec63361c2041bc25e29a2fa87fcdfe663 # shrinks to seed = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], filler = [[48, 101, 0, 0, 0, 0, 22, 168, 129, 45, 9, 42, 99, 111, 214, 5, 125, 132, 128, 118, 162, 242, 191, 80, 118, 5, 8, 154, 218, 135, 248, 221]]

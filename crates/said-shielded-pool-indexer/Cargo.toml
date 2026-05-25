@@ -1,0 +1,83 @@
+[package]
+name = "said-shielded-pool-indexer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Indexer + Merkle forester for the Ghola Solana-native shielded pool. Maintains an off-chain mirror of every commitment in the depth-26 Merkle forest, serves witness/Merkle-path queries to clients, and (as forester) rolls batched insertion-queue updates into a single new root via Groth16. Phase 38."
+
+[[bin]]
+name = "said-shielded-pool-indexer"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared types — Commitment, MerklePath, TREE_DEPTH, FieldBytes, etc.
+said-shielded-pool-types = { path = "../said-shielded-pool-types" }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# HTTP server (witness API) and HTTP client (prover, Solana JSON-RPC).
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+reqwest = { workspace = true }
+
+# Serialization / encoding.
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+bs58 = { workspace = true }
+base64 = { workspace = true }
+borsh = "0.10"
+
+# Errors / logging.
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Solana tx signing — same approach as the relayer
+# (`crates/said-shielded-pool-relayer/src/submit.rs`): raw JSON-RPC plus
+# in-process Ed25519 signing, NO `solana-sdk`/`solana-client` dep.
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+
+# Embedded KV store for the off-chain tree mirror + root history.
+sled = "0.34"
+
+# Secret-handling primitives — Zeroizing wrapper around the forester
+# keypair bytes so a SIGTERM scrubs the seed before the process exits.
+zeroize = { workspace = true }
+common-secrets = { workspace = true }
+
+# Privacy-aware tracing helpers — used by the forester to scrub tx
+# signatures at DEBUG without leaking the full base58 to disk. See
+# `docs/shielded-pool/OPERATIONS.md` § 2 (Stream 7).
+common-log = { workspace = true }
+
+# Poseidon-BN254 (Circom-compatible, x^5 S-box) — same parameters as the
+# on-chain `sol_poseidon` syscall and the circom circuits.
+light-poseidon = "0.2"
+ark-bn254 = "0.4"
+ark-ff = "0.4"
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"
+sha2 = { workspace = true }
+hex = { workspace = true }
+bs58 = { workspace = true }
+# Stream 2 (production-hardening) — property-based tests for the
+# incremental Merkle tree (insertion determinism, idempotent re-insert,
+# path/root consistency).
+proptest = "1"
+
+# Stream 2 (production-hardening) — proptest harness for tree invariants.
+[[test]]
+name = "tree_props"
+path = "proptests/tree_props.rs"

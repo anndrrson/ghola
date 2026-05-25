@@ -1,0 +1,91 @@
+[package]
+name = "said-shielded-pool-relayer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Delayed/batched withdrawal relayer for the Ghola Solana-native shielded pool. Phase 41: anonymity thresholds, retries, decoy traffic, metadata-leak mitigation."
+
+[[bin]]
+name = "said-shielded-pool-relayer"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# NOTE: `said-shielded-pool-types` is intentionally NOT a direct dep.
+# The relayer treats the proof bundle as an opaque JSON blob (see
+# `queue::ProofBlob` for rationale) so that:
+#   1. The relayer is decoupled from upstream type-version churn.
+#   2. The relayer never structurally decodes proof internals
+#      (defense in depth against accidental logging of field elements).
+# The on-chain program is the cryptographic source of truth.
+# said-shielded-pool-types = { path = "../said-shielded-pool-types" }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# HTTP
+axum = { workspace = true }
+tower = { workspace = true }
+reqwest = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+bs58 = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Misc
+uuid = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+
+# Crypto — for signing Solana txs. Same minimal stack as
+# `said-receipts-service`: raw Ed25519, no `solana-sdk` heavy native
+# deps. We don't need curve25519 PDA helpers here because the client
+# pre-derives all PDAs and supplies them in the queued payload.
+ed25519-dalek = { workspace = true }
+
+# Embedded persistent queue
+sled = "0.34"
+
+# Stream 3 (production-hardening) — content-addressed dedup hash. Pinned
+# here (not in [workspace.dependencies]) so a workspace-wide blake3 bump
+# can't silently change the dedup key derivation; Stream 1's
+# `inv_relay_dedupe` predicate keys off this exact algorithm.
+blake3 = "1"
+
+# Secret-handling primitives (Zeroizing wrapper for the cached signing key).
+zeroize = { workspace = true }
+common-secrets = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tempfile = "3"
+# Stream 3 replay tests drive the axum router in-process via
+# `tower::ServiceExt::oneshot` — no real HTTP socket. Pulls
+# `tower::util::ServiceExt`; tower itself is already a runtime dep.
+tower = { workspace = true, features = ["util"] }
+# Stream 3 replay tests implement an in-test `Submitter` stub.
+async-trait = { workspace = true }
+# Stream 2 (production-hardening) — property-based tests for the
+# persistent withdrawal queue. Pinned to a current-stable release.
+proptest = "1"
+
+# Stream 2 (production-hardening) — proptest harness for queue invariants.
+# Lives under `proptests/` (not `tests/`) so it can be opt-in via
+# `cargo test --test queue_props` without slowing the default suite.
+[[test]]
+name = "queue_props"
+path = "proptests/queue_props.rs"
