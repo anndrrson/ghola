@@ -2,60 +2,55 @@
 
 [Hermes Agent](https://hermes-agent.nousresearch.com/) by Nous Research is an autonomous AI agent with 40+ built-in tools, persistent memory, skill generation, and multi-platform messaging. Hermes natively supports MCP servers, making SAID a natural tool source.
 
-By connecting SAID's MCP server, Hermes gains access to your portable identity, memories, preferences, secrets, payments, and business discovery tools -- all with UCAN-based access control.
+By connecting Ghola's SAID MCP server, Hermes gains access to your portable identity, memories, preferences, secrets, payments, and business discovery tools.
 
 ## Quick Start
 
 ### 1. Install SAID
 
 ```bash
-# Install the SAID CLI (includes the MCP server)
-cargo install said
+# Install from this repo. This installs both `said` and the `ghola` alias.
+cargo install --path cli
 
 # Initialize your wallet (first time only)
-said init
+ghola init
 ```
 
 ### 2. Configure Hermes to use SAID
 
-Add SAID as an MCP tool source in your Hermes configuration. The exact config location depends on your Hermes deployment, but the MCP server entry is:
+Hermes reads MCP servers from `~/.hermes/config.yaml` under `mcp_servers`.
 
 **Stdio mode (local):**
 
-```json
-{
-  "mcpServers": {
-    "said": {
-      "command": "said",
-      "args": ["serve"]
-    }
-  }
-}
+```yaml
+mcp_servers:
+  ghola:
+    command: "ghola"
+    args: ["serve"]
+    enabled: true
 ```
 
 **HTTP mode (remote / multi-user):**
 
-```json
-{
-  "mcpServers": {
-    "said": {
-      "url": "http://localhost:3100/mcp",
-      "headers": {
-        "Authorization": "Bearer <your-ucan-token>"
-      }
-    }
-  }
-}
+```yaml
+mcp_servers:
+  ghola:
+    url: "http://localhost:3100/mcp"
+    headers:
+      Authorization: "Bearer <your-ucan-token>"
+    enabled: true
 ```
 
 To generate a UCAN token for Hermes:
 
 ```bash
 # Grant Hermes read/write access to memories, preferences, and discovery
-said provider grant --provider local --label hermes-agent \
+ghola provider grant --provider local --label hermes-agent \
   --capabilities read-memories,write-memories,read-preferences,read-prompts,read-knowledge \
-  --expires 720h
+  --expires 30d
 ```
+
+For local Hermes installs, stdio mode is the simpler default because Hermes starts `ghola serve` directly and no bearer token is stored in `~/.hermes/config.yaml`.
 
 ### 3. Verify
 
@@ -96,7 +91,7 @@ Hermes can access API keys and credentials stored in SAID's encrypted vault, sco
 
 ```bash
 # Store a secret that Hermes can access
-said secret set stripe sk_live_... --description "Stripe API key" --allowed-providers local
+ghola secret set stripe sk_live_... --description "Stripe API key" --providers local
 ```
 
 Hermes can then use `said_get_secret(name: "stripe")` to retrieve it at runtime, without the key appearing in config files or environment variables.
@@ -122,12 +117,12 @@ If you grant `PayTransfer` capability, Hermes can make payments on your behalf v
 
 ```bash
 # Create an agent wallet for Hermes with daily limits
-said pay create-agent --label hermes --daily-usdc-limit 50 --per-tx-usdc-limit 10
+ghola pay agents create hermes --daily-usdc-limit 50 --per-tx-usdc-limit 10
 
 # Grant payment capabilities
-said provider grant --provider local --label hermes-agent \
+ghola provider grant --provider local --label hermes-agent \
   --capabilities pay-read,pay-transfer \
-  --expires 720h
+  --expires 30d
 ```
 
 ## Skill Discovery via agents.txt
@@ -174,21 +169,16 @@ hermes --base-url http://localhost:11434/v1
 
 Hermes can use SAID alongside other MCP servers. SAID handles identity and context while other servers handle domain-specific tasks:
 
-```json
-{
-  "mcpServers": {
-    "said": {
-      "command": "said",
-      "args": ["serve"]
-    },
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
-    },
-    "browser": {
-      "command": "npx",
-      "args": ["-y", "@anthropic/mcp-server-puppeteer"]
-    }
-  }
-}
+```yaml
+mcp_servers:
+  ghola:
+    command: "ghola"
+    args: ["serve"]
+    enabled: true
+  filesystem:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+  browser:
+    command: "npx"
+    args: ["-y", "@anthropic/mcp-server-puppeteer"]
 ```

@@ -1,0 +1,104 @@
+# SBOM generation + signing.
+#
+# Stream 8 of the Phase-45 production-hardening pass.
+# Runs on tag pushes (and on demand via workflow_dispatch). Emits:
+#   - one CycloneDX JSON SBOM per workspace Rust crate (cargo-cyclonedx)
+#   - one combined CycloneDX JSON SBOM covering Rust + Node (syft)
+#   - a cosign keyless OIDC signature of the combined SBOM blob
+# Uploads `artifacts/sbom/` as a workflow artifact.
+#
+# See docs/shielded-pool/OPERATIONS.md § 3 for retention + verification flow.
+
+name: sbom
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "audit-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Required for cosign keyless OIDC signing.
+  id-token: write
+
+jobs:
+  sbom:
+    name: generate + sign SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: sbom-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            sbom-${{ runner.os }}-
+
+      - name: Install cargo-cyclonedx
+        run: |
+          if ! command -v cargo-cyclonedx >/dev/null; then
+            cargo install --locked cargo-cyclonedx
+          fi
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Prepare output directory
+        run: |
+          mkdir -p artifacts/sbom
+          echo "COMMIT=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+
+      - name: Generate per-crate Rust SBOMs (cargo-cyclonedx)
+        # cargo-cyclonedx walks the workspace and emits one SBOM per
+        # workspace member. We move the output into artifacts/sbom/ with
+        # the commit short-sha appended so multiple runs don't overwrite.
+        run: |
+          set -euo pipefail
+          cargo cyclonedx --format json --all
+          # Each member gets a `<crate>.cdx.json` in its own directory; collect them.
+          find . -path ./target -prune -o -name "*.cdx.json" -print | while read -r f; do
+            rel="${f#./}"
+            dest="artifacts/sbom/rust-${COMMIT}-$(echo "$rel" | tr '/' '_')"
+            cp "$f" "$dest"
+          done
+
+      - name: Generate combined Rust + Node SBOM (syft)
+        # `cyclonedx-json` is the canonical interchange format; syft picks
+        # up Cargo.lock, package-lock.json, go.mod, etc. across the tree.
+        run: |
+          syft . -o cyclonedx-json > "artifacts/sbom/full-${COMMIT}.json"
+
+      - name: Sign the combined SBOM (cosign keyless OIDC)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          sbom="artifacts/sbom/full-${COMMIT}.json"
+          cosign sign-blob \
+            --output-signature "${sbom}.sig" \
+            --output-certificate "${sbom}.pem" \
+            "$sbom"
+
+      - name: Compute a manifest hash for the artifact bundle
+        # Lets Stream 10 (Evidence Gate) record a single deterministic
+        # digest representing the full SBOM bundle.
+        run: |
+          set -euo pipefail
+          ( cd artifacts/sbom && sha256sum *.json *.sig *.pem 2>/dev/null | sort > MANIFEST.sha256 )
+          cat artifacts/sbom/MANIFEST.sha256
+
+      - name: Upload SBOM bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ env.COMMIT }}
+          path: artifacts/sbom/
+          retention-days: 90

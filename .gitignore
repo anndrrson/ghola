@@ -10,6 +10,7 @@ android/app/build/
 # CMake build cache — was accidentally committed historically, now ignored
 android/app/.cxx/
 *.apk
+*.idsig
 # Release signing (never commit)
 android/keystore/
 *.keystore
@@ -27,3 +28,10 @@ local.properties
 .dev/
 ios/Ghola.xcodeproj/
 ios/build/
+.env*.local
+
+# Stream 10 — hardening evidence raw artifacts (manifests live elsewhere)
+/artifacts/hardening-evidence/
+
+# Local native dev scratch build output (CMake)
+mac-dev/build/

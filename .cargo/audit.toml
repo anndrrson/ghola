@@ -1,10 +1,82 @@
+# .cargo/audit.toml — cargo-audit configuration for the Ghola workspace.
+#
+# Stream 8 of the Phase-45 hardening pass extended this file. The ignore
+# list mirrors deny.toml's [advisories].ignore block — keep them in sync.
+# Every ignored advisory MUST also be documented in
+# docs/shielded-pool/OPERATIONS.md § 3 with a one-paragraph rationale.
+
 [advisories]
 ignore = [
-  # sqlx-mysql is present in sqlx metadata, but Ghola services compile with
-  # explicit Postgres/SQLite SQLx features and do not use MySQL TLS auth.
-  # RustSec also lists no fixed rsa upgrade for this advisory.
-  "RUSTSEC-2023-0071",
-  # time 0.3.47 fixes this, but time-macros 0.2.27 currently requires a
-  # newer Rust compiler/edition than this workspace is building with.
-  "RUSTSEC-2026-0009",
+    # ----- RUSTSEC-2023-0071 -----
+    # sqlx-mysql RSA timing side-channel.
+    #
+    # Ghola services (gateway, cloud, home, receipts, orni-models-api,
+    # thumper-cloud) all enable only the `postgres` and `sqlite` features
+    # of sqlx, never `mysql`. The vulnerable MySQL TLS auth path is
+    # therefore unreachable. No upstream fix has been released for the
+    # underlying `rsa` crate side-channel (it requires constant-time
+    # CRT exponent reconstruction, which is a major refactor).
+    # cargo-deny may also surface this as `advisory-not-detected` if the
+    # current resolved graph does not include sqlx-mysql at all — kept as
+    # documented intent regardless.
+    "RUSTSEC-2023-0071",
+
+    # ----- RUSTSEC-2026-0009 -----
+    # time 0.3.x localtime_r soundness on Unix.
+    #
+    # The upstream fix lives in time-macros 0.2.27, which depends on
+    # constant_time_eq 0.4.2 — that crate requires Rust edition 2024.
+    # The Ghola workspace is pinned at edition 2021 (bumping requires a
+    # workspace-wide migration; see workspace.package.edition note in
+    # Cargo.toml) and the Solana BPF toolchain ships with rustc 1.89,
+    # which supports edition 2024 only on certain crate boundaries.
+    # Until the edition bump lands, the time crate is unavoidable as a
+    # transitive dep of chrono / sqlx.
+    "RUSTSEC-2026-0009",
+
+    # ----- RUSTSEC-2024-0388 -----
+    # `derivative 2.2.0` is unmaintained. Compile-time `Derive` macro
+    # with no runtime surface. Pulled in via solana-program / borsh-derive
+    # forks. Tracked upstream.
+    "RUSTSEC-2024-0388",
+
+    # ----- RUSTSEC-2024-0384 -----
+    # `instant 0.1.13` is unmaintained. Replaced by std::time on host;
+    # only appears in old parking_lot 0.11 transitive dep from Solana BPF
+    # tooling. No exploitable behavior.
+    "RUSTSEC-2024-0384",
+
+    # ----- RUSTSEC-2024-0436 -----
+    # `paste 1.0.15` and `fxhash 0.2.1` are unmaintained.
+    # `paste` is a macro-only crate (no runtime surface). `fxhash` is a
+    # non-cryptographic in-memory hash, pulled in by solana-program.
+    "RUSTSEC-2024-0436",
+
+    # ----- RUSTSEC-2025-0134 -----
+    # `rustls-pemfile 2.2.0` is unmaintained. Functionality has migrated
+    # into rustls-pki-types 1.9+. Used by axum-server 0.7 transitively;
+    # safe to use as a thin wrapper. Migration tracked in axum-server.
+    "RUSTSEC-2025-0134",
+
+    # ----- RUSTSEC-2021-0127 -----
+    # `serde_cbor 0.11.2` is unmaintained (archived upstream; alternatives
+    # are `ciborium`/`minicbor`). Pulled in transitively only by
+    # `aws-nitro-enclaves-nsm-api 0.4.0` → `thumper-gpu-provider` (the AWS
+    # Nitro attestation path). Out of the shielded-pool audit scope; the
+    # Nitro path has its own threat model in SECURITY.md. Migration tracked
+    # upstream in aws-nitro-enclaves-*. MUST stay in sync with deny.toml,
+    # which already ignores this advisory — the prior drift here was why
+    # `cargo audit --deny warnings` (supply-chain.yml) failed.
+    "RUSTSEC-2021-0127",
+
+    # ----- RUSTSEC-2025-0057 -----
+    # `paste` (separate advisory ID). Same rationale as RUSTSEC-2024-0436.
+    "RUSTSEC-2025-0057",
+
+    # ----- RUSTSEC-2026-0097 -----
+    # `rand 0.8.5` soundness advisory. Only triggered by a specific
+    # custom-logger pattern (rand::rng() with a user-defined Allocator
+    # that captures the same thread-local state); not present anywhere in
+    # the Ghola workspace. Migration to rand 0.9 tracked separately.
+    "RUSTSEC-2026-0097",
 ]

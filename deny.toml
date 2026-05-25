@@ -1,0 +1,198 @@
+# cargo-deny configuration for the Ghola workspace.
+#
+# Stream 8 of the Phase-45 hardening pass owns this file.
+# Run `cargo deny check` locally; CI runs it via .github/workflows/supply-chain.yml.
+#
+# Three goals:
+#   1. Block known-vulnerable dep versions and import the RustSec advisory DB.
+#   2. Restrict licenses to a vetted allow-list (no copyleft surprises).
+#   3. Restrict source registries (no random git deps slipping in).
+#
+# Status target: `cargo deny check` exits 0 against the workspace as of
+# Phase-45 baseline. Any new ignore added below MUST have a corresponding
+# rationale paragraph in docs/shielded-pool/OPERATIONS.md § 3.
+
+[graph]
+# Empty `targets` = check all targets. The shielded-pool program builds for
+# `bpfel-unknown-unknown` (Solana BPF/SBF); services build for host triples.
+targets = []
+all-features = false
+no-default-features = false
+exclude-dev = false
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Advisories: RustSec database integration
+# ---------------------------------------------------------------------------
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Ignored advisories. Keep this list aligned with .cargo/audit.toml.
+# Every entry must be justified in docs/shielded-pool/OPERATIONS.md § 3.
+ignore = [
+    # --- Carried over from .cargo/audit.toml (pre-hardening baseline) ---
+    # sqlx-mysql RSA timing — Ghola services use only Postgres/SQLite TLS;
+    # the MySQL TLS-auth path is never exercised. No upstream fix yet for
+    # the underlying rsa-crate side-channel. Currently the advisory does
+    # not match any package in the resolved graph (sqlx 0.8.6 with no
+    # mysql feature), so cargo-deny will warn `advisory-not-detected`;
+    # the entry is preserved as documented intent.
+    "RUSTSEC-2023-0071",
+    # time 0.3.x localtime_r soundness — the upstream fix in time-macros
+    # 0.2.27 requires edition 2024 / a newer compiler than the workspace
+    # currently builds under (edition 2021, MSRV pinned by Solana BPF
+    # toolchain).
+    "RUSTSEC-2026-0009",
+
+    # --- Newly documented exceptions (Phase-45) ---
+    # `derivative 2.2.0` unmaintained. Pulled in transitively via
+    # solana-program / borsh-derive forks. No exploitable surface; it is
+    # a compile-time `Derive` macro. Will drop once Solana bumps off it.
+    "RUSTSEC-2024-0388",
+    # `instant 0.1.13` unmaintained. Pulled in by parking_lot 0.11 (old)
+    # via Solana BPF tooling. No runtime exposure; replaced by std::time
+    # on host targets.
+    "RUSTSEC-2024-0384",
+    # `fxhash 0.2.1` unmaintained. Pulled in by solana-program; used only
+    # for non-cryptographic in-memory hashing. Migration to rustc-hash
+    # tracked upstream. (`paste 1.0.15` also matches this advisory ID;
+    # macro-only crate, no runtime surface — same disposition.)
+    "RUSTSEC-2024-0436",
+    # `serde_cbor 0.11.2` unmaintained (archived upstream; alternatives
+    # are `ciborium`/`minicbor`). Pulled in transitively by
+    # `aws-nitro-enclaves-nsm-api 0.4.0` → `thumper-gpu-provider` — the
+    # AWS Nitro attestation path. Out of the shielded-pool audit scope;
+    # the Nitro path has its own threat model documented in
+    # `SECURITY.md`. Migration tracked upstream in aws-nitro-enclaves-*.
+    "RUSTSEC-2021-0127",
+    # `rustls-pemfile 2.2.0` unmaintained. Functionality is now in
+    # rustls-pki-types 1.9+; transitive dep of axum-server 0.7. Safe to
+    # use; migration tracked in axum-server upstream.
+    "RUSTSEC-2025-0134",
+    # `rand 0.8.5` soundness advisory (RUSTSEC-2026-0097). Only triggered
+    # by a specific custom-logger pattern not present in the workspace.
+    # Migration to rand 0.9 tracked in a separate refresh.
+    "RUSTSEC-2026-0097",
+    # `paste 1.0.15` unmaintained (separate ID — see OPERATIONS.md § 3).
+    "RUSTSEC-2025-0057",
+]
+
+# ---------------------------------------------------------------------------
+# Licenses
+# ---------------------------------------------------------------------------
+[licenses]
+# Allow-list. Anything outside this list will fail the check.
+# Rationale for each license is documented in docs/shielded-pool/OPERATIONS.md § 3.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",        # ICU 73+
+    "MPL-2.0",            # webpki/encoding-rs file-scope copyleft, acceptable
+    "OpenSSL",            # ring + boringssl-style triple-license combos
+    "CC0-1.0",            # tiny-keccak, secp256k1 fixtures
+    "Zlib",               # adler/miniz
+    "0BSD",               # tiny-skia, public-domain equivalents
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",            # boost-license, used by xxhash-rust
+    "WTFPL",              # one transitive dev-dep; harmless
+]
+confidence-threshold = 0.93
+
+# Per-crate license overrides for ambiguous SPDX detection.
+exceptions = [
+    # Ring is triple-licensed (ISC, MIT, OpenSSL). The OpenSSL portion is
+    # historical license text; ring itself is the rustls cryptographic
+    # backend and we accept the bundle.
+    { allow = ["ISC", "MIT", "OpenSSL"], crate = "ring" },
+    { allow = ["ISC"], crate = "webpki" },
+    { allow = ["ISC"], crate = "rustls-webpki" },
+    { allow = ["ISC"], crate = "untrusted" },
+]
+
+# First-party Ghola workspace crates with no `license` field (the
+# orni-models-* crates predate the workspace.package license inheritance
+# convention). cargo-deny lets us clarify the license expression for any
+# specific crate via a clarification block. Adding/removing entries here
+# requires a security-team review.
+[[licenses.clarify]]
+crate = "orni-models-api"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "orni-models-types"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+# ---------------------------------------------------------------------------
+# Bans: multiple-versions and explicitly forbidden crates
+# ---------------------------------------------------------------------------
+[bans]
+# `warn` (not `deny`) for multiple-versions: the workspace contains Solana
+# BPF crates that pin old transitive deps (toml 0.5/0.8, indexmap 1/2,
+# borsh 0.10/1.5). A `deny` here would block every build until we land
+# Solana 2.x. Surface them as warnings instead and review monthly per
+# OPERATIONS.md § 3.
+multiple-versions = "warn"
+# `wildcards = warn` (not deny): workspace path deps like
+# `said-types = { path = "../said-types" }` are version=* under the hood
+# and any `deny` here would fire on every internal crate. Allow them with
+# `allow-wildcard-paths = true` and surface external `*` deps as warnings.
+wildcards = "warn"
+allow-wildcard-paths = true
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+# Crates that are categorically banned, regardless of version.
+# Note: the rust `openssl` crate is intentionally NOT banned here. The
+# Ghola workspace prefers rustls + ring, but `openssl 0.10.x` is pulled in
+# transitively via `native-tls` -> `reqwest` features and is actively
+# maintained. A version-range ban for the rust crate would be misleading
+# (the Rust `openssl` crate version != the OpenSSL C library version).
+# We rely on the advisory database to surface concrete CVEs.
+deny = [
+    # `curve25519-dalek <4.1.3` has the timing-attack CVE on Scalar::invert.
+    # The shielded-pool circuits, prover, and indexer all rely on
+    # constant-time scalar ops; any older version is unsafe.
+    { name = "curve25519-dalek", version = "<4.1.3" },
+    # `ed25519-dalek 1.x` predates the explicit-context-string break that
+    # mitigates the Chalkias double-sig attack; only 2.x is acceptable.
+    { name = "ed25519-dalek", version = "<2.0.0" },
+    # chrono 0.4.20 and earlier expose localtime_r unsoundness on Linux.
+    { name = "chrono", version = "<0.4.31" },
+    # `time` 0.1.x is unmaintained and pulls in an unsound localtime path.
+    { name = "time", version = "<0.2.0" },
+]
+
+# Allow specific multiple-version pairs without warn-spam.
+skip = []
+
+# Crates we tolerate transitive duplicates for. Empty until
+# `cargo deny check bans` surfaces a specific noisy pair worth pinning.
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Empty: the Ghola workspace has zero git-sourced deps as of Phase-45.
+# If one is added, cargo-deny will fail until the URL is listed here AND
+# justified in docs/shielded-pool/OPERATIONS.md § 3.
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

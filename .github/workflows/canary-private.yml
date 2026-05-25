@@ -1,0 +1,156 @@
+name: Relay Private Canary
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  canary:
+    name: Private Path Canary
+    runs-on: ubuntu-latest
+    env:
+      RELAY_BASE_URL: ${{ vars.GHOLA_RELAY_BASE_URL || 'https://ghola-relay.onrender.com' }}
+      CLOUD_BASE_URL: ${{ vars.GHOLA_CLOUD_BASE_URL || 'https://thumper-cloud.onrender.com' }}
+      RECEIPTS_BASE_URL: ${{ vars.GHOLA_RECEIPTS_BASE_URL || 'https://ghola-receipts.onrender.com' }}
+      WEB_BASE_URL: ${{ vars.GHOLA_WEB_BASE_URL || 'https://ghola.xyz' }}
+      REQUIRE_PRIVATE_CAPACITY: ${{ vars.REQUIRE_PRIVATE_CAPACITY || 'false' }}
+    steps:
+      - name: Check web chat loads
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o /tmp/web_chat_body.html -w "%{http_code}" "${WEB_BASE_URL}/chat")"
+          if [ "${code}" -lt 200 ] || [ "${code}" -ge 400 ]; then
+            echo "/chat returned ${code}"
+            exit 1
+          fi
+
+      - name: Check cloud health contract
+        run: |
+          set -euo pipefail
+          body="$(curl -fsS "${CLOUD_BASE_URL}/health")"
+          status="$(echo "${body}" | jq -r '.status // empty')"
+          service="$(echo "${body}" | jq -r '.service // empty')"
+          if [ -z "${status}" ] || [ "${service}" != "thumper-cloud" ]; then
+            echo "/health did not return the standard JSON contract"
+            echo "${body}"
+            exit 1
+          fi
+
+      - name: Check cloud readiness contract
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o /tmp/cloud_ready_body.json -w "%{http_code}" "${CLOUD_BASE_URL}/ready")"
+          if [ "${code}" != "200" ]; then
+            echo "/ready returned ${code}"
+            cat /tmp/cloud_ready_body.json
+            exit 1
+          fi
+          jq -e '.service == "thumper-cloud" and (.checks | type == "object")' /tmp/cloud_ready_body.json >/dev/null
+
+      - name: Check receipts health alias
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o /tmp/receipts_health_body.txt -w "%{http_code}" "${RECEIPTS_BASE_URL}/health")"
+          if [ "${code}" != "200" ]; then
+            echo "/health returned ${code}"
+            cat /tmp/receipts_health_body.txt
+            exit 1
+          fi
+          jq -e '.service == "said-receipts-service" and .status == "ok"' /tmp/receipts_health_body.txt >/dev/null
+
+      - name: Check receipts readiness contract
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o /tmp/receipts_ready_body.json -w "%{http_code}" "${RECEIPTS_BASE_URL}/ready")"
+          if [ "${code}" != "200" ]; then
+            echo "/ready returned ${code}"
+            cat /tmp/receipts_ready_body.json
+            exit 1
+          fi
+          jq -e '.service == "said-receipts-service" and (.checks.storage.ok == true)' /tmp/receipts_ready_body.json >/dev/null
+
+      - name: Check /health private readiness
+        run: |
+          set -euo pipefail
+          body="$(curl -fsS "${RELAY_BASE_URL}/health")"
+          jq -e '.service == "thumper-relay" and .status == "ok"' <<<"${body}" >/dev/null
+          private_ready="$(echo "${body}" | jq -r '.private_ready // false')"
+          if [ "${private_ready}" != "true" ]; then
+            echo "/health private_ready is not true"
+            echo "${body}"
+            exit 1
+          fi
+          if ! echo "${body}" | jq -e 'has("attested_provider_count") and has("private_capacity_ready") and has("capacity_reason_codes")' >/dev/null; then
+            echo "/health is missing private capacity fields"
+            echo "${body}"
+            exit 1
+          fi
+
+      - name: Check relay readiness contract
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o /tmp/relay_ready_body.json -w "%{http_code}" "${RELAY_BASE_URL}/ready")"
+          if [ "${code}" != "200" ]; then
+            echo "/ready returned ${code}"
+            cat /tmp/relay_ready_body.json
+            exit 1
+          fi
+          jq -e '.service == "thumper-relay" and .private_ready == true' /tmp/relay_ready_body.json >/dev/null
+
+      - name: Check /ready/private capacity contract
+        run: |
+          set -euo pipefail
+          body="$(curl -fsS "${RELAY_BASE_URL}/ready/private")"
+          private_ready="$(echo "${body}" | jq -r '.private_ready // false')"
+          capacity_ready="$(echo "${body}" | jq -r '.private_capacity_ready // false')"
+          provider_count="$(echo "${body}" | jq -r '.attested_provider_count // -1')"
+          if [ "${private_ready}" != "true" ]; then
+            echo "/ready/private private_ready is not true"
+            echo "${body}"
+            exit 1
+          fi
+          if [ "${provider_count}" -lt 0 ]; then
+            echo "/ready/private missing attested_provider_count"
+            echo "${body}"
+            exit 1
+          fi
+          if [ "${capacity_ready}" != "true" ]; then
+            echo "::warning::private_capacity_ready=false; Private will fail closed until attested providers are online"
+            echo "${body}"
+            if [ "${REQUIRE_PRIVATE_CAPACITY}" = "true" ]; then
+              exit 1
+            fi
+          fi
+
+      - name: Check /ohttp-keys contract
+        run: |
+          set -euo pipefail
+          hdrs="$(mktemp)"
+          body="$(mktemp)"
+          code="$(curl -sS -D "${hdrs}" -o "${body}" -w "%{http_code}" "${RELAY_BASE_URL}/ohttp-keys")"
+          if [ "${code}" != "200" ]; then
+            echo "/ohttp-keys returned ${code}"
+            exit 1
+          fi
+          ctype="$(awk -F': ' 'tolower($1)=="content-type" {print tolower($2)}' "${hdrs}" | tr -d '\r' | head -n1)"
+          if [[ "${ctype}" != application/ohttp-keys* ]]; then
+            echo "unexpected content-type: ${ctype}"
+            exit 1
+          fi
+
+      - name: Check /inference/sealed invalid probe contract
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o /tmp/sealed_probe_body.txt -w "%{http_code}" \
+            -H "content-type: application/json" \
+            -d '{"invalid":"probe"}' \
+            "${RELAY_BASE_URL}/inference/sealed")"
+          if [ "${code}" -ge 500 ]; then
+            echo "/inference/sealed invalid payload returned ${code} (5xx)"
+            exit 1
+          fi
+          if [ "${code}" -lt 400 ]; then
+            echo "/inference/sealed invalid payload unexpectedly returned ${code}"
+            exit 1
+          fi

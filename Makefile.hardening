@@ -1,0 +1,68 @@
+# Makefile.hardening — supply-chain hardening tools (Stream 8).
+#
+# Invoke as: `make -f Makefile.hardening <target>`
+#
+# Targets:
+#   tools-install  — install cargo-deny, cargo-cyclonedx, syft, cosign
+#   deny           — run `cargo deny check` against the workspace
+#   audit          — run `cargo audit` against the workspace
+#   sbom           — generate per-crate Rust SBOMs into artifacts/sbom/
+#   sbom-full      — generate a combined Rust+Node SBOM via syft
+#   attest         — emit a SLSA provenance JSON for the shielded-pool program
+#   verify-devnet  — verify the devnet-deployed shielded-pool against the local .so
+#   all-checks     — run deny + audit + sbom (used as a local pre-PR gate)
+
+REPO_ROOT      := $(shell git rev-parse --show-toplevel)
+COMMIT         := $(shell git rev-parse --short=12 HEAD)
+SBOM_DIR       := $(REPO_ROOT)/artifacts/sbom
+PROGRAM_ID     := 5bmCDeaQceBpWgK8aADB4Tz4JzqZ9hkCi3qedC6oZR8A
+DEVNET_URL     := https://api.devnet.solana.com
+LOCAL_SO       := $(REPO_ROOT)/programs/said-shielded-pool/target/deploy/said_shielded_pool.so
+
+.PHONY: tools-install
+tools-install:
+	@echo "==> Installing cargo-deny + cargo-cyclonedx"
+	@command -v cargo-deny >/dev/null     || cargo install --locked cargo-deny
+	@command -v cargo-cyclonedx >/dev/null || cargo install --locked cargo-cyclonedx
+	@echo "==> Installing syft + cosign"
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+	  command -v syft   >/dev/null || brew install syft; \
+	  command -v cosign >/dev/null || brew install cosign; \
+	else \
+	  echo "Linux: install via:"; \
+	  echo "  curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin"; \
+	  echo "  curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign"; \
+	fi
+
+.PHONY: deny
+deny:
+	cd $(REPO_ROOT) && cargo deny --all-features check
+
+.PHONY: audit
+audit:
+	cd $(REPO_ROOT) && cargo audit
+
+.PHONY: sbom
+sbom:
+	mkdir -p $(SBOM_DIR)
+	cd $(REPO_ROOT) && cargo cyclonedx --format json --all
+	@echo "Per-crate Rust SBOMs emitted next to each Cargo.toml (look for *.cdx.json)."
+
+.PHONY: sbom-full
+sbom-full:
+	mkdir -p $(SBOM_DIR)
+	syft $(REPO_ROOT) -o cyclonedx-json > $(SBOM_DIR)/full-$(COMMIT).json
+	@echo "Combined Rust+Node SBOM at $(SBOM_DIR)/full-$(COMMIT).json"
+
+.PHONY: attest
+attest:
+	$(REPO_ROOT)/scripts/build-attestation.sh said-shielded-pool > $(SBOM_DIR)/attestation-$(COMMIT).json
+	@echo "SLSA Provenance at $(SBOM_DIR)/attestation-$(COMMIT).json"
+
+.PHONY: verify-devnet
+verify-devnet:
+	$(REPO_ROOT)/scripts/verify-deploy.sh $(PROGRAM_ID) $(DEVNET_URL) $(LOCAL_SO)
+
+.PHONY: all-checks
+all-checks: deny audit sbom
+	@echo "==> Local supply-chain hardening checks complete."

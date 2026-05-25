@@ -1,0 +1,11 @@
+{
+  "_comment": "PLACEHOLDER ONLY — NOT the source of truth. The release-gate job in .github/workflows/ci.yml regenerates this file from real cargo-audit / cargo-deny / npm-audit output on every main build and REJECTS any committed file whose source is not 'ci-generated-from-scanner-output'. Do not hand-edit counts to pass the gate; fix the underlying advisory or document an exception in .cargo/audit.toml / deny.toml.",
+  "generated_at": "1970-01-01T00:00:00Z",
+  "source": "placeholder-committed-file",
+  "counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  }
+}

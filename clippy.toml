@@ -1,0 +1,15 @@
+# Workspace-wide clippy policy. Privacy-hardening bans for off-chain crates.
+#
+# Owned by Stream 7 of the production-hardening pass. Rationale and audit
+# trail live in `docs/shielded-pool/OPERATIONS.md` § 2.
+#
+# Escape hatch: `#[allow(clippy::disallowed_macros)]` with a one-line
+# justification immediately above the call site. Greppable on review.
+
+disallowed-macros = [
+    { path = "std::dbg", reason = "use tracing::debug! with redaction; dbg! prints to stderr and can leak secrets" },
+    { path = "std::print", reason = "use tracing for structured + redacted output" },
+    { path = "std::println", reason = "use tracing for structured + redacted output" },
+    { path = "std::eprintln", reason = "use tracing::error! for errors" },
+    { path = "std::eprint", reason = "use tracing::error! for errors" },
+]

@@ -38,7 +38,10 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
-      - run: npm install --frozen-lockfile || npm install
+      # `npm ci` installs strictly from package-lock.json and fails if the
+      # lockfile is out of sync — the lockfile-pinning the previous
+      # `npm install --frozen-lockfile` (not a valid npm flag) never gave.
+      - run: npm ci
       - run: npm test
       - name: Block dangerous HTML sinks
         run: ../../scripts/security/check-dangerous-html.sh
@@ -150,20 +153,116 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Enforce zero known High/Critical findings
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install scanners
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-audit
+          cargo install --locked cargo-deny
+
+      # Generate the security-findings report from REAL scanner output
+      # rather than trusting a hand-edited committed file. cargo-audit and
+      # cargo-deny advisory hits count as High (RustSec does not grade
+      # advisories by CVSS, so any unignored advisory is treated as High);
+      # npm audit reports its own high/critical severities. The ignore
+      # lists in .cargo/audit.toml and deny.toml still apply — anything NOT
+      # ignored there surfaces here and blocks the gate.
+      - name: Run security scans + generate findings report
+        id: scan
+        run: |
+          set -uo pipefail
+          mkdir -p .github/security
+          report=".github/security/security-findings.json"
+
+          # ---- cargo audit (RustSec) -> JSON ----
+          cargo audit --json > /tmp/cargo-audit.json 2>/tmp/cargo-audit.err || true
+          cargo_audit_vulns="$(jq -r '.vulnerabilities.count // 0' /tmp/cargo-audit.json 2>/dev/null || echo 0)"
+          [[ "${cargo_audit_vulns}" =~ ^[0-9]+$ ]] || cargo_audit_vulns=0
+
+          # ---- cargo deny (advisories section) ----
+          # Exit code is non-zero on any advisory/ban/license/source error.
+          if cargo deny --all-features check advisories 2>/tmp/cargo-deny.log; then
+            cargo_deny_high=0
+          else
+            cargo_deny_high=1
+          fi
+
+          # ---- npm audit (web app lockfile) -> JSON ----
+          npm_high=0
+          npm_critical=0
+          if [ -f apps/web/package-lock.json ]; then
+            ( cd apps/web && npm audit --audit-level=high --json > /tmp/npm-audit.json 2>/dev/null ) || true
+            npm_high="$(jq -r '[.vulnerabilities[]?|select(.severity=="high")]|length' /tmp/npm-audit.json 2>/dev/null || echo 0)"
+            npm_critical="$(jq -r '[.vulnerabilities[]?|select(.severity=="critical")]|length' /tmp/npm-audit.json 2>/dev/null || echo 0)"
+            [[ "${npm_high}" =~ ^[0-9]+$ ]] || npm_high=0
+            [[ "${npm_critical}" =~ ^[0-9]+$ ]] || npm_critical=0
+          fi
+
+          # RustSec advisories carry no CVSS grade; treat every unignored
+          # one as High. npm critical maps to critical, npm high to high.
+          high=$(( cargo_audit_vulns + cargo_deny_high + npm_high ))
+          critical=$(( npm_critical ))
+
+          jq -n \
+            --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg commit "${GITHUB_SHA}" \
+            --argjson critical "${critical}" \
+            --argjson high "${high}" \
+            --argjson cargo_audit "${cargo_audit_vulns}" \
+            --argjson cargo_deny "${cargo_deny_high}" \
+            --argjson npm_high "${npm_high}" \
+            --argjson npm_critical "${npm_critical}" \
+            '{
+              generated_at: $generated_at,
+              commit: $commit,
+              source: "ci-generated-from-scanner-output",
+              counts: { critical: $critical, high: $high, medium: 0, low: 0 },
+              breakdown: {
+                cargo_audit_vulnerabilities: $cargo_audit,
+                cargo_deny_advisory_errors: $cargo_deny,
+                npm_audit_high: $npm_high,
+                npm_audit_critical: $npm_critical
+              }
+            }' > "${report}"
+
+          echo "Generated ${report}:"
+          cat "${report}"
+
+      - name: Enforce zero High/Critical findings
         run: |
           set -euo pipefail
           report=".github/security/security-findings.json"
           if [ ! -f "${report}" ]; then
-            echo "Missing ${report}"
+            echo "Missing ${report} — scan step did not run."
+            exit 1
+          fi
+          # Reject the legacy hand-maintained file: a freshly generated
+          # report MUST carry the CI source marker.
+          source="$(jq -r '.source // ""' "${report}")"
+          if [ "${source}" != "ci-generated-from-scanner-output" ]; then
+            echo "Security gate refused: ${report} is not freshly generated from scanner output (source='${source}')."
             exit 1
           fi
           high="$(jq -r '.counts.high // 0' "${report}")"
           critical="$(jq -r '.counts.critical // 0' "${report}")"
           if [ "${high}" != "0" ] || [ "${critical}" != "0" ]; then
             echo "Security gate failed: high=${high}, critical=${critical}"
+            jq '.breakdown' "${report}"
             exit 1
           fi
+          echo "Security gate passed: 0 high, 0 critical."
+
+      - name: Upload security findings report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-findings
+          path: .github/security/security-findings.json
+          retention-days: 90
 
       - name: Enforce latest canary pass
         env:

@@ -1,0 +1,44 @@
+# CODEOWNERS for the Ghola monorepo.
+#
+# These rules force review approval for hardening-sensitive paths. The
+# evidence-gate workflow (.github/workflows/evidence-gate.yml) re-derives
+# every stream's commitment on PR — but baseline updates (the
+# `evidence-baseline.json` file) can ONLY land with an explicit human
+# approval from this set, so a code change that silently breaks an
+# invariant cannot be papered over by regenerating the baseline.
+
+# Repository default — protocol & infra owners
+*                                          @anndrrson
+
+# Hardening evidence (the gate's source of truth)
+/.github/evidence-baseline.json            @anndrrson
+/scripts/evidence/                         @anndrrson
+/.github/workflows/evidence-gate.yml       @anndrrson
+/.github/workflows/supply-chain.yml        @anndrrson
+/.github/workflows/sbom.yml                @anndrrson
+/.github/workflows/fuzz.yml                @anndrrson
+
+# Shielded-pool program — Stream 4 surface (governance, custody, vk)
+/programs/said-shielded-pool/              @anndrrson
+
+# Cryptographic core — auditor-facing artifacts
+/crates/said-shielded-pool-circuits/       @anndrrson
+/crates/said-shielded-pool-invariants/     @anndrrson
+/crates/said-shielded-pool-types/          @anndrrson
+/docs/shielded-pool/SPEC.md                @anndrrson
+/docs/shielded-pool/INVARIANTS.md          @anndrrson
+/docs/shielded-pool/GOVERNANCE.md          @anndrrson
+/docs/shielded-pool/UPGRADE_RUNBOOK.md     @anndrrson
+/docs/shielded-pool/AUDIT_PACKAGE.md       @anndrrson
+
+# Secret-handling surfaces
+/crates/common-secrets/                    @anndrrson
+/crates/common-log/                        @anndrrson
+
+# Supply-chain policy
+/deny.toml                                 @anndrrson
+/.cargo/audit.toml                         @anndrrson
+
+# Note: replace @anndrrson with the production multisig handle (e.g.
+# @ghola/security-council) before tagging for external audit. The
+# CODEOWNERS file itself should require ≥2 approvers in production.

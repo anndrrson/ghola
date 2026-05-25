@@ -9,6 +9,7 @@ members = [
     "crates/said-cloud",
     "crates/said-wasm",
     "crates/said-x402",
+    "crates/said-shielded",
     "crates/said-turnkey",
     "crates/said-attest",
     "crates/said-receipts-service",
@@ -37,11 +38,48 @@ members = [
     "crates/ghola-zkml-types",
     "crates/said-bbs-types",
     "crates/said-pir-types",
+
+    # Shared secret-handling primitives (used by the shielded-pool stack)
+    "crates/common-secrets",
+
+    # Privacy-aware tracing shim. Workspace logging entrypoint with the
+    # redaction layer enforcing the deny-list documented in
+    # `docs/shielded-pool/OPERATIONS.md` § 2. Owned by Stream 7 of the
+    # production-hardening pass.
+    "crates/common-log",
+
+    # Shielded Pool (anonymous on-chain agents — Phases 36-45)
+    "crates/said-shielded-pool-types",
+    "crates/said-shielded-pool-prover",
+    "crates/ghola-shielded-pool-mobile-backend",
+    "crates/said-shielded-pool-client",
+    "crates/said-shielded-pool-relayer",
+    "crates/said-shielded-pool-indexer",
+    "crates/said-shielded-pool-testvectors",
+
+    # Formal invariants (Stream 1 of the production-hardening pass).
+    # Off-chain machine-checkable predicates that mirror the on-chain
+    # safety properties of the shielded pool program. See
+    # `docs/shielded-pool/INVARIANTS.md` for the formal statements.
+    "crates/said-shielded-pool-invariants",
+
+    # Failure-mode / chaos test harness (Stream 6 of the production-hardening
+    # pass). Spins mock prover/RPC servers in-process and exercises the
+    # relayer + indexer crates against pathological backends.
+    "crates/chaos-tests",
+
+    # Malicious-actor scenario suite (Stream 9 of the production-hardening
+    # pass). One integration test file per attacker profile; all offline
+    # except the devnet-redeploy-gated `#[ignore]`d ones.
+    "crates/malicious-tests",
 ]
 exclude = [
     "programs/said-registry",
     "programs/said-receipts",
     "programs/ghola-model-registry",
+    "programs/said-shielded-pool",
+    # circuits crate is circom sources + artifacts only, no Rust
+    "crates/said-shielded-pool-circuits",
 ]
 resolver = "2"
 
@@ -64,6 +102,9 @@ sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
 rand = "0.8"
 zeroize = { version = "1.3", features = ["derive"] }
+subtle = "2"
+common-secrets = { path = "crates/common-secrets" }
+common-log = { path = "crates/common-log" }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 curve25519-dalek = { version = "4", features = ["digest"] }
 

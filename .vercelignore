@@ -1,0 +1,12 @@
+*
+!.vercelignore
+!apps
+!apps/web
+!apps/web/**
+apps/web/.next
+apps/web/node_modules
+apps/web/coverage
+apps/web/.turbo
+apps/web/out
+apps/web/dist
+apps/web/build

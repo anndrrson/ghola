@@ -1,0 +1,151 @@
+# Stream 10 (production-hardening) — Hardening Evidence Gate.
+#
+# On every PR and push targeting `main` or `audit-v1`, run all
+# Streams 1-9 verification commands, generate a canonical
+# `evidence.json`, and diff against `.github/evidence-baseline.json`.
+# A commitment mismatch blocks merge.
+#
+# The raw artifact bundle (per-test logs) is uploaded as a workflow
+# artifact for triage but never committed to the repo.
+#
+# This workflow is COMMITMENT-ONLY: it never echoes log content or
+# failure signatures into the public CI summary. Reviewers needing
+# detail download the `hardening-evidence` artifact.
+
+name: evidence-gate
+
+on:
+  pull_request:
+    branches: [main, audit-v1]
+  push:
+    branches: [main, audit-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # cosign keyless OIDC
+
+env:
+  COSIGN_EXPERIMENTAL: "1"
+  EVIDENCE_FUZZ_SECS: "120"
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install nightly Rust toolchain (cargo-fuzz)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install b3sum (matches manifest hash algo)
+        run: cargo install b3sum --locked
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Install cosign (keyless signing)
+        uses: sigstore/cosign-installer@v3
+
+      - name: Cache cargo + fuzz artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            fuzz/target
+          key: evidence-gate-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.toml') }}
+
+      - name: Collect raw artifacts
+        run: ./scripts/evidence/collect.sh
+
+      - name: Commit canonical evidence.json
+        run: ./scripts/evidence/commit.sh
+
+      # GATING: assert the DYNAMIC-stream outcomes from this run, not just
+      # that document hashes match a baseline. These are the fields the
+      # old gate merely echoed ("RECORDED ...") — now a failed fuzz run,
+      # a fuzz crash, a failing cargo-deny / cargo-audit, or any non-zero
+      # test fail_count blocks merge regardless of what the baseline says.
+      - name: Enforce dynamic-stream outcomes
+        run: |
+          COMMIT="$(git rev-parse HEAD)"
+          ./scripts/evidence/assert-dynamic.sh "artifacts/hardening-evidence/$COMMIT/evidence.json"
+
+      - name: Verify against current tree (re-derivation)
+        run: |
+          COMMIT="$(git rev-parse HEAD)"
+          ./scripts/evidence/verify.sh "artifacts/hardening-evidence/$COMMIT/evidence.json"
+
+      - name: Diff against baseline (static commitments only)
+        run: |
+          COMMIT="$(git rev-parse HEAD)"
+          CURRENT="artifacts/hardening-evidence/$COMMIT/evidence.json"
+          BASELINE=".github/evidence-baseline.json"
+
+          # The baseline pins STATIC commitments (doc hashes, lockfile
+          # hashes, vk hashes, program binary, workflow/config hashes).
+          # It deliberately does NOT pin the dynamic-run fields below —
+          # those vary legitimately per run (fuzz corpus, wall-clock,
+          # generated timestamps) and are instead hard-asserted by the
+          # "Enforce dynamic-stream outcomes" step above. Pinning them as
+          # exact-match commitments was the source of the self-defeating
+          # contradiction (baseline said executed:false while CI runs
+          # executed:true).
+          STRIP='del(
+            .commit, .generated_at, .signed_by,
+            .streams.fuzz.executed, .streams.fuzz.corpus_hash,
+            .streams.fuzz.minutes, .streams.fuzz.crashes,
+            .streams.supply_chain.deny_pass, .streams.supply_chain.audit_pass,
+            .streams.invariants.result_hash, .streams.replay.result_hash,
+            .streams.chaos.result_hash, .streams.secrets.audit_hash,
+            .streams.telemetry.leak_test_hash, .streams.malicious.result_hash,
+            .streams.invariants.pass_count, .streams.invariants.fail_count,
+            .streams.replay.pass_count, .streams.replay.fail_count,
+            .streams.secrets.pass_count, .streams.secrets.fail_count,
+            .streams.chaos.pass_count, .streams.chaos.fail_count,
+            .streams.telemetry.pass_count, .streams.telemetry.fail_count,
+            .streams.malicious.pass_count, .streams.malicious.fail_count,
+            .streams.malicious.ignored_count
+          )'
+          jq -S "$STRIP" "$CURRENT"  > /tmp/cur.json
+          jq -S "$STRIP" "$BASELINE" > /tmp/base.json
+
+          if ! diff -q /tmp/cur.json /tmp/base.json >/dev/null; then
+            echo "::error::Hardening evidence (static commitments) does not match baseline."
+            echo "::error::To accept a change, regenerate the baseline:"
+            echo "::error::  ./scripts/evidence/collect.sh && ./scripts/evidence/commit.sh"
+            echo "::error::  cp artifacts/hardening-evidence/$COMMIT/evidence.json .github/evidence-baseline.json"
+            echo "::error::Baseline updates require CODEOWNERS approval."
+            # Print which top-level keys differ — commitment names only,
+            # never values (commitment-only invariant).
+            jq -S 'keys_unsorted' /tmp/cur.json  > /tmp/cur.keys
+            jq -S 'keys_unsorted' /tmp/base.json > /tmp/base.keys
+            diff /tmp/cur.keys /tmp/base.keys || true
+            exit 1
+          fi
+          echo "evidence gate: static commitments match baseline"
+
+      - name: Upload raw artifacts (CI-only, never committed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardening-evidence-${{ github.sha }}
+          path: artifacts/hardening-evidence/
+          retention-days: 90
+          if-no-files-found: error

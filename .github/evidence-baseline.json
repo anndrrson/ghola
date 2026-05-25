@@ -1,0 +1,81 @@
+{
+  "commit": "0634707416c1ddb0e7aef771ef88256ba095eadf",
+  "config": {
+    "clippy_toml": "7a7ab1de18879f4adae3514333459861579e58efb27783143654c4d4c51a2bcb"
+  },
+  "generated_at": "2026-05-23T21:32:06Z",
+  "hash_algo": "sha256",
+  "lockfiles": {
+    "cargo_program": "8a30da56d658d07840d954c6078bd6ca85bf4b2fb8cdfe9de9cc79bb8c643585",
+    "cargo_workspace": "6aefe8c8a9eb72b81ed55fca631d019099a2c2764c123de5b8ad20026343d25c"
+  },
+  "program_bin_sha256": "3d204c4178e2c7125392ec067b15387388ad085f2f585f775d05f7021f2ca638",
+  "program_id": "5bmCDeaQceBpWgK8aADB4Tz4JzqZ9hkCi3qedC6oZR8A",
+  "program_idl_sha256": "absent",
+  "schema_version": "stream10.v1",
+  "signed_by": "unsigned-local-stream10-generation",
+  "streams": {
+    "chaos": {
+      "fail_count": 0,
+      "pass_count": 10,
+      "result_hash": "8e8d29ae5a9ea4785b1a03755b1dd6339defc9a92149d97a5cf04c955d07bb34"
+    },
+    "fuzz": {
+      "corpus_hash": "ci-generated-per-run",
+      "crashes": 0,
+      "executed": true,
+      "minutes": 12,
+      "targets": 6
+    },
+    "governance": {
+      "config_doc_hash": "b3806675af765dba513209f4989d7fa16070629187d496fe2869ea2b9985cf7e",
+      "timelock_secs": 172800,
+      "upgrade_doc_hash": "435f5531270e69c0dbcfe364b8337b2b0873ccc21e85d485a03ca6d7a3afc91a"
+    },
+    "invariants": {
+      "doc_hash": "92fbe4af24b18d79e0175ec15798d4afe8cc2440e2348fd3fbea0ee4a189a178",
+      "fail_count": 0,
+      "pass_count": 66,
+      "result_hash": "80aa69a49fa6c8f750d443c83e3bc2f2148ae67998a294e8a6cf09c9030fbac5",
+      "spec_hash": "9c6cf0b276e778d145c76077a858f1f8f4ddbd500d74ab1233517498d9b4ee13"
+    },
+    "malicious": {
+      "doc_hash": "378c3a6393ef35706c3fe17a095fcc17d91a2f18da34e02d4ac8553fb5133623",
+      "fail_count": 0,
+      "ignored_count": 8,
+      "pass_count": 16,
+      "result_hash": "06ec25dd9790852f0c6eafd04f1d21876062d7f92aeeda8da8e8f94e88b7aaad"
+    },
+    "replay": {
+      "doc_hash": "378c3a6393ef35706c3fe17a095fcc17d91a2f18da34e02d4ac8553fb5133623",
+      "fail_count": 0,
+      "pass_count": 34,
+      "result_hash": "f536fcf572525a52d8e528613c29f6031dad0754fb543c5c097465a2185decb6"
+    },
+    "secrets": {
+      "audit_hash": "f116d8a3a8d1f3abf69a14b862fbd5792bd38289776c8738c63e4eab0f22016c",
+      "fail_count": 0,
+      "key_rotation_doc": "53c7009db3f2e244550bd67ae325d4c341dafd71123f11479ac889a921ef0ddf",
+      "pass_count": 13
+    },
+    "supply_chain": {
+      "audit_pass": true,
+      "deny_config_hash": "b301c8780ef8f2e7d2d86d42356e432faba5b1c0eee66fe38f9082e957d6461e",
+      "deny_pass": true,
+      "doc_hash": "53c7009db3f2e244550bd67ae325d4c341dafd71123f11479ac889a921ef0ddf"
+    },
+    "telemetry": {
+      "doc_hash": "53c7009db3f2e244550bd67ae325d4c341dafd71123f11479ac889a921ef0ddf",
+      "fail_count": 0,
+      "leak_test_hash": "0ba36d14ccf97461b6f6114ca5856c36534a0aa1dd9717752f240214ad12737e",
+      "pass_count": 16
+    }
+  },
+  "vk_forester_hash": "301c38e483805cde168baa7d8a48295b02c6753e4c816d966234d735da0b1a60",
+  "vk_transfer_hash": "cd5bb157fec0aae5c18f83a0803f5e1c85d8c7da697a176c193513f0992ec197",
+  "workflows": {
+    "fuzz": "b76d54ca411534e3f6ebe8d8a2d21d49ba0349e15a28ea8a546dbba3927ca296",
+    "sbom": "27bcad186559a374597bcf3877b5682befa68471fa96865c7f4c8cfe2bda3442",
+    "supply_chain": "7ec1816791a2099fee9834aa2f6900a8ef630ba1dda4d1c3b3a6e4ba6f08c91d"
+  }
+}

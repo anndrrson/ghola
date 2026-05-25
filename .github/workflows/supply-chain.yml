@@ -1,0 +1,168 @@
+# Supply-chain hardening checks.
+#
+# Stream 8 of the Phase-45 production-hardening pass.
+# Runs cargo-audit, cargo-deny, npm audit, and a snarkjs version-pin check.
+# Independent of ci.yml so a failure here does not block functional CI
+# (and vice versa); both must pass for a PR to land in `audit-v1`.
+
+name: supply-chain
+
+on:
+  pull_request:
+    branches: [main, audit-v1]
+  push:
+    branches: [main, audit-v1]
+  schedule:
+    # Nightly at 06:00 UTC — picks up freshly disclosed RustSec advisories.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/advisory-db
+            ~/.cargo/bin
+          key: cargo-audit-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-audit-${{ runner.os }}-
+      - name: Install cargo-audit
+        run: |
+          if ! command -v cargo-audit >/dev/null; then
+            cargo install --locked cargo-audit
+          fi
+      - name: Run cargo audit
+        # `--deny warnings` makes any unignored advisory (informational or
+        # otherwise) fail the job. The ignore list lives in
+        # .cargo/audit.toml and is documented in docs/shielded-pool/OPERATIONS.md § 3.
+        run: cargo audit --deny warnings
+
+  cargo-deny:
+    name: cargo deny (licenses + bans + sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: cargo-deny-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'deny.toml') }}
+          restore-keys: |
+            cargo-deny-${{ runner.os }}-
+      - name: Install cargo-deny
+        run: |
+          if ! command -v cargo-deny >/dev/null; then
+            cargo install --locked cargo-deny
+          fi
+      - name: Run cargo deny
+        # `--all-features` exercises optional code paths (BPF builds, tls
+        # backends, etc.) so a vulnerable crate hiding behind a feature
+        # gate is still surfaced.
+        run: cargo deny --all-features check
+
+  npm-audit:
+    name: npm audit (per package-lock.json)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # We need the full tree to enumerate every lockfile that git
+          # tracks. `git ls-files` is the source of truth — vendored
+          # `node_modules/` lockfiles and build-artifact lockfiles
+          # (under target/, .next/, mac-dev/build/, android/.cxx/) are
+          # ignored by git and therefore by this step.
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run npm audit on every tracked lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r lockfile; do
+            dir="$(dirname "$lockfile")"
+            echo "::group::npm audit in $dir"
+            # `--audit-level=high` returns non-zero only on high or
+            # critical findings. Capture JSON for traceability and tee a
+            # human-readable summary.
+            if ! ( cd "$dir" && npm audit --audit-level=high --json > /tmp/audit.json ); then
+              echo "::error file=$lockfile::npm audit reported high/critical advisories"
+              jq '.vulnerabilities | to_entries | map(select(.value.severity == "high" or .value.severity == "critical")) | map({name: .key, severity: .value.severity, via: .value.via})' /tmp/audit.json || cat /tmp/audit.json
+              fail=1
+            else
+              echo "ok: $lockfile"
+            fi
+            echo "::endgroup::"
+          done < <(git ls-files '*package-lock.json')
+          exit "$fail"
+
+  snarkjs-pin-check:
+    name: snarkjs pinning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert snarkjs is pinned to an exact version
+        shell: bash
+        # The circuits/package.json snarkjs dep must be an exact version
+        # (no ^ / ~ / >= range). A range here allows a non-reproducible
+        # zk-SNARK trusted-setup tool upgrade to slip in via a fresh
+        # npm install. See docs/shielded-pool/OPERATIONS.md § 3.7
+        # (Node toolchain pinning).
+        run: |
+          set -euo pipefail
+          pkg="crates/said-shielded-pool-circuits/circuits/package.json"
+          if [ ! -f "$pkg" ]; then
+            echo "snarkjs pin check skipped: $pkg not present"
+            exit 0
+          fi
+          snarkjs_version="$(jq -r '.devDependencies.snarkjs // .dependencies.snarkjs // empty' "$pkg")"
+          if [ -z "$snarkjs_version" ]; then
+            echo "::error file=$pkg::no snarkjs dependency declared"
+            exit 1
+          fi
+          # Pinned = does NOT start with ^, ~, >=, <=, >, <, or contain " - " (range).
+          if [[ "$snarkjs_version" =~ ^[\^\~\>\<] ]] || [[ "$snarkjs_version" == *"||"* ]] || [[ "$snarkjs_version" == *" - "* ]]; then
+            echo "::error file=$pkg::snarkjs must be pinned to an exact version, got '$snarkjs_version'"
+            exit 1
+          fi
+          echo "snarkjs pinned to exact version: $snarkjs_version"
+
+  cosign-verify:
+    name: cosign verify (release SBOM)
+    runs-on: ubuntu-latest
+    # Only run on tag pushes — verifies an already-published, signed SBOM.
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Verify signed SBOM blob
+        shell: bash
+        run: |
+          set -euo pipefail
+          sbom="artifacts/sbom/full-${GITHUB_SHA}.json"
+          sig="${sbom}.sig"
+          if [ ! -f "$sbom" ] || [ ! -f "$sig" ]; then
+            echo "::warning::no SBOM artifact present for $GITHUB_SHA; sbom.yml may not have run yet"
+            exit 0
+          fi
+          cosign verify-blob \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.+" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --signature "$sig" \
+            "$sbom"

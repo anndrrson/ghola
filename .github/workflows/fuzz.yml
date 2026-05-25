@@ -1,0 +1,75 @@
+# Stream 2 (production-hardening) — nightly + manual cargo-fuzz runs.
+#
+# Each target runs for ~2 minutes (`-max_total_time=120`); together the
+# matrix is ~12 wall-clock minutes nightly. Failures upload the
+# corresponding corpus + crash artifacts for triage.
+#
+# We pin to `dtolnay/rust-toolchain@nightly` because libFuzzer's
+# sanitizer instrumentation requires a nightly toolchain.
+
+name: fuzz
+
+on:
+  schedule:
+    # 06:00 UTC daily — runs after the main CI's nightly window so we
+    # don't compete for GH-hosted runner minutes during peak PR traffic.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - prover_witness_parse
+          - relayer_relay_payload
+          - indexer_commitment_hex
+          - program_args_decode
+          - vk_parse
+          - merkle_insert
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly + libFuzzer prerequisites
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Cache fuzz target build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            fuzz/target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: fuzz-${{ matrix.target }}-${{ hashFiles('fuzz/Cargo.toml', 'crates/**/Cargo.toml') }}
+
+      - name: Run fuzz target
+        working-directory: fuzz
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=120
+
+      - name: Upload corpus on failure (for triage)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}/
+          if-no-files-found: ignore
+
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crashes-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
