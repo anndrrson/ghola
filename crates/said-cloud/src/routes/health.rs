@@ -15,12 +15,10 @@ pub async fn health(State(state): State<Arc<AppState>>) -> (StatusCode, Json<ser
 
     if db_ok {
         // Fetch enriched stats
-        let total_services: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM service_listings",
-        )
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(0);
+        let total_services: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM service_listings")
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
 
         let active_services: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM service_listings WHERE status::text = 'active'",
@@ -29,19 +27,16 @@ pub async fn health(State(state): State<Arc<AppState>>) -> (StatusCode, Json<ser
         .await
         .unwrap_or(0);
 
-        let total_verifications: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM auth_verifications",
-        )
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(0);
+        let total_verifications: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM auth_verifications")
+                .fetch_one(&state.db)
+                .await
+                .unwrap_or(0);
 
-        let total_users: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM users",
-        )
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(0);
+        let total_users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
 
         (
             StatusCode::OK,

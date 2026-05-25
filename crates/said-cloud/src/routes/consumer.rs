@@ -54,11 +54,10 @@ pub async fn register(
     }
 
     // Check if email already exists
-    let existing: Option<(Uuid,)> =
-        sqlx::query_as("SELECT id FROM users WHERE email = $1")
-            .bind(&req.email)
-            .fetch_optional(&state.db)
-            .await?;
+    let existing: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM users WHERE email = $1")
+        .bind(&req.email)
+        .fetch_optional(&state.db)
+        .await?;
 
     if existing.is_some() {
         return Err(AppError::Conflict(
@@ -163,24 +162,22 @@ pub async fn update_profile(
     // Check handle uniqueness if provided
     if let Some(ref handle) = req.handle {
         // Check against both public_profiles and business_profiles
-        let existing_public: Option<(Uuid,)> = sqlx::query_as(
-            "SELECT id FROM public_profiles WHERE handle = $1 AND user_id != $2",
-        )
-        .bind(handle)
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await?;
+        let existing_public: Option<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM public_profiles WHERE handle = $1 AND user_id != $2")
+                .bind(handle)
+                .bind(user_id)
+                .fetch_optional(&state.db)
+                .await?;
 
         if existing_public.is_some() {
             return Err(AppError::Conflict("Handle is already taken".into()));
         }
 
-        let existing_business: Option<(Uuid,)> = sqlx::query_as(
-            "SELECT id FROM business_profiles WHERE handle = $1",
-        )
-        .bind(handle)
-        .fetch_optional(&state.db)
-        .await?;
+        let existing_business: Option<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM business_profiles WHERE handle = $1")
+                .bind(handle)
+                .fetch_optional(&state.db)
+                .await?;
 
         if existing_business.is_some() {
             return Err(AppError::Conflict("Handle is already taken".into()));
@@ -270,12 +267,11 @@ pub async fn get_wallet(
         .parse()
         .map_err(|_| AppError::Internal("Invalid user ID in token".into()))?;
 
-    let row: Option<(Option<Vec<u8>>,)> = sqlx::query_as(
-        "SELECT encrypted_wallet FROM public_profiles WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(Option<Vec<u8>>,)> =
+        sqlx::query_as("SELECT encrypted_wallet FROM public_profiles WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     let wallet_bytes = row
         .and_then(|r| r.0)
@@ -308,12 +304,11 @@ pub async fn get_public_profile(
 
     // Log the lookup
     let profile_id = profile.id;
-    let _ = sqlx::query(
-        "INSERT INTO usage_logs (profile_id, endpoint) VALUES ($1, 'profile_lookup')",
-    )
-    .bind(profile_id)
-    .execute(&state.db)
-    .await;
+    let _ =
+        sqlx::query("INSERT INTO usage_logs (profile_id, endpoint) VALUES ($1, 'profile_lookup')")
+            .bind(profile_id)
+            .execute(&state.db)
+            .await;
 
     Ok(Json(profile.into()))
 }

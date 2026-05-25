@@ -23,6 +23,60 @@ use said_attest::AttestedEnclave;
 use crate::auth::verify_auth;
 use crate::state::{AppState, RateLimiter};
 
+const OHTTP_X402_FORWARD_HEADERS: &[&str] = &[
+    "accept",
+    "authorization",
+    "content-type",
+    "payment-signature",
+    "x-payment",
+    "x402-payment",
+    "x-ghola-payment-rail",
+    "x-payment-rail",
+];
+
+const OHTTP_X402_RESPONSE_HEADERS: &[&str] = &[
+    "content-type",
+    "payment-required",
+    "x-payment-required",
+    "payment-response",
+    "x-payment-response",
+];
+
+fn filtered_ohttp_x402_forward_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let name_lc = name.trim().to_ascii_lowercase();
+            if OHTTP_X402_FORWARD_HEADERS.contains(&name_lc.as_str())
+                && !value.contains('\r')
+                && !value.contains('\n')
+            {
+                Some((name_lc, value.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn filtered_ohttp_x402_response_headers(
+    headers: &reqwest::header::HeaderMap,
+) -> Vec<(String, String)> {
+    let mut filtered = Vec::new();
+    for name in OHTTP_X402_RESPONSE_HEADERS {
+        if let Some(value) = headers.get(*name).and_then(|v| v.to_str().ok()) {
+            filtered.push((name.to_string(), value.to_string()));
+        }
+    }
+    if !filtered
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    {
+        filtered.push(("content-type".to_string(), "application/json".to_string()));
+    }
+    filtered
+}
+
 /// Health check endpoint.
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     Json(relay_health_body(&state, true))
@@ -60,6 +114,7 @@ fn relay_health_body(state: &AppState, ready_status: bool) -> serde_json::Value 
     let ready = state.private_readiness();
     let attested_provider_count = state.list_attested_enclaves().len();
     let private_capacity_ready = ready.private_ready && attested_provider_count > 0;
+    let x402_upstream_configured = !state.config().thumper_cloud_base_url.trim().is_empty();
     let capacity_reason_codes: Vec<&str> = if private_capacity_ready {
         Vec::new()
     } else if ready.private_ready {
@@ -77,6 +132,8 @@ fn relay_health_body(state: &AppState, ready_status: bool) -> serde_json::Value 
         "gpu_providers": state.gpu_provider_count(),
         "attested_provider_count": attested_provider_count,
         "ohttp_enabled": ready.ohttp_enabled,
+        "ohttp_x402_gateway_enabled": ready.ohttp_enabled && x402_upstream_configured,
+        "ohttp_x402_upstream_configured": x402_upstream_configured,
         "did_set_bootstrapped": ready.did_set_bootstrapped,
         "did_set_fresh": ready.did_set_fresh,
         "private_ready": ready.private_ready,
@@ -1264,9 +1321,8 @@ pub async fn ohttp_gateway(
         }
     };
 
-    // Dispatch on the inner request's method + path. We only support the
-    // sealed-inference path through OHTTP for now; everything else gets a
-    // 404 BHTTP response so the client surfaces a meaningful error.
+    // Dispatch on the inner request's method + path. We support sealed
+    // inference locally and a narrow x402 inference proxy to thumper-cloud.
     //
     // SECURITY: the direct `POST /inference/sealed` route is wrapped by
     // `auth::require_sealed_envelope_auth`, but axum middleware doesn't
@@ -1278,8 +1334,10 @@ pub async fn ohttp_gateway(
     // DID membership + nonce replay + per-DID rate limit). The status
     // code from the validator is forwarded inside the BHTTP response so
     // the client surfaces the real failure through the encrypted tunnel.
-    let (resp_status, resp_json) =
-        if bhttp_req.method.eq_ignore_ascii_case("POST") && bhttp_req.path == "/inference/sealed" {
+    let bhttp_resp = if bhttp_req.method.eq_ignore_ascii_case("POST")
+        && bhttp_req.path == "/inference/sealed"
+    {
+        let (resp_status, resp_json) =
             match serde_json::from_slice::<SealedInferenceDispatchRequest>(&bhttp_req.body) {
                 Ok(parsed) => match base64::Engine::decode(
                     &base64::engine::general_purpose::STANDARD,
@@ -1306,19 +1364,27 @@ pub async fn ohttp_gateway(
                     axum::http::StatusCode::BAD_REQUEST,
                     json!({"error": format!("invalid sealed inference body: {e}")}),
                 ),
-            }
-        } else {
-            (
-                axum::http::StatusCode::NOT_FOUND,
-                json!({"error": "OHTTP gateway: unsupported inner path", "path": bhttp_req.path}),
-            )
-        };
-
-    let body_bytes = serde_json::to_vec(&resp_json).unwrap_or_default();
-    let bhttp_resp = ohttp::BhttpResponse {
-        status: resp_status.as_u16(),
-        headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: body_bytes,
+            };
+        let body_bytes = serde_json::to_vec(&resp_json).unwrap_or_default();
+        ohttp::BhttpResponse {
+            status: resp_status.as_u16(),
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: body_bytes,
+        }
+    } else if bhttp_req.method.eq_ignore_ascii_case("POST")
+        && bhttp_req.path == "/v1/chat/completions"
+    {
+        ohttp_x402_chat_completions(&state, &bhttp_req).await
+    } else {
+        ohttp::BhttpResponse {
+            status: axum::http::StatusCode::NOT_FOUND.as_u16(),
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: serde_json::to_vec(&json!({
+                "error": "OHTTP gateway: unsupported inner path",
+                "path": bhttp_req.path
+            }))
+            .unwrap_or_default(),
+        }
     }
     .encode();
 
@@ -1340,6 +1406,130 @@ pub async fn ohttp_gateway(
         capsule,
     )
         .into_response()
+}
+
+async fn ohttp_x402_chat_completions(
+    state: &AppState,
+    bhttp_req: &crate::ohttp::BhttpRequest,
+) -> crate::ohttp::BhttpResponse {
+    let base = state.config().thumper_cloud_base_url.trim_end_matches('/');
+    let url = format!("{base}/v1/chat/completions");
+    let client = reqwest::Client::new();
+    let mut req = client.post(url).body(bhttp_req.body.clone());
+
+    for (name, value) in filtered_ohttp_x402_forward_headers(&bhttp_req.headers) {
+        req = req.header(name, value);
+    }
+
+    let upstream = match req.send().await {
+        Ok(response) => response,
+        Err(e) => {
+            tracing::warn!(err = %e, "OHTTP x402 upstream request failed");
+            return crate::ohttp::BhttpResponse {
+                status: axum::http::StatusCode::BAD_GATEWAY.as_u16(),
+                headers: vec![("content-type".to_string(), "application/json".to_string())],
+                body: serde_json::to_vec(&json!({"error": "x402 upstream unavailable"}))
+                    .unwrap_or_default(),
+            };
+        }
+    };
+
+    let status = upstream.status().as_u16();
+    let headers = filtered_ohttp_x402_response_headers(upstream.headers());
+
+    let body = match upstream.bytes().await {
+        Ok(bytes) => bytes.to_vec(),
+        Err(e) => {
+            tracing::warn!(err = %e, "OHTTP x402 upstream body read failed");
+            serde_json::to_vec(&json!({"error": "x402 upstream body unavailable"}))
+                .unwrap_or_default()
+        }
+    };
+
+    crate::ohttp::BhttpResponse {
+        status,
+        headers,
+        body,
+    }
+}
+
+#[cfg(test)]
+mod ohttp_x402_tests {
+    use super::*;
+
+    #[test]
+    fn ohttp_x402_forward_filter_only_keeps_payment_headers() {
+        let headers = vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("X402-Payment".to_string(), "opaque-payment".to_string()),
+            (
+                "Payment-Signature".to_string(),
+                "bad\r\nx-leak: yes".to_string(),
+            ),
+            ("Cookie".to_string(), "sid=session".to_string()),
+            ("Referer".to_string(), "https://ghola.xyz/chat".to_string()),
+            ("X-Forwarded-For".to_string(), "203.0.113.7".to_string()),
+            ("X-Request-Id".to_string(), "req-123".to_string()),
+            ("X-User-Id".to_string(), "user-123".to_string()),
+            ("X-Wallet-Address".to_string(), "0xabc".to_string()),
+            ("X-Viewing-Key".to_string(), "view-secret".to_string()),
+        ];
+
+        let filtered = filtered_ohttp_x402_forward_headers(&headers);
+
+        assert_eq!(
+            filtered,
+            vec![
+                ("content-type".to_string(), "application/json".to_string()),
+                ("x402-payment".to_string(), "opaque-payment".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn ohttp_x402_response_filter_only_keeps_payment_headers() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            reqwest::header::HeaderName::from_static("payment-response"),
+            reqwest::header::HeaderValue::from_static("paid"),
+        );
+        headers.insert(
+            reqwest::header::SET_COOKIE,
+            reqwest::header::HeaderValue::from_static("sid=upstream"),
+        );
+        headers.insert(
+            reqwest::header::HeaderName::from_static("x-request-id"),
+            reqwest::header::HeaderValue::from_static("req-123"),
+        );
+        headers.insert(
+            reqwest::header::HeaderName::from_static("server"),
+            reqwest::header::HeaderValue::from_static("upstream"),
+        );
+
+        let filtered = filtered_ohttp_x402_response_headers(&headers);
+
+        assert_eq!(
+            filtered,
+            vec![
+                ("content-type".to_string(), "application/json".to_string()),
+                ("payment-response".to_string(), "paid".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn ohttp_x402_response_filter_defaults_json_content_type() {
+        let headers = reqwest::header::HeaderMap::new();
+
+        assert_eq!(
+            filtered_ohttp_x402_response_headers(&headers),
+            vec![("content-type".to_string(), "application/json".to_string())]
+        );
+    }
 }
 
 /// GET /attestations/:hash_hex — serve the cached vendor_quote_b64 plus the

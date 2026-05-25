@@ -89,7 +89,8 @@ pub fn pricing_catalog() -> Vec<PricedEndpoint> {
         PricedEndpoint {
             path: "/v1/discover",
             method: "GET",
-            description: "Discover a business by domain — fetch agents.txt and .well-known/said.json",
+            description:
+                "Discover a business by domain — fetch agents.txt and .well-known/said.json",
             price_micro_usdc: 5000, // $0.005
             free_tier_per_day: 20,
             auth: "none",
@@ -99,9 +100,7 @@ pub fn pricing_catalog() -> Vec<PricedEndpoint> {
 
 /// GET /v1/pricing (public)
 /// Machine-readable pricing catalog. This is the headless merchant schema.
-pub async fn get_pricing(
-    State(_state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+pub async fn get_pricing(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let catalog = pricing_catalog();
     let total_endpoints = catalog.len();
 

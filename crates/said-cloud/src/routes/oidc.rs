@@ -148,17 +148,20 @@ pub async fn register_provider(
         .map_err(|_| AppError::Unauthorized("Invalid token".into()))?;
 
     // Caller must be admin/owner of the tenant
-    let role: Option<(String,)> = sqlx::query_as(
-        "SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2",
-    )
-    .bind(req.tenant_id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let role: Option<(String,)> =
+        sqlx::query_as("SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2")
+            .bind(req.tenant_id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     match role.as_ref().map(|r| r.0.as_str()) {
         Some("owner") | Some("admin") => {}
-        _ => return Err(AppError::Unauthorized("Admin or owner role required".into())),
+        _ => {
+            return Err(AppError::Unauthorized(
+                "Admin or owner role required".into(),
+            ))
+        }
     }
 
     if req.issuer_url.is_empty() {
@@ -183,14 +186,10 @@ pub async fn register_provider(
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
-        .map_err(|_| {
-            AppError::BadRequest("Could not reach OIDC discovery endpoint".into())
-        })?
+        .map_err(|_| AppError::BadRequest("Could not reach OIDC discovery endpoint".into()))?
         .json()
         .await
-        .map_err(|_| {
-            AppError::BadRequest("Invalid OIDC discovery document".into())
-        })?;
+        .map_err(|_| AppError::BadRequest("Invalid OIDC discovery document".into()))?;
 
     // Verify the issuer in the discovery doc matches what was supplied.
     if let Some(issuer) = discovery.get("issuer").and_then(|v| v.as_str()) {
@@ -225,7 +224,9 @@ pub async fn register_provider(
     .await
     .map_err(|e| {
         if e.to_string().contains("unique") {
-            AppError::Conflict("An OIDC provider with this issuer already exists for this tenant".into())
+            AppError::Conflict(
+                "An OIDC provider with this issuer already exists for this tenant".into(),
+            )
         } else {
             AppError::Sqlx(e)
         }
@@ -257,13 +258,12 @@ pub async fn list_providers(
         .parse()
         .map_err(|_| AppError::Unauthorized("Invalid token".into()))?;
 
-    let member: Option<(String,)> = sqlx::query_as(
-        "SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2",
-    )
-    .bind(params.tenant_id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let member: Option<(String,)> =
+        sqlx::query_as("SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2")
+            .bind(params.tenant_id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     if member.is_none() {
         return Err(AppError::Unauthorized("Not a member of this tenant".into()));
@@ -304,17 +304,20 @@ pub async fn deactivate_provider(
     let tenant_id =
         tenant_id.ok_or_else(|| AppError::NotFound("OIDC provider not found".into()))?;
 
-    let role: Option<(String,)> = sqlx::query_as(
-        "SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2",
-    )
-    .bind(tenant_id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let role: Option<(String,)> =
+        sqlx::query_as("SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2")
+            .bind(tenant_id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     match role.as_ref().map(|r| r.0.as_str()) {
         Some("owner") | Some("admin") => {}
-        _ => return Err(AppError::Unauthorized("Admin or owner role required".into())),
+        _ => {
+            return Err(AppError::Unauthorized(
+                "Admin or owner role required".into(),
+            ))
+        }
     }
 
     sqlx::query("UPDATE oidc_providers SET active = false WHERE id = $1")
@@ -376,11 +379,12 @@ pub async fn provision_agent(
     .fetch_optional(&state.db)
     .await?;
 
-    let provider =
-        provider.ok_or_else(|| AppError::NotFound("OIDC provider not found".into()))?;
+    let provider = provider.ok_or_else(|| AppError::NotFound("OIDC provider not found".into()))?;
 
     if !provider.active {
-        return Err(AppError::Unauthorized("OIDC provider is deactivated".into()));
+        return Err(AppError::Unauthorized(
+            "OIDC provider is deactivated".into(),
+        ));
     }
 
     // Verify the issuer matches.
@@ -458,13 +462,13 @@ pub async fn provision_agent(
         .execute(&state.db)
         .await?;
 
-        let user_id = existing.user_id.ok_or_else(|| {
-            AppError::Internal("Provisioned agent has no user_id".into())
-        })?;
+        let user_id = existing
+            .user_id
+            .ok_or_else(|| AppError::Internal("Provisioned agent has no user_id".into()))?;
 
-        let email = token_email
-            .clone()
-            .unwrap_or_else(|| format!("{}@oidc.provisioned", &token_sub[..8.min(token_sub.len())]));
+        let email = token_email.clone().unwrap_or_else(|| {
+            format!("{}@oidc.provisioned", &token_sub[..8.min(token_sub.len())])
+        });
 
         let token = issue_jwt(&user_id, &email, &state.config.jwt_secret)
             .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -491,38 +495,39 @@ pub async fn provision_agent(
 
     // Provision a new user + DID.
     let email = token_email.clone().unwrap_or_else(|| {
-        format!("oidc+{}@tenant-{}", &token_sub[..8.min(token_sub.len())], provider.tenant_id)
+        format!(
+            "oidc+{}@tenant-{}",
+            &token_sub[..8.min(token_sub.len())],
+            provider.tenant_id
+        )
     });
 
     // Create a synthetic password hash (OIDC users never use password login).
     let password_hash = format!("oidc:{}:{}", provider.id, token_sub);
 
-    let (user_id,): (Uuid,) = sqlx::query_as(
-        "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id",
-    )
-    .bind(&email)
-    .bind(&password_hash)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        if e.to_string().contains("unique") {
-            AppError::Conflict("A user with this email already exists".into())
-        } else {
-            AppError::Sqlx(e)
-        }
-    })?;
+    let (user_id,): (Uuid,) =
+        sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id")
+            .bind(&email)
+            .bind(&password_hash)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| {
+                if e.to_string().contains("unique") {
+                    AppError::Conflict("A user with this email already exists".into())
+                } else {
+                    AppError::Sqlx(e)
+                }
+            })?;
 
     let (did, _) = generate_did();
 
     // Create a public profile for the provisioned agent.
-    sqlx::query(
-        r#"INSERT INTO public_profiles (user_id, did, display_name) VALUES ($1, $2, $3)"#,
-    )
-    .bind(user_id)
-    .bind(&did)
-    .bind(email.split('@').next().unwrap_or("agent"))
-    .execute(&state.db)
-    .await?;
+    sqlx::query(r#"INSERT INTO public_profiles (user_id, did, display_name) VALUES ($1, $2, $3)"#)
+        .bind(user_id)
+        .bind(&did)
+        .bind(email.split('@').next().unwrap_or("agent"))
+        .execute(&state.db)
+        .await?;
 
     // Record the provisioning.
     sqlx::query(

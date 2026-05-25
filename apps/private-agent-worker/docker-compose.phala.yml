@@ -1,0 +1,19 @@
+services:
+  private-agent-worker:
+    image: ghcr.io/anndrrson/ghola-private-agent-worker:private-agent-worker-128f9e8@sha256:9e2cb99b475ab193bfa5cc9c8c2dcd4b1ed314586ee4801aa217a2eeeb6c66f7
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      PORT: "8787"
+      PRIVATE_AGENT_PROVIDER_ID: "phala"
+      PRIVATE_AGENT_TEE_KIND: "phala"
+      PRIVATE_AGENT_EXECUTION_TOKEN: "${PRIVATE_AGENT_EXECUTION_TOKEN}"
+      PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE: "true"
+      PHALA_CVM_IMAGE_DIGEST: "${PHALA_CVM_IMAGE_DIGEST}"
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+      - private-agent-data:/data
+
+volumes:
+  private-agent-data:

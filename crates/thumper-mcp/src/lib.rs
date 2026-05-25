@@ -664,36 +664,35 @@ fn is_retryable_relay_error(e: &ErrorData) -> bool {
 #[tool_handler]
 impl ServerHandler for ThumperServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            instructions: Some(
-                "Thumper device agent -- remotely control an Android phone via accessibility APIs.\n\n\
-                 RECOMMENDED WORKFLOW:\n\
-                 1. device_status -- verify device is connected\n\
-                 2. device_read_screen -- see what's on screen (always do this first)\n\
-                 3. Interact using device_tap, device_type_text, device_swipe, device_scroll, etc.\n\
-                 4. device_wait_for -- wait for UI to settle after loading actions\n\
-                 5. device_read_screen -- verify the result\n\n\
-                 BEST PRACTICES:\n\
-                 - Actions (tap, type, swipe, etc.) return instantly by default (~50ms). Pass wait=true to wait for screen stabilization.\n\
-                 - For multi-step sequences: fire actions fast, then call device_read_screen or device_wait_for when you need to check the result.\n\
-                 - Prefer text selectors over coordinates (more reliable across devices)\n\
-                 - Use device_wait_for after tapping buttons that trigger navigation or loading\n\
-                 - Use device_smart_read for apps with few accessibility nodes (WebViews, Flutter, games)\n\
-                 - Use device_screenshot when you need visual context (icons, images, charts)\n\
-                 - Use device_execute_flow for scripted multi-step operations (zero AI cost per step)\n\
-                 - Use device_history to review recent actions and avoid repeating failed approaches\n\n\
-                 ERROR RECOVERY:\n\
-                 - 'no matching node' -> call device_read_screen to see current state, try different selector\n\
-                 - App crash -> use device_launch_app to restart\n\
-                 - Stuck screen -> try device_press_back or device_global_action(home)\n\
-                 - Connection lost -> tools will auto-reconnect, retry after a few seconds\n\n\
-                 All tools accept an optional 'device' parameter for multi-device targeting.\n\
-                 Every action automatically returns the updated screen state."
-                    .into(),
-            ),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+        let mut info = ServerInfo::default();
+        info.instructions = Some(
+            "Thumper device agent -- remotely control an Android phone via accessibility APIs.\n\n\
+             RECOMMENDED WORKFLOW:\n\
+             1. device_status -- verify device is connected\n\
+             2. device_read_screen -- see what's on screen (always do this first)\n\
+             3. Interact using device_tap, device_type_text, device_swipe, device_scroll, etc.\n\
+             4. device_wait_for -- wait for UI to settle after loading actions\n\
+             5. device_read_screen -- verify the result\n\n\
+             BEST PRACTICES:\n\
+             - Actions (tap, type, swipe, etc.) return instantly by default (~50ms). Pass wait=true to wait for screen stabilization.\n\
+             - For multi-step sequences: fire actions fast, then call device_read_screen or device_wait_for when you need to check the result.\n\
+             - Prefer text selectors over coordinates (more reliable across devices)\n\
+             - Use device_wait_for after tapping buttons that trigger navigation or loading\n\
+             - Use device_smart_read for apps with few accessibility nodes (WebViews, Flutter, games)\n\
+             - Use device_screenshot when you need visual context (icons, images, charts)\n\
+             - Use device_execute_flow for scripted multi-step operations (zero AI cost per step)\n\
+             - Use device_history to review recent actions and avoid repeating failed approaches\n\n\
+             ERROR RECOVERY:\n\
+             - 'no matching node' -> call device_read_screen to see current state, try different selector\n\
+             - App crash -> use device_launch_app to restart\n\
+             - Stuck screen -> try device_press_back or device_global_action(home)\n\
+             - Connection lost -> tools will auto-reconnect, retry after a few seconds\n\n\
+             All tools accept an optional 'device' parameter for multi-device targeting.\n\
+             Every action automatically returns the updated screen state."
+                .into(),
+        );
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info
     }
 }
 

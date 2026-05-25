@@ -121,7 +121,9 @@ pub async fn create_grant(
 
     // Validate capabilities
     if req.capabilities.is_empty() {
-        return Err(AppError::BadRequest("At least one capability required".into()));
+        return Err(AppError::BadRequest(
+            "At least one capability required".into(),
+        ));
     }
 
     // Validate expiry
@@ -131,8 +133,7 @@ pub async fn create_grant(
         ));
     }
 
-    let expires_at =
-        chrono::Utc::now() + chrono::Duration::seconds(req.expires_in_seconds);
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(req.expires_in_seconds);
 
     // Generate a deterministic token hash (represents this grant)
     let token_content = format!(
@@ -156,9 +157,7 @@ pub async fn create_grant(
         .await?;
 
         if is_revoked {
-            return Err(AppError::BadRequest(
-                "Parent token has been revoked".into(),
-            ));
+            return Err(AppError::BadRequest("Parent token has been revoked".into()));
         }
 
         // Verify parent grant exists and is active
@@ -274,12 +273,10 @@ pub async fn revoke_grant(
     .await?;
 
     // Mark grant as revoked
-    sqlx::query(
-        "UPDATE delegation_grants SET revoked = true WHERE token_hash = $1",
-    )
-    .bind(&req.token_hash)
-    .execute(&state.db)
-    .await?;
+    sqlx::query("UPDATE delegation_grants SET revoked = true WHERE token_hash = $1")
+        .bind(&req.token_hash)
+        .execute(&state.db)
+        .await?;
 
     // Also revoke all child grants (cascade revocation)
     let child_count = cascade_revoke(&state, &issuer_did, &req.token_hash, &req.reason).await;
@@ -483,12 +480,11 @@ pub async fn verify_chain(
     let token_hash = sha256_hex(&req.ucan_token);
 
     // Check if this specific token is revoked
-    let is_revoked: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM ucan_revocations WHERE token_hash = $1)",
-    )
-    .bind(&token_hash)
-    .fetch_one(&state.db)
-    .await?;
+    let is_revoked: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ucan_revocations WHERE token_hash = $1)")
+            .bind(&token_hash)
+            .fetch_one(&state.db)
+            .await?;
 
     if is_revoked {
         return Ok(Json(ChainVerifyResponse {

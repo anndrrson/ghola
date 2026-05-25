@@ -43,7 +43,7 @@ pub struct UpdateTenantRequest {
 #[derive(Debug, Deserialize)]
 pub struct AddMemberRequest {
     pub user_id: Uuid,
-    pub role: Option<String>,    // owner | admin | member | viewer
+    pub role: Option<String>, // owner | admin | member | viewer
     pub department: Option<String>,
 }
 
@@ -107,29 +107,20 @@ pub struct DepartmentResponse {
 
 /// Returns the caller's role in `tenant_id`, or an auth error if they are not
 /// a member.
-async fn require_member(
-    state: &AppState,
-    tenant_id: Uuid,
-    user_id: Uuid,
-) -> AppResult<String> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2",
-    )
-    .bind(tenant_id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+async fn require_member(state: &AppState, tenant_id: Uuid, user_id: Uuid) -> AppResult<String> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2")
+            .bind(tenant_id)
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     row.map(|r| r.0)
         .ok_or_else(|| AppError::Unauthorized("Not a member of this tenant".into()))
 }
 
 /// Returns the caller's role, requiring at least `admin` level.
-async fn require_admin(
-    state: &AppState,
-    tenant_id: Uuid,
-    user_id: Uuid,
-) -> AppResult<()> {
+async fn require_admin(state: &AppState, tenant_id: Uuid, user_id: Uuid) -> AppResult<()> {
     let role = require_member(state, tenant_id, user_id).await?;
     if role != "owner" && role != "admin" {
         return Err(AppError::Unauthorized(
@@ -193,13 +184,11 @@ pub async fn create_tenant(
     })?;
 
     // Auto-enrol the creator as owner
-    sqlx::query(
-        "INSERT INTO tenant_members (tenant_id, user_id, role) VALUES ($1, $2, 'owner')",
-    )
-    .bind(tenant.id)
-    .bind(user_id)
-    .execute(&state.db)
-    .await?;
+    sqlx::query("INSERT INTO tenant_members (tenant_id, user_id, role) VALUES ($1, $2, 'owner')")
+        .bind(tenant.id)
+        .bind(user_id)
+        .execute(&state.db)
+        .await?;
 
     super::audit::emit(
         &state.db,
@@ -246,13 +235,11 @@ pub async fn get_tenant(
     let user_id = parse_user_id(&claims)?;
     require_member(&state, tenant_id, user_id).await?;
 
-    let tenant = sqlx::query_as::<_, TenantResponse>(
-        "SELECT * FROM tenants WHERE id = $1",
-    )
-    .bind(tenant_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("Tenant not found".into()))?;
+    let tenant = sqlx::query_as::<_, TenantResponse>("SELECT * FROM tenants WHERE id = $1")
+        .bind(tenant_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Tenant not found".into()))?;
 
     Ok(Json(tenant))
 }
@@ -312,7 +299,9 @@ pub async fn delete_tenant(
     // Only the owner can delete a tenant
     let role = require_member(&state, tenant_id, user_id).await?;
     if role != "owner" {
-        return Err(AppError::Unauthorized("Only the owner can delete a tenant".into()));
+        return Err(AppError::Unauthorized(
+            "Only the owner can delete a tenant".into(),
+        ));
     }
 
     sqlx::query("DELETE FROM tenants WHERE id = $1")
@@ -434,13 +423,11 @@ pub async fn remove_member(
     let user_id = parse_user_id(&claims)?;
     require_admin(&state, tenant_id, user_id).await?;
 
-    let result = sqlx::query(
-        "DELETE FROM tenant_members WHERE tenant_id = $1 AND user_id = $2",
-    )
-    .bind(tenant_id)
-    .bind(target_user_id)
-    .execute(&state.db)
-    .await?;
+    let result = sqlx::query("DELETE FROM tenant_members WHERE tenant_id = $1 AND user_id = $2")
+        .bind(tenant_id)
+        .bind(target_user_id)
+        .execute(&state.db)
+        .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Member not found".into()));
@@ -546,13 +533,11 @@ pub async fn delete_department(
     let user_id = parse_user_id(&claims)?;
     require_admin(&state, tenant_id, user_id).await?;
 
-    let result = sqlx::query(
-        "DELETE FROM tenant_departments WHERE id = $1 AND tenant_id = $2",
-    )
-    .bind(dept_id)
-    .bind(tenant_id)
-    .execute(&state.db)
-    .await?;
+    let result = sqlx::query("DELETE FROM tenant_departments WHERE id = $1 AND tenant_id = $2")
+        .bind(dept_id)
+        .bind(tenant_id)
+        .execute(&state.db)
+        .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Department not found".into()));

@@ -9,6 +9,7 @@ use chrono::Utc;
 use futures::stream::Stream;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::auth::Claims;
@@ -41,8 +42,10 @@ fn payment_rail_header(headers: &HeaderMap) -> Option<&str> {
 const CREATED_AT: i64 = 1_700_000_000;
 const GHOLA_PRIVATE_MODEL: &str = "ghola-private";
 const GHOLA_LOCAL_MODEL: &str = "ghola-local";
+const GHOLA_OPEN_MODEL: &str = "ghola-open";
 const AGENT_MODEL_NAMESPACE: &str = "agent:";
-const PRIVATE_PAYMENT_RAIL: &str = "private_usdcx";
+const PRIVATE_PAYMENT_RAIL: &str = "private_shielded_auto";
+const SEALED_OR_LOCAL_DISCLOSURE: &str = "Prompt-confidential routes require ghola-local or sealed inference. Plaintext remote provider execution is disabled for ghola-private and agent:*.";
 
 fn is_agent_model(model: Option<&str>) -> bool {
     model
@@ -56,7 +59,7 @@ fn is_local_model(model: Option<&str>) -> bool {
 
 fn is_supported_public_model(model: Option<&str>) -> bool {
     match model {
-        None | Some(GHOLA_PRIVATE_MODEL) | Some(GHOLA_LOCAL_MODEL) => true,
+        None | Some(GHOLA_PRIVATE_MODEL) | Some(GHOLA_LOCAL_MODEL) | Some(GHOLA_OPEN_MODEL) => true,
         Some(model) => model.starts_with(AGENT_MODEL_NAMESPACE),
     }
 }
@@ -65,34 +68,54 @@ fn response_model_name(requested: Option<&str>, configured: &str) -> String {
     match requested {
         None => GHOLA_PRIVATE_MODEL.to_string(),
         Some(GHOLA_PRIVATE_MODEL) => GHOLA_PRIVATE_MODEL.to_string(),
+        Some(GHOLA_OPEN_MODEL) => configured.to_string(),
         Some(model) if model.starts_with(AGENT_MODEL_NAMESPACE) => model.to_string(),
         _ => configured.to_string(),
     }
 }
 
-fn request_declares_private_intent(approval: &PrivacyApproval) -> bool {
-    matches!(
-        approval.privacy_mode.as_deref(),
-        Some("private") | Some(crate::privacy::STRICT_LOCAL)
-    )
+fn chat_request_hash(req: &ChatCompletionRequest, max_tokens: u32) -> Result<String, CloudError> {
+    let sealed_request_sha256 = req.sealed_request_b64.as_deref().map(|raw| {
+        let hash = Sha256::digest(raw.as_bytes());
+        hex::encode(hash)
+    });
+    let binding = serde_json::json!({
+        "version": "ghola-x402-request-v1",
+        "model": req.model.as_deref().unwrap_or(GHOLA_PRIVATE_MODEL),
+        "messages": &req.messages,
+        "sealed_request_sha256": sealed_request_sha256,
+        "enclave_key_id": &req.enclave_key_id,
+        "max_tokens": max_tokens,
+        "temperature": req.temperature,
+    });
+    let bytes = serde_json::to_vec(&binding)
+        .map_err(|e| CloudError::Internal(format!("request hash serialization failed: {e}")))?;
+    Ok(hex::encode(Sha256::digest(&bytes)))
 }
 
 // ---------------------------------------------------------------------------
 // Request/Response types (OpenAI-compatible)
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ChatCompletionRequest {
+    #[serde(default)]
     pub messages: Vec<MessageInput>,
     pub model: Option<String>,
     pub stream: Option<bool>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f64>,
+    #[serde(default)]
+    pub enclave_key_id: Option<String>,
+    #[serde(default)]
+    pub sealed_request_b64: Option<String>,
+    #[serde(default)]
+    pub sealed_job_id: Option<String>,
     #[serde(flatten)]
     pub approval: PrivacyApproval,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct MessageInput {
     pub role: String,
     pub content: String,
@@ -106,6 +129,25 @@ pub struct ChatCompletion {
     pub model: String,
     pub choices: Vec<Choice>,
     pub usage: Usage,
+}
+
+#[derive(Serialize)]
+pub struct SealedChatCompletion {
+    pub id: String,
+    pub object: &'static str,
+    pub created: i64,
+    pub model: String,
+    pub ciphertext_b64: String,
+    pub is_final: bool,
+    pub ghola: SealedChatMetadata,
+}
+
+#[derive(Serialize)]
+pub struct SealedChatMetadata {
+    pub prompt_confidentiality: &'static str,
+    pub payment_privacy_scope: &'static str,
+    pub enclave_key_id: String,
+    pub relay_sealed: bool,
 }
 
 #[derive(Serialize)]
@@ -148,6 +190,9 @@ pub struct ModelInfo {
 pub struct ModelMetadata {
     pub privacy_modes: Vec<&'static str>,
     pub payment_rails: Vec<&'static str>,
+    pub prompt_confidentiality: &'static str,
+    pub payment_privacy_scope: &'static str,
+    pub privacy_boundary: &'static str,
     pub receipts: bool,
     pub description: &'static str,
 }
@@ -160,10 +205,18 @@ fn canonical_models() -> Vec<ModelInfo> {
             created: CREATED_AT,
             owned_by: "ghola".to_string(),
             ghola: Some(ModelMetadata {
-                privacy_modes: vec!["private", "open"],
-                payment_rails: vec!["private_usdcx", "public_usdc"],
+                privacy_modes: vec!["private"],
+                payment_rails: vec![
+                    "private_shielded_auto",
+                    "aleo_usdcx_shielded",
+                    "railgun_evm_shielded",
+                    "solana_shielded_pool",
+                ],
+                prompt_confidentiality: "sealed_or_local_required",
+                payment_privacy_scope: "shielded_payment_available",
+                privacy_boundary: SEALED_OR_LOCAL_DISCLOSURE,
                 receipts: true,
-                description: "Default private Ghola chat route with receipt support.",
+                description: "Default prompt-confidential route; use browser local inference or sealed remote inference.",
             }),
         },
         ModelInfo {
@@ -174,8 +227,26 @@ fn canonical_models() -> Vec<ModelInfo> {
             ghola: Some(ModelMetadata {
                 privacy_modes: vec!["local"],
                 payment_rails: vec![],
+                prompt_confidentiality: "local_device_only",
+                payment_privacy_scope: "no_payment_required",
+                privacy_boundary: "On-device local model route; prompts and responses stay on the user's hardware when local setup succeeds.",
                 receipts: true,
                 description: "On-device local model route for prompts that should stay on the user's hardware.",
+            }),
+        },
+        ModelInfo {
+            id: GHOLA_OPEN_MODEL.to_string(),
+            object: "model",
+            created: CREATED_AT,
+            owned_by: "ghola".to_string(),
+            ghola: Some(ModelMetadata {
+                privacy_modes: vec!["open"],
+                payment_rails: vec![],
+                prompt_confidentiality: "remote_plaintext_to_provider",
+                payment_privacy_scope: "no_payment_required",
+                privacy_boundary: "Explicit open route sends plaintext prompt/model requests to the configured remote provider.",
+                receipts: true,
+                description: "Explicit plaintext cloud route for users who choose open remote inference.",
             }),
         },
         ModelInfo {
@@ -184,13 +255,51 @@ fn canonical_models() -> Vec<ModelInfo> {
             created: CREATED_AT,
             owned_by: "ghola".to_string(),
             ghola: Some(ModelMetadata {
-                privacy_modes: vec!["private", "open"],
-                payment_rails: vec!["private_usdcx", "public_usdc"],
+                privacy_modes: vec!["private"],
+                payment_rails: vec![
+                    "private_shielded_auto",
+                    "aleo_usdcx_shielded",
+                    "railgun_evm_shielded",
+                    "solana_shielded_pool",
+                ],
+                prompt_confidentiality: "sealed_inference_required",
+                payment_privacy_scope: "shielded_payment_available",
+                privacy_boundary: SEALED_OR_LOCAL_DISCLOSURE,
                 receipts: true,
-                description: "Paid agent execution namespace. Use model ids like agent:research-bot.",
+                description: "Paid sealed agent execution namespace. Use model ids like agent:research-bot.",
             }),
         },
     ]
+}
+
+fn require_sealed_remote_request(req: &ChatCompletionRequest) -> Result<(), CloudError> {
+    let has_enclave = req
+        .enclave_key_id
+        .as_deref()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    let has_sealed = req
+        .sealed_request_b64
+        .as_deref()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if !has_enclave || !has_sealed {
+        return Err(CloudError::BadRequest(
+            "prompt-confidential remote inference requires enclave_key_id and sealed_request_b64; use ghola-local or the sealed inference client".into(),
+        ));
+    }
+    if !req.messages.is_empty() {
+        return Err(CloudError::BadRequest(
+            "sealed remote inference must not include plaintext messages in /v1/chat/completions"
+                .into(),
+        ));
+    }
+    if req.stream == Some(true) {
+        return Err(CloudError::BadRequest(
+            "sealed remote inference returns an encrypted non-streaming response; streaming sealed chunks are not enabled on this route".into(),
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +317,8 @@ pub async fn chat_completions(
 ) -> Result<axum::response::Response, CloudError> {
     if !is_supported_public_model(req.model.as_deref()) {
         return Err(CloudError::BadRequest(
-            "unsupported model id; use ghola-private, ghola-local, or agent:<slug>".into(),
+            "unsupported model id; use ghola-private, ghola-local, ghola-open, or agent:<slug>"
+                .into(),
         ));
     }
 
@@ -216,6 +326,12 @@ pub async fn chat_completions(
         return Err(CloudError::BadRequest(
             "ghola-local runs on the user's device and is not available through the cloud API"
                 .into(),
+        ));
+    }
+
+    if matches!(req.model.as_deref(), None | Some(GHOLA_PRIVATE_MODEL)) {
+        return Err(CloudError::BadRequest(
+            "ghola-private no longer runs plaintext remote inference through /v1/chat/completions; use ghola-local in the browser or sealed inference".into(),
         ));
     }
 
@@ -311,6 +427,15 @@ async fn handle_x402_agent_request(
     let slug = model_str
         .strip_prefix("agent:")
         .ok_or_else(|| CloudError::BadRequest("invalid agent model format".into()))?;
+    require_sealed_remote_request(&req)?;
+    let enclave_key_id = req
+        .enclave_key_id
+        .clone()
+        .expect("sealed request validation requires enclave_key_id");
+    let sealed_request_b64 = req
+        .sealed_request_b64
+        .clone()
+        .expect("sealed request validation requires sealed_request_b64");
 
     // Look up agent — 404 before 402
     let agent_info = agent_service::get_public_agent(&state.db, slug).await?;
@@ -345,20 +470,30 @@ async fn handle_x402_agent_request(
             "max_tokens must be between 1 and {provider_max_tokens}"
         )));
     }
+    let enclave_matches_provider = compute_service::attested_enclave_matches_provider(
+        state,
+        &matched_agent.model_id,
+        &enclave_key_id,
+        &matched_agent.relay_pubkey,
+    )
+    .await?;
+    if !enclave_matches_provider {
+        return Err(CloudError::ServiceUnavailable(
+            "sealed enclave is not attested for this agent provider/model".into(),
+        ));
+    }
     let required_amount = x402_service::estimate_agent_price(
         matched_agent.price_per_1k_input,
         matched_agent.price_per_1k_output,
         max_tokens,
     );
+    let request_hash = chat_request_hash(&req, max_tokens)?;
     let requested_rail_header = payment_rail_header(headers);
-    let requested_rail_preference = requested_rail_header.or_else(|| {
-        if request_declares_private_intent(&req.approval) {
-            Some(PRIVATE_PAYMENT_RAIL)
-        } else {
-            None
-        }
-    });
+    let requested_rail_preference = requested_rail_header.or(Some(PRIVATE_PAYMENT_RAIL));
     let requested_rail = x402_service::parse_requested_payment_rail(requested_rail_preference)?;
+    if requested_rail == x402_service::PaymentRailKind::SolanaPublicStablecoin {
+        return Ok(x402_service::build_shielded_fallback_rejected_response());
+    }
 
     // Accept canonical x402 and existing Ghola header aliases. Verification
     // normalizes the decoded proof, so replay protection is rail/proof based,
@@ -368,7 +503,14 @@ async fn handle_x402_agent_request(
     let payment_header = match payment_header {
         Some(h) => h,
         None => {
-            if requested_rail == x402_service::PaymentRailKind::ShieldedStablecoin {
+            if requested_rail == x402_service::PaymentRailKind::PrivateShieldedAuto {
+                if !x402_service::any_shielded_rail_ready() {
+                    return Ok(x402_service::build_no_payment_options_response(
+                        requested_rail,
+                        Some(x402_service::any_shielded_unavailable_reason()),
+                    ));
+                }
+            } else if requested_rail == x402_service::PaymentRailKind::ShieldedStablecoin {
                 let shielded = x402_service::shielded_stablecoin_runtime_status();
                 if !shielded.ready {
                     return Ok(x402_service::build_no_payment_options_response(
@@ -387,6 +529,9 @@ async fn handle_x402_agent_request(
                 matched_agent.price_per_1k_output,
                 max_tokens,
             );
+            for option in &mut requirements.accepts {
+                option.extra.request_hash = Some(request_hash.clone());
+            }
             if requested_rail_preference.is_some() {
                 x402_service::filter_payment_requirements_for_rail(
                     &mut requirements,
@@ -413,12 +558,18 @@ async fn handle_x402_agent_request(
     if requested_rail_preference.is_some()
         && !x402_service::proof_matches_rail(&proof, requested_rail)
     {
-        if requested_rail == x402_service::PaymentRailKind::ShieldedStablecoin {
+        if requested_rail == x402_service::PaymentRailKind::ShieldedStablecoin
+            || requested_rail == x402_service::PaymentRailKind::PrivateShieldedAuto
+        {
             return Ok(x402_service::build_shielded_fallback_rejected_response());
         }
         return Err(CloudError::PaymentRequired(
             "payment proof does not match requested payment rail".into(),
         ));
+    }
+    if x402_service::proof_matches_rail(&proof, x402_service::PaymentRailKind::PrivateShieldedAuto)
+    {
+        x402_service::validate_payment_request_hash(&proof, &request_hash)?;
     }
 
     // Verify payment on-chain
@@ -432,38 +583,18 @@ async fn handle_x402_agent_request(
     )
     .await?;
 
-    // Payment verified — dispatch inference
-    // Use a random job_id for relay routing (no compute_jobs DB record needed)
-    let job_id = Uuid::new_v4();
-
-    // Build messages for inference
-    let mut system = Some(matched_agent.system_prompt.clone());
-    let mut messages_json = Vec::new();
-    for msg in &req.messages {
-        if msg.role == "system" {
-            // Prepend user's system message to agent's system prompt
-            if let Some(ref mut sys) = system {
-                *sys = format!("{}\n\n{}", sys, msg.content);
-            }
-        } else {
-            messages_json.push(serde_json::json!({
-                "role": msg.role,
-                "content": msg.content,
-            }));
-        }
-    }
-
-    let messages_value = serde_json::Value::Array(messages_json);
-
-    // Dispatch inference to provider via relay
-    let inference_result = match compute_service::dispatch_inference(
+    // Payment verified — dispatch opaque sealed inference to the relay.
+    // The cloud cannot inspect the prompt or response; the sealed envelope
+    // must contain the model/messages/agent context the enclave needs.
+    let job_id = req
+        .sealed_job_id
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let inference_result = match compute_service::dispatch_inference_sealed(
         state,
-        &matched_agent.relay_pubkey,
-        &messages_value,
-        system.as_deref(),
-        &matched_agent.model_id,
-        max_tokens,
-        &job_id.to_string(),
+        &enclave_key_id,
+        &sealed_request_b64,
+        &job_id,
     )
     .await
     {
@@ -490,38 +621,24 @@ async fn handle_x402_agent_request(
         }
     };
 
-    // Build OpenAI-compatible response
-    let prompt_tokens = req
-        .messages
-        .iter()
-        .map(|m| m.content.len() / 4)
-        .sum::<usize>() as u32;
-    let completion_tokens = (inference_result.text.len() / 4) as u32;
-
-    let completion = ChatCompletion {
-        id: format!("chatcmpl-{}", Uuid::new_v4()),
-        object: "chat.completion",
+    let completion = SealedChatCompletion {
+        id: format!("sealedcmpl-{}", inference_result.job_id),
+        object: "sealed.chat.completion",
         created: Utc::now().timestamp(),
         model: model_str.to_string(),
-        choices: vec![Choice {
-            index: 0,
-            message: ChoiceMessage {
-                role: "assistant",
-                content: inference_result.text,
-            },
-            finish_reason: "stop",
-        }],
-        usage: Usage {
-            prompt_tokens: inference_result.input_tokens.max(prompt_tokens),
-            completion_tokens: inference_result.output_tokens.max(completion_tokens),
-            total_tokens: inference_result.input_tokens.max(prompt_tokens)
-                + inference_result.output_tokens.max(completion_tokens),
+        ciphertext_b64: inference_result.ciphertext_b64,
+        is_final: inference_result.is_final,
+        ghola: SealedChatMetadata {
+            prompt_confidentiality: "sealed_inference",
+            payment_privacy_scope: "settlement_metadata_only",
+            enclave_key_id: enclave_key_id.clone(),
+            relay_sealed: true,
         },
     };
 
     // Settle payment in background (85/15 split)
-    let actual_input = inference_result.input_tokens.max(prompt_tokens) as i32;
-    let actual_output = inference_result.output_tokens.max(completion_tokens) as i32;
+    let actual_input = 500_i32;
+    let actual_output = max_tokens as i32;
     let latency = inference_result.latency_ms as i32;
     let price_in = matched_agent.price_per_1k_input;
     let price_out = matched_agent.price_per_1k_output;
@@ -544,9 +661,7 @@ async fn handle_x402_agent_request(
     });
 
     // Build PAYMENT-RESPONSE header
-    let actual_cost = ((actual_input as i64 * price_in + actual_output as i64 * price_out) / 1000)
-        .max(1000)
-        .min(verified.amount_usdc);
+    let actual_cost = verified.amount_usdc;
     let payment_response = x402_service::PaymentResponse {
         x402_version: 2,
         settled: true,
@@ -750,7 +865,15 @@ mod tests {
     fn canonical_models_advertise_private_local_and_agent_routes() {
         let models = canonical_models();
         let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
-        assert_eq!(ids, vec![GHOLA_PRIVATE_MODEL, GHOLA_LOCAL_MODEL, "agent:*"]);
+        assert_eq!(
+            ids,
+            vec![
+                GHOLA_PRIVATE_MODEL,
+                GHOLA_LOCAL_MODEL,
+                GHOLA_OPEN_MODEL,
+                "agent:*"
+            ]
+        );
 
         let payload = serde_json::to_value(ModelList {
             object: "list",
@@ -767,10 +890,24 @@ mod tests {
         assert_eq!(private["owned_by"], "ghola");
         assert_eq!(private["ghola"]["receipts"], true);
         assert_eq!(
+            private["ghola"]["prompt_confidentiality"],
+            "sealed_or_local_required"
+        );
+        assert_eq!(
+            private["ghola"]["payment_privacy_scope"],
+            "shielded_payment_available"
+        );
+        assert!(private["ghola"]["privacy_boundary"]
+            .as_str()
+            .unwrap()
+            .contains("Plaintext remote provider execution is disabled"));
+        assert_eq!(
             private["ghola"]["payment_rails"],
             Value::Array(vec![
-                Value::String("private_usdcx".to_string()),
-                Value::String("public_usdc".to_string()),
+                Value::String("private_shielded_auto".to_string()),
+                Value::String("aleo_usdcx_shielded".to_string()),
+                Value::String("railgun_evm_shielded".to_string()),
+                Value::String("solana_shielded_pool".to_string()),
             ])
         );
     }
@@ -783,6 +920,7 @@ mod tests {
         assert!(is_supported_public_model(None));
         assert!(is_supported_public_model(Some(GHOLA_PRIVATE_MODEL)));
         assert!(is_supported_public_model(Some(GHOLA_LOCAL_MODEL)));
+        assert!(is_supported_public_model(Some(GHOLA_OPEN_MODEL)));
         assert!(is_supported_public_model(Some("agent:research-bot")));
         assert!(!is_supported_public_model(Some("claude-sonnet-4")));
         assert_eq!(
@@ -792,6 +930,10 @@ mod tests {
         assert_eq!(
             response_model_name(Some(GHOLA_PRIVATE_MODEL), "claude-sonnet-4"),
             GHOLA_PRIVATE_MODEL
+        );
+        assert_eq!(
+            response_model_name(Some(GHOLA_OPEN_MODEL), "claude-sonnet-4"),
+            "claude-sonnet-4"
         );
         assert_eq!(
             response_model_name(Some("agent:research-bot"), "claude-sonnet-4"),
@@ -804,23 +946,43 @@ mod tests {
     }
 
     #[test]
-    fn privacy_mode_declares_private_payment_intent() {
-        let private = PrivacyApproval {
-            privacy_mode: Some("private".to_string()),
-            ..Default::default()
+    fn sealed_remote_request_requires_ciphertext_only_body() {
+        let missing = ChatCompletionRequest {
+            messages: vec![],
+            model: Some("agent:research-bot".to_string()),
+            stream: None,
+            max_tokens: None,
+            temperature: None,
+            enclave_key_id: None,
+            sealed_request_b64: None,
+            sealed_job_id: None,
+            approval: PrivacyApproval::default(),
         };
-        let strict = PrivacyApproval {
-            privacy_mode: Some(crate::privacy::STRICT_LOCAL.to_string()),
-            ..Default::default()
-        };
-        let open = PrivacyApproval {
-            privacy_mode: Some("open".to_string()),
-            ..Default::default()
-        };
+        assert!(require_sealed_remote_request(&missing)
+            .unwrap_err()
+            .to_string()
+            .contains("sealed_request_b64"));
 
-        assert!(request_declares_private_intent(&private));
-        assert!(request_declares_private_intent(&strict));
-        assert!(!request_declares_private_intent(&open));
-        assert!(!request_declares_private_intent(&PrivacyApproval::default()));
+        let plaintext = ChatCompletionRequest {
+            messages: vec![MessageInput {
+                role: "user".to_string(),
+                content: "leak".to_string(),
+            }],
+            enclave_key_id: Some("enclave".to_string()),
+            sealed_request_b64: Some("ciphertext".to_string()),
+            ..missing
+        };
+        assert!(require_sealed_remote_request(&plaintext)
+            .unwrap_err()
+            .to_string()
+            .contains("must not include plaintext messages"));
+
+        let sealed = ChatCompletionRequest {
+            messages: vec![],
+            enclave_key_id: Some("enclave".to_string()),
+            sealed_request_b64: Some("ciphertext".to_string()),
+            ..plaintext
+        };
+        require_sealed_remote_request(&sealed).unwrap();
     }
 }

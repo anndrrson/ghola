@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use serde_yaml::{Mapping, Value as YamlValue};
 use std::fs;
 use std::path::PathBuf;
 
@@ -34,6 +35,11 @@ pub fn auto_discover(port: u16) -> Vec<DiscoveryResult> {
             configured: configure_windsurf(port),
             reason: if windsurf_config_path().is_some() { None } else { Some("not installed") },
         },
+        DiscoveryResult {
+            name: "Hermes Agent",
+            configured: configure_hermes(),
+            reason: if hermes_config_path().is_some() { None } else { Some("not installed") },
+        },
     ]
 }
 
@@ -52,6 +58,9 @@ pub fn unregister_all() -> Vec<String> {
     }
     if unconfigure_windsurf() {
         removed.push("Windsurf".to_string());
+    }
+    if unconfigure_hermes() {
+        removed.push("Hermes Agent (~/.hermes/config.yaml)".to_string());
     }
 
     removed
@@ -95,6 +104,19 @@ fn windsurf_config_path() -> Option<PathBuf> {
     dirs::home_dir()
         .map(|h| h.join(".codeium").join("windsurf").join("mcp_config.json"))
         .filter(|p| p.parent().map(|d| d.exists()).unwrap_or(false))
+}
+
+fn hermes_config_path() -> Option<PathBuf> {
+    dirs::home_dir()
+        .map(|h| h.join(".hermes").join("config.yaml"))
+        .filter(|p| p.parent().map(|d| d.exists()).unwrap_or(false))
+}
+
+fn said_command() -> String {
+    std::env::current_exe()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "said".to_string())
 }
 
 fn configure_claude_code(port: u16) -> bool {
@@ -264,6 +286,60 @@ fn configure_windsurf(port: u16) -> bool {
     .is_ok()
 }
 
+fn configure_hermes() -> bool {
+    let Some(config_path) = hermes_config_path() else {
+        return false;
+    };
+
+    let mut config: YamlValue = if config_path.exists() {
+        match fs::read_to_string(&config_path) {
+            Ok(s) => serde_yaml::from_str(&s).unwrap_or(YamlValue::Mapping(Mapping::new())),
+            Err(_) => return false,
+        }
+    } else {
+        YamlValue::Mapping(Mapping::new())
+    };
+
+    configure_hermes_value(&mut config, &said_command());
+
+    fs::write(
+        &config_path,
+        serde_yaml::to_string(&config).unwrap_or_default(),
+    )
+    .is_ok()
+}
+
+fn configure_hermes_value(config: &mut YamlValue, command: &str) {
+    if !matches!(config, YamlValue::Mapping(_)) {
+        *config = YamlValue::Mapping(Mapping::new());
+    }
+
+    let root = config.as_mapping_mut().unwrap();
+    let servers_key = YamlValue::String("mcp_servers".to_string());
+    let servers = root
+        .entry(servers_key)
+        .or_insert_with(|| YamlValue::Mapping(Mapping::new()));
+    if !matches!(servers, YamlValue::Mapping(_)) {
+        *servers = YamlValue::Mapping(Mapping::new());
+    }
+
+    let mut ghola = Mapping::new();
+    ghola.insert(
+        YamlValue::String("command".to_string()),
+        YamlValue::String(command.to_string()),
+    );
+    ghola.insert(
+        YamlValue::String("args".to_string()),
+        YamlValue::Sequence(vec![YamlValue::String("serve".to_string())]),
+    );
+    ghola.insert(YamlValue::String("enabled".to_string()), YamlValue::Bool(true));
+
+    servers
+        .as_mapping_mut()
+        .unwrap()
+        .insert(YamlValue::String("ghola".to_string()), YamlValue::Mapping(ghola));
+}
+
 fn unconfigure_claude_desktop() -> bool {
     let Some(config_path) = claude_desktop_config_path() else {
         return false;
@@ -352,4 +428,95 @@ fn unconfigure_cursor() -> bool {
         }
     }
     false
+}
+
+fn unconfigure_hermes() -> bool {
+    let Some(config_path) = hermes_config_path() else {
+        return false;
+    };
+    if !config_path.exists() {
+        return false;
+    }
+
+    let Ok(s) = fs::read_to_string(&config_path) else {
+        return false;
+    };
+    let Ok(mut config) = serde_yaml::from_str::<YamlValue>(&s) else {
+        return false;
+    };
+
+    let Some(servers) = config
+        .as_mapping_mut()
+        .and_then(|root| root.get_mut(&YamlValue::String("mcp_servers".to_string())))
+        .and_then(|servers| servers.as_mapping_mut())
+    else {
+        return false;
+    };
+
+    if servers
+        .remove(&YamlValue::String("ghola".to_string()))
+        .is_none()
+    {
+        return false;
+    }
+
+    fs::write(
+        &config_path,
+        serde_yaml::to_string(&config).unwrap_or_default(),
+    )
+    .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hermes_config_preserves_existing_servers_and_adds_ghola_stdio() {
+        let mut config: YamlValue = serde_yaml::from_str(
+            r#"
+model:
+  provider: openai
+mcp_servers:
+  filesystem:
+    command: npx
+    args:
+      - -y
+      - "@modelcontextprotocol/server-filesystem"
+"#,
+        )
+        .unwrap();
+
+        configure_hermes_value(&mut config, "/usr/local/bin/ghola");
+
+        let root = config.as_mapping().unwrap();
+        let servers = root
+            .get(&YamlValue::String("mcp_servers".to_string()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert!(servers.contains_key(&YamlValue::String("filesystem".to_string())));
+
+        let ghola = servers
+            .get(&YamlValue::String("ghola".to_string()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            ghola
+                .get(&YamlValue::String("command".to_string()))
+                .unwrap(),
+            &YamlValue::String("/usr/local/bin/ghola".to_string())
+        );
+        assert_eq!(
+            ghola.get(&YamlValue::String("args".to_string())).unwrap(),
+            &YamlValue::Sequence(vec![YamlValue::String("serve".to_string())])
+        );
+        assert_eq!(
+            ghola
+                .get(&YamlValue::String("enabled".to_string()))
+                .unwrap(),
+            &YamlValue::Bool(true)
+        );
+    }
 }

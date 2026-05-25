@@ -97,12 +97,11 @@ pub async fn request_badge(
         .map_err(|_| AppError::Internal("Invalid user ID in token".into()))?;
 
     // Check that user has a Stripe customer (i.e. has purchased something)
-    let has_billing: Option<(Option<String>,)> = sqlx::query_as(
-        "SELECT stripe_customer_id FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let has_billing: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT stripe_customer_id FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     let has_stripe = has_billing
         .and_then(|(c,)| c)
@@ -143,7 +142,9 @@ pub async fn request_badge(
 
     Ok(Json(BadgeRequestResponse {
         status: "pending".to_string(),
-        message: "Your verification request has been submitted. We'll review within 5 business days.".to_string(),
+        message:
+            "Your verification request has been submitted. We'll review within 5 business days."
+                .to_string(),
     }))
 }
 

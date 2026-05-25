@@ -43,11 +43,17 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod agent_delegation;
 pub mod envelope;
 pub mod local;
 pub mod stamp;
 pub mod turnkey;
 
+pub use agent_delegation::{
+    AgentDelegationClient, AgentDelegationError, AgentStatus, AgentSubOrg, DenyReason,
+    MerchantAllowlist, PolicyEvaluation, SpendRequest, SpendingPolicy, StubAgentDelegationClient,
+    TimeWindow,
+};
 pub use local::LocalVault;
 pub use turnkey::TurnkeyVault;
 

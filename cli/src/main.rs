@@ -13,7 +13,7 @@ use said_types::{
 };
 
 #[derive(Parser)]
-#[command(name = "said", about = "Sovereign AI Identity — portable AI data wallet")]
+#[command(about = "Sovereign AI Identity — portable AI data wallet")]
 struct Cli {
     /// Custom wallet directory (default: ~/.said)
     #[arg(long, global = true)]

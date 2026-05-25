@@ -190,11 +190,7 @@ fn extract_client_ip(request: &Request) -> Option<std::net::IpAddr> {
         .headers()
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| {
-            s.split(',')
-                .rev()
-                .find_map(|part| part.trim().parse().ok())
-        })
+        .and_then(|s| s.split(',').rev().find_map(|part| part.trim().parse().ok()))
         // Fallback: ConnectInfo (direct connection)
         .or_else(|| {
             request
@@ -221,10 +217,8 @@ mod tests {
 
     #[test]
     fn client_ip_uses_rightmost_valid_forwarded_address() {
-        let request = request_with_headers(&[(
-            "x-forwarded-for",
-            "203.0.113.10, not-an-ip, 198.51.100.25",
-        )]);
+        let request =
+            request_with_headers(&[("x-forwarded-for", "203.0.113.10, not-an-ip, 198.51.100.25")]);
 
         assert_eq!(
             extract_client_ip(&request),

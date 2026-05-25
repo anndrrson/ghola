@@ -56,11 +56,10 @@ async fn check_endpoint(
 // ── Inference Node Health Checks ──
 
 async fn check_nodes(state: &AppState) -> anyhow::Result<()> {
-    let nodes: Vec<(uuid::Uuid, String)> = sqlx::query_as(
-        "SELECT id, endpoint_url FROM inference_nodes WHERE status != 'offline'",
-    )
-    .fetch_all(&state.db)
-    .await?;
+    let nodes: Vec<(uuid::Uuid, String)> =
+        sqlx::query_as("SELECT id, endpoint_url FROM inference_nodes WHERE status != 'offline'")
+            .fetch_all(&state.db)
+            .await?;
 
     for (node_id, endpoint_url) in nodes {
         let url = format!("{}/v1/models", endpoint_url.trim_end_matches('/'));
@@ -88,8 +87,7 @@ async fn check_nodes(state: &AppState) -> anyhow::Result<()> {
             .execute(&state.db)
             .await?;
         } else {
-            record_node_failure(state, node_id, error_msg.as_deref().unwrap_or("unknown"))
-                .await?;
+            record_node_failure(state, node_id, error_msg.as_deref().unwrap_or("unknown")).await?;
         }
     }
 
@@ -149,9 +147,8 @@ async fn check_services(state: &AppState) -> anyhow::Result<()> {
     .await?;
 
     for (service_id, base_url, health_check_url) in services {
-        let url = health_check_url.unwrap_or_else(|| {
-            format!("{}/health", base_url.trim_end_matches('/'))
-        });
+        let url = health_check_url
+            .unwrap_or_else(|| format!("{}/health", base_url.trim_end_matches('/')));
 
         let (success, latency_ms, status_code, error_msg) =
             check_endpoint(&state.http_client, &url).await;

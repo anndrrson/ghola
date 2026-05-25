@@ -285,6 +285,7 @@ fn test_config() -> RelayConfig {
         max_body_size_bytes: 1_048_576,
         max_sealed_body_size_bytes: 4 * 1_048_576,
         cors_allowed_origins: vec!["https://ghola.xyz".to_string()],
+        thumper_cloud_base_url: "https://thumper-cloud.example".to_string(),
     }
 }
 
@@ -296,6 +297,71 @@ fn test_config_prod() -> RelayConfig {
     cfg.dev_mode = false;
     cfg.cors_allowed_origins = vec!["https://ghola.xyz".to_string()];
     cfg
+}
+
+#[derive(Debug)]
+struct CapturedHttpRequest {
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+async fn spawn_one_shot_x402_upstream() -> (String, tokio::task::JoinHandle<CapturedHttpRequest>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock upstream");
+    let addr = listener.local_addr().expect("mock upstream addr");
+    let handle = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept upstream request");
+        let mut buf = Vec::new();
+        let header_end = loop {
+            let mut chunk = [0u8; 1024];
+            let n = socket
+                .read(&mut chunk)
+                .await
+                .expect("read upstream request");
+            assert!(n > 0, "upstream connection closed before headers");
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+
+        let header_text = String::from_utf8_lossy(&buf[..header_end]);
+        let headers: Vec<(String, String)> = header_text
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            })
+            .collect();
+        let content_length = headers
+            .iter()
+            .find(|(name, _)| name == "content-length")
+            .and_then(|(_, value)| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut body = buf[header_end..].to_vec();
+        while body.len() < content_length {
+            let mut chunk = vec![0u8; content_length - body.len()];
+            let n = socket.read(&mut chunk).await.expect("read upstream body");
+            assert!(n > 0, "upstream connection closed before body");
+            body.extend_from_slice(&chunk[..n]);
+        }
+        body.truncate(content_length);
+
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\npayment-response: settled\r\nx-payment-response: settled\r\nset-cookie: sid=leak\r\nx-request-id: upstream-req\r\ncontent-length: 11\r\n\r\n{\"ok\":true}",
+            )
+            .await
+            .expect("write upstream response");
+
+        CapturedHttpRequest { headers, body }
+    });
+
+    (format!("http://{addr}"), handle)
 }
 
 #[test]
@@ -690,6 +756,125 @@ async fn ready_private_reports_capacity_ready_with_attested_provider() {
         .is_empty());
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn ohttp_x402_gateway_proxies_only_payment_allowlisted_headers() {
+    let (upstream_base, upstream_handle) = spawn_one_shot_x402_upstream().await;
+    let mut cfg = test_config();
+    cfg.ohttp_key_secret_hex =
+        Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string());
+    cfg.thumper_cloud_base_url = upstream_base;
+    let kp = cfg.ohttp_keypair().expect("ohttp keypair");
+    let state = AppState::new(cfg);
+
+    let inner = crate::ohttp::BhttpRequest {
+        method: "POST".to_string(),
+        scheme: "https".to_string(),
+        authority: "ghola.xyz".to_string(),
+        path: "/v1/chat/completions".to_string(),
+        headers: vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("X402-Payment".to_string(), "paid".to_string()),
+            ("Payment-Signature".to_string(), "paid".to_string()),
+            (
+                "X-Ghola-Payment-Rail".to_string(),
+                "railgun_evm_shielded".to_string(),
+            ),
+            ("Cookie".to_string(), "sid=session".to_string()),
+            ("Referer".to_string(), "https://ghola.xyz/chat".to_string()),
+            ("X-Forwarded-For".to_string(), "203.0.113.9".to_string()),
+            ("X-Request-Id".to_string(), "client-req".to_string()),
+            ("X-User-Id".to_string(), "user-123".to_string()),
+            ("X-Wallet-Address".to_string(), "0xabc".to_string()),
+            ("X-Viewing-Key".to_string(), "view-secret".to_string()),
+        ],
+        body: br#"{"model":"agent:research-bot","messages":[]}"#.to_vec(),
+    }
+    .encode();
+    let (capsule, exporter_secret) =
+        crate::ohttp::encapsulate_request_for_test(&kp.public, kp.key_id, &inner)
+            .expect("encapsulate ohttp request");
+    let mut enc = [0u8; 32];
+    enc.copy_from_slice(&capsule[7..39]);
+
+    use axum::extract::State;
+    use axum::http::{HeaderMap, HeaderValue};
+    use axum::response::IntoResponse;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("message/ohttp-req"),
+    );
+    let response =
+        crate::handlers::ohttp_gateway(State(state), headers, axum::body::Bytes::from(capsule))
+            .await
+            .into_response();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("message/ohttp-res")
+    );
+    let response_body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read ohttp response");
+    let bhttp_response_bytes =
+        crate::ohttp::decapsulate_response_for_test(&exporter_secret, &enc, &response_body)
+            .expect("decapsulate ohttp response");
+    let bhttp_response =
+        crate::ohttp::BhttpResponse::decode(&bhttp_response_bytes).expect("decode bhttp");
+    assert_eq!(bhttp_response.status, 200);
+    assert_eq!(bhttp_response.body, br#"{"ok":true}"#);
+
+    let response_headers = bhttp_response.headers;
+    assert!(response_headers
+        .iter()
+        .any(|(name, value)| name == "payment-response" && value == "settled"));
+    assert!(response_headers
+        .iter()
+        .any(|(name, value)| name == "x-payment-response" && value == "settled"));
+    assert!(!response_headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("set-cookie")));
+    assert!(!response_headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("x-request-id")));
+
+    let captured = upstream_handle.await.expect("mock upstream task");
+    assert_eq!(
+        captured.body,
+        br#"{"model":"agent:research-bot","messages":[]}"#
+    );
+    let captured_headers = captured.headers;
+    assert!(captured_headers
+        .iter()
+        .any(|(name, value)| name == "content-type" && value == "application/json"));
+    assert!(captured_headers
+        .iter()
+        .any(|(name, value)| name == "x402-payment" && value == "paid"));
+    assert!(captured_headers
+        .iter()
+        .any(|(name, value)| name == "payment-signature" && value == "paid"));
+    assert!(captured_headers
+        .iter()
+        .any(|(name, value)| name == "x-ghola-payment-rail" && value == "railgun_evm_shielded"));
+    for forbidden in [
+        "cookie",
+        "referer",
+        "x-forwarded-for",
+        "x-request-id",
+        "x-user-id",
+        "x-wallet-address",
+        "x-viewing-key",
+    ] {
+        assert!(
+            !captured_headers.iter().any(|(name, _)| name == forbidden),
+            "forbidden header forwarded to upstream: {forbidden}"
+        );
+    }
+}
+
 // -- H100 CC + TDX dispatch tests ----------------------------------
 //
 // These cover the production path: handle_provider_attest dispatches
@@ -907,6 +1092,8 @@ async fn health_includes_private_readiness_fields() {
     assert!(json.get("version").is_some());
     assert!(json.get("uptime_secs").is_some());
     assert!(json.get("ohttp_enabled").is_some());
+    assert!(json.get("ohttp_x402_gateway_enabled").is_some());
+    assert!(json.get("ohttp_x402_upstream_configured").is_some());
     assert!(json.get("did_set_bootstrapped").is_some());
     assert!(json.get("did_set_fresh").is_some());
     assert!(json.get("private_ready").is_some());

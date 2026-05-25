@@ -16,10 +16,7 @@ use crate::state::AppState;
 // ---------------------------------------------------------------------------
 
 /// Extract the profile_id for the authenticated user, returning None if no profile.
-async fn get_profile_id(
-    db: &sqlx::PgPool,
-    user_id: Uuid,
-) -> AppResult<Option<Uuid>> {
+async fn get_profile_id(db: &sqlx::PgPool, user_id: Uuid) -> AppResult<Option<Uuid>> {
     let row: Option<(Uuid,)> =
         sqlx::query_as("SELECT id FROM business_profiles WHERE user_id = $1")
             .bind(user_id)

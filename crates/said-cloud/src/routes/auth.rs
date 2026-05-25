@@ -4,8 +4,8 @@ use axum::extract::State;
 use axum::Json;
 use chrono::Utc;
 use ed25519_dalek::SigningKey;
-use rand::RngCore;
 use rand::rngs::OsRng;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -50,7 +50,9 @@ pub struct RefreshRequest {
 /// Decode `exp` from a JWT we just minted, without verifying signature.
 /// Best-effort — failure simply omits the field from the response.
 fn jwt_exp(token: &str, secret: &str) -> Option<i64> {
-    crate::auth::validate_jwt(token, secret).ok().map(|c| c.exp as i64)
+    crate::auth::validate_jwt(token, secret)
+        .ok()
+        .map(|c| c.exp as i64)
 }
 
 /// Attach a refresh token + access exp to an AuthResponse.
@@ -113,7 +115,10 @@ pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterRequest>,
 ) -> AppResult<Json<AuthResponse>> {
-    if let Err(retry_after) = state.rate_limiter.check(&format!("register:{}", req.email), 5) {
+    if let Err(retry_after) = state
+        .rate_limiter
+        .check(&format!("register:{}", req.email), 5)
+    {
         return Err(AppError::TooManyRequests(retry_after));
     }
 
@@ -131,11 +136,10 @@ pub async fn register(
     }
 
     // Check if email already exists
-    let existing: Option<(Uuid,)> =
-        sqlx::query_as("SELECT id FROM users WHERE email = $1")
-            .bind(&req.email)
-            .fetch_optional(&state.db)
-            .await?;
+    let existing: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM users WHERE email = $1")
+        .bind(&req.email)
+        .fetch_optional(&state.db)
+        .await?;
 
     if existing.is_some() {
         return Err(AppError::Conflict(
@@ -155,13 +159,12 @@ pub async fn register(
     let did = format!("did:key:z{}", bs58::encode(&multi).into_string());
 
     // Create user
-    let user_id: (Uuid,) = sqlx::query_as(
-        "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id",
-    )
-    .bind(&req.email)
-    .bind(&password_hash)
-    .fetch_one(&state.db)
-    .await?;
+    let user_id: (Uuid,) =
+        sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id")
+            .bind(&req.email)
+            .bind(&password_hash)
+            .fetch_one(&state.db)
+            .await?;
 
     let user_id = user_id.0;
 
@@ -197,16 +200,20 @@ pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
 ) -> AppResult<Json<AuthResponse>> {
-    if let Err(retry_after) = state.rate_limiter.check(&format!("login:{}", req.email), 10) {
+    if let Err(retry_after) = state
+        .rate_limiter
+        .check(&format!("login:{}", req.email), 10)
+    {
         return Err(AppError::TooManyRequests(retry_after));
     }
 
     // Look up user
-    let user: Option<crate::db::DbUser> =
-        sqlx::query_as("SELECT id, email, password_hash, account_type, created_at FROM users WHERE email = $1")
-            .bind(&req.email)
-            .fetch_optional(&state.db)
-            .await?;
+    let user: Option<crate::db::DbUser> = sqlx::query_as(
+        "SELECT id, email, password_hash, account_type, created_at FROM users WHERE email = $1",
+    )
+    .bind(&req.email)
+    .fetch_optional(&state.db)
+    .await?;
 
     let user = user.ok_or_else(|| AppError::Unauthorized("Invalid email or password".into()))?;
 
@@ -289,22 +296,21 @@ pub async fn siws_sign_in(
         return Err(AppError::Unauthorized("SIWS challenge expired".into()));
     }
     if !req.challenge.contains(&format!("Nonce: {}", req.nonce)) {
-        return Err(AppError::Unauthorized("SIWS challenge nonce mismatch".into()));
+        return Err(AppError::Unauthorized(
+            "SIWS challenge nonce mismatch".into(),
+        ));
     }
 
-    let sig_bytes = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        &req.signature,
-    )
-    .map_err(|e| AppError::Unauthorized(format!("invalid SIWS signature encoding: {e}")))?;
+    let sig_bytes =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &req.signature)
+            .map_err(|e| AppError::Unauthorized(format!("invalid SIWS signature encoding: {e}")))?;
     verify_siws(&req.wallet_pubkey, req.challenge.as_bytes(), &sig_bytes)?;
 
-    let existing: Option<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, email FROM users WHERE siws_pubkey = $1",
-    )
-    .bind(&req.wallet_pubkey)
-    .fetch_optional(&state.db)
-    .await?;
+    let existing: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT id, email FROM users WHERE siws_pubkey = $1")
+            .bind(&req.wallet_pubkey)
+            .fetch_optional(&state.db)
+            .await?;
 
     if let Some((user_id, email)) = existing {
         let did = lookup_did_for_user(&state.db, user_id).await?;
@@ -326,7 +332,9 @@ pub async fn siws_sign_in(
     let user_id = new_user.0;
 
     let token = issue_jwt(&user_id, &synthetic_email, &state.config.jwt_secret)?;
-    Ok(Json(attach_refresh(&state, token, user_id, String::new()).await))
+    Ok(Json(
+        attach_refresh(&state, token, user_id, String::new()).await,
+    ))
 }
 
 // ── Google Sign-In (mobile / Seeker) ────────────────────────────────────────
@@ -353,13 +361,9 @@ pub async fn google_sign_in(
     State(state): State<Arc<AppState>>,
     Json(req): Json<GoogleSignInRequest>,
 ) -> AppResult<Json<AuthResponse>> {
-    let google_client_id = state
-        .config
-        .google_client_id
-        .as_deref()
-        .ok_or_else(|| {
-            AppError::Internal("Google sign-in not configured (GOOGLE_CLIENT_ID missing)".into())
-        })?;
+    let google_client_id = state.config.google_client_id.as_deref().ok_or_else(|| {
+        AppError::Internal("Google sign-in not configured (GOOGLE_CLIENT_ID missing)".into())
+    })?;
 
     let payload = verify_google_id_token(&req.id_token, google_client_id).await?;
 
@@ -371,11 +375,10 @@ pub async fn google_sign_in(
     }
 
     // 1. Returning user — already linked Google.
-    let existing: Option<(Uuid,)> =
-        sqlx::query_as("SELECT id FROM users WHERE google_id = $1")
-            .bind(&payload.sub)
-            .fetch_optional(&state.db)
-            .await?;
+    let existing: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM users WHERE google_id = $1")
+        .bind(&payload.sub)
+        .fetch_optional(&state.db)
+        .await?;
 
     if let Some((user_id,)) = existing {
         // Best-effort profile update — ignore unique-constraint races on email.
@@ -394,11 +397,10 @@ pub async fn google_sign_in(
     }
 
     // 2. Email already in DB from another auth method — link Google.
-    let by_email: Option<(Uuid,)> =
-        sqlx::query_as("SELECT id FROM users WHERE email = $1")
-            .bind(&payload.email)
-            .fetch_optional(&state.db)
-            .await?;
+    let by_email: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM users WHERE email = $1")
+        .bind(&payload.email)
+        .fetch_optional(&state.db)
+        .await?;
 
     if let Some((user_id,)) = by_email {
         sqlx::query(
@@ -435,7 +437,9 @@ pub async fn google_sign_in(
     let user_id = new_user.0;
     let token = issue_jwt(&user_id, &payload.email, &state.config.jwt_secret)?;
 
-    Ok(Json(attach_refresh(&state, token, user_id, String::new()).await))
+    Ok(Json(
+        attach_refresh(&state, token, user_id, String::new()).await,
+    ))
 }
 
 /// Look up a user's DID from `business_profiles` or `public_profiles`.
@@ -471,11 +475,10 @@ pub async fn refresh_token(
         let (new_refresh, new_refresh_exp, user_id) =
             crate::auth::consume_refresh_token(&state.db, rt).await?;
 
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT email FROM users WHERE id = $1")
-                .bind(user_id)
-                .fetch_optional(&state.db)
-                .await?;
+        let row: Option<(String,)> = sqlx::query_as("SELECT email FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await?;
         let email = row.map(|r| r.0).unwrap_or_default();
         let did = lookup_did_for_user(&state.db, user_id).await?;
         let access = issue_jwt(&user_id, &email, &state.config.jwt_secret)?;

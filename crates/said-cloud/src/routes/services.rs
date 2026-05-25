@@ -256,15 +256,21 @@ pub async fn register_service(
 
     // Validate tags count
     if req.tags.as_ref().map_or(false, |t| t.len() > 20) {
-        return Err(AppError::BadRequest(
-            "Maximum 20 tags allowed".into(),
-        ));
+        return Err(AppError::BadRequest("Maximum 20 tags allowed".into()));
     }
 
     // Validate category
     let valid_categories = [
-        "general", "inference", "data", "commerce", "finance",
-        "logistics", "communication", "search", "media", "developer-tools",
+        "general",
+        "inference",
+        "data",
+        "commerce",
+        "finance",
+        "logistics",
+        "communication",
+        "search",
+        "media",
+        "developer-tools",
     ];
     let category = req.category.as_deref().unwrap_or("general");
     if !valid_categories.contains(&category) {

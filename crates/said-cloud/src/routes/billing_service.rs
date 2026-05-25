@@ -100,12 +100,11 @@ fn sha256_hex(input: &str) -> String {
 async fn validate_service_key(state: &AppState, key: &str) -> Result<Uuid, AppError> {
     let key_hash = sha256_hex(key);
 
-    let row: Option<(Uuid, bool)> = sqlx::query_as(
-        "SELECT service_id, active FROM service_api_keys WHERE key_hash = $1",
-    )
-    .bind(&key_hash)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(Uuid, bool)> =
+        sqlx::query_as("SELECT service_id, active FROM service_api_keys WHERE key_hash = $1")
+            .bind(&key_hash)
+            .fetch_optional(&state.db)
+            .await?;
 
     match row {
         Some((service_id, true)) => {
@@ -136,12 +135,11 @@ pub async fn subscribe_to_service(
         .map_err(|_| AppError::Unauthorized("Invalid token".into()))?;
 
     // Verify user owns the agent wallet
-    let wallet_owner: Option<Uuid> = sqlx::query_scalar(
-        "SELECT user_id FROM agent_wallets WHERE id = $1 AND active = true",
-    )
-    .bind(req.agent_wallet_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let wallet_owner: Option<Uuid> =
+        sqlx::query_scalar("SELECT user_id FROM agent_wallets WHERE id = $1 AND active = true")
+            .bind(req.agent_wallet_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     match wallet_owner {
         None => return Err(AppError::NotFound("Agent wallet not found".into())),
@@ -152,12 +150,11 @@ pub async fn subscribe_to_service(
     }
 
     // Verify service exists and is active
-    let service_status: Option<String> = sqlx::query_scalar(
-        "SELECT status::text FROM service_listings WHERE id = $1",
-    )
-    .bind(service_id)
-    .fetch_optional(&state.db)
-    .await?;
+    let service_status: Option<String> =
+        sqlx::query_scalar("SELECT status::text FROM service_listings WHERE id = $1")
+            .bind(service_id)
+            .fetch_optional(&state.db)
+            .await?;
 
     match service_status.as_deref() {
         None => return Err(AppError::NotFound("Service not found".into())),
@@ -271,13 +268,12 @@ pub async fn record_usage(
         amt
     } else {
         // Look up service pricing
-        let price: i64 = sqlx::query_scalar(
-            "SELECT price_micro_usdc FROM service_listings WHERE id = $1",
-        )
-        .bind(service_id)
-        .fetch_optional(&state.db)
-        .await?
-        .unwrap_or(0);
+        let price: i64 =
+            sqlx::query_scalar("SELECT price_micro_usdc FROM service_listings WHERE id = $1")
+                .bind(service_id)
+                .fetch_optional(&state.db)
+                .await?
+                .unwrap_or(0);
 
         price * req.request_count.unwrap_or(1) as i64
     };
@@ -325,7 +321,8 @@ pub async fn record_usage(
         // Check daily budget
         if let Some(budget) = daily_budget {
             // Approximate daily spend from today's requests * avg price
-            let today_spent = effective_requests as i64 * (amount / req.request_count.unwrap_or(1) as i64).max(1);
+            let today_spent =
+                effective_requests as i64 * (amount / req.request_count.unwrap_or(1) as i64).max(1);
             if today_spent + amount > *budget {
                 return Err(AppError::BadRequest(
                     "Agent daily budget exceeded for this service".into(),
@@ -376,13 +373,11 @@ pub async fn record_usage(
     .await?;
 
     // Update service total_requests
-    sqlx::query(
-        "UPDATE service_listings SET total_requests = total_requests + $1 WHERE id = $2",
-    )
-    .bind(req.request_count.unwrap_or(1) as i64)
-    .bind(service_id)
-    .execute(&state.db)
-    .await?;
+    sqlx::query("UPDATE service_listings SET total_requests = total_requests + $1 WHERE id = $2")
+        .bind(req.request_count.unwrap_or(1) as i64)
+        .bind(service_id)
+        .execute(&state.db)
+        .await?;
 
     Ok((
         StatusCode::CREATED,
@@ -435,9 +430,8 @@ pub async fn usage_summary(
         .await?;
 
     // Top agents by spend
-    let top_agents: Vec<serde_json::Value> = sqlx::query_scalar(
-        &format!(
-            r#"SELECT json_build_object(
+    let top_agents: Vec<serde_json::Value> = sqlx::query_scalar(&format!(
+        r#"SELECT json_build_object(
                 'agent_did', agent_did,
                 'total_requests', SUM(request_count),
                 'total_amount', SUM(amount_micro_usdc)
@@ -447,8 +441,7 @@ pub async fn usage_summary(
             GROUP BY agent_did
             ORDER BY SUM(amount_micro_usdc) DESC
             LIMIT 10"#,
-        ),
-    )
+    ))
     .bind(service_id)
     .fetch_all(&state.db)
     .await?;
@@ -533,7 +526,7 @@ pub async fn settlement_loop(state: Arc<AppState>) {
         // Collect tenant settlement configs.
         #[derive(sqlx::FromRow)]
         struct TenantCfg {
-            id: Option<Uuid>,  // NULL = "global" (no tenant)
+            id: Option<Uuid>, // NULL = "global" (no tenant)
             settlement_interval_secs: i32,
             fallback_rpc_urls: Vec<String>,
         }
@@ -676,13 +669,12 @@ async fn process_settlements(
         let merchant_share = total_amount - platform_share;
 
         // Fetch merchant's receive_address from service info (owner_did already in loop var)
-        let receive_address: Option<String> = sqlx::query_scalar(
-            "SELECT receive_address FROM service_listings WHERE id = $1",
-        )
-        .bind(service_id)
-        .fetch_optional(&state.db)
-        .await?
-        .flatten();
+        let receive_address: Option<String> =
+            sqlx::query_scalar("SELECT receive_address FROM service_listings WHERE id = $1")
+                .bind(service_id)
+                .fetch_optional(&state.db)
+                .await?
+                .flatten();
 
         // ── Execute on-chain USDC transfer to merchant ──
         let tx_signature: Option<String> = if let (Some(client), Some(ref addr)) =
@@ -723,9 +715,16 @@ async fn process_settlements(
             None
         };
 
-        let batch_status = if tx_signature.is_some() { "completed" } else { "pending" };
-        let settled_at: Option<chrono::DateTime<chrono::Utc>> =
-            if tx_signature.is_some() { Some(now) } else { None };
+        let batch_status = if tx_signature.is_some() {
+            "completed"
+        } else {
+            "pending"
+        };
+        let settled_at: Option<chrono::DateTime<chrono::Utc>> = if tx_signature.is_some() {
+            Some(now)
+        } else {
+            None
+        };
 
         // Upsert settlement batch
         sqlx::query(

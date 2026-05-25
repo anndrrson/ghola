@@ -307,6 +307,14 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::billing::private_balance_status),
         )
         .route(
+            "/api/billing/private-agent/compute/reserve",
+            post(routes::billing::reserve_private_agent_compute),
+        )
+        .route(
+            "/api/billing/private-agent/compute/release",
+            post(routes::billing::release_private_agent_compute),
+        )
+        .route(
             "/api/billing/webhook",
             post(routes::billing::billing_webhook),
         )
@@ -320,6 +328,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/llm/providers", get(routes::llm::list_providers))
         // Chat (SSE streaming)
         .route("/api/chat", post(routes::chat::chat))
+        .route("/api/chat/e2e", post(routes::chat::chat_e2e))
         // Accounts (Gmail OAuth)
         .route(
             "/api/accounts/authorize/gmail",
@@ -606,8 +615,7 @@ async fn readiness_snapshot(state: &AppState) -> ReadinessSnapshot {
         &mut reason_codes,
         &mut degraded,
         "receipts",
-        probe_receipts_health(receipts_base_url())
-        .await,
+        probe_receipts_health(receipts_base_url()).await,
         true,
         "receipts_readiness_failed",
     );
@@ -854,6 +862,8 @@ async fn health_providers(State(state): State<AppState>) -> Json<serde_json::Val
 
 async fn health_payments() -> Json<serde_json::Value> {
     let shielded = services::x402_service::shielded_stablecoin_runtime_status();
+    let solana_shielded = services::x402_service::solana_shielded_pool_runtime_status();
+    let railgun = services::x402_service::railgun_evm_runtime_status();
     Json(json!({
         "default_rail": services::x402_service::SOLANA_PUBLIC_USDC_RAIL,
         "rails": {
@@ -879,6 +889,8 @@ async fn health_payments() -> Json<serde_json::Value> {
                 "privacy_disclosure": services::x402_service::PUBLIC_STABLECOIN_DISCLOSURE
             },
             "aleo_usdcx_shielded": shielded.clone(),
+            "solana_shielded_pool": solana_shielded,
+            "railgun_evm_shielded": railgun,
             "shielded_stablecoin": shielded
         }
     }))
@@ -904,6 +916,21 @@ async fn health_privacy() -> Json<serde_json::Value> {
         "agent_plan_approval_enabled": true,
         "swarm_execution_approval_enabled": true,
         "messaging_block_report_enabled": true,
+        "private_payment_request_hash_binding_enabled": true,
+        "railgun_relay_only_required": true,
+        "private_payment_public_fallback_allowed": false,
+        "private_payment_header_identity_minimized": true,
+        "private_payment_header_policy": {
+            "requires_request_hash": true,
+            "requires_railgun_relay_only": true,
+            "disallows_user_id": true,
+            "disallows_wallet_seed_or_viewing_key": true,
+            "replay_protection": "rail_scoped_settlement_reference"
+        },
+        "remote_agent_prompt_confidentiality": "sealed_or_local_required",
+        "payment_privacy_scope": "settlement_metadata_only",
+        "sealed_compute_required_for_prompt_confidentiality": true,
+        "remote_agent_compute_disclosure": services::x402_service::REMOTE_AGENT_COMPUTE_DISCLOSURE,
         "email_list_redaction_enabled": true,
         "public_wallet_recipient_hashing_enabled": true,
         "call_transcript_retention_default": "redacted",
@@ -964,6 +991,7 @@ mod privacy_log_safety_tests {
             stripe_secret_key: None,
             stripe_webhook_secret: None,
             stripe_price_pro: None,
+            stripe_price_private_agent: None,
             stripe_price_unlimited: None,
             base_url: "http://localhost:3000".to_string(),
             encryption_key: [7u8; 32],
@@ -1004,6 +1032,46 @@ mod privacy_log_safety_tests {
         assert!(body.get("checks").is_some());
         assert_eq!(body["degraded"], false);
         assert!(body.get("timestamp").is_some());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn privacy_health_advertises_private_payment_guardrails() {
+        let Json(body) = health_privacy().await;
+
+        assert_eq!(body["private_payment_request_hash_binding_enabled"], true);
+        assert_eq!(body["railgun_relay_only_required"], true);
+        assert_eq!(body["private_payment_public_fallback_allowed"], false);
+        assert_eq!(body["private_payment_header_identity_minimized"], true);
+        assert_eq!(
+            body["private_payment_header_policy"]["requires_request_hash"],
+            true
+        );
+        assert_eq!(
+            body["private_payment_header_policy"]["requires_railgun_relay_only"],
+            true
+        );
+        assert_eq!(
+            body["private_payment_header_policy"]["disallows_user_id"],
+            true
+        );
+        assert_eq!(
+            body["private_payment_header_policy"]["disallows_wallet_seed_or_viewing_key"],
+            true
+        );
+        assert_eq!(
+            body["remote_agent_prompt_confidentiality"],
+            "sealed_or_local_required"
+        );
+        assert_eq!(body["payment_privacy_scope"], "settlement_metadata_only");
+        assert_eq!(
+            body["sealed_compute_required_for_prompt_confidentiality"],
+            true
+        );
+        assert_eq!(
+            body["remote_agent_compute_disclosure"],
+            services::x402_service::REMOTE_AGENT_COMPUTE_DISCLOSURE
+        );
+        assert_eq!(body["private_rail_fail_closed"], true);
     }
 
     #[test]

@@ -162,7 +162,8 @@ pub async fn create_merchant(
             ))
         })?;
 
-    if !matches!(auth_mode, AuthMode::None) && req.auth_credential.as_deref().unwrap_or("").is_empty()
+    if !matches!(auth_mode, AuthMode::None)
+        && req.auth_credential.as_deref().unwrap_or("").is_empty()
     {
         return Err(AppError::BadRequest(
             "auth_credential is required when auth_mode != 'none'".into(),
@@ -182,16 +183,12 @@ pub async fn create_merchant(
     }
 
     // 2. Derive a slug. Explicit > request field > auto-derive from host.
-    let raw_slug = req
-        .slug
-        .as_deref()
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            parsed_origin
-                .host_str()
-                .unwrap_or("merchant")
-                .replace('.', "-")
-        });
+    let raw_slug = req.slug.as_deref().map(str::to_string).unwrap_or_else(|| {
+        parsed_origin
+            .host_str()
+            .unwrap_or("merchant")
+            .replace('.', "-")
+    });
     let slug = slugify(&raw_slug);
     if slug.is_empty() {
         return Err(AppError::BadRequest("derived slug is empty".into()));
@@ -305,13 +302,11 @@ pub async fn create_merchant(
         .await?
         .get("id");
 
-        sqlx::query(
-            "UPDATE service_listings SET merchant_credential_id = $1 WHERE id = $2",
-        )
-        .bind(id)
-        .bind(service_id)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("UPDATE service_listings SET merchant_credential_id = $1 WHERE id = $2")
+            .bind(id)
+            .bind(service_id)
+            .execute(&mut *tx)
+            .await?;
 
         Some(id)
     } else {
@@ -326,8 +321,8 @@ pub async fn create_merchant(
     let probe = probe_origin(&state.http_client, origin).await;
 
     let base = &state.config.base_url;
-    let gateway_base = std::env::var("GATEWAY_BASE_URL")
-        .unwrap_or_else(|_| "https://gateway.ghola.xyz".into());
+    let gateway_base =
+        std::env::var("GATEWAY_BASE_URL").unwrap_or_else(|_| "https://gateway.ghola.xyz".into());
     let frontend = &state.config.frontend_url;
 
     Ok((
@@ -363,13 +358,15 @@ pub async fn get_public_listing(
     .await?
     .ok_or_else(|| AppError::NotFound(format!("no merchant with slug '{slug}'")))?;
 
-    let gateway_base = std::env::var("GATEWAY_BASE_URL")
-        .unwrap_or_else(|_| "https://gateway.ghola.xyz".into());
+    let gateway_base =
+        std::env::var("GATEWAY_BASE_URL").unwrap_or_else(|_| "https://gateway.ghola.xyz".into());
 
     Ok(Json(PublicListing {
         slug: slug.clone(),
         name: row.get("name"),
-        description: row.get::<Option<String>, _>("description").unwrap_or_default(),
+        description: row
+            .get::<Option<String>, _>("description")
+            .unwrap_or_default(),
         price_micro_usdc: row.get("price_micro_usdc"),
         wallet_address: row.get("vault_wallet_address"),
         status: row.get("status"),
@@ -489,8 +486,8 @@ pub async fn run_test_call(
     // Fire a synthetic GET through the gateway. We use the gateway base URL
     // rather than invoking proxy logic directly — that way the ritual exercises
     // the whole loop: route cache, vault decrypt, auth injection, metering.
-    let gateway_base = std::env::var("GATEWAY_BASE_URL")
-        .unwrap_or_else(|_| "http://localhost:8090".into());
+    let gateway_base =
+        std::env::var("GATEWAY_BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
     let url = format!("{gateway_base}/m/{slug}/");
 
     let start = std::time::Instant::now();
@@ -543,7 +540,9 @@ pub async fn kill_switch(
     .rows_affected();
 
     if affected == 0 {
-        return Err(AppError::NotFound(format!("no merchant with slug '{slug}'")));
+        return Err(AppError::NotFound(format!(
+            "no merchant with slug '{slug}'"
+        )));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -590,12 +589,11 @@ async fn make_unique_slug(db: &sqlx::PgPool, base: &str) -> AppResult<String> {
         } else {
             format!("{base}-{i}")
         };
-        let exists: Option<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM service_listings WHERE slug = $1",
-        )
-        .bind(&candidate)
-        .fetch_optional(db)
-        .await?;
+        let exists: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM service_listings WHERE slug = $1")
+                .bind(&candidate)
+                .fetch_optional(db)
+                .await?;
         if exists.is_none() {
             return Ok(candidate);
         }

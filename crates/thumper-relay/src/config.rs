@@ -79,6 +79,10 @@ pub struct RelayConfig {
     /// Override with `THUMPER_CORS_ALLOWED_ORIGINS` (comma-separated
     /// list of fully-qualified origins).
     pub cors_allowed_origins: Vec<String>,
+    /// Upstream thumper-cloud base URL used for the OHTTP-fronted x402
+    /// endpoint. The OHTTP gateway only forwards a narrow `/v1/chat/completions`
+    /// allowlist through this origin.
+    pub thumper_cloud_base_url: String,
 }
 
 impl RelayConfig {
@@ -137,6 +141,8 @@ impl RelayConfig {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_else(|| vec!["https://ghola.xyz".to_string()]),
+            thumper_cloud_base_url: env::var("THUMPER_CLOUD_BASE_URL")
+                .unwrap_or_else(|_| "https://thumper-cloud.onrender.com".to_string()),
         }
     }
 

@@ -1,0 +1,19 @@
+[package]
+name = "common-log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Workspace-wide privacy-aware logging shim for the Ghola shielded pool. Wraps `tracing` + `tracing-subscriber` with a redaction Layer that suppresses or scrubs deny-listed field names (recipient, amount, proof, nullifier, signing_key, viewing_key, …). Provides `init()` for binaries and `init_test()` for tests, plus `scrub_pubkey` / `scrub_hex` helpers that emit `ScrubbedString` from common-secrets."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["json", "env-filter", "fmt"] }
+common-secrets = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["json", "env-filter", "fmt"] }

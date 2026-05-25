@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT,
     phone_number TEXT,
     timezone TEXT DEFAULT 'America/New_York',
-    tier TEXT DEFAULT 'free' CHECK (tier IN ('free', 'pro', 'unlimited')),
+    tier TEXT DEFAULT 'free' CHECK (tier IN ('free', 'pro', 'private_agent', 'unlimited')),
     stripe_customer_id TEXT,
     said_identity_id TEXT,
     created_at TIMESTAMPTZ DEFAULT now(),
@@ -241,6 +241,25 @@ CREATE TABLE IF NOT EXISTS usage_tracking (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_user_period ON usage_tracking(user_id, period_start);
 
+CREATE TABLE IF NOT EXISTS private_agent_compute_usage (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    seconds_reserved INT NOT NULL CHECK (seconds_reserved > 0),
+    seconds_used INT NOT NULL DEFAULT 0 CHECK (seconds_used >= 0),
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'paused', 'completed', 'failed')),
+    period_start DATE NOT NULL,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(user_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_private_agent_compute_usage_user_period
+    ON private_agent_compute_usage(user_id, period_start);
+CREATE INDEX IF NOT EXISTS idx_private_agent_compute_usage_active
+    ON private_agent_compute_usage(user_id, status) WHERE status = 'active';
+
 -- Email/password auth
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
 
@@ -380,10 +399,10 @@ BEGIN
 END
 $$;
 
--- Enterprise tier support
+-- Paid tier support
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
 ALTER TABLE users ADD CONSTRAINT users_tier_check
-    CHECK (tier IN ('free', 'pro', 'unlimited', 'enterprise'));
+    CHECK (tier IN ('free', 'pro', 'private_agent', 'unlimited', 'enterprise'));
 
 -- Crypto wallet support
 CREATE TABLE IF NOT EXISTS user_wallets (

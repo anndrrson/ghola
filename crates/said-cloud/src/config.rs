@@ -10,7 +10,7 @@ pub struct Config {
     pub stripe_secret_key: Option<String>,
     pub stripe_webhook_secret: Option<String>,
     pub stripe_price_consumer_pro: Option<String>, // price_xxx for $9/mo
-    pub stripe_price_business: Option<String>,      // price_xxx for $29/mo
+    pub stripe_price_business: Option<String>,     // price_xxx for $29/mo
     pub allowed_origins: String,
     pub admin_emails: Vec<String>,
     /// Base58-encoded 64-byte settlement keypair ([secret(32)|pubkey(32)]).
@@ -44,12 +44,15 @@ impl Config {
     pub fn from_env() -> Self {
         Self {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL required"),
-            bind_addr: env::var("BIND_ADDR").or_else(|_| {
-                // Render sets PORT; fall back to it if BIND_ADDR is not set
-                env::var("PORT").map(|p| format!("0.0.0.0:{p}"))
-            }).unwrap_or_else(|_| "0.0.0.0:8080".into()),
+            bind_addr: env::var("BIND_ADDR")
+                .or_else(|_| {
+                    // Render sets PORT; fall back to it if BIND_ADDR is not set
+                    env::var("PORT").map(|p| format!("0.0.0.0:{p}"))
+                })
+                .unwrap_or_else(|_| "0.0.0.0:8080".into()),
             jwt_secret: env::var("JWT_SECRET").unwrap_or_else(|_| "dev-secret-change-me".into()),
-            base_url: env::var("BASE_URL").unwrap_or_else(|_| "https://ghola-api.onrender.com".into()),
+            base_url: env::var("BASE_URL")
+                .unwrap_or_else(|_| "https://ghola-api.onrender.com".into()),
             frontend_url: env::var("FRONTEND_URL").unwrap_or_else(|_| "https://ghola.xyz".into()),
             stripe_secret_key: env::var("STRIPE_SECRET_KEY").ok(),
             stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET").ok(),

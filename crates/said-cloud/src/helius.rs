@@ -110,9 +110,7 @@ impl<'a> Helius<'a> {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(AppError::Internal(format!(
-                "helius get {status}: {body}"
-            )));
+            return Err(AppError::Internal(format!("helius get {status}: {body}")));
         }
         resp.json::<HeliusWebhook>()
             .await
@@ -131,7 +129,11 @@ impl<'a> Helius<'a> {
         let tx_types: Vec<&str> = if current.transaction_types.is_empty() {
             vec!["ANY"]
         } else {
-            current.transaction_types.iter().map(String::as_str).collect()
+            current
+                .transaction_types
+                .iter()
+                .map(String::as_str)
+                .collect()
         };
         let webhook_type = if current.webhook_type.is_empty() {
             "enhanced"
@@ -156,9 +158,7 @@ impl<'a> Helius<'a> {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(AppError::Internal(format!(
-                "helius put {status}: {body}"
-            )));
+            return Err(AppError::Internal(format!("helius put {status}: {body}")));
         }
         Ok(())
     }
@@ -294,7 +294,8 @@ pub fn derive_transfers(tx: &EnhancedTx, watched: &[String]) -> Vec<DerivedTrans
         if !is_usdc_mint(&tt.mint) {
             continue;
         }
-        let amount_micro = micro_from_raw(tt).unwrap_or_else(|| (tt.token_amount * 1_000_000.0) as i64);
+        let amount_micro =
+            micro_from_raw(tt).unwrap_or_else(|| (tt.token_amount * 1_000_000.0) as i64);
         if amount_micro == 0 {
             continue;
         }
@@ -338,7 +339,9 @@ pub fn derive_transfers(tx: &EnhancedTx, watched: &[String]) -> Vec<DerivedTrans
         }
         let lamports = nt.amount.abs();
         if watched.iter().any(|a| a == &nt.to_user_account)
-            && !out.iter().any(|d| d.agent_wallet_address == nt.to_user_account)
+            && !out
+                .iter()
+                .any(|d| d.agent_wallet_address == nt.to_user_account)
         {
             out.push(DerivedTransfer {
                 agent_wallet_address: nt.to_user_account.clone(),
@@ -355,7 +358,9 @@ pub fn derive_transfers(tx: &EnhancedTx, watched: &[String]) -> Vec<DerivedTrans
             });
         }
         if watched.iter().any(|a| a == &nt.from_user_account)
-            && !out.iter().any(|d| d.agent_wallet_address == nt.from_user_account)
+            && !out
+                .iter()
+                .any(|d| d.agent_wallet_address == nt.from_user_account)
         {
             out.push(DerivedTransfer {
                 agent_wallet_address: nt.from_user_account.clone(),
@@ -397,7 +402,10 @@ fn micro_from_raw(tt: &TokenTransfer) -> Option<i64> {
 mod tests {
     use super::*;
 
-    fn tx(token_transfers: Vec<TokenTransfer>, native_transfers: Vec<NativeTransfer>) -> EnhancedTx {
+    fn tx(
+        token_transfers: Vec<TokenTransfer>,
+        native_transfers: Vec<NativeTransfer>,
+    ) -> EnhancedTx {
         EnhancedTx {
             signature: "sig1".into(),
             slot: None,
@@ -416,13 +424,20 @@ mod tests {
             from_user_account: from.into(),
             to_user_account: to.into(),
             token_amount: 0.0,
-            raw_token_amount: Some(RawTokenAmount { token_amount: raw.into(), decimals }),
+            raw_token_amount: Some(RawTokenAmount {
+                token_amount: raw.into(),
+                decimals,
+            }),
             mint: mint.into(),
         }
     }
 
     fn nt(from: &str, to: &str, amount: i64) -> NativeTransfer {
-        NativeTransfer { from_user_account: from.into(), to_user_account: to.into(), amount }
+        NativeTransfer {
+            from_user_account: from.into(),
+            to_user_account: to.into(),
+            amount,
+        }
     }
 
     #[test]
@@ -471,7 +486,16 @@ mod tests {
 
     #[test]
     fn non_usdc_token_dropped() {
-        let t = tx(vec![tt("X", "A", "SomeRandomMint1111111111111111111111111111", "1000000", 6)], vec![]);
+        let t = tx(
+            vec![tt(
+                "X",
+                "A",
+                "SomeRandomMint1111111111111111111111111111",
+                "1000000",
+                6,
+            )],
+            vec![],
+        );
         let out = derive_transfers(&t, &["A".to_string()]);
         assert!(out.is_empty());
     }
@@ -498,7 +522,10 @@ mod tests {
 
     #[test]
     fn raw_amount_decimals_9_scaled_down() {
-        let t = tx(vec![tt("X", "A", USDC_MINT_MAINNET, "1000000000", 9)], vec![]);
+        let t = tx(
+            vec![tt("X", "A", USDC_MINT_MAINNET, "1000000000", 9)],
+            vec![],
+        );
         let out = derive_transfers(&t, &["A".to_string()]);
         assert_eq!(out[0].amount_micro, 1_000_000);
     }
@@ -520,7 +547,10 @@ mod tests {
 
     #[test]
     fn zero_amount_dropped() {
-        let t = tx(vec![tt("X", "A", USDC_MINT_MAINNET, "0", 6)], vec![nt("Y", "A", 0)]);
+        let t = tx(
+            vec![tt("X", "A", USDC_MINT_MAINNET, "0", 6)],
+            vec![nt("Y", "A", 0)],
+        );
         let out = derive_transfers(&t, &["A".to_string()]);
         assert!(out.is_empty());
     }

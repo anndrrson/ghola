@@ -386,6 +386,7 @@ pub async fn create_quote(
         1000,
         &execute_resource,
         "POST",
+        None,
         Some(&quote_id.to_string()),
     );
     let mut payment_requirements = serde_json::to_value(&requirements)
@@ -1612,6 +1613,7 @@ mod tests {
             stripe_secret_key: None,
             stripe_webhook_secret: None,
             stripe_price_pro: None,
+            stripe_price_private_agent: None,
             stripe_price_unlimited: None,
             base_url: "http://localhost".into(),
             encryption_key: [0u8; 32],

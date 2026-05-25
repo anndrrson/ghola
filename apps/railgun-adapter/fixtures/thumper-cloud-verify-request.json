@@ -1,0 +1,34 @@
+{
+  "provider": "railgun",
+  "network": "arbitrum",
+  "asset": "USDC",
+  "destination": "0zkrecipient000000000000000000000",
+  "required_amount": 1000,
+  "purpose": "model_inference",
+  "intent_id": "00000000-0000-0000-0000-000000000001",
+  "agent_id": "00000000-0000-0000-0000-000000000002",
+  "provider_id": "00000000-0000-0000-0000-000000000003",
+  "model_id": "ghola-test-model",
+  "request_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "proof": {
+    "tx_signature": null,
+    "shielded_receipt_id": "receipt-1",
+    "proof_b64": "cHJvb2Y=",
+    "nullifier_hex": "nullifier-1",
+    "request_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "extensions": {
+      "railgun": {
+        "tx_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount": 1200,
+        "destination": "0zkrecipient000000000000000000000",
+        "network": "arbitrum",
+        "asset": "USDC",
+        "broadcaster": "0x1111111111111111111111111111111111111111",
+        "relay_only": true,
+        "public_wallet_broadcast": false,
+        "proof_of_innocence_id": "poi-01",
+        "proof_of_innocence_passed": true
+      }
+    }
+  }
+}

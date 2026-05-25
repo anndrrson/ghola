@@ -1,0 +1,22 @@
+[package]
+name = "common-secrets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Internal secret-handling primitives for the Ghola shielded pool: zeroizing newtype wrapper for fixed-size secrets, constant-time equality, and redaction helpers for log fields. Consumed by every crate that handles spending keys, signing keys, ephemeral KEM secrets, or HKDF intermediates."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+zeroize = { workspace = true }
+subtle = "2"
+serde = { workspace = true, optional = true }
+hex = { workspace = true }
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dev-dependencies]
+serde_json = { workspace = true }

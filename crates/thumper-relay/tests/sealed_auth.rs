@@ -79,6 +79,7 @@ fn test_config() -> RelayConfig {
         max_body_size_bytes: 1_048_576,
         max_sealed_body_size_bytes: 4 * 1_048_576,
         cors_allowed_origins: vec!["https://ghola.xyz".to_string()],
+        thumper_cloud_base_url: "https://thumper-cloud.example".to_string(),
     }
 }
 

@@ -9,7 +9,8 @@ use crate::error::CloudError;
 use crate::privacy::{NetworkScope, PrivacyApproval};
 use crate::services::x402_service::{
     self, PaymentProof, ShieldedSettlementContext, ALEO_USDCX_SHIELDED_RAIL,
-    SHIELDED_STABLECOIN_DISCLOSURE, SHIELDED_STABLECOIN_RAIL,
+    RAILGUN_EVM_DISCLOSURE, RAILGUN_EVM_SHIELDED_RAIL, SHIELDED_STABLECOIN_DISCLOSURE,
+    SHIELDED_STABLECOIN_RAIL, SOLANA_SHIELDED_POOL_DISCLOSURE, SOLANA_SHIELDED_POOL_RAIL,
 };
 use crate::state::AppState;
 
@@ -20,6 +21,7 @@ const SIGNER_ATTESTATION_FUTURE_SKEW_SECONDS: i64 = 120;
 pub const INSTITUTIONAL_READINESS_VERSION: &str = "institutional-usdcx-v1";
 pub const SIGNING_MODE_TURNKEY_USER: &str = "turnkey_user";
 pub const SIGNING_MODE_ALEO_DEVICE: &str = "aleo_device";
+pub const SIGNING_MODE_SEED_VAULT_DEVICE: &str = "seed_vault_device";
 const SIGNING_MODE_MANUAL_PROOF: &str = "manual_proof";
 const SELECTIVE_DISCLOSURE_TEXT: &str = "Selective disclosure export includes redacted receipt metadata, amount, policy hash, verification time, and approval summary. Raw shielded recipient and proof payload are not exported by default.";
 const EXPORT_REASON_MAX_LEN: usize = 160;
@@ -233,6 +235,39 @@ struct InstitutionalReadinessInputs {
     last_canary_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateRail {
+    AleoUsdcxShielded,
+    SolanaShieldedPool,
+    RailgunEvmShielded,
+}
+
+impl PrivateRail {
+    fn rail(self) -> &'static str {
+        match self {
+            Self::AleoUsdcxShielded => SHIELDED_STABLECOIN_RAIL,
+            Self::SolanaShieldedPool => SOLANA_SHIELDED_POOL_RAIL,
+            Self::RailgunEvmShielded => RAILGUN_EVM_SHIELDED_RAIL,
+        }
+    }
+
+    fn canonical(self) -> &'static str {
+        match self {
+            Self::AleoUsdcxShielded => ALEO_USDCX_SHIELDED_RAIL,
+            Self::SolanaShieldedPool => SOLANA_SHIELDED_POOL_RAIL,
+            Self::RailgunEvmShielded => RAILGUN_EVM_SHIELDED_RAIL,
+        }
+    }
+
+    fn disclosure(self) -> &'static str {
+        match self {
+            Self::AleoUsdcxShielded => SHIELDED_STABLECOIN_DISCLOSURE,
+            Self::SolanaShieldedPool => SOLANA_SHIELDED_POOL_DISCLOSURE,
+            Self::RailgunEvmShielded => RAILGUN_EVM_DISCLOSURE,
+        }
+    }
+}
+
 pub fn private_rail_recipient_status() -> PrivateRailRecipientResponse {
     let status = x402_service::shielded_stablecoin_runtime_status();
     PrivateRailRecipientResponse {
@@ -252,24 +287,113 @@ pub fn private_rail_recipient_status() -> PrivateRailRecipientResponse {
     }
 }
 
-fn assert_private_rail_ready() -> Result<x402_service::ShieldedStablecoinRuntimeStatus, CloudError>
-{
-    let status = x402_service::shielded_stablecoin_runtime_status();
+fn assert_private_rail_ready(
+    rail: PrivateRail,
+) -> Result<x402_service::ShieldedStablecoinRuntimeStatus, CloudError> {
+    let status = match rail {
+        PrivateRail::AleoUsdcxShielded => x402_service::shielded_stablecoin_runtime_status(),
+        PrivateRail::SolanaShieldedPool => x402_service::solana_shielded_pool_runtime_status(),
+        PrivateRail::RailgunEvmShielded => {
+            let status = x402_service::railgun_evm_runtime_status();
+            if !status.ready {
+                return Err(CloudError::PaymentRequired(
+                    "Railgun/EVM settlement is not configured; refusing public fallback".into(),
+                ));
+            }
+            return Ok(x402_service::ShieldedStablecoinRuntimeStatus {
+                configured: status.configured,
+                ready: status.ready,
+                adapter_configured: status.adapter_configured,
+                destination_configured: status.recipient_configured,
+                adapter_auth_configured: status.adapter_auth_configured,
+                adapter_signature_required: status.adapter_signature_required,
+                adapter_signature_configured: status.adapter_signature_configured,
+                verifier_ready: status.proof_of_innocence_configured,
+                arbitrary_recipient_proofs_enabled: false,
+                provider: status.provider,
+                network: status.network,
+                asset: status.asset,
+                recipient_configured: status.recipient_configured,
+                recipient_preview: status.recipient_preview,
+                recipient: status.recipient,
+                rail: RAILGUN_EVM_SHIELDED_RAIL,
+                canonical_rail: RAILGUN_EVM_SHIELDED_RAIL,
+                fallback_allowed: false,
+                unavailable_reason: status.unavailable_reason,
+                privacy_disclosure: RAILGUN_EVM_DISCLOSURE,
+                public_indexer_url: None,
+                program_id: None,
+                mint: None,
+                pool_config: None,
+                verifier_key: None,
+                merkle_tree: None,
+                escrow: None,
+                token_program: None,
+                system_program: None,
+                relayer_token_account: None,
+                relayer_payer: None,
+                tree_id: None,
+            });
+        }
+    };
     if !status.ready {
-        return Err(CloudError::PaymentRequired(
-            "private USDCx settlement is not configured; refusing public fallback".to_string(),
-        ));
+        return Err(CloudError::PaymentRequired(format!(
+            "{} settlement is not configured; refusing public fallback",
+            rail.canonical()
+        )));
     }
     Ok(status)
 }
 
-fn normalize_private_rail(raw: Option<&str>) -> Result<(), CloudError> {
+fn normalize_private_rail(raw: Option<&str>) -> Result<PrivateRail, CloudError> {
     match raw.unwrap_or(ALEO_USDCX_SHIELDED_RAIL).trim() {
-        ALEO_USDCX_SHIELDED_RAIL | SHIELDED_STABLECOIN_RAIL | "shielded" => Ok(()),
+        ALEO_USDCX_SHIELDED_RAIL | SHIELDED_STABLECOIN_RAIL | "shielded" => {
+            Ok(PrivateRail::AleoUsdcxShielded)
+        }
+        SOLANA_SHIELDED_POOL_RAIL | "solana_shielded" | "said_shielded_pool" => {
+            Ok(PrivateRail::SolanaShieldedPool)
+        }
+        RAILGUN_EVM_SHIELDED_RAIL | "railgun" | "railgun_evm" => {
+            Ok(PrivateRail::RailgunEvmShielded)
+        }
         other => Err(CloudError::BadRequest(format!(
             "unsupported private settlement rail '{other}'"
         ))),
     }
+}
+
+fn normalize_private_transfer_rail(
+    raw: Option<&str>,
+    recipient: &str,
+) -> Result<PrivateRail, CloudError> {
+    let requested = raw.map(str::trim).filter(|s| !s.is_empty());
+    let auto_requested = requested.is_none()
+        || matches!(
+            requested.unwrap_or_default(),
+            "private"
+                | "private_usdcx"
+                | "usdcx"
+                | "shielded"
+                | "private_shielded"
+                | "private_shielded_auto"
+                | "any_shielded"
+        );
+    if !auto_requested {
+        return normalize_private_rail(requested);
+    }
+
+    if recipient.trim().starts_with("aleo1") {
+        return Ok(PrivateRail::AleoUsdcxShielded);
+    }
+    if recipient.trim().starts_with("0zk") {
+        return Ok(PrivateRail::RailgunEvmShielded);
+    }
+    if validate_solana_shielded_recipient(recipient).is_ok() {
+        return Ok(PrivateRail::SolanaShieldedPool);
+    }
+    Err(CloudError::BadRequest(
+        "could not infer private settlement rail from recipient; use aleo1..., 0zk..., or Solana shielded recipient".to_string(),
+    ))
 }
 
 fn env_flag(name: &str) -> bool {
@@ -301,6 +425,7 @@ fn normalize_signing_mode(
     match raw {
         SIGNING_MODE_TURNKEY_USER => Ok(SIGNING_MODE_TURNKEY_USER),
         SIGNING_MODE_ALEO_DEVICE => Ok(SIGNING_MODE_ALEO_DEVICE),
+        SIGNING_MODE_SEED_VAULT_DEVICE => Ok(SIGNING_MODE_SEED_VAULT_DEVICE),
         SIGNING_MODE_MANUAL_PROOF if allow_manual => Ok(SIGNING_MODE_MANUAL_PROOF),
         SIGNING_MODE_MANUAL_PROOF => Err(CloudError::BadRequest(
             "manual private proof submission is disabled outside debug builds".to_string(),
@@ -543,6 +668,34 @@ fn validate_aleo_recipient(raw: &str) -> Result<String, CloudError> {
     Ok(value.to_string())
 }
 
+fn validate_solana_shielded_recipient(raw: &str) -> Result<String, CloudError> {
+    let value = raw.trim();
+    if value.starts_with("shld1") && value.len() >= 32 {
+        return Ok(value.to_string());
+    }
+    let decoded = bs58::decode(value).into_vec().map_err(|_| {
+        CloudError::BadRequest(
+            "enter a valid Solana shielded recipient (shld1... or 32-byte base58 key)".to_string(),
+        )
+    })?;
+    if decoded.len() != 32 {
+        return Err(CloudError::BadRequest(
+            "Solana shielded recipient must decode to 32 bytes".to_string(),
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn validate_railgun_recipient(raw: &str) -> Result<String, CloudError> {
+    let value = raw.trim();
+    if value.starts_with("0zk") && value.len() >= 32 {
+        return Ok(value.to_string());
+    }
+    Err(CloudError::BadRequest(
+        "enter a valid Railgun 0zk recipient address".to_string(),
+    ))
+}
+
 async fn insert_private_transfer_audit_event(
     state: &AppState,
     user_id: Uuid,
@@ -581,6 +734,8 @@ fn recipient_preview(recipient: &str) -> String {
             &recipient[..8],
             &recipient[recipient.len() - 6..]
         )
+    } else if recipient.starts_with("shld1") {
+        "shld1...".to_string()
     } else {
         "aleo1...".to_string()
     }
@@ -614,8 +769,8 @@ pub async fn create_private_transfer_intent(
     let approval = req
         .approval
         .require_and_store_for(NetworkScope::WalletTransfer)?;
-    normalize_private_rail(req.rail.as_deref())?;
-    let status = assert_private_rail_ready()?;
+    let rail = normalize_private_transfer_rail(req.rail.as_deref(), &req.to_shielded_address)?;
+    let status = assert_private_rail_ready(rail)?;
     let signing_mode =
         normalize_signing_mode(req.signing_mode.as_deref(), manual_private_proof_enabled())?;
     let signer_key_id = normalize_signer_key_id(req.signer_key_id.as_deref())?;
@@ -626,8 +781,30 @@ pub async fn create_private_transfer_intent(
         ));
     }
 
-    let recipient = validate_aleo_recipient(&req.to_shielded_address)?;
-    ensure_supported_private_recipient(&status, &recipient)?;
+    let recipient = match rail {
+        PrivateRail::AleoUsdcxShielded => validate_aleo_recipient(&req.to_shielded_address)?,
+        PrivateRail::SolanaShieldedPool => {
+            if signing_mode == SIGNING_MODE_ALEO_DEVICE {
+                return Err(CloudError::BadRequest(
+                    "Solana shielded-pool intents require seed_vault_device signing mode"
+                        .to_string(),
+                ));
+            }
+            validate_solana_shielded_recipient(&req.to_shielded_address)?
+        }
+        PrivateRail::RailgunEvmShielded => {
+            if signing_mode == SIGNING_MODE_ALEO_DEVICE {
+                return Err(CloudError::BadRequest(
+                    "Railgun/EVM intents require turnkey_user or seed_vault_device signing mode"
+                        .to_string(),
+                ));
+            }
+            validate_railgun_recipient(&req.to_shielded_address)?
+        }
+    };
+    if rail == PrivateRail::AleoUsdcxShielded {
+        ensure_supported_private_recipient(&status, &recipient)?;
+    }
     let recipient_hash = recipient_hash(&recipient);
     let recipient_preview = recipient_preview(&recipient);
     let expires_at = Utc::now() + Duration::minutes(INTENT_TTL_MINUTES);
@@ -654,7 +831,7 @@ pub async fn create_private_transfer_intent(
         "#,
     )
     .bind(user_id)
-    .bind(ALEO_USDCX_SHIELDED_RAIL)
+    .bind(rail.canonical())
     .bind(&status.provider)
     .bind(&status.network)
     .bind(&status.asset)
@@ -687,8 +864,8 @@ pub async fn create_private_transfer_intent(
 
     Ok(PrivateTransferIntentResponse {
         id,
-        rail: SHIELDED_STABLECOIN_RAIL,
-        canonical_rail: ALEO_USDCX_SHIELDED_RAIL,
+        rail: rail.rail(),
+        canonical_rail: rail.canonical(),
         provider: status.provider,
         network: status.network,
         asset: status.asset,
@@ -696,7 +873,7 @@ pub async fn create_private_transfer_intent(
         recipient_preview,
         status: "intent_pending".to_string(),
         expires_at,
-        privacy_disclosure: SHIELDED_STABLECOIN_DISCLOSURE,
+        privacy_disclosure: rail.disclosure(),
         fallback_allowed: false,
         signing_mode: signing_mode.to_string(),
         signer_key_id,
@@ -740,16 +917,14 @@ pub async fn submit_signed_private_transfer(
     allow_manual: bool,
 ) -> Result<PrivateTransferProofResponse, CloudError> {
     req.approval.require_for(NetworkScope::WalletTransfer)?;
-    assert_private_rail_ready()?;
     let signing_mode = normalize_signing_mode(Some(&req.signing_mode), allow_manual)?;
     let signer_key_id = normalize_signer_key_id(Some(&req.signer_key_id))?;
-    let recipient = validate_aleo_recipient(&req.to_shielded_address)?;
-    let expected_recipient_hash = recipient_hash(&recipient);
 
     let row = sqlx::query_as::<
         _,
         (
             i64,
+            String,
             String,
             String,
             String,
@@ -763,7 +938,7 @@ pub async fn submit_signed_private_transfer(
         ),
     >(
         r#"
-        SELECT amount_micro_usdc, recipient_hash, recipient_preview, status,
+        SELECT amount_micro_usdc, rail, recipient_hash, recipient_preview, status,
                provider, network, asset, expires_at, signing_mode, signer_key_id, policy_hash
         FROM private_wallet_transfers
         WHERE id = $1 AND user_id = $2
@@ -777,6 +952,7 @@ pub async fn submit_signed_private_transfer(
 
     let (
         amount,
+        stored_rail,
         stored_recipient_hash,
         stored_preview,
         status,
@@ -788,6 +964,16 @@ pub async fn submit_signed_private_transfer(
         stored_signer_key_id,
         stored_policy_hash,
     ) = row;
+    let rail = normalize_private_rail(Some(&stored_rail))?;
+    assert_private_rail_ready(rail)?;
+    let recipient = match rail {
+        PrivateRail::AleoUsdcxShielded => validate_aleo_recipient(&req.to_shielded_address)?,
+        PrivateRail::SolanaShieldedPool => {
+            validate_solana_shielded_recipient(&req.to_shielded_address)?
+        }
+        PrivateRail::RailgunEvmShielded => validate_railgun_recipient(&req.to_shielded_address)?,
+    };
+    let expected_recipient_hash = recipient_hash(&recipient);
     if stored_signing_mode.as_deref() != Some(signing_mode) {
         return Err(CloudError::BadRequest(
             "signed transfer signing_mode does not match the approved private transfer intent"
@@ -823,20 +1009,27 @@ pub async fn submit_signed_private_transfer(
     let policy_hash = stored_policy_hash.ok_or_else(|| {
         CloudError::BadRequest("private transfer intent is missing policy_hash".to_string())
     })?;
-    let verified = x402_service::verify_shielded_stablecoin_settlement(
-        state,
-        &req.proof,
-        ShieldedSettlementContext {
-            required_amount: amount,
-            purpose: "wallet_private_transfer",
-            destination: Some(&recipient),
-            intent_id: Some(req.intent_id),
-            agent_id: None,
-            provider_id: None,
-            model_id: None,
-        },
-    )
-    .await?;
+    let context = ShieldedSettlementContext {
+        required_amount: amount,
+        purpose: "wallet_private_transfer",
+        destination: Some(&recipient),
+        intent_id: Some(req.intent_id),
+        agent_id: None,
+        provider_id: None,
+        model_id: None,
+        request_hash: x402_service::proof_request_hash(&req.proof),
+    };
+    let verified = match rail {
+        PrivateRail::AleoUsdcxShielded => {
+            x402_service::verify_shielded_stablecoin_settlement(state, &req.proof, context).await?
+        }
+        PrivateRail::SolanaShieldedPool => {
+            x402_service::submit_solana_shielded_pool_settlement(state, &req.proof, context).await?
+        }
+        PrivateRail::RailgunEvmShielded => {
+            x402_service::verify_railgun_evm_settlement(state, &req.proof, context).await?
+        }
+    };
     let receipt_hash = selective_disclosure_receipt_hash(
         req.intent_id,
         amount,
@@ -845,6 +1038,11 @@ pub async fn submit_signed_private_transfer(
         &verified.proof_digest,
         &policy_hash,
     );
+    let attested_receipt_ref = if rail == PrivateRail::SolanaShieldedPool {
+        "pending"
+    } else {
+        &verified.receipt_ref
+    };
     let signer_attestation_hash = validate_private_transfer_signer_attestation(
         req.signer_attestation.as_deref(),
         PrivateTransferSignerAttestationExpected {
@@ -857,7 +1055,7 @@ pub async fn submit_signed_private_transfer(
             asset: &asset,
             policy_hash: &policy_hash,
             proof_digest: &verified.proof_digest,
-            receipt_ref: &verified.receipt_ref,
+            receipt_ref: attested_receipt_ref,
         },
         allow_manual,
     )?;
@@ -909,7 +1107,7 @@ pub async fn submit_signed_private_transfer(
 
     tracing::info!(
         user = %crate::privacy::log_id(&user_id),
-        rail = ALEO_USDCX_SHIELDED_RAIL,
+        rail = rail.canonical(),
         "private USDCx transfer verified"
     );
 
@@ -926,8 +1124,8 @@ pub async fn submit_signed_private_transfer(
 
     Ok(PrivateTransferProofResponse {
         id: req.intent_id,
-        rail: SHIELDED_STABLECOIN_RAIL,
-        canonical_rail: ALEO_USDCX_SHIELDED_RAIL,
+        rail: rail.rail(),
+        canonical_rail: rail.canonical(),
         provider,
         network,
         asset,
@@ -935,7 +1133,7 @@ pub async fn submit_signed_private_transfer(
         recipient_preview: stored_preview,
         adapter_receipt_ref: verified.receipt_ref,
         status: "verified".to_string(),
-        privacy_disclosure: SHIELDED_STABLECOIN_DISCLOSURE,
+        privacy_disclosure: rail.disclosure(),
         signing_mode: signing_mode.to_string(),
         signer_key_id,
         policy_hash,
@@ -1286,6 +1484,18 @@ mod tests {
             fallback_allowed: false,
             unavailable_reason: None,
             privacy_disclosure: SHIELDED_STABLECOIN_DISCLOSURE,
+            public_indexer_url: None,
+            program_id: None,
+            mint: None,
+            pool_config: None,
+            verifier_key: None,
+            merkle_tree: None,
+            escrow: None,
+            token_program: None,
+            system_program: None,
+            relayer_token_account: None,
+            relayer_payer: None,
+            tree_id: None,
         }
     }
 
@@ -1330,6 +1540,7 @@ mod tests {
         normalize_private_rail(None).unwrap();
         normalize_private_rail(Some(ALEO_USDCX_SHIELDED_RAIL)).unwrap();
         normalize_private_rail(Some(SHIELDED_STABLECOIN_RAIL)).unwrap();
+        normalize_private_rail(Some(SOLANA_SHIELDED_POOL_RAIL)).unwrap();
         normalize_private_rail(Some("shielded")).unwrap();
     }
 

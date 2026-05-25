@@ -242,9 +242,7 @@ pub async fn update_node(
 
     match owner_id {
         None => return Err(AppError::NotFound("Node not found".into())),
-        Some(oid) if oid != user_id => {
-            return Err(AppError::Unauthorized("Not your node".into()))
-        }
+        Some(oid) if oid != user_id => return Err(AppError::Unauthorized("Not your node".into())),
         _ => {}
     }
 

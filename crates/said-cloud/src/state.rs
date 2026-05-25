@@ -107,10 +107,11 @@ impl AppState {
     /// Build the signing key from config, or generate an ephemeral one.
     pub fn build_signing_key(config: &Config) -> SigningKey {
         if let Some(hex_seed) = &config.signing_key_hex {
-            let bytes = hex::decode(hex_seed).expect(
-                "SIGNING_KEY must be a 64-character hex string (32 bytes)",
-            );
-            let arr: [u8; 32] = bytes.try_into().expect("SIGNING_KEY must be exactly 32 bytes");
+            let bytes = hex::decode(hex_seed)
+                .expect("SIGNING_KEY must be a 64-character hex string (32 bytes)");
+            let arr: [u8; 32] = bytes
+                .try_into()
+                .expect("SIGNING_KEY must be exactly 32 bytes");
             SigningKey::from_bytes(&arr)
         } else {
             use rand::rngs::OsRng;

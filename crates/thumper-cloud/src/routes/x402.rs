@@ -123,6 +123,7 @@ async fn discovery_resources_value(state: &AppState) -> Result<Value, CloudError
             &resource,
             "POST",
             None,
+            None,
         );
 
         items.push(json!({

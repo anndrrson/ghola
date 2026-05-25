@@ -1,4 +1,5 @@
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::Json;
 use chrono::Utc;
 use rand::RngCore;
@@ -9,6 +10,59 @@ use crate::auth::{create_jwt, verify_apple_token, verify_google_token, verify_si
 use crate::error::CloudError;
 use crate::privacy::log_id;
 use crate::state::AppState;
+
+/// Header the trusted web proxy must present on auth endpoints that mint a
+/// session from a client-asserted identity it cannot verify server-side
+/// (currently only `/api/auth/twitter`, where the OAuth code-exchange and
+/// `users/me` lookup happen in the Next.js layer, not here).
+///
+/// Without this gate the endpoint would trust a raw `twitter_id` from any
+/// internet client — `thumper-cloud` is directly reachable, and CORS only
+/// constrains browsers, so this is an account-takeover surface.
+const INTERNAL_PROXY_HEADER: &str = "x-ghola-internal-proxy-secret";
+
+/// Verify the request came from the trusted web proxy by comparing the
+/// `X-Ghola-Internal-Proxy-Secret` header against `GHOLA_INTERNAL_PROXY_SECRET`
+/// in constant time. Fails CLOSED: if the env var is unset/empty the endpoint
+/// rejects all callers (so a misconfigured deploy cannot silently expose the
+/// account-takeover path).
+///
+/// TODO(security): replace this shared-secret gate with full server-side X
+/// OAuth verification — exchange the OAuth code (or validate the access token
+/// via `GET https://api.x.com/2/users/me`) inside thumper-cloud so the backend
+/// no longer trusts a client-asserted `twitter_id` relayed by the proxy.
+fn require_internal_proxy(headers: &HeaderMap) -> Result<(), CloudError> {
+    let expected = std::env::var("GHOLA_INTERNAL_PROXY_SECRET").unwrap_or_default();
+    if expected.trim().is_empty() {
+        tracing::error!(
+            "GHOLA_INTERNAL_PROXY_SECRET unset; refusing /api/auth/twitter (fail-closed)"
+        );
+        return Err(CloudError::Unauthorized);
+    }
+
+    let provided = headers
+        .get(INTERNAL_PROXY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+        tracing::warn!("rejected /api/auth/twitter: missing or invalid internal proxy secret");
+        return Err(CloudError::Unauthorized);
+    }
+    Ok(())
+}
+
+/// Constant-time byte comparison (length-equal AND content-equal).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
 
 #[derive(Deserialize)]
 pub struct GoogleSignInRequest {
@@ -419,10 +473,19 @@ pub async fn apple_sign_in(
 }
 
 /// POST /api/auth/twitter
+///
+/// SECURITY: this endpoint trusts a client-asserted `twitter_id` that is
+/// resolved by the web OAuth proxy, NOT verified here. It is therefore gated
+/// behind the internal-proxy shared secret (`require_internal_proxy`) and fails
+/// closed when that secret is not configured. See the TODO on
+/// `require_internal_proxy` for the longer-term fix (server-side X OAuth).
 pub async fn twitter_sign_in(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<TwitterSignInRequest>,
 ) -> Result<Json<AuthResponse>, CloudError> {
+    require_internal_proxy(&headers)?;
+
     let display = req.name.clone().or_else(|| req.username.clone());
 
     // 1. Returning user? (already linked Twitter)

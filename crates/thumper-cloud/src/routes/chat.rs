@@ -4,10 +4,14 @@ use std::pin::Pin;
 use axum::extract::State;
 use axum::response::sse::{Event, Sse};
 use axum::Json;
+use ed25519_dalek::SigningKey;
 use futures::stream::Stream;
 use futures::StreamExt;
+use said_envelope::{seal, RecipientKind, SealParams};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
+use x25519_dalek::PublicKey as X25519Public;
 
 use crate::auth::AuthUser;
 use crate::error::CloudError;
@@ -58,6 +62,26 @@ pub struct ChatRequest {
     pub envelope_blob_b64: Option<String>,
     #[serde(flatten)]
     pub approval: PrivacyApproval,
+}
+
+#[derive(Deserialize)]
+pub struct E2eChatRequest {
+    pub session_id: Option<Uuid>,
+    /// Required sealed-envelope-v1 ciphertext. This strict endpoint has no
+    /// plaintext message field by design.
+    pub envelope_blob_b64: String,
+    /// Base64-encoded 32-byte X25519 public key from the unlocked client
+    /// vault. Android's vault X25519 key is derived from the wallet unlock
+    /// signature, so it is not recoverable from the wallet did:key alone.
+    pub reply_recipient_x25519_b64: String,
+    #[serde(flatten)]
+    pub approval: PrivacyApproval,
+}
+
+#[derive(Debug)]
+struct EnvelopeHeader {
+    sender_did: String,
+    recipient_id: String,
 }
 
 /// Persist a user-role row, choosing the legacy plaintext path or the
@@ -145,6 +169,119 @@ async fn insert_user_message(
         .map_err(|e| CloudError::Internal(format!("failed to save message: {e}")))?;
     }
     Ok(())
+}
+
+fn parse_envelope_header(wire: &[u8]) -> Result<EnvelopeHeader, CloudError> {
+    const MAGIC: &[u8; 4] = b"SEv1";
+    const SIGNATURE_LEN: usize = 64;
+    const EPHEM_PUB_LEN: usize = 32;
+    const NONCE_LEN: usize = 12;
+
+    if wire.len() < SIGNATURE_LEN + MAGIC.len() + 2 {
+        return Err(CloudError::BadRequest("envelope is too short".to_string()));
+    }
+    let body = &wire[..wire.len() - SIGNATURE_LEN];
+    let mut pos = 0usize;
+
+    fn take<'a>(buf: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8], CloudError> {
+        let end = pos
+            .checked_add(n)
+            .ok_or_else(|| CloudError::BadRequest("envelope length overflow".to_string()))?;
+        if end > buf.len() {
+            return Err(CloudError::BadRequest("envelope is truncated".to_string()));
+        }
+        let out = &buf[*pos..end];
+        *pos = end;
+        Ok(out)
+    }
+
+    fn take_u16(buf: &[u8], pos: &mut usize) -> Result<usize, CloudError> {
+        let b = take(buf, pos, 2)?;
+        Ok(u16::from_be_bytes([b[0], b[1]]) as usize)
+    }
+
+    if take(body, &mut pos, MAGIC.len())? != MAGIC {
+        return Err(CloudError::BadRequest(
+            "envelope magic mismatch".to_string(),
+        ));
+    }
+    let version = take(body, &mut pos, 1)?[0];
+    if version != 1 {
+        return Err(CloudError::BadRequest(
+            "unsupported envelope version".to_string(),
+        ));
+    }
+    let _recipient_kind = take(body, &mut pos, 1)?[0];
+
+    let sender_len = take_u16(body, &mut pos)?;
+    let sender_did = String::from_utf8(take(body, &mut pos, sender_len)?.to_vec())
+        .map_err(|_| CloudError::BadRequest("sender_did is not UTF-8".to_string()))?;
+    let recipient_len = take_u16(body, &mut pos)?;
+    let recipient_id = String::from_utf8(take(body, &mut pos, recipient_len)?.to_vec())
+        .map_err(|_| CloudError::BadRequest("recipient_id is not UTF-8".to_string()))?;
+
+    let _ = take(body, &mut pos, EPHEM_PUB_LEN + NONCE_LEN)?;
+    let ad_len = take_u16(body, &mut pos)?;
+    let _ = take(body, &mut pos, ad_len)?;
+    let ct_len_bytes = take(body, &mut pos, 4)?;
+    let ct_len = u32::from_be_bytes([
+        ct_len_bytes[0],
+        ct_len_bytes[1],
+        ct_len_bytes[2],
+        ct_len_bytes[3],
+    ]) as usize;
+    let _ = take(body, &mut pos, ct_len)?;
+    if pos != body.len() {
+        return Err(CloudError::BadRequest(
+            "envelope has trailing bytes".to_string(),
+        ));
+    }
+
+    Ok(EnvelopeHeader {
+        sender_did,
+        recipient_id,
+    })
+}
+
+fn response_signing_key(config_key: &[u8; 32]) -> SigningKey {
+    let mut seed = [0u8; 32];
+    let digest = Sha256::digest([b"ghola/e2e-response-signing-v1".as_slice(), config_key].concat());
+    seed.copy_from_slice(&digest);
+    SigningKey::from_bytes(&seed)
+}
+
+fn seal_e2e_response(
+    config_key: &[u8; 32],
+    recipient_did: &str,
+    recipient_x25519: X25519Public,
+    session_id: Uuid,
+    plaintext: &str,
+) -> Result<String, CloudError> {
+    use base64::Engine;
+
+    let signer = response_signing_key(config_key);
+    let payload = serde_json::json!({
+        "v": 1,
+        "session_id": session_id,
+        "role": "assistant",
+        "content": plaintext,
+        "privacy": {
+            "mode": "ciphertext_only_fail_closed",
+            "cloud_plaintext_seen": false,
+            "llm_inference": "not_run_without_attested_private_inference"
+        }
+    });
+    let ad = format!("session={session_id};role=assistant");
+    let wire = seal(SealParams {
+        sender: &signer,
+        kind: RecipientKind::SelfRecipient,
+        recipient_id: recipient_did,
+        recipient_x25519,
+        associated_data: ad.as_bytes(),
+        plaintext: payload.to_string().as_bytes(),
+    })
+    .map_err(|e| CloudError::Internal(format!("failed to seal e2e response: {e}")))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(wire))
 }
 
 /// Load recent conversation history for an LLM call.
@@ -480,6 +617,96 @@ pub async fn chat(
             .execute(&db)
             .await;
         }
+    });
+
+    Ok(Sse::new(sse_stream))
+}
+
+/// POST /api/chat/e2e — strict ciphertext-only chat contract.
+///
+/// This route intentionally has no plaintext request field and does not run
+/// cloud LLM inference unless/ until the private enclave path can decrypt
+/// inside an attested boundary. It preserves encrypted-at-rest sync today and
+/// fails closed instead of downgrading to plaintext cloud inference.
+pub async fn chat_e2e(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<E2eChatRequest>,
+) -> Result<Sse<SseStream>, CloudError> {
+    use base64::Engine;
+
+    req.approval.require_for(NetworkScope::CloudChat)?;
+    let user_id = claims.sub;
+    let session_id = req.session_id.unwrap_or_else(Uuid::new_v4);
+    check_chat_limit(&state, user_id, &claims.tier).await?;
+
+    let envelope_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&req.envelope_blob_b64)
+        .map_err(|e| CloudError::BadRequest(format!("invalid envelope_blob_b64: {e}")))?;
+    let header = parse_envelope_header(&envelope_bytes)?;
+    if header.sender_did != header.recipient_id {
+        tracing::warn!(
+            user = %log_id(&user_id),
+            "strict e2e envelope sender/recipient mismatch"
+        );
+    }
+
+    insert_user_message(
+        &state.db,
+        user_id,
+        session_id,
+        "",
+        Some(&req.envelope_blob_b64),
+        None,
+        None,
+    )
+    .await?;
+
+    let response_text = "Strict private cloud mode is active: your message was received as ciphertext only. Cloud inference is paused until an attested private provider is available; use an on-device backend for a full private answer.";
+    let reply_pub_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&req.reply_recipient_x25519_b64)
+        .map_err(|e| CloudError::BadRequest(format!("invalid reply_recipient_x25519_b64: {e}")))?;
+    let reply_pub: [u8; 32] = reply_pub_bytes.as_slice().try_into().map_err(|_| {
+        CloudError::BadRequest("reply recipient X25519 public key must be 32 bytes".to_string())
+    })?;
+    let sealed_response = seal_e2e_response(
+        &state.config.encryption_key,
+        &header.recipient_id,
+        X25519Public::from(reply_pub),
+        session_id,
+        response_text,
+    )?;
+    let db = state.db.clone();
+
+    let sse_stream: SseStream = Box::pin(async_stream::stream! {
+        yield Ok(Event::default()
+            .event("session")
+            .data(serde_json::json!({ "session_id": session_id }).to_string()));
+        yield Ok(Event::default()
+            .event("privacy")
+            .data(serde_json::json!({
+                "mode": "ciphertext_only",
+                "cloud_plaintext_seen": false,
+                "llm_inference": "not_run_without_attested_private_inference",
+            }).to_string()));
+        yield Ok(Event::default()
+            .event("sealed_delta")
+            .data(serde_json::json!({ "envelope_blob_b64": sealed_response }).to_string()));
+        yield Ok(Event::default()
+            .event("done")
+            .data(serde_json::json!({ "session_id": session_id }).to_string()));
+
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO chat_messages (user_id, session_id, role, content, envelope_blob, envelope_v)
+            VALUES ($1, $2, 'assistant', NULL, $3, 1)
+            "#,
+        )
+        .bind(user_id)
+        .bind(session_id)
+        .bind(base64::engine::general_purpose::STANDARD.decode(sealed_response).unwrap_or_default())
+        .execute(&db)
+        .await;
     });
 
     Ok(Sse::new(sse_stream))

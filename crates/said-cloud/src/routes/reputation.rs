@@ -359,19 +359,17 @@ async fn bootstrap_new_entities(state: &AppState) -> anyhow::Result<()> {
 
 async fn recompute_single(state: &AppState, did: &str) -> anyhow::Result<()> {
     // Determine entity type
-    let is_business: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM business_profiles WHERE did = $1)",
-    )
-    .bind(did)
-    .fetch_one(&state.db)
-    .await?;
+    let is_business: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM business_profiles WHERE did = $1)")
+            .bind(did)
+            .fetch_one(&state.db)
+            .await?;
 
-    let is_consumer: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM public_profiles WHERE did = $1)",
-    )
-    .bind(did)
-    .fetch_one(&state.db)
-    .await?;
+    let is_consumer: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public_profiles WHERE did = $1)")
+            .bind(did)
+            .fetch_one(&state.db)
+            .await?;
 
     let entity_type = if is_business {
         "business"
@@ -480,10 +478,7 @@ async fn recompute_single(state: &AppState, did: &str) -> anyhow::Result<()> {
     .await?;
 
     let avg_rating = review_stats.as_ref().and_then(|r| r.avg_rating);
-    let review_count = review_stats
-        .as_ref()
-        .and_then(|r| r.count)
-        .unwrap_or(0) as i32;
+    let review_count = review_stats.as_ref().and_then(|r| r.count).unwrap_or(0) as i32;
 
     let quality_score: f32 = avg_rating.map(|r| r / 5.0).unwrap_or(0.0).min(1.0);
 

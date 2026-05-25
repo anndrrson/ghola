@@ -73,7 +73,9 @@ pub async fn ingest_helius(
 
     for tx in &batch {
         for d in derive_transfers(tx, &addresses) {
-            let Some(wallet) = wallets.iter().find(|w| w.solana_address == d.agent_wallet_address)
+            let Some(wallet) = wallets
+                .iter()
+                .find(|w| w.solana_address == d.agent_wallet_address)
             else {
                 skipped += 1;
                 continue;

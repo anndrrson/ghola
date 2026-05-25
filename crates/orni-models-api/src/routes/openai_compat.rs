@@ -17,10 +17,22 @@ use crate::services::x402_facilitator::X402Client;
 use crate::state::AppState;
 use orni_models_types::{InferenceChatMessage, Model, ModelStatus, OpenAIChatRequest};
 
+const PAYMENT_HEADER_ALIASES: &[&str] = &[
+    "x-payment",
+    "x402-payment",
+    "payment-signature",
+];
+
+fn payment_header(headers: &HeaderMap) -> Option<&str> {
+    PAYMENT_HEADER_ALIASES
+        .iter()
+        .find_map(|name| headers.get(*name).and_then(|v| v.to_str().ok()))
+}
+
 /// POST /v1/chat/completions — OpenAI-compatible chat endpoint
 ///
 /// Auth methods (in priority order):
-/// 1. x402 payment proof via `X-Payment` header (agent-to-agent, no account needed)
+/// 1. x402 payment proof via `X-Payment` / compatible aliases (agent-to-agent, no account needed)
 /// 2. Bearer API key (orn_...) for registered users
 ///
 /// If neither is provided and the model requires payment, returns HTTP 402
@@ -80,7 +92,7 @@ async fn chat_completions_inner(
     let mut x402_paid = false;
 
     if state.config.x402_enabled {
-        if let Some(payment_header) = headers.get("x-payment").and_then(|v| v.to_str().ok()) {
+        if let Some(payment_header) = payment_header(&headers) {
             // Build accepts-array entries — one per non-paused stablecoin.
             // Ordered so the platform's primary stablecoin is first; agents
             // SHOULD pick the first they can pay in.

@@ -127,6 +127,20 @@ pub struct InferenceResult {
     pub latency_ms: u64,
 }
 
+#[derive(Debug)]
+pub struct SealedInferenceResult {
+    pub job_id: String,
+    pub ciphertext_b64: String,
+    pub is_final: bool,
+    pub latency_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttestedEnclaveWire {
+    enclave_key_id: String,
+    provider_id: String,
+}
+
 pub type InferenceTextStream =
     Pin<Box<dyn futures::Stream<Item = Result<String, CloudError>> + Send>>;
 
@@ -1186,6 +1200,117 @@ pub async fn dispatch_inference(
         output_tokens,
         latency_ms,
     })
+}
+
+/// Send an opaque sealed inference request to the relay. The cloud never sees
+/// prompt or response plaintext; the relay authenticates the inner
+/// said-envelope and forwards ciphertext to an attested enclave.
+pub async fn dispatch_inference_sealed(
+    state: &AppState,
+    enclave_key_id: &str,
+    sealed_request_b64: &str,
+    job_id: &str,
+) -> Result<SealedInferenceResult, CloudError> {
+    let relay_url = &state.config.relay_url;
+    let url = format!("{relay_url}/inference/sealed");
+    let body = serde_json::json!({
+        "enclave_key_id": enclave_key_id,
+        "job_id": job_id,
+        "sealed_request_b64": sealed_request_b64,
+        "mode_hint": "private",
+    });
+
+    let start = std::time::Instant::now();
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| CloudError::ServiceUnavailable(format!("sealed relay request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let detail = resp.text().await.unwrap_or_default();
+        return Err(CloudError::ServiceUnavailable(format!(
+            "sealed relay returned status {status}: {detail}"
+        )));
+    }
+
+    let latency_ms = start.elapsed().as_millis() as u64;
+    let result: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| CloudError::Internal(format!("failed to parse sealed relay response: {e}")))?;
+
+    let ciphertext_b64 = result
+        .get("ciphertext_b64")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| {
+            CloudError::Internal("sealed relay response missing ciphertext".to_string())
+        })?
+        .to_string();
+    let job_id = result
+        .get("job_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(job_id)
+        .to_string();
+    let is_final = result
+        .get("is_final")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    Ok(SealedInferenceResult {
+        job_id,
+        ciphertext_b64,
+        is_final,
+        latency_ms,
+    })
+}
+
+/// Verify the user-selected enclave key is currently attested for the exact
+/// provider/model that will receive payment. This prevents a sealed request
+/// from paying one matched provider while dispatching ciphertext to another
+/// enclave key id.
+pub async fn attested_enclave_matches_provider(
+    state: &AppState,
+    model_id: &str,
+    enclave_key_id: &str,
+    provider_pubkey: &str,
+) -> Result<bool, CloudError> {
+    let relay_url = &state.config.relay_url;
+    let mut url = reqwest::Url::parse(&format!("{relay_url}/providers/attested"))
+        .map_err(|e| CloudError::Internal(format!("invalid relay URL: {e}")))?;
+    url.query_pairs_mut().append_pair("model", model_id);
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| {
+            CloudError::ServiceUnavailable(format!("attested provider lookup failed: {e}"))
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        return Err(CloudError::ServiceUnavailable(format!(
+            "attested provider lookup returned status {status}"
+        )));
+    }
+
+    let enclaves: Vec<AttestedEnclaveWire> = resp.json().await.map_err(|e| {
+        CloudError::ServiceUnavailable(format!(
+            "attested provider lookup returned malformed JSON: {e}"
+        ))
+    })?;
+
+    Ok(enclaves.iter().any(|enclave| {
+        enclave.enclave_key_id == enclave_key_id && enclave.provider_id == provider_pubkey
+    }))
 }
 
 // =========================================================================
