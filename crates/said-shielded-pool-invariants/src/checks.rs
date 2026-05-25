@@ -45,29 +45,35 @@ pub type Result<T> = std::result::Result<T, InvariantViolation>;
 // FAMILY 1 — NOTES (value conservation)
 // =============================================================================
 
-/// `Σ(input_amounts) + public_amount == Σ(output_amounts)`, per-asset.
+/// `Σ(input_amounts) == Σ(output_amounts) + public_amount`, per-asset.
 ///
 /// This is the arithmetic equation enforced by the circuit
-/// (`circuits/transaction.circom`) — see SPEC.md §4.1, item 7.
+/// (`circuits/transaction.circom` line `inSumAccum === outSumAccum +
+/// publicAmount`) — see SPEC.md §4.1, item 7.
 ///
-/// Sign convention (arithmetic, off-chain frame):
-///   * `public_amount > 0` ==> deposit / shield-in (new outputs minted
-///     to back an SPL transfer INTO the escrow ATA).
-///   * `public_amount < 0` ==> withdraw / unshield-out (inputs spent
-///     to back an SPL transfer OUT of escrow).
+/// **L-NEW-1 fix (convergence with C1).** This checker previously held the
+/// INVERTED equation `Σin + publicAmount == Σout` with the deposit/withdraw
+/// signs swapped — the pre-C1 convention. The C1 correction (cdf6c96) fixed
+/// the equation and sign everywhere else (circuit, on-chain binding, SDK,
+/// testvectors); this brings the invariant model into line.
+///
+/// Sign convention (arithmetic, off-chain frame — matches the circuit and the
+/// on-chain C1 binding):
+///   * `public_amount > 0` ==> WITHDRAW / unshield-out (`Σin > Σout`; an
+///     input note is spent to back an SPL transfer OUT of escrow). Encoded
+///     on-chain as `+amount`.
+///   * `public_amount < 0` ==> DEPOSIT / shield-in (`Σout > Σin`; a fresh
+///     output note backs an SPL transfer INTO escrow). Encoded on-chain as
+///     `r - amount` (the field negation, i.e. `-amount`).
 ///   * `public_amount == 0` ==> internal transfer (no net flow).
 ///
-/// (SPEC.md uses "negative = shield-in" descriptively to mean the
-/// pool's net-flow perspective. The arithmetic equation is the same.)
-///
 /// **Enforcement**: the Groth16 circuit (`circuits/transaction.circom`)
-/// constrains `sumIn + publicAmount = sumOut`. As of H1 (2026-05-25) the
+/// constrains `sumIn == sumOut + publicAmount`. As of H1 (2026-05-25) the
 /// circuit ALSO range-bounds `publicAmount` to the signed-64-bit envelope
 /// (`SignedAmount64`) and both sums to 65 bits (`Num2Bits(sumBits)`), so
 /// the equality holds over the integers — it can no longer be satisfied by
-/// a mod-r wrap. This off-chain checker already modelled the sound
-/// behaviour (it works in checked `i128`/`u128`, never in the field), so
-/// it needs no change; it is the cross-check that the recovered witness
+/// a mod-r wrap. This off-chain checker works in checked `i128`/`u128`
+/// (never in the field); it is the cross-check that the recovered witness
 /// satisfies the same relation the circuit now enforces.
 /// **Off-chain checker**: this function, called by the indexer + chaos
 /// harness against the recovered witness.
@@ -91,14 +97,15 @@ pub fn inv_note_conservation(
         .try_fold(0u128, |acc, x| acc.checked_add(*x as u128))
         .ok_or_else(|| InvariantViolation::Notes("output sum overflow".into()))?;
 
-    // sumIn + publicAmount == sumOut.
-    let lhs = (sum_in as i128)
+    // L-NEW-1: sumIn == sumOut + publicAmount (the C1 / circuit convention;
+    // withdraw publicAmount > 0, deposit publicAmount < 0).
+    let lhs = sum_in as i128;
+    let rhs = (sum_out as i128)
         .checked_add(public_amount)
-        .ok_or_else(|| InvariantViolation::Notes("lhs overflow".into()))?;
-    let rhs = sum_out as i128;
+        .ok_or_else(|| InvariantViolation::Notes("rhs overflow".into()))?;
     if lhs != rhs {
         return Err(InvariantViolation::Notes(format!(
-            "sumIn + publicAmount ({lhs}) != sumOut ({rhs})"
+            "sumIn ({lhs}) != sumOut + publicAmount ({rhs})"
         )));
     }
     Ok(())

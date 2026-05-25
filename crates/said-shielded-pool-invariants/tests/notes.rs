@@ -15,12 +15,13 @@ fn wit(inputs: Vec<u64>, outputs: Vec<u64>) -> TransferWitnessSummary {
 
 #[test]
 fn deposit_value_conservation_ok() {
-    // Deposit: 0 inputs, 1000 of fresh outputs. The witness-frame
-    // relation `sumIn + publicAmount = sumOut` yields publicAmount = +1000.
-    // (On-chain the same value is signed-field-encoded via the mod-p
-    // trick documented in SPEC §4.1; off-chain we work in plain i128.)
+    // L-NEW-1 / C1: DEPOSIT adds a fresh output note with no input. The
+    // conservation relation `sumIn == sumOut + publicAmount` gives
+    // `0 == 1000 + publicAmount` → publicAmount = -1000 (NEGATIVE = deposit).
+    // (On-chain the same value is signed-field-encoded as `r - 1000`; off-
+    // chain we work in plain i128.)
     let w = wit(vec![], vec![1000]);
-    inv_note_conservation(&w, 1000).expect("deposit balances");
+    inv_note_conservation(&w, -1000).expect("deposit balances");
 }
 
 #[test]
@@ -32,9 +33,11 @@ fn transfer_value_conservation_ok() {
 
 #[test]
 fn withdraw_value_conservation_ok() {
-    // Withdraw 200 from the pool: sumIn(1000) + publicAmount(-200) = sumOut(800).
+    // L-NEW-1 / C1: WITHDRAW spends an input note. The conservation relation
+    // `sumIn == sumOut + publicAmount` gives `1000 == 800 + publicAmount` →
+    // publicAmount = +200 (POSITIVE = withdraw).
     let w = wit(vec![1000], vec![800]);
-    inv_note_conservation(&w, -200).expect("withdraw balances");
+    inv_note_conservation(&w, 200).expect("withdraw balances");
 }
 
 #[test]
@@ -70,8 +73,9 @@ fn overflow_rejected() {
 
 #[test]
 fn withdraw_more_than_input_rejected() {
-    // sumIn(100) + publicAmount(-200) = -100, which doesn't equal sumOut(0).
+    // L-NEW-1 / C1: try to withdraw 200 with only 100 of input. Under
+    // `sumIn == sumOut + publicAmount`, `100 == 0 + 200` is false → reject.
     let w = wit(vec![100], vec![0]);
-    let err = inv_note_conservation(&w, -200).expect_err("violates conservation");
+    let err = inv_note_conservation(&w, 200).expect_err("violates conservation");
     matches!(err, InvariantViolation::Notes(_));
 }

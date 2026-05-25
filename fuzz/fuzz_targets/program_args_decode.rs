@@ -84,13 +84,28 @@ struct UpdateRootArgs {
     _commitments: [[u8; 32]; FORESTER_BATCH_SIZE],
 }
 
-/// Deposit takes `(amount: u64, commitment: [u8; 32])` (positional args
-/// rather than a struct in the on-chain handler; borsh-encoded the
-/// same way regardless).
+/// **C-NEW-1**: deposit is now PROOF-GATED. It takes a `DepositArgs` struct
+/// (a `transaction.circom` proof + public inputs + amount + commitment +
+/// memo_commitments), no longer the old `(amount, commitment)` tuple. Mirror
+/// the on-chain `DepositArgs` field-for-field so the fuzzer exercises the
+/// real wire format (including the length-prefixed `memo_commitments` vec —
+/// a huge declared len with a short body must return Err, not OOM/panic).
 #[derive(BorshDeserialize)]
-struct DepositArgsTuple {
+struct DepositArgs {
+    _proof_a: [u8; 64],
+    _proof_b: [u8; 128],
+    _proof_c: [u8; 64],
+    _root: [u8; 32],
+    _input_nullifier_0: [u8; 32],
+    _input_nullifier_1: [u8; 32],
+    _output_commitment_0: [u8; 32],
+    _output_commitment_1: [u8; 32],
+    _public_amount: [u8; 32],
+    _asset_id: [u8; 32],
+    _ext_data_hash: [u8; 32],
     _amount: u64,
     _commitment: [u8; 32],
+    _memo_commitments: Vec<[u8; 32]>,
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -114,7 +129,7 @@ fuzz_target!(|data: &[u8]| {
             let _: Result<UpdateRootArgs, _> = UpdateRootArgs::try_from_slice(body);
         }
         _ => {
-            let _: Result<DepositArgsTuple, _> = DepositArgsTuple::try_from_slice(body);
+            let _: Result<DepositArgs, _> = DepositArgs::try_from_slice(body);
         }
     }
 });

@@ -57,8 +57,14 @@ pub mod said_shielded_pool {
     }
 
     /// Deposit SPL/Token-2022 into the shielded pool, queueing a commitment.
-    pub fn deposit(ctx: Context<Deposit>, amount: u64, commitment: [u8; 32]) -> Result<()> {
-        instructions::deposit::deposit_handler(ctx, amount, commitment)
+    ///
+    /// **C-NEW-1**: now PROOF-GATED. A deposit is a `transaction.circom` proof
+    /// with dummy inputs + one real output; the queued commitment is bound to
+    /// the proof's real output commitment and `public_amount` to `-amount`, so
+    /// the note's hidden value is proven to equal the deposited amount. Reuses
+    /// the transaction VK (same H1 ceremony requirement as transfer/withdraw).
+    pub fn deposit(ctx: Context<Deposit>, args: DepositArgs) -> Result<()> {
+        instructions::deposit::deposit_handler(ctx, args)
     }
 
     /// Shielded → shielded transfer (2-in / 2-out).

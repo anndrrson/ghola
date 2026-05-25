@@ -280,6 +280,33 @@ pub struct TransferArgs {
     pub memo_commitments: Vec<[u8; 32]>,
 }
 
+/// Mirror of on-chain `DepositArgs`. Field order is load-bearing.
+/// Fields are documented in the source-of-truth program struct
+/// (`programs/said-shielded-pool/src/instructions/deposit.rs`).
+///
+/// **C-NEW-1**: a deposit is now a `transaction.circom` proof (dummy inputs +
+/// one real output). `public_amount` is the NEGATIVE deposit-sign encoding of
+/// `amount`, and `commitment` MUST equal `output_commitment_0` (the proof's
+/// real output) — the on-chain handler rejects on mismatch.
+#[allow(missing_docs)]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct DepositArgs {
+    pub proof_a: [u8; 64],
+    pub proof_b: [u8; 128],
+    pub proof_c: [u8; 64],
+    pub root: [u8; 32],
+    pub input_nullifier_0: [u8; 32],
+    pub input_nullifier_1: [u8; 32],
+    pub output_commitment_0: [u8; 32],
+    pub output_commitment_1: [u8; 32],
+    pub public_amount: [u8; 32],
+    pub asset_id: [u8; 32],
+    pub ext_data_hash: [u8; 32],
+    pub amount: u64,
+    pub commitment: [u8; 32],
+    pub memo_commitments: Vec<[u8; 32]>,
+}
+
 /// Full accounts layout — supplied by the caller so the SDK doesn't
 /// need to know how PDAs are resolved (`said-solana::pda` handles that;
 /// CLI/daemon do `find_program_address` then hand the bumps in).
@@ -314,6 +341,10 @@ pub struct DepositAccounts {
     pub depositor: [u8; 32],
     /// Pool config PDA.
     pub pool_config: [u8; 32],
+    /// VerifierKey PDA (transaction VK). **C-NEW-1**: deposit is now
+    /// proof-gated, so the verifier-key account is required (same as
+    /// withdraw/transfer).
+    pub verifier_key: [u8; 32],
     /// Token mint being deposited.
     pub mint: [u8; 32],
     /// Active Merkle tree PDA for `mint`.
@@ -330,32 +361,92 @@ pub struct DepositAccounts {
     pub system_program: [u8; 32],
 }
 
-/// Build `deposit(amount: u64, commitment: [u8; 32])`.
+/// Build `deposit(args: DepositArgs)` — proof-gated shield-in.
 ///
 /// SOURCE OF TRUTH: `programs/said-shielded-pool/src/instructions/deposit.rs`.
-/// Deposit is NOT proof-gated on-chain — it transfers `amount` of `mint`
-/// from `depositor_token_account` into `escrow` and queues a single
-/// `commitment` for the forester. The instruction data is exactly the two
-/// Anchor top-level args in declared order: `u64` LE `amount` followed by
-/// the 32-byte `commitment`.
+///
+/// **C-NEW-1 fix.** Deposit is now PROOF-GATED. A deposit is a
+/// `transaction.circom` Groth16 proof with 2 DUMMY inputs (amount = 0) and 1
+/// REAL output (the deposited note); the on-chain handler binds:
+///   - `public_amount == encode_public_amount(-(amount))` — the NEGATIVE
+///     deposit sign (deposit adds an output note → `publicAmount = -amount`,
+///     the C1 convention; withdraw is `+amount`). DERIVED here from `amount`,
+///     so the bundle's own `public_amount` is ignored to avoid drift.
+///   - the queued `commitment` == the proof's real `output_commitment_0`, so
+///     the note's hidden value is proven to equal the deposited `amount`.
+///
+/// The `ProofBundle.public_inputs` MUST carry exactly 2 input nullifiers and
+/// 2 output commitments (the 2-in/2-out circuit shape); the REAL deposit
+/// output is `output_commitments[0]` (see `build_deposit_input.js`). Otherwise
+/// this returns an `Encoding` error.
+///
+/// `memo_commitments` MUST equal exactly the per-output memo commitments the
+/// prover folded into `ext_data_hash` (the on-chain handler rebuilds
+/// `ExtData { recipient = 0, mint, fee = 0, relayer_fee = 0, memo_commitments }`
+/// and rejects a mismatch — same C2 binding as transfer).
+///
+/// **Ceremony note**: reuses the transaction VK, so it inherits the SAME H1
+/// trusted-setup requirement as withdraw/transfer (no NEW ceremony). Deposits
+/// are non-functional until the real prover + regenerated keys land.
 ///
 /// Accounts order MUST match `Deposit<'info>`:
-///   depositor, pool_config, mint, merkle_tree, depositor_token_account,
-///   escrow, commitment_record, token_program, system_program.
+///   depositor, pool_config, verifier_key, mint, merkle_tree,
+///   depositor_token_account, escrow, commitment_record, token_program,
+///   system_program.
 pub fn build_deposit_ix(
     program_id: &[u8; 32],
     accounts: &DepositAccounts,
+    proof: &ProofBundle,
     amount: u64,
-    commitment: [u8; 32],
+    memo_commitments: Vec<[u8; 32]>,
 ) -> Result<RawInstruction> {
+    let pi = &proof.public_inputs;
+    let input_nullifiers = exactly_two(
+        pi.input_nullifiers.iter().map(|n| n.0),
+        "deposit input_nullifiers",
+    )?;
+    let output_commitments = exactly_two(
+        pi.output_commitments.iter().map(|c| c.0),
+        "deposit output_commitments",
+    )?;
+
+    // The REAL deposit output is slot 0; the queued commitment is bound to it
+    // on-chain. We surface it as `commitment` too so the wire struct carries
+    // both (the program requires `commitment == output_commitment_0`).
+    let real_output = output_commitments[0];
+
+    let args = DepositArgs {
+        proof_a: proof.proof.a,
+        proof_b: proof.proof.b,
+        proof_c: proof.proof.c,
+        root: pi.root.0,
+        input_nullifier_0: input_nullifiers[0],
+        input_nullifier_1: input_nullifiers[1],
+        output_commitment_0: output_commitments[0],
+        output_commitment_1: output_commitments[1],
+        // C1 (deposit sign): deposit adds an output note with no real input →
+        // `sum(in)=0 === sum(out)=amount + publicAmount` → publicAmount =
+        // -amount (NEGATIVE, encoded `r - amount`). Must equal the on-chain
+        // `encode_public_amount(-(amount as i128))`.
+        public_amount: encode_public_amount(-(amount as i128)),
+        asset_id: pi.asset_id.0,
+        ext_data_hash: pi.ext_data_hash,
+        amount,
+        commitment: real_output,
+        memo_commitments,
+    };
+
     let mut data = Vec::new();
     data.extend_from_slice(&discriminator("deposit"));
-    data.extend_from_slice(&amount.to_le_bytes());
-    data.extend_from_slice(&commitment);
+    let serialized = borsh::to_vec(&args).map_err(|e| {
+        crate::error::Error::Encoding(format!("borsh DepositArgs serialize: {e}"))
+    })?;
+    data.extend_from_slice(&serialized);
 
     let metas = vec![
         AccountMeta::new(accounts.depositor, true),
         AccountMeta::new_readonly(accounts.pool_config, false),
+        AccountMeta::new_readonly(accounts.verifier_key, false),
         AccountMeta::new_readonly(accounts.mint, false),
         AccountMeta::new(accounts.merkle_tree, false),
         AccountMeta::new(accounts.depositor_token_account, false),
@@ -591,6 +682,7 @@ mod tests {
         DepositAccounts {
             depositor: [10u8; 32],
             pool_config: [11u8; 32],
+            verifier_key: [19u8; 32],
             mint: [13u8; 32],
             merkle_tree: [12u8; 32],
             depositor_token_account: [15u8; 32],
@@ -598,6 +690,32 @@ mod tests {
             commitment_record: [18u8; 32],
             token_program: [16u8; 32],
             system_program: [0u8; 32],
+        }
+    }
+
+    /// A deposit-shaped bundle: 2 dummy input nullifiers, real output in slot
+    /// 0, dummy output in slot 1, negative (deposit-sign) public_amount.
+    /// Mirrors `circuits/tools/build_deposit_input.js`.
+    fn dummy_deposit_bundle(real_output: [u8; 32]) -> ProofBundle {
+        ProofBundle {
+            proof: Groth16Proof {
+                a: [1u8; 64],
+                b: [2u8; 128],
+                c: [3u8; 64],
+            },
+            public_inputs: PublicInputs {
+                // For a pure deposit both inputs are dummies; root is
+                // irrelevant in-circuit (membership skipped). Any value.
+                root: MerkleRoot([0u8; 32]),
+                input_nullifiers: vec![Nullifier([5u8; 32]), Nullifier([55u8; 32])],
+                // Slot 0 = REAL deposit output; slot 1 = dummy output.
+                output_commitments: vec![Commitment(real_output), Commitment([0u8; 32])],
+                // Deposit sign is NEGATIVE (this field is ignored by the
+                // builder, which derives it from `amount`).
+                public_amount: -1000,
+                asset_id: AssetId([8u8; 32]),
+                ext_data_hash: [9u8; 32],
+            },
         }
     }
 
@@ -616,13 +734,86 @@ mod tests {
     #[test]
     fn deposit_ix_builds() {
         let pid = [0u8; 32];
-        let ix = build_deposit_ix(&pid, &dummy_deposit_accounts(), 1_000, [0xCDu8; 32]).unwrap();
+        let real_output = [0xCDu8; 32];
+        let ix = build_deposit_ix(
+            &pid,
+            &dummy_deposit_accounts(),
+            &dummy_deposit_bundle(real_output),
+            1_000,
+            vec![],
+        )
+        .unwrap();
         assert_eq!(&ix.data[..8], &discriminator("deposit"));
-        assert_eq!(&ix.data[8..16], &1000u64.to_le_bytes());
-        assert_eq!(&ix.data[16..48], &[0xCDu8; 32]);
-        // No trailing bytes — deposit has no proof / public inputs.
-        assert_eq!(ix.data.len(), 8 + 8 + 32);
-        assert_eq!(ix.accounts.len(), 9);
+        // 10 accounts now (verifier_key added for proof verification).
+        assert_eq!(ix.accounts.len(), 10);
+        // The 3rd account meta is the verifier_key (proof-gated).
+        assert_eq!(ix.accounts[2].pubkey, [19u8; 32]);
+    }
+
+    /// **C-NEW-1 regression — the queued commitment is bound to the proof's
+    /// real output, and the public_amount carries the DEPOSIT (negative)
+    /// sign.** Decode the serialized `DepositArgs` and assert both.
+    #[test]
+    fn deposit_binds_commitment_to_real_output_and_negative_sign() {
+        let pid = [0u8; 32];
+        let real_output = [0xABu8; 32];
+        let ix = build_deposit_ix(
+            &pid,
+            &dummy_deposit_accounts(),
+            &dummy_deposit_bundle(real_output),
+            1_000,
+            vec![],
+        )
+        .unwrap();
+        let decoded = DepositArgs::try_from_slice(&ix.data[8..]).expect("decode DepositArgs");
+
+        // The queued commitment MUST equal output_commitment_0 (the proof's
+        // real output) — this is the load-bearing C-NEW-1 bind. The on-chain
+        // handler rejects `commitment != output_commitment_0`.
+        assert_eq!(decoded.commitment, real_output);
+        assert_eq!(decoded.output_commitment_0, real_output);
+
+        // DEPOSIT sign is NEGATIVE: public_amount == encode_public_amount(-amount).
+        assert_eq!(decoded.amount, 1_000);
+        assert_eq!(
+            decoded.public_amount,
+            encode_public_amount(-(1_000i128)),
+            "deposit public_amount must be the NEGATIVE (r - amount) encoding"
+        );
+        // Sanity: it is NOT the positive (withdraw) encoding.
+        assert_ne!(decoded.public_amount, encode_public_amount(1_000i128));
+    }
+
+    /// The builder always sets `commitment == output_commitment_0`, so a
+    /// caller cannot accidentally queue a commitment that differs from the
+    /// proven output. (The on-chain handler is the authoritative guard, but
+    /// the SDK never even constructs a mismatching bundle.)
+    #[test]
+    fn deposit_commitment_never_diverges_from_proof_output() {
+        let pid = [0u8; 32];
+        for real in [[1u8; 32], [0x7fu8; 32], [0xEEu8; 32]] {
+            let ix = build_deposit_ix(
+                &pid,
+                &dummy_deposit_accounts(),
+                &dummy_deposit_bundle(real),
+                42,
+                vec![],
+            )
+            .unwrap();
+            let decoded = DepositArgs::try_from_slice(&ix.data[8..]).unwrap();
+            assert_eq!(decoded.commitment, decoded.output_commitment_0);
+            assert_eq!(decoded.commitment, real);
+        }
+    }
+
+    #[test]
+    fn deposit_rejects_wrong_output_count() {
+        let pid = [0u8; 32];
+        let mut bundle = dummy_deposit_bundle([0xCDu8; 32]);
+        bundle.public_inputs.output_commitments = vec![Commitment([1u8; 32])]; // only 1
+        let err = build_deposit_ix(&pid, &dummy_deposit_accounts(), &bundle, 1_000, vec![])
+            .unwrap_err();
+        assert!(matches!(err, crate::error::Error::Encoding(_)));
     }
 
     #[test]
@@ -785,6 +976,39 @@ mod tests {
         assert_eq!(decoded.public_amount, [0u8; 32]);
         assert_eq!(decoded.asset_id, bundle.public_inputs.asset_id.0);
         assert_eq!(decoded.ext_data_hash, bundle.public_inputs.ext_data_hash);
+        assert_eq!(decoded.memo_commitments, memos);
+
+        let reserialized = borsh::to_vec(&decoded).unwrap();
+        assert_eq!(&ix.data[8..], reserialized.as_slice());
+    }
+
+    #[test]
+    fn deposit_args_round_trip() {
+        let pid = [0u8; 32];
+        let real_output = [0x5Au8; 32];
+        let bundle = dummy_deposit_bundle(real_output);
+        let memos = vec![[31u8; 32]];
+        let ix = build_deposit_ix(&pid, &dummy_deposit_accounts(), &bundle, 1_000, memos.clone())
+            .unwrap();
+
+        let decoded = DepositArgs::try_from_slice(&ix.data[8..])
+            .expect("DepositArgs must borsh-deserialize from the emitted bytes");
+
+        assert_eq!(decoded.proof_a, bundle.proof.a);
+        assert_eq!(decoded.proof_b, bundle.proof.b);
+        assert_eq!(decoded.proof_c, bundle.proof.c);
+        assert_eq!(decoded.root, bundle.public_inputs.root.0);
+        assert_eq!(decoded.input_nullifier_0, bundle.public_inputs.input_nullifiers[0].0);
+        assert_eq!(decoded.input_nullifier_1, bundle.public_inputs.input_nullifiers[1].0);
+        assert_eq!(decoded.output_commitment_0, real_output);
+        assert_eq!(decoded.output_commitment_1, bundle.public_inputs.output_commitments[1].0);
+        // Deposit: public_amount is the NEGATIVE encoding of amount.
+        assert_eq!(decoded.public_amount, encode_public_amount(-(1_000i128)));
+        assert_eq!(decoded.asset_id, bundle.public_inputs.asset_id.0);
+        assert_eq!(decoded.ext_data_hash, bundle.public_inputs.ext_data_hash);
+        assert_eq!(decoded.amount, 1_000);
+        // Load-bearing: queued commitment == proof's real output.
+        assert_eq!(decoded.commitment, real_output);
         assert_eq!(decoded.memo_commitments, memos);
 
         let reserialized = borsh::to_vec(&decoded).unwrap();
