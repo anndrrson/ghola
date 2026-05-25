@@ -84,11 +84,18 @@ impl Batcher {
             BatchDecision::Hold => Ok(()),
             BatchDecision::Release { reason, take } => {
                 let batch = self.select_batch(&items, take)?;
-                // INFO-level: count and reason only. NO ids, recipients, amounts.
-                tracing::info!(
+                // M3 (privacy): keep INFO generic — NO size, NO reason, NO
+                // ids/recipients/amounts. The exact anonymity-set size and
+                // the release reason (threshold vs timeout) are a
+                // side-channel: an observer with log access could use a
+                // timeout release with size < k to narrow the set. Demote
+                // both to DEBUG, consistent with the dedup module's
+                // privacy-logging rule.
+                tracing::info!("releasing batch");
+                tracing::debug!(
                     size = batch.len(),
                     reason = ?reason,
-                    "releasing batch"
+                    "releasing batch (detail)"
                 );
                 self.metrics.observe_anonymity_set(batch.len());
                 self.submit_batch(batch).await

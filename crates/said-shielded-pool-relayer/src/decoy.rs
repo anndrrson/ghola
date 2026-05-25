@@ -254,10 +254,23 @@ pub struct DecoyTrafficGenerator {
 impl DecoyTrafficGenerator {
     /// New generator. Caller wires `submitter` to the same Submitter
     /// the batcher uses, so decoys and real submissions share a fee
-    /// payer (Stream 4's `decoy_withdraw` has a `payer: Signer` so
-    /// the relayer keypair signs both — this matters because the
-    /// keypair's on-chain activity profile is the entity we want to
-    /// indistinguishably mix decoy + real traffic into).
+    /// payer (the `withdraw` ix has a `payer: Signer` so the relayer
+    /// keypair signs both — this matters because the keypair's on-chain
+    /// activity profile is the entity we want to indistinguishably mix
+    /// decoy + real traffic into).
+    ///
+    /// LINKABILITY LIMITATION (M3, documented — not yet mitigated): because
+    /// a SINGLE relayer keypair signs and fee-pays for BOTH real and decoy
+    /// withdrawals, that fee-payer is a stable, linkable on-chain entity.
+    /// Decoys hide WHICH of the relayer's txs are real, but every tx is
+    /// still attributable to "the relayer." An adversary correlating
+    /// fee-payer activity learns the aggregate real+decoy volume routed
+    /// through this relayer. Future hardening: per-tx fee-payer rotation
+    /// (a pool of disposable, separately-funded payer keypairs, round-robin
+    /// or randomized per submission) so no single on-chain identity spans
+    /// the whole traffic stream. Out of scope for the current design; the
+    /// mixing guarantee here is "real vs decoy within one relayer," not
+    /// "unlinkable across relayers / payers."
     pub fn new(
         config: Arc<Config>,
         submitter: Arc<dyn Submitter + Send + Sync>,
