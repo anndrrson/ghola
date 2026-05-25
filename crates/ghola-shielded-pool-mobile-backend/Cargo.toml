@@ -1,0 +1,54 @@
+[package]
+name = "ghola-shielded-pool-mobile-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native C ABI backend for Seeker-local Solana shielded-pool Groth16 proving."
+
+[lib]
+name = "ghola_shielded_pool_backend"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Host reference backend. This shells out to snarkjs and is for ABI/output
+# contract testing only; production Android builds must link a real mobile
+# witness/prover engine instead.
+host-snarkjs = ["dep:said-shielded-pool-prover"]
+# Rust-native Groth16 backend. This avoids Node/snarkjs and proves directly
+# from the Circom WASM/R1CS/zkey artifacts using arkworks.
+mobile-arkworks = [
+    "dep:ark-bn254",
+    "dep:ark-circom",
+    "dep:ark-crypto-primitives",
+    "dep:ark-ec",
+    "dep:ark-ff",
+    "dep:ark-groth16",
+    "dep:ark-std",
+    "dep:num-bigint",
+    "dep:rand",
+    "dep:said-shielded-pool-prover",
+]
+
+[dependencies]
+said-shielded-pool-prover = { path = "../said-shielded-pool-prover", optional = true }
+said-shielded-pool-types = { path = "../said-shielded-pool-types" }
+
+ark-bn254 = { version = "0.6", optional = true }
+ark-circom = { version = "0.6", default-features = false, optional = true }
+ark-crypto-primitives = { version = "0.6", features = ["snark"], optional = true }
+ark-ec = { version = "0.6", optional = true }
+ark-ff = { version = "0.6", optional = true }
+ark-groth16 = { version = "0.6", optional = true }
+ark-std = { version = "0.6", optional = true }
+base64 = { workspace = true }
+bs58 = { workspace = true }
+curve25519-dalek = { workspace = true }
+hex = { workspace = true }
+num-bigint = { version = "0.4", optional = true }
+rand = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = "3"

@@ -16,14 +16,13 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * E2E-encrypted cloud backend.
+ * Strict E2E-encrypted cloud backend.
  *
- * Talks to thumper-cloud's `POST /api/chat`, passing the user's outbound
- * message as a sealed-envelope-v1 ciphertext. The cloud persists the
- * ciphertext verbatim and never sees plaintext for that row (see
- * `crates/thumper-cloud/src/routes/chat.rs:64-97`). The SSE response is
- * plaintext today (the cloud doesn't yet send streaming envelopes back),
- * so we accumulate `text_delta` events into a single `ApiResponse`.
+ * Talks to thumper-cloud's `POST /api/chat/e2e`, passing only a
+ * sealed-envelope-v1 ciphertext. The strict route has no plaintext
+ * compatibility field and only emits sealed response envelopes. Cloud LLM
+ * inference must fail closed until an attested private provider can decrypt
+ * inside the private boundary.
  *
  * The vault must be unlocked before construction; ChatActivity is
  * responsible for that. Tool-use is not supported in v0.3 — agentic flows
@@ -41,7 +40,7 @@ class EnvelopeCloudBackend(
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
     }
 
-    override val displayName: String = "End-to-end encrypted (Ghola)"
+    override val displayName: String = "Strict encrypted cloud"
     override val requiresInternet: Boolean = true
 
     private val client = OkHttpClient.Builder()
@@ -66,15 +65,19 @@ class EnvelopeCloudBackend(
         val envelopeB64 = sealUserMessage(userText)
 
         val requestBody = JSONObject().apply {
+            val mat = vault.material()
             put("session_id", sessionId.toString())
-            put("message", userText) // The cloud route still requires the
-            // field for backwards compatibility, but it stores ciphertext
-            // when envelope_blob_b64 is present (see chat.rs).
             put("envelope_blob_b64", envelopeB64)
+            put("reply_recipient_x25519_b64", java.util.Base64.getEncoder().encodeToString(mat.x25519Public))
+            put("privacy_mode", "strictLocal")
+            put("network_scope", "cloudChat")
+            put("user_approved_at", java.time.Instant.now().toString())
+            put("approval_nonce", UUID.randomUUID().toString())
+            put("approval_summary", "Send ciphertext-only chat envelope to Ghola Cloud strict E2E route")
         }
 
         val request = Request.Builder()
-            .url("$baseUrl/api/chat")
+            .url("$baseUrl/api/chat/e2e")
             .header("Authorization", "Bearer $authToken")
             .header("Accept", "text/event-stream")
             .post(requestBody.toString().toRequestBody(JSON_MEDIA))
@@ -84,10 +87,10 @@ class EnvelopeCloudBackend(
         return response.use { resp ->
             if (!resp.isSuccessful) {
                 val body = try { resp.body?.string() } catch (_: Exception) { null }
-                throw IOException("/api/chat failed (${resp.code}): ${body ?: ""}")
+                throw IOException("/api/chat/e2e failed (${resp.code}): ${body ?: ""}")
             }
             val source = resp.body?.source()
-                ?: throw IOException("/api/chat: empty response body")
+                ?: throw IOException("/api/chat/e2e: empty response body")
             consumeSseToApiResponse(source)
         }
     }
@@ -164,6 +167,7 @@ class EnvelopeCloudBackend(
         var event = ""
         var dataBuffer = StringBuilder()
         var error: String? = null
+        var sawSealedResponse = false
 
         fun dispatch() {
             if (event.isEmpty() && dataBuffer.isEmpty()) return
@@ -174,9 +178,19 @@ class EnvelopeCloudBackend(
                         // Cloud may rewrite our session id; ignored here
                         // because we already pinned ours into the envelope AD.
                     }
-                    "text_delta" -> {
+                    "sealed_delta" -> {
+                        sawSealedResponse = true
                         val obj = JSONObject(data)
-                        text.append(obj.optString("text"))
+                        text.append(openAssistantEnvelope(obj.getString("envelope_blob_b64")))
+                    }
+                    "text_delta" -> {
+                        throw IOException("strict E2E route returned plaintext text_delta")
+                    }
+                    "privacy" -> {
+                        val obj = JSONObject(data)
+                        if (obj.optBoolean("cloud_plaintext_seen", true)) {
+                            throw IOException("strict E2E route reported plaintext exposure")
+                        }
                     }
                     "error" -> {
                         val obj = JSONObject(data)
@@ -184,14 +198,13 @@ class EnvelopeCloudBackend(
                     }
                     "done" -> { /* terminal */ }
                     "tool_use", "tool_result", "provider" -> {
-                        // Server-side tool calls aren't routed through the E2E
-                        // backend in v0.3; user-paired wallets stay on the
-                        // direct-LLM path.
+                        throw IOException("strict E2E route returned unsupported event: $event")
                     }
                     else -> Log.d(TAG, "ignoring unknown SSE event: $event")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "failed to parse SSE event '$event': $data", e)
+                error = e.message ?: "failed to parse encrypted SSE event"
             }
             event = ""
             dataBuffer = StringBuilder()
@@ -212,9 +225,27 @@ class EnvelopeCloudBackend(
         }
         dispatch()
 
-        if (error != null) throw IOException("/api/chat error: $error")
+        if (error != null) throw IOException("/api/chat/e2e error: $error")
+        if (!sawSealedResponse) throw IOException("/api/chat/e2e returned no sealed response")
 
         val blocks = listOf<ContentBlock>(ContentBlock.Text(text.toString()))
         return ApiResponse(blocks, "end_turn", null)
+    }
+
+    private fun openAssistantEnvelope(envelopeB64: String): String {
+        val wire = java.util.Base64.getDecoder().decode(envelopeB64)
+        val opened = Envelope.open(wire, vault.material().x25519Secret)
+        val expectedAd = "session=$sessionId;role=assistant"
+        if (String(opened.associatedData, Charsets.UTF_8) != expectedAd) {
+            throw IOException("assistant envelope associated data mismatch")
+        }
+        if (opened.recipientId != vault.userDid) {
+            throw IOException("assistant envelope recipient mismatch")
+        }
+        val payload = JSONObject(String(opened.plaintext, Charsets.UTF_8))
+        if (payload.optString("role") != "assistant") {
+            throw IOException("assistant envelope role mismatch")
+        }
+        return payload.optString("content")
     }
 }

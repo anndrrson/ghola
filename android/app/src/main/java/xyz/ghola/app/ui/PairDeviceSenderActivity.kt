@@ -1,32 +1,36 @@
 package xyz.ghola.app.ui
 
-import android.app.AlertDialog
-import android.graphics.Color
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
-import android.view.Gravity
-import android.view.ViewGroup.LayoutParams
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.google.android.material.bottomnavigation.BottomNavigationView
+import com.google.android.material.button.MaterialButton
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import xyz.ghola.app.BuildConfig
+import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
+import xyz.ghola.app.cloud.DeviceSignResult
+import xyz.ghola.app.cloud.DeviceSignerProvider
 import xyz.ghola.app.crypto.Envelope
 import xyz.ghola.app.crypto.PairDevice
 import xyz.ghola.app.crypto.VaultStore
 import xyz.ghola.app.crypto.mwaSignerForVault
 import xyz.ghola.app.solana.Base58
 import xyz.ghola.app.solana.MWAConnect
+import xyz.ghola.app.solana.SeedVaultNative
 
 /**
- * Pair Device — sender side. Scans the QR from the receiver, asks the
+ * Pair Device — sender side. Uses the code from the new phone, asks the
  * user to confirm the receiver's expectedSenderDid matches their own
  * wallet, then seals all session DEKs into a sealed-envelope-v1 frame
  * signed by the wallet (one MWA popup), and POSTs to the cloud mailbox.
@@ -35,8 +39,19 @@ class PairDeviceSenderActivity : AppCompatActivity() {
 
     private lateinit var storage: SecureStorage
     private lateinit var statusView: TextView
+    private lateinit var scanButton: MaterialButton
+    private lateinit var pasteButton: MaterialButton
+    private lateinit var confirmPanel: LinearLayout
+    private lateinit var receiverDidLine: TextView
+    private lateinit var walletDidLine: TextView
+    private lateinit var confirmSendButton: MaterialButton
+    private lateinit var cancelPairButton: MaterialButton
     private val activityResultSender = ActivityResultSender(this)
+    private val seedVaultNative = SeedVaultNative(this)
     private var vault: VaultStore? = null
+    private var pendingDescriptor: PairDevice.HandshakeDescriptor? = null
+    private var pendingSolanaAddress: String? = null
+    private var pendingWalletDid: String? = null
 
     private val qrLauncher = registerForActivityResult(ScanContract()) { result ->
         val raw = result.contents
@@ -51,37 +66,45 @@ class PairDeviceSenderActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         storage = SecureStorage(this)
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(32, 48, 32, 48)
-            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+        setContentView(R.layout.activity_pair_device_sender)
+        statusView = findViewById(R.id.pairSenderStatus)
+        scanButton = findViewById(R.id.scanPairQrButton)
+        pasteButton = findViewById(R.id.pastePairCodeButton)
+        confirmPanel = findViewById(R.id.pairConfirmPanel)
+        receiverDidLine = findViewById(R.id.receiverDidLine)
+        walletDidLine = findViewById(R.id.walletDidLine)
+        confirmSendButton = findViewById(R.id.confirmSendButton)
+        cancelPairButton = findViewById(R.id.cancelPairButton)
+
+        pasteButton.setOnClickListener { pastePairingCode() }
+        scanButton.setOnClickListener { launchScan() }
+        confirmSendButton.setOnClickListener { sendPendingPairing() }
+        cancelPairButton.setOnClickListener {
+            clearPendingPairing()
+            statusView.text = "Paste the code from your new phone. Ghola will encrypt your chats and send them there."
         }
-        val title = TextView(this).apply {
-            text = "Send sessions to a new device"
-            textSize = 20f
-            setTextColor(Color.WHITE)
+        BottomNavHelper.attach(this, R.id.tab_messages, findViewById<BottomNavigationView>(R.id.bottomNav))
+    }
+
+    private fun pastePairingCode() {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val raw = clipboard.primaryClip
+            ?.takeIf { it.itemCount > 0 }
+            ?.getItemAt(0)
+            ?.coerceToText(this)
+            ?.toString()
+            ?.trim()
+        if (raw.isNullOrBlank()) {
+            statusView.text = "No receive code found on clipboard."
+            return
         }
-        statusView = TextView(this).apply {
-            text = "Tap Scan, then point your camera at the new device's QR."
-            textSize = 14f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 16, 0, 16)
-        }
-        val scanButton = Button(this).apply {
-            text = "Scan QR"
-            setOnClickListener { launchScan() }
-        }
-        root.addView(title)
-        root.addView(statusView)
-        root.addView(scanButton)
-        setContentView(root)
+        onScanned(raw)
     }
 
     private fun launchScan() {
         val opts = ScanOptions().apply {
             setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-            setPrompt("Scan the receiving device's QR")
+            setPrompt("Scan the new phone's code")
             setBeepEnabled(false)
             setOrientationLocked(true)
         }
@@ -92,13 +115,13 @@ class PairDeviceSenderActivity : AppCompatActivity() {
         val descriptor = try {
             PairDevice.HandshakeDescriptor.fromJson(raw)
         } catch (e: Exception) {
-            statusView.text = "Invalid QR: ${e.message ?: "parse error"}"
+            statusView.text = "That code does not look like a Ghola receive code: ${e.message ?: "parse error"}"
             return
         }
 
         val solanaAddress = storage.getSolanaAddress()
         if (solanaAddress.isNullOrBlank()) {
-            statusView.text = "Connect your wallet first (Wallet tab)."
+            statusView.text = "Connect your wallet first."
             return
         }
         val pubBytes = try { Base58.decode(solanaAddress) } catch (e: Exception) {
@@ -109,19 +132,33 @@ class PairDeviceSenderActivity : AppCompatActivity() {
         }
         val ourDid = Envelope.didKeyFromVerifying(pubBytes)
 
-        // Show the receiver's expected DID alongside our own so the user
-        // can visually verify they match before any sealing happens. This
-        // is the only step where the cloud cannot impersonate.
-        AlertDialog.Builder(this)
-            .setTitle("Confirm receiver wallet")
-            .setMessage(
-                "The new device says it expects:\n${descriptor.expectedSenderDid}\n\n" +
-                    "Your wallet DID is:\n$ourDid\n\n" +
-                    "If these don't match, cancel and try again.",
-            )
-            .setPositiveButton("Send") { _, _ -> startSend(descriptor, solanaAddress, ourDid) }
-            .setNegativeButton("Cancel", null)
-            .show()
+        pendingDescriptor = descriptor
+        pendingSolanaAddress = solanaAddress
+        pendingWalletDid = ourDid
+        receiverDidLine.text = "New phone expects\n${descriptor.expectedSenderDid}"
+        walletDidLine.text = "This phone wallet\n$ourDid"
+        confirmPanel.visibility = LinearLayout.VISIBLE
+        statusView.text = if (descriptor.expectedSenderDid == ourDid) {
+            "This code belongs to your wallet. Send chats to the new phone."
+        } else {
+            "Wallet mismatch. Do not send unless this is expected."
+        }
+    }
+
+    private fun sendPendingPairing() {
+        val descriptor = pendingDescriptor ?: return
+        val solanaAddress = pendingSolanaAddress ?: return
+        val ourDid = pendingWalletDid ?: return
+        startSend(descriptor, solanaAddress, ourDid)
+    }
+
+    private fun clearPendingPairing() {
+        pendingDescriptor = null
+        pendingSolanaAddress = null
+        pendingWalletDid = null
+        receiverDidLine.text = ""
+        walletDidLine.text = ""
+        confirmPanel.visibility = LinearLayout.GONE
     }
 
     private fun startSend(
@@ -129,15 +166,33 @@ class PairDeviceSenderActivity : AppCompatActivity() {
         solanaAddress: String,
         ourDid: String,
     ) {
-        statusView.text = "Unlocking vault…"
+        statusView.text = "Approve with ${walletLabel()} to send chats."
+        scanButton.isEnabled = false
+        pasteButton.isEnabled = false
+        confirmSendButton.isEnabled = false
+        cancelPairButton.isEnabled = false
         val v = VaultStore.create(this, ourDid)
         vault = v
 
         lifecycleScope.launch {
             runCatching {
-                val signer = mwaSignerForVault(activityResultSender, solanaAddress)
+                val signer = if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                    (DeviceSignerProvider.cached(this@PairDeviceSenderActivity)
+                        ?: DeviceSignerProvider.signIn(this@PairDeviceSenderActivity).getOrThrow())
+                        .vaultSigner()
+                } else if (BuildConfig.GHOLA_SEEKER_BUILD && storage.hasSeedVaultSession()) {
+                    val seedSession = currentSeedVaultSession()
+                        ?: error("Seed Vault session unavailable; reconnect in Wallet")
+                    seedVaultNative.signer(seedSession).vaultSigner()
+                } else {
+                    mwaSignerForVault(
+                        activityResultSender,
+                        solanaAddress,
+                        storage.getMwaAuthToken(),
+                    )
+                }
                 withContext(Dispatchers.IO) { v.unlock(signer) }
-                statusView.text = "Tap your wallet to authorize the transfer…"
+                statusView.text = "Sending encrypted chats..."
                 // The handshake envelope must be signed by the wallet
                 // (not the cached chat-sign seed) so the receiver can
                 // verify against the wallet DID it pinned in the
@@ -145,12 +200,18 @@ class PairDeviceSenderActivity : AppCompatActivity() {
                 // signer once during seal(); that's the single MWA popup
                 // the user sees in this flow.
                 val walletSigner = Envelope.Ed25519BodySigner { msg ->
-                    val sig = kotlinx.coroutines.runBlocking(Dispatchers.IO) {
-                        MWAConnect.signMessageDetached(activityResultSender, solanaAddress, msg)
-                    }
-                    when (sig) {
-                        is MWAConnect.SignOutcome.Success -> sig.signature
-                        else -> error("wallet sign failed: $sig")
+                    if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                        val turnkeySigner = DeviceSignerProvider.cached(this@PairDeviceSenderActivity)
+                            ?: error("Turnkey signer unavailable")
+                        when (val sig = kotlinx.coroutines.runBlocking(Dispatchers.IO) { turnkeySigner.sign(msg) }) {
+                            is DeviceSignResult.Success -> sig.signature
+                            else -> error("Turnkey sign failed: $sig")
+                        }
+                    } else {
+                        when (val sig = kotlinx.coroutines.runBlocking(Dispatchers.IO) { signWithNativeWalletFirst(solanaAddress, msg) }) {
+                            is MWAConnect.SignOutcome.Success -> sig.signature
+                            else -> error("wallet sign failed: $sig")
+                        }
                     }
                 }
                 withContext(Dispatchers.IO) {
@@ -167,12 +228,54 @@ class PairDeviceSenderActivity : AppCompatActivity() {
                 finish()
             }.onFailure { err ->
                 statusView.text = "Send failed: ${err.message ?: "unknown"}"
+                scanButton.isEnabled = true
+                pasteButton.isEnabled = true
+                confirmSendButton.isEnabled = true
+                cancelPairButton.isEnabled = true
             }
         }
+    }
+
+    private suspend fun signWithNativeWalletFirst(
+        walletAddress: String,
+        message: ByteArray,
+    ): MWAConnect.SignOutcome {
+        val seedToken = storage.getSeedVaultAuthToken()
+        val seedPath = storage.getSeedVaultDerivationPathUri()
+        if (
+            BuildConfig.GHOLA_SEEKER_BUILD &&
+            seedVaultNative.isAvailable() &&
+            seedToken != null &&
+            !seedPath.isNullOrBlank()
+        ) {
+            return when (val out = seedVaultNative.signMessage(seedToken, seedPath, message)) {
+                is SeedVaultNative.SignOutcome.Success -> MWAConnect.SignOutcome.Success(out.signature)
+                SeedVaultNative.SignOutcome.NoSeedVault -> MWAConnect.SignOutcome.NoWallet
+                SeedVaultNative.SignOutcome.Declined -> MWAConnect.SignOutcome.Declined
+                SeedVaultNative.SignOutcome.Cancelled -> MWAConnect.SignOutcome.Cancelled
+                is SeedVaultNative.SignOutcome.Failure -> MWAConnect.SignOutcome.Failure(out.cause)
+            }
+        }
+        return MWAConnect.signMessageDetached(
+            activityResultSender,
+            walletAddress,
+            message,
+            storage.getMwaAuthToken(),
+        )
+    }
+
+    private fun currentSeedVaultSession(): SeedVaultNative.Session? {
+        val address = storage.getSeedVaultAddress() ?: return null
+        val token = storage.getSeedVaultAuthToken() ?: return null
+        val path = storage.getSeedVaultDerivationPathUri() ?: return null
+        return SeedVaultNative.Session(address, token, path)
     }
 
     override fun onDestroy() {
         super.onDestroy()
         vault?.lock()
     }
+
+    private fun walletLabel(): String =
+        if (BuildConfig.GHOLA_SEEKER_BUILD) "Seeker Wallet" else "your wallet"
 }

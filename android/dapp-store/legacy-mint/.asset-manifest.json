@@ -1,0 +1,39 @@
+{
+  "assets": {
+    "app-release.apk": {
+      "path": "app-release.apk",
+      "sha256": "jlHn/lY/oiPWpkHdMEyEQ0bDuKImpCoqA2VFxBYGNy8=",
+      "uri": "https://arweave.net/jymwmy7hqHAgzbIFU0Of5wxaGB6Ow3J7K2cxtV56sro"
+    },
+    "media/icon-512.png": {
+      "path": "media/icon-512.png",
+      "sha256": "0DD/LYplkZAXnZC0NdFBfEfkoO071tPLaqdTcxyURAA=",
+      "uri": "https://arweave.net/Hf-B0KDhJOK1iWwWsKazYIF6VuwLm5xhVI0TbLPUQns"
+    },
+    "media/banner.png": {
+      "path": "media/banner.png",
+      "sha256": "uLb9/dQ2nXE0YGWFE48PA6kEdkGcFOCI9HWJuhnl+xY=",
+      "uri": "https://arweave.net/LQfqZ7ej8QdIAogP3RI90Hi4AU4D0LW3q1hICGNPZlY"
+    },
+    "media/screenshot1.png": {
+      "path": "media/screenshot1.png",
+      "sha256": "dWRmrmdZEC3n3jqcC2qClafzyh7ju4bRdCTK0Zm4yy4=",
+      "uri": "https://arweave.net/zTy66LkaL3Kvn6imJGZ0egXdMig-FxR6ew7C9yPyjNQ"
+    },
+    "media/screenshot2.png": {
+      "path": "media/screenshot2.png",
+      "sha256": "n372e9oeE0sY6Mu2PjoI5bXAM8RXPloZVkn3E8H3aDs=",
+      "uri": "https://arweave.net/aVL_SxjM7icEJYQYhukyr9Jh5g1YYzcIujR77ZZmvJg"
+    },
+    "media/screenshot3.png": {
+      "path": "media/screenshot3.png",
+      "sha256": "1Xhtnkylto8TgUpy0sFcL/BqVTzomvCmwMjWX6qIQLM=",
+      "uri": "https://arweave.net/3b9L_4HXmv-B2mkSOgHa6b_v3ATjU6Y_XMZQjqDlWzk"
+    },
+    "media/screenshot4.png": {
+      "path": "media/screenshot4.png",
+      "sha256": "XKzrcFNciNG3YW7PmGUvJilxrfrs7kojgwa3klCCnWY=",
+      "uri": "https://arweave.net/Ck-d2iYCOCLj3PiI2cx8op8Zln5yqNSYfbOe2fOq-ng"
+    }
+  }
+}

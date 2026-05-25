@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="onboarding_welcome_title">Ghola for Android</string>
+    <string name="onboarding_welcome_body">The Play Store build uses normal Android wallet sign-in and keeps Seeker-only features in the Solana dApp Store build.</string>
+    <string name="onboarding_primary_sign_in">Sign in on Android</string>
+    <string name="onboarding_body_wallet">Your Ghola account unlocks call, email, chat, and owned agents. Turnkey-native signing is the target account surface for this build.</string>
+    <string name="onboarding_cta_idle">Sign in on Android</string>
+    <string name="cloud_required_for_call">Sign in to enable calls.</string>
+    <string name="cloud_required_for_email">Sign in to enable email.</string>
+    <string name="e2e_backend_caption">Your account unlocks the encrypted vault. Even Ghola can\'t read your chat.</string>
+    <string name="wallet_primary_section_title">› ANDROID WALLET</string>
+    <string name="wallet_proof_section_title">› ACCOUNT PROOF</string>
+    <string name="wallet_connect_button">SIGN IN WITH WALLET</string>
+    <string name="wallet_verify_button">ACCOUNT PROOF</string>
+    <string name="wallet_device_standard">Android Wallet</string>
+    <string name="wallet_status_standard">Connect a compatible wallet to use Ghola chat, calls, email, agents, and private payments.</string>
+    <string name="wallet_missing_standard">No compatible wallet installed. Install Solflare or Phantom, or use ghola.xyz for web account auth.</string>
+    <string name="wallet_package_missing">none detected - install Solflare or Phantom</string>
+    <string name="wallet_standard_proof_status">Standard Android account proof is handled by wallet sign-in.</string>
+    <string name="wallet_auth_label_standard">wallet</string>
+    <string name="litert_npu_section_caption">Runs local models on supported Android hardware when available. Nothing leaves the device.</string>
+</resources>

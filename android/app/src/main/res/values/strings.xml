@@ -3,13 +3,13 @@
     <string name="app_name">Ghola</string>
     <string name="accessibility_service_description">Ghola agent — gives your AI agent permission to read the screen and tap, type, and navigate other apps on your behalf.</string>
 
-    <!-- Phase 0.3 — End-to-end encrypted chat copy -->
-    <string name="e2e_backend_label">End-to-end encrypted</string>
-    <string name="e2e_backend_caption">Your wallet unlocks the encrypted vault. Even Ghola can\'t read your chat.</string>
-    <string name="pair_device_section_title">Pair Device</string>
-    <string name="pair_device_section_caption">Move encrypted chat sessions between two devices that share your wallet.</string>
-    <string name="pair_device_receive_button">Add this device from another</string>
-    <string name="pair_device_send_button">Send my sessions to a new device</string>
+    <!-- Strict encrypted cloud chat copy -->
+    <string name="e2e_backend_label">Strict encrypted cloud</string>
+    <string name="e2e_backend_caption">Ciphertext-only sync. Cloud inference fails closed until an attested private provider is available.</string>
+    <string name="pair_device_section_title">Chat Backup &amp; Transfer</string>
+    <string name="pair_device_section_caption">Only use this when setting up another phone you own.</string>
+    <string name="pair_device_receive_button">This is my new phone</string>
+    <string name="pair_device_send_button">This is my old phone</string>
 
     <!-- Quick-action tile prerequisites. Shown when a user taps Call/Email
          on the home grid without an active cloud session. -->
@@ -30,6 +30,38 @@
     <string name="onboarding_cta_check_a11y">I\'ve enabled it</string>
     <string name="onboarding_cta_finish">Finish</string>
     <string name="onboarding_cta_done">Done</string>
+    <string name="onboarding_welcome_title">Welcome to Ghola</string>
+    <string name="onboarding_welcome_body">Sign in with your Solana wallet. Call, email, chat, and agents stay bound to your wallet.</string>
+    <string name="onboarding_primary_sign_in">Sign in with wallet</string>
+    <string name="onboarding_accessibility_title">Enable Device Control</string>
+    <string name="onboarding_accessibility_body">Tap Ghola in the next screen, then turn it on. Android will ask you to confirm.</string>
+    <string name="onboarding_accessibility_open">Open Ghola Permission</string>
+    <string name="onboarding_accessibility_done">Done</string>
+    <string name="onboarding_accessibility_skip">Skip for now</string>
+    <string name="onboarding_accessibility_get_started">Get Started</string>
+
+    <!-- Wallet surface -->
+    <string name="wallet_nav_title">wallet</string>
+    <string name="wallet_primary_section_title">› SEEKER WALLET</string>
+    <string name="wallet_proof_section_title">› SEEKER PROOF</string>
+    <string name="wallet_connect_button">SIGN IN WITH SEEKER WALLET</string>
+    <string name="wallet_verify_button">VERIFY SEEKER</string>
+    <string name="wallet_device_seeker">Seeker Wallet</string>
+    <string name="wallet_device_standard">Wallet</string>
+    <string name="wallet_status_seed_vault">Connect once to use wallet-bound chat, pairing, and payments.</string>
+    <string name="wallet_status_seeker">Connect once to use wallet-bound chat and pairing.</string>
+    <string name="wallet_status_standard">Connect a Solana wallet to use Ghola.</string>
+    <string name="wallet_missing_seeker">No Solana wallet installed. Try Seed Vault on Seeker.</string>
+    <string name="wallet_missing_standard">No compatible Solana wallet installed. Install Solflare or Phantom to continue.</string>
+    <string name="wallet_package_missing">none detected - install Solflare, Phantom, or Seed Vault</string>
+    <string name="wallet_connect_seeker">SIGN IN WITH SEEKER WALLET</string>
+    <string name="wallet_connect_standard">SIGN IN WITH WALLET</string>
+    <string name="wallet_refresh_seeker">REFRESH SEEKER SIGN-IN</string>
+    <string name="wallet_refresh_standard">REFRESH WALLET SIGN-IN</string>
+    <string name="wallet_standard_proof_status">Seeker proof is only available in the Solana dApp Store build.</string>
+    <string name="wallet_seeker_only_toast">Seeker verification is only available in the Solana dApp Store build.</string>
+    <string name="wallet_auth_label_seeker">Seeker Wallet</string>
+    <string name="wallet_auth_label_standard">wallet</string>
 
     <!-- Phase γ.3 — LiteRT-LM NPU backend (Gemma-3-1B on APU 655) -->
     <string name="litert_npu_radio_label">On-device NPU (Gemma-3-1B)</string>

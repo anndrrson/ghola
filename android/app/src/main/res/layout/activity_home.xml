@@ -9,7 +9,7 @@
     R.id.greetingText, R.id.profileButton, R.id.activeTasksContainer,
     R.id.quickActionsContainer, R.id.actionCall, R.id.actionEmail,
     R.id.actionDevice, R.id.actionChat, R.id.micFab, R.id.voiceStatusText,
-    R.id.bottomNav
+    R.id.homeWalletButton, R.id.bottomNav
 -->
 <androidx.coordinatorlayout.widget.CoordinatorLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -23,7 +23,7 @@
         android:layout_height="match_parent"
         android:fillViewport="true"
         android:clipToPadding="false"
-        android:paddingBottom="176dp"
+        android:paddingBottom="120dp"
         android:paddingTop="24dp"
         android:paddingStart="24dp"
         android:paddingEnd="24dp">
@@ -120,7 +120,23 @@
                 android:layout_width="48dp"
                 android:layout_height="1dp"
                 android:background="#3da8ff"
-                android:layout_marginBottom="56dp" />
+                android:layout_marginBottom="16dp" />
+
+            <TextView
+                android:id="@+id/homeWalletButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:fontFamily="@font/geist_mono"
+                android:letterSpacing="0.08"
+                android:paddingTop="10dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="10dp"
+                android:text="WALLET"
+                android:textColor="#8b95a8"
+                android:textFontWeight="500"
+                android:textSize="12sp"
+                android:layout_marginBottom="30dp" />
 
             <!-- Active tasks -->
             <TextView
@@ -161,187 +177,219 @@
                 android:text="› DO"
                 android:layout_marginBottom="16dp" />
 
-            <LinearLayout
+            <FrameLayout
                 android:id="@+id/quickActionsContainer"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical">
+                android:layout_height="wrap_content">
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="1dp"
-                    android:baselineAligned="false">
+                    android:orientation="vertical">
 
-                    <com.google.android.material.card.MaterialCardView
-                        android:id="@+id/actionCall"
-                        android:layout_width="0dp"
-                        android:layout_height="96dp"
-                        android:layout_weight="1"
-                        android:layout_marginEnd="1dp"
-                        app:cardCornerRadius="0dp"
-                        app:cardElevation="0dp"
-                        app:cardBackgroundColor="#000000"
-                        app:strokeColor="#1e2a3a"
-                        app:strokeWidth="1dp">
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:layout_marginBottom="1dp"
+                        android:baselineAligned="false">
 
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent"
-                            android:orientation="vertical"
-                            android:gravity="bottom"
-                            android:padding="16dp">
-                            <TextView
-                                style="@style/Ghola.Text.Eyebrow"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="01"
-                                android:textColor="#4a5568" />
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Call"
-                                android:textColor="#eef1f8"
-                                android:textSize="22sp"
-                                android:fontFamily="@font/geist"
-                                android:textFontWeight="500"
-                                android:letterSpacing="-0.02" />
-                        </LinearLayout>
-                    </com.google.android.material.card.MaterialCardView>
+                        <com.google.android.material.card.MaterialCardView
+                            android:id="@+id/actionCall"
+                            android:layout_width="0dp"
+                            android:layout_height="96dp"
+                            android:layout_weight="1"
+                            android:layout_marginEnd="1dp"
+                            app:cardCornerRadius="0dp"
+                            app:cardElevation="0dp"
+                            app:cardBackgroundColor="#000000"
+                            app:strokeColor="#1e2a3a"
+                            app:strokeWidth="1dp">
 
-                    <com.google.android.material.card.MaterialCardView
-                        android:id="@+id/actionEmail"
-                        android:layout_width="0dp"
-                        android:layout_height="96dp"
-                        android:layout_weight="1"
-                        app:cardCornerRadius="0dp"
-                        app:cardElevation="0dp"
-                        app:cardBackgroundColor="#000000"
-                        app:strokeColor="#1e2a3a"
-                        app:strokeWidth="1dp">
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="match_parent"
+                                android:orientation="vertical"
+                                android:gravity="bottom"
+                                android:padding="16dp">
+                                <TextView
+                                    style="@style/Ghola.Text.Eyebrow"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="01"
+                                    android:textColor="#4a5568" />
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Call"
+                                    android:textColor="#eef1f8"
+                                    android:textSize="22sp"
+                                    android:fontFamily="@font/geist"
+                                    android:textFontWeight="500"
+                                    android:letterSpacing="-0.02" />
+                            </LinearLayout>
+                        </com.google.android.material.card.MaterialCardView>
 
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent"
-                            android:orientation="vertical"
-                            android:gravity="bottom"
-                            android:padding="16dp">
-                            <TextView
-                                style="@style/Ghola.Text.Eyebrow"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="02"
-                                android:textColor="#4a5568" />
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Email"
-                                android:textColor="#eef1f8"
-                                android:textSize="22sp"
-                                android:fontFamily="@font/geist"
-                                android:textFontWeight="500"
-                                android:letterSpacing="-0.02" />
-                        </LinearLayout>
-                    </com.google.android.material.card.MaterialCardView>
+                        <com.google.android.material.card.MaterialCardView
+                            android:id="@+id/actionEmail"
+                            android:layout_width="0dp"
+                            android:layout_height="96dp"
+                            android:layout_weight="1"
+                            app:cardCornerRadius="0dp"
+                            app:cardElevation="0dp"
+                            app:cardBackgroundColor="#000000"
+                            app:strokeColor="#1e2a3a"
+                            app:strokeWidth="1dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="match_parent"
+                                android:orientation="vertical"
+                                android:gravity="bottom|end"
+                                android:padding="16dp">
+                                <TextView
+                                    style="@style/Ghola.Text.Eyebrow"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="02"
+                                    android:textColor="#4a5568" />
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Email"
+                                    android:textColor="#eef1f8"
+                                    android:textSize="22sp"
+                                    android:fontFamily="@font/geist"
+                                    android:textFontWeight="500"
+                                    android:letterSpacing="-0.02" />
+                            </LinearLayout>
+                        </com.google.android.material.card.MaterialCardView>
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:baselineAligned="false">
+
+                        <com.google.android.material.card.MaterialCardView
+                            android:id="@+id/actionDevice"
+                            android:layout_width="0dp"
+                            android:layout_height="96dp"
+                            android:layout_weight="1"
+                            android:layout_marginEnd="1dp"
+                            app:cardCornerRadius="0dp"
+                            app:cardElevation="0dp"
+                            app:cardBackgroundColor="#000000"
+                            app:strokeColor="#1e2a3a"
+                            app:strokeWidth="1dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="match_parent"
+                                android:orientation="vertical"
+                                android:gravity="bottom"
+                                android:padding="16dp">
+                                <TextView
+                                    style="@style/Ghola.Text.Eyebrow"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="03"
+                                    android:textColor="#4a5568" />
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Device"
+                                    android:textColor="#eef1f8"
+                                    android:textSize="22sp"
+                                    android:fontFamily="@font/geist"
+                                    android:textFontWeight="500"
+                                    android:letterSpacing="-0.02" />
+                            </LinearLayout>
+                        </com.google.android.material.card.MaterialCardView>
+
+                        <com.google.android.material.card.MaterialCardView
+                            android:id="@+id/actionChat"
+                            android:layout_width="0dp"
+                            android:layout_height="96dp"
+                            android:layout_weight="1"
+                            app:cardCornerRadius="0dp"
+                            app:cardElevation="0dp"
+                            app:cardBackgroundColor="#000000"
+                            app:strokeColor="#1e2a3a"
+                            app:strokeWidth="1dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="match_parent"
+                                android:orientation="vertical"
+                                android:gravity="bottom|end"
+                                android:padding="16dp">
+                                <TextView
+                                    style="@style/Ghola.Text.Eyebrow"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="04"
+                                    android:textColor="#4a5568" />
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Chat"
+                                    android:textColor="#eef1f8"
+                                    android:textSize="22sp"
+                                    android:fontFamily="@font/geist"
+                                    android:textFontWeight="500"
+                                    android:letterSpacing="-0.02" />
+                            </LinearLayout>
+                        </com.google.android.material.card.MaterialCardView>
+                    </LinearLayout>
                 </LinearLayout>
 
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:baselineAligned="false">
+                <FrameLayout
+                    android:layout_width="92dp"
+                    android:layout_height="92dp"
+                    android:layout_gravity="center"
+                    android:clipChildren="false"
+                    android:clipToPadding="false">
 
-                    <com.google.android.material.card.MaterialCardView
-                        android:id="@+id/actionDevice"
-                        android:layout_width="0dp"
-                        android:layout_height="96dp"
-                        android:layout_weight="1"
-                        android:layout_marginEnd="1dp"
-                        app:cardCornerRadius="0dp"
-                        app:cardElevation="0dp"
-                        app:cardBackgroundColor="#000000"
-                        app:strokeColor="#1e2a3a"
-                        app:strokeWidth="1dp">
+                    <View
+                        android:layout_width="92dp"
+                        android:layout_height="92dp"
+                        android:layout_gravity="center"
+                        android:background="@drawable/bg_mic_orb_shadow" />
 
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent"
-                            android:orientation="vertical"
-                            android:gravity="bottom"
-                            android:padding="16dp">
-                            <TextView
-                                style="@style/Ghola.Text.Eyebrow"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="03"
-                                android:textColor="#4a5568" />
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Device"
-                                android:textColor="#eef1f8"
-                                android:textSize="22sp"
-                                android:fontFamily="@font/geist"
-                                android:textFontWeight="500"
-                                android:letterSpacing="-0.02" />
-                        </LinearLayout>
-                    </com.google.android.material.card.MaterialCardView>
+                    <View
+                        android:layout_width="72dp"
+                        android:layout_height="72dp"
+                        android:layout_gravity="center"
+                        android:background="@drawable/bg_mic_orb_surface"
+                        android:elevation="10dp" />
 
-                    <com.google.android.material.card.MaterialCardView
-                        android:id="@+id/actionChat"
-                        android:layout_width="0dp"
-                        android:layout_height="96dp"
-                        android:layout_weight="1"
-                        app:cardCornerRadius="0dp"
-                        app:cardElevation="0dp"
-                        app:cardBackgroundColor="#000000"
-                        app:strokeColor="#1e2a3a"
-                        app:strokeWidth="1dp">
+                    <View
+                        android:layout_width="54dp"
+                        android:layout_height="54dp"
+                        android:layout_gravity="center"
+                        android:layout_marginTop="-8dp"
+                        android:background="@drawable/bg_mic_orb_highlight"
+                        android:elevation="11dp" />
 
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="match_parent"
-                            android:orientation="vertical"
-                            android:gravity="bottom"
-                            android:padding="16dp">
-                            <TextView
-                                style="@style/Ghola.Text.Eyebrow"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="04"
-                                android:textColor="#4a5568" />
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="Chat"
-                                android:textColor="#eef1f8"
-                                android:textSize="22sp"
-                                android:fontFamily="@font/geist"
-                                android:textFontWeight="500"
-                                android:letterSpacing="-0.02" />
-                        </LinearLayout>
-                    </com.google.android.material.card.MaterialCardView>
-                </LinearLayout>
-            </LinearLayout>
+                    <ImageButton
+                        android:id="@+id/micFab"
+                        android:layout_width="72dp"
+                        android:layout_height="72dp"
+                        android:layout_gravity="center"
+                        android:background="@drawable/bg_mic_orb_press"
+                        android:contentDescription="Voice input"
+                        android:elevation="12dp"
+                        android:padding="22dp"
+                        android:scaleType="centerInside"
+                        android:src="@android:drawable/ic_btn_speak_now"
+                        android:tint="#05131d" />
+                </FrameLayout>
+            </FrameLayout>
 
         </LinearLayout>
     </ScrollView>
-
-    <!-- Mic FAB -->
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/micFab"
-        android:layout_width="56dp"
-        android:layout_height="56dp"
-        android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="96dp"
-        android:src="@android:drawable/ic_btn_speak_now"
-        android:contentDescription="Voice input"
-        app:fabSize="normal"
-        app:backgroundTint="#3da8ff"
-        app:tint="#000000"
-        app:borderWidth="0dp"
-        app:elevation="0dp" />
 
     <com.google.android.material.bottomnavigation.BottomNavigationView
         android:id="@+id/bottomNav"

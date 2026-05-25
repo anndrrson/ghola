@@ -11,6 +11,7 @@ import com.google.android.material.button.MaterialButton
 import org.json.JSONObject
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
+import xyz.ghola.app.cloud.CloudAuthManager
 import xyz.ghola.app.cloud.SaidCloudClient
 import java.util.concurrent.Executors
 
@@ -70,15 +71,28 @@ class AgentsActivity : AppCompatActivity() {
 
     private fun loadAgents() {
         if (!storage.hasSaidAuth()) {
-            adapter?.setAgents(emptyList())
-            emptyState.visibility = View.VISIBLE
-            recycler.visibility = View.GONE
+            if (storage.hasSaidRefreshToken()) {
+                executor.execute {
+                    val refreshed = CloudAuthManager(this).refreshSaidToken()
+                    runOnUiThread {
+                        if (refreshed) loadAgents() else showEmpty()
+                    }
+                }
+                return
+            }
+            showEmpty()
             return
         }
 
         executor.execute {
             try {
-                val client = SaidCloudClient(storage.getSaidBaseUrl(), storage.getSaidToken())
+                val authManager = CloudAuthManager(this)
+                val client = SaidCloudClient.withRefresh(
+                    baseUrl = storage.getSaidBaseUrl(),
+                    tokenProvider = { storage.getSaidToken() },
+                    tokenRefresher = { authManager.refreshSaidToken() },
+                    onAuthExhausted = { storage.clearSaidAuth() },
+                )
                 val rows = client.listAgents()
                 val list = mutableListOf<JSONObject>()
                 if (rows != null) {
@@ -92,12 +106,14 @@ class AgentsActivity : AppCompatActivity() {
                     recycler.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
                 }
             } catch (_: Exception) {
-                runOnUiThread {
-                    adapter?.setAgents(emptyList())
-                    emptyState.visibility = View.VISIBLE
-                    recycler.visibility = View.GONE
-                }
+                runOnUiThread { showEmpty() }
             }
         }
+    }
+
+    private fun showEmpty() {
+            adapter?.setAgents(emptyList())
+            emptyState.visibility = View.VISIBLE
+            recycler.visibility = View.GONE
     }
 }

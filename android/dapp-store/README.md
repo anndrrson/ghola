@@ -1,24 +1,30 @@
 # Ghola dApp Store Publishing
 
-This directory holds the Solana dApp Store publishing config for the Android
-client. It is used by `@solana-mobile/dapp-store-cli` to mint the on-chain
-publisher/app/release records and submit the APK to the Solana Mobile store.
+This directory holds the Solana dApp Store release materials for the Android
+client: listing copy, screenshots, release notes, and signed APKs.
+
+Ghola's current store listing uses the Solana Mobile Publisher Portal-backed
+CLI (`@solana-mobile/dapp-store-cli@1.0.0`). The older legacy mint flow in
+`legacy-mint/` is kept for metadata history, but current submissions require a
+Publisher Portal API key.
 
 ## Prerequisites
 
 1. **Node.js 18+** and `npx`.
-2. **A funded devnet Solana wallet** for the publisher account. The CLI will
-   create three on-chain records (publisher, app, release) that each need a
-   small amount of SOL.
-3. **A release keystore** at `~/.android/ghola-release.keystore` (or any path
-   exported as `GHOLA_KEYSTORE_PATH`). Store the passwords in your shell env
-   or `~/.gradle/gradle.properties`:
+2. **The existing Ghola App NFT**: `GGy59nfUdjL1aXyoawPrcR4v2gEY2ioMDriAoJWXk1ef`.
+3. **The Ornithopter publisher keypair** used by prior submissions:
+   `/Users/andersonobrien/Downloads/orni/orni-mobile/publishing/keypair.json`.
+4. **Publisher Portal API key** from
+   `https://publish.solanamobile.com/dashboard/settings/api-keys`, exported as
+   `DAPP_STORE_API_KEY`.
+5. **Enough mainnet SOL** on that publisher keypair for minting and review
+   submission fees.
+6. **The real Ghola release keystore** from the Documents secret folder. Avoid
+   the older `~/.android/ghola-release.keystore` decoy; store updates must keep
+   certificate SHA-256 `fb6d833b43c0d16c7152eeb5ff2ead110dda6baf3d1222292b444f3058b95510`.
 
    ```
-   GHOLA_KEYSTORE_PATH=/absolute/path/to/ghola-release.keystore
-   GHOLA_KEYSTORE_PASSWORD=...
-   GHOLA_KEY_ALIAS=ghola
-   GHOLA_KEY_PASSWORD=...
+   source "/Users/andersonobrien/Documents/New project/secrets/ghola-release-signing.env"
    ```
 
 ## Workflow
@@ -26,40 +32,45 @@ publisher/app/release records and submit the APK to the Solana Mobile store.
 1. **Build a signed release APK:**
    ```
    cd android
-   ./gradlew assembleRelease
-   cp app/build/outputs/apk/release/app-release.apk dapp-store/app-release.apk
+   set -a
+   source "/Users/andersonobrien/Documents/New project/secrets/ghola-release-signing.env"
+   set +a
+   JAVA_HOME=$(/usr/libexec/java_home -v 17) ./gradlew :app:assembleSeekerRelease
+
+   cp app/build/outputs/apk/seeker/release/app-seeker-release.apk dapp-store/app-release-signed.apk
+   cp app/build/outputs/apk/seeker/release/app-seeker-release.apk dapp-store/legacy-mint/app-release.apk
    ```
 
-2. **Fill in the TODO assets** in this directory:
+   If Gradle outputs `app-release-unsigned.apk`, the signing env is missing and
+   the APK is not submission-ready.
+
+2. **Confirm assets** in this directory:
    - `assets/icon.png` (512x512 app icon)
-   - `assets/screenshots/*.png` (6-8 screenshots at 1080x2400)
+   - `assets/screenshots/*.png` (Seeker screenshots)
 
-3. **Validate the config:**
+3. **Run the local release checks:**
    ```
-   npx @solana-mobile/dapp-store-cli validate
-   ```
-
-4. **First publish — creates on-chain publisher + app + release records:**
-   ```
-   npx @solana-mobile/dapp-store-cli create publisher -k publisher.json
-   npx @solana-mobile/dapp-store-cli create app -k publisher.json
-   npx @solana-mobile/dapp-store-cli create release -k publisher.json \
-     -b $ANDROID_HOME/build-tools/34.0.0
+   ./check-release.sh dapp-store/app-release-signed.apk
    ```
 
-5. **Submit for review:**
+4. **Publish the update to the Publisher Portal:**
    ```
-   npx @solana-mobile/dapp-store-cli publish submit -k publisher.json
+   cd dapp-store
+   export DAPP_STORE_API_KEY=...
+   npx -y @solana-mobile/dapp-store-cli@1.0.0 \
+     --apk-file ./app-release-signed.apk \
+     --keypair /Users/andersonobrien/Downloads/orni/orni-mobile/publishing/keypair.json \
+     --whats-new "$(cat release-notes.txt)"
    ```
 
 ## Review window
 
-Solana Mobile's review is manual and typically takes 3-10 business days. Keep
-building against the submitted build — the next release is `publish update`
-with the same publisher keypair.
+Solana Mobile's legacy flow estimates 1-2 business days for app update review.
+If there is no response, follow up in the Solana Mobile developer channels with
+the release NFT and submission date.
 
 ## Security
 
-**DO NOT commit `publisher.json` or any `.keystore` file.** Add them to
-`.gitignore`. The publisher keypair controls the on-chain publisher account
-and losing it means losing the dApp Store listing.
+**DO NOT commit publisher keypairs, keystores, or signing env files.** The
+publisher keypair controls the on-chain publisher account, and the release
+keystore controls Android update continuity.

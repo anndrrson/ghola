@@ -13,7 +13,7 @@
         android:title="Activity"
         android:icon="@drawable/ic_nav_activity" />
     <item
-        android:id="@+id/tab_wallet"
-        android:title="Wallet"
-        android:icon="@drawable/ic_nav_wallet" />
+        android:id="@+id/tab_messages"
+        android:title="Messages"
+        android:icon="@android:drawable/ic_dialog_email" />
 </menu>

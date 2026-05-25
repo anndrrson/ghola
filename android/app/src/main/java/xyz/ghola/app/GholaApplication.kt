@@ -5,6 +5,7 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import xyz.ghola.app.cloud.AppForegroundCoordinator
+import xyz.ghola.app.cloud.TurnkeyAuthBridge
 import xyz.ghola.app.crypto.CryptoProviders
 
 /**
@@ -31,6 +32,7 @@ class GholaApplication : Application(), DefaultLifecycleObserver {
         // Application one and must call super<Application>.onCreate() explicitly.
         super<Application>.onCreate()
         CryptoProviders.installBouncyCastleOnce()
+        TurnkeyAuthBridge.initialize(this)
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
     }
 

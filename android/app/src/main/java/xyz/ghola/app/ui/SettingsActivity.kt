@@ -5,7 +5,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.provider.Settings
 import android.view.MenuItem
 import android.view.View
 import android.widget.ArrayAdapter
@@ -30,7 +29,6 @@ import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.ai.litert.LiteRtModelManager
 import xyz.ghola.app.ai.llama.ModelManager
 import xyz.ghola.app.cloud.ThumperCloudClient
-import xyz.ghola.app.service.ThumperAccessibilityService
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -270,11 +268,14 @@ class SettingsActivity : AppCompatActivity() {
         hfTokenClearButton.setOnClickListener { onClearHfToken() }
 
         enableA11yButton.setOnClickListener {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            AccessibilitySetup.open(this)
         }
 
         openRelayButton.setOnClickListener {
             startActivity(Intent(this, MainActivity::class.java))
+        }
+        findViewById<View>(R.id.localHomeConnectButton).setOnClickListener {
+            startActivity(Intent(this, LocalServerConnectActivity::class.java))
         }
 
         connectGoogleButton.setOnClickListener {
@@ -980,7 +981,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun updateA11yStatus() {
-        val enabled = ThumperAccessibilityService.instance != null
+        val enabled = AccessibilitySetup.isEnabled(this)
         a11yStatus.text = if (enabled) "Enabled" else "Disabled"
         a11yStatus.setTextColor(
             if (enabled) 0xFF4CAF50.toInt() else 0xFFF44336.toInt()

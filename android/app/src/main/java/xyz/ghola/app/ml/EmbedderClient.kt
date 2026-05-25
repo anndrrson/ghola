@@ -43,24 +43,13 @@ class EmbedderClient private constructor(
         private const val MODEL_FILE = "minilm-l6-v2-int8.onnx"
         private const val VOCAB_FILE = "minilm-l6-v2-vocab.txt"
 
-        /**
-         * URL the embedder downloads from on first run. We host this as a
-         * static asset on api.ghola.xyz; the model bytes are public (it's an
-         * open-weight model) so this download leaks no user data.
-         *
-         * Sha256 verification happens in [downloadIfMissing] — a tampered
-         * model would change embedding semantics and silently corrupt the
-         * retrieval index.
-         */
-        private const val MODEL_URL =
-            "https://api.ghola.xyz/static/ml/minilm-l6-v2-int8.onnx"
-        private const val MODEL_SHA256 =
-            // Placeholder — must match the actual onnx file shipped to
-            // api.ghola.xyz. Verify with: shasum -a 256 minilm-l6-v2-int8.onnx
-            "TODO-fill-in-once-model-is-uploaded"
-
-        private const val VOCAB_URL =
-            "https://api.ghola.xyz/static/ml/minilm-l6-v2-vocab.txt"
+        // Remote MiniLM assets are intentionally disabled for the dApp Store
+        // build until the model/vocab are hosted and pinned with a real hash.
+        // Callers already fall back to recency-only anchors when this returns
+        // null, which is better than a first-run 404 or unverified download.
+        private const val REMOTE_MODEL_ENABLED = false
+        private const val MODEL_URL = ""
+        private const val VOCAB_URL = ""
 
         @Volatile private var INSTANCE: EmbedderClient? = null
 
@@ -78,6 +67,10 @@ class EmbedderClient private constructor(
 
         private fun build(context: Context): EmbedderClient? {
             return try {
+                if (!REMOTE_MODEL_ENABLED) {
+                    Log.i(TAG, "embedder disabled; remote model assets are not configured")
+                    return null
+                }
                 val modelFile = ensureFile(context, MODEL_FILE, MODEL_URL)
                 val vocabFile = ensureFile(context, VOCAB_FILE, VOCAB_URL)
                 val env = OrtEnvironment.getEnvironment()

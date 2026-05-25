@@ -31,7 +31,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Welcome to Ghola"
+            android:text="@string/onboarding_welcome_title"
             android:textSize="28sp"
             android:textStyle="bold"
             android:textColor="#eef1f8"
@@ -41,7 +41,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Sign in with your Solana wallet — that's it. Call, email, chat, and agents are wallet-bound."
+            android:text="@string/onboarding_welcome_body"
             android:textSize="16sp"
             android:textColor="#8b95a8"
             android:textAlignment="center"
@@ -51,7 +51,7 @@
             android:id="@+id/btnWalletSignIn"
             android:layout_width="280dp"
             android:layout_height="48dp"
-            android:text="Sign in with wallet"
+            android:text="@string/onboarding_primary_sign_in"
             android:layout_marginBottom="16dp"
             style="@style/Widget.MaterialComponents.Button" />
     </LinearLayout>
@@ -68,7 +68,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Enable Device Control"
+            android:text="@string/onboarding_accessibility_title"
             android:textSize="28sp"
             android:textStyle="bold"
             android:textColor="#eef1f8"
@@ -78,7 +78,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Ghola can control your phone with Accessibility to open apps, tap buttons, and type text. Optional — you can enable this now or later."
+            android:text="@string/onboarding_accessibility_body"
             android:textSize="16sp"
             android:textColor="#8b95a8"
             android:textAlignment="center"
@@ -88,7 +88,7 @@
             android:id="@+id/btnEnableAccessibility"
             android:layout_width="280dp"
             android:layout_height="48dp"
-            android:text="Open Accessibility Settings"
+            android:text="@string/onboarding_accessibility_open"
             android:layout_marginBottom="16dp"
             style="@style/Widget.MaterialComponents.Button" />
 
@@ -96,14 +96,14 @@
             android:id="@+id/btnCheckAccessibility"
             android:layout_width="280dp"
             android:layout_height="48dp"
-            android:text="I've enabled it"
+            android:text="@string/onboarding_accessibility_done"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
 
         <Button
             android:id="@+id/btnFinish"
             android:layout_width="280dp"
             android:layout_height="48dp"
-            android:text="Skip for now"
+            android:text="@string/onboarding_accessibility_skip"
             android:layout_marginTop="16dp"
             style="@style/Widget.MaterialComponents.Button.TextButton" />
 
@@ -111,7 +111,8 @@
             android:id="@+id/btnDone"
             android:layout_width="280dp"
             android:layout_height="48dp"
-            android:text="Get Started"
+            android:text="@string/onboarding_accessibility_get_started"
+            android:visibility="gone"
             style="@style/Widget.MaterialComponents.Button" />
     </LinearLayout>
 

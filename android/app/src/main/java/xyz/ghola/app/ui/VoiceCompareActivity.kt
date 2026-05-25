@@ -72,6 +72,20 @@ class VoiceCompareActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // SECURITY (exported deep-link hardening). This is the only exported
+        // BROWSABLE activity (ghola://voice-compare, see AndroidManifest), so
+        // any app or web page can launch it. It is treated as PURE NAVIGATION:
+        // it must never read data, extras, or the deep-link URI from the launch
+        // Intent — every input comes from on-device state (SecureStorage,
+        // ModelManager) or the user-typed prompt field. We drop any incoming
+        // extras / data here so a future edit can't accidentally start trusting
+        // attacker-supplied intent contents.
+        intent?.let { launchIntent ->
+            launchIntent.replaceExtras(null as Bundle?)
+            launchIntent.data = null
+        }
+
         setContentView(R.layout.activity_voice_compare)
         storage = SecureStorage(this)
 

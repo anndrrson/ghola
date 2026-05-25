@@ -50,6 +50,7 @@
              machine sits on a different IP. -->
         <domain includeSubdomains="false">192.168.1.100</domain>
         <domain includeSubdomains="false">192.168.1.169</domain>
+        <domain includeSubdomains="false">192.168.1.170</domain>
         <trust-anchors>
             <certificates src="system" />
             <certificates src="user" />

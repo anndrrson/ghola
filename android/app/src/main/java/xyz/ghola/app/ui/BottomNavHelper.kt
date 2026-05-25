@@ -6,7 +6,7 @@ import com.google.android.material.bottomnavigation.BottomNavigationView
 import xyz.ghola.app.R
 
 /**
- * Phase M6: Shared bottom navigation across the 4 top-level activities.
+ * Phase M6: Shared bottom navigation across top-level activities.
  *
  * Activity-based navigation (NOT Fragments) — intentional choice per the plan:
  * Fragment migration would churn lifecycle logic in the accessibility-sensitive
@@ -20,7 +20,9 @@ import xyz.ghola.app.R
 object BottomNavHelper {
 
     fun attach(activity: Activity, currentTabId: Int, navView: BottomNavigationView) {
-        navView.selectedItemId = currentTabId
+        if (navView.menu.findItem(currentTabId) != null) {
+            navView.selectedItemId = currentTabId
+        }
         navView.setOnItemSelectedListener { item ->
             if (item.itemId == currentTabId) {
                 return@setOnItemSelectedListener true
@@ -29,7 +31,7 @@ object BottomNavHelper {
                 R.id.tab_assistant -> HomeActivity::class.java
                 R.id.tab_agents -> AgentsActivity::class.java
                 R.id.tab_activity -> ActivityFeedActivity::class.java
-                R.id.tab_wallet -> WalletActivity::class.java
+                R.id.tab_messages -> MessagesActivity::class.java
                 else -> null
             }
             if (target != null) {

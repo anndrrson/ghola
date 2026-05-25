@@ -33,7 +33,7 @@
             android:id="@+id/enableA11yButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Enable Accessibility Service"
+            android:text="Open Ghola Permission"
             android:layout_marginBottom="16dp" />
 
         <Button

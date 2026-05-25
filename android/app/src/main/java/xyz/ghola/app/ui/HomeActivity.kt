@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.View
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -12,7 +13,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.card.MaterialCardView
-import com.google.android.material.floatingactionbutton.FloatingActionButton
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.CloudAuthManager
@@ -37,9 +37,10 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
     private lateinit var voiceService: VoiceInputService
     private lateinit var greetingText: TextView
     private lateinit var activeTasksContainer: LinearLayout
-    private lateinit var quickActionsContainer: LinearLayout
-    private lateinit var micFab: FloatingActionButton
+    private lateinit var quickActionsContainer: View
+    private lateinit var micFab: ImageButton
     private lateinit var voiceStatusText: TextView
+    private lateinit var homeWalletButton: TextView
 
     private var cloudClient: ThumperCloudClient? = null
 
@@ -56,16 +57,17 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         quickActionsContainer = findViewById(R.id.quickActionsContainer)
         micFab = findViewById(R.id.micFab)
         voiceStatusText = findViewById(R.id.voiceStatusText)
+        homeWalletButton = findViewById(R.id.homeWalletButton)
 
         // Mic FAB
         micFab.setOnClickListener { toggleVoiceInput() }
 
         // Quick action buttons
         findViewById<MaterialCardView>(R.id.actionCall).setOnClickListener {
-            startChatWith("I need to make a phone call")
+            startChatWith("I need to make a phone call", "call")
         }
         findViewById<MaterialCardView>(R.id.actionEmail).setOnClickListener {
-            startChatWith("I need to send an email")
+            startChatWith("I need to send an email", "email")
         }
         findViewById<MaterialCardView>(R.id.actionDevice).setOnClickListener {
             startActivity(Intent(this, ChatActivity::class.java))
@@ -80,6 +82,9 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         findViewById<View>(R.id.profileButton).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
+        homeWalletButton.setOnClickListener {
+            startActivity(Intent(this, WalletActivity::class.java))
+        }
 
         // Phase M6: Bottom navigation
         val bottomNav = findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(R.id.bottomNav)
@@ -93,6 +98,7 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
             return
         }
         updateGreeting()
+        updateWalletEntry()
         refreshActiveTasks()
         initCloudClient()
     }
@@ -114,6 +120,15 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
             "$timeGreeting, $name"
         } else {
             "$timeGreeting"
+        }
+    }
+
+    private fun updateWalletEntry() {
+        val address = secureStorage.getSolanaAddress()
+        homeWalletButton.text = if (address.isNullOrBlank()) {
+            "CONNECT WALLET"
+        } else {
+            "WALLET ${mask(address)}"
         }
     }
 
@@ -175,9 +190,16 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         else -> type.replaceFirstChar { it.uppercase() }
     }
 
-    private fun startChatWith(prefill: String) {
+    private fun mask(raw: String): String {
+        val value = raw.trim()
+        if (value.length <= 16) return value
+        return "${value.take(6)}...${value.takeLast(6)}"
+    }
+
+    private fun startChatWith(prefill: String, quickAction: String? = null) {
         val intent = Intent(this, ChatActivity::class.java)
         intent.putExtra("prefill_message", prefill)
+        if (quickAction != null) intent.putExtra("quick_action", quickAction)
         startActivity(intent)
     }
 

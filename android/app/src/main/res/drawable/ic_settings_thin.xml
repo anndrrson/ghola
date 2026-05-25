@@ -1,0 +1,27 @@
+<!--
+  Minimal "sliders" settings glyph. Three horizontal tracks with knobs at
+  varying positions — same line language as ic_nav_wallet (1.75dp stroke,
+  round caps) so the home top bar feels like one icon family.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#eef1f8"
+        android:strokeWidth="1.75"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M4,7 L20,7 M4,12 L20,12 M4,17 L20,17" />
+    <path
+        android:fillColor="#eef1f8"
+        android:pathData="M16,7 m-2.4,0 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0 Z" />
+    <path
+        android:fillColor="#eef1f8"
+        android:pathData="M8,12 m-2.4,0 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0 Z" />
+    <path
+        android:fillColor="#eef1f8"
+        android:pathData="M14,17 m-2.4,0 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0 Z" />
+</vector>

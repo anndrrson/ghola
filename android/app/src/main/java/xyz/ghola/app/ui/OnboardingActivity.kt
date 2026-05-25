@@ -2,7 +2,6 @@ package xyz.ghola.app.ui
 
 import android.content.Intent
 import android.os.Bundle
-import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.TextView
@@ -11,11 +10,12 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import kotlinx.coroutines.launch
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.CloudAuthManager
-import xyz.ghola.app.service.ThumperAccessibilityService
 import xyz.ghola.app.solana.MWAConnect
+import xyz.ghola.app.solana.SeedVaultNative
 
 /**
  * 2-screen onboarding flow:
@@ -27,9 +27,11 @@ class OnboardingActivity : AppCompatActivity() {
     private lateinit var secureStorage: SecureStorage
     private lateinit var cloudAuthManager: CloudAuthManager
     private var currentStep = 0
+    private var waitingForAccessibility = false
 
     // ActivityResultSender must be initialized as a field.
     private val activityResultSender = ActivityResultSender(this)
+    private val seedVaultNative = SeedVaultNative(this)
 
     private lateinit var stepSignIn: View
     private lateinit var stepAccessibility: View
@@ -48,13 +50,16 @@ class OnboardingActivity : AppCompatActivity() {
             startWalletSignIn()
         }
         findViewById<Button>(R.id.btnEnableAccessibility).setOnClickListener {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            waitingForAccessibility = true
+            AccessibilitySetup.open(this)
         }
         findViewById<Button>(R.id.btnCheckAccessibility).setOnClickListener {
-            if (ThumperAccessibilityService.instance != null) {
+            if (AccessibilitySetup.isEnabled(this)) {
                 finishOnboarding()
             } else {
-                Toast.makeText(this, "Accessibility is still disabled", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Tap Ghola, turn it on, then come back.", Toast.LENGTH_SHORT).show()
+                waitingForAccessibility = true
+                AccessibilitySetup.open(this)
             }
         }
         findViewById<Button>(R.id.btnFinish).setOnClickListener {
@@ -69,17 +74,72 @@ class OnboardingActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (currentStep == 1 && ThumperAccessibilityService.instance != null) {
-            finishOnboarding()
+        if (currentStep == 1) {
+            if (AccessibilitySetup.isEnabled(this)) {
+                finishOnboarding()
+            } else if (waitingForAccessibility) {
+                Toast.makeText(this, "Android still needs Ghola turned on.", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
     private fun startWalletSignIn() {
         lifecycleScope.launch {
-            val auth = MWAConnect.authorize(activityResultSender)
+            if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                val result = cloudAuthManager.signInWithTurnkey(this@OnboardingActivity)
+                when (result) {
+                    is CloudAuthManager.AuthResult.Success -> {
+                        Toast.makeText(this@OnboardingActivity, "Turnkey wallet connected", Toast.LENGTH_SHORT).show()
+                        showStep(1)
+                    }
+                    is CloudAuthManager.AuthResult.Error -> {
+                        Toast.makeText(this@OnboardingActivity, result.message, Toast.LENGTH_LONG).show()
+                    }
+                }
+                return@launch
+            }
+            if (BuildConfig.GHOLA_SEEKER_BUILD) {
+                val savedSession = currentSeedVaultSession()
+                val session = savedSession ?: seedVaultNative.authorizeSession().getOrElse { err ->
+                    Toast.makeText(
+                        this@OnboardingActivity,
+                        err.message ?: "Seed Vault connection failed",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    return@launch
+                }
+                if (savedSession == null) {
+                    secureStorage.setSeedVaultSession(
+                        address = session.address,
+                        authToken = session.authToken,
+                        derivationPathUri = session.derivationPathUri,
+                    )
+                }
+                when (val result = cloudAuthManager.signInWithDeviceSigner(seedVaultNative.signer(session))) {
+                    is CloudAuthManager.AuthResult.Success -> {
+                        Toast.makeText(this@OnboardingActivity, "Seed Vault connected", Toast.LENGTH_SHORT).show()
+                        showStep(1)
+                    }
+                    is CloudAuthManager.AuthResult.Error -> {
+                        Toast.makeText(this@OnboardingActivity, result.message, Toast.LENGTH_LONG).show()
+                    }
+                }
+                return@launch
+            }
+            val auth = MWAConnect.authorizeSession(
+                activityResultSender,
+                previousAuthToken = secureStorage.getMwaAuthToken(),
+            )
             auth.fold(
-                onSuccess = { walletAddress ->
-                    secureStorage.setSolanaAddress(walletAddress)
+                onSuccess = { session ->
+                    secureStorage.setMwaSession(
+                        address = session.address,
+                        authToken = session.authToken,
+                        walletUriBase = session.walletUriBase,
+                        accountLabel = session.accountLabel,
+                        cluster = session.cluster,
+                    )
+                    val walletAddress = session.address
                     val result = cloudAuthManager.signInWithWallet(activityResultSender, walletAddress)
                     when (result) {
                         is CloudAuthManager.AuthResult.Success -> {
@@ -94,13 +154,24 @@ class OnboardingActivity : AppCompatActivity() {
                 onFailure = { err ->
                     val msg = when (err) {
                         is MWAConnect.NoWalletInstalledException ->
-                            "No Solana wallet found. Install one to continue."
+                            if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                                "No compatible wallet found. Install Solflare or Phantom, or use ghola.xyz for web account auth."
+                            } else {
+                                "No Solana wallet found. Install one to continue."
+                            }
                         else -> err.message ?: "Wallet connection failed"
                     }
                     Toast.makeText(this@OnboardingActivity, msg, Toast.LENGTH_LONG).show()
                 }
             )
         }
+    }
+
+    private fun currentSeedVaultSession(): SeedVaultNative.Session? {
+        val address = secureStorage.getSeedVaultAddress() ?: return null
+        val token = secureStorage.getSeedVaultAuthToken() ?: return null
+        val path = secureStorage.getSeedVaultDerivationPathUri() ?: return null
+        return SeedVaultNative.Session(address, token, path)
     }
 
     private fun showStep(step: Int) {

@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.AgentController
 import xyz.ghola.app.ai.EnvelopeCloudBackend
@@ -42,6 +43,7 @@ import xyz.ghola.app.ai.litert.LiteRtNpuDispatcher
 import xyz.ghola.app.ai.llama.LocalLlamaBackend
 import xyz.ghola.app.ai.llama.ModelManager
 import xyz.ghola.app.cloud.CloudAuthManager
+import xyz.ghola.app.cloud.DeviceSignerProvider
 import xyz.ghola.app.cloud.TaskClassifier
 import xyz.ghola.app.cloud.ThumperCloudClient
 import xyz.ghola.app.crypto.Envelope
@@ -49,6 +51,7 @@ import xyz.ghola.app.crypto.VaultStore
 import xyz.ghola.app.crypto.mwaSignerForVault
 import xyz.ghola.app.service.ThumperAccessibilityService
 import xyz.ghola.app.solana.Base58
+import xyz.ghola.app.solana.SeedVaultNative
 import xyz.ghola.app.ui.components.IntegrityBadge
 import xyz.ghola.app.ui.components.IntegrityBadgeDetailDialog
 
@@ -136,6 +139,8 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     private lateinit var chatAdapter: ChatAdapter
     private lateinit var integrityBadge: IntegrityBadge
     private lateinit var backendNameText: TextView
+    private lateinit var chatTitle: TextView
+    private var promptedAccessibilityThisSession = false
 
     /**
      * Cached snapshot from the most recent [refreshIntegrityBadge] so the
@@ -158,6 +163,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     // activity-result handler at construction time so the MWA SDK can
     // dispatch the wallet's intent result back to us.
     private val activityResultSender = ActivityResultSender(this)
+    private val seedVaultNative = SeedVaultNative(this)
 
     private var agentController: AgentController? = null
     private var localBackend: LocalLlamaBackend? = null
@@ -184,6 +190,8 @@ class ChatActivity : AppCompatActivity(), AgentListener {
 
         integrityBadge = findViewById(R.id.integrityBadge)
         backendNameText = findViewById(R.id.backendNameText)
+        chatTitle = findViewById(R.id.chatTitle)
+        applyQuickActionMode(intent.getStringExtra("quick_action"))
         integrityBadge.onBadgeClick = Runnable {
             val snap = lastIntegritySnapshot ?: return@Runnable
             IntegrityBadgeDetailDialog.show(
@@ -239,6 +247,23 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                         }
                     }, 500)
                 }
+            }
+        }
+    }
+
+    private fun applyQuickActionMode(mode: String?) {
+        when (mode) {
+            "call" -> {
+                chatTitle.text = "ghola / call"
+                messageInput.hint = "Who should I call?"
+            }
+            "email" -> {
+                chatTitle.text = "ghola / email"
+                messageInput.hint = "What should I write?"
+            }
+            else -> {
+                chatTitle.text = "ghola / chat"
+                messageInput.hint = "Ask Ghola"
             }
         }
     }
@@ -302,7 +327,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
      * reads to populate [IntegrityBadgeDetailDialog].
      */
     private fun refreshIntegrityBadge() {
-        val mode = secureStorage.getBackendMode()
+        val mode = activeBackendMode()
         val tag = integrityArgsForBackend(mode)
 
         when (tag) {
@@ -365,15 +390,48 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     private fun backendDisplayNameForMode(mode: String): String = when (mode) {
         SecureStorage.BACKEND_LOCAL -> "On-device (Qwen 2.5 1.5B)"
         SecureStorage.BACKEND_LITERT_NPU -> "On-device NPU (Gemma-3-1B)"
-        SecureStorage.BACKEND_E2E_CLOUD -> "End-to-end encrypted"
+        SecureStorage.BACKEND_E2E_CLOUD -> "Strict encrypted cloud"
         SecureStorage.BACKEND_QWEN_CLOUD -> "Qwen (Cloud)"
         SecureStorage.BACKEND_CLOUD -> "Claude (Cloud)"
         else -> ""
     }
 
+    private fun activeBackendMode(): String {
+        if (secureStorage.hasExplicitBackendMode()) return secureStorage.getBackendMode()
+        val npu = LiteRtModelManager(this)
+        if (runCatching { npu.isModelDownloaded() }.getOrDefault(false)) {
+            return SecureStorage.BACKEND_LITERT_NPU
+        }
+        val local = ModelManager(this)
+        if (runCatching { local.isModelDownloaded() }.getOrDefault(false)) {
+            return SecureStorage.BACKEND_LOCAL
+        }
+        return SecureStorage.BACKEND_E2E_CLOUD
+    }
+
     private fun checkPrerequisites() {
-        if (secureStorage.isE2ECloudMode()) {
+        val mode = activeBackendMode()
+        if (mode == SecureStorage.BACKEND_E2E_CLOUD) {
             if (!secureStorage.hasSolanaAddress()) {
+                if (BuildConfig.GHOLA_PLAY_STORE_BUILD && !isSigningIntoCloud) {
+                    isSigningIntoCloud = true
+                    showStatus("Signing in with Turnkey…")
+                    lifecycleScope.launch {
+                        val auth = CloudAuthManager(this@ChatActivity).signInWithTurnkey(this@ChatActivity)
+                        isSigningIntoCloud = false
+                        when (auth) {
+                            is CloudAuthManager.AuthResult.Success -> {
+                                hideStatus()
+                                checkPrerequisites()
+                            }
+                            is CloudAuthManager.AuthResult.Error -> {
+                                showStatus(auth.message)
+                                Toast.makeText(this@ChatActivity, auth.message, Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                    return
+                }
                 Toast.makeText(
                     this,
                     "Connect a Solana wallet first to enable end-to-end encrypted chat",
@@ -390,10 +448,21 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                     return
                 }
                 isSigningIntoCloud = true
-                showStatus("Signing in with wallet…")
+                showStatus(if (BuildConfig.GHOLA_PLAY_STORE_BUILD) "Signing in with Turnkey…" else "Signing in with wallet…")
                 lifecycleScope.launch {
-                    val auth = CloudAuthManager(this@ChatActivity)
-                        .signInWithWallet(activityResultSender, walletAddress)
+                    val auth = if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                        CloudAuthManager(this@ChatActivity).signInWithTurnkey(this@ChatActivity)
+                    } else if (BuildConfig.GHOLA_SEEKER_BUILD && secureStorage.hasSeedVaultSession()) {
+                        val session = currentSeedVaultSession()
+                        if (session == null) {
+                            CloudAuthManager.AuthResult.Error("Reconnect Seed Vault in Wallet")
+                        } else {
+                            CloudAuthManager(this@ChatActivity).signInWithDeviceSigner(seedVaultNative.signer(session))
+                        }
+                    } else {
+                        CloudAuthManager(this@ChatActivity)
+                            .signInWithWallet(activityResultSender, walletAddress)
+                    }
                     isSigningIntoCloud = false
                     when (auth) {
                         is CloudAuthManager.AuthResult.Success -> {
@@ -408,14 +477,14 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                 }
                 return
             }
-        } else if (secureStorage.isLocalMode()) {
+        } else if (mode == SecureStorage.BACKEND_LOCAL) {
             val modelManager = ModelManager(this)
             if (!modelManager.isModelDownloaded()) {
                 Toast.makeText(this, "Please download the model in Settings", Toast.LENGTH_LONG).show()
                 startActivity(Intent(this, SettingsActivity::class.java))
                 return
             }
-        } else if (secureStorage.getBackendMode() == SecureStorage.BACKEND_LITERT_NPU) {
+        } else if (mode == SecureStorage.BACKEND_LITERT_NPU) {
             // Phase γ.3 — gentle nudge if the user picked the NPU backend
             // without downloading the artifact. `initializeLitertNpuAgent`
             // also handles this state, but surfacing it in
@@ -431,7 +500,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                 startActivity(Intent(this, SettingsActivity::class.java))
                 return
             }
-        } else if (secureStorage.isQwenCloudMode()) {
+        } else if (mode == SecureStorage.BACKEND_QWEN_CLOUD) {
             if (!secureStorage.hasQwenApiKey()) {
                 Toast.makeText(this, "Enable Power user / BYOM in Settings and set a DashScope API key", Toast.LENGTH_LONG).show()
                 startActivity(Intent(this, SettingsActivity::class.java))
@@ -447,7 +516,11 @@ class ChatActivity : AppCompatActivity(), AgentListener {
 
         val service = ThumperAccessibilityService.instance
         if (service == null) {
-            Toast.makeText(this, "Please enable the Accessibility Service in Settings", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Tap Ghola, then turn it on to control apps.", Toast.LENGTH_LONG).show()
+            if (!promptedAccessibilityThisSession) {
+                promptedAccessibilityThisSession = true
+                AccessibilitySetup.open(this)
+            }
             return
         }
 
@@ -481,10 +554,10 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         }
 
         when {
-            secureStorage.isE2ECloudMode() -> initializeE2eAgent(toolExecutor)
-            secureStorage.isLocalMode() -> initializeLocalAgent(toolExecutor)
-            secureStorage.isQwenCloudMode() -> initializeQwenCloudAgent(toolExecutor)
-            secureStorage.getBackendMode() == SecureStorage.BACKEND_LITERT_NPU ->
+            activeBackendMode() == SecureStorage.BACKEND_E2E_CLOUD -> initializeE2eAgent(toolExecutor)
+            activeBackendMode() == SecureStorage.BACKEND_LOCAL -> initializeLocalAgent(toolExecutor)
+            activeBackendMode() == SecureStorage.BACKEND_QWEN_CLOUD -> initializeQwenCloudAgent(toolExecutor)
+            activeBackendMode() == SecureStorage.BACKEND_LITERT_NPU ->
                 initializeLitertNpuAgent(toolExecutor)
             else -> initializeCloudAgent(toolExecutor)
         }
@@ -500,9 +573,8 @@ class ChatActivity : AppCompatActivity(), AgentListener {
      * Decision tree (mirrors the matrix documented on
      * [LiteRtNpuDispatcher]):
      *  - `VERIFIED` / `DOWNLOADED_UNVERIFIED` → build the NPU backend
-     *  - `NOT_DOWNLOADED` → toast + bounce to Settings + fall back to
-     *    the E2E cloud backend so the chat surface still works (the
-     *    user doesn't get a dead UI while their model downloads)
+     *  - `NOT_DOWNLOADED` → toast + bounce to Settings. Do not silently
+     *    downgrade to cloud; the user explicitly chose on-device inference.
      *  - `TAMPERED` → show an error message; do NOT silently
      *    downgrade. The user explicitly chose to keep data on-device;
      *    quietly switching to cloud would leak that data.
@@ -558,17 +630,9 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                         getString(R.string.litert_npu_error_missing_model),
                         Toast.LENGTH_LONG,
                     ).show()
-                    // Fall back to a working backend so the chat surface
-                    // isn't dead while the user downloads. Prefer E2E
-                    // cloud when available; the cloud BYOM path needs
-                    // an API key the user hasn't necessarily set.
-                    if (secureStorage.hasCloudAuth() && secureStorage.hasSolanaAddress()) {
-                        initializeE2eAgent(toolExecutor)
-                    } else {
-                        hideStatus()
-                        setInputEnabled(true)
-                        startActivity(Intent(this@ChatActivity, SettingsActivity::class.java))
-                    }
+                    hideStatus()
+                    setInputEnabled(true)
+                    startActivity(Intent(this@ChatActivity, SettingsActivity::class.java))
                 }
                 is LiteRtNpuDispatcher.Decision.FailWithTamperedError -> {
                     hideStatus()
@@ -626,11 +690,26 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         vaultStore = vault
 
         setInputEnabled(false)
-        showStatus("Tap your wallet to unlock end-to-end chat…")
+        showStatus(if (BuildConfig.GHOLA_PLAY_STORE_BUILD) "Approve with Turnkey to unlock end-to-end chat…" else "Tap your wallet to unlock end-to-end chat…")
 
         lifecycleScope.launch {
             val outcome = runCatching {
-                val signer = mwaSignerForVault(activityResultSender, solanaAddress)
+                val signer = if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                    DeviceSignerProvider.cached(this@ChatActivity)
+                        ?: DeviceSignerProvider.signIn(this@ChatActivity).getOrThrow()
+                    DeviceSignerProvider.cached(this@ChatActivity)?.vaultSigner()
+                        ?: error("Turnkey signer unavailable after sign-in")
+                } else if (BuildConfig.GHOLA_SEEKER_BUILD && secureStorage.hasSeedVaultSession()) {
+                    val session = currentSeedVaultSession()
+                        ?: error("Seed Vault session unavailable; reconnect in Wallet")
+                    seedVaultNative.signer(session).vaultSigner()
+                } else {
+                    mwaSignerForVault(
+                        activityResultSender,
+                        solanaAddress,
+                        secureStorage.getMwaAuthToken(),
+                    )
+                }
                 withContext(Dispatchers.IO) { vault.unlock(signer) }
             }
             outcome.onSuccess {
@@ -667,6 +746,13 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                 setInputEnabled(true)
             }
         }
+    }
+
+    private fun currentSeedVaultSession(): SeedVaultNative.Session? {
+        val address = secureStorage.getSeedVaultAddress() ?: return null
+        val token = secureStorage.getSeedVaultAuthToken() ?: return null
+        val path = secureStorage.getSeedVaultDerivationPathUri() ?: return null
+        return SeedVaultNative.Session(address, token, path)
     }
 
     private fun initializeCloudAgent(toolExecutor: LocalToolExecutor) {
@@ -855,6 +941,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     }
 
     private fun handleCloudTaskRouting(text: String): Boolean {
+        if (activeBackendMode() == SecureStorage.BACKEND_E2E_CLOUD) return false
         if (!secureStorage.hasCloudAuth()) return false
         val token = secureStorage.getCloudAuthToken() ?: return false
         val route = TaskClassifier.classify(text, true).route

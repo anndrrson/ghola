@@ -2,12 +2,17 @@ package xyz.ghola.app.cloud
 
 import android.content.Context
 import android.util.Log
+import android.app.Activity
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import xyz.ghola.app.ai.SecureStorage
+import xyz.ghola.app.crypto.signWithWallet
+import xyz.ghola.app.solana.MWAConnect
 import java.io.IOException
 
 /**
@@ -26,10 +31,115 @@ class CloudAuthManager(private val context: Context) {
     private val client = OkHttpClient()
     private val siwsAuthFlow = SiwsAuthFlow(context)
 
+    suspend fun signInWithTurnkey(activity: Activity): AuthResult {
+        val signer = DeviceSignerProvider.signIn(activity).getOrElse { err ->
+            return AuthResult.Error(err.message ?: "Turnkey sign-in failed")
+        }
+        val primary = signInWithDeviceSigner(signer)
+        if (primary is AuthResult.Success) {
+            secureStorage.setTurnkeySession(
+                address = signer.identity.address,
+                provider = signer.identity.provider,
+                displayName = signer.identity.displayName,
+            )
+        }
+        return primary
+    }
+
+    suspend fun signInWithDeviceSigner(signer: DeviceSigner): AuthResult {
+        val primary = siwsAuthFlow.signInWithDeviceSigner(signer)
+        if (primary is AuthResult.Success) {
+            when (val said = signInSaidWithDeviceSigner(signer)) {
+                is AuthResult.Success -> Log.i(TAG, "said-cloud device signer sign-in succeeded")
+                is AuthResult.Error -> Log.w(TAG, "said-cloud device signer sign-in failed: ${said.message}")
+            }
+        }
+        return primary
+    }
+
     suspend fun signInWithWallet(
         sender: ActivityResultSender,
         walletPubkey: String
-    ): AuthResult = siwsAuthFlow.signInWithWallet(sender, walletPubkey)
+    ): AuthResult {
+        val primary = siwsAuthFlow.signInWithWallet(sender, walletPubkey)
+        if (primary is AuthResult.Success) {
+            when (val said = signInSaidWithWallet(sender, walletPubkey)) {
+                is AuthResult.Success -> Log.i(TAG, "said-cloud wallet sign-in succeeded")
+                is AuthResult.Error -> Log.w(TAG, "said-cloud wallet sign-in failed: ${said.message}")
+            }
+        }
+        return primary
+    }
+
+    suspend fun signInSaidWithWallet(
+        sender: ActivityResultSender,
+        walletPubkey: String,
+    ): AuthResult {
+        return signInSaidWithSigner(walletPubkey) { challengeBytes ->
+            when (
+                val out = signWithWallet(
+                    sender,
+                    walletPubkey,
+                    challengeBytes,
+                    secureStorage.getMwaAuthToken(),
+                )
+            ) {
+                is MWAConnect.SignOutcome.Success -> DeviceSignResult.Success(out.signature)
+                MWAConnect.SignOutcome.NoWallet -> DeviceSignResult.NoSigner
+                MWAConnect.SignOutcome.Declined -> DeviceSignResult.Declined
+                MWAConnect.SignOutcome.Cancelled -> DeviceSignResult.Cancelled
+                is MWAConnect.SignOutcome.Failure -> DeviceSignResult.Failure(out.cause)
+            }
+        }
+    }
+
+    suspend fun signInSaidWithDeviceSigner(signer: DeviceSigner): AuthResult {
+        return signInSaidWithSigner(signer.identity.address) { challengeBytes ->
+            signer.sign(challengeBytes)
+        }
+    }
+
+    private suspend fun signInSaidWithSigner(
+        walletPubkey: String,
+        sign: suspend (ByteArray) -> DeviceSignResult,
+    ): AuthResult {
+        val saidClient = SaidCloudClient(secureStorage.getSaidBaseUrl(), null)
+        val challenge = withContext(Dispatchers.IO) { saidClient.siwsChallenge() }
+            ?: return AuthResult.Error("Failed to start agent wallet sign-in")
+
+        val signature = when (val out = sign(challenge.challenge.toByteArray(Charsets.UTF_8))) {
+            is DeviceSignResult.Success -> out.signature
+            DeviceSignResult.NoSigner -> return AuthResult.Error("No compatible signer installed")
+            DeviceSignResult.Declined -> return AuthResult.Error("Agent sign-in declined")
+            DeviceSignResult.Cancelled -> return AuthResult.Error("Agent sign-in was cancelled")
+            is DeviceSignResult.Failure ->
+                return AuthResult.Error(out.cause.message ?: "Agent signing failed")
+        }
+
+        val response = withContext(Dispatchers.IO) {
+            saidClient.siwsSignIn(
+                walletPubkey = walletPubkey,
+                nonce = challenge.nonce,
+                challenge = challenge.challenge,
+                signature = signature,
+            )
+        } ?: return AuthResult.Error("Agent sign-in failed")
+
+        val token = response.optString("token", "")
+        val userId = response.optString("user_id", "")
+        if (token.isBlank() || userId.isBlank()) {
+            return AuthResult.Error(response.optString("error", "Agent sign-in returned no session"))
+        }
+
+        secureStorage.setSaidToken(
+            token = token,
+            expSeconds = response.optLongOrNull("exp"),
+            refreshToken = response.optString("refresh_token", "").ifBlank { null },
+            refreshExpSeconds = response.optLongOrNull("refresh_exp"),
+        )
+        secureStorage.setSaidUserId(userId)
+        return AuthResult.Success(token, userId, response.optBoolean("is_new_user", false))
+    }
 
     /**
      * Exchange a Google ID token for a Thumper cloud JWT.

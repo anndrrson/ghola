@@ -141,13 +141,21 @@ class VaultStore internal constructor(
      * On a returning install: signs the unlock challenge (same wallet
      * required), derives the wrapping key, unwraps the KEK.
      *
-     * @param verifyDeterminism Re-sign once and compare so a non-RFC-8032
-     *  wallet (different signature for the same challenge) can't corrupt
-     *  the vault. Costs an extra wallet popup; default false in
-     *  production because all major Solana wallets are deterministic and
-     *  the AES-GCM unwrap acts as an implicit check (a flaky signature
-     *  produces a different kekWrapKey, which fails to unwrap and yields
-     *  WrongSignature). Tests pass true to exercise the explicit guard.
+     * @param verifyDeterminism Re-sign once and compare on the RETURNING
+     *  (KEK-unwrap) branch so a non-RFC-8032 wallet (different signature for
+     *  the same challenge) can't silently fail. Costs an extra wallet popup;
+     *  default false on the returning branch because all major Solana wallets
+     *  are deterministic and the AES-GCM unwrap is an implicit check (a flaky
+     *  signature produces a different kekWrapKey, which fails to unwrap and
+     *  yields WrongSignature). Tests pass true to exercise the explicit guard.
+     *
+     *  H1: On the FRESH-INSTALL branch (where this device first creates and
+     *  wraps the KEK) the determinism check is ALWAYS performed, regardless
+     *  of this flag. That is a one-time event per device, so the extra popup
+     *  is acceptable, and it is the only moment where a non-deterministic
+     *  signature does irreversible damage — it would wrap the KEK under a key
+     *  that can never be re-derived, permanently bricking the vault. We refuse
+     *  to persist a wrapped KEK we cannot prove is reproducible.
      */
     @Throws(VaultLockedError::class)
     @JvmOverloads
@@ -167,10 +175,14 @@ class VaultStore internal constructor(
                 val sig2 = sigOrThrow(signMessage.sign(challenge))
                 if (!sig1.contentEquals(sig2)) {
                     Log.e(TAG, "non-deterministic wallet signature on unlock")
+                    sig1.fill(0)
+                    sig2.fill(0)
                     mat.zeroize()
                     throw VaultLockedError.DeterminismViolation
                 }
+                sig2.fill(0)
             }
+            sig1.fill(0)
             val kek = aesGcmUnwrap(mat.kekWrapKey, wrappedKek)
                 ?: run {
                     mat.zeroize()
@@ -182,11 +194,24 @@ class VaultStore internal constructor(
             material = mat
             touch()
         } else {
-            // Fresh install for this DID on this device.
+            // Fresh install for this DID on this device. This branch CREATES
+            // the wrapped KEK, so a non-deterministic signature here is
+            // unrecoverable — force the determinism re-sign unconditionally
+            // before we persist anything (H1).
             val salt = ByteArray(SALT_LEN).also { rng.nextBytes(it) }
             val challenge = VaultIdentity.unlockChallenge(userDid, salt)
             val sig = sigOrThrow(signMessage.sign(challenge))
+            val sigVerify = sigOrThrow(signMessage.sign(challenge))
+            if (!sig.contentEquals(sigVerify)) {
+                Log.e(TAG, "non-deterministic wallet signature on first-unlock KEK creation")
+                sig.fill(0)
+                sigVerify.fill(0)
+                // Nothing persisted yet, so the vault is simply not created.
+                throw VaultLockedError.DeterminismViolation
+            }
+            sigVerify.fill(0)
             val mat = VaultIdentity.deriveVaultMaterial(sig, salt)
+            sig.fill(0)
             val kek = ByteArray(KEK_LEN).also { rng.nextBytes(it) }
             val wrapped = aesGcmWrap(mat.kekWrapKey, kek)
             prefs.edit()

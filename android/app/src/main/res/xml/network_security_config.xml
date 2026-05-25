@@ -33,7 +33,7 @@
         Bundled by LiteRT-LM; same audit posture as LiteRT-LM.
     - ONNX Runtime (com.microsoft.onnxruntime:onnxruntime-mobile, used by EmbedderClient)
         No known phone-home; inference is in-process.
-    - BouncyCastle (org.bouncycastle:bcprov-jdk18on)
+    - BouncyCastle (org.bouncycastle:bcprov-jdk15to18)
         Pure crypto library; no network code.
 
   This audit is a static one (release-notes review + per-host
@@ -56,6 +56,34 @@
         </trust-anchors>
     </base-config>
 
+    <!--
+      CERTIFICATE PINNING (first-party backends) — M finding.
+
+      The blocks below pin the first-party hosts we control operationally so a
+      mis-issued or coerced public CA cannot MITM our own API/auth/asset
+      traffic. We deliberately do NOT pin the Google / Hugging Face hosts:
+      their cert/CDN rotation is outside our control and a stale pin there
+      would brick model downloads and OAuth.
+
+      ACTION REQUIRED BEFORE RELEASE: the <pin> digests below are PLACEHOLDERS.
+      A pin-set with wrong digests fails CLOSED (all TLS to the host is
+      rejected), so the pin-set elements are currently commented out and the
+      hosts fall back to system-CA validation. To activate pinning:
+        1. Compute the base64 SHA-256 of the SubjectPublicKeyInfo for each host:
+             openssl s_client -connect thumper-cloud.onrender.com:443 -servername thumper-cloud.onrender.com </dev/null 2>/dev/null \
+               | openssl x509 -pubkey -noout \
+               | openssl pkey -pubin -outform der \
+               | openssl dgst -sha256 -binary | openssl enc -base64
+        2. Pin the LEAF and at least one BACKUP key (an offline-held spare or
+           the issuing intermediate) so a routine cert rotation doesn't lock
+           users out. Android requires >=2 pins or it ignores the set.
+        3. Set <pin-set expiration="YYYY-MM-DD"> a few months out; after expiry
+           Android stops enforcing the set (fail-open) rather than bricking.
+        4. Uncomment the <pin-set> blocks and replace the placeholder digests.
+      Until then these hosts remain on the same system-CA posture as before
+      (no behavioral change shipped), so this commit cannot brick the app.
+    -->
+
     <!-- ghola.xyz: web origin used as MWA identityUri (handed to the
          wallet for app identification) and as the static-asset host
          used by EmbedderClient for the MiniLM ONNX weights + vocab. -->
@@ -64,6 +92,10 @@
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
+        <!-- <pin-set expiration="2026-12-31">
+            <pin digest="SHA-256">REPLACE_WITH_GHOLA_XYZ_LEAF_SPKI_PIN=</pin>
+            <pin digest="SHA-256">REPLACE_WITH_GHOLA_XYZ_BACKUP_SPKI_PIN=</pin>
+        </pin-set> -->
     </domain-config>
 
     <!-- onrender.com hosts: SAID cloud (`ghola-api.onrender.com`) and
@@ -78,9 +110,42 @@
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
+        <!-- <pin-set expiration="2026-12-31">
+            <pin digest="SHA-256">REPLACE_WITH_GHOLA_API_LEAF_SPKI_PIN=</pin>
+            <pin digest="SHA-256">REPLACE_WITH_GHOLA_API_BACKUP_SPKI_PIN=</pin>
+        </pin-set> -->
     </domain-config>
     <domain-config>
         <domain includeSubdomains="false">thumper-cloud.onrender.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+        <!-- <pin-set expiration="2026-12-31">
+            <pin digest="SHA-256">REPLACE_WITH_THUMPER_CLOUD_LEAF_SPKI_PIN=</pin>
+            <pin digest="SHA-256">REPLACE_WITH_THUMPER_CLOUD_BACKUP_SPKI_PIN=</pin>
+        </pin-set> -->
+    </domain-config>
+
+    <!-- Turnkey: Play Store build wallet/passkey provider. api.turnkey.com
+         handles organization, wallet, and signing requests; authproxy.turnkey.com
+         handles Turnkey's optional auth proxy/session path. Seeker builds do
+         not call these hosts because their source set uses MWA instead. -->
+    <domain-config>
+        <domain includeSubdomains="false">api.turnkey.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+        <!-- api.turnkey.com is a third-party SaaS; pin only after confirming
+             Turnkey's cert/key rotation policy and pinning a backup, otherwise
+             a rotation locks Play-build users out of signing. Activate the same
+             way as the first-party blocks above.
+        <pin-set expiration="2026-12-31">
+            <pin digest="SHA-256">REPLACE_WITH_TURNKEY_LEAF_SPKI_PIN=</pin>
+            <pin digest="SHA-256">REPLACE_WITH_TURNKEY_BACKUP_SPKI_PIN=</pin>
+        </pin-set> -->
+    </domain-config>
+    <domain-config>
+        <domain includeSubdomains="false">authproxy.turnkey.com</domain>
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
@@ -139,7 +204,15 @@
          storage.googleapis.com (LiteRT-LM model bucket referenced in
          ai/litert/LiteRtModelManager.kt). All of these are Google-
          operated; subdomain inclusion keeps us robust to AppAuth/
-         Google adding new sibling hosts on the discovery doc. -->
+         Google adding new sibling hosts on the discovery doc.
+
+         M-audit decision: the includeSubdomains wildcards on googleapis.com
+         and huggingface.co are RETAINED. Narrowing googleapis.com to an
+         explicit host list would break AppAuth token refresh whenever Google
+         rotates the discovery-doc sibling host; narrowing huggingface.co
+         breaks the LFS CDN redirect (cdn-lfs*.huggingface.co) used for model
+         downloads. Neither is pinned (third-party rotation is out of our
+         control). Only the four first-party hosts above carry pin-set stubs. -->
     <domain-config>
         <domain includeSubdomains="true">googleapis.com</domain>
         <trust-anchors>

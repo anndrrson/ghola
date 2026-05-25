@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.provider.Settings
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -64,7 +63,7 @@ class MainActivity : AppCompatActivity() {
         relayUrlInput.setText(prefs.getString("relay_url", "ws://192.168.1.100:8080/ws"))
 
         enableA11yButton.setOnClickListener {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            AccessibilitySetup.open(this)
         }
 
         scanQrButton.setOnClickListener {
@@ -147,7 +146,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateStatus() {
         val service = ThumperAccessibilityService.instance
-        val a11yEnabled = service != null
+        val a11yEnabled = AccessibilitySetup.isEnabled(this)
         val relayConnected = service?.isRelayConnected() ?: false
 
         statusText.text = buildString {

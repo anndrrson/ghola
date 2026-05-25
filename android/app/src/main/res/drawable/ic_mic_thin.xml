@@ -1,0 +1,34 @@
+<!--
+  Minimal mic glyph for the voice FAB. Vertical capsule body + U-cradle +
+  short stand. Drawn against a 24dp viewport; the FAB applies app:tint so
+  fill/stroke colors are tinted at render time — declaring white here keeps
+  the source readable.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- Capsule body (vertical pill). -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M9,6 a3,3 0 0,1 6,0 v7 a3,3 0 0,1 -6,0 z" />
+
+    <!-- U-cradle below the body. -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="1.75"
+        android:strokeLineCap="round"
+        android:pathData="M5,12 a7,7 0 0,0 14,0" />
+
+    <!-- Stand post + base. -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="1.75"
+        android:strokeLineCap="round"
+        android:pathData="M12,19 v2 M9,21 h6" />
+
+</vector>

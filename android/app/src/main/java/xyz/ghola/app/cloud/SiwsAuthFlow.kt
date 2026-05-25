@@ -33,6 +33,24 @@ class SiwsAuthFlow(context: Context) {
         sender: ActivityResultSender,
         walletPubkey: String
     ): CloudAuthManager.AuthResult = withContext(Dispatchers.IO) {
+        signInWithSigner(walletPubkey) { challengeBytes ->
+            when (val out = signWithWallet(sender, walletPubkey, challengeBytes, secureStorage.getMwaAuthToken())) {
+                is MWAConnect.SignOutcome.Success -> DeviceSignResult.Success(out.signature)
+                MWAConnect.SignOutcome.NoWallet -> DeviceSignResult.NoSigner
+                MWAConnect.SignOutcome.Declined -> DeviceSignResult.Declined
+                MWAConnect.SignOutcome.Cancelled -> DeviceSignResult.Cancelled
+                is MWAConnect.SignOutcome.Failure -> DeviceSignResult.Failure(out.cause)
+            }
+        }
+    }
+
+    suspend fun signInWithDeviceSigner(signer: DeviceSigner): CloudAuthManager.AuthResult =
+        signInWithSigner(signer.identity.address) { challengeBytes -> signer.sign(challengeBytes) }
+
+    private suspend fun signInWithSigner(
+        walletPubkey: String,
+        sign: suspend (ByteArray) -> DeviceSignResult,
+    ): CloudAuthManager.AuthResult = withContext(Dispatchers.IO) {
         val baseUrl = secureStorage.getCloudBaseUrl()
 
         val challengeReq = Request.Builder()
@@ -60,22 +78,14 @@ class SiwsAuthFlow(context: Context) {
         val nonce = challengeJson.getString("nonce")
         val challenge = challengeJson.getString("challenge")
 
-        // Determinism guard: sign the exact same challenge twice.
-        val sig1 = when (val out = signWithWallet(sender, walletPubkey, challenge.toByteArray(Charsets.UTF_8))) {
-            is MWAConnect.SignOutcome.Success -> out.signature
-            MWAConnect.SignOutcome.NoWallet -> return@withContext CloudAuthManager.AuthResult.Error("No compatible wallet installed")
-            MWAConnect.SignOutcome.Declined -> return@withContext CloudAuthManager.AuthResult.Error("Wallet declined the sign-in request")
-            MWAConnect.SignOutcome.Cancelled -> return@withContext CloudAuthManager.AuthResult.Error("Wallet sign-in was cancelled")
-            is MWAConnect.SignOutcome.Failure -> return@withContext CloudAuthManager.AuthResult.Error(out.cause.message ?: "Wallet signing failed")
+        val challengeBytes = challenge.toByteArray(Charsets.UTF_8)
+        val sig1 = when (val out = sign(challengeBytes)) {
+            is DeviceSignResult.Success -> out.signature
+            DeviceSignResult.NoSigner -> return@withContext CloudAuthManager.AuthResult.Error("No compatible signer installed")
+            DeviceSignResult.Declined -> return@withContext CloudAuthManager.AuthResult.Error("Sign-in request declined")
+            DeviceSignResult.Cancelled -> return@withContext CloudAuthManager.AuthResult.Error("Sign-in was cancelled")
+            is DeviceSignResult.Failure -> return@withContext CloudAuthManager.AuthResult.Error(out.cause.message ?: "Signing failed")
         }
-        val sig2 = when (val out = signWithWallet(sender, walletPubkey, challenge.toByteArray(Charsets.UTF_8))) {
-            is MWAConnect.SignOutcome.Success -> out.signature
-            else -> return@withContext CloudAuthManager.AuthResult.Error("Wallet must produce stable signatures for SIWS")
-        }
-        if (!sig1.contentEquals(sig2)) {
-            return@withContext CloudAuthManager.AuthResult.Error("Wallet returned non-deterministic signatures")
-        }
-
         val signatureB64 = Base64.encodeToString(sig1, Base64.NO_WRAP)
         val verifyBody = JSONObject().apply {
             put("wallet_pubkey", walletPubkey)
@@ -106,7 +116,12 @@ class SiwsAuthFlow(context: Context) {
             val userId = json.getString("user_id")
             val isNewUser = json.optBoolean("is_new_user", false)
 
-            secureStorage.setCloudAuthToken(token)
+            secureStorage.setCloudAuthToken(
+                token = token,
+                expSeconds = json.optLongOrNull("exp"),
+                refreshToken = json.optString("refresh_token", "").ifBlank { null },
+                refreshExpSeconds = json.optLongOrNull("refresh_exp"),
+            )
             secureStorage.setCloudUserId(userId)
 
             CloudAuthManager.AuthResult.Success(token, userId, isNewUser)

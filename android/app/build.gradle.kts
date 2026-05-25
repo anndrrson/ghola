@@ -7,15 +7,15 @@ plugins {
 
 android {
     namespace = "xyz.ghola.app"
-    compileSdk = 34
+    compileSdk = 35
     ndkVersion = "26.1.10909125"
 
     defaultConfig {
         applicationId = "xyz.ghola.app"
         minSdk = 28
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 11
+        versionName = "0.7.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -29,11 +29,27 @@ android {
         // so we don't ship two copies of libc++.
         externalNativeBuild {
             cmake {
+                val shieldedPoolBackend = providers.gradleProperty("gholaShieldedPoolBackend")
+                    .orElse(providers.environmentVariable("GHOLA_SHIELDED_POOL_BACKEND"))
+                    .orNull
+                    ?.trim()
+                    .orEmpty()
+                val shieldedPoolArgs = if (shieldedPoolBackend.isNotEmpty()) {
+                    listOf(
+                        "-DGHOLA_SHIELDED_POOL_BACKEND_PREBUILT=$shieldedPoolBackend",
+                        "-DGHOLA_SHIELDED_POOL_BUILD_STUB_BACKEND=OFF",
+                    )
+                } else {
+                    listOf(
+                        "-DGHOLA_SHIELDED_POOL_BACKEND_PREBUILT=",
+                        "-DGHOLA_SHIELDED_POOL_BUILD_STUB_BACKEND=ON",
+                    )
+                }
                 arguments += listOf(
                     "-DANDROID_STL=c++_shared",
                     "-DGGML_OPENMP=OFF",
                     "-DBUILD_SHARED_LIBS=OFF",
-                )
+                ) + shieldedPoolArgs
                 cppFlags += listOf("-std=c++17", "-O3", "-fexceptions", "-frtti")
             }
         }
@@ -46,6 +62,23 @@ android {
         val gmailClientId: String = providers.gradleProperty("ghoLaGmailClientId").orNull
             ?: "PLACEHOLDER-google-oauth-client-id.apps.googleusercontent.com"
         buildConfigField("String", "GOOGLE_OAUTH_CLIENT_ID", "\"$gmailClientId\"")
+
+        val turnkeyOrgId: String = providers.gradleProperty("gholaTurnkeyOrgId").orNull
+            ?: providers.environmentVariable("TURNKEY_ORG_ID").orNull
+            ?: ""
+        val turnkeyAuthProxyConfigId: String = providers.gradleProperty("gholaTurnkeyAuthProxyConfigId").orNull
+            ?: providers.environmentVariable("TURNKEY_AUTH_PROXY_CONFIG_ID").orNull
+            ?: ""
+        val turnkeyRpId: String = providers.gradleProperty("gholaTurnkeyRpId").orNull
+            ?: providers.environmentVariable("TURNKEY_RP_ID").orNull
+            ?: "ghola.xyz"
+        val turnkeyAppScheme: String = providers.gradleProperty("gholaTurnkeyAppScheme").orNull
+            ?: providers.environmentVariable("TURNKEY_APP_SCHEME").orNull
+            ?: "ghola"
+        buildConfigField("String", "TURNKEY_ORG_ID", "\"$turnkeyOrgId\"")
+        buildConfigField("String", "TURNKEY_AUTH_PROXY_CONFIG_ID", "\"$turnkeyAuthProxyConfigId\"")
+        buildConfigField("String", "TURNKEY_RP_ID", "\"$turnkeyRpId\"")
+        buildConfigField("String", "TURNKEY_APP_SCHEME", "\"$turnkeyAppScheme\"")
 
         // Build-time stamp: short SHA + timestamp so the dev gauntlet can
         // verify which build is on device without grepping logcat.
@@ -64,10 +97,6 @@ android {
         manifestPlaceholders["appAuthRedirectScheme"] = "xyz.ghola.app.oauth"
     }
 
-    buildFeatures {
-        buildConfig = true
-    }
-
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
@@ -75,8 +104,8 @@ android {
     // Phase M9: release signing + R8 for Solana dApp Store submission.
     // Keystore path + passwords are read from gradle.properties or env vars
     // (`GHOLA_KEYSTORE_PATH`, `GHOLA_KEYSTORE_PASSWORD`, `GHOLA_KEY_ALIAS`,
-    // `GHOLA_KEY_PASSWORD`). Release builds fall back to the debug keystore
-    // if no signing config is provided, so dev builds still work.
+    // `GHOLA_KEY_PASSWORD`). Without those values Gradle still assembles a
+    // local unsigned release APK, but it is not suitable for dApp Store upload.
     signingConfigs {
         create("release") {
             val keystorePath = providers.gradleProperty("GHOLA_KEYSTORE_PATH")
@@ -101,6 +130,45 @@ android {
         buildConfig = true
     }
 
+    sourceSets {
+        getByName("main") {
+            assets.srcDir(layout.buildDirectory.dir("generated/shieldedPoolAssets"))
+            jniLibs.srcDir(layout.buildDirectory.dir("generated/shieldedPoolJniLibs"))
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // Google Play requires 16 KB page-size compatibility for Android
+            // 15/API 35 submissions. AGP 8.2 still zip-aligns uncompressed
+            // native libraries at 4 KB boundaries, so package them compressed
+            // until the Android toolchain is upgraded to AGP 8.5.1+ / NDK r28+.
+            useLegacyPackaging = true
+        }
+    }
+
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("seeker") {
+            dimension = "distribution"
+            targetSdk = 34
+            buildConfigField("String", "GHOLA_DISTRIBUTION", "\"seeker\"")
+            buildConfigField("String", "GHOLA_AUTH_SURFACE", "\"seeker_mwa\"")
+            buildConfigField("boolean", "GHOLA_SEEKER_BUILD", "true")
+            buildConfigField("boolean", "GHOLA_PLAY_STORE_BUILD", "false")
+            resValue("string", "distribution_name", "Solana Seeker")
+        }
+        create("standard") {
+            dimension = "distribution"
+            targetSdk = 35
+            buildConfigField("String", "GHOLA_DISTRIBUTION", "\"standard_android_play\"")
+            buildConfigField("String", "GHOLA_AUTH_SURFACE", "\"turnkey_ready\"")
+            buildConfigField("boolean", "GHOLA_SEEKER_BUILD", "false")
+            buildConfigField("boolean", "GHOLA_PLAY_STORE_BUILD", "true")
+            resValue("string", "distribution_name", "Android")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -115,10 +183,12 @@ android {
             // Override at build time via -PghoLaCloudUrlRelease=https://...
             val releaseUrl = providers.gradleProperty("ghoLaCloudUrlRelease").orNull
                 ?: "https://thumper-cloud.onrender.com"
+            val releaseSaidUrl = providers.gradleProperty("ghoLaSaidUrlRelease").orNull
+                ?: "https://ghola-api.onrender.com/v1"
             buildConfigField("String", "DEFAULT_CLOUD_URL", "\"$releaseUrl\"")
-            // Only assign the release signing config if a keystore was found;
-            // otherwise fall back to debug signing so `assembleRelease` still
-            // works for local smoke tests.
+            buildConfigField("String", "DEFAULT_SAID_URL", "\"$releaseSaidUrl\"")
+            // Only assign the release signing config if a keystore was found.
+            // The dApp Store release checker rejects unsigned APKs explicitly.
             val hasKeystore = providers.gradleProperty("GHOLA_KEYSTORE_PATH")
                 .orElse(providers.environmentVariable("GHOLA_KEYSTORE_PATH"))
                 .isPresent
@@ -133,7 +203,10 @@ android {
             // Override at build time:  ./gradlew … -PghoLaCloudUrl=http://10.0.0.5:3000
             val devUrl = providers.gradleProperty("ghoLaCloudUrl").orNull
                 ?: "http://192.168.1.169:3000"
+            val devSaidUrl = providers.gradleProperty("ghoLaSaidUrl").orNull
+                ?: "https://ghola-api.onrender.com/v1"
             buildConfigField("String", "DEFAULT_CLOUD_URL", "\"$devUrl\"")
+            buildConfigField("String", "DEFAULT_SAID_URL", "\"$devSaidUrl\"")
         }
     }
 
@@ -172,6 +245,47 @@ android {
     }
 }
 
+val prepareShieldedPoolAssets by tasks.registering(Copy::class) {
+    val circuitsDir = file("../../crates/said-shielded-pool-circuits")
+    into(layout.buildDirectory.dir("generated/shieldedPoolAssets/shielded_pool"))
+    from(circuitsDir.resolve("artifacts/transaction_js/transaction.wasm")) {
+        rename { "transaction.wasm" }
+    }
+    from(circuitsDir.resolve("artifacts/transaction.r1cs")) {
+        rename { "transaction.r1cs" }
+    }
+    from(circuitsDir.resolve("ceremony/transaction_final.zkey")) {
+        rename { "transaction_final.zkey" }
+    }
+}
+
+val prepareShieldedPoolBackend by tasks.registering(Sync::class) {
+    val shieldedPoolBackend = providers.gradleProperty("gholaShieldedPoolBackend")
+        .orElse(providers.environmentVariable("GHOLA_SHIELDED_POOL_BACKEND"))
+        .orNull
+        ?.trim()
+        .orEmpty()
+    into(layout.buildDirectory.dir("generated/shieldedPoolJniLibs/arm64-v8a"))
+    if (shieldedPoolBackend.isNotEmpty()) {
+        from(shieldedPoolBackend) {
+            rename { "libghola_shielded_pool_backend.so" }
+        }
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(prepareShieldedPoolAssets)
+    dependsOn(prepareShieldedPoolBackend)
+}
+
+configurations.configureEach {
+    resolutionStrategy {
+        force("androidx.browser:browser:1.8.0")
+        force("androidx.lifecycle:lifecycle-common:2.7.0")
+        force("androidx.lifecycle:lifecycle-process:2.7.0")
+    }
+}
+
 dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
@@ -189,12 +303,33 @@ dependencies {
     implementation("androidx.credentials:credentials:1.3.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
+    add("standardImplementation", "com.turnkey:sdk-kotlin:1.0.2")
+    add("standardImplementation", "com.turnkey:types:1.0.2")
+    add("standardImplementation", "com.turnkey:http:1.0.2")
+    add("standardImplementation", "com.turnkey:crypto:1.0.0")
+    add("standardImplementation", "com.turnkey:encoding:1.0.0")
+    add("standardImplementation", "com.turnkey:passkey:1.0.2")
+    add("standardImplementation", "com.turnkey:stamper:1.0.2")
 
     // Phase M4 — Solana Mobile Stack.
     // The ktx variant is a suspend-based wrapper around the core MWA client;
     // it brings kotlinx-coroutines transitively but we also declare it
     // explicitly so the IDE resolves lifecycleScope without surprises.
-    implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.3")
+    implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.3") {
+        // The 2.0.3 POM leaks test fixtures into runtime
+        // (androidx.test + Mockito). Exclude them so store builds do not ship
+        // test-only manifest components or mocking libraries.
+        exclude(group = "androidx.test")
+        exclude(group = "androidx.test.ext")
+        exclude(group = "androidx.test.services")
+        exclude(group = "org.mockito")
+        exclude(group = "org.mockito.kotlin")
+        exclude(group = "net.bytebuddy")
+        exclude(group = "org.objenesis")
+        exclude(group = "junit")
+        exclude(group = "org.hamcrest")
+    }
+    implementation("com.solanamobile:seedvault-wallet-sdk:0.4.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     // ProcessLifecycleOwner — fires onStart exactly once per
     // background→foreground transition. Used by AppForegroundCoordinator.
@@ -248,11 +383,15 @@ dependencies {
     // Ed25519 / X25519 only lands at API 33. AES-GCM still uses the platform
     // Cipher. See android/app/src/main/java/xyz/ghola/app/crypto/ for the
     // wire-format port of crates/said-envelope.
-    implementation("org.bouncycastle:bcprov-jdk18on:1.77")
+    implementation("org.bouncycastle:bcprov-jdk15to18:1.82")
 
     // Unit tests for crypto / vault / pair-device.
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20231013")
-    testImplementation("org.bouncycastle:bcprov-jdk18on:1.77")
+    testImplementation("org.bouncycastle:bcprov-jdk15to18:1.82")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+
+    androidTestImplementation("androidx.test:core:1.5.0")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test:runner:1.5.2")
 }

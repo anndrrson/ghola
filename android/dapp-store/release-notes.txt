@@ -1,13 +1,8 @@
-Ghola 0.4.0 — Wallet-only auth
+Ghola 0.7.1 — Private Seeker agent update
 
-• Sign in with your Solana wallet — that's it.
-• New SIWS challenge/response auth route on thumper-cloud:
-  wallet pubkey + Ed25519 signature => standard Ghola JWT.
-• Fresh installs no longer require Google Sign-In or any third-party API key.
-• Call, email, chat, and device-action planning now share the same
-  wallet-authenticated cloud session.
-• End-to-end encrypted chat stays default; envelope ciphertext is persisted
-  server-side and plaintext never lands in chat storage.
-• Google is now optional in Settings:
-  "Connect Google for Gmail integration."
-• Android user-facing rename cleanup: Thumper → Ghola.
+• Create Seeker-native private agents with local Seed Vault-derived identity.
+• Sync only encrypted private-agent config to Ghola Cloud.
+• Agent details now show the private shield state, local identity mode, and copy actions.
+• Production said-cloud preserves private agent linkage across reloads.
+• Wallet-owned agents, encrypted messaging, and privacy-forward Seeker flows remain unchanged.
+• No seed phrases, private keys, or recovery material are collected by Ghola.

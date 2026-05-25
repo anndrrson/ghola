@@ -1,0 +1,15 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <!-- Minimal house outline — same stroke language as ic_nav_wallet. -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="1.75"
+        android:strokeLineJoin="round"
+        android:strokeLineCap="round"
+        android:pathData="M3,11 L12,4 L21,11 V20 H3 V11 Z" />
+</vector>

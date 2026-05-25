@@ -50,6 +50,27 @@ class SecureStorage(context: Context) {
         private const val KEY_SAID_USER_ID = "said_cloud_user_id"
         private const val KEY_PRIMARY_AGENT_ID = "primary_agent_id"
         private const val KEY_SOLANA_ADDRESS = "solana_address"
+        private const val KEY_MWA_AUTH_TOKEN = "mwa_auth_token"
+        private const val KEY_MWA_WALLET_URI_BASE = "mwa_wallet_uri_base"
+        private const val KEY_MWA_ACCOUNT_LABEL = "mwa_account_label"
+        private const val KEY_MWA_CLUSTER = "mwa_cluster"
+        private const val KEY_MWA_CONNECTED_AT = "mwa_connected_at_millis"
+        private const val KEY_SEED_VAULT_AUTH_TOKEN = "seed_vault_auth_token"
+        private const val KEY_SEED_VAULT_DERIVATION_PATH = "seed_vault_derivation_path"
+        private const val KEY_SEED_VAULT_ADDRESS = "seed_vault_address"
+        private const val KEY_SEED_VAULT_CONNECTED_AT = "seed_vault_connected_at_millis"
+        private const val KEY_SHIELDED_POOL_RECIPIENT = "solana_shielded_pool_recipient"
+        private const val KEY_SHIELDED_POOL_NOTES_JSON = "solana_shielded_pool_notes_json"
+        private const val KEY_TURNKEY_ADDRESS = "turnkey_solana_address"
+        private const val KEY_TURNKEY_PROVIDER = "turnkey_provider"
+        private const val KEY_TURNKEY_DISPLAY_NAME = "turnkey_display_name"
+        private const val KEY_TURNKEY_CONNECTED_AT = "turnkey_connected_at_millis"
+        private const val KEY_SEEKER_VERIFIED_AT = "seeker_verified_at_millis"
+        private const val KEY_SEEKER_SGT_MINT = "seeker_sgt_mint"
+        private const val KEY_LOCAL_MODE = "local_mode"
+        private const val KEY_LOCAL_TOKEN = "local_token"
+        private const val KEY_LOCAL_BASE_URL = "local_base_url"
+        private const val KEY_LOCAL_SERVER_NAME = "local_server_name"
         // v0.7 (Phase γ.4 / L2) — HuggingFace Bearer token used to
         // download gated repo artifacts (e.g. the per-SoC `.litertlm`
         // bundles under `huggingface.co/litert-community/Gemma3-1B-IT`).
@@ -66,7 +87,13 @@ class SecureStorage(context: Context) {
         // https://api.ghola.xyz. Override at build time:
         //   ./gradlew … -PghoLaCloudUrl=http://<lan-ip>:3000
         private val DEFAULT_CLOUD_URL: String = BuildConfig.DEFAULT_CLOUD_URL
-        private const val DEFAULT_SAID_URL = "https://ghola-api.onrender.com/v1"
+        private const val PUBLIC_THUMPER_CLOUD_URL = "https://thumper-cloud.onrender.com"
+        private val LEGACY_DEBUG_CLOUD_URLS = setOf(
+            "http://192.168.1.169:3000",
+            "http://192.168.1.170:3000",
+        )
+        private val DEFAULT_SAID_URL: String = BuildConfig.DEFAULT_SAID_URL
+        private const val LEGACY_RENDER_SAID_URL = "https://ghola-api.onrender.com/v1"
         const val BACKEND_CLOUD = "cloud"
         const val BACKEND_QWEN_CLOUD = "qwen_cloud"
         const val BACKEND_LOCAL = "local"
@@ -153,6 +180,8 @@ class SecureStorage(context: Context) {
         return BACKEND_E2E_CLOUD
     }
 
+    fun hasExplicitBackendMode(): Boolean = prefs.contains(KEY_BACKEND)
+
     fun setBackendMode(mode: String) {
         prefs.edit().putString(KEY_BACKEND, mode).apply()
     }
@@ -209,6 +238,168 @@ class SecureStorage(context: Context) {
     }
 
     fun hasSolanaAddress(): Boolean = !getSolanaAddress().isNullOrBlank()
+
+    // --- MWA session metadata (Seeker Wallet / user-held custody) ---
+    //
+    // The auth token is a wallet-issued MWA reauthorization token. It is not a
+    // private key, seed, or hosted-custody credential, but it still lives in
+    // EncryptedSharedPreferences so Ghola can reuse the Seeker Wallet session
+    // without extra prompts and clear it on disconnect.
+
+    fun setMwaSession(
+        address: String,
+        authToken: String?,
+        walletUriBase: String?,
+        accountLabel: String?,
+        cluster: String,
+    ) {
+        val editor = prefs.edit()
+            .putString(KEY_SOLANA_ADDRESS, address)
+            .putString(KEY_MWA_CLUSTER, cluster)
+            .putLong(KEY_MWA_CONNECTED_AT, System.currentTimeMillis())
+        if (authToken.isNullOrBlank()) {
+            editor.remove(KEY_MWA_AUTH_TOKEN)
+        } else {
+            editor.putString(KEY_MWA_AUTH_TOKEN, authToken)
+        }
+        if (walletUriBase.isNullOrBlank()) {
+            editor.remove(KEY_MWA_WALLET_URI_BASE)
+        } else {
+            editor.putString(KEY_MWA_WALLET_URI_BASE, walletUriBase)
+        }
+        if (accountLabel.isNullOrBlank()) {
+            editor.remove(KEY_MWA_ACCOUNT_LABEL)
+        } else {
+            editor.putString(KEY_MWA_ACCOUNT_LABEL, accountLabel)
+        }
+        editor.apply()
+    }
+
+    fun getMwaAuthToken(): String? = prefs.getString(KEY_MWA_AUTH_TOKEN, null)
+    fun getMwaWalletUriBase(): String? = prefs.getString(KEY_MWA_WALLET_URI_BASE, null)
+    fun getMwaAccountLabel(): String? = prefs.getString(KEY_MWA_ACCOUNT_LABEL, null)
+    fun getMwaCluster(): String? = prefs.getString(KEY_MWA_CLUSTER, null)
+    fun getMwaConnectedAtMillis(): Long = prefs.getLong(KEY_MWA_CONNECTED_AT, 0L)
+
+    // --- Native Seed Vault session metadata (Seeker) ---
+
+    fun setSeedVaultSession(
+        address: String,
+        authToken: Long,
+        derivationPathUri: String,
+    ) {
+        prefs.edit()
+            .putString(KEY_SOLANA_ADDRESS, address)
+            .putString(KEY_SEED_VAULT_ADDRESS, address)
+            .putLong(KEY_SEED_VAULT_AUTH_TOKEN, authToken)
+            .putString(KEY_SEED_VAULT_DERIVATION_PATH, derivationPathUri)
+            .putLong(KEY_SEED_VAULT_CONNECTED_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    fun getSeedVaultAddress(): String? = prefs.getString(KEY_SEED_VAULT_ADDRESS, null)
+
+    fun getSeedVaultAuthToken(): Long? =
+        if (prefs.contains(KEY_SEED_VAULT_AUTH_TOKEN)) {
+            prefs.getLong(KEY_SEED_VAULT_AUTH_TOKEN, 0L)
+        } else {
+            null
+        }
+
+    fun getSeedVaultDerivationPathUri(): String? = prefs.getString(KEY_SEED_VAULT_DERIVATION_PATH, null)
+
+    fun getSeedVaultConnectedAtMillis(): Long = prefs.getLong(KEY_SEED_VAULT_CONNECTED_AT, 0L)
+
+    fun hasSeedVaultSession(): Boolean =
+        getSeedVaultAuthToken() != null &&
+            !getSeedVaultAddress().isNullOrBlank() &&
+            !getSeedVaultDerivationPathUri().isNullOrBlank()
+
+    fun clearSeedVaultSession() {
+        prefs.edit()
+            .remove(KEY_SEED_VAULT_AUTH_TOKEN)
+            .remove(KEY_SEED_VAULT_DERIVATION_PATH)
+            .remove(KEY_SEED_VAULT_ADDRESS)
+            .remove(KEY_SEED_VAULT_CONNECTED_AT)
+            .remove(KEY_SHIELDED_POOL_RECIPIENT)
+            .remove(KEY_SHIELDED_POOL_NOTES_JSON)
+            .remove(KEY_SOLANA_ADDRESS)
+            .remove(KEY_SEEKER_VERIFIED_AT)
+            .remove(KEY_SEEKER_SGT_MINT)
+            .apply()
+    }
+
+    fun clearMwaSession() {
+        prefs.edit()
+            .remove(KEY_SOLANA_ADDRESS)
+            .remove(KEY_MWA_AUTH_TOKEN)
+            .remove(KEY_MWA_WALLET_URI_BASE)
+            .remove(KEY_MWA_ACCOUNT_LABEL)
+            .remove(KEY_MWA_CLUSTER)
+            .remove(KEY_MWA_CONNECTED_AT)
+            .remove(KEY_SEED_VAULT_AUTH_TOKEN)
+            .remove(KEY_SEED_VAULT_DERIVATION_PATH)
+            .remove(KEY_SEED_VAULT_ADDRESS)
+            .remove(KEY_SEED_VAULT_CONNECTED_AT)
+            .remove(KEY_SHIELDED_POOL_RECIPIENT)
+            .remove(KEY_SHIELDED_POOL_NOTES_JSON)
+            .remove(KEY_SEEKER_VERIFIED_AT)
+            .remove(KEY_SEEKER_SGT_MINT)
+            .apply()
+    }
+
+    fun setShieldedPoolRecipient(recipient: String) {
+        prefs.edit().putString(KEY_SHIELDED_POOL_RECIPIENT, recipient).apply()
+    }
+
+    fun getShieldedPoolRecipient(): String? = prefs.getString(KEY_SHIELDED_POOL_RECIPIENT, null)
+
+    fun setShieldedPoolNotesJson(notesJson: String) {
+        prefs.edit().putString(KEY_SHIELDED_POOL_NOTES_JSON, notesJson).apply()
+    }
+
+    fun getShieldedPoolNotesJson(): String? = prefs.getString(KEY_SHIELDED_POOL_NOTES_JSON, null)
+
+    fun setTurnkeySession(
+        address: String,
+        provider: String,
+        displayName: String,
+    ) {
+        prefs.edit()
+            .putString(KEY_TURNKEY_ADDRESS, address)
+            .putString(KEY_SOLANA_ADDRESS, address)
+            .putString(KEY_TURNKEY_PROVIDER, provider)
+            .putString(KEY_TURNKEY_DISPLAY_NAME, displayName)
+            .putLong(KEY_TURNKEY_CONNECTED_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    fun getTurnkeyAddress(): String? = prefs.getString(KEY_TURNKEY_ADDRESS, null)
+    fun getTurnkeyProvider(): String? = prefs.getString(KEY_TURNKEY_PROVIDER, null)
+    fun getTurnkeyDisplayName(): String? = prefs.getString(KEY_TURNKEY_DISPLAY_NAME, null)
+    fun getTurnkeyConnectedAtMillis(): Long = prefs.getLong(KEY_TURNKEY_CONNECTED_AT, 0L)
+    fun hasTurnkeySession(): Boolean = !getTurnkeyAddress().isNullOrBlank()
+
+    fun clearTurnkeySession() {
+        prefs.edit()
+            .remove(KEY_TURNKEY_ADDRESS)
+            .remove(KEY_TURNKEY_PROVIDER)
+            .remove(KEY_TURNKEY_DISPLAY_NAME)
+            .remove(KEY_TURNKEY_CONNECTED_AT)
+            .remove(KEY_SOLANA_ADDRESS)
+            .apply()
+    }
+
+    fun setSeekerVerified(sgtMint: String?) {
+        prefs.edit()
+            .putLong(KEY_SEEKER_VERIFIED_AT, System.currentTimeMillis())
+            .putString(KEY_SEEKER_SGT_MINT, sgtMint)
+            .apply()
+    }
+
+    fun getSeekerVerifiedAtMillis(): Long = prefs.getLong(KEY_SEEKER_VERIFIED_AT, 0L)
+    fun getSeekerSgtMint(): String? = prefs.getString(KEY_SEEKER_SGT_MINT, null)
+    fun hasVerifiedSeekerWallet(): Boolean = getSeekerVerifiedAtMillis() > 0L
 
     fun setIsSeeker(value: Boolean) {
         prefs.edit().putBoolean(KEY_IS_SEEKER, value).apply()
@@ -407,11 +598,76 @@ class SecureStorage(context: Context) {
         prefs.edit().putString(KEY_CLOUD_USER_ID, userId).apply()
     }
 
-    fun getCloudBaseUrl(): String = prefs.getString(KEY_CLOUD_BASE_URL, DEFAULT_CLOUD_URL) ?: DEFAULT_CLOUD_URL
+    fun getCloudBaseUrl(): String {
+        val configured = prefs.getString(KEY_CLOUD_BASE_URL, DEFAULT_CLOUD_URL) ?: DEFAULT_CLOUD_URL
+        if (BuildConfig.DEBUG && configured.trim().trimEnd('/') in LEGACY_DEBUG_CLOUD_URLS) {
+            return DEFAULT_CLOUD_URL
+        }
+        return configured
+    }
 
     fun setCloudBaseUrl(url: String) {
         prefs.edit().putString(KEY_CLOUD_BASE_URL, url).apply()
     }
+
+    /**
+     * Native Seeker commerce endpoints need the thumper-cloud API root.
+     *
+     * Some early/debug installs persisted website origins while the web app
+     * was proxying API calls. That works for browser API requests but
+     * fails for native health/discovery routes like `/health/payments`. Keep
+     * the base cloud URL untouched for legacy callers and normalize only the
+     * native Seeker/private-rail feature surface.
+     */
+    fun getThumperApiBaseUrl(): String {
+        val raw = getCloudBaseUrl().trim().trimEnd('/')
+        val defaultCloud = DEFAULT_CLOUD_URL.trim().trimEnd('/')
+        if (BuildConfig.DEBUG && raw == defaultCloud) {
+            return PUBLIC_THUMPER_CLOUD_URL
+        }
+        // L finding: classify strictly by the parsed-URI host. The previous
+        // lower.contains() shortcut would match a URL like
+        // "http://evil.com/?x=ghola.xyz" on the substring before the real host
+        // check; relying solely on URI.host removes that ambiguity.
+        val host = runCatching { java.net.URI(raw).host?.lowercase() }.getOrNull()
+        return when (host) {
+            "ghola.xyz",
+            "www.ghola.xyz",
+            "anndrrson.com",
+            "www.anndrrson.com" -> PUBLIC_THUMPER_CLOUD_URL
+            else -> raw.ifBlank { DEFAULT_CLOUD_URL }
+        }
+    }
+
+    // --- Ghola Home local server pairing ---
+    //
+    // Android mirrors the iOS local-pair flow but keeps the Seeker posture:
+    // cloud auth remains SIWS/MWA, and local mode only stores a LAN server
+    // bearer token returned by the user's own Ghola Home process.
+
+    fun isGholaHomeLocalMode(): Boolean = prefs.getBoolean(KEY_LOCAL_MODE, false)
+
+    fun setLocalPair(token: String, baseUrl: String, serverName: String) {
+        prefs.edit()
+            .putBoolean(KEY_LOCAL_MODE, true)
+            .putString(KEY_LOCAL_TOKEN, token)
+            .putString(KEY_LOCAL_BASE_URL, baseUrl)
+            .putString(KEY_LOCAL_SERVER_NAME, serverName)
+            .apply()
+    }
+
+    fun clearLocalPair() {
+        prefs.edit()
+            .remove(KEY_LOCAL_MODE)
+            .remove(KEY_LOCAL_TOKEN)
+            .remove(KEY_LOCAL_BASE_URL)
+            .remove(KEY_LOCAL_SERVER_NAME)
+            .apply()
+    }
+
+    fun getLocalToken(): String? = prefs.getString(KEY_LOCAL_TOKEN, null)
+    fun getLocalBaseUrl(): String? = prefs.getString(KEY_LOCAL_BASE_URL, null)
+    fun getLocalServerName(): String? = prefs.getString(KEY_LOCAL_SERVER_NAME, null)
 
     // --- User Profile ---
 
@@ -478,7 +734,13 @@ class SecureStorage(context: Context) {
         return !xyz.ghola.app.cloud.JwtUtil.isExpired(token)
     }
 
-    fun getSaidBaseUrl(): String = prefs.getString(KEY_SAID_BASE_URL, DEFAULT_SAID_URL) ?: DEFAULT_SAID_URL
+    fun getSaidBaseUrl(): String {
+        if (BuildConfig.DEBUG) {
+            return DEFAULT_SAID_URL
+        }
+        val configured = prefs.getString(KEY_SAID_BASE_URL, DEFAULT_SAID_URL) ?: DEFAULT_SAID_URL
+        return configured
+    }
 
     fun setSaidBaseUrl(url: String) {
         prefs.edit().putString(KEY_SAID_BASE_URL, url).apply()

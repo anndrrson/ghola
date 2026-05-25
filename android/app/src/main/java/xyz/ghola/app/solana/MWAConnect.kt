@@ -4,8 +4,10 @@ package xyz.ghola.app.solana
 
 import android.net.Uri
 import android.util.Log
+import xyz.ghola.app.BuildConfig
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import com.solana.mobilewalletadapter.clientlib.ConnectionIdentity
+import com.solana.mobilewalletadapter.clientlib.DefaultTransactionParams
 import com.solana.mobilewalletadapter.clientlib.MobileWalletAdapter
 import com.solana.mobilewalletadapter.clientlib.RpcCluster
 import com.solana.mobilewalletadapter.clientlib.TransactionResult
@@ -52,47 +54,73 @@ import com.solana.mobilewalletadapter.clientlib.TransactionResult
  * dispatcher the caller used. Use `lifecycleScope.launch { ... }` from
  * an Activity to avoid leaks.
  *
- * ## What this does NOT do
- *
- * - Does not cache the auth token. Every call re-authorizes. If you
- *   want a "reauthorize with cached token" flow, set
- *   `adapter.authToken = previousToken` before calling `transact`.
- * - Does not sign transactions. The block returns the pubkey bytes and
- *   exits; no `signAndSendTransactions` is invoked. Adding signing is a
- *   one-line change inside the transact block.
- * - Does not deauthorize on logout. Call `adapter.disconnect(sender)`
- *   from a separate flow if needed.
+ * This wrapper keeps Ghola on the native Solana Mobile path: Seeker
+ * Wallet / MWA controls authorization, signing, and public transaction
+ * submission. Ghola stores only the MWA auth token and public account
+ * metadata in encrypted preferences; it never provisions hosted custody
+ * for the Android/Seeker path.
  */
 object MWAConnect {
     private const val TAG = "MWAConnect"
+    private const val IDENTITY_URI = "https://ghola.xyz"
+    private const val ICON_URI = "/favicon.ico"
+
+    data class WalletSession(
+        val address: String,
+        val authToken: String?,
+        val walletUriBase: String?,
+        val accountLabel: String?,
+        val cluster: String,
+    )
+
+    sealed class TransactionSendOutcome {
+        data class Success(val signatures: List<String>) : TransactionSendOutcome()
+        object NoWallet : TransactionSendOutcome()
+        object Declined : TransactionSendOutcome()
+        object Cancelled : TransactionSendOutcome()
+        data class Failure(val cause: Throwable) : TransactionSendOutcome()
+    }
+
+    private fun cluster(): RpcCluster =
+        if (BuildConfig.DEBUG) RpcCluster.Devnet else RpcCluster.MainnetBeta
+
+    fun clusterName(): String =
+        if (BuildConfig.DEBUG) SolanaConstants.DEFAULT_CLUSTER_DEVNET else SolanaConstants.DEFAULT_CLUSTER_MAINNET
+
+    private fun adapter(previousAuthToken: String? = null): MobileWalletAdapter =
+        MobileWalletAdapter(
+            connectionIdentity = ConnectionIdentity(
+                identityUri = Uri.parse(IDENTITY_URI),
+                iconUri = Uri.parse(ICON_URI),
+                identityName = "Ghola",
+            ),
+        ).apply {
+            rpcCluster = cluster()
+            if (!previousAuthToken.isNullOrBlank()) {
+                authToken = previousAuthToken
+            }
+        }
 
     /**
      * Launch the MWA authorize flow and return the connected wallet's
      * Solana address (base58-encoded) on success.
      */
-    suspend fun authorize(sender: ActivityResultSender): Result<String> {
-        val adapter = MobileWalletAdapter(
-            connectionIdentity = ConnectionIdentity(
-                identityUri = Uri.parse("https://ghola.xyz"),
-                iconUri = Uri.parse("favicon.ico"),
-                identityName = "Ghola",
-            ),
-        )
-        // Devnet is the safe default for dev/demo. Mainnet-beta would work
-        // for production signing flows; we're not signing anything here so
-        // the cluster is largely cosmetic — some wallets use it to colour
-        // their UI ("Devnet mode"), nothing else.
-        adapter.rpcCluster = RpcCluster.Devnet
+    suspend fun authorize(sender: ActivityResultSender): Result<String> =
+        authorizeSession(sender).map { it.address }
 
-        // transact() opens a session with the installed wallet, runs the
-        // block with the AuthorizationResult, then closes the session.
-        // The block's return value becomes the `payload` on
-        // TransactionResult.Success<T>. We return the first account's
-        // public key bytes so the caller can display them as base58.
+    /**
+     * Launch or refresh MWA authorization and return the public account plus
+     * auth-token metadata callers should persist in encrypted storage.
+     */
+    suspend fun authorizeSession(
+        sender: ActivityResultSender,
+        previousAuthToken: String? = null,
+    ): Result<WalletSession> {
+        val adapter = adapter(previousAuthToken)
         val result = try {
             adapter.transact(sender) { authResult ->
                 val accounts = authResult.accounts
-                if (accounts.isNotEmpty()) {
+                val publicKey = if (accounts.isNotEmpty()) {
                     accounts[0].publicKey
                 } else {
                     // Legacy fallback: pre-multi-account wallets populate
@@ -100,6 +128,14 @@ object MWAConnect {
                     @Suppress("DEPRECATION")
                     authResult.publicKey
                 }
+                val accountLabel = accounts.firstOrNull()?.accountLabel ?: authResult.accountLabel
+                WalletSession(
+                    address = Base58.encode(publicKey),
+                    authToken = authResult.authToken,
+                    walletUriBase = authResult.walletUriBase?.toString(),
+                    accountLabel = accountLabel,
+                    cluster = clusterName(),
+                )
             }
         } catch (e: Exception) {
             Log.e(TAG, "MWA transact threw", e)
@@ -108,14 +144,13 @@ object MWAConnect {
 
         return when (result) {
             is TransactionResult.Success -> {
-                val bytes = result.payload
-                if (bytes.isEmpty()) {
+                val session = result.payload
+                if (session.address.isBlank()) {
                     Log.w(TAG, "MWA success but no pubkey bytes")
                     Result.failure(IllegalStateException("wallet returned no public key"))
                 } else {
-                    val address = Base58.encode(bytes)
-                    Log.i(TAG, "MWA authorized — address=$address")
-                    Result.success(address)
+                    Log.i(TAG, "MWA authorized address=${session.address} cluster=${session.cluster}")
+                    Result.success(session)
                 }
             }
             is TransactionResult.NoWalletFound -> {
@@ -162,15 +197,9 @@ object MWAConnect {
         sender: ActivityResultSender,
         walletAddressBase58: String,
         message: ByteArray,
+        authToken: String? = null,
     ): SignOutcome {
-        val adapter = MobileWalletAdapter(
-            connectionIdentity = ConnectionIdentity(
-                identityUri = Uri.parse("https://ghola.xyz"),
-                iconUri = Uri.parse("favicon.ico"),
-                identityName = "Ghola",
-            ),
-        )
-        adapter.rpcCluster = RpcCluster.Devnet
+        val adapter = adapter(authToken)
 
         val addressBytes = try {
             Base58.decode(walletAddressBase58)
@@ -204,7 +233,7 @@ object MWAConnect {
             is TransactionResult.Success -> SignOutcome.Success(result.payload)
             is TransactionResult.NoWalletFound -> SignOutcome.NoWallet
             is TransactionResult.Failure -> {
-                val msg = result.message?.lowercase().orEmpty()
+                val msg = result.message.lowercase()
                 when {
                     msg.contains("declin") || msg.contains("reject") ->
                         SignOutcome.Declined
@@ -212,6 +241,82 @@ object MWAConnect {
                     else -> SignOutcome.Failure(result.e)
                 }
             }
+        }
+    }
+
+    /**
+     * Submit already-serialized Solana transactions through the connected
+     * wallet. This is the public-rail path Ghola should use for SOL/USDC/x402
+     * approvals on Seeker: the wallet signs and broadcasts, and Ghola receives
+     * only transaction signatures.
+     */
+    suspend fun signAndSendTransactions(
+        sender: ActivityResultSender,
+        walletAddressBase58: String,
+        serializedTransactions: List<ByteArray>,
+        authToken: String? = null,
+    ): TransactionSendOutcome {
+        if (serializedTransactions.isEmpty()) {
+            return TransactionSendOutcome.Failure(IllegalArgumentException("no transactions to send"))
+        }
+        val expectedAddress = try {
+            Base58.decode(walletAddressBase58)
+        } catch (e: Exception) {
+            return TransactionSendOutcome.Failure(e)
+        }
+        val adapter = adapter(authToken)
+        val result = try {
+            adapter.transact(sender) { authResult ->
+                val authorized = authResult.accounts.firstOrNull()?.publicKey ?: run {
+                    @Suppress("DEPRECATION")
+                    authResult.publicKey
+                }
+                if (!authorized.contentEquals(expectedAddress)) {
+                    error("authorized wallet does not match connected Ghola wallet")
+                }
+                signAndSendTransactions(
+                    serializedTransactions.toTypedArray(),
+                    DefaultTransactionParams,
+                ).signatures.map { Base58.encode(it) }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "MWA signAndSendTransactions threw", e)
+            return TransactionSendOutcome.Failure(e)
+        }
+
+        return when (result) {
+            is TransactionResult.Success -> TransactionSendOutcome.Success(result.payload)
+            is TransactionResult.NoWalletFound -> TransactionSendOutcome.NoWallet
+            is TransactionResult.Failure -> {
+                val msg = result.message.lowercase()
+                when {
+                    msg.contains("declin") || msg.contains("reject") ->
+                        TransactionSendOutcome.Declined
+                    msg.contains("cancel") -> TransactionSendOutcome.Cancelled
+                    else -> TransactionSendOutcome.Failure(result.e)
+                }
+            }
+        }
+    }
+
+    suspend fun deauthorize(
+        sender: ActivityResultSender,
+        authToken: String?,
+    ): Result<Unit> {
+        if (authToken.isNullOrBlank()) return Result.success(Unit)
+        val adapter = adapter(authToken)
+        val result = try {
+            adapter.transact(sender) {
+                deauthorize(authToken)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "MWA deauthorize threw", e)
+            return Result.failure(e)
+        }
+        return when (result) {
+            is TransactionResult.Success -> Result.success(Unit)
+            is TransactionResult.NoWalletFound -> Result.failure(NoWalletInstalledException(result.message))
+            is TransactionResult.Failure -> Result.failure(result.e)
         }
     }
 }

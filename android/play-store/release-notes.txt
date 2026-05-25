@@ -1,0 +1,8 @@
+Ghola for Android
+
+Normal Android Play Store build. This release keeps the core Ghola flows for
+chat, calls, email, agents, local AI, and wallet-bound privacy while keeping
+Solana Seeker-only features in the separate dApp Store build.
+
+Privacy remains the default: encrypted chat vaults, user-held wallet approval,
+and no public fallback for private USDCx intents.

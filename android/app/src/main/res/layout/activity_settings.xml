@@ -32,7 +32,7 @@
                 android:id="@+id/radioE2eCloud"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Wallet-only cloud (Recommended)"
+                android:text="@string/e2e_backend_label"
                 android:textSize="14sp"
                 android:padding="4dp" />
 
@@ -429,7 +429,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Accessibility Service"
+            android:text="Device Control"
             android:textSize="16sp"
             android:textStyle="bold"
             android:textColor="#eef1f8"
@@ -448,7 +448,7 @@
             android:id="@+id/enableA11yButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Enable Accessibility Service"
+            android:text="Open Ghola Permission"
             android:layout_marginBottom="24dp"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
 
@@ -482,14 +482,22 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Open Relay Setup"
+            android:layout_marginBottom="8dp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        <Button
+            android:id="@+id/localHomeConnectButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Connect Ghola Home"
             android:layout_marginBottom="24dp"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
 
-        <!-- Pair Device (Phase 0.3) -->
+        <!-- Chat backup and transfer -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Pair Device"
+            android:text="Chat Backup &amp; Transfer"
             android:textSize="16sp"
             android:textStyle="bold"
             android:textColor="#eef1f8"
@@ -498,7 +506,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Move encrypted chat sessions between two devices that share your wallet."
+            android:text="Only use this when setting up another phone you own."
             android:textSize="13sp"
             android:textColor="#4a5568"
             android:layout_marginBottom="8dp" />
@@ -507,7 +515,7 @@
             android:id="@+id/pairDeviceReceiveButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Add this device from another"
+            android:text="This is my new phone"
             android:layout_marginBottom="8dp"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
 
@@ -515,7 +523,7 @@
             android:id="@+id/pairDeviceSendButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Send my sessions to a new device"
+            android:text="This is my old phone"
             android:layout_marginBottom="32dp"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
 

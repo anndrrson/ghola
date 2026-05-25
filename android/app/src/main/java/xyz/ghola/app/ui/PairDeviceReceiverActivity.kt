@@ -1,32 +1,41 @@
 package xyz.ghola.app.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Bundle
-import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup.LayoutParams
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.google.android.material.bottomnavigation.BottomNavigationView
+import com.google.android.material.button.MaterialButton
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import xyz.ghola.app.BuildConfig
+import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
+import xyz.ghola.app.cloud.DeviceSignerProvider
 import xyz.ghola.app.crypto.Envelope
 import xyz.ghola.app.crypto.PairDevice
 import xyz.ghola.app.crypto.VaultStore
 import xyz.ghola.app.crypto.mwaSignerForVault
 import xyz.ghola.app.solana.Base58
+import xyz.ghola.app.solana.SeedVaultNative
 
 /**
- * Pair Device — receiver side. The user opens this on a NEW device that
+ * Pair Device — receiver side. The user opens this on a new phone that
  * needs to inherit the existing wallet's session DEKs. We:
  *
  *   1. Unlock the vault for the user's DID (one MWA wallet sign).
@@ -39,49 +48,43 @@ class PairDeviceReceiverActivity : AppCompatActivity() {
 
     private lateinit var storage: SecureStorage
     private lateinit var qrView: ImageView
+    private lateinit var qrFrame: FrameLayout
     private lateinit var statusView: TextView
+    private lateinit var hintView: TextView
+    private lateinit var createPairCodeButton: MaterialButton
+    private lateinit var pairCodeLine: TextView
+    private lateinit var sharePairCodeButton: MaterialButton
+    private lateinit var copyPairCodeButton: MaterialButton
+    private lateinit var showPairQrButton: MaterialButton
+    private lateinit var pairCodeActions: LinearLayout
     private val activityResultSender = ActivityResultSender(this)
+    private val seedVaultNative = SeedVaultNative(this)
     private var vault: VaultStore? = null
     private var receiver: PairDevice.ReceiverHandshake? = null
+    private var pairingDescriptorJson: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         storage = SecureStorage(this)
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(32, 48, 32, 48)
-            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+        setContentView(R.layout.activity_pair_device_receiver)
+        statusView = findViewById(R.id.pairReceiverStatus)
+        hintView = findViewById(R.id.pairReceiverHint)
+        qrView = findViewById(R.id.pairQrImage)
+        qrFrame = findViewById(R.id.pairQrFrame)
+        createPairCodeButton = findViewById(R.id.createPairCodeButton)
+        pairCodeLine = findViewById(R.id.pairCodeLine)
+        sharePairCodeButton = findViewById(R.id.sharePairCodeButton)
+        copyPairCodeButton = findViewById(R.id.copyPairCodeButton)
+        showPairQrButton = findViewById(R.id.showPairQrButton)
+        pairCodeActions = findViewById(R.id.pairCodeActions)
+        createPairCodeButton.setOnClickListener { startReceiverFlow() }
+        sharePairCodeButton.setOnClickListener { sharePairingCode() }
+        copyPairCodeButton.setOnClickListener { copyPairingCode() }
+        showPairQrButton.setOnClickListener {
+            pairingDescriptorJson?.let { renderQr(it) }
         }
-        val title = TextView(this).apply {
-            text = "Pair this device"
-            textSize = 20f
-            setTextColor(Color.WHITE)
-        }
-        statusView = TextView(this).apply {
-            text = "Connecting…"
-            textSize = 14f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 16, 0, 16)
-        }
-        qrView = ImageView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(640, 640).apply { topMargin = 16 }
-            visibility = View.GONE
-        }
-        val instructions = TextView(this).apply {
-            text = "On your other device, scan this QR. Verify the sender DID matches your wallet before approving."
-            textSize = 13f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 24, 0, 0)
-        }
-        root.addView(title)
-        root.addView(statusView)
-        root.addView(qrView)
-        root.addView(instructions)
-        setContentView(root)
-
-        startReceiverFlow()
+        BottomNavHelper.attach(this, R.id.tab_messages, findViewById<BottomNavigationView>(R.id.bottomNav))
     }
 
     private fun startReceiverFlow() {
@@ -104,21 +107,48 @@ class PairDeviceReceiverActivity : AppCompatActivity() {
         val v = VaultStore.create(this, userDid)
         vault = v
 
-        statusView.text = "Tap your wallet to unlock the vault…"
+        statusView.text = "Approve with ${walletLabel()} to create a receive code."
+        createPairCodeButton.isEnabled = false
         lifecycleScope.launch {
             runCatching {
-                val signer = mwaSignerForVault(activityResultSender, solanaAddress)
+                val signer = if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                    (DeviceSignerProvider.cached(this@PairDeviceReceiverActivity)
+                        ?: DeviceSignerProvider.signIn(this@PairDeviceReceiverActivity).getOrThrow())
+                        .vaultSigner()
+                } else if (BuildConfig.GHOLA_SEEKER_BUILD && storage.hasSeedVaultSession()) {
+                    val seedSession = currentSeedVaultSession()
+                        ?: error("Seed Vault session unavailable; reconnect in Wallet")
+                    seedVaultNative.signer(seedSession).vaultSigner()
+                } else {
+                    mwaSignerForVault(
+                        activityResultSender,
+                        solanaAddress,
+                        storage.getMwaAuthToken(),
+                    )
+                }
                 withContext(Dispatchers.IO) { v.unlock(signer) }
             }.onSuccess {
                 val handshake = PairDevice.createReceiverHandshake(userDid)
                 receiver = handshake
-                renderQr(handshake.descriptor.toJson())
-                statusView.text = "Waiting for the other device to send…"
+                val descriptorJson = handshake.descriptor.toJson()
+                pairingDescriptorJson = descriptorJson
+                renderPairingCode(descriptorJson)
+                statusView.text = "Code ready. Send it to your old phone."
+                hintView.text = "On the phone that already has your chats, open Messages > Send Chats, then paste this code. Keep this screen open."
+                createPairCodeButton.visibility = View.GONE
                 runReceiverPoll(handshake, v)
             }.onFailure { err ->
                 statusView.text = "Vault unlock failed: ${err.message ?: "unknown"}"
+                createPairCodeButton.isEnabled = true
             }
         }
+    }
+
+    private fun currentSeedVaultSession(): SeedVaultNative.Session? {
+        val address = storage.getSeedVaultAddress() ?: return null
+        val token = storage.getSeedVaultAuthToken() ?: return null
+        val path = storage.getSeedVaultDerivationPathUri() ?: return null
+        return SeedVaultNative.Session(address, token, path)
     }
 
     private fun runReceiverPoll(handshake: PairDevice.ReceiverHandshake, vault: VaultStore) {
@@ -154,12 +184,55 @@ class PairDeviceReceiverActivity : AppCompatActivity() {
             bmp.setPixel(x, y, if (matrix.get(x, y)) Color.BLACK else Color.WHITE)
         }
         qrView.setImageBitmap(bmp)
-        qrView.visibility = View.VISIBLE
+        qrFrame.visibility = View.VISIBLE
+        showPairQrButton.text = "HIDE QR"
+        showPairQrButton.setOnClickListener {
+            qrFrame.visibility = View.GONE
+            showPairQrButton.text = "SHOW QR"
+            showPairQrButton.setOnClickListener { pairingDescriptorJson?.let { renderQr(it) } }
+        }
+    }
+
+    private fun renderPairingCode(content: String) {
+        pairCodeLine.text = previewPairingCode(content)
+        pairCodeLine.visibility = View.VISIBLE
+        sharePairCodeButton.visibility = View.VISIBLE
+        pairCodeActions.visibility = View.VISIBLE
+    }
+
+    private fun copyPairingCode() {
+        val content = pairingDescriptorJson ?: return
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Ghola receive code", content))
+        Toast.makeText(this, "Receive code copied", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun sharePairingCode() {
+        val content = pairingDescriptorJson ?: return
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Ghola receive code")
+            putExtra(Intent.EXTRA_TEXT, content)
+        }
+        startActivity(Intent.createChooser(send, "Send code to old phone"))
+    }
+
+    private fun previewPairingCode(content: String): String {
+        val compact = content.replace("\\s+".toRegex(), "")
+        return if (compact.length <= 96) {
+            compact
+        } else {
+            "${compact.take(56)}\n...\n${compact.takeLast(40)}"
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        pairingDescriptorJson = null
         receiver?.zeroize()
         vault?.lock()
     }
+
+    private fun walletLabel(): String =
+        if (BuildConfig.GHOLA_SEEKER_BUILD) "Seeker Wallet" else "your wallet"
 }

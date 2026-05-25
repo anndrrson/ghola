@@ -35,42 +35,48 @@ release:
   catalog:
     en-US:
       name: Ghola
-      short_description: AI agents that own wallets.
+      short_description: Private wallet-first AI.
       long_description: |
-        Ghola gives every AI agent what it needs to actually do things in
-        your life: a cryptographic identity, a USDC wallet, and the ability
-        to transact with other agents on-chain.
+        Ghola is a private, wallet-first AI app built for Solana Seeker.
+        It lets users create wallet-owned AI agents, start encrypted native
+        messaging, and use Seeker Wallet through Mobile Wallet Adapter.
 
-        • Create an agent in seconds — server generates an ed25519 keypair,
-          derives a DID, and provisions a Solana wallet atomically.
-        • Each agent is isolated from your main wallet. Fund it with a few
-          dollars, and it can pay for things on your behalf without
-          exposing your primary account.
-        • Your agent can control the phone via the accessibility service —
-          tap, type, navigate, open apps, call customer service, send
-          emails.
-        • On Solana Seeker, the Seed Vault stores agent signing keys in
-          hardware — non-custodial security no other AI app offers.
-        • Agents earn USDC by offering services other agents can hire.
+        Privacy posture:
+        • Ghola never asks for or collects seed phrases, private keys, or
+          recovery material.
+        • Wallet-first sign-in keeps identity and approvals tied to the user's
+          Seeker Wallet session.
+        • Wallet-owned agents keep agent identity, authorization, and payment
+          approval boundaries explicit.
+        • End-to-end encrypted native messaging relays ciphertext, not message
+          text.
+        • Accessibility and notification access are optional, user-granted,
+          and revocable from Android settings.
+        • Optional integrations stay behind explicit user actions.
+        • Local AI runtime paths are built for Seeker-class hardware.
 
-        Built on SAID, Ghola's open cryptographic identity protocol for AI
-        agents. Full operator dashboard at ghola.xyz.
+        Core experience:
+        • Create and manage wallet-owned AI agents from the mobile app.
+        • Chat, message, and device actions share the same wallet session.
+        • Invite links make Ghola messaging easy to start from any app.
+        • Solana-native payment rails make settlement transparent when used.
       new_in_version: |
-        Initial release.
-          • Create and manage cryptographically-owned AI agents
-          • Agent detail with DID, Solana address, balance, reputation
-          • Bottom navigation across Home / Agents / Activity / Wallet
-          • Seed Vault detection on Solana Seeker
-          • Integrated accessibility-based device control
+        0.7.1 private Seeker agent update.
+          • Create Seeker-native private agents with local Seed Vault-derived identity.
+          • Sync only encrypted private-agent config to Ghola Cloud.
+          • Agent details now show the private shield state, local identity mode, and copy actions.
+          • Production said-cloud preserves private agent linkage across reloads.
+          • Wallet-owned agents, encrypted messaging, and privacy-forward Seeker flows remain unchanged.
       saga_features: |
-        • Hardware-backed agent keys via Seed Vault on Solana Seeker
-        • Mobile Wallet Adapter integration for agent funding
-        • First-class Solana dApp Store distribution
+        • Mobile Wallet Adapter integration for Seeker Wallet sign-in.
+        • Wallet-owned agents and Solana-native identity.
+        • Optional, revocable device permissions for user-initiated agent actions.
+        • Seeker-focused local AI runtime path.
   android_details:
     cert_fingerprint: fb6d833b43c0d16c7152eeb5ff2ead110dda6baf3d1222292b444f3058b95510
     min_sdk: 28
-    version: 0.1.0
-    version_code: 1
+    version: 0.7.1
+    version_code: 11
     locales:
       - en-US
       - af
@@ -161,7 +167,7 @@ release:
       - zh-HK
       - zh-TW
       - zu
-  address: BkXTZKiHRnLvNTocsohe4nDh5DEYPWVRp3jJSeArugbY
+  address: 4k3zvw5LYYAj6JjPjqB2w7qyJeGCgQWxo6osJNpFa8ZW
 solana_mobile_dapp_publisher_portal:
   google_store_package: xyz.ghola.app
   testing_instructions: |
@@ -175,8 +181,8 @@ solana_mobile_dapp_publisher_portal:
     (showing Seed Vault detection on Seeker) are reachable without any
     sign-in.
 lastSubmittedVersionOnChain:
-  address: BkXTZKiHRnLvNTocsohe4nDh5DEYPWVRp3jJSeArugbY
-  version_code: 1
-  apk_hash: X/X8D91Bn/SsmS3ra7dpXN62gJAID1P12hca8t1sXZw=
+  address: 4k3zvw5LYYAj6JjPjqB2w7qyJeGCgQWxo6osJNpFa8ZW
+  version_code: 10
+  apk_hash: jlHn/lY/oiPWpkHdMEyEQ0bDuKImpCoqA2VFxBYGNy8=
 lastUpdatedVersionOnStore:
-  address: BkXTZKiHRnLvNTocsohe4nDh5DEYPWVRp3jJSeArugbY
+  address: 4k3zvw5LYYAj6JjPjqB2w7qyJeGCgQWxo6osJNpFa8ZW
