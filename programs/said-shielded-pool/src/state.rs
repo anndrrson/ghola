@@ -219,6 +219,50 @@ pub struct MerkleTree {
     pub _pad: [u8; 2],
 }
 
+/// Compile-time guard that the `#[repr(C)]` layout (and any padding the
+/// compiler inserts) matches the hand-computed byte layout documented on
+/// `MerkleTree`. `init_tree` allocates `8 + size_of::<MerkleTree>()`
+/// bytes and `AccountLoader` reads/writes exactly `size_of::<MerkleTree>()`
+/// from offset 8; if these ever diverge, zero-copy reads could run off the
+/// end of the allocation. The assertion makes that a BUILD failure rather
+/// than a runtime out-of-bounds.
+///
+/// Expected size derivation (align(MerkleTree) = 8, from the u64 fields):
+///   root_history 64*32 = 2048
+///   pool                 32
+///   mint                 32
+///   root                 32   (running offset 2144, divisible by 8)
+///   next_index            8   (u64 — no pad needed, 2144 % 8 == 0)
+///   queue_tail            8
+///   root_history_idx      4
+///   depth                 1
+///   bump                  1
+///   _pad                  2
+///   ------------------------
+///   total              2168   (already a multiple of 8 — no tail pad)
+const MERKLE_TREE_EXPECTED_SIZE: usize =
+    ROOT_HISTORY_SIZE * 32 // root_history
+    + 32 // pool
+    + 32 // mint
+    + 32 // root
+    + 8  // next_index
+    + 8  // queue_tail
+    + 4  // root_history_idx
+    + 1  // depth
+    + 1  // bump
+    + 2; // _pad
+const _: () = assert!(
+    core::mem::size_of::<MerkleTree>() == MERKLE_TREE_EXPECTED_SIZE,
+    "MerkleTree #[repr(C)] size drifted from the documented layout — \
+     init_tree space + AccountLoader zero-copy reads would go out of bounds"
+);
+// Alignment must be 8 (the u64 fields) so the documented offsets — which
+// assume no internal padding before `next_index` — hold.
+const _: () = assert!(
+    core::mem::align_of::<MerkleTree>() == 8,
+    "MerkleTree alignment changed; documented field offsets may be wrong"
+);
+
 impl MerkleTree {
     /// Returns true iff `candidate` matches the latest root or any entry
     /// in the rolling history window.

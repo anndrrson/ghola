@@ -114,7 +114,19 @@ pub struct InitTree<'info> {
 
     /// Program-owned escrow token account. Caller pre-creates this with
     /// owner = `pool_config` and address derived from the documented
-    /// escrow seeds — we just sanity-check its mint here.
+    /// escrow seeds.
+    ///
+    /// VERIFIED (security review, escrow-authority item): the
+    /// `token::authority = pool_config` constraint is sufficient — a caller
+    /// CANNOT pre-create an escrow with a different authority and have it
+    /// pass. This account is NOT `init`d here; Anchor deserializes the
+    /// existing SPL token account and asserts its on-chain `owner`
+    /// (authority) field equals `pool_config.key()`, failing with
+    /// `ConstraintTokenOwner` otherwise. Combined with `token::mint = mint`
+    /// (and the per-instruction `escrow` PDA address used in deposit/
+    /// withdraw via the documented `escrow_seeds`), the program's signer-PDA
+    /// CPI authority always matches the escrow it moves funds from. No extra
+    /// `require!` is needed.
     #[account(
         token::mint = mint,
         token::authority = pool_config,

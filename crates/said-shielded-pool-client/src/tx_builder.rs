@@ -46,9 +46,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 use tiny_keccak::{Hasher, Keccak};
 
-use said_shielded_pool_types::{
-    FieldBytes, Groth16Proof, Nullifier, ProofBundle,
-};
+use said_shielded_pool_types::{FieldBytes, Nullifier, ProofBundle};
 
 use crate::error::Result;
 
@@ -214,24 +212,10 @@ pub fn escrow_seeds(mint: &[u8; 32]) -> Vec<Vec<u8>> {
     vec![b"escrow".to_vec(), mint.to_vec()]
 }
 
-/// Borsh wire format for a Groth16 proof argument (matches the on-chain
-/// program's `groth16-solana` expected layout: A 64B, B 128B, C 64B).
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
-struct ProofArg {
-    a: [u8; 64],
-    b: [u8; 128],
-    c: [u8; 64],
-}
-
-impl From<&Groth16Proof> for ProofArg {
-    fn from(p: &Groth16Proof) -> Self {
-        Self {
-            a: p.a,
-            b: p.b,
-            c: p.c,
-        }
-    }
-}
+// NOTE: the proof bytes (A 64B / B 128B / C 64B) are embedded directly as
+// `proof_a` / `proof_b` / `proof_c` fields of `WithdrawArgs` / `TransferArgs`
+// below, matching the on-chain Anchor structs. (The former standalone
+// `ProofArg` wire struct is gone — the mirror structs ARE the wire format.)
 
 // =============================================================================
 // ON-CHAIN ARG MIRRORS (single source of truth: the program's Anchor structs)
@@ -559,7 +543,7 @@ fn exactly_two<T: Copy + Default>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use said_shielded_pool_types::{AssetId, Commitment, MerkleRoot, PublicInputs};
+    use said_shielded_pool_types::{AssetId, Commitment, Groth16Proof, MerkleRoot, PublicInputs};
 
     /// Bundle with the 2-in/2-out shape the transfer/withdraw circuits use.
     fn dummy_bundle() -> ProofBundle {
