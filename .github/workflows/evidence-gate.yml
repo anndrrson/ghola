@@ -46,8 +46,13 @@ jobs:
         with:
           components: rust-src
 
-      - name: Install b3sum (matches manifest hash algo)
-        run: cargo install b3sum --locked
+      # NOTE: the evidence manifest is pinned to sha256 (see
+      # scripts/evidence/collect.sh — `shasum -a 256` is on every runner).
+      # We deliberately do NOT install b3sum here: if it were present,
+      # collect.sh would have selected blake3 and every static commitment
+      # would mismatch the sha256 baseline, making this gate permanently
+      # red (the bug this gate previously had). Do not re-add b3sum without
+      # also flipping collect.sh AND regenerating the baseline.
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked

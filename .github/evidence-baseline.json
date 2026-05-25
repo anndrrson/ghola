@@ -9,7 +9,7 @@
     "cargo_program": "8a30da56d658d07840d954c6078bd6ca85bf4b2fb8cdfe9de9cc79bb8c643585",
     "cargo_workspace": "6aefe8c8a9eb72b81ed55fca631d019099a2c2764c123de5b8ad20026343d25c"
   },
-  "program_bin_sha256": "3d204c4178e2c7125392ec067b15387388ad085f2f585f775d05f7021f2ca638",
+  "program_bin_sha256": "absent",
   "program_id": "5bmCDeaQceBpWgK8aADB4Tz4JzqZ9hkCi3qedC6oZR8A",
   "program_idl_sha256": "absent",
   "schema_version": "stream10.v1",
@@ -30,14 +30,14 @@
     "governance": {
       "config_doc_hash": "b3806675af765dba513209f4989d7fa16070629187d496fe2869ea2b9985cf7e",
       "timelock_secs": 172800,
-      "upgrade_doc_hash": "435f5531270e69c0dbcfe364b8337b2b0873ccc21e85d485a03ca6d7a3afc91a"
+      "upgrade_doc_hash": "b3806675af765dba513209f4989d7fa16070629187d496fe2869ea2b9985cf7e"
     },
     "invariants": {
       "doc_hash": "92fbe4af24b18d79e0175ec15798d4afe8cc2440e2348fd3fbea0ee4a189a178",
       "fail_count": 0,
       "pass_count": 66,
       "result_hash": "80aa69a49fa6c8f750d443c83e3bc2f2148ae67998a294e8a6cf09c9030fbac5",
-      "spec_hash": "9c6cf0b276e778d145c76077a858f1f8f4ddbd500d74ab1233517498d9b4ee13"
+      "spec_hash": "21165674971ed33c2d6a0447a310b9144d4df11e6c5deab52680083dd4f6f4bf"
     },
     "malicious": {
       "doc_hash": "378c3a6393ef35706c3fe17a095fcc17d91a2f18da34e02d4ac8553fb5133623",

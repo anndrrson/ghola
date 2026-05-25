@@ -142,7 +142,12 @@ jobs:
 
   release-gate:
     name: Release Gate (canary + security)
-    if: github.ref == 'refs/heads/main'
+    # Runs on BOTH pull_request and push-to-main (see top-level `on:`).
+    # The security scan below must gate the MERGE, so it can no longer be
+    # restricted to `refs/heads/main` (that made it skip every PR and only
+    # fire post-merge, where it can fail a push but cannot block the PR).
+    # The canary-freshness check is inherently a main-branch concern and is
+    # gated to main at the step level instead.
     needs:
       - backend
       - frontend
@@ -179,9 +184,44 @@ jobs:
           report=".github/security/security-findings.json"
 
           # ---- cargo audit (RustSec) -> JSON ----
-          cargo audit --json > /tmp/cargo-audit.json 2>/tmp/cargo-audit.err || true
-          cargo_audit_vulns="$(jq -r '.vulnerabilities.count // 0' /tmp/cargo-audit.json 2>/dev/null || echo 0)"
-          [[ "${cargo_audit_vulns}" =~ ^[0-9]+$ ]] || cargo_audit_vulns=0
+          # FAIL-CLOSED. cargo-audit's exit code is:
+          #   0  = ran clean, no unignored advisories
+          #   1  = ran clean, found vulnerabilities (we read the count below)
+          #   >1 = the tool itself errored (DB fetch failed, bad lockfile,
+          #        panic, etc.) — the scan did NOT effectively run.
+          # The old `|| true` + `// 0` swallowed every one of those error
+          # cases as "0 vulns", letting the gate pass with the scanner not
+          # having run. We now distinguish ran-clean from errored and abort
+          # the job on a real error instead of reporting a false zero.
+          cargo_audit_rc=0
+          cargo audit --json > /tmp/cargo-audit.json 2>/tmp/cargo-audit.err || cargo_audit_rc=$?
+          if [ "${cargo_audit_rc}" -gt 1 ]; then
+            echo "::error::cargo-audit errored (exit ${cargo_audit_rc}); the advisory scan did not run."
+            echo "----- cargo-audit stderr -----"
+            cat /tmp/cargo-audit.err || true
+            exit 1
+          fi
+          # Assert the report is well-formed AND that the scanner actually
+          # had data to scan: the advisory DB loaded (advisory-db count > 0)
+          # and the lockfile parsed (dependency count > 0). A truncated /
+          # garbage / empty JSON, or a run against an empty DB, fails here
+          # rather than silently yielding 0.
+          if ! jq -e '(.database.advisory_count // .database["advisory-count"] // 0) > 0
+                      and (.lockfile.dependency_count // .lockfile["dependency-count"] // 0) > 0' \
+                 /tmp/cargo-audit.json >/dev/null 2>&1; then
+            echo "::error::cargo-audit report malformed or advisory DB/lockfile not loaded; refusing to treat as a clean scan."
+            echo "----- cargo-audit stdout (head) -----"
+            head -c 2000 /tmp/cargo-audit.json || true
+            echo
+            echo "----- cargo-audit stderr -----"
+            cat /tmp/cargo-audit.err || true
+            exit 1
+          fi
+          cargo_audit_vulns="$(jq -r '.vulnerabilities.count // 0' /tmp/cargo-audit.json)"
+          [[ "${cargo_audit_vulns}" =~ ^[0-9]+$ ]] || {
+            echo "::error::cargo-audit vulnerability count not numeric: '${cargo_audit_vulns}'"
+            exit 1
+          }
 
           # ---- cargo deny (advisories section) ----
           # Exit code is non-zero on any advisory/ban/license/source error.
@@ -265,6 +305,11 @@ jobs:
           retention-days: 90
 
       - name: Enforce latest canary pass
+        # Canary runs are a main-branch concept (the query below filters
+        # `branch=main`); a PR head has no per-PR canary, so this freshness
+        # gate only applies on push-to-main. The security scan above runs
+        # on PRs and main alike so it gates the merge.
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}

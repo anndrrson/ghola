@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  connectSrcDirective,
+  CROSS_ORIGIN_ISOLATION_HEADERS,
+} from "./lib/csp-config";
 
 // Next.js 16's Proxy (formerly middleware) always runs on the Node.js
 // runtime, so `node:fs` is available here and no `runtime` segment
@@ -112,46 +116,12 @@ export function buildContentSecurityPolicy(
       "media-src 'self' blob:",
       "manifest-src 'self'",
       "worker-src 'self' blob:",
-      // API + auth + identity backends
-      "connect-src 'self' " +
-        "https://accounts.google.com https://apis.google.com " +
-        "https://*.supabase.co wss://*.supabase.co " +
-        "https://orni-models-api.onrender.com " +
-        "https://ghola-api.onrender.com " +
-        "https://thumper-cloud.onrender.com " +
-        "https://ghola-gateway.onrender.com " +
-        "https://ghola-merchant-gateway.onrender.com " +
-        // v2 surfaces — sealed transport relay + on-chain anchor receipts service.
-        // ghola-relay stays during v3.5 OHTTP rollout so the legacy direct
-        // POST /inference/sealed path still works.
-        "https://ghola-relay.onrender.com " +
-        "https://ghola-receipts.onrender.com " +
-        // Private voice downloads ONNX/WASM runtime assets and model weights,
-        // but microphone audio and transcripts stay in the browser until the
-        // user submits text. These hosts are intentionally explicit.
-        "https://cdn.jsdelivr.net " +
-        "https://huggingface.co https://hf.co " +
-        "https://cas-bridge.xethub.hf.co https://cas-server.xethub.hf.co " +
-        "https://raw.githubusercontent.com " +
-        // v3.5 Phase 2: Cloudflare OHTTP relay (RFC 9458).
-        //
-        // SECURITY: do NOT add a wildcard host here. Wildcards in
-        // `connect-src` defeat the entire purpose of pinning OHTTP traffic
-        // to a known relay — a compromised subdomain of cloudflare.com
-        // would otherwise be silently reachable from authenticated pages.
-        //
-        // The single pinned host below is the public landing URL for the
-        // Cloudflare OHTTP relay during invite-only beta. Once Cloudflare
-        // assigns our production-tier relay hostname (post-onboarding via
-        // cloudflare.com/onion-routing), update the line below in a
-        // single, reviewed commit — do not paper over with a wildcard.
-        //
-        // TODO(phase-2-go-live): replace `https://ohttp.cloudflare.com`
-        // with the exact relay hostname Cloudflare assigns us once we are
-        // out of invite-only beta. If the assigned host is unknown at
-        // deploy time, gate the OHTTP rollout on this CSP entry — do NOT
-        // ship a `https://*.ohttp.cloudflare.com` wildcard to production.
-        "https://ohttp.cloudflare.com",
+      // API + auth + identity backends. Pinned host list is shared with
+      // next.config.ts via src/lib/csp-config.ts so the runtime Proxy and
+      // the static headers() config emit the IDENTICAL connect-src — no
+      // more wide-open `connect-src 'self' https: wss:` on some routes and
+      // a tight allowlist on others. No wildcards (see csp-config.ts).
+      connectSrcDirective(),
       "frame-src https://accounts.google.com",
       "frame-ancestors 'none'",
       "object-src 'none'",
@@ -179,8 +149,13 @@ export function applySecurityHeaders(
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("X-Frame-Options", "DENY");
   headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  headers.set("Cross-Origin-Opener-Policy", "same-origin");
-  headers.set("Cross-Origin-Resource-Policy", "same-origin");
+  // Cross-origin isolation (COOP + COEP + CORP) — shared with
+  // next.config.ts so the Proxy no longer drops COEP `require-corp`
+  // (which previously left SharedArrayBuffer isolation present on
+  // static-header routes but absent on Proxy-handled responses).
+  for (const { key, value } of CROSS_ORIGIN_ISOLATION_HEADERS) {
+    headers.set(key, value);
+  }
   headers.set("X-DNS-Prefetch-Control", "off");
   headers.set("X-Permitted-Cross-Domain-Policies", "none");
   headers.set("Origin-Agent-Cluster", "?1");

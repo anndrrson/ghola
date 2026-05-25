@@ -1,6 +1,10 @@
 import type { NextConfig } from "next";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  connectSrcDirective,
+  CROSS_ORIGIN_ISOLATION_HEADERS,
+} from "./src/lib/csp-config";
 
 // Defense-in-depth response headers. Applied to every route except the
 // API/proxy paths so chat/inference requests aren't accidentally
@@ -73,7 +77,10 @@ export function buildCspHeader(): { key: string; value: string } {
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data: blob: https:",
         "font-src 'self' data:",
-        "connect-src 'self' https: wss:",
+        // Pinned host allowlist shared with the runtime Proxy
+        // (src/lib/csp-config.ts) — replaces the previous wide-open
+        // `connect-src 'self' https: wss:` so both layers agree.
+        connectSrcDirective(),
         "worker-src 'self' blob:",
         "frame-ancestors 'none'",
         "base-uri 'self'",
@@ -96,7 +103,8 @@ export function buildCspHeader(): { key: string; value: string } {
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob: https:",
       "font-src 'self' data:",
-      "connect-src 'self' https: wss:",
+      // Same pinned allowlist as the enforcing branch / the Proxy.
+      connectSrcDirective(),
       "worker-src 'self' blob:",
       "frame-ancestors 'none'",
       "base-uri 'self'",
@@ -125,11 +133,11 @@ export const SECURITY_HEADERS = [
     key: "Strict-Transport-Security",
     value: "max-age=63072000; includeSubDomains; preload",
   },
-  // Cross-origin isolation lets the in-browser model runtime use
-  // SharedArrayBuffer. Required for WebLLM's fastest path on some
-  // backends; harmless when the runtime doesn't need it.
-  { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
-  { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
+  // Cross-origin isolation (COOP + COEP + CORP) lets the in-browser model
+  // runtime use SharedArrayBuffer. Shared with the runtime Proxy via
+  // src/lib/csp-config.ts so the same isolation set is emitted on every
+  // response (the Proxy previously omitted COEP).
+  ...CROSS_ORIGIN_ISOLATION_HEADERS,
   buildCspHeader(),
 ];
 

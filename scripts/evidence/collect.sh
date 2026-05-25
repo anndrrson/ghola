@@ -37,16 +37,19 @@ mkdir -p "$OUT"
 FUZZ_SECS="${EVIDENCE_FUZZ_SECS:-30}"
 
 # ── Hash helper ────────────────────────────────────────────────────────
-if command -v b3sum >/dev/null 2>&1; then
-  HASH_ALGO="blake3"
-  hash_file() { b3sum "$1" | awk '{print "blake3 " $1 "  " $2}'; }
-elif command -v blake3sum >/dev/null 2>&1; then
-  HASH_ALGO="blake3"
-  hash_file() { blake3sum "$1" | awk '{print "blake3 " $1 "  " $2}'; }
-else
-  HASH_ALGO="sha256"
-  hash_file() { shasum -a 256 "$1" | awk '{print "sha256 " $1 "  " $2}'; }
-fi
+# Pinned to sha256. The committed baseline (.github/evidence-baseline.json)
+# records hash_algo="sha256" with sha256 digests for every static
+# commitment, and the diff gate compares hash_algo + every doc/lockfile/vk
+# hash byte-for-byte. If this script selected blake3 (e.g. because b3sum
+# happens to be installed on the runner) EVERY static hash would differ
+# from the sha256 baseline and the gate would be permanently red — which is
+# precisely what made the gate cosmetic. shasum -a 256 is available on every
+# supported runner, so there is no portability reason to branch on b3sum.
+#
+# To intentionally migrate the hash algorithm, change this AND regenerate
+# the baseline in the same CODEOWNERS-approved commit.
+HASH_ALGO="sha256"
+hash_file() { shasum -a 256 "$1" | awk '{print "sha256 " $1 "  " $2}'; }
 echo "$HASH_ALGO" > "$OUT/_algo"
 
 write_hash() {
@@ -107,12 +110,18 @@ run_capture "stream-3 replay" "$OUT/replay.log" -- \
   cargo test -p said-shielded-pool-relayer --tests --no-fail-fast
 
 # ── Stream 4: program binary + governance docs ─────────────────────────
+# The compiled program (.so) is produced by `anchor build`, which is NOT
+# run in the evidence-gate workflow and is gitignored — so on a fresh CI
+# checkout the file is absent. Record the canonical sentinel "absent"
+# (NOT a "missing: <path>" line, whose first token would leak into the
+# manifest via commit.sh's `awk '{print $1}'` and then never match the
+# baseline). The baseline pins program_bin_sha256="absent"; a build that
+# actually emits the .so must update the baseline under CODEOWNERS review.
 if [ -f programs/said-shielded-pool/target/deploy/said_shielded_pool.so ]; then
   shasum -a 256 programs/said-shielded-pool/target/deploy/said_shielded_pool.so \
     > "$OUT/program-bin.sha256"
 else
-  echo "missing: programs/said-shielded-pool/target/deploy/said_shielded_pool.so" \
-    > "$OUT/program-bin.sha256"
+  echo "absent" > "$OUT/program-bin.sha256"
 fi
 
 # IDL: not currently emitted by `cargo build` (anchor build produces it).
