@@ -33,6 +33,37 @@ interface Check {
 
 type ChecksState = Check[];
 
+interface PrivacyHealth {
+  remote_agent_prompt_confidentiality?: string;
+  payment_privacy_scope?: string;
+  sealed_compute_required_for_prompt_confidentiality?: boolean;
+  remote_agent_compute_disclosure?: string;
+  private_payment_request_hash_binding_enabled?: boolean;
+  railgun_relay_only_required?: boolean;
+  private_payment_public_fallback_allowed?: boolean;
+  private_payment_header_identity_minimized?: boolean;
+  private_payment_header_policy?: {
+    requires_request_hash?: boolean;
+    requires_railgun_relay_only?: boolean;
+    disallows_user_id?: boolean;
+    disallows_wallet_seed_or_viewing_key?: boolean;
+    replay_protection?: string;
+  };
+  private_rail_fail_closed?: boolean;
+  blocking_reasons?: string[];
+}
+
+interface PaymentRailHealth {
+  ready?: boolean;
+  configured?: boolean;
+  fallback_allowed?: boolean;
+  unavailable_reason?: string | null;
+}
+
+interface PaymentsHealth {
+  rails?: Record<string, PaymentRailHealth>;
+}
+
 const INITIAL: ChecksState = [
   { label: "Attested provider pool", state: "pending", detail: "probing /providers/attested…" },
   { label: "Private-mode readiness", state: "pending", detail: "probing /ready/private…" },
@@ -43,6 +74,10 @@ const INITIAL: ChecksState = [
   { label: "Web bundle SRI manifest", state: "pending", detail: "probing /.well-known/sri-manifest.json…" },
   { label: "Runtime SRI enforcement (service worker)", state: "pending", detail: "asking the service worker for its pinned-hash count…" },
   { label: "CSP inline-script allowlist", state: "pending", detail: "probing /.well-known/csp-inline-hashes.json…" },
+  { label: "Private payment guardrails", state: "pending", detail: "probing /health/privacy…" },
+  { label: "Remote prompt boundary", state: "pending", detail: "probing /health/privacy…" },
+  { label: "Shielded rail readiness", state: "pending", detail: "probing /health/payments…" },
+  { label: "Blind x402 transport", state: "pending", detail: "checking OHTTP relay configuration…" },
 ];
 
 export default function SecurityStatusPage() {
@@ -370,6 +405,180 @@ export default function SecurityStatusPage() {
       } catch (err) {
         next[8] = {
           label: "CSP inline-script allowlist",
+          state: "fail",
+          detail: err instanceof Error ? err.message : "probe failed",
+        };
+      }
+
+      // 10. Private payment guardrails — these are the server-side
+      //     privacy invariants behind private x402 settlement.
+      try {
+        const res = await fetch("/api/thumper/health/privacy", {
+          method: "GET",
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          next[9] = {
+            label: "Private payment guardrails",
+            state: "fail",
+            detail: `privacy health unreachable — HTTP ${res.status}`,
+          };
+          next[10] = {
+            label: "Remote prompt boundary",
+            state: "fail",
+            detail: `privacy health unreachable — HTTP ${res.status}`,
+          };
+        } else {
+          const body = (await res.json()) as PrivacyHealth;
+          const policy = body.private_payment_header_policy ?? {};
+          const missing: string[] = [];
+          if (!body.private_payment_request_hash_binding_enabled) missing.push("request_hash");
+          if (!body.railgun_relay_only_required) missing.push("relay_only");
+          if (body.private_payment_public_fallback_allowed !== false) missing.push("no_public_fallback");
+          if (!body.private_payment_header_identity_minimized) missing.push("header_minimized");
+          if (!policy.disallows_user_id) missing.push("no_user_id");
+          if (!policy.disallows_wallet_seed_or_viewing_key) missing.push("no_wallet_secrets");
+          next[9] =
+            missing.length === 0
+              ? {
+                  label: "Private payment guardrails",
+                  state: "ok",
+                  detail: "request-bound, relay-only, fail-closed private payment policy is live",
+                  evidence: `replay=${policy.replay_protection ?? "unknown"}; blocking=${(body.blocking_reasons ?? []).join(", ") || "none"}`,
+                }
+              : {
+                  label: "Private payment guardrails",
+                  state: "fail",
+                  detail: `missing guardrail(s): ${missing.join(", ")}`,
+                };
+          const promptBoundaryOk =
+            body.remote_agent_prompt_confidentiality === "sealed_or_local_required" &&
+            body.payment_privacy_scope === "settlement_metadata_only" &&
+            body.sealed_compute_required_for_prompt_confidentiality === true;
+          next[10] = promptBoundaryOk
+            ? {
+                label: "Remote prompt boundary",
+                state: "ok",
+                detail: "remote prompt-confidential routes require sealed or local inference",
+                evidence: body.remote_agent_compute_disclosure,
+              }
+            : {
+                label: "Remote prompt boundary",
+                state: "fail",
+                detail: "privacy health is missing the remote prompt/payment boundary",
+              };
+        }
+      } catch (err) {
+        next[9] = {
+          label: "Private payment guardrails",
+          state: "fail",
+          detail: err instanceof Error ? err.message : "probe failed",
+        };
+        next[10] = {
+          label: "Remote prompt boundary",
+          state: "fail",
+          detail: err instanceof Error ? err.message : "probe failed",
+        };
+      }
+
+      // 11. Remote prompt boundary is derived from the same privacy
+      //     health response above.
+
+      // 12. Shielded rail readiness — show which private rails can
+      //     actually settle without falling back to public USDC.
+      try {
+        const res = await fetch("/api/payments/health", {
+          method: "GET",
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          next[11] = {
+            label: "Shielded rail readiness",
+            state: "warn",
+            detail: `payment health unreachable — HTTP ${res.status}`,
+          };
+        } else {
+          const body = (await res.json()) as PaymentsHealth;
+          const rails = body.rails ?? {};
+          const shieldedRails = [
+            ["aleo", rails.aleo_usdcx_shielded],
+            ["railgun", rails.railgun_evm_shielded],
+            ["solana-shielded", rails.solana_shielded_pool],
+          ] as const;
+          const ready = shieldedRails.filter(([, rail]) => rail?.ready);
+          const publicFallback = shieldedRails.some(([, rail]) => rail?.fallback_allowed === true);
+          if (publicFallback) {
+            next[11] = {
+              label: "Shielded rail readiness",
+              state: "fail",
+              detail: "a shielded rail reports public fallback allowed",
+            };
+          } else if (ready.length > 0) {
+            next[11] = {
+              label: "Shielded rail readiness",
+              state: "ok",
+              detail: `${ready.map(([name]) => name).join(", ")} ready; public fallback disabled`,
+              evidence: shieldedRails
+                .map(([name, rail]) => `${name}:${rail?.ready ? "ready" : rail?.unavailable_reason ?? "not_ready"}`)
+                .join("; "),
+            };
+          } else {
+            next[11] = {
+              label: "Shielded rail readiness",
+              state: "warn",
+              detail: "no shielded rail is currently ready",
+              evidence: shieldedRails
+                .map(([name, rail]) => `${name}:${rail?.unavailable_reason ?? "not_ready"}`)
+                .join("; "),
+            };
+          }
+        }
+      } catch (err) {
+        next[11] = {
+          label: "Shielded rail readiness",
+          state: "fail",
+          detail: err instanceof Error ? err.message : "probe failed",
+        };
+      }
+
+      // 13. Blind x402 transport — Railgun x402 should use OHTTP when
+      //     the frontend is configured with the public relay URL.
+      try {
+        const ohttpRelay =
+          typeof process !== "undefined"
+            ? process.env.NEXT_PUBLIC_OHTTP_RELAY_URL
+            : undefined;
+        if (!ohttpRelay) {
+          next[12] = {
+            label: "Blind x402 transport",
+            state: "warn",
+            detail: "NEXT_PUBLIC_OHTTP_RELAY_URL is not configured; Railgun x402 uses direct transport",
+          };
+        } else {
+          const keyUrl = new URL("/ohttp-keys", thumperRelayBase());
+          const res = await fetch(keyUrl.toString(), {
+            method: "GET",
+            cache: "no-store",
+          });
+          const keyBytes = res.ok ? new Uint8Array(await res.arrayBuffer()) : new Uint8Array(0);
+          next[12] =
+            res.ok && keyBytes.byteLength >= 41
+              ? {
+                  label: "Blind x402 transport",
+                  state: "ok",
+                  detail: "Railgun x402 auto-routes through OHTTP and gateway keyconfig is live",
+                  evidence: `relay=${ohttpRelay}; gateway_key_bytes=${keyBytes.byteLength}`,
+                }
+              : {
+                  label: "Blind x402 transport",
+                  state: "fail",
+                  detail: `OHTTP gateway keyconfig unavailable — HTTP ${res.status}`,
+                  evidence: ohttpRelay,
+                };
+        }
+      } catch (err) {
+        next[12] = {
+          label: "Blind x402 transport",
           state: "fail",
           detail: err instanceof Error ? err.message : "probe failed",
         };

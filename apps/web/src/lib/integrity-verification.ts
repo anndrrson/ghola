@@ -77,6 +77,8 @@ export interface IntegrityVerificationResult {
   onChainHash?: string;
   /** Hex-encoded fingerprint over the loaded cache, when computable. */
   localFingerprint?: string;
+  /** Direct browser RPC is preferred; server RPC is a read-only fallback for browser-CORS failures. */
+  registryLookupSource?: ModelRegistryResult["lookupSource"];
   /** ISO 8601 timestamp the verification ran at (client clock). */
   verifiedAt: string;
 }
@@ -166,9 +168,9 @@ export async function verifyLocalIntegrity(
     pass: registryReachable,
     detail: registryReachable
       ? registry.status === "verified"
-        ? `Registered (slot ${registry.slot ?? "?"}, record v${registry.version ?? 1}).`
+        ? `Registered (slot ${registry.slot ?? "?"}, record v${registry.version ?? 1})${registry.lookupSource === "server_rpc" ? " via read-only RPC fallback" : ""}.`
         : registry.status === "unregistered"
-          ? "PDA derived; no record at that address yet (Tier 1A.5)."
+          ? `PDA derived${registry.lookupSource === "server_rpc" ? " via read-only RPC fallback" : ""}; no record at that address yet (Tier 1A.5).`
           : registry.error ?? "Registry returned a non-matching record."
       : registry.error ?? "Solana RPC unreachable.",
   });
@@ -259,6 +261,7 @@ export async function verifyLocalIntegrity(
     checks,
     onChainHash: registry?.onChainHash,
     localFingerprint: fingerprint?.fingerprint,
+    registryLookupSource: registry?.lookupSource,
     verifiedAt,
   };
 }

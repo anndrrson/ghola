@@ -6,19 +6,18 @@ import { ModelLibraryCard } from "@/components/ModelLibraryCard";
 import {
   DEFAULT_WEBGPU_MODEL,
   DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH,
+  LLAMA_3_2_1B_WEBGPU_MODEL,
+  LLAMA_3_2_1B_WEBGPU_MODEL_WEIGHTS_HASH,
   PHI3_MINI_WEBGPU_MODEL,
   PHI3_MINI_WEBGPU_MODEL_WEIGHTS_HASH,
 } from "@/lib/webgpu-inference";
 import { getCacheInventory } from "@/lib/local-cache-inventory";
 
-// Open-weight model library for Local mode. v1 ships with a single
-// model — the one the WebGPU engine loads by default — but the page
-// is structured as a list so we can add more entries without
-// reshuffling the layout. "Cached" status comes from a CacheStorage
-// walk via local-cache-inventory.ts (no body hashing, just URL
-// enumeration). Pinned-hash badge surfaces the canonical
-// DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH so a reviewer can compare against
-// the on-chain record.
+// Open-weight model library for Local mode. The first entry is the
+// consumer default; larger models remain opt-in because cold downloads
+// dominate first-message latency. "Cached" status comes from a
+// CacheStorage walk via local-cache-inventory.ts (no body hashing, just
+// URL enumeration).
 
 interface LocalModelDescriptor {
   name: string;
@@ -38,11 +37,19 @@ interface LocalModelDescriptor {
 
 const LOCAL_MODELS: LocalModelDescriptor[] = [
   {
-    name: "Llama 3.2 1B Instruct (q4f16_1)",
-    size: "~800 MB",
-    license: "Llama 3.2 Community License",
+    name: "SmolLM2 360M Instruct (fast default)",
+    size: "~210 MB",
+    license: "Apache-2.0",
     modelId: DEFAULT_WEBGPU_MODEL,
     weightsHash: DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH,
+    cacheMarker: "SmolLM2-360M-Instruct-q4f16_1-MLC",
+  },
+  {
+    name: "Llama 3.2 1B Instruct (quality)",
+    size: "~800 MB",
+    license: "Llama 3.2 Community License",
+    modelId: LLAMA_3_2_1B_WEBGPU_MODEL,
+    weightsHash: LLAMA_3_2_1B_WEBGPU_MODEL_WEIGHTS_HASH,
     cacheMarker: "Llama-3.2-1B-Instruct-q4f16_1-MLC",
   },
   {
@@ -105,7 +112,7 @@ export default function LocalModelsPage() {
           >
             chat
           </Link>{" "}
-          page re-verifies live against the on-chain registry.
+          page checks against pinned loader hashes and the model registry when a record exists.
         </p>
 
         <div className="mt-10 space-y-4">

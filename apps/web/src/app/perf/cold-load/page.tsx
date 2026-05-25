@@ -237,13 +237,11 @@ export default function ColdLoadPerfPage() {
       typeof navigator !== "undefined" ? navigator.userAgent : "unknown";
     const platform =
       typeof navigator !== "undefined" ? navigator.platform ?? "unknown" : "unknown";
+    const navWithMemory = navigator as Navigator & { deviceMemory?: number };
     const deviceMemoryGb =
       typeof navigator !== "undefined" &&
-      // deviceMemory is non-standard but Chromium-supported
-      // @ts-expect-error
-      typeof navigator.deviceMemory === "number"
-        ? // @ts-expect-error
-          (navigator.deviceMemory as number)
+      typeof navWithMemory.deviceMemory === "number"
+        ? navWithMemory.deviceMemory
         : null;
     const webgpuAdapter = await captureWebGpuAdapter();
 

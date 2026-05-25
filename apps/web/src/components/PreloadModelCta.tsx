@@ -3,7 +3,7 @@
 /**
  * PreloadModelCta — opt-in "warm the local model now" affordance.
  *
- * Why this exists: the default WebGPU model is ~800MB. First-time chat
+ * Why this exists: the default WebGPU model is ~210MB. First-time chat
  * users pay that download on first send, which shows up as a ~10-30s
  * "Loading model…" wait before tokens stream. This component lets a
  * user pre-fetch the model from outside the chat surface (e.g. from
@@ -29,8 +29,6 @@ import {
   DEFAULT_WEBGPU_MODEL,
 } from "@/lib/webgpu-inference";
 
-const STORAGE_KEY = "ghola:preloaded-default-model";
-
 type Phase = "idle" | "confirming" | "loading" | "done" | "error" | "unsupported";
 
 export interface PreloadModelCtaProps {
@@ -44,11 +42,14 @@ export interface PreloadModelCtaProps {
   modelId?: string;
   /** Optional className for the outermost wrapper. */
   className?: string;
+  /** Human-readable download size shown before the user starts. */
+  approxSize?: string;
 }
 
 export function PreloadModelCta({
   modelId = DEFAULT_WEBGPU_MODEL,
   className,
+  approxSize = "model files",
 }: PreloadModelCtaProps) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0);
@@ -61,10 +62,11 @@ export function PreloadModelCta({
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
+    const storageKey = `ghola:preloaded-model:${modelId}`;
     try {
       if (
         typeof window !== "undefined" &&
-        window.localStorage.getItem(STORAGE_KEY) === "1"
+        window.localStorage.getItem(storageKey) === "1"
       ) {
         setAlreadyDone(true);
       }
@@ -73,7 +75,7 @@ export function PreloadModelCta({
     }
     const support = detectWebGPU();
     if (!support.supported) setPhase("unsupported");
-  }, []);
+  }, [modelId]);
 
   const startWarm = useCallback(async () => {
     setPhase("loading");
@@ -87,7 +89,7 @@ export function PreloadModelCta({
       setProgress(1);
       try {
         if (typeof window !== "undefined") {
-          window.localStorage.setItem(STORAGE_KEY, "1");
+          window.localStorage.setItem(`ghola:preloaded-model:${modelId}`, "1");
         }
       } catch {
         // ignore — we'll just re-show next visit, but the in-memory
@@ -117,13 +119,13 @@ export function PreloadModelCta({
           onClick={() => setPhase("confirming")}
           className="inline-flex items-center gap-2 rounded-lg border border-[#1e2a3a] bg-[#0a0b10] px-3 py-1.5 text-xs font-medium text-[#eef1f8] hover:border-[#3da8ff]/60 hover:text-[#3da8ff] transition-colors cursor-pointer"
         >
-          Pre-load the AI now (~800MB, stays on your device)
+          Pre-load model ({approxSize}, stays on your device)
         </button>
       )}
       {phase === "confirming" && (
         <div className="rounded-lg border border-[#1e2a3a] bg-[#0a0b10] p-3 text-xs text-[#eef1f8] max-w-sm">
           <p className="mb-2">
-            This downloads about 800MB of model weights to your browser&apos;s
+            This downloads {approxSize} of model files to your browser&apos;s
             local cache. The download stays on your device — nothing is sent
             to a server. Once cached, future chats start instantly.
           </p>

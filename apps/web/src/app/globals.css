@@ -19,7 +19,7 @@
 }
 
 .font-display {
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 body {
@@ -39,6 +39,67 @@ body {
 ::-webkit-scrollbar-thumb {
   background: #1e2a3a;
   border-radius: 3px;
+}
+
+/* ---------- Dimensional buttons ----------
+   Gradient body + inset top highlight + bottom shadow rim + outer drop
+   shadow read as a physical chip rather than a flat fill. Hover lifts
+   the gradient; :active sinks via translateY in JSX. */
+.btn-primary {
+  background-image:
+    linear-gradient(180deg, #5ab6ff 0%, #3da8ff 45%, #2c97f0 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -1px 0 rgba(8, 25, 50, 0.35),
+    0 1px 0 rgba(255, 255, 255, 0.05),
+    0 8px 18px -6px rgba(61, 168, 255, 0.55),
+    0 2px 4px rgba(0, 0, 0, 0.4);
+}
+.btn-primary:hover {
+  background-image:
+    linear-gradient(180deg, #74c2ff 0%, #57b5ff 45%, #3da8ff 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0 rgba(8, 25, 50, 0.35),
+    0 1px 0 rgba(255, 255, 255, 0.06),
+    0 10px 22px -6px rgba(61, 168, 255, 0.65),
+    0 2px 6px rgba(0, 0, 0, 0.45);
+}
+.btn-primary:active {
+  background-image:
+    linear-gradient(180deg, #3da8ff 0%, #2c97f0 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    inset 0 1px 3px rgba(8, 25, 50, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.btn-secondary {
+  background-image:
+    linear-gradient(180deg, #131a26 0%, #0d131c 100%);
+  border: 1px solid #1e2a3a;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4),
+    0 2px 4px rgba(0, 0, 0, 0.3),
+    0 6px 14px -8px rgba(0, 0, 0, 0.6);
+}
+.btn-secondary:hover {
+  background-image:
+    linear-gradient(180deg, #18202e 0%, #111824 100%);
+  border-color: #2a3a50;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4),
+    0 2px 4px rgba(0, 0, 0, 0.35),
+    0 8px 18px -8px rgba(61, 168, 255, 0.25);
+}
+.btn-secondary:active {
+  background-image:
+    linear-gradient(180deg, #0d131c 0%, #0d131c 100%);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.5),
+    0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 /* Wallet adapter overrides */

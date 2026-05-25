@@ -19,16 +19,16 @@ export default function SupportPage() {
             Support, privacy, payments, and abuse reports.
           </h1>
           <p className="mt-4 text-[15px] leading-relaxed text-[#8b95a8]">
-            For TestFlight and production support, use the paths below. Do not
-            send private keys, seed phrases, recovery material, or one-time
-            codes to Ghola.
+            For Ghola mobile and web support, use the paths below. Do not send
+            private keys, seed phrases, recovery material, or one-time codes to
+            Ghola.
           </p>
         </header>
 
         <Section title="General Support">
           <p>
-            For account access, sign-in issues, app crashes, wallet display
-            errors, or TestFlight feedback, email{" "}
+            For account access, wallet sign-in issues, app crashes, wallet
+            display errors, or dApp Store release feedback, email{" "}
             <SupportEmail label="privacy@ghola.xyz" /> with the device model,
             app version, approximate time of the issue, and screenshots if you
             choose to include them.
@@ -90,7 +90,7 @@ export default function SupportPage() {
           <p>
             For security vulnerabilities, account takeover concerns, or
             suspected key exposure, email <SupportEmail label="privacy@ghola.xyz" />{" "}
-            with the subject line "Security report". Do not include exploit
+            with the subject line &quot;Security report&quot;. Do not include exploit
             code that affects real users without first coordinating disclosure.
           </p>
         </Section>

@@ -176,6 +176,37 @@ function aleoTransactionId(proof: NonNullable<ShieldedVerifyRequest["proof"]>) {
   return candidates.find((candidate) => /^at1[0-9a-z]+$/i.test(candidate));
 }
 
+function stringTooLong(value: unknown, maxLength: number) {
+  return typeof value === "string" && value.length > maxLength;
+}
+
+function validateRequestSize(body: ShieldedVerifyRequest) {
+  if (stringTooLong(body.provider, 32)) return "provider is too long";
+  if (stringTooLong(body.network, 64)) return "network is too long";
+  if (stringTooLong(body.asset, 32)) return "asset is too long";
+  if (stringTooLong(body.destination, 256)) return "destination is too long";
+
+  const proof = body.proof;
+  if (!proof) return null;
+  if (stringTooLong(proof.tx_signature, 256)) return "tx_signature is too long";
+  if (stringTooLong(proof.shielded_receipt_id, 256)) return "shielded_receipt_id is too long";
+  if (stringTooLong(proof.nullifier_hex, 256)) return "nullifier_hex is too long";
+  if (stringTooLong(proof.proof_b64, 16 * 1024)) return "proof_b64 is too long";
+
+  const receipt = proof.extensions?.recipient_receipt;
+  if (!receipt) return null;
+  if (stringTooLong(receipt.recipient, 256)) return "recipient receipt recipient is too long";
+  if (stringTooLong(receipt.network, 64)) return "recipient receipt network is too long";
+  if (stringTooLong(receipt.asset, 32)) return "recipient receipt asset is too long";
+  if (stringTooLong(receipt.tx_signature, 256)) {
+    return "recipient receipt transaction is too long";
+  }
+  if (stringTooLong(receipt.receipt_ref, 256)) return "recipient receipt ref is too long";
+  if (stringTooLong(receipt.proof_digest, 128)) return "recipient receipt digest is too long";
+  if (stringTooLong(receipt.signature, 512)) return "recipient receipt signature is too long";
+  return null;
+}
+
 function parseReceiptAmount(value: RecipientReceiptV1["amount_micro_usdc"]) {
   if (typeof value === "number" && Number.isFinite(value)) {
     return BigInt(Math.trunc(value));
@@ -423,6 +454,9 @@ export async function POST(request: NextRequest) {
     return badRequest("invalid JSON body");
   }
 
+  const sizeError = validateRequestSize(body);
+  if (sizeError) return badRequest(sizeError);
+
   if (body.provider !== "aleo") {
     return badRequest("unsupported shielded provider");
   }
@@ -646,6 +680,9 @@ export async function POST(request: NextRequest) {
       adapter_key_id: "ghola-aleo-shielded-adapter-v1",
     });
   } catch (error) {
+    console.error("Aleo verifier failed", {
+      message: error instanceof Error ? error.message : "unknown error",
+    });
     return NextResponse.json(
       {
         settled: false,
@@ -654,7 +691,7 @@ export async function POST(request: NextRequest) {
         asset: body.asset,
         destination: body.destination,
         receipt_id: txId,
-        error: error instanceof Error ? error.message : "Aleo verifier failed",
+        error: "Aleo verifier failed",
       },
       { status: 502 },
     );

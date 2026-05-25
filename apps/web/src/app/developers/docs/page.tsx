@@ -120,7 +120,7 @@ export default function DocsPage() {
                 Base URL
               </h3>
               <code className="rounded bg-[#161822] px-2 py-1 text-sm text-[#3da8ff]">
-                {API_BASE}
+                {API_BASE}/v1
               </code>
             </div>
           </div>
@@ -134,7 +134,15 @@ export default function DocsPage() {
               </h2>
               <p className="text-sm text-[#8b95a8] leading-relaxed mb-2">
                 Create a chat completion. This endpoint is OpenAI-compatible —
-                any OpenAI SDK works by changing the base URL.
+                any OpenAI SDK works by changing the base URL. Ghola keeps
+                privacy details available through receipts without changing
+                the normal chat API shape.
+              </p>
+              <p className="text-sm text-[#8b95a8] leading-relaxed mb-4">
+                Shielded x402 rails protect settlement metadata. Remote
+                prompt-confidential routes now require ghola-local or sealed
+                inference; plaintext provider execution is only available
+                through the explicit ghola-open model.
               </p>
               <div className="flex items-center gap-2 mb-4">
                 <span className="rounded bg-green-400/10 px-2 py-0.5 text-xs font-medium text-green-400">
@@ -168,7 +176,7 @@ export default function DocsPage() {
                     name: "model",
                     type: "string",
                     required: false,
-                    desc: "Model override (uses your configured model by default)",
+                    desc: "OpenAI-compatible model id: ghola-private, ghola-local, or agent:<slug>",
                   },
                   {
                     name: "max_tokens",
@@ -215,6 +223,7 @@ export default function DocsPage() {
       {"role": "system", "content": "You are a helpful assistant."},
       {"role": "user", "content": "Hello!"}
     ],
+    "model": "ghola-private",
     "stream": false
   }'`}
               onCopy={handleCopy}
@@ -233,7 +242,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="default",
+    model="ghola-private",
     messages=[
         {"role": "user", "content": "Hello!"}
     ]
@@ -255,7 +264,7 @@ const client = new OpenAI({
 });
 
 const response = await client.chat.completions.create({
-  model: "default",
+  model: "ghola-private",
   messages: [{ role: "user", content: "Hello!" }],
 });
 
@@ -276,7 +285,7 @@ console.log(response.choices[0].message.content);`}
   "id": "chatcmpl-abc123",
   "object": "chat.completion",
   "created": 1710000000,
-  "model": "claude-sonnet-4-6-20250514",
+  "model": "ghola-private",
   "choices": [{
     "index": 0,
     "message": {
@@ -295,6 +304,53 @@ console.log(response.choices[0].message.content);`}
                 copied={copied}
               />
             </div>
+
+            <div>
+              <h3 className="text-sm font-medium text-[#eef1f8] mb-2">
+                Payment Headers
+              </h3>
+              <p className="text-sm text-[#8b95a8] leading-relaxed mb-3">
+                Payment proof aliases:{" "}
+                <code className="rounded bg-[#161822] px-1.5 py-0.5 text-xs text-[#3da8ff]">
+                  payment-signature
+                </code>{" "}
+                <code className="rounded bg-[#161822] px-1.5 py-0.5 text-xs text-[#3da8ff]">
+                  x-payment
+                </code>{" "}
+                <code className="rounded bg-[#161822] px-1.5 py-0.5 text-xs text-[#3da8ff]">
+                  x402-payment
+                </code>
+                . Rail preference aliases:{" "}
+                <code className="rounded bg-[#161822] px-1.5 py-0.5 text-xs text-[#3da8ff]">
+                  x-ghola-payment-rail
+                </code>{" "}
+                <code className="rounded bg-[#161822] px-1.5 py-0.5 text-xs text-[#3da8ff]">
+                  x-payment-rail
+                </code>{" "}
+                <code className="rounded bg-[#161822] px-1.5 py-0.5 text-xs text-[#3da8ff]">
+                  payment-rail
+                </code>
+                . Send{" "}
+                <code className="rounded bg-[#161822] px-1.5 py-0.5 text-xs text-[#3da8ff]">
+                  private_shielded_auto
+                </code>{" "}
+                to let Ghola choose any ready shielded rail, or{" "}
+                <code className="rounded bg-[#161822] px-1.5 py-0.5 text-xs text-[#3da8ff]">
+                  aleo_usdcx_shielded
+                </code>{" "}
+                ,{" "}
+                <code className="rounded bg-[#161822] px-1.5 py-0.5 text-xs text-[#3da8ff]">
+                  railgun_evm_shielded
+                </code>
+                , or{" "}
+                <code className="rounded bg-[#161822] px-1.5 py-0.5 text-xs text-[#3da8ff]">
+                  solana_shielded_pool
+                </code>{" "}
+                to require a specific shielded rail; Ghola fails closed instead
+                of silently using public settlement. Shielded settlement does
+                not by itself make remote prompts confidential.
+              </p>
+            </div>
           </div>
         )}
 
@@ -305,7 +361,10 @@ console.log(response.choices[0].message.content);`}
                 Models
               </h2>
               <p className="text-sm text-[#8b95a8] leading-relaxed mb-2">
-                List available models based on your configured provider.
+                List available model routes. The response keeps the standard
+                model-list shape and may include Ghola metadata for privacy
+                modes, supported payment rails, receipts, and route
+                descriptions.
               </p>
               <div className="flex items-center gap-2 mb-4">
                 <span className="rounded bg-blue-400/10 px-2 py-0.5 text-xs font-medium text-blue-400">
@@ -315,12 +374,39 @@ console.log(response.choices[0].message.content);`}
               </div>
             </div>
 
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] divide-y divide-[#1e2a3a]">
+              {[
+                {
+                  id: "ghola-private",
+                  desc: "Prompt-confidential route; local or sealed inference required.",
+                },
+                {
+                  id: "ghola-local",
+                  desc: "On-device route for local prompts.",
+                },
+                {
+                  id: "ghola-open",
+                  desc: "Explicit plaintext cloud route.",
+                },
+                {
+                  id: "agent:<slug>",
+                  desc: "Paid sealed agent execution, for example agent:research-bot.",
+                },
+              ].map((m) => (
+                <div key={m.id} className="px-4 py-3 flex gap-4">
+                  <code className="min-w-[120px] text-xs text-[#eef1f8]">
+                    {m.id}
+                  </code>
+                  <span className="text-xs text-[#8b95a8]">{m.desc}</span>
+                </div>
+              ))}
+            </div>
+
             <CodeBlock
               id="models-curl"
               title="curl"
               language="bash"
-              code={`curl ${API_BASE}/v1/models \\
-  -H "Authorization: Bearer sk-ghola-your-key"`}
+              code={`curl ${API_BASE}/v1/models`}
               onCopy={handleCopy}
               copied={copied}
             />
@@ -332,9 +418,57 @@ console.log(response.choices[0].message.content);`}
               code={`{
   "object": "list",
   "data": [
-    { "id": "claude-sonnet-4-6-20250514", "object": "model", "owned_by": "anthropic" },
-    { "id": "claude-opus-4-6-20250514", "object": "model", "owned_by": "anthropic" },
-    { "id": "claude-haiku-4-5-20251001", "object": "model", "owned_by": "anthropic" }
+    {
+      "id": "ghola-private",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "ghola",
+      "ghola": {
+        "privacy_modes": ["private"],
+        "payment_rails": ["private_shielded_auto", "aleo_usdcx_shielded", "railgun_evm_shielded", "solana_shielded_pool"],
+        "prompt_confidentiality": "sealed_or_local_required",
+        "receipts": true,
+        "description": "Default prompt-confidential route; use browser local inference or sealed remote inference."
+      }
+    },
+    {
+      "id": "ghola-local",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "ghola",
+      "ghola": {
+        "privacy_modes": ["local"],
+        "payment_rails": [],
+        "receipts": true,
+        "description": "On-device local model route for prompts that should stay on the user's hardware."
+      }
+    },
+    {
+      "id": "ghola-open",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "ghola",
+      "ghola": {
+        "privacy_modes": ["open"],
+        "payment_rails": [],
+        "prompt_confidentiality": "remote_plaintext_to_provider",
+        "receipts": true,
+        "description": "Explicit plaintext cloud route for users who choose open remote inference."
+      }
+    },
+    {
+      "id": "agent:<slug>",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "ghola",
+      "ghola": {
+        "privacy_modes": ["private"],
+        "payment_rails": ["private_shielded_auto", "aleo_usdcx_shielded", "railgun_evm_shielded", "solana_shielded_pool"],
+        "prompt_confidentiality": "sealed_inference_required",
+        "receipts": true,
+        "description": "Paid sealed agent execution namespace. Use model ids like agent:research-bot."
+      }
+    }
   ]
 }`}
               onCopy={handleCopy}

@@ -1,0 +1,57 @@
+{
+  "said_version": "1.0",
+  "did": "did:key:z6Mkgh6uB4XpixKsS91kGYiQqEibePd3QUnW5GvbHKMB2dko",
+  "profile_url": "https://ghola.xyz/.well-known/said.json",
+  "business": {
+    "name": "Ghola",
+    "category": "saas",
+    "description": "Private AI that runs on-device or through end-to-end encrypted cloud inference, with agent payments and verifiable receipts."
+  },
+  "services": [
+    {
+      "name": "Ghola Chat",
+      "endpoint": "https://thumper-cloud.onrender.com/api/chat",
+      "description": "Authenticated Ghola chat endpoint. Returns an SSE stream for user and agent chat sessions.",
+      "auth_required": true
+    },
+    {
+      "name": "OpenAI-compatible Chat Completions",
+      "endpoint": "https://thumper-cloud.onrender.com/v1/chat/completions",
+      "description": "OpenAI-compatible chat completions endpoint for Ghola models and configured providers.",
+      "auth_required": true
+    },
+    {
+      "name": "OpenAI-compatible Models",
+      "endpoint": "https://thumper-cloud.onrender.com/v1/models",
+      "description": "List models available through the OpenAI-compatible Ghola API surface.",
+      "auth_required": true
+    },
+    {
+      "name": "Agent Marketplace Discovery",
+      "endpoint": "https://thumper-cloud.onrender.com/x402/agents",
+      "description": "Discover x402-payable Ghola agents available for programmatic use.",
+      "auth_required": false
+    },
+    {
+      "name": "Model Marketplace",
+      "endpoint": "https://orni-models-api.onrender.com/api/models/featured",
+      "description": "Browse featured live models available through Ghola's model marketplace.",
+      "auth_required": false
+    },
+    {
+      "name": "Payment Gateway",
+      "endpoint": "https://ghola-gateway.onrender.com/m",
+      "description": "x402 payment gateway for merchant and model routes. Append a registered merchant slug to call a paid route.",
+      "auth_required": false
+    },
+    {
+      "name": "Receipt Service Health",
+      "endpoint": "https://ghola-receipts.onrender.com/health",
+      "description": "Health endpoint for Ghola's receipt anchoring service.",
+      "auth_required": false
+    }
+  ],
+  "verification": {
+    "method": "well-known"
+  }
+}

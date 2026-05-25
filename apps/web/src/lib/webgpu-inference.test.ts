@@ -1,10 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   computeLoadedWeightFingerprint,
+  detectUsableWebGPUAdapter,
   getWebGPUModelIntegrity,
+  isRecoverableWebGPUCacheError,
   DEFAULT_WEBGPU_MODEL,
   DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH,
+  FAST_WEBGPU_MODEL,
+  FAST_WEBGPU_MODEL_WEIGHTS_HASH,
+  LLAMA_3_2_1B_WEBGPU_MODEL,
+  LLAMA_3_2_1B_WEBGPU_MODEL_WEIGHTS_HASH,
   PHI3_MINI_WEBGPU_MODEL,
   PHI3_MINI_WEBGPU_MODEL_WEIGHTS_HASH,
 } from "./webgpu-inference";
@@ -130,8 +136,14 @@ describe("WebGPU model integrity registry", () => {
     expect(record.onFailure).toBe("error");
   }
 
-  it("pins SRI hashes for the default Llama model", () => {
+  it("uses the fast SmolLM2 model as the consumer default", () => {
+    expect(DEFAULT_WEBGPU_MODEL).toBe(FAST_WEBGPU_MODEL);
+    expect(DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH).toBe(FAST_WEBGPU_MODEL_WEIGHTS_HASH);
     assertIntegrityShape(DEFAULT_WEBGPU_MODEL);
+  });
+
+  it("pins SRI hashes for the opt-in Llama model", () => {
+    assertIntegrityShape(LLAMA_3_2_1B_WEBGPU_MODEL);
   });
 
   it("pins SRI hashes for the opt-in Phi-3 mini model", () => {
@@ -145,12 +157,60 @@ describe("WebGPU model integrity registry", () => {
   it("exposes 64-hex canonical weights hashes for both pinned models", () => {
     const hex = /^[0-9a-f]{64}$/;
     expect(DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH).toMatch(hex);
+    expect(FAST_WEBGPU_MODEL_WEIGHTS_HASH).toMatch(hex);
+    expect(LLAMA_3_2_1B_WEBGPU_MODEL_WEIGHTS_HASH).toMatch(hex);
     expect(PHI3_MINI_WEBGPU_MODEL_WEIGHTS_HASH).toMatch(hex);
-    // The two models must not collide on the canonical hash — that
+    // The shipped models must not collide on the canonical hash — that
     // would mean either a copy-paste mistake or a real
     // weights-collision incident worth investigating.
-    expect(DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH).not.toBe(
+    expect(new Set([
+      FAST_WEBGPU_MODEL_WEIGHTS_HASH,
+      LLAMA_3_2_1B_WEBGPU_MODEL_WEIGHTS_HASH,
       PHI3_MINI_WEBGPU_MODEL_WEIGHTS_HASH,
+    ]).size).toBe(3);
+  });
+});
+
+describe("WebGPU cache backend fallback", () => {
+  it("detects browser Cache.add network failures as recoverable", () => {
+    expect(
+      isRecoverableWebGPUCacheError(
+        new Error(
+          "Failed to execute 'add' on 'Cache': Cache.add() encountered a network error",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not retry unrelated local model load failures", () => {
+    expect(isRecoverableWebGPUCacheError(new Error("WebGPU device lost"))).toBe(
+      false,
     );
+  });
+});
+
+describe("WebGPU adapter detection", () => {
+  afterEach(() => {
+    const nav = globalThis.navigator as unknown as Record<string, unknown>;
+    delete nav.gpu;
+  });
+
+  it("reports unavailable when requestAdapter returns null", async () => {
+    const nav = globalThis.navigator as unknown as Record<string, unknown>;
+    nav.gpu = { requestAdapter: async () => null };
+
+    const result = await detectUsableWebGPUAdapter();
+
+    expect(result.supported).toBe(false);
+    expect(result.reason).toMatch(/could not allocate/i);
+  });
+
+  it("reports supported when a WebGPU adapter is available", async () => {
+    const nav = globalThis.navigator as unknown as Record<string, unknown>;
+    nav.gpu = { requestAdapter: async () => ({}) };
+
+    const result = await detectUsableWebGPUAdapter();
+
+    expect(result.supported).toBe(true);
   });
 });

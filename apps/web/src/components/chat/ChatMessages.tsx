@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useEffect } from "react";
+import { useRef, useEffect } from "react";
 import DOMPurify from "dompurify";
 import { ActionCard } from "@/components/actions/ActionCard";
 import { mapInlineActionToDraft } from "@/components/actions/types";
@@ -10,17 +10,25 @@ import type { ThumperChatMessage } from "@/lib/thumper-types";
 function sanitizeHtml(html: string): string {
   return DOMPurify.sanitize(html, {
     ALLOWED_TAGS: ["strong", "em", "code", "span"],
-    ALLOWED_ATTR: ["class"],
+    ALLOWED_ATTR: [],
   });
 }
 
 interface ChatMessagesProps {
   messages: ThumperChatMessage[];
   isStreaming: boolean;
-  providerInfo?: { type: string; model?: string; provider_name?: string } | null;
+  providerInfo?: {
+    type: string;
+    model?: string;
+    provider_name?: string;
+  } | null;
 }
 
-export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessagesProps) {
+export function ChatMessages({
+  messages,
+  isStreaming,
+  providerInfo,
+}: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -28,19 +36,6 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
   }, [messages]);
 
   const groupedByDay = groupMessagesByDay(messages);
-
-  // The most recent assistant message that has a receipt — used as the
-  // single hint anchor so loading old chats doesn't paint a hint next
-  // to every historical badge. Reference equality is enough because
-  // updateSession in the parent splices in fresh message objects on
-  // updates, and the receipt arrives in its own update.
-  const lastReceiptMessage = useMemo<ThumperChatMessage | null>(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.role === "assistant" && m.receipt) return m;
-    }
-    return null;
-  }, [messages]);
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4">
@@ -51,8 +46,8 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
           </div>
           <p className="text-[#eef1f8] font-medium mb-1">Off the record.</p>
           <p className="text-sm text-[#4a5568] max-w-sm">
-            What&apos;s on your mind? This chat is encrypted on your
-            device. The mode in the header decides where it runs.
+            What&apos;s on your mind? This chat is encrypted on your device. The
+            mode in the header decides where it runs.
           </p>
         </div>
       )}
@@ -74,89 +69,96 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
             const promptForReceipt =
               prev && prev.role === "user" ? prev.content : "";
             return (
-            <div key={idx}>
-              <div
-                className={`flex mb-3 ${
-                  msg.role === "user" ? "justify-end" : "justify-start"
-                }`}
-              >
+              <div key={idx}>
                 <div
-                  className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
-                    msg.role === "user"
-                      ? "bg-[#3da8ff] text-white rounded-br-md"
-                      : "bg-[#161822] text-[#eef1f8] rounded-bl-md"
+                  className={`flex mb-3 ${
+                    msg.role === "user" ? "justify-end" : "justify-start"
                   }`}
                 >
-                  {msg.role === "assistant" ? (
-                    <RenderMarkdown content={msg.content} />
-                  ) : (
-                    msg.content
-                  )}
-                  {msg.role === "assistant" &&
-                    !msg.content &&
-                    isStreaming &&
-                    idx === dayMessages.length - 1 && (
-                      <span className="inline-flex gap-1">
-                        <span className="animate-pulse">.</span>
-                        <span
-                          className="animate-pulse"
-                          style={{ animationDelay: "0.2s" }}
-                        >
-                          .
-                        </span>
-                        <span
-                          className="animate-pulse"
-                          style={{ animationDelay: "0.4s" }}
-                        >
-                          .
-                        </span>
-                      </span>
-                    )}
                   <div
-                    className={`text-[10px] mt-1 ${
-                      msg.role === "user" ? "text-white/60" : "text-[#4a5568]"
+                    className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
+                      msg.role === "user"
+                        ? "bg-[#3da8ff] text-white rounded-br-md"
+                        : "bg-[#161822] text-[#eef1f8] rounded-bl-md"
                     }`}
                   >
-                    {new Date(msg.timestamp).toLocaleTimeString(undefined, {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </div>
-                </div>
-              </div>
-
-              {/* Inline action cards — one per tool_use emitted in this turn. */}
-              {msg.actions?.map((action, ai) => {
-                const draft = mapInlineActionToDraft(action);
-                if (!draft) return null;
-                return (
-                  <div key={ai} className="flex justify-start mb-3">
-                    <div className="max-w-[80%]">
-                      <ActionCard draft={draft} />
+                    {msg.role === "assistant" ? (
+                      <RenderMarkdown content={msg.content} />
+                    ) : (
+                      msg.content
+                    )}
+                    {msg.role === "assistant" &&
+                      !msg.content &&
+                      isStreaming &&
+                      idx === dayMessages.length - 1 && (
+                        <span className="inline-flex gap-1">
+                          <span className="animate-pulse">.</span>
+                          <span
+                            className="animate-pulse"
+                            style={{ animationDelay: "0.2s" }}
+                          >
+                            .
+                          </span>
+                          <span
+                            className="animate-pulse"
+                            style={{ animationDelay: "0.4s" }}
+                          >
+                            .
+                          </span>
+                        </span>
+                      )}
+                    <div
+                      className={`text-[10px] mt-1 ${
+                        msg.role === "user" ? "text-white/60" : "text-[#4a5568]"
+                      }`}
+                    >
+                      {new Date(msg.timestamp).toLocaleTimeString(undefined, {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
                     </div>
                   </div>
-                );
-              })}
-              {providerInfo?.type === "community" && !isStreaming && idx === dayMessages.length - 1 && msg.role === "assistant" && msg.content && (
-                <div className="flex justify-start mb-3 ml-1">
-                  <div className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] text-[#4a5568] bg-white/[0.02] border border-white/[0.06]">
-                    <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                    Powered by community GPU
-                    {providerInfo.provider_name && <span className="text-[#8b95a8]">&middot; {providerInfo.provider_name}</span>}
+                </div>
+
+                {/* Inline action cards — one per tool_use emitted in this turn. */}
+                {msg.actions?.map((action, ai) => {
+                  const draft = mapInlineActionToDraft(action);
+                  if (!draft) return null;
+                  return (
+                    <div key={ai} className="flex justify-start mb-3">
+                      <div className="max-w-[80%]">
+                        <ActionCard draft={draft} />
+                      </div>
+                    </div>
+                  );
+                })}
+                {providerInfo?.type === "community" &&
+                  !isStreaming &&
+                  idx === dayMessages.length - 1 &&
+                  msg.role === "assistant" &&
+                  msg.content && (
+                    <div className="flex justify-start mb-3 ml-1">
+                      <div className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] text-[#4a5568] bg-white/[0.02] border border-white/[0.06]">
+                        <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                        Powered by community GPU
+                        {providerInfo.provider_name && (
+                          <span className="text-[#8b95a8]">
+                            &middot; {providerInfo.provider_name}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                {msg.role === "assistant" && msg.receipt && (
+                  <div className="flex justify-start mb-3 ml-1">
+                    <ReceiptBadge
+                      receipt={msg.receipt}
+                      prompt={promptForReceipt}
+                      response={msg.content}
+                    />
                   </div>
-                </div>
-              )}
-              {msg.role === "assistant" && msg.receipt && (
-                <div className="flex justify-start mb-3 ml-1">
-                  <ReceiptBadge
-                    receipt={msg.receipt}
-                    prompt={promptForReceipt}
-                    response={msg.content}
-                    isHintAnchor={msg === lastReceiptMessage}
-                  />
-                </div>
-              )}
-            </div>
+                )}
+              </div>
             );
           })}
         </div>
@@ -166,7 +168,7 @@ export function ChatMessages({ messages, isStreaming, providerInfo }: ChatMessag
   );
 }
 
-function RenderMarkdown({ content }: { content: string }) {
+export function RenderMarkdown({ content }: { content: string }) {
   if (!content) return null;
 
   // Split by code blocks first
@@ -191,7 +193,12 @@ function RenderMarkdown({ content }: { content: string }) {
 
         // Process inline markdown
         return (
-          <span key={i} dangerouslySetInnerHTML={{ __html: sanitizeHtml(inlineMarkdown(part)) }} />
+          <span
+            key={i}
+            dangerouslySetInnerHTML={{
+              __html: sanitizeHtml(inlineMarkdown(part)),
+            }}
+          />
         );
       })}
     </>
@@ -199,17 +206,22 @@ function RenderMarkdown({ content }: { content: string }) {
 }
 
 function inlineMarkdown(text: string): string {
-  return text
-    // Bold
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    // Italic
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    // Inline code
-    .replace(/`([^`]+)`/g, '<code class="rounded bg-[#0a0b10] px-1 py-0.5 text-xs font-mono">$1</code>')
-    // Unordered list items
-    .replace(/^- (.+)$/gm, '<span class="block ml-3">&#8226; $1</span>')
-    // Ordered list items
-    .replace(/^(\d+)\. (.+)$/gm, '<span class="block ml-3">$1. $2</span>');
+  return (
+    text
+      // Bold
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      // Italic
+      .replace(/\*(.+?)\*/g, "<em>$1</em>")
+      // Inline code
+      .replace(
+        /`([^`]+)`/g,
+        '<code class="rounded bg-[#0a0b10] px-1 py-0.5 text-xs font-mono">$1</code>',
+      )
+      // Unordered list items
+      .replace(/^- (.+)$/gm, '<span class="block ml-3">&#8226; $1</span>')
+      // Ordered list items
+      .replace(/^(\d+)\. (.+)$/gm, '<span class="block ml-3">$1. $2</span>')
+  );
 }
 
 function groupMessagesByDay(messages: ThumperChatMessage[]) {

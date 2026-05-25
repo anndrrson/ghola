@@ -116,7 +116,7 @@ function SignUpContent() {
       setLoading(true);
       try {
         const res = await thumperGoogleSignIn(credential);
-        setAuth(res.token, {
+        setAuth({
           id: res.user.id,
           email: res.user.email,
           name: res.user.name,
@@ -175,7 +175,7 @@ function SignUpContent() {
     setLoading(true);
     try {
       const res = await thumperSignUp({ name, email, password });
-      setAuth(res.token, {
+      setAuth({
         id: res.user.id,
         email: res.user.email,
         name: res.user.name,

@@ -35,7 +35,7 @@ const MODES = [
       },
       {
         k: "Current status (v2)",
-        v: "Private mode now seals end-to-end to an attested Nitro enclave. The cloud forwards opaque bytes only. When no attested enclave is in the pool, the route falls back to relay-plain and the receipt records the caveat honestly.",
+        v: "Private mode now seals end-to-end to an attested Nitro enclave. The cloud forwards opaque bytes only. When no attested enclave is in the pool, the route fails closed and asks the user to choose Local or Open.",
       },
     ],
   },
@@ -236,7 +236,7 @@ export default function SecurityPage() {
 {`{
   version:            1,
   job_id:             "<uuid>",
-  mode:               "private" | "local" | "open",
+  mode:               "auto" | "private" | "local" | "open",
   provider_id:        "<bs58 | local-webgpu | ghola-home/host>",
   enclave_key_id:     "<sha256>",           // populated in v2 Private
   attestation_hash:   "<sha256(quote)>",    // populated in v2 Private

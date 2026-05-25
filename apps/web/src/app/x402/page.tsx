@@ -24,8 +24,8 @@ const features = [
   },
   {
     icon: Shield,
-    title: "Replay-protected",
-    desc: "Every payment signature is consumed exactly once across the gateway. Burn it twice, get rejected.",
+    title: "Shielded rail boundary",
+    desc: "Agents can request private_shielded_auto settlement with x-ghola-payment-rail. Ghola chooses a ready shielded rail, refuses public fallback, and treats this as settlement privacy, not remote prompt confidentiality.",
   },
   {
     icon: Zap,
@@ -41,7 +41,7 @@ export default function X402Page() {
       <section className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 pt-24 pb-16 text-center">
         <div className="inline-flex items-center gap-2 rounded-full border border-[#1e2a3a] bg-[#0f1117] px-4 py-1.5 text-sm text-[#8b95a8] mb-8">
           <span className="h-2 w-2 rounded-full bg-[#3da8ff] animate-pulse" />
-          x402-compliant · Solana mainnet · Live
+          x402-compliant · public USDC live · shielded rail gated
         </div>
         <h1 className="text-4xl md:text-6xl font-medium tracking-tight text-[#eef1f8] leading-[1.04]">
           Ghola speaks
@@ -51,7 +51,11 @@ export default function X402Page() {
         <p className="mx-auto mt-6 max-w-2xl text-lg text-[#8b95a8] leading-relaxed">
           Any standard x402 client can discover, pay, and call Ghola merchants
           — no Ghola-specific SDK required. The gateway returns spec-compliant
-          402 challenges and verifies USDC payments on-chain.
+          402 challenges and verifies public USDC payments on-chain. Shielded
+          stablecoin calls use a separate verifier rail and fail closed when
+          that rail is unavailable. Prompt-confidential agent calls must use
+          ghola-local or sealed inference; plaintext remote execution is only
+          available on explicit open routes.
         </p>
         <div className="mt-10 flex flex-col sm:flex-row gap-4 justify-center">
           <Link
@@ -122,7 +126,9 @@ export default function X402Page() {
       "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
       "extra": {
         "merchant_slug": "<slug>",
-        "platform_fee_bps": 300
+        "platform_fee_bps": 300,
+        "payment_rail": "solana_public_stablecoin",
+        "privacy_disclosure": "Public Solana settlement reveals payer, provider, amount, asset, and timing on-chain."
       }
     }
   ]
@@ -131,11 +137,22 @@ export default function X402Page() {
         </div>
 
         <p className="text-sm text-[#8b95a8] text-center mt-6 leading-relaxed">
-          Your client signs a USDC transfer to <code className="text-[#3da8ff] text-xs">payTo</code>,
+          Your client signs a public USDC transfer to <code className="text-[#3da8ff] text-xs">payTo</code>,
           base64-encodes the proof, and retries with{" "}
-          <code className="text-[#3da8ff] text-xs">x402-Payment</code>. The
-          gateway verifies on-chain, then forwards your call.
+          <code className="text-[#3da8ff] text-xs">x402-Payment</code>. Ghola
+          also accepts common x402 aliases such as{" "}
+          <code className="text-[#3da8ff] text-xs">X-Payment</code> and{" "}
+          <code className="text-[#3da8ff] text-xs">payment-signature</code>.
+          The gateway verifies on-chain, then forwards your call.
         </p>
+        <div className="mt-6 rounded-xl border border-[#1e2a3a] bg-[#0f1117] px-5 py-4 text-sm text-[#8b95a8] leading-relaxed">
+          For shielded-only agent calls, send{" "}
+          <code className="text-[#3da8ff] text-xs">x-ghola-payment-rail: private_shielded_auto</code>.
+          Ghola will only accept a configured shielded verifier or relayer path and
+          will not downgrade that request to public USDC. Agent prompts must
+          also be sent through local or sealed inference; shielded payment
+          alone only covers settlement metadata.
+        </div>
       </section>
 
       {/* Features */}

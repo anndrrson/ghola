@@ -402,8 +402,8 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
             Private Balance
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[#8b95a8]">
-            One balance. Private Mode spends through USDCx-backed shielded
-            settlement when the rail is ready. No rail picking, no silent
+            One balance. Private Mode spends through ready shielded rails
+            ({summary.railLabel}). No mandatory Aleo-only path, no silent
             public fallback.
           </p>
         </div>

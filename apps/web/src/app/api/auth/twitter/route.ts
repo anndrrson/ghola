@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomBytes, createHash } from "crypto";
+import { applyNoStore, NO_STORE_HEADERS } from "../session/_lib";
 
 // Twitter OAuth 2.0 Authorization Code Flow with PKCE
 export async function GET(req: NextRequest) {
   const clientId = process.env.TWITTER_CLIENT_ID;
-  if (!clientId) {
-    return NextResponse.json({ error: "Twitter not configured" }, { status: 500 });
+  const clientSecret = process.env.TWITTER_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    return NextResponse.json(
+      { error: "Twitter not configured" },
+      { status: 500, headers: NO_STORE_HEADERS },
+    );
   }
 
   const redirectUri = `${req.nextUrl.origin}/api/auth/twitter/callback`;
@@ -32,7 +37,7 @@ export async function GET(req: NextRequest) {
   const authUrl = `https://twitter.com/i/oauth2/authorize?${params.toString()}`;
 
   // Store verifier and state in cookies (httpOnly, secure)
-  const response = NextResponse.redirect(authUrl);
+  const response = applyNoStore(NextResponse.redirect(authUrl));
   response.cookies.set("twitter_code_verifier", codeVerifier, {
     httpOnly: true,
     secure: true,

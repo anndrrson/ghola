@@ -108,6 +108,37 @@ function getThumperToken(): string | null {
   return safeGetLocalStorage("thumper_token");
 }
 
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const [, payload] = token.split(".");
+    if (!payload) return null;
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
+    return JSON.parse(atob(padded)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function userFromAuthToken(
+  token: string,
+  fallbackEmail?: string,
+  fallbackName?: string
+): ThumperAuthResponse["user"] {
+  const payload = decodeJwtPayload(token);
+  const id = payload?.sub || payload?.user_id;
+  const email = payload?.email || fallbackEmail;
+  const name = payload?.name || fallbackName;
+  if (typeof id !== "string" || typeof email !== "string" || !email) {
+    throw new Error("Auth response was missing user details.");
+  }
+  return {
+    id,
+    email,
+    ...(typeof name === "string" && name ? { name } : {}),
+  };
+}
+
 export function setThumperToken(token: string) {
   safeSetLocalStorage("thumper_token", token);
 }
@@ -118,7 +149,12 @@ export function clearThumperToken() {
 
 export function thumperLogout() {
   const token = getThumperToken();
-  if (token) {
+  if (typeof window !== "undefined") {
+    fetch("/api/auth/session/logout", {
+      method: "POST",
+      credentials: "same-origin",
+    }).catch(() => {});
+  } else if (token) {
     fetch(`${THUMPER_API_BASE}/api/auth/logout`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
@@ -142,6 +178,7 @@ async function thumperFetch<T>(
   const res = await fetch(`${THUMPER_API_BASE}${path}`, {
     ...options,
     headers,
+    credentials: options.credentials ?? "same-origin",
   });
   if (!res.ok) {
     const body = await res
@@ -163,30 +200,34 @@ export async function thumperSignUp(data: {
   email: string;
   password: string;
 }): Promise<ThumperAuthResponse> {
-  const res = await thumperFetch<ThumperAuthResponse>(
-    "/api/auth/email/signup",
+  const res = await thumperFetch<{ user: ThumperAuthResponse["user"] }>(
+    "/api/auth/session/email/signup",
     {
       method: "POST",
-      body: JSON.stringify(data),
-    }
+      body: JSON.stringify({
+        email: data.email,
+        password: data.password,
+        display_name: data.name,
+      }),
+    },
   );
-  setThumperToken(res.token);
-  return res;
+  clearThumperToken();
+  return { user: res.user };
 }
 
 export async function thumperSignIn(data: {
   email: string;
   password: string;
 }): Promise<ThumperAuthResponse> {
-  const res = await thumperFetch<ThumperAuthResponse>(
-    "/api/auth/email/signin",
+  const res = await thumperFetch<{ user: ThumperAuthResponse["user"] }>(
+    "/api/auth/session/email/signin",
     {
       method: "POST",
       body: JSON.stringify(data),
-    }
+    },
   );
-  setThumperToken(res.token);
-  return res;
+  clearThumperToken();
+  return { user: res.user };
 }
 
 // User Profile
@@ -373,6 +414,32 @@ export async function getThumperBillingStatus(): Promise<ThumperBillingStatusRes
   return thumperFetch<ThumperBillingStatusResponse>("/api/billing/status");
 }
 
+export async function reservePrivateAgentCompute(input: {
+  session_id: string;
+  seconds: number;
+}): Promise<{ ok: boolean; reservation_id: string; reserved_seconds: number }> {
+  return thumperFetch<{ ok: boolean; reservation_id: string; reserved_seconds: number }>(
+    "/api/billing/private-agent/compute/reserve",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function releasePrivateAgentCompute(input: {
+  session_id: string;
+  status: "paused" | "completed" | "failed";
+}): Promise<{ ok: boolean }> {
+  return thumperFetch<{ ok: boolean }>(
+    "/api/billing/private-agent/compute/release",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
 export type PrivateBalanceDeposit = {
   id: string;
   amount_usdc: number;
@@ -505,14 +572,9 @@ export async function unlinkTelegram(): Promise<void> {
 
 export function handleTwitterToken(token: string): ThumperAuthResponse {
   setThumperToken(token);
-  const payload = JSON.parse(atob(token.split(".")[1]));
   return {
     token,
-    user: {
-      id: payload.sub || payload.user_id,
-      email: payload.email,
-      name: payload.name,
-    },
+    user: userFromAuthToken(token),
   };
 }
 
@@ -539,24 +601,13 @@ export async function thumperGoogleSignIn(
 ): Promise<ThumperAuthResponse> {
   try {
     const res = await thumperFetch<{
-      token: string;
-      user_id: string;
-      is_new_user: boolean;
-    }>("/api/auth/google", {
+      user: ThumperAuthResponse["user"];
+    }>("/api/auth/session/google", {
       method: "POST",
       body: JSON.stringify({ id_token: idToken }),
     });
-    setThumperToken(res.token);
-    // Parse JWT for user info
-    const payload = JSON.parse(atob(res.token.split(".")[1]));
-    return {
-      token: res.token,
-      user: {
-        id: payload.sub || payload.user_id,
-        email: payload.email,
-        name: payload.name,
-      },
-    };
+    clearThumperToken();
+    return { user: res.user };
   } catch (err) {
     const status = (err as Error & { status?: number }).status;
     if (status === 503) {

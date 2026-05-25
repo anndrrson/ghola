@@ -42,10 +42,12 @@ export default function PrivacyPolicyPage() {
             2.1 Account information
           </h3>
           <p>
-            When you create an account we collect your email address, a hashed
-            password (or your sign-in identifier from Google or Apple if you
-            use those providers), your display name, and any profile metadata
-            you choose to provide.
+            Ghola accounts are wallet-first. When you create or access an
+            account, we collect your public wallet address, wallet-signed
+            authentication metadata, display name, and any profile metadata you
+            choose to provide. If you contact support, join a beta, or connect
+            an optional email-based integration, we may also collect the email
+            address you provide for that purpose.
           </p>
 
           <h3 className="text-[#eef1f8] font-medium mt-6 mb-2">
@@ -105,6 +107,12 @@ export default function PrivacyPolicyPage() {
             choose. Accessibility data is processed locally on your device and
             is only transmitted to our servers when required to fulfil a task
             you initiated.
+          </p>
+          <p>
+            If you enable notification access, Ghola can read selected
+            notification metadata so the agent can help with user-initiated
+            messaging and task workflows. Notification access is optional and
+            can be revoked from Android settings.
           </p>
 
           <h3 className="text-[#eef1f8] font-medium mt-6 mb-2">

@@ -1,5 +1,5 @@
 export interface ThumperAuthResponse {
-  token: string;
+  token?: string;
   user: {
     id: string;
     email: string;
@@ -80,6 +80,17 @@ export interface ThumperPrivacyHealthResponse {
   sms_recipient_hashing_enabled: boolean;
   remote_compute_approval_enabled: boolean;
   messaging_block_report_enabled: boolean;
+  private_payment_request_hash_binding_enabled?: boolean;
+  railgun_relay_only_required?: boolean;
+  private_payment_public_fallback_allowed?: boolean;
+  private_payment_header_identity_minimized?: boolean;
+  private_payment_header_policy?: {
+    requires_request_hash?: boolean;
+    requires_railgun_relay_only?: boolean;
+    disallows_user_id?: boolean;
+    disallows_wallet_seed_or_viewing_key?: boolean;
+    replay_protection?: string;
+  };
   private_rail_fail_closed: boolean;
   blocking_reasons: string[];
 }
@@ -157,12 +168,26 @@ export interface ThumperTemplateResponse {
 }
 
 export interface ThumperBillingStatusResponse {
-  tier: "free" | "pro" | "unlimited";
+  tier: "free" | "pro" | "private_agent" | "unlimited" | "enterprise";
   stripe_customer_id: string | null;
-  expires_at: string | null;
+  expires_at?: string | null;
+  portal_url?: string | null;
   limits: {
     calls_per_month: number;
     emails_per_month: number;
+    private_compute_seconds: number;
+    active_private_agents: number;
+  };
+  private_agent_compute?: {
+    included_seconds: number;
+    reserved_seconds: number;
+    used_seconds: number;
+    remaining_seconds: number;
+    active_agent_limit: number;
+    active_agent_count: number;
+    period_start: string;
+    period_end: string;
+    metering_unit: "agent_second";
   };
 }
 

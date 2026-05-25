@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   FileCheck2,
   Loader2,
   LockKeyhole,
+  Mic,
   ReceiptText,
   Search,
   ShieldCheck,
@@ -34,6 +35,14 @@ import {
 } from "@/lib/private-balance";
 
 type Step = "ask" | "offers" | "quote" | "approval" | "receipt";
+type PrivateVoiceState = "idle" | "starting" | "recording" | "transcribing";
+type PrivateVoiceWarmState = "idle" | "warming" | "ready" | "unavailable";
+
+const EXAMPLE_GOALS = [
+  "Find a private AI service under $5",
+  "Compare secure email options",
+  "Pay for a research tool privately",
+];
 
 function approvalNonce() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -70,9 +79,10 @@ async function fetchPaymentHealth(): Promise<PaymentHealth | null> {
 export default function IntentPage() {
   const thumperAuth = useThumperAuth();
   const turnkeyWallet = useTurnkeyWallet();
-  const [goal, setGoal] = useState(
-    "Find a privacy-friendly AI service I can pay for."
-  );
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<BlobPart[]>([]);
+  const [goal, setGoal] = useState("");
   const [budgetUsd, setBudgetUsd] = useState("5.00");
   const [privacyMode, setPrivacyMode] = useState<"private" | "open">("private");
   const [intent, setIntent] = useState<CommerceIntent | null>(null);
@@ -80,16 +90,79 @@ export default function IntentPage() {
   const [selectedOfferId, setSelectedOfferId] = useState<string | null>(null);
   const [quote, setQuote] = useState<CommerceQuote | null>(null);
   const [execution, setExecution] = useState<CommerceExecution | null>(null);
-  const [approved, setApproved] = useState(false);
   const [paymentHealth, setPaymentHealth] = useState<PaymentHealth | null>(null);
   const [loading, setLoading] = useState<Step | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
-  const [walletCreating, setWalletCreating] = useState(false);
+  const [privateVoiceState, setPrivateVoiceState] =
+    useState<PrivateVoiceState>("idle");
+  const [voiceStatus, setVoiceStatus] = useState(
+    "Private voice warms up in the background. Audio stays on this device.",
+  );
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceWarmState, setVoiceWarmState] =
+    useState<PrivateVoiceWarmState>("idle");
 
   useEffect(() => {
     void fetchPaymentHealth().then(setPaymentHealth).catch(() => setPaymentHealth(null));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      mediaRecorderRef.current?.stop();
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaRecorderRef.current = null;
+      mediaStreamRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (typeof window === "undefined") return;
+
+    const warm = () => {
+      if (cancelled) return;
+      setVoiceWarmState("warming");
+      void import("@/lib/private-voice")
+        .then(({ warmPrivateVoice }) =>
+          warmPrivateVoice((status) => {
+            if (!cancelled) setVoiceStatus(status);
+          }),
+        )
+        .then(() => {
+          if (!cancelled) {
+            setVoiceWarmState("ready");
+            setVoiceStatus("Private voice ready. Audio stays on this device.");
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setVoiceWarmState("unavailable");
+            setVoiceStatus("Private voice is unavailable here. Typing still works.");
+          }
+        });
+    };
+
+    if (typeof window.requestIdleCallback !== "function") {
+      const timeout = globalThis.setTimeout(() => {
+        if (cancelled) return;
+        warm();
+      }, 1200);
+      return () => {
+        cancelled = true;
+        globalThis.clearTimeout(timeout);
+      };
+    }
+
+    const idleId = window.requestIdleCallback(
+      warm,
+      { timeout: 2500 },
+    );
+    return () => {
+      cancelled = true;
+      window.cancelIdleCallback(idleId);
+    };
   }, []);
 
   useEffect(() => {
@@ -100,7 +173,6 @@ export default function IntentPage() {
     setSelectedOfferId(null);
     setQuote(null);
     setExecution(null);
-    setApproved(false);
   }, [thumperAuth.loading, thumperAuth.authenticated, turnkeyWallet.loading, turnkeyWallet.walletAddress]);
 
   const privateSummary = summarizePrivateBalance(paymentHealth);
@@ -120,33 +192,34 @@ export default function IntentPage() {
       : "Private payments paused";
   const needsAuth = !thumperAuth.loading && !thumperAuth.authenticated;
   const walletReady = !!turnkeyWallet.walletAddress;
-  const accountReady = thumperAuth.authenticated && walletReady;
+  const accountReady = thumperAuth.authenticated;
   const formLocked = !accountReady;
   const walletStatusLabel = thumperAuth.loading || turnkeyWallet.loading
-    ? "Checking wallet"
+    ? "Checking account"
     : walletReady
       ? `Wallet ${shortAddress(turnkeyWallet.walletAddress!)}`
-      : "Sign in required";
+      : thumperAuth.authenticated
+        ? "Signed in"
+        : "Sign in required";
   const primaryLabel = thumperAuth.loading || turnkeyWallet.loading
     ? "Checking account"
     : needsAuth
       ? "Sign in to continue"
-      : !walletReady
-        ? "Set up account"
-        : "Find options";
+      : "Find private options";
+
+  const privateCheckout = privacyMode === "private";
+  const paymentModeLabel = privateCheckout ? "Private payment" : "Public payment";
+  const paymentModeDetail = privateCheckout
+    ? "Ghola uses the private rail when available and stops if it cannot be used."
+    : "Public payment uses a visible on-chain settlement rail.";
 
   async function submitIntent() {
     setError(null);
     setExecution(null);
     setQuote(null);
-    setApproved(false);
     if (!thumperAuth.authenticated) {
       setAuthMode("signup");
       setAuthOpen(true);
-      return;
-    }
-    if (!turnkeyWallet.walletAddress) {
-      setError("Finish account setup before starting checkout.");
       return;
     }
     const budget = Math.round(Number(budgetUsd || "0") * 1_000_000);
@@ -186,26 +259,147 @@ export default function IntentPage() {
       setAuthOpen(true);
       return;
     }
-    if (!walletReady) {
-      setError(null);
-      setWalletCreating(true);
-      try {
-        await turnkeyWallet.createWallet(thumperAuth.user?.email || "ghola-user");
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not finish account setup.");
-      } finally {
-        setWalletCreating(false);
-      }
+    await submitIntent();
+  }
+
+  function appendGoalText(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setGoal((current) => `${current}${current.trim() ? " " : ""}${trimmed}`.trim());
+  }
+
+  function stopPrivateVoiceRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    }
+  }
+
+  async function finishPrivateVoiceRecording() {
+    const chunks = audioChunksRef.current;
+    const mimeType = mediaRecorderRef.current?.mimeType || "audio/webm";
+    audioChunksRef.current = [];
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+    mediaRecorderRef.current = null;
+
+    if (chunks.length === 0) {
+      setPrivateVoiceState("idle");
+      setVoiceStatus("No audio was captured.");
       return;
     }
-    await submitIntent();
+
+    setPrivateVoiceState("transcribing");
+    setVoiceError(null);
+    try {
+      const { transcribePrivateAudio } = await import("@/lib/private-voice");
+      const blob = new Blob(chunks, { type: mimeType });
+      const transcript = await transcribePrivateAudio(blob, setVoiceStatus);
+      if (!transcript) {
+        setVoiceStatus("No speech detected. Try a slightly longer request.");
+        return;
+      }
+      appendGoalText(transcript);
+      setVoiceStatus("Transcript added locally. Review it before submitting.");
+    } catch (err) {
+      setVoiceError(
+        err instanceof Error
+          ? err.message
+          : "Private transcription failed on this device.",
+      );
+      setVoiceStatus("Private voice stopped.");
+    } finally {
+      setPrivateVoiceState("idle");
+    }
+  }
+
+  async function toggleVoiceInput() {
+    if (formLocked) return;
+    if (privateVoiceState === "recording") {
+      stopPrivateVoiceRecording();
+      return;
+    }
+    if (privateVoiceState === "starting" || privateVoiceState === "transcribing") {
+      return;
+    }
+    if (voiceWarmState === "warming") {
+      setVoiceStatus("Private voice is almost ready. You can type while it finishes.");
+      return;
+    }
+
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof MediaRecorder === "undefined"
+    ) {
+      setVoiceError("Private voice needs a browser with local microphone recording.");
+      return;
+    }
+
+    if (voiceWarmState !== "ready") {
+      setVoiceStatus("Preparing private voice before recording.");
+      setVoiceWarmState("warming");
+      try {
+        const { isPrivateVoiceReady, warmPrivateVoice } = await import("@/lib/private-voice");
+        if (!isPrivateVoiceReady()) {
+          await warmPrivateVoice(setVoiceStatus);
+        }
+        setVoiceWarmState("ready");
+        setVoiceStatus("Private voice ready. Audio stays on this device.");
+      } catch {
+        setVoiceWarmState("unavailable");
+        setVoiceError("Private voice is unavailable here. Type your request instead.");
+        return;
+      }
+    }
+
+    setPrivateVoiceState("starting");
+    setVoiceStatus("Requesting microphone access for local-only recording.");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      audioChunksRef.current = [];
+      mediaStreamRef.current = stream;
+      const options = MediaRecorder.isTypeSupported("audio/webm")
+        ? { mimeType: "audio/webm" }
+        : undefined;
+      const recorder = new MediaRecorder(stream, options);
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        void finishPrivateVoiceRecording();
+      };
+      recorder.onerror = () => {
+        setPrivateVoiceState("idle");
+        setVoiceError("Private recording failed in this browser.");
+        stream.getTracks().forEach((track) => track.stop());
+      };
+      mediaRecorderRef.current = recorder;
+      setError(null);
+      setVoiceError(null);
+      setVoiceStatus("Recording locally. Stop when you are done speaking.");
+      setPrivateVoiceState("recording");
+      recorder.start();
+    } catch (err) {
+      setPrivateVoiceState("idle");
+      setVoiceError(
+        err instanceof DOMException && err.name === "NotAllowedError"
+          ? "Microphone permission was blocked."
+          : "Could not start private voice on this device.",
+      );
+    }
   }
 
   async function quoteOffer() {
     if (!intent || !selectedOffer) return;
     setError(null);
     setExecution(null);
-    setApproved(false);
     setLoading("quote");
     try {
       const nextQuote = await createCommerceQuote(intent.id, {
@@ -262,8 +456,12 @@ export default function IntentPage() {
               Shop / Pay
             </div>
             <h1 className="mt-3 max-w-2xl text-2xl font-medium tracking-tight text-[#f6f8ff] sm:text-3xl">
-              Find it. Approve it. Pay privately.
+              Ask Ghola to buy something.
             </h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-[#8b95a8]">
+              Describe what you need. Ghola finds options, shows the exact cost,
+              and waits for your approval before any payment.
+            </p>
             <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-[#8b95a8]">
               <span className="inline-flex items-center gap-2">
                 <span
@@ -277,7 +475,7 @@ export default function IntentPage() {
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <LockKeyhole className="h-3.5 w-3.5" />
-                You approve before payment
+                Approval required
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <Wallet className="h-3.5 w-3.5" />
@@ -299,7 +497,8 @@ export default function IntentPage() {
                       What are you buying?
                     </h2>
                     <p className="mt-1 text-xs text-[#7f8ca3]">
-                      Ghola finds options and prepares a quote. Payment waits for your approval.
+                      Type it like a normal request. Ghola handles the routing
+                      and keeps private payments private.
                     </p>
                   </div>
                 </div>
@@ -312,20 +511,94 @@ export default function IntentPage() {
                 {formLocked && (
                   <div className="rounded-md border border-[#1e2a3a] bg-[#090d13] px-4 py-3 text-sm text-[#9fb2cc]">
                     <span className="font-medium text-[#d6deec]">
-                      Sign in required.
+                      {thumperAuth.loading ? "Checking account." : "Sign in required."}
                     </span>{" "}
-                    Ghola binds checkout approvals, receipts, and payment authority
-                    to your account before any options or quotes are created.
+                    {thumperAuth.loading
+                      ? "Ghola is checking whether this browser already has an active account session."
+                      : "Ghola needs an account before it can create quotes or payments."}
                   </div>
                 )}
-                <textarea
-                  value={goal}
-                  onChange={(event) => setGoal(event.target.value)}
-                  disabled={formLocked}
-                  className="min-h-24 resize-y rounded-md border border-[#263449] bg-[#08090d] px-3 py-3 text-base leading-6 text-[#eef1f8] outline-none transition placeholder:text-[#5b6880] focus:border-[#3da8ff] disabled:cursor-not-allowed disabled:text-[#64748b]"
-                  maxLength={1200}
-                  placeholder="Example: Find a privacy-friendly AI tool under $5."
-                />
+                <div className="grid gap-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-[#f6f8ff]">
+                        Describe it naturally
+                      </p>
+                      <p className="mt-1 text-xs text-[#7f8ca3]">
+                        Type, tap an example, or speak once private voice is ready.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={toggleVoiceInput}
+                      disabled={
+                        formLocked ||
+                        voiceWarmState === "warming" ||
+                        voiceWarmState === "unavailable" ||
+                        privateVoiceState === "starting" ||
+                        privateVoiceState === "transcribing"
+                      }
+                      className={`inline-flex h-9 items-center justify-center gap-2 rounded-md border px-3 text-xs font-medium transition sm:w-fit ${
+                        privateVoiceState === "recording"
+                          ? "border-[#ff6b8a]/50 bg-[#2a1018] text-[#ffb4c0]"
+                          : "border-[#2f435c] bg-[#0b1119] text-[#b8c7de] hover:border-[#3da8ff]/60 hover:text-[#eef1f8]"
+                      } disabled:cursor-not-allowed disabled:opacity-45`}
+                    >
+                      {privateVoiceState === "starting" ||
+                      privateVoiceState === "transcribing" ||
+                      voiceWarmState === "warming" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Mic className="h-3.5 w-3.5" />
+                      )}
+                      {privateVoiceState === "recording"
+                        ? "Stop recording"
+                        : privateVoiceState === "transcribing"
+                          ? "Transcribing"
+                          : voiceWarmState === "warming"
+                            ? "Preparing voice"
+                            : voiceWarmState === "ready"
+                              ? "Speak"
+                              : "Private voice"}
+                    </button>
+                  </div>
+                  <div
+                    className={`rounded-md border px-3 py-2 text-xs ${
+                      voiceError
+                        ? "border-[#5a4324] bg-[#1b150d] text-[#ffd49a]"
+                        : privateVoiceState === "recording" ||
+                            privateVoiceState === "transcribing"
+                          ? "border-[#254568] bg-[#0a121d] text-[#9ccfff]"
+                          : "border-[#1e2a3a] bg-[#090d13] text-[#7f8ca3]"
+                    }`}
+                  >
+                    {voiceError ?? voiceStatus}
+                  </div>
+                  <textarea
+                    value={goal}
+                    onChange={(event) => setGoal(event.target.value)}
+                    disabled={formLocked}
+                    aria-label="Commerce request"
+                    className="min-h-28 w-full resize-y rounded-md border border-[#263449] bg-[#08090d] px-3 py-3 text-base leading-6 text-[#eef1f8] outline-none transition focus:border-[#3da8ff] disabled:cursor-not-allowed disabled:text-[#64748b]"
+                    maxLength={1200}
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6f7d9a]">
+                      Try
+                    </span>
+                    {EXAMPLE_GOALS.map((example) => (
+                      <button
+                        key={example}
+                        type="button"
+                        onClick={() => setGoal(example)}
+                        disabled={formLocked}
+                        className="rounded-md border border-[#1e2a3a] bg-[#090d13] px-3 py-1.5 text-xs text-[#8ea2c1] transition hover:border-[#2f435c] hover:text-[#eef1f8] disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        {example}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="grid gap-3 md:grid-cols-[9rem_minmax(15rem,1fr)_auto] md:items-end">
                   <label className="grid gap-2">
                     <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6f7d9a]">
@@ -341,33 +614,19 @@ export default function IntentPage() {
                   </label>
                   <div className="grid gap-2">
                     <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#6f7d9a]">
-                      Payment mode
+                      Payment
                     </span>
-                    <div className="grid h-10 grid-cols-2 overflow-hidden rounded-md border border-[#263449] bg-[#08090d]">
-                      {(["private", "open"] as const).map((mode) => (
-                        <button
-                          key={mode}
-                          type="button"
-                          onClick={() => setPrivacyMode(mode)}
-                          disabled={formLocked}
-                          className={`text-sm font-medium transition ${
-                            privacyMode === mode
-                              ? "bg-[#3da8ff] text-[#05080d]"
-                              : "text-[#7f8ca3] hover:bg-[#101722] hover:text-[#eef1f8]"
-                          }`}
-                        >
-                          {mode === "private" ? "Private USDCx" : "Public USDC"}
-                        </button>
-                      ))}
+                    <div className="flex h-10 items-center rounded-md border border-[#263449] bg-[#08090d] px-3 text-sm text-[#d6deec]">
+                      {paymentModeLabel}
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={handlePrimaryAction}
-                    disabled={!!loading || thumperAuth.loading || turnkeyWallet.loading || walletCreating}
+                    disabled={!!loading || thumperAuth.loading || turnkeyWallet.loading}
                     className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#3da8ff] px-4 text-sm font-semibold text-[#05080d] shadow-[0_10px_28px_-14px_rgba(61,168,255,0.9)] transition hover:bg-[#67bbff] active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-[#1a2635] disabled:text-[#64748b] disabled:shadow-none"
                   >
-                    {loading === "ask" || loading === "offers" || walletCreating ? (
+                    {loading === "ask" || loading === "offers" ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <Search className="h-4 w-4" />
@@ -376,11 +635,35 @@ export default function IntentPage() {
                   </button>
                 </div>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-[#151b26] pt-3 text-xs text-[#7f8ca3]">
-                  <span className="text-[#9fb2cc]">
-                    {privacyMode === "private" ? "Private USDCx selected" : "Public USDC selected"}
-                  </span>
-                  <span>{privacyMode === "private" ? "No public fallback" : "Public on-chain rail"}</span>
-                  <span>{railStatusKnown ? "Funded proof pending" : "Checking rail status"}</span>
+                  <span className="text-[#9fb2cc]">{paymentModeLabel}</span>
+                  <span>{paymentModeDetail}</span>
+                  <details className="group">
+                    <summary className="cursor-pointer text-[#6f7d9a] hover:text-[#9fb2cc]">
+                      Payment details
+                    </summary>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[#6f7d9a]">
+                      <span>
+                        {privacyMode === "private"
+                          ? "Private USDCx preferred"
+                          : "Public USDC selected"}
+                      </span>
+                      <span>
+                        {railStatusKnown ? "Rail status checked" : "Checking rail status"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPrivacyMode(privacyMode === "private" ? "open" : "private")
+                        }
+                        disabled={formLocked}
+                        className="rounded border border-[#263449] px-2 py-1 text-[11px] text-[#9fb2cc] hover:border-[#3da8ff]/60 disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        {privacyMode === "private"
+                          ? "Use public payment"
+                          : "Use private payment"}
+                      </button>
+                    </div>
+                  </details>
                 </div>
               </div>
             </section>
@@ -427,7 +710,11 @@ export default function IntentPage() {
                       <span className="text-sm text-[#d6deec]">
                         {formatMicroUsd(offer.amount_micro_usdc)}
                       </span>
-                      <span className="text-xs text-[#7f8ca3]">{railLabel(offer.rail)}</span>
+                      <span className="text-xs text-[#7f8ca3]">
+                        {offer.rail.includes("shielded") || offer.rail.includes("usdcx")
+                          ? "Private"
+                          : "Public"}
+                      </span>
                     </button>
                   ))
                 )}
@@ -445,7 +732,7 @@ export default function IntentPage() {
                     ) : (
                       <FileCheck2 className="h-4 w-4" />
                     )}
-                    Create quote
+                    Review quote
                   </button>
                 </div>
               )}
@@ -454,43 +741,39 @@ export default function IntentPage() {
             {quote && (
               <section className="rounded-md border border-[#1e2a3a] bg-[#0c0f15]">
                 <div className="border-b border-[#1e2a3a] px-5 py-4">
-                  <h2 className="text-sm font-medium text-[#f6f8ff]">Approve checkout</h2>
+                  <h2 className="text-sm font-medium text-[#f6f8ff]">Approve payment</h2>
                 </div>
                 <div className="grid gap-4 p-5">
                   <div className="grid gap-3 rounded-md border border-[#263449] bg-[#08090d] p-4 text-sm text-[#b7c3d8] md:grid-cols-3">
                     <span>{quote.provider_label ?? selectedOffer?.merchant_label ?? quote.offer_id}</span>
                     <span>{formatMicroUsd(quote.amount_micro_usdc)}</span>
-                    <span>{railLabel(quote.rail)}</span>
+                    <span>{quote.rail.includes("shielded") || quote.rail.includes("usdcx") ? "Private payment" : "Public payment"}</span>
                   </div>
                   <div className="rounded-md border border-[#263449] bg-[#08090d] p-4">
                     <div className="flex items-center gap-2 text-sm font-medium text-[#eef1f8]">
                       <LockKeyhole className="h-4 w-4 text-[#3da8ff]" />
-                      What leaves Ghola
+                      What you are approving
                     </div>
                     <p className="mt-2 text-sm leading-6 text-[#9fb2cc]">
-                      Merchant label, quote amount, selected rail, approval timestamp,
-                      and a hashed approval nonce. Ghola does not return raw provider
-                      payloads or raw approval nonces in receipts.
+                      Ghola will send the provider, amount, payment mode, and
+                      your approval timestamp. The raw approval secret is never
+                      returned in the receipt.
                     </p>
-                    <p className="mt-3 text-xs leading-5 text-[#7f8ca3]">
-                      {selectedOffer?.privacy_disclosure ?? "This external execution requires explicit approval."}
-                    </p>
+                    <details className="mt-3 text-xs leading-5 text-[#7f8ca3]">
+                      <summary className="cursor-pointer text-[#9fb2cc]">
+                        Payment details
+                      </summary>
+                      <p className="mt-2">
+                        Rail: {railLabel(quote.rail)}.{" "}
+                        {selectedOffer?.privacy_disclosure ??
+                          "This external execution requires explicit approval."}
+                      </p>
+                    </details>
                   </div>
-                  <label className="flex items-start gap-3 text-sm leading-6 text-[#b7c3d8]">
-                    <input
-                      type="checkbox"
-                      checked={approved}
-                      onChange={(event) => setApproved(event.target.checked)}
-                      className="mt-1 h-4 w-4 rounded border-[#2f435c] bg-[#08090d]"
-                    />
-                    <span>
-                      I approve this checkout and understand which provider and payment rail Ghola will use.
-                    </span>
-                  </label>
                   <button
                     type="button"
                     onClick={approveAndPay}
-                    disabled={!approved || !!loading}
+                    disabled={!!loading}
                     className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#3da8ff] px-4 text-sm font-semibold text-[#05080d] transition hover:bg-[#67bbff] disabled:cursor-not-allowed disabled:bg-[#1a2635] disabled:text-[#64748b] sm:w-fit"
                   >
                     {loading === "approval" ? (
@@ -498,7 +781,7 @@ export default function IntentPage() {
                     ) : (
                       <ShieldCheck className="h-4 w-4" />
                     )}
-                    Approve and pay
+                    Approve payment
                   </button>
                 </div>
               </section>
@@ -522,8 +805,13 @@ export default function IntentPage() {
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-[0.16em] text-[#7bbd89]">Rail</p>
-                    <p className="mt-1">{railLabel(execution.receipt.rail)}</p>
+                    <p className="text-xs uppercase tracking-[0.16em] text-[#7bbd89]">Payment privacy</p>
+                    <p className="mt-1">
+                      {execution.receipt.rail.includes("shielded") ||
+                      execution.receipt.rail.includes("usdcx")
+                        ? "Private"
+                        : "Public"}
+                    </p>
                   </div>
                   <div>
                     <p className="text-xs uppercase tracking-[0.16em] text-[#7bbd89]">Private proof</p>

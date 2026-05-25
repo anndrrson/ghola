@@ -113,7 +113,7 @@ function EmailBody({
                 className="flex items-center gap-1.5 rounded-lg bg-[#3da8ff] px-3 py-1.5 text-xs font-medium text-[#08090d] hover:bg-[#5bb8ff] disabled:opacity-50 transition-colors cursor-pointer"
               >
                 <Send className="h-3 w-3" />
-                Send
+                Approve send
               </button>
               <button
                 onClick={() => setEditing(false)}
@@ -154,7 +154,7 @@ function EmailBody({
                 className="mt-1 flex items-center gap-2 rounded-lg bg-[#3da8ff] px-3 py-1.5 text-xs font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors cursor-pointer"
               >
                 <Mail className="h-3 w-3" />
-                Edit & Send
+                Review & approve
               </button>
             )}
 
@@ -234,7 +234,7 @@ function SmsBody({ draft }: { draft: Extract<ActionDraft, { kind: "sms" }> }) {
                 className="flex items-center gap-1.5 rounded-lg bg-[#3da8ff] px-3 py-1.5 text-xs font-medium text-[#08090d] hover:bg-[#5bb8ff] disabled:opacity-50 transition-colors cursor-pointer"
               >
                 <Send className="h-3 w-3" />
-                Send
+                Approve send
               </button>
               <button
                 onClick={() => setEditing(false)}
@@ -254,7 +254,7 @@ function SmsBody({ draft }: { draft: Extract<ActionDraft, { kind: "sms" }> }) {
                 className="mt-1 flex items-center gap-2 rounded-lg bg-[#3da8ff] px-3 py-1.5 text-xs font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors cursor-pointer"
               >
                 <MessageSquare className="h-3 w-3" />
-                Edit & Send
+                Review & approve
               </button>
             )}
 
@@ -332,7 +332,7 @@ function CallBody({
             className="mt-1 flex items-center gap-2 rounded-lg bg-[#3da8ff] px-3 py-1.5 text-xs font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors cursor-pointer"
           >
             <Phone className="h-3 w-3" />
-            Make this call
+            Approve call
           </button>
         )}
 
@@ -457,7 +457,7 @@ function CalendarBody({
                 className="flex items-center gap-1.5 rounded-lg bg-[#3da8ff] px-3 py-1.5 text-xs font-medium text-[#08090d] hover:bg-[#5bb8ff] disabled:opacity-50 transition-colors cursor-pointer"
               >
                 <Send className="h-3 w-3" />
-                Create
+                Approve create
               </button>
               <button
                 onClick={() => setEditing(false)}
@@ -475,7 +475,7 @@ function CalendarBody({
                 className="mt-1 flex items-center gap-2 rounded-lg bg-[#3da8ff] px-3 py-1.5 text-xs font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors cursor-pointer"
               >
                 <Calendar className="h-3 w-3" />
-                Review & Create
+                Review & approve
               </button>
             )}
 

@@ -5,8 +5,8 @@ import { PrivateBalancePanel } from "@/components/private-balance";
 const principles = [
   {
     icon: ShieldCheck,
-    title: "No rail picking",
-    desc: "Users choose Private Mode. Ghola handles the payment rail.",
+    title: "Rail diversity",
+    desc: "Users choose Private Mode. Ghola can route across ready shielded rails.",
   },
   {
     icon: Wallet,
@@ -34,9 +34,9 @@ export default function PrivateBalancePage() {
                 Privacy with no setup ritual.
               </h1>
               <p className="mt-6 max-w-2xl text-base leading-7 text-[#aab5c8] sm:text-lg">
-                Private Balance turns shielded stablecoin settlement into one
-                switch. Users top up normally; Ghola enforces private spend
-                behind the scenes.
+                Private Balance turns shielded settlement into one switch.
+                Ghola avoids Aleo-only concentration risk by keeping the rail
+                interface open for multiple fail-closed shielded networks.
               </p>
             </div>
             <div className="grid gap-3">
@@ -74,7 +74,8 @@ export default function PrivateBalancePage() {
         <div className="mx-auto flex max-w-6xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="max-w-2xl text-sm leading-6 text-[#8b95a8]">
             Public USDC remains the fastest settlement rail. Private Mode uses
-            the shielded rail only when it can preserve the privacy guarantee.
+            ready shielded rails only when they can preserve the privacy
+            guarantee.
           </p>
           <Link
             href="/chat"

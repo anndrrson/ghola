@@ -65,6 +65,28 @@ describe("chat-vault", () => {
     expect(Array.from(dek1)).toEqual(Array.from(dek2));
   });
 
+  it("returns a cloud-storable envelope without message plaintext", async () => {
+    const secret = ed25519.utils.randomPrivateKey();
+    const userDid = didKeyFromVerifying(ed25519.getPublicKey(secret));
+    const vault = createChatVault({
+      userDid,
+      signBytes: async (msg) => ed25519.sign(msg, secret),
+    });
+
+    const secretBody = "native e2ee storage regression sentinel";
+    const sealed = await vault.sealUserMessage("s-no-plaintext", secretBody);
+    expect(Object.keys(sealed)).toEqual(["envelopeB64"]);
+
+    const bin = atob(sealed.envelopeB64);
+    const wire = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) wire[i] = bin.charCodeAt(i);
+
+    const wireText = new TextDecoder().decode(wire);
+    expect(wireText).not.toContain(secretBody);
+    expect(wireText).not.toContain('"content"');
+    expect(wireText).toContain("session=s-no-plaintext;role=user");
+  });
+
   it("rejects an envelope whose AD has been tampered with", async () => {
     const secret = ed25519.utils.randomPrivateKey();
     const userDid = didKeyFromVerifying(ed25519.getPublicKey(secret));

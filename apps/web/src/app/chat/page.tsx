@@ -8,18 +8,18 @@ import { ChatMessages } from "@/components/chat/ChatMessages";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { LocalSetupBanner } from "@/components/chat/LocalSetupBanner";
-import { PrivateBalancePanel } from "@/components/private-balance";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import { SovereigntyPicker } from "@/components/SovereigntyPicker";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
-import { handleTwitterSession } from "@/lib/thumper-api";
+import { createPrivacyApproval, handleTwitterSession } from "@/lib/thumper-api";
 import { createChatVault, didKeyFromVerifying } from "@/lib/chat-vault";
 import {
   loadSessions as loadSessionsFromStore,
   saveSessions as saveSessionsToStore,
 } from "@/lib/chat-history-store";
 import {
+  canUseAutoBrowserLocalAI,
   fetchPrivateAvailability,
   selectRoute,
   useSovereigntyMode,
@@ -31,7 +31,9 @@ import {
   streamWebGPUChat,
   warmEngine,
   detectWebGPU,
+  detectUsableWebGPUAdapter,
   DEFAULT_WEBGPU_MODEL,
+  LLAMA_3_2_1B_WEBGPU_MODEL,
   PHI3_MINI_WEBGPU_MODEL,
 } from "@/lib/webgpu-inference";
 import { streamSealedChat } from "@/lib/sealed-stream";
@@ -88,7 +90,6 @@ function emitPrivacyEvent(
   event: string,
   payload: Record<string, unknown>,
 ): void {
-  // eslint-disable-next-line no-console
   console.warn("[privacy-event]", JSON.stringify({ event, ...payload }));
 }
 
@@ -96,7 +97,7 @@ export default function ChatPage() {
   const [sessions, setSessions] = useState<ThumperSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [mobileView, setMobileView] = useState<"list" | "chat">("list");
+  const [mobileView, setMobileView] = useState<"list" | "chat">("chat");
   const [providerInfo, setProviderInfo] = useState<{ type: string; model?: string; provider_name?: string } | null>(null);
   const [privateAvailable, setPrivateAvailable] = useState(true);
   const [privateUnavailableReason, setPrivateUnavailableReason] =
@@ -104,7 +105,13 @@ export default function ChatPage() {
   const [pendingOpenSend, setPendingOpenSend] = useState<{
     text: string;
     reason: string;
+    requestedMode: SovereigntyMode;
   } | null>(null);
+  const [pendingPrivateAuthSend, setPendingPrivateAuthSend] = useState<{
+    text: string;
+    mode: SovereigntyMode;
+  } | null>(null);
+  const [localSendBlocked, setLocalSendBlocked] = useState<string | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<AuthMode>("signup");
   const searchParams = useSearchParams();
@@ -145,12 +152,16 @@ export default function ChatPage() {
     useSovereigntyMode(userDid);
 
   // Local-mode model selection. `/models/local` links into chat with a
-  // `?model=…` query param so a user who opted into Phi-3 mini lands
-  // in a chat that loads it instead of the default Llama-1B. Allowlist
+  // `?model=…` query param so a user who opted into a larger model lands
+  // in a chat that loads it instead of the fast default. Allowlist
   // the value — anything else falls back to the default so a stray
   // querystring can't trigger loading an un-vetted model id.
   const LOCAL_MODEL_ALLOWLIST = useMemo<readonly string[]>(
-    () => [DEFAULT_WEBGPU_MODEL, PHI3_MINI_WEBGPU_MODEL],
+    () => [
+      DEFAULT_WEBGPU_MODEL,
+      LLAMA_3_2_1B_WEBGPU_MODEL,
+      PHI3_MINI_WEBGPU_MODEL,
+    ],
     [],
   );
   const requestedModel = searchParams.get("model");
@@ -162,14 +173,24 @@ export default function ChatPage() {
   }, [requestedModel, LOCAL_MODEL_ALLOWLIST]);
 
   // WebGPU engine warm-up. Cold-loading the model on first send adds a
-  // ~10-30s wait before the first token; pre-loading on chat mount lets
-  // the multi-hundred-megabyte download + WebGPU shader compile happen
+  // noticeable wait before the first token; pre-loading on chat mount lets
+  // the model download + WebGPU shader compile happen
   // in the background while the user is reading the welcome surface.
   // The actual `streamWebGPUChat` call below transparently reuses the
   // already-warm singleton — no behavior change on the send path.
   const [warmupProgress, setWarmupProgress] = useState<number | null>(null);
   useEffect(() => {
-    if (sovereigntyMode !== "local") return;
+    if (sovereigntyMode !== "local" && sovereigntyMode !== "auto") return;
+    if (sovereigntyMode === "auto") {
+      try {
+        if (window.localStorage.getItem("ghola:home-pair-token") !== null) {
+          return;
+        }
+      } catch {
+        // If localStorage is blocked, let the browser capability check decide.
+      }
+      if (!canUseAutoBrowserLocalAI()) return;
+    }
     const support = detectWebGPU();
     if (!support.supported) return;
     let cancelled = false;
@@ -332,23 +353,23 @@ export default function ChatPage() {
     [activeSessionId, chatVault]
   );
 
-  const sendWithMode = async (text: string, modeOverride?: SovereigntyMode) => {
-    if (isStreaming) return;
+  const sendWithMode = async (
+    text: string,
+    modeOverride?: SovereigntyMode,
+  ): Promise<boolean> => {
+    if (isStreaming) return false;
     if (pendingOpenSend && modeOverride !== "open") {
-      setPendingOpenSend({ text, reason: pendingOpenSend.reason });
-      return;
+      setPendingOpenSend({
+        text,
+        reason: pendingOpenSend.reason,
+        requestedMode: pendingOpenSend.requestedMode,
+      });
+      return true;
     }
     const effectiveMode = modeOverride ?? sovereigntyMode;
 
-    if (!authenticated && effectiveMode !== "local") {
-      setAuthModalMode("signup");
-      setAuthModalOpen(true);
-      return;
-    }
-
-    const route = await selectRoute(effectiveMode);
+    const route = await selectRoute(effectiveMode, localModelId);
     if (route.caveat) {
-      // eslint-disable-next-line no-console
       console.info(`[sovereignty:${route.mode}] ${route.caveat}`);
     }
     // Provider plurality signal — the Yahya anonymity-set property:
@@ -365,35 +386,54 @@ export default function ChatPage() {
     if (route.transport === "private-unavailable") {
       const reason = route.caveat ?? "Private mode unavailable.";
       emitPrivacyEvent("private_unavailable", {
-        requested_mode: "private",
+        requested_mode: route.mode,
         reason_codes: route.reasonCodes ?? [],
       });
-      emitPrivacyEvent("forced_open_switch", {
-        from: "private",
-        to: "open",
+      emitPrivacyEvent("private_send_blocked", {
+        requested_mode: route.mode,
         reason,
       });
-      setSovereigntyMode("open");
-      setPendingOpenSend({ text, reason });
+      setPendingOpenSend({ text, reason, requestedMode: effectiveMode });
       setPrivateAvailable(false);
       setPrivateUnavailableReason(reason);
-      return;
+      return true;
+    }
+
+    if (route.transport === "webgpu" && route.mode === "local") {
+      const support = await detectUsableWebGPUAdapter();
+      if (!support.supported) {
+        setLocalSendBlocked(
+          `${support.reason ?? "WebGPU is not available in this browser."} Your message was not sent.`,
+        );
+        return false;
+      }
+    }
+
+    if (!authenticated && route.transport === "relay-sealed") {
+      setPendingPrivateAuthSend({ text, mode: effectiveMode });
+      setAuthModalMode("signup");
+      setAuthModalOpen(true);
+      return true;
+    }
+
+    if (!authenticated && route.transport === "relay-plain") {
+      setAuthModalMode("signup");
+      setAuthModalOpen(true);
+      return true;
     }
 
     if (route.transport === "relay-sealed" && !userDid) {
-      const reason = "Private mode requires a connected wallet DID.";
+      const reason = "Private setup did not finish. Your message was not sent.";
       emitPrivacyEvent("private_unavailable", {
-        requested_mode: "private",
-        reason_codes: ["wallet_did_missing"],
+        requested_mode: route.mode,
+        reason_codes: ["private_setup_missing"],
       });
-      emitPrivacyEvent("forced_open_switch", {
-        from: "private",
-        to: "open",
+      emitPrivacyEvent("private_send_blocked", {
+        requested_mode: route.mode,
         reason,
       });
-      setSovereigntyMode("open");
-      setPendingOpenSend({ text, reason });
-      return;
+      setPendingOpenSend({ text, reason, requestedMode: effectiveMode });
+      return true;
     }
 
     let sessionId = activeSessionId;
@@ -438,6 +478,7 @@ export default function ChatPage() {
     });
 
     setPendingOpenSend(null);
+    setLocalSendBlocked(null);
     setIsStreaming(true);
     setProviderInfo(null);
 
@@ -506,7 +547,7 @@ export default function ChatPage() {
           },
         },
       );
-      return;
+      return true;
     }
 
     if (route.transport === "webgpu") {
@@ -520,10 +561,13 @@ export default function ChatPage() {
         const trimmed = all[all.length - 1]?.content === ""
           ? all.slice(0, -1)
           : all;
-        return trimmed.map((m) => ({
-          role: m.role as "user" | "assistant" | "system",
-          content: m.content,
-        }));
+        return [
+          ...trimmed.map((m) => ({
+            role: m.role as "user" | "assistant" | "system",
+            content: m.content,
+          })),
+          { role: "user" as const, content: text },
+        ];
       })();
       await streamWebGPUChat(priorMessages, {
         model: localModelId,
@@ -570,8 +614,10 @@ export default function ChatPage() {
         },
         onError: (errMsg) => {
           const displayError =
-            !authenticated
-              ? `${errMsg}\n\nThis phone could not start the on-device model. Create an account to use Private cloud inference, or try Local on a desktop browser.`
+            route.mode === "local"
+              ? `${errMsg}\n\nLocal mode did not send this message to Ghola cloud.`
+              : !authenticated
+              ? `${errMsg}\n\nThis device could not start the on-device model. Create an account to use protected cloud inference, or try Local on a stronger desktop browser.`
               : errMsg;
           updateSession(currentSessionId, (s) => {
             const msgs = [...s.messages];
@@ -581,14 +627,14 @@ export default function ChatPage() {
             };
             return { ...s, messages: msgs };
           });
-          if (!authenticated) {
+          if (!authenticated && route.mode !== "local") {
             setAuthModalMode("signup");
             setAuthModalOpen(true);
           }
           setIsStreaming(false);
         },
       });
-      return;
+      return true;
     }
 
     if (route.transport === "ghola-home") {
@@ -619,33 +665,6 @@ export default function ChatPage() {
             };
           });
           setIsStreaming(false);
-          if (userDid) {
-            void (async () => {
-              try {
-                const receipt = await makeReceipt({
-                  jobId: messageJobId,
-                  mode: currentMode,
-                  providerId: "ghola-home",
-                  modelId: null,
-                  prompt: text,
-                  response: fullContent,
-                  signerDid: userDid,
-                  signBytes,
-                });
-                updateSession(currentSessionId, (s) => {
-                  const msgs = [...s.messages];
-                  msgs[msgs.length - 1] = {
-                    ...msgs[msgs.length - 1],
-                    receipt,
-                  };
-                  return { ...s, messages: msgs };
-                });
-                void submitReceiptToService(receipt);
-              } catch {
-                // Receipt failed — Local message still displays.
-              }
-            })();
-          }
         },
         onError: (errMsg) => {
           updateSession(currentSessionId, (s) => {
@@ -659,7 +678,7 @@ export default function ChatPage() {
           setIsStreaming(false);
         },
       });
-      return;
+      return true;
     }
 
     let envelopeBlobB64: string | undefined;
@@ -684,12 +703,21 @@ export default function ChatPage() {
           return { ...s, messages: msgs };
         });
         setIsStreaming(false);
-        return;
+        return true;
       }
     }
 
+    const cloudApproval =
+      route.transport === "relay-plain"
+        ? createPrivacyApproval(
+            "cloudChat",
+            "User selected Open mode and approved Ghola Cloud chat inference for this message.",
+          )
+        : undefined;
+
     await streamChat(currentSessionId, text, {
       envelopeBlobB64,
+      approval: cloudApproval,
       onSession: () => {},
       onProvider: (info) => {
         setProviderInfo(info);
@@ -774,27 +802,50 @@ export default function ChatPage() {
         setIsStreaming(false);
       },
     });
+    return true;
   };
 
   const handleSend = async (text: string) => {
-    await sendWithMode(text);
+    return sendWithMode(text);
   };
 
   const handleConfirmOpenSend = async () => {
     if (!pendingOpenSend || isStreaming) return;
     const pendingText = pendingOpenSend.text;
     setPendingOpenSend(null);
+    setSovereigntyMode("open");
     await sendWithMode(pendingText, "open");
   };
 
+  const handleRetryPrivateSend = async () => {
+    if (!pendingOpenSend || isStreaming) return;
+    const pendingText = pendingOpenSend.text;
+    const requestedMode = pendingOpenSend.requestedMode;
+    setPendingOpenSend(null);
+    await sendWithMode(pendingText, requestedMode);
+  };
+
+  useEffect(() => {
+    if (!pendingPrivateAuthSend) return;
+    if (!authenticated || !walletAddress || isStreaming) return;
+    const pending = pendingPrivateAuthSend;
+    setPendingPrivateAuthSend(null);
+    setAuthModalOpen(false);
+    void sendWithMode(pending.text, pending.mode);
+    // sendWithMode is intentionally omitted; including it would rerun this
+    // effect every render while auth/wallet state settles.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authenticated, isStreaming, pendingPrivateAuthSend, walletAddress]);
+
   return (
-    <div className="flex h-full">
+    <div className="flex min-h-screen bg-[#08090d] text-[#eef1f8]">
       <AuthModal
         mode={authModalMode}
         open={authModalOpen}
         onClose={() => setAuthModalOpen(false)}
         onModeChange={setAuthModalMode}
         redirectTo={null}
+        reason={pendingPrivateAuthSend ? "chat-private" : undefined}
       />
       {/* Sidebar */}
       <div
@@ -815,7 +866,7 @@ export default function ChatPage() {
       <div
         className={`${
           mobileView === "chat" ? "flex" : "hidden"
-        } lg:flex flex-1 flex-col`}
+        } lg:flex flex-1 min-w-0 flex-col`}
       >
         {activeSessionId ? (
           <>
@@ -832,28 +883,61 @@ export default function ChatPage() {
                   : providerInfo?.model ?? null
               }
               warmupProgress={
-                sovereigntyMode === "local" ? warmupProgress : null
+                sovereigntyMode === "local" || sovereigntyMode === "auto"
+                  ? warmupProgress
+                  : null
               }
             />
-            {sovereigntyMode === "local" && hasPairedGholaHome && <LocalSetupBanner />}
+            {(sovereigntyMode === "local" || sovereigntyMode === "auto") &&
+              hasPairedGholaHome && <LocalSetupBanner />}
             {pendingOpenSend && (
               <div className="mx-4 mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
                 <p className="mb-2">
-                  Private send is unavailable. Mode has switched to Open. Confirm before sending this message in plaintext.
+                  Private is unavailable. Your message was not sent.
                 </p>
                 <p className="mb-3 text-xs text-amber-100/90">{pendingOpenSend.reason}</p>
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
+                    onClick={handleRetryPrivateSend}
+                    className="rounded-lg border border-amber-300/60 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:border-amber-200 cursor-pointer"
+                  >
+                    Try again
+                  </button>
+                  <button
+                    type="button"
                     onClick={handleConfirmOpenSend}
                     className="rounded-lg bg-amber-300 px-3 py-1.5 text-xs font-semibold text-[#201400] hover:bg-amber-200 cursor-pointer"
                   >
-                    Send as Open
+                    Send without private protection
                   </button>
                   <button
                     type="button"
                     onClick={() => setPendingOpenSend(null)}
                     className="rounded-lg border border-amber-300/60 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:border-amber-200 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+            {localSendBlocked && (
+              <div className="mx-4 mt-3 rounded-xl border border-[#3da8ff]/35 bg-[#3da8ff]/10 p-3 text-sm text-[#cfeaff]">
+                <p className="mb-3 text-xs leading-5 text-[#cfeaff]/90">
+                  {localSendBlocked}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSovereigntyMode("auto")}
+                    className="rounded-lg bg-[#3da8ff] px-3 py-1.5 text-xs font-semibold text-[#06111d] hover:bg-[#5bb8ff] cursor-pointer"
+                  >
+                    Use Auto
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLocalSendBlocked(null)}
+                    className="rounded-lg border border-[#3da8ff]/50 px-3 py-1.5 text-xs font-semibold text-[#cfeaff] hover:border-[#7cc8ff] cursor-pointer"
                   >
                     Cancel
                   </button>
@@ -864,21 +948,29 @@ export default function ChatPage() {
             <ChatInput onSend={handleSend} disabled={isStreaming} />
           </>
         ) : (
-          <div className="flex-1 flex flex-col">
-            {sovereigntyMode === "local" && hasPairedGholaHome && <LocalSetupBanner />}
+          <div className="flex-1 flex min-h-screen flex-col">
+            {(sovereigntyMode === "local" || sovereigntyMode === "auto") &&
+              hasPairedGholaHome && <LocalSetupBanner />}
             {pendingOpenSend && (
               <div className="mx-4 mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
                 <p className="mb-2">
-                  Private send is unavailable. Mode has switched to Open. Confirm before sending this message in plaintext.
+                  Private is unavailable. Your message was not sent.
                 </p>
                 <p className="mb-3 text-xs text-amber-100/90">{pendingOpenSend.reason}</p>
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
+                    onClick={handleRetryPrivateSend}
+                    className="rounded-lg border border-amber-300/60 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:border-amber-200 cursor-pointer"
+                  >
+                    Try again
+                  </button>
+                  <button
+                    type="button"
                     onClick={handleConfirmOpenSend}
                     className="rounded-lg bg-amber-300 px-3 py-1.5 text-xs font-semibold text-[#201400] hover:bg-amber-200 cursor-pointer"
                   >
-                    Send as Open
+                    Send without private protection
                   </button>
                   <button
                     type="button"
@@ -890,37 +982,65 @@ export default function ChatPage() {
                 </div>
               </div>
             )}
-            <div className="flex-1 flex flex-col items-center justify-center px-4">
-            <div className="w-16 h-16 rounded-2xl bg-[#3da8ff]/10 flex items-center justify-center mb-6">
-              <span className="text-2xl font-bold text-[#3da8ff]">G</span>
-            </div>
-            <h2 className="text-xl font-semibold text-[#eef1f8] mb-2">
-              Verifiably off the record.
-            </h2>
-            <p className="text-sm text-[#8b95a8] text-center max-w-sm mb-6">
-              Pick where your chat runs. Every message ships with a
-              cryptographic receipt you can audit.
-            </p>
-            <div className="mb-6">
-              <SovereigntyPicker
-                value={sovereigntyMode}
-                onChange={setSovereigntyMode}
-                privateAvailable={privateAvailable}
-                privateUnavailableReason={privateUnavailableReason}
-              />
-            </div>
-            {sovereigntyMode === "private" && (
-              <div className="mb-6 w-full max-w-xl">
-                <PrivateBalancePanel compact />
+            {localSendBlocked && (
+              <div className="mx-4 mt-3 rounded-xl border border-[#3da8ff]/35 bg-[#3da8ff]/10 p-3 text-sm text-[#cfeaff]">
+                <p className="mb-3 text-xs leading-5 text-[#cfeaff]/90">
+                  {localSendBlocked}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSovereigntyMode("auto")}
+                    className="rounded-lg bg-[#3da8ff] px-3 py-1.5 text-xs font-semibold text-[#06111d] hover:bg-[#5bb8ff] cursor-pointer"
+                  >
+                    Use Auto
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLocalSendBlocked(null)}
+                    className="rounded-lg border border-[#3da8ff]/50 px-3 py-1.5 text-xs font-semibold text-[#cfeaff] hover:border-[#7cc8ff] cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
             )}
-            <button
-              onClick={handleNewChat}
-              className="rounded-xl bg-[#3da8ff] px-6 py-2.5 text-sm font-medium text-[#08090d] hover:bg-[#5bb8ff] transition-colors cursor-pointer"
-            >
-              New chat
-            </button>
+            <div className="flex-1 flex flex-col items-center justify-center px-4">
+              <div className="w-16 h-16 rounded-2xl bg-[#3da8ff]/10 flex items-center justify-center mb-6">
+                <span className="text-2xl font-bold text-[#3da8ff]">G</span>
+              </div>
+              <h2 className="text-xl font-semibold text-[#eef1f8] mb-2">
+                Off the record.
+              </h2>
+              <p className="text-sm text-[#8b95a8] text-center max-w-sm mb-6">
+                Ask normally. Ghola uses this device when it can, protects the
+                message when it needs cloud, and asks first if protection is
+                unavailable.
+              </p>
+              <div className="mb-6">
+                <SovereigntyPicker
+                  value={sovereigntyMode}
+                  onChange={setSovereigntyMode}
+                  privateAvailable={privateAvailable}
+                  privateUnavailableReason={privateUnavailableReason}
+                />
+              </div>
+              {(sovereigntyMode === "auto" || sovereigntyMode === "private") && (
+                <div className="mb-6 w-full max-w-sm rounded-2xl border border-[#1e2a3a] bg-[#0a0b10] p-4 text-center">
+                  <p className="text-xs leading-5 text-[#8b95a8]">
+                    {sovereigntyMode === "auto"
+                      ? warmupProgress !== null && warmupProgress < 1
+                        ? `Preparing this device ${Math.max(0, Math.min(99, Math.floor(warmupProgress * 100)))}%. You can type while Ghola gets ready.`
+                        : "Auto is ready. This device is tried first; Ghola will not use a less private route without asking."
+                      : privateAvailable
+                        ? "Private is ready. If protection is unavailable, Ghola will not send without asking."
+                        : privateUnavailableReason ??
+                          "Private is not ready yet. Ghola will not send without asking."}
+                  </p>
+                </div>
+              )}
             </div>
+            <ChatInput onSend={handleSend} disabled={isStreaming} />
           </div>
         )}
       </div>

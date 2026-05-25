@@ -62,7 +62,7 @@ export default function Home() {
     name: "ghola",
     url: "https://ghola.xyz",
     description:
-      "The most private AI. Runs locally or end-to-end encrypted in the cloud.",
+      "Private AI that runs locally when possible, or through sealed cloud inference with auditable receipts.",
     logo: "https://ghola.xyz/icon-512.png",
   };
 
@@ -74,7 +74,7 @@ export default function Home() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(orgSchema) }}
       />
 
-      <section className="relative min-h-[calc(100svh-4rem)] overflow-hidden border-b border-[#151b26]">
+      <section className="relative min-h-[calc(82svh-4rem)] overflow-hidden border-b border-[#151b26]">
         <div className="absolute inset-0 bg-black" />
         <div className="pointer-events-none absolute inset-0 opacity-[0.78]">
           <PixelField
@@ -111,20 +111,20 @@ export default function Home() {
           }}
         />
 
-        <div className="relative mx-auto flex min-h-[calc(100svh-4rem)] max-w-7xl flex-col justify-center px-5 py-20 text-center sm:px-8 lg:px-10">
-          <p className="mx-auto mb-7 font-mono text-[10px] uppercase tracking-[0.28em] text-[#6f7d9a]">
+        <div className="relative mx-auto flex min-h-[calc(82svh-4rem)] max-w-7xl flex-col justify-center px-5 py-12 text-center sm:px-8 lg:px-10">
+          <p className="mx-auto mb-6 font-mono text-[10px] uppercase tracking-[0.28em] text-[#6f7d9a]">
             Private AI / Local First / Signed Receipts
           </p>
 
-          <h1 className="mx-auto max-w-6xl font-display text-[clamp(4.5rem,13vw,12rem)] font-medium leading-[0.86] text-[#f6f8ff]">
+          <h1 className="mx-auto max-w-6xl font-display text-[clamp(3.8rem,10.5vw,8.5rem)] font-medium leading-[0.9] text-[#f6f8ff]">
             The most private AI.
           </h1>
-          <p className="mx-auto mt-8 max-w-3xl text-lg leading-7 text-[#aab5c8] sm:text-2xl sm:leading-8">
-            Runs on your device, or end-to-end encrypted in the cloud. Every
-            answer tells you where it ran.
+          <p className="mx-auto mt-7 max-w-3xl text-lg leading-7 text-[#aab5c8] sm:text-2xl sm:leading-8">
+            Ask normally. Ghola keeps sensitive work protected and shows you
+            when something leaves your device.
           </p>
 
-          <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <Link
               href="/chat"
               className="group inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[#eef1f8] px-6 text-sm font-medium text-[#08090d] transition hover:bg-white"
@@ -148,7 +148,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="bg-black px-5 py-20 sm:px-8 sm:py-28 lg:px-10">
+      <section className="bg-black px-5 pb-20 pt-10 sm:px-8 sm:pb-28 sm:pt-12 lg:px-10">
         <div className="mx-auto max-w-7xl">
           <div className="grid gap-10 lg:grid-cols-[0.78fr_1.22fr] lg:items-end">
             <div>

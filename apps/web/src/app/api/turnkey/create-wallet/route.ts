@@ -6,7 +6,16 @@ const TURNKEY_API_BASE_URL = "https://api.turnkey.com";
 type TurnkeyApiClient = ReturnType<InstanceType<typeof Turnkey>["apiClient"]>;
 
 function serverControlledWalletsEnabled() {
-  return process.env.TURNKEY_SERVER_CONTROLLED_WALLETS_ENABLED === "true";
+  if (process.env.TURNKEY_SERVER_CONTROLLED_WALLETS_ENABLED !== "true") {
+    return false;
+  }
+  if (
+    process.env.NODE_ENV === "production" &&
+    process.env.TURNKEY_DANGEROUS_SERVER_CONTROLLED_WALLETS_ALLOW_PRODUCTION !== "true"
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function subOrgNameForEmail(email: string) {

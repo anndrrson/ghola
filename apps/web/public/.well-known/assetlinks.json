@@ -1,0 +1,15 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "xyz.ghola.app",
+      "sha256_cert_fingerprints": [
+        "FB:6D:83:3B:43:C0:D1:6C:71:52:EE:B5:FF:2E:AD:11:0D:DA:6B:AF:3D:12:22:29:2B:44:4F:30:58:B9:55:10"
+      ]
+    }
+  }
+]

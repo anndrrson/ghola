@@ -49,10 +49,12 @@ export default function TermsPage() {
 
         <Section title="3. Accounts">
           <p>
-            You are responsible for maintaining the confidentiality of your
-            credentials and for all activity that occurs under your account.
-            You must promptly notify us of any unauthorised use. We may
-            suspend or terminate accounts that violate these Terms.
+            Ghola accounts are wallet-first. You are responsible for keeping
+            your wallet, device, private keys, seed phrases, recovery material,
+            and wallet approval prompts secure. You are responsible for all
+            activity authorised through your wallet session. You must promptly
+            notify us of any unauthorised use. We may suspend or terminate
+            accounts that violate these Terms.
           </p>
         </Section>
 

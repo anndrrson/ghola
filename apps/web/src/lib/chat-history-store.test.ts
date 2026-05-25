@@ -44,14 +44,14 @@ describe("chat-history-store", () => {
     if (typeof localStorage !== "undefined") localStorage.clear();
   });
 
-  it("with no vault, falls back to localStorage (read + write)", async () => {
+  it("with no vault, keeps history off-record and clears legacy plaintext", async () => {
+    localStorage.setItem("ghola_sessions", JSON.stringify(sample));
+
     await saveSessions(sample, null);
-    const raw = localStorage.getItem("ghola_sessions");
-    expect(raw).toBeTruthy();
-    expect(JSON.parse(raw!)).toEqual(sample);
+    expect(localStorage.getItem("ghola_sessions")).toBeNull();
 
     const got = await loadSessions(null);
-    expect(got).toEqual(sample);
+    expect(got).toEqual([]);
   });
 
   it("with a vault, persists ciphertext to IndexedDB and round-trips", async () => {

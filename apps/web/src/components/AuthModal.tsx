@@ -16,6 +16,7 @@ type AuthModalProps = {
   onClose: () => void;
   onModeChange: (mode: AuthMode) => void;
   redirectTo?: string | null;
+  reason?: "chat-private";
 };
 
 function passwordStrength(password: string) {
@@ -39,6 +40,7 @@ export function AuthModal({
   onClose,
   onModeChange,
   redirectTo = "/chat",
+  reason,
 }: AuthModalProps) {
   const router = useRouter();
   const { setAuth } = useThumperAuth();
@@ -51,6 +53,7 @@ export function AuthModal({
   const [mounted, setMounted] = useState(open);
   const [visible, setVisible] = useState(false);
   const isSignup = mode === "signup";
+  const isPrivateChat = reason === "chat-private";
   const strength = passwordStrength(password);
 
   useEffect(() => {
@@ -89,7 +92,7 @@ export function AuthModal({
       const res = isSignup
         ? await thumperSignUp({ name, email, password })
         : await thumperSignIn({ email, password });
-      setAuth(res.token, {
+      setAuth({
         id: res.user.id,
         email: res.user.email,
         name: res.user.name,
@@ -143,12 +146,20 @@ export function AuthModal({
         </div>
 
         <h2 className="text-lg font-semibold text-[#eef1f8]">
-          {isSignup ? "Create your account" : "Welcome back"}
+          {isPrivateChat
+            ? isSignup
+              ? "Create an account to get your private answer"
+              : "Sign in to get your private answer"
+            : isSignup
+              ? "Create your account"
+              : "Welcome back"}
         </h2>
         <p className="mt-1 text-sm text-[#8b95a8]">
-          {isSignup
-            ? "Start a private AI session without leaving this page."
-            : "Sign in and continue to your private AI."}
+          {isPrivateChat
+            ? "Your question is saved and will send after private setup finishes."
+            : isSignup
+              ? "Start a private AI session without leaving this page."
+              : "Sign in and continue to your private AI."}
         </p>
 
         <form onSubmit={submit} className="mt-6 space-y-4">

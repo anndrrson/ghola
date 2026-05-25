@@ -4,7 +4,16 @@ import { Turnkey } from "@turnkey/sdk-server";
 const TURNKEY_API_BASE_URL = "https://api.turnkey.com";
 
 function serverSigningEnabled() {
-  return process.env.TURNKEY_SERVER_SIGNING_ENABLED === "true";
+  if (process.env.TURNKEY_SERVER_SIGNING_ENABLED !== "true") {
+    return false;
+  }
+  if (
+    process.env.NODE_ENV === "production" &&
+    process.env.TURNKEY_DANGEROUS_SERVER_SIGNING_ALLOW_PRODUCTION !== "true"
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function getErrorValue(err: unknown, key: string): unknown {

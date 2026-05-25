@@ -49,14 +49,15 @@ export interface ModelLibraryCardProps {
 // hasn't shipped it yet. Re-imports on every press are fine — module
 // resolution is cached after the first hit.
 type PreloadModelCtaModule = {
-  default?: ComponentType<{ modelId?: string }>;
-  PreloadModelCta?: ComponentType<{ modelId?: string }>;
+  default?: ComponentType<{ modelId?: string; approxSize?: string }>;
+  PreloadModelCta?: ComponentType<{ modelId?: string; approxSize?: string }>;
 };
 
 export function ModelLibraryCard(props: ModelLibraryCardProps) {
   const { name, size, license, modelId, cached, integrityHashShort, chatHref } = props;
   const [PreloadCta, setPreloadCta] = useState<ComponentType<{
     modelId?: string;
+    approxSize?: string;
   }> | null>(null);
   const [preloadUnavailable, setPreloadUnavailable] = useState(false);
   const [preloadLoading, setPreloadLoading] = useState(false);
@@ -127,7 +128,7 @@ export function ModelLibraryCard(props: ModelLibraryCardProps) {
 
           <div className="mt-5 flex flex-wrap items-center gap-2">
             {PreloadCta ? (
-              <PreloadCta modelId={modelId} />
+              <PreloadCta modelId={modelId} approxSize={size} />
             ) : (
               <button
                 type="button"

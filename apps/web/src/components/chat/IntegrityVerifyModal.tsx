@@ -144,8 +144,10 @@ export function IntegrityVerifyModal({ modelId, open, onClose }: Props) {
         <div className="px-6 py-5">
           <p className="text-sm text-[#8b95a8] leading-relaxed">
             Re-hashes the cached weights, fetches the live Solana
-            registry record, and compares per-check. Nothing leaves your
-            device except the on-chain RPC read.
+            registry record, and compares per-check.
+            {result?.registryLookupSource === "server_rpc"
+              ? " Your cached model bytes stay local; the registry read used Ghola's read-only RPC fallback because browser RPC was blocked."
+              : " Nothing leaves your device except the on-chain RPC read."}
           </p>
 
           {!result ? (

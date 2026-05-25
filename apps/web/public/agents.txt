@@ -1,0 +1,18 @@
+# agents.txt - SAID Protocol v1.0
+# Ghola - private AI, local inference, sealed cloud inference, and agent payments.
+
+Identity: did:key:z6Mkgh6uB4XpixKsS91kGYiQqEibePd3QUnW5GvbHKMB2dko
+Profile: https://ghola.xyz/.well-known/said.json
+Said-Json: /.well-known/said.json
+
+Allow-Agent: *
+
+Auth: api_key https://ghola.xyz/developers/keys
+
+Service: chat https://thumper-cloud.onrender.com/api/chat
+Service: openai-compatible-chat https://thumper-cloud.onrender.com/v1/chat/completions
+Service: openai-compatible-models https://thumper-cloud.onrender.com/v1/models
+Service: agent-marketplace https://thumper-cloud.onrender.com/x402/agents
+Service: model-marketplace https://orni-models-api.onrender.com/api/models/featured
+Service: payment-gateway https://ghola-gateway.onrender.com/m
+Service: receipt-health https://ghola-receipts.onrender.com/health

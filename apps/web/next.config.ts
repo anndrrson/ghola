@@ -107,14 +107,19 @@ export function buildCspHeader(): { key: string; value: string } {
   };
 }
 
+const LOCKED_PERMISSIONS_POLICY =
+  "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()";
+
+const INTENT_PERMISSIONS_POLICY =
+  "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(self), payment=(), usb=()";
+
 export const SECURITY_HEADERS = [
   { key: "X-Frame-Options", value: "DENY" },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   {
     key: "Permissions-Policy",
-    value:
-      "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()",
+    value: LOCKED_PERMISSIONS_POLICY,
   },
   {
     key: "Strict-Transport-Security",
@@ -127,6 +132,12 @@ export const SECURITY_HEADERS = [
   { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
   buildCspHeader(),
 ];
+
+export const INTENT_SECURITY_HEADERS = SECURITY_HEADERS.map((header) =>
+  header.key === "Permissions-Policy"
+    ? { ...header, value: INTENT_PERMISSIONS_POLICY }
+    : header,
+);
 
 const nextConfig: NextConfig = {
   output: "standalone",
@@ -160,9 +171,13 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        source: "/intent",
+        headers: INTENT_SECURITY_HEADERS,
+      },
+      {
         // Apply to everything except the API surface; the proxy/relay
         // routes are server-to-server and don't benefit from these.
-        source: "/((?!api/).*)",
+        source: "/((?!api/|intent$).*)",
         headers: SECURITY_HEADERS,
       },
     ];

@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, User, Cpu, BarChart3, CreditCard, Eye, EyeOff, Check, MessageCircle, Copy, ExternalLink, Unlink, Link2, Mail } from "lucide-react";
+import Link from "next/link";
+import { ArrowLeft, User, Cpu, BarChart3, CreditCard, Eye, EyeOff, Check, MessageCircle, Copy, ExternalLink, Unlink, Link2, Mail, ShieldCheck, LockKeyhole, ReceiptText, Wallet } from "lucide-react";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import {
   getUserProfile,
@@ -28,9 +29,10 @@ import type {
   ThumperTelegramLinkCode,
   ThumperTelegramStatus,
 } from "@/lib/thumper-types";
+import type { PrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime";
 import { GholaLogo } from "@/components/GholaLogo";
 
-type Tab = "profile" | "model" | "usage" | "accounts" | "telegram" | "plan";
+type Tab = "profile" | "privacy" | "model" | "usage" | "accounts" | "telegram" | "plan";
 
 export default function SettingsPage() {
   const { authenticated, loading, user, logout } = useThumperAuth();
@@ -47,7 +49,7 @@ export default function SettingsPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const urlTab = params.get("tab");
-    if (urlTab && ["profile", "model", "usage", "accounts", "telegram", "plan"].includes(urlTab)) {
+    if (urlTab && ["profile", "privacy", "model", "usage", "accounts", "telegram", "plan"].includes(urlTab)) {
       setTab(urlTab as Tab);
     }
   }, []);
@@ -56,6 +58,7 @@ export default function SettingsPage() {
 
   const tabs: { id: Tab; label: string; icon: typeof User }[] = [
     { id: "profile", label: "Profile", icon: User },
+    { id: "privacy", label: "Privacy", icon: ShieldCheck },
     { id: "model", label: "AI Model", icon: Cpu },
     { id: "usage", label: "Usage", icon: BarChart3 },
     { id: "accounts", label: "Accounts", icon: Link2 },
@@ -101,6 +104,7 @@ export default function SettingsPage() {
 
         {/* Tab content */}
         {tab === "profile" && <ProfileTab userEmail={user?.email} onLogout={() => { logout(); router.push("/"); }} />}
+        {tab === "privacy" && <PrivacySecurityTab />}
         {tab === "model" && <ModelTab />}
         {tab === "usage" && <UsageTab />}
         {tab === "accounts" && <AccountsTab />}
@@ -204,6 +208,95 @@ function ProfileTab({ userEmail, onLogout }: { userEmail?: string; onLogout: () 
       >
         Sign out
       </button>
+    </div>
+  );
+}
+
+function PrivacySecurityTab() {
+  const cards = [
+    {
+      icon: LockKeyhole,
+      title: "Private mode",
+      status: "Default",
+      desc: "Protected routes fail closed instead of silently downgrading.",
+      href: "/security",
+      cta: "View security model",
+    },
+    {
+      icon: ReceiptText,
+      title: "Receipts",
+      status: "On",
+      desc: "Assistant answers can include a signed record of where they ran.",
+      href: "/security/audit-trail",
+      cta: "Audit receipts",
+    },
+    {
+      icon: Wallet,
+      title: "Private spending",
+      status: "Private preferred",
+      desc: "Private actions use the private rail when available; public settlement requires an explicit choice.",
+      href: "/private-balance",
+      cta: "Manage balance",
+    },
+    {
+      icon: Link2,
+      title: "Connected accounts",
+      status: "Permissioned",
+      desc: "External accounts stay behind per-action approval and can be disconnected anytime.",
+      href: "/settings?tab=accounts",
+      cta: "Manage access",
+    },
+  ] as const;
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5">
+        <div className="flex items-start gap-3">
+          <ShieldCheck className="mt-0.5 h-5 w-5 text-[#3da8ff]" />
+          <div>
+            <h2 className="text-sm font-semibold text-[#eef1f8]">
+              Privacy & Security
+            </h2>
+            <p className="mt-1 text-sm leading-6 text-[#8b95a8]">
+              Ghola is private by default. You can inspect details when you
+              want them, but everyday chat stays simple.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3">
+        {cards.map((card) => {
+          const Icon = card.icon;
+          return (
+            <Link
+              key={card.title}
+              href={card.href}
+              className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-4 transition-colors hover:border-[#2a3a50]"
+            >
+              <div className="flex items-start gap-3">
+                <Icon className="mt-0.5 h-4 w-4 text-[#8b95a8]" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-medium text-[#eef1f8]">
+                      {card.title}
+                    </h3>
+                    <span className="shrink-0 rounded-full bg-[#3da8ff]/10 px-2 py-0.5 text-[10px] font-medium text-[#3da8ff]">
+                      {card.status}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-sm leading-5 text-[#8b95a8]">
+                    {card.desc}
+                  </p>
+                  <p className="mt-3 text-xs font-medium text-[#a8d8ff]">
+                    {card.cta}
+                  </p>
+                </div>
+              </div>
+            </Link>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -647,12 +740,26 @@ function TelegramTab() {
 
 function PlanTab() {
   const [billing, setBilling] = useState<ThumperBillingStatusResponse | null>(null);
+  const [agentRuntime, setAgentRuntime] = useState<PrivateAgentRuntimeStatus | null>(null);
   const [upgrading, setUpgrading] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     getThumperBillingStatus()
       .then(setBilling)
       .catch(() => {});
+    fetch("/api/private-agent/status", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((status) => setAgentRuntime(status as PrivateAgentRuntimeStatus | null))
+      .catch(() => setAgentRuntime(null));
+
+    const params = new URLSearchParams(window.location.search);
+    const checkout = params.get("checkout");
+    if (checkout === "success") {
+      setNotice("Checkout complete. Your Ghola plan updates after Stripe confirms the payment.");
+    } else if (checkout === "cancelled") {
+      setNotice("Checkout cancelled.");
+    }
   }, []);
 
   const handleUpgrade = async (tier: string) => {
@@ -671,7 +778,7 @@ function PlanTab() {
       name: "Free",
       price: "$0",
       period: "/forever",
-      features: ["5 calls/month", "10 emails/month", "Chat with AI"],
+      features: ["5 calls/month", "10 emails/month", "Local encrypted strategies"],
     },
     {
       id: "pro",
@@ -681,11 +788,33 @@ function PlanTab() {
       features: ["30 calls/month", "50 emails/month", "BYOM support", "Priority responses"],
     },
     {
+      id: "private_agent",
+      name: "Private Agents",
+      price: "$19.99",
+      period: "/month",
+      features: [
+        "Everything in Pro",
+        "Encrypted strategy vault",
+        "30 private compute hours/month",
+        "1 active private agent",
+        "Sealed sessions when attested capacity is live",
+        "Shielded-only trade guardrails",
+        "No Phala account or API key",
+      ],
+    },
+    {
       id: "unlimited",
       name: "Unlimited",
       price: "$29.99",
       period: "/month",
-      features: ["Unlimited calls", "Unlimited emails", "BYOM support", "API access (100k/mo)", "Priority support"],
+      features: [
+        "Unlimited calls",
+        "Unlimited emails",
+        "Private agents included",
+        "100 private compute hours/month",
+        "3 active private agents",
+        "API access (100k/mo)",
+      ],
     },
     {
       id: "enterprise",
@@ -696,10 +825,113 @@ function PlanTab() {
     },
   ];
 
+  const privateAgentPaid =
+    billing?.tier === "private_agent" ||
+    billing?.tier === "unlimited" ||
+    billing?.tier === "enterprise";
+  const remoteReady = agentRuntime?.remote_execution_ready === true;
+  const privateCompute = billing?.private_agent_compute ?? null;
+  const includedSeconds =
+    privateCompute?.included_seconds ?? billing?.limits.private_compute_seconds ?? 0;
+  const remainingSeconds = privateCompute?.remaining_seconds ?? includedSeconds;
+  const reservedSeconds = privateCompute?.reserved_seconds ?? 0;
+  const consumedPercent =
+    includedSeconds > 0
+      ? Math.min(100, Math.max(0, ((includedSeconds - remainingSeconds) / includedSeconds) * 100))
+      : 0;
+  const resetDate = privateCompute?.period_end
+    ? new Date(`${privateCompute.period_end}T00:00:00Z`)
+    : null;
+
   return (
     <div className="space-y-4">
+      <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5">
+        <div className="flex items-start gap-3">
+          <ShieldCheck className="mt-0.5 h-5 w-5 text-[#3da8ff]" />
+          <div>
+            <h2 className="text-sm font-semibold text-[#eef1f8]">
+              Ghola private-agent compute
+            </h2>
+            <p className="mt-1 text-sm leading-6 text-[#8b95a8]">
+              Users subscribe to Ghola. Each plan includes monthly private
+              compute hours, and remote agents pause before surprise overages.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {notice && (
+        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] px-4 py-3 text-sm text-[#cfeaff]">
+          {notice}
+        </div>
+      )}
+
+      {privateAgentPaid && !remoteReady && (
+        <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+          Your paid private-agent plan is active. Remote sealed execution is
+          waiting on attested Ghola compute and remains fail-closed.
+        </div>
+      )}
+
+      {privateAgentPaid && includedSeconds > 0 && (
+        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5">
+          <div className="mb-4 flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-[#eef1f8]">
+                Private compute allowance
+              </h3>
+              <p className="mt-1 text-xs text-[#8b95a8]">
+                Reserved before a private agent can start.
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-lg font-medium text-[#eef1f8]">
+                {formatComputeHours(remainingSeconds)}
+              </p>
+              <p className="text-[11px] uppercase tracking-[0.14em] text-[#4a5568]">
+                remaining
+              </p>
+            </div>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-[#161822]">
+            <div
+              className="h-full rounded-full bg-[#3da8ff]"
+              style={{ width: `${consumedPercent}%` }}
+            />
+          </div>
+          <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
+            <div>
+              <p className="text-[#4a5568]">Included</p>
+              <p className="mt-1 text-[#eef1f8]">{formatComputeHours(includedSeconds)}</p>
+            </div>
+            <div>
+              <p className="text-[#4a5568]">Reserved</p>
+              <p className="mt-1 text-[#eef1f8]">{formatComputeHours(reservedSeconds)}</p>
+            </div>
+            <div>
+              <p className="text-[#4a5568]">Active</p>
+              <p className="mt-1 text-[#eef1f8]">
+                {privateCompute?.active_agent_count ?? 0}/
+                {privateCompute?.active_agent_limit ?? billing?.limits.active_private_agents ?? 0}
+              </p>
+            </div>
+          </div>
+          {resetDate && !Number.isNaN(resetDate.getTime()) && (
+            <p className="mt-3 text-xs text-[#4a5568]">
+              Resets {resetDate.toLocaleDateString(undefined, { month: "short", day: "numeric" })}.
+            </p>
+          )}
+        </div>
+      )}
+
       {plans.map((plan) => {
         const isCurrent = billing?.tier === plan.id;
+        const cta =
+          plan.id === "private_agent"
+            ? "Start with 30 hours"
+            : plan.id === "unlimited"
+              ? "Upgrade to 100 hours"
+              : `Upgrade to ${plan.name}`;
         return (
           <div
             key={plan.id}
@@ -739,7 +971,7 @@ function PlanTab() {
                 disabled={upgrading === plan.id}
                 className="w-full rounded-lg bg-[#3da8ff] py-2 text-xs font-medium text-[#08090d] hover:bg-[#5bb8ff] disabled:opacity-50 transition-colors cursor-pointer"
               >
-                {upgrading === plan.id ? "Redirecting..." : `Upgrade to ${plan.name}`}
+                {upgrading === plan.id ? "Redirecting..." : cta}
               </button>
             )}
             {!isCurrent && plan.id === "enterprise" && (
@@ -755,4 +987,12 @@ function PlanTab() {
       })}
     </div>
   );
+}
+
+function formatComputeHours(seconds: number): string {
+  const hours = Math.max(0, seconds) / 3600;
+  const maximumFractionDigits = hours >= 10 || Number.isInteger(hours) ? 0 : 1;
+  return `${hours.toLocaleString(undefined, {
+    maximumFractionDigits,
+  })}h`;
 }

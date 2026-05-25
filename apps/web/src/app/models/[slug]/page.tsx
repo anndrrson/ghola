@@ -112,7 +112,7 @@ export default function ModelDetailPage() {
           Model not found
         </h1>
         <p className="mt-3 text-sm text-[#8b95a8]">
-          The model you're looking for doesn't exist or has been removed.
+          The model you&apos;re looking for doesn&apos;t exist or has been removed.
         </p>
         <Link
           href="/models"
@@ -270,6 +270,7 @@ export default function ModelDetailPage() {
           {authenticated ? (
             <ChatInterface
               slug={slug}
+              modelId={model.hf_id ?? model.slug}
               pricePerQuery={model.price_per_query}
               balance={balance}
               onBalanceUpdate={fetchBalance}

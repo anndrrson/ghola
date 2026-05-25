@@ -7,7 +7,7 @@ import {
   type ModelRegistryResult,
 } from "@/lib/model-registry";
 import {
-  DEFAULT_WEBGPU_MODEL,
+  getWebGPUModelIntegrity,
   computeLoadedWeightFingerprint,
   type WeightFingerprint,
 } from "@/lib/webgpu-inference";
@@ -21,12 +21,12 @@ interface Props {
 /**
  * Whether ghola ships pinned SRI hashes for the model's loader artifacts.
  * When true, WebLLM verifies model_lib + config + tokenizer on download
- * (see webgpu-inference.ts::DEFAULT_WEBGPU_MODEL_INTEGRITY). The on-chain
+ * (see webgpu-inference.ts::getWebGPUModelIntegrity). The on-chain
  * registry is the broader claim for weight + creator provenance; SRI
  * is the narrower one that already runs.
  */
 function isSriPinned(modelId: string): boolean {
-  return modelId === DEFAULT_WEBGPU_MODEL;
+  return getWebGPUModelIntegrity(modelId) !== undefined;
 }
 
 // Small, low-key chip rendered in the chat header. The point isn't to

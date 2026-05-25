@@ -15,10 +15,9 @@
  *     browser CacheStorage. The result it embeds is a "shape-only"
  *     placeholder that explains the limitation.
  *   - This route DOES include: the SRI manifest (read off disk from
- *     /.well-known/sri-manifest.json), the receipt hash from the
- *     URL (the receipt body itself isn't on the server either; the
- *     verifier page at /r/[hash] takes a pasted body), and the
- *     offline verify.sh.
+ *     /.well-known/sri-manifest.json), the receipt hash from the URL,
+ *     the receipt body when the receipts service can return it, and
+ *     the offline verify.sh.
  *
  * In other words: this route's bundle proves the on-chain record
  * exists and is internally consistent. It cannot prove what the
@@ -34,6 +33,7 @@ import {
 } from "@/lib/portable-export";
 import type { IntegrityVerificationResult } from "@/lib/integrity-verification";
 import { DEFAULT_WEBGPU_MODEL } from "@/lib/webgpu-inference";
+import type { ReceiptV1 } from "@/lib/receipt";
 
 export const runtime = "nodejs";
 
@@ -42,19 +42,39 @@ export const runtime = "nodejs";
 // when missing (early CI builds), the bundle gracefully includes a
 // stub via buildPortableExport's default.
 async function readSriManifest(): Promise<unknown | undefined> {
-  const candidates = [
-    path.join(process.cwd(), "public", ".well-known", "sri-manifest.json"),
-    path.join(process.cwd(), ".next", "standalone", "public", ".well-known", "sri-manifest.json"),
-  ];
-  for (const p of candidates) {
-    try {
-      const buf = await fs.readFile(p, "utf8");
-      return JSON.parse(buf);
-    } catch {
-      // try next
-    }
+  const manifestPath = path.join(
+    process.cwd(),
+    "public",
+    ".well-known",
+    "sri-manifest.json",
+  );
+  try {
+    const buf = await fs.readFile(manifestPath, "utf8");
+    return JSON.parse(buf);
+  } catch {
+    return undefined;
   }
-  return undefined;
+}
+
+function receiptsServiceBase(): string | null {
+  const url = process.env.NEXT_PUBLIC_RECEIPTS_SERVICE_URL;
+  return url ? url.replace(/\/$/, "") : null;
+}
+
+async function fetchReceipt(hash: string): Promise<ReceiptV1[]> {
+  const base = receiptsServiceBase();
+  if (!base) return [];
+  try {
+    const res = await fetch(`${base}/v1/receipts/${encodeURIComponent(hash)}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    if (!res.ok) return [];
+    const body = (await res.json()) as { receipt?: ReceiptV1 };
+    return body.receipt ? [body.receipt].slice(0, MAX_BUNDLED_RECEIPTS) : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function GET(
@@ -114,12 +134,7 @@ export async function GET(
       ? req.nextUrl.origin
       : "https://ghola.xyz";
 
-  // No receipt bodies are stored server-side in this revision. The
-  // bundle still carries the receipt *hash* via the URL, embedded
-  // into the README for the offline verifier. When a receipt-anchor
-  // service lookup ships (`GET /v1/receipts/{hash}`), this route can
-  // fan out, fetch up to MAX_BUNDLED_RECEIPTS, and pass them through.
-  const receipts: never[] = [];
+  const receipts = await fetchReceipt(hash);
 
   const blob = await buildPortableExport({
     modelId: placeholderResult.modelId,

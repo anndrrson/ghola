@@ -44,6 +44,7 @@ export function ChatHeader({
     showWarmup && typeof warmupProgress === "number"
       ? Math.max(0, Math.min(99, Math.floor(warmupProgress * 100)))
       : 0;
+  const warmupLabel = mode === "auto" ? "Preparing private AI" : "Loading model";
   return (
     <div className="flex items-center gap-3 px-4 py-3 border-b border-[#1e2a3a] bg-[#0a0b10]">
       <button
@@ -59,12 +60,12 @@ export function ChatHeader({
         </h2>
       </div>
       {mode === "local" && <ModelIntegrityBadge modelId={activeModelId} />}
-      {mode === "local" && showWarmup && (
+      {(mode === "local" || mode === "auto") && showWarmup && (
         <span
           className="hidden sm:inline-flex items-center text-[11px] text-[#8b95a8] tabular-nums"
           aria-live="polite"
         >
-          Loading model… {warmupPct}%
+          {warmupLabel}… {warmupPct}%
         </span>
       )}
       <SovereigntyPicker

@@ -11,12 +11,10 @@ import {
   type AttestationDoc,
 } from "@/lib/receipt";
 
-// Public receipt verifier — Tier 1D. Anyone with a receipt hash + body
-// can paste it in and audit the full chain on their own device, with
-// no account, no API call to ghola for the verification math. The hash
-// in the URL is for sharing; the receipt body itself comes from the
-// chat user (who exports it) or — once `GET /v1/receipts/{hash}` ships
-// — from the anchor service.
+// Public receipt verifier — Tier 1D. Anyone with a receipt hash can
+// audit the full chain on their own device, with no account. When the
+// receipts service has the body, this page loads it by hash; otherwise
+// the user can paste/export the receipt JSON manually.
 //
 // This page is the show-don't-tell artifact for the privacy claim. A
 // journalist, a regulator, or an a16z partner can take any receipt
@@ -29,6 +27,20 @@ interface ReceiptStatus {
   attestation: { fetched: boolean; doc: AttestationDoc | null; error?: string };
 }
 
+interface StoredReceiptResponse {
+  receipt_hash: string;
+  status: "pending" | "anchored";
+  receipt: ReceiptV1;
+}
+
+function receiptsServiceBase(): string {
+  if (typeof process !== "undefined" && process.env) {
+    const url = process.env.NEXT_PUBLIC_RECEIPTS_SERVICE_URL;
+    if (url) return url;
+  }
+  return "http://localhost:3001";
+}
+
 export default function ReceiptVerifierPage({
   params,
 }: {
@@ -39,9 +51,13 @@ export default function ReceiptVerifierPage({
   const [receipt, setReceipt] = useState<ReceiptV1 | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [status, setStatus] = useState<ReceiptStatus | null>(null);
+  const [lookupStatus, setLookupStatus] = useState<
+    "idle" | "loading" | "loaded" | "missing"
+  >("idle");
 
-  // Accept `?body=` query param as a convenience for shared links —
-  // some chat clients will round-trip the receipt JSON URL-safely.
+  // Accept `?body=` query param as a convenience for shared links.
+  // Otherwise, try the receipts service by hash. Verification still
+  // happens locally after the JSON is loaded.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
@@ -54,9 +70,36 @@ export default function ReceiptVerifierPage({
       } catch {
         // ignore — user can still paste manually
       }
+      return;
     }
+    let cancelled = false;
+    setLookupStatus("loading");
+    void (async () => {
+      try {
+        const url = new URL(
+          `/v1/receipts/${encodeURIComponent(hash)}`,
+          receiptsServiceBase(),
+        );
+        const res = await fetch(url.toString(), { method: "GET" });
+        if (!res.ok) {
+          if (!cancelled) setLookupStatus("missing");
+          return;
+        }
+        const payload = (await res.json()) as StoredReceiptResponse;
+        const raw = JSON.stringify(payload.receipt, null, 2);
+        if (cancelled) return;
+        setPasted(raw);
+        tryParse(raw);
+        setLookupStatus("loaded");
+      } catch {
+        if (!cancelled) setLookupStatus("missing");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [hash]);
 
   function tryParse(raw: string) {
     setParseError(null);
@@ -152,9 +195,8 @@ export default function ReceiptVerifierPage({
         </h1>
         <p className="mt-4 text-[#8b95a8] max-w-2xl leading-relaxed">
           Every reply ghola streams to a user comes with a signed receipt.
-          Paste one below to check the signatures and attestation chain on
-          your own device. No login, no server call to ghola for the
-          verification math.
+          This verifier loads the receipt when it is available, then checks
+          the signatures and attestation chain on your own device. No login.
         </p>
 
         <div className="mt-10 rounded-2xl border border-[#1e2a3a] bg-[#0a0b10] p-5">
@@ -165,6 +207,18 @@ export default function ReceiptVerifierPage({
             {hash || "—"}
           </div>
         </div>
+
+        {lookupStatus === "loading" && (
+          <p className="mt-4 text-sm text-[#8b95a8]">
+            Looking up receipt body…
+          </p>
+        )}
+        {lookupStatus === "missing" && !receipt && (
+          <p className="mt-4 text-sm text-[#8b95a8]">
+            Receipt body was not found by hash. Paste the JSON below to verify
+            it locally.
+          </p>
+        )}
 
         <div className="mt-6">
           <label className="font-mono text-[10px] uppercase tracking-[0.22em] text-[#8b95a8] block mb-2">

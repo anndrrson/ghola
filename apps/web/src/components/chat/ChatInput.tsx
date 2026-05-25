@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { Send, Loader2 } from "lucide-react";
 
 interface ChatInputProps {
-  onSend: (text: string) => void;
+  onSend: (text: string) => void | Promise<boolean | void>;
   disabled?: boolean;
 }
 
@@ -18,10 +18,11 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
     }
   }, [disabled]);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const trimmed = text.trim();
     if (!trimmed || disabled) return;
-    onSend(trimmed);
+    const result = await onSend(trimmed);
+    if (result === false) return;
     setText("");
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -31,7 +32,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSubmit();
+      void handleSubmit();
     }
   };
 
@@ -73,7 +74,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
         </button>
       </div>
       <p className="text-[10px] text-[#4a5568] mt-1.5 text-center">
-        Every message ships with a verifiable receipt
+        Private by default. Details stay in the background.
       </p>
     </div>
   );

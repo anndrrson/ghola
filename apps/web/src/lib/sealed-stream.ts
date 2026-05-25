@@ -28,7 +28,7 @@ import { seal, open as openEnvelope, RecipientKind } from "./envelope";
 import type { AttestedEnclaveInfo } from "./sovereignty";
 import { thumperRelayBase } from "./sovereignty";
 import { deriveVaultX25519Keypair } from "./vault-x25519";
-import type { ReceiptV1 } from "./receipt";
+import type { ReceiptV1, VerifyReceiptResult } from "./receipt";
 import {
   decapsulateResponse,
   decodeBhttpResponse,
@@ -61,14 +61,75 @@ export interface SealedStreamOptions {
   onError: (msg: string) => void;
 }
 
+export interface SealedChatCompletionsBodyOptions {
+  routeModel: string;
+  messages: InferenceMessage[];
+  enclave: AttestedEnclaveInfo;
+  signBytes: (bytes: Uint8Array) => Promise<Uint8Array>;
+  senderDid: string;
+  modelId?: string;
+  maxTokens?: number;
+  stream?: boolean;
+}
+
+export interface SealedChatCompletionsBody {
+  body: string;
+  jobId: string;
+  enclaveKeyId: string;
+  sealedRequestB64: string;
+}
+
 interface SealedInferenceResponseWire {
   ciphertext_b64: string;
   is_final?: boolean;
 }
 
-interface InEnvelopeAssistantPayload {
+export interface InEnvelopeAssistantPayload {
   text: string;
   receipt: ReceiptV1;
+}
+
+const PRIVATE_RECEIPT_REQUIRED_FIELDS = [
+  "provider_signature",
+  "enclave_key_id",
+  "attestation_hash",
+  "measurement",
+] as const;
+
+function hasNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export async function validatePrivateReceiptProof(
+  receipt: ReceiptV1,
+): Promise<VerifyReceiptResult> {
+  if (receipt.mode !== "private") {
+    return {
+      ok: false,
+      reason: `unexpected receipt mode: ${receipt.mode}`,
+    };
+  }
+
+  for (const field of PRIVATE_RECEIPT_REQUIRED_FIELDS) {
+    if (!hasNonEmptyString(receipt[field])) {
+      return { ok: false, reason: `missing ${field}` };
+    }
+  }
+
+  if (!hasNonEmptyString(receipt.provider_id)) {
+    return { ok: false, reason: "missing provider_id" };
+  }
+  if (!hasNonEmptyString(receipt.signer_did)) {
+    return { ok: false, reason: "missing signer_did" };
+  }
+  if (!hasNonEmptyString(receipt.signature)) {
+    return { ok: false, reason: "missing signature" };
+  }
+  if (!Number.isFinite(receipt.issued_at)) {
+    return { ok: false, reason: "invalid issued_at" };
+  }
+
+  return { ok: true };
 }
 
 // ── byte helpers ────────────────────────────────────────────────────────
@@ -96,6 +157,110 @@ function base64ToBytes(s: string): Uint8Array {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+async function sealInferenceRequest(
+  sessionId: string,
+  jobId: string,
+  messages: InferenceMessage[],
+  enclave: AttestedEnclaveInfo,
+  signBytes: (bytes: Uint8Array) => Promise<Uint8Array>,
+  senderDid: string,
+  options: Pick<SealedStreamOptions, "modelId" | "maxTokens" | "stream">,
+): Promise<Uint8Array> {
+  const requestPayload = {
+    job_id: jobId,
+    model_id: options.modelId ?? "llama3.2:3b",
+    messages,
+    max_tokens: options.maxTokens ?? 2048,
+    stream: options.stream ?? false,
+  };
+  const recipientX25519 = hexToBytes(enclave.enclave_x25519_pub_hex);
+  if (recipientX25519.length !== 32) {
+    throw new Error(
+      `attested enclave returned invalid X25519 pubkey (${recipientX25519.length} bytes)`,
+    );
+  }
+  const ad = new TextEncoder().encode(
+    `ghola-inference-v1|${sessionId}|${jobId}`,
+  );
+  return seal({
+    senderDid,
+    recipientId: enclave.enclave_key_id,
+    recipientX25519,
+    kind: RecipientKind.ModelBridge,
+    associatedData: ad,
+    plaintext: new TextEncoder().encode(JSON.stringify(requestPayload)),
+    signBody: signBytes,
+  });
+}
+
+export async function buildSealedChatCompletionsBody(
+  options: SealedChatCompletionsBodyOptions,
+): Promise<SealedChatCompletionsBody> {
+  const jobId = crypto.randomUUID();
+  const sealedBytes = await sealInferenceRequest(
+    "v1-chat-completions",
+    jobId,
+    options.messages,
+    options.enclave,
+    options.signBytes,
+    options.senderDid,
+    options,
+  );
+  const sealedRequestB64 = bytesToBase64(sealedBytes);
+  return {
+    body: JSON.stringify({
+      model: options.routeModel,
+      messages: [],
+      enclave_key_id: options.enclave.enclave_key_id,
+      sealed_request_b64: sealedRequestB64,
+      sealed_job_id: jobId,
+      max_tokens: options.maxTokens ?? 2048,
+      stream: false,
+    }),
+    jobId,
+    enclaveKeyId: options.enclave.enclave_key_id,
+    sealedRequestB64,
+  };
+}
+
+export async function openSealedAssistantPayload(
+  ciphertextB64: string,
+  signBytes: (bytes: Uint8Array) => Promise<Uint8Array>,
+): Promise<InEnvelopeAssistantPayload> {
+  if (!ciphertextB64.trim()) {
+    throw new Error("Sealed inference: missing ciphertext");
+  }
+
+  const vaultKp = await deriveVaultX25519Keypair(signBytes);
+  const responseBytes = base64ToBytes(ciphertextB64);
+  const opened = await openEnvelope(responseBytes, vaultKp.secret);
+  const text = new TextDecoder().decode(opened.plaintext);
+
+  let decoded: InEnvelopeAssistantPayload;
+  try {
+    decoded = JSON.parse(text) as InEnvelopeAssistantPayload;
+  } catch (err) {
+    throw new Error(
+      `Sealed inference: response not valid JSON: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
+  if (typeof decoded.text !== "string" || !decoded.receipt) {
+    throw new Error("Sealed inference: response missing text or receipt");
+  }
+
+  const privateProof = await validatePrivateReceiptProof(decoded.receipt);
+  if (!privateProof.ok) {
+    throw new Error(
+      `Sealed inference: invalid private receipt (${privateProof.reason})`,
+    );
+  }
+
+  return decoded;
 }
 
 // ── Transport helpers (legacy direct + OHTTP) ───────────────────────────
@@ -320,34 +485,18 @@ export async function streamSealedChat(
       return;
     }
 
-    // Derive the same vault X25519 secret the provider sealed back to.
-    // This is the deterministic Turnkey-gated keypair (see
-    // vault-x25519.ts) — both sides of the round-trip can recover it
-    // independently without leaking the secret.
-    const vaultKp = await deriveVaultX25519Keypair(signBytes);
-    const responseBytes = base64ToBytes(wire.ciphertext_b64);
-    const opened = await openEnvelope(responseBytes, vaultKp.secret);
-    const text = new TextDecoder().decode(opened.plaintext);
-
-    let decoded: InEnvelopeAssistantPayload;
     try {
-      decoded = JSON.parse(text) as InEnvelopeAssistantPayload;
+      const decoded = await openSealedAssistantPayload(
+        wire.ciphertext_b64,
+        signBytes,
+      );
+      options.onChunk(decoded.text);
+      options.onDone(decoded.receipt);
     } catch (err) {
       options.onError(
-        `Sealed inference: response not valid JSON: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        err instanceof Error ? err.message : String(err),
       );
-      return;
     }
-
-    if (typeof decoded.text !== "string" || !decoded.receipt) {
-      options.onError("Sealed inference: response missing text or receipt");
-      return;
-    }
-
-    options.onChunk(decoded.text);
-    options.onDone(decoded.receipt);
   } catch (err) {
     options.onError(err instanceof Error ? err.message : String(err));
   }

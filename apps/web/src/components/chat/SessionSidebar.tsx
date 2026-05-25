@@ -1,7 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { Plus, MessageSquare, Trash2, Home, Settings, Cpu } from "lucide-react";
+import { usePathname } from "next/navigation";
+import {
+  Cpu,
+  Home,
+  MessageSquare,
+  Plus,
+  Settings,
+  ShoppingBag,
+  Trash2,
+} from "lucide-react";
 import { GholaLogo } from "@/components/GholaLogo";
 import type { ThumperSession } from "@/lib/thumper-types";
 
@@ -60,6 +69,28 @@ export function SessionSidebar({
   onDelete,
 }: SessionSidebarProps) {
   const groups = groupSessions(sessions);
+  const pathname = usePathname();
+  const navItems = [
+    { href: "/", label: "Home", icon: Home, active: pathname === "/" },
+    {
+      href: "/intent",
+      label: "Shop / Pay",
+      icon: ShoppingBag,
+      active: pathname.startsWith("/intent"),
+    },
+    {
+      href: "/settings",
+      label: "Settings",
+      icon: Settings,
+      active: pathname.startsWith("/settings"),
+    },
+    {
+      href: "/provide",
+      label: "Provide",
+      icon: Cpu,
+      active: pathname.startsWith("/provide"),
+    },
+  ];
 
   return (
     <div className="flex h-full flex-col">
@@ -79,28 +110,24 @@ export function SessionSidebar({
       </div>
 
       {/* Navigation */}
-      <div className="px-2 py-2 border-b border-[#1e2a3a] flex gap-1">
-        <Link
-          href="/"
-          className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117] transition-colors flex-1"
-        >
-          <Home className="h-3.5 w-3.5" />
-          Home
-        </Link>
-        <Link
-          href="/settings"
-          className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117] transition-colors flex-1"
-        >
-          <Settings className="h-3.5 w-3.5" />
-          Settings
-        </Link>
-        <Link
-          href="/provide"
-          className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117] transition-colors flex-1"
-        >
-          <Cpu className="h-3.5 w-3.5" />
-          Provide
-        </Link>
+      <div className="grid grid-cols-2 gap-1 border-b border-[#1e2a3a] px-2 py-2">
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
+                item.active
+                  ? "bg-[#3da8ff]/10 text-[#3da8ff]"
+                  : "text-[#8b95a8] hover:bg-[#0f1117] hover:text-[#eef1f8]"
+              }`}
+            >
+              <Icon className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{item.label}</span>
+            </Link>
+          );
+        })}
       </div>
 
       {/* Session list */}

@@ -42,6 +42,12 @@ describe("payment rails", () => {
     expect(requestedPaymentRailHeader("aleo_usdcx_shielded")).toEqual({
       "x-ghola-payment-rail": "aleo_usdcx_shielded",
     });
+    expect(requestedPaymentRailHeader("railgun_evm_shielded")).toEqual({
+      "x-ghola-payment-rail": "railgun_evm_shielded",
+    });
+    expect(requestedPaymentRailHeader("private_shielded_auto")).toEqual({
+      "x-ghola-payment-rail": "private_shielded_auto",
+    });
   });
 
   it("rejects public USDC on the private Aleo rail", () => {
@@ -59,5 +65,59 @@ describe("payment rails", () => {
       ok: false,
       code: "invalid_asset",
     });
+  });
+
+  it("models Railgun/EVM as a separate fail-closed shielded rail", () => {
+    const rail: PaymentRail = {
+      kind: "railgun_evm_shielded",
+      provider: "railgun",
+      network: "arbitrum",
+      asset: "USDC",
+      destination: "0zkrecipient",
+      adapterConfigured: true,
+      broadcasterConfigured: false,
+      proofOfInnocenceRequired: true,
+      proofOfInnocenceConfigured: true,
+      privacy: "shielded_subject_to_relayer_pool_and_timing_correlation",
+    };
+
+    expect(validatePaymentRail(rail)).toMatchObject({
+      ok: false,
+      code: "broadcaster_unconfigured",
+    });
+    expect(privacyDisclosureForRail(rail)).toContain("Railgun/EVM");
+  });
+
+  it("accepts Railgun/EVM only when adapter, broadcaster, and proof policy are configured", () => {
+    const rail: PaymentRail = {
+      kind: "railgun_evm_shielded",
+      provider: "railgun",
+      network: "polygon",
+      asset: "USDT",
+      destination: "0zkrecipient",
+      adapterConfigured: true,
+      broadcasterConfigured: true,
+      proofOfInnocenceRequired: true,
+      proofOfInnocenceConfigured: true,
+      privacy: "shielded_subject_to_relayer_pool_and_timing_correlation",
+    };
+
+    expect(validatePaymentRail(rail)).toEqual({ ok: true });
+  });
+
+  it("accepts Solana shielded pool only when relayer and verifier are ready", () => {
+    const rail: PaymentRail = {
+      kind: "solana_shielded_pool",
+      provider: "solana_shielded_pool",
+      network: "solana:devnet",
+      asset: "USDCx",
+      destination: "shld1recipient",
+      adapterConfigured: true,
+      verifierReady: true,
+      privacy: "shielded_subject_to_deposit_withdraw_relayer_and_timing_correlation",
+    };
+
+    expect(validatePaymentRail(rail)).toEqual({ ok: true });
+    expect(privacyDisclosureForRail(rail)).toContain("Solana-native");
   });
 });

@@ -17,18 +17,34 @@
 // ghola-home binds 0.0.0.0:3000 by default (GHOLA_HOME_BIND env var).
 // We probe 127.0.0.1:7878 first because :3000 collides with the Next.js
 // dev server on a developer machine and most home users will set
-// GHOLA_HOME_BIND to something dedicated. Users can override either
-// value via localStorage `ghola:home-url`.
+// GHOLA_HOME_BIND to something dedicated. Users can override the port
+// via localStorage `ghola:home-url`, but only loopback hosts are allowed:
+// Local mode must not be repointed at a remote machine.
 const DEFAULT_HOME_URL = "http://127.0.0.1:7878";
 const HOME_URL_STORAGE_KEY = "ghola:home-url";
 const PAIR_TOKEN_STORAGE_KEY = "ghola:home-pair-token";
 const PROBE_TIMEOUT_MS = 1500;
 
+export function isAllowedGholaHomeUrl(raw: string): boolean {
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    return (
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "::1" ||
+      parsed.hostname === "[::1]"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function getGholaHomeUrl(): string {
   if (typeof window === "undefined") return DEFAULT_HOME_URL;
   try {
     const stored = window.localStorage.getItem(HOME_URL_STORAGE_KEY);
-    if (stored && stored.startsWith("http")) return stored;
+    if (stored && isAllowedGholaHomeUrl(stored)) return stored;
   } catch {
     // localStorage may be disabled; fall through to default.
   }
@@ -141,6 +157,7 @@ export function clearPairToken(): void {
 
 export function setGholaHomeUrl(url: string): void {
   if (typeof window === "undefined") return;
+  if (!isAllowedGholaHomeUrl(url)) return;
   try {
     window.localStorage.setItem(HOME_URL_STORAGE_KEY, url);
   } catch {

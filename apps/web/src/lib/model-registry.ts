@@ -57,6 +57,8 @@ export type ModelRegistryStatus =
 export interface ModelRegistryResult {
   status: ModelRegistryStatus;
   modelId: string;
+  /** Where the successful read happened. Direct browser RPC is preferred. */
+  lookupSource?: "browser_rpc" | "server_rpc";
   /** Hex-encoded SHA-256 of the model weights manifest, when on-chain. */
   onChainHash?: string;
   /** Creator Solana pubkey (base58), when on-chain. */
@@ -119,58 +121,90 @@ export async function lookupModel(
   modelId: string,
 ): Promise<ModelRegistryResult> {
   try {
-    const pda = await deriveModelPda(modelId);
-    const conn = getConnection();
-    const info = await conn.getAccountInfo(pda, "confirmed");
-    if (!info) {
-      return { status: "unregistered", modelId };
-    }
-    const slot = await conn.getSlot("confirmed");
-    try {
-      const decoded = decodeModelRecord(info.data);
-      // Sanity: the on-chain model_id must match what we queried for.
-      // Mismatch means a hash collision (statistically impossible) or
-      // a misconfigured registry entry — either way, refuse to trust.
-      if (decoded.modelId !== modelId) {
-        return {
-          status: "mismatch",
-          modelId,
-          slot,
-          error: `on-chain model_id "${decoded.modelId}" does not match queried "${modelId}"`,
-        };
-      }
-      return {
-        status: "verified",
-        modelId,
-        slot,
-        creator: decoded.creator,
-        onChainHash: decoded.weightsHash,
-        modelLibHash: decoded.modelLibHash,
-        configHash: decoded.configHash,
-        tokenizerHash: decoded.tokenizerHash,
-        ipfsCid: decoded.ipfsCid,
-        licenseSpdx: decoded.licenseSpdx,
-        priceMicroUsdc: decoded.priceMicroUsdc,
-        version: decoded.version,
-      };
-    } catch (err) {
-      // Decoding failure means the account exists at the right PDA but
-      // doesn't match the schema this client knows — treat as a stub
-      // hit so the badge stays honest.
-      return {
-        status: "unregistered",
-        modelId,
-        slot,
-        error:
-          err instanceof Error ? `decode failed: ${err.message}` : undefined,
-      };
-    }
+    return await lookupModelViaSolanaRpc(modelId, "browser_rpc");
   } catch (err) {
+    const fallback = await lookupModelViaServer(modelId);
+    if (fallback) return fallback;
     return {
       status: "unreachable",
       modelId,
       error: err instanceof Error ? err.message : "rpc error",
     };
+  }
+}
+
+async function lookupModelViaSolanaRpc(
+  modelId: string,
+  lookupSource: ModelRegistryResult["lookupSource"],
+): Promise<ModelRegistryResult> {
+  const pda = await deriveModelPda(modelId);
+  const conn = getConnection();
+  const info = await conn.getAccountInfo(pda, "confirmed");
+  if (!info) {
+    return { status: "unregistered", modelId, lookupSource };
+  }
+  const slot = await conn.getSlot("confirmed");
+  try {
+    const decoded = decodeModelRecord(info.data);
+    // Sanity: the on-chain model_id must match what we queried for.
+    // Mismatch means a hash collision (statistically impossible) or
+    // a misconfigured registry entry — either way, refuse to trust.
+    if (decoded.modelId !== modelId) {
+      return {
+        status: "mismatch",
+        modelId,
+        slot,
+        lookupSource,
+        error: `on-chain model_id "${decoded.modelId}" does not match queried "${modelId}"`,
+      };
+    }
+    return {
+      status: "verified",
+      modelId,
+      slot,
+      lookupSource,
+      creator: decoded.creator,
+      onChainHash: decoded.weightsHash,
+      modelLibHash: decoded.modelLibHash,
+      configHash: decoded.configHash,
+      tokenizerHash: decoded.tokenizerHash,
+      ipfsCid: decoded.ipfsCid,
+      licenseSpdx: decoded.licenseSpdx,
+      priceMicroUsdc: decoded.priceMicroUsdc,
+      version: decoded.version,
+    };
+  } catch (err) {
+    // Decoding failure means the account exists at the right PDA but
+    // doesn't match the schema this client knows — treat as a stub
+    // hit so the badge stays honest.
+    return {
+      status: "unregistered",
+      modelId,
+      slot,
+      lookupSource,
+      error:
+        err instanceof Error ? `decode failed: ${err.message}` : undefined,
+    };
+  }
+}
+
+async function lookupModelViaServer(
+  modelId: string,
+): Promise<ModelRegistryResult | null> {
+  if (typeof window === "undefined" || typeof fetch !== "function") {
+    return null;
+  }
+  try {
+    const res = await fetch(
+      `/api/model-registry?modelId=${encodeURIComponent(modelId)}`,
+      { cache: "no-store" },
+    );
+    if (!res.ok) return null;
+    const body = (await res.json()) as ModelRegistryResult;
+    if (!body || body.modelId !== modelId || !body.status) return null;
+    return { ...body, lookupSource: "server_rpc" };
+  } catch {
+    return null;
   }
 }
 

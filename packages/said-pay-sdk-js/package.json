@@ -4,13 +4,36 @@
   "description": "SAID Pay SDK — Agent payment infrastructure for AI",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "node --test dist/test/*.js",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["said", "ai", "payments", "agent", "solana", "usdc"],
+  "keywords": ["said", "ai", "payments", "agent", "solana", "usdc", "railgun", "x402"],
   "license": "MIT",
+  "peerDependencies": {
+    "@railgun-community/shared-models": "^8.0.1",
+    "@railgun-community/waku-broadcaster-client-node": "^9.1.0",
+    "@railgun-community/waku-broadcaster-client-web": "^9.1.0",
+    "@railgun-community/wallet": "^10.8.6"
+  },
+  "peerDependenciesMeta": {
+    "@railgun-community/shared-models": {
+      "optional": true
+    },
+    "@railgun-community/waku-broadcaster-client-node": {
+      "optional": true
+    },
+    "@railgun-community/waku-broadcaster-client-web": {
+      "optional": true
+    },
+    "@railgun-community/wallet": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "typescript": "^5.4"
   }

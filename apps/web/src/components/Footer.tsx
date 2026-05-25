@@ -37,6 +37,14 @@ export function Footer() {
             >
               Terms
             </Link>
+            <a
+              href="https://x.com/GholaXYZ"
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-[#8b95a8] transition-colors"
+            >
+              X
+            </a>
           </div>
         </div>
       </div>

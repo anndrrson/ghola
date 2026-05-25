@@ -30,7 +30,7 @@ const SITE_URL = "https://ghola.xyz";
 
 const SHARED_TITLE = "ghola — the most private AI";
 const SHARED_DESCRIPTION =
-  "The most private AI. Runs on your device, or end-to-end encrypted in the cloud.";
+  "Private AI that runs locally when possible, or through sealed cloud inference with auditable receipts.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
