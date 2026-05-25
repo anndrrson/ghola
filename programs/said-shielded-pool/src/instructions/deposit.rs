@@ -6,7 +6,9 @@ use anchor_spl::token_interface::{
 use crate::error::ShieldedPoolError;
 use crate::events::CommitmentQueued;
 use crate::groth16::{verify, VerifyInputs};
-use crate::state::{CommitmentRecord, MerkleTree, PoolConfig, VerifierKey, NUM_PUBLIC_INPUTS};
+use crate::state::{
+    CommitmentRecord, MerkleTree, NullifierAccount, PoolConfig, VerifierKey, NUM_PUBLIC_INPUTS,
+};
 
 /// Deposit (shield-in) shielded value INTO the pool from a clear-text token
 /// account.
@@ -19,16 +21,38 @@ use crate::state::{CommitmentRecord, MerkleTree, PoolConfig, VerifierKey, NUM_PU
 /// difference, draining escrow. We now require the SAME `transaction.circom`
 /// Groth16 proof (and the SAME verifying key) the spend paths use:
 ///
-///   - A deposit is a transaction proof with 2 DUMMY inputs (amount = 0, so the
-///     circuit skips their Merkle membership) and 1 REAL output whose value is
-///     constrained, in-circuit, to back `publicAmount`. See
-///     `circuits/tools/build_deposit_input.js` — the working witness generator.
-///   - Conservation `sum(in) === sum(out) + publicAmount` with `sum(in) = 0`
-///     and `sum(out) = amount` forces `publicAmount = -amount` (the NEGATIVE /
-///     deposit sign — the C1 convention; withdraw is +amount).
+///   - A deposit is a transaction proof. The COMMON case is 2 DUMMY inputs
+///     (amount = 0, so the circuit skips their Merkle membership) and 1 REAL
+///     output whose value is constrained, in-circuit, to back `publicAmount`.
+///     See `circuits/tools/build_deposit_input.js` — the working witness
+///     generator. Real (nonzero) inputs are ALSO permitted — that is a
+///     legitimate "join + topup" (spend `sum(in)` of existing notes AND add
+///     `amount` of fresh clear-text value → one note worth `sum(in)+amount`,
+///     with escrow backing both legs). Both cases are now value-correct.
+///   - Conservation `sum(in) === sum(out) + publicAmount` with
+///     `publicAmount = -amount` (the NEGATIVE / deposit sign — the C1
+///     convention; withdraw is +amount) forces `sum(out) = sum(in) + amount`.
 ///   - The queued `commitment` is bound to the proof's REAL output commitment
-///     public input (`out_commitment_0`), so it is now PROVEN to be
-///     `Poseidon(amount, asset_id, owner, blinding)` for THIS `amount`.
+///     public input (`out_commitment_0`).
+///
+/// **C-NEW-2 fix (fabricated-root / un-nullified-spend, found in the third-pass
+/// convergence audit of C-NEW-1).** The C-NEW-1 binds above are sound ONLY when
+/// `sum(in) = 0`, which NOTHING on-chain enforced: the circuit happily accepts
+/// nonzero inputs that prove Merkle membership against the public `root`, and
+/// the previous deposit handler (a) SKIPPED the root-history check, so a prover
+/// could reference a FABRICATED root containing notes that never existed, and
+/// (b) wrote NO nullifier PDA, so even a genuine input spent here was never
+/// burned. Either way `sum(out) = sum(in) + amount` let the queued note be
+/// worth far more than the `amount` actually transferred to escrow — the SAME
+/// mint-from-nothing C-NEW-1 set out to close, re-routed through inputs. We now
+/// MIRROR the audited spend paths:
+///   - `root` MUST be in the tree's rolling root-history (like withdraw /
+///     transfer). A real input must prove membership against it, so a
+///     fabricated root is rejected; a fresh all-dummy deposit just passes a
+///     recent real root (the inputs skip membership regardless).
+///   - a `NullifierAccount` PDA is `init`-ed for BOTH input nullifiers (like
+///     transfer's 2-in shape). A real input is double-spend-protected; a dummy
+///     zero-amount input simply burns a unique marker PDA, which is harmless.
 ///
 /// **CEREMONY NOTE.** This reuses the transaction verifying key
 /// (`CircuitKind::Transfer`) — it inherits the SAME H1 trusted-setup / key
@@ -60,6 +84,35 @@ pub struct Deposit<'info> {
         constraint = merkle_tree.load()?.mint == mint.key() @ ShieldedPoolError::AssetMismatch,
     )]
     pub merkle_tree: AccountLoader<'info, MerkleTree>,
+
+    /// **C-NEW-2 fix.** First-input nullifier PDA. The shared transaction
+    /// circuit does NOT force the deposit's inputs to be dummies (amount==0);
+    /// it permits real inputs that prove Merkle membership against `root`. A
+    /// real input spent on the deposit path MUST be double-spend-protected on
+    /// chain, exactly like transfer/withdraw. We therefore `init` a PDA for
+    /// `args.input_nullifier_0`. `init` (not `init_if_needed`) means a
+    /// repeated nullifier fails with "already in use" — the on-chain
+    /// double-spend guard. A genuine dummy (zero-amount) input just burns a
+    /// unique marker PDA, which is harmless.
+    #[account(
+        init,
+        payer = depositor,
+        space = 8 + NullifierAccount::INIT_SPACE,
+        seeds = [b"nullifier", mint.key().as_ref(), args.input_nullifier_0.as_ref()],
+        bump,
+    )]
+    pub nullifier_0: Box<Account<'info, NullifierAccount>>,
+
+    /// **C-NEW-2 fix.** Second-input nullifier PDA — same reasoning as
+    /// `nullifier_0` (the circuit is 2-in/2-out; both inputs can be real).
+    #[account(
+        init,
+        payer = depositor,
+        space = 8 + NullifierAccount::INIT_SPACE,
+        seeds = [b"nullifier", mint.key().as_ref(), args.input_nullifier_1.as_ref()],
+        bump,
+    )]
+    pub nullifier_1: Box<Account<'info, NullifierAccount>>,
 
     #[account(
         mut,
@@ -183,11 +236,24 @@ pub fn deposit_handler(ctx: Context<Deposit>, args: DepositArgs) -> Result<()> {
         }
     }
 
-    // 1. NO root-history check. A pure deposit has two DUMMY inputs
-    //    (amount == 0); the circuit skips their Merkle-membership constraint
-    //    (`(1 - isZero) * (computed_root - root) === 0`), so `root` does not
-    //    have to be a real, recent root. (Contrast withdraw/transfer, which
-    //    spend real inputs and MUST reference a root in the window.)
+    // 1. **C-NEW-2 fix**: root-history check — mirror withdraw/transfer.
+    //    The shared transaction circuit forces any REAL input (amount != 0)
+    //    to prove Merkle membership against the public `root`
+    //    (`(1 - isZero) * (computed_root - root) === 0`). Without binding
+    //    `root` to a real, recent tree root, a prover could reference a
+    //    FABRICATED root containing notes that never existed and inflate
+    //    `sum(in)` (hence `out_commitment_0` = `sum(in)+amount`) far above the
+    //    `amount` actually escrowed — the C-NEW-1 mint-from-nothing, re-routed
+    //    through inputs. Requiring `root` to be in the rolling window rejects
+    //    fabricated roots. An all-dummy deposit (both inputs amount==0) skips
+    //    membership in-circuit, so it simply passes a recent real root.
+    {
+        let tree = ctx.accounts.merkle_tree.load()?;
+        require!(
+            tree.root_in_history(&args.root),
+            ShieldedPoolError::RootNotInHistory
+        );
+    }
 
     // 2. Asset must match the mint.
     require!(args.asset_id != [0u8; 32], ShieldedPoolError::AssetMismatch);
@@ -297,11 +363,31 @@ pub fn deposit_handler(ctx: Context<Deposit>, args: DepositArgs) -> Result<()> {
     let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
     transfer_checked(cpi_ctx, args.amount, ctx.accounts.mint.decimals)?;
 
+    let tree_key = ctx.accounts.merkle_tree.key();
+    let clock = Clock::get()?;
+    let mint_key = ctx.accounts.mint.key();
+
+    // 4b. **C-NEW-2 fix**: record BOTH input nullifiers spent. The `init` on
+    //     `nullifier_0` / `nullifier_1` already guaranteed they were unused
+    //     (a repeat fails "already in use"); persisting them makes them
+    //     permanently spent so a real input spent on the deposit path cannot
+    //     be double-spent. A dummy (zero-amount) input just consumes a unique
+    //     marker PDA — harmless — same reasoning as transfer/withdraw.
+    let nf0 = &mut ctx.accounts.nullifier_0;
+    nf0.nullifier = args.input_nullifier_0;
+    nf0.mint = mint_key;
+    nf0.spent_slot = clock.slot;
+    nf0.bump = ctx.bumps.nullifier_0;
+
+    let nf1 = &mut ctx.accounts.nullifier_1;
+    nf1.nullifier = args.input_nullifier_1;
+    nf1.mint = mint_key;
+    nf1.spent_slot = clock.slot;
+    nf1.bump = ctx.bumps.nullifier_1;
+
     // 5. Append commitment to the per-tree queue. The forester will fold
     //    batches of these into the tree off-chain and submit a root-update
     //    proof via `update_root_via_proof`.
-    let tree_key = ctx.accounts.merkle_tree.key();
-    let clock = Clock::get()?;
 
     // **V2 state change** (Stream 4): deposit advances `tree.queue_tail`,
     // NOT `tree.next_index`. `next_index` is reserved for the forester

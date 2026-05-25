@@ -334,7 +334,9 @@ pub struct PoolAccounts {
 
 /// Accounts for `deposit`, in the on-chain `Deposit<'info>` order.
 /// (Deposit has a different account set than transfer/withdraw — notably
-/// the queued `commitment_record` PDA and no nullifier PDAs.)
+/// the queued `commitment_record` PDA. **C-NEW-2**: it now ALSO carries two
+/// nullifier PDAs, exactly like transfer's 2-in shape, so a real input spent
+/// on the deposit path is double-spend-protected.)
 #[derive(Debug, Clone)]
 pub struct DepositAccounts {
     /// Depositor / fee payer (signer).
@@ -349,6 +351,12 @@ pub struct DepositAccounts {
     pub mint: [u8; 32],
     /// Active Merkle tree PDA for `mint`.
     pub merkle_tree: [u8; 32],
+    /// **C-NEW-2**: NullifierAccount PDA for `input_nullifier_0`, seeds
+    /// `[b"nullifier", mint, input_nullifier_0]`. `init`-ed by the ix.
+    pub nullifier_0: [u8; 32],
+    /// **C-NEW-2**: NullifierAccount PDA for `input_nullifier_1`, seeds
+    /// `[b"nullifier", mint, input_nullifier_1]`. `init`-ed by the ix.
+    pub nullifier_1: [u8; 32],
     /// Depositor's source token account.
     pub depositor_token_account: [u8; 32],
     /// Escrow token account (program-owned) for `mint`.
@@ -391,8 +399,11 @@ pub struct DepositAccounts {
 ///
 /// Accounts order MUST match `Deposit<'info>`:
 ///   depositor, pool_config, verifier_key, mint, merkle_tree,
-///   depositor_token_account, escrow, commitment_record, token_program,
-///   system_program.
+///   nullifier_0, nullifier_1, depositor_token_account, escrow,
+///   commitment_record, token_program, system_program.
+///   (**C-NEW-2**: nullifier_0 / nullifier_1 added — two `init`-ed
+///   NullifierAccount PDAs so a real input spent on the deposit path is
+///   double-spend-protected, mirroring transfer's 2-in shape.)
 pub fn build_deposit_ix(
     program_id: &[u8; 32],
     accounts: &DepositAccounts,
@@ -449,6 +460,10 @@ pub fn build_deposit_ix(
         AccountMeta::new_readonly(accounts.verifier_key, false),
         AccountMeta::new_readonly(accounts.mint, false),
         AccountMeta::new(accounts.merkle_tree, false),
+        // **C-NEW-2**: two init'd nullifier PDAs (writable), before the token
+        // accounts — matches the on-chain `Deposit<'info>` account order.
+        AccountMeta::new(accounts.nullifier_0, false),
+        AccountMeta::new(accounts.nullifier_1, false),
         AccountMeta::new(accounts.depositor_token_account, false),
         AccountMeta::new(accounts.escrow_ata, false),
         AccountMeta::new(accounts.commitment_record, false),
@@ -685,6 +700,9 @@ mod tests {
             verifier_key: [19u8; 32],
             mint: [13u8; 32],
             merkle_tree: [12u8; 32],
+            // **C-NEW-2**: two init'd nullifier PDAs.
+            nullifier_0: [20u8; 32],
+            nullifier_1: [21u8; 32],
             depositor_token_account: [15u8; 32],
             escrow_ata: [14u8; 32],
             commitment_record: [18u8; 32],
@@ -744,10 +762,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(&ix.data[..8], &discriminator("deposit"));
-        // 10 accounts now (verifier_key added for proof verification).
-        assert_eq!(ix.accounts.len(), 10);
+        // 12 accounts now: verifier_key (C-NEW-1) + two nullifier PDAs
+        // (C-NEW-2) added on top of the original 9.
+        assert_eq!(ix.accounts.len(), 12);
         // The 3rd account meta is the verifier_key (proof-gated).
         assert_eq!(ix.accounts[2].pubkey, [19u8; 32]);
+        // **C-NEW-2**: the two nullifier PDAs sit right after merkle_tree
+        // (index 4), at indices 5 and 6, and are writable (init'd).
+        assert_eq!(ix.accounts[5].pubkey, [20u8; 32]);
+        assert_eq!(ix.accounts[6].pubkey, [21u8; 32]);
+        assert!(ix.accounts[5].is_writable);
+        assert!(ix.accounts[6].is_writable);
     }
 
     /// **C-NEW-1 regression — the queued commitment is bound to the proof's

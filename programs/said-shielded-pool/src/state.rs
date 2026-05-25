@@ -283,6 +283,59 @@ impl MerkleTree {
     }
 }
 
+#[cfg(test)]
+mod merkle_tree_tests {
+    use super::*;
+
+    /// A zeroed `MerkleTree` for pure-logic tests of the root-history helper.
+    /// `MerkleTree` is `#[repr(C)]` POD (all integer/array fields, no
+    /// pointers), so an all-zero bit pattern is a valid, inert instance.
+    fn empty_tree() -> MerkleTree {
+        // SAFETY: every field is a plain-old-data integer or fixed-size byte
+        // array; the all-zero bit pattern is a valid value for each.
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// **C-NEW-2 regression.** The deposit handler now gates `args.root`
+    /// through `root_in_history` (mirroring withdraw/transfer). This proves
+    /// the helper REJECTS a fabricated root (one never pushed into the tree)
+    /// — which is exactly what blocks the fabricated-root inflation attack
+    /// (real input proves membership against `root`; if `root` isn't a real
+    /// tree root the deposit reverts with `RootNotInHistory`).
+    #[test]
+    fn fabricated_root_not_in_history() {
+        let mut tree = empty_tree();
+        // The attacker's fabricated root — a tree they built off-chain
+        // containing notes that never existed.
+        let fabricated = [0xABu8; 32];
+        // It is NOT in the (empty) history.
+        assert!(!tree.root_in_history(&fabricated));
+
+        // Push some legitimate roots; the fabricated one still isn't there.
+        tree.push_root([1u8; 32]);
+        tree.push_root([2u8; 32]);
+        tree.push_root([3u8; 32]);
+        assert!(!tree.root_in_history(&fabricated));
+    }
+
+    /// A genuine recent root (the active root OR any windowed history entry)
+    /// IS accepted — so an honest deposit (all-dummy inputs that skip
+    /// membership in-circuit) just passes a recent real root and succeeds.
+    #[test]
+    fn recent_real_roots_in_history() {
+        let mut tree = empty_tree();
+        tree.push_root([1u8; 32]); // -> root, prev (0) into history
+        tree.push_root([2u8; 32]); // -> root, prev (1) into history
+
+        // Active root accepted.
+        assert!(tree.root_in_history(&[2u8; 32]));
+        // Prior root, now in the rolling window, accepted.
+        assert!(tree.root_in_history(&[1u8; 32]));
+        // The empty-tree root that was shifted into history is accepted too.
+        assert!(tree.root_in_history(&[0u8; 32]));
+    }
+}
+
 /// Marker PDA proving a nullifier has been spent. Existence == spent.
 /// PDA seeds: `[b"nullifier", mint.key().as_ref(), &nullifier_bytes]`.
 ///
