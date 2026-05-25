@@ -11,7 +11,16 @@ enum KeychainHelper {
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            // SECURITY: these items hold the Ed25519 signing key, X25519
+            // agreement key, AES local-store key, and the private-payment
+            // signing key. WhenUnlockedThisDeviceOnly keeps them out of
+            // encrypted device backups and prevents restore onto another
+            // device; Synchronizable=false keeps them off iCloud Keychain.
+            // No background-access need exists (sign/decrypt happen in
+            // foreground user flows), so the strictest "WhenUnlocked" tier
+            // is correct rather than "AfterFirstUnlock".
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecAttrSynchronizable as String: false,
         ]
         return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
     }
