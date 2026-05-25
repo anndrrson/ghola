@@ -106,6 +106,11 @@ pub async fn track_api_usage(state: AppState, request: Request, next: Next) -> R
             .map(|s| s.to_string());
 
         if let Some(key) = key {
+            // SECURITY NOTE (L3, deferred): bare SHA-256 (matches
+            // `auth::hash_api_key`). HMAC-with-server-key hardening is deferred
+            // because it would invalidate all live keys (re-hash migration
+            // required); keys are high-entropy so offline brute-force is
+            // infeasible. See `auth::hash_api_key` for the full rationale.
             let mut hasher = Sha256::new();
             hasher.update(key.as_bytes());
             let key_hash = format!("{:x}", hasher.finalize());
@@ -186,6 +191,19 @@ fn extract_client_ip(request: &Request) -> Option<std::net::IpAddr> {
     // Reverse proxies that append to X-Forwarded-For leave user-controlled
     // values on the left. Prefer the rightmost valid address to avoid trivial
     // unauthenticated rate-limit spoofing.
+    //
+    // SECURITY ASSUMPTION (L4 — confirm before relying on this for security):
+    // "rightmost-valid hop == the trusted edge proxy" only holds if the
+    // platform's edge (Render here) STRIPS any inbound client-supplied
+    // X-Forwarded-For and appends its own observed peer address on the right.
+    // If the platform instead PASSES THROUGH a client XFF and appends, the
+    // rightmost entry is still the trusted proxy and this is fine; but if it
+    // does NOT append at all (or appends on the left), a client could spoof the
+    // rightmost value and defeat per-IP rate limiting. We have NOT confirmed
+    // Render's exact XFF behavior from the repo. Before treating per-IP rate
+    // limiting as a security control (vs. best-effort abuse dampening),
+    // verify the trusted-hop count against the actual deployment and, if
+    // needed, parse XFF as "Nth-from-right where N = number of trusted proxies".
     request
         .headers()
         .get("x-forwarded-for")

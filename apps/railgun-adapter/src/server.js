@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { loadConfig, readiness } from "./config.js";
 import { verifyRailgunPayment } from "./verify.js";
 
@@ -30,6 +31,17 @@ function bearer(req) {
   return raw.startsWith("Bearer ") ? raw.slice("Bearer ".length) : "";
 }
 
+/// Constant-time bearer-token comparison (L2). `timingSafeEqual` requires
+/// equal-length buffers; the auth token is high-entropy, so short-circuiting
+/// on length leaks nothing useful while avoiding the early-exit timing leak of
+/// `===`.
+function tokensEqual(a, b) {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
 export function createRailgunAdapterServer(config = loadConfig()) {
   return createServer(async (req, res) => {
     try {
@@ -52,7 +64,7 @@ export function createRailgunAdapterServer(config = loadConfig()) {
       }
 
       if (req.method === "POST" && req.url === "/verify") {
-        if (bearer(req) !== config.authToken) {
+        if (!tokensEqual(bearer(req), config.authToken)) {
           return json(res, 401, { settled: false, error: "unauthorized" });
         }
         const body = await readJson(req);

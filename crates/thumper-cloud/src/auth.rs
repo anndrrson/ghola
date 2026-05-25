@@ -184,6 +184,21 @@ async fn verify_api_key(key: &str, state: &AppState) -> Result<Claims, CloudErro
 }
 
 /// SHA-256 hash an API key for storage/lookup.
+///
+/// SECURITY NOTE (L3, deferred): this is a bare SHA-256, not an HMAC keyed with
+/// a server-side secret. HMAC-with-server-key is the standard hardening (it
+/// stops an attacker who reads the `api_keys.key_hash` column via a DB leak
+/// from verifying guessed keys offline without also stealing the server key).
+/// We accept the current scheme for now because:
+///   1. Keys are high-entropy (`sk-ghola-` + 128 bits of randomness; see
+///      `generate_api_key`), so offline precomputation/brute-force is
+///      infeasible regardless of the hash.
+///   2. Switching to HMAC would change every stored `key_hash`, invalidating
+///      all live keys — it requires a re-hash/rotation migration, not a hot
+///      swap.
+/// Tracked here so the hardening is an explicit, revisitable decision rather
+/// than silently accepted. If/when a key migration path exists, move this to
+/// HMAC-SHA256 keyed with a dedicated server secret.
 pub fn hash_api_key(key: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(key.as_bytes());
