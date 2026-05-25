@@ -1,0 +1,20 @@
+{
+  "name": "said-shielded-pool-tests",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "e2e": "ts-node tests/e2e_devnet.ts"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.30.1",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.95.4",
+    "bn.js": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.5",
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}

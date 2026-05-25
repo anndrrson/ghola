@@ -1,0 +1,30 @@
+{
+  "program_id": "5bmCDeaQceBpWgK8aADB4Tz4JzqZ9hkCi3qedC6oZR8A",
+  "payer": "9yrbzwJ3cLjhFtdXUXVqY5vLZPEEaQZD67v4hmQNjmkF",
+  "mint": "4Sxtv7c8wjGUz7WneLTkRJioqz74R4hnYFigkQYVmEKh",
+  "escrow": "FSbjfswVN9a6bsWVYCBTGVxVBz23sg5ZQ1JvoJJXiLKd",
+  "merkle_tree": "7N36X8u84NQgLsSLxL5NJMeivK58FTmqVtVffrYs86Tg",
+  "results": [
+    {
+      "label": "init_tree",
+      "sig": "kq2X4z7wSdUk7BubTAuoacX7e4JGknfMpxuvaFbJqHyAyr5QCBRwQTWXBtBghSYdURLApZjECqumRrUxhhYjftV",
+      "cu": "11302"
+    },
+    {
+      "label": "deposit",
+      "sig": "324UCEq9QxHQJkbQ6fC9QPfqHXK4m6zeddNJjH7DCQxsfmVDqx23J2hkstmdHWt8hArsHdtXdpUr6t9Bn81xvUFV",
+      "cu": "15512"
+    },
+    {
+      "label": "update_root_via_proof (real)",
+      "sig": "4czDmXsJsX2ChrUDi15k2czeE8s5GHVHCSKA6hySnYYPX4NAp26bstHuzPDPGj5b5Xd9jcY2GWKu6KbuF28eznHw",
+      "cu": "125959"
+    },
+    {
+      "label": "withdraw",
+      "sig": "relayer:4863660f-50e4-40a3-80ff-0622c97bb88b",
+      "cu": "relayer"
+    }
+  ],
+  "sol_delta": -0.0281038
+}

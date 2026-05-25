@@ -22,7 +22,17 @@
 //!   - tokenizer_hash: SHA-256 of the tokenizer.json.
 //!   - ipfs_cid: IPFS CIDv1 for the weights bundle (UTF-8, up to 96 b).
 //!   - license_spdx: SPDX identifier (UTF-8, up to 32 b).
-//!   - price_micro_usdc: per-call price for x402 settlement.
+//!   - price_micro_usdc: per-call price for x402 settlement on the
+//!     public Solana rail.
+//!   - price_micro_usdc_shielded: optional per-call price for the
+//!     shielded (Aleo) settlement rail. `None` means the provider does
+//!     not offer shielded settlement for this model. See
+//!     `docs/security/tier-2k-shielded-payments.md` §6.4.
+//!   - aleo_address: optional 63-byte raw bech32m payload of the
+//!     provider's Aleo address (e.g. `aleo1...`). `None` means no
+//!     shielded rail support. Must be `Some` whenever
+//!     `price_micro_usdc_shielded` is `Some` (the reverse is also
+//!     enforced — you cannot offer one without the other).
 //!   - version: increments on every update; lets clients invalidate
 //!     cached metadata without re-fetching the whole record.
 //!
@@ -59,6 +69,11 @@ pub mod ghola_model_registry {
         ipfs_cid: String,
         license_spdx: String,
         price_micro_usdc: u64,
+        // Shielded-rail (Aleo) fields, both optional. Either both are
+        // `Some` (provider offers shielded settlement) or both are
+        // `None` (public-only). See Tier 2K §6.4.
+        price_micro_usdc_shielded: Option<u64>,
+        aleo_address: Option<[u8; 63]>,
     ) -> Result<()> {
         require!(
             model_id.len() <= MAX_MODEL_ID_LEN,
@@ -71,6 +86,13 @@ pub mod ghola_model_registry {
         require!(
             license_spdx.len() <= MAX_LICENSE_LEN,
             ModelRegistryError::LicenseTooLong,
+        );
+        // Shielded-rail invariant: an aleo_address without a price is
+        // an unfulfillable advertisement; a price without an address
+        // has nowhere to settle. Reject both halves of that mismatch.
+        require!(
+            aleo_address.is_some() == price_micro_usdc_shielded.is_some(),
+            ModelRegistryError::MissingShieldedPrice,
         );
 
         // Bind the seed hash to the receipted model_id. Stops a
@@ -92,6 +114,8 @@ pub mod ghola_model_registry {
         model.ipfs_cid = ipfs_cid.clone();
         model.license_spdx = license_spdx;
         model.price_micro_usdc = price_micro_usdc;
+        model.price_micro_usdc_shielded = price_micro_usdc_shielded;
+        model.aleo_address = aleo_address;
         model.version = 1;
         model.model_id = model_id.clone();
         model.created_at = now;
@@ -102,6 +126,7 @@ pub mod ghola_model_registry {
             creator: ctx.accounts.creator.key(),
             weights_hash,
             ipfs_cid,
+            shielded_available: aleo_address.is_some(),
         });
         Ok(())
     }
@@ -129,6 +154,12 @@ pub mod ghola_model_registry {
         ipfs_cid: String,
         license_spdx: String,
         price_micro_usdc: u64,
+        // Shielded-rail fields. Both optional; pairing is enforced
+        // below (same invariant as `register_model`). An update that
+        // flips either field from `None` -> `Some` will grow the
+        // account via the `realloc` directive on `UpdateModel.model`.
+        price_micro_usdc_shielded: Option<u64>,
+        aleo_address: Option<[u8; 63]>,
     ) -> Result<()> {
         require!(
             ipfs_cid.len() <= MAX_IPFS_CID_LEN,
@@ -138,10 +169,16 @@ pub mod ghola_model_registry {
             license_spdx.len() <= MAX_LICENSE_LEN,
             ModelRegistryError::LicenseTooLong,
         );
+        require!(
+            aleo_address.is_some() == price_micro_usdc_shielded.is_some(),
+            ModelRegistryError::MissingShieldedPrice,
+        );
         let model = &mut ctx.accounts.model;
         model.ipfs_cid = ipfs_cid.clone();
         model.license_spdx = license_spdx;
         model.price_micro_usdc = price_micro_usdc;
+        model.price_micro_usdc_shielded = price_micro_usdc_shielded;
+        model.aleo_address = aleo_address;
         model.version = model.version.checked_add(1).unwrap_or(u16::MAX);
         model.updated_at = Clock::get()?.unix_timestamp;
         emit!(ModelUpdated {
@@ -149,6 +186,7 @@ pub mod ghola_model_registry {
             version: model.version,
             price_micro_usdc: model.price_micro_usdc,
             ipfs_cid,
+            shielded_available: aleo_address.is_some(),
         });
         Ok(())
     }
@@ -209,12 +247,25 @@ pub struct UpdateModel<'info> {
     // path above; recomputing the seed would require passing model_id
     // again and tripping the IDL builder which can't introspect
     // String fields of a stored account from within a seeds clause.
+    //
+    // `realloc` lets us grow accounts that were registered before the
+    // shielded-rail fields existed (Tier 2K §6.4 migration). Anchor
+    // will charge the difference in rent to `authority` (the creator)
+    // if the account needs to grow, or refund if it shrinks. We do
+    // **not** zero the realloc'd bytes — Anchor's account
+    // deserializer ignores any tail past the serialized struct, and
+    // `realloc::zero = false` keeps the instruction CU-cheap.
     #[account(
         mut,
         has_one = creator @ ModelRegistryError::NotCreator,
+        realloc = 8 + ModelRecord::MAX_SIZE,
+        realloc::payer = creator,
+        realloc::zero = false,
     )]
     pub model: Account<'info, ModelRecord>,
+    #[account(mut)]
     pub creator: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +280,14 @@ pub struct ModelRecord {
     pub config_hash: [u8; 32],
     pub tokenizer_hash: [u8; 32],
     pub price_micro_usdc: u64,
+    /// Shielded-rail (Aleo) per-call price in micro-USDC. `None`
+    /// means the provider does not offer shielded settlement for this
+    /// model. Invariant: `Some` iff `aleo_address.is_some()`.
+    pub price_micro_usdc_shielded: Option<u64>,
+    /// Provider's Aleo address as the 63-byte raw bech32m payload
+    /// (e.g. `aleo1...`). `None` means no shielded rail support.
+    /// Invariant: `Some` iff `price_micro_usdc_shielded.is_some()`.
+    pub aleo_address: Option<[u8; 63]>,
     pub created_at: i64,
     pub updated_at: i64,
     pub version: u16,
@@ -242,12 +301,18 @@ impl ModelRecord {
     // Anchor account size = fixed fields + 4-byte length prefix for each
     // String + max chars. The 8-byte discriminator is added by Anchor at
     // the call site (space = 8 + ModelRecord::MAX_SIZE).
+    //
+    // Anchor serializes `Option<T>` as a 1-byte tag followed by T iff
+    // the tag is 1. For account sizing we reserve the maximum (tag +
+    // T) so a `None`->`Some` update fits without further realloc.
     pub const MAX_SIZE: usize = 32 // creator
         + 32 // weights_hash
         + 32 // model_lib_hash
         + 32 // config_hash
         + 32 // tokenizer_hash
         + 8  // price_micro_usdc
+        + 1 + 8  // price_micro_usdc_shielded: Option<u64>
+        + 1 + 63 // aleo_address: Option<[u8; 63]>
         + 8  // created_at
         + 8  // updated_at
         + 2  // version
@@ -266,6 +331,9 @@ pub struct ModelRegistered {
     pub creator: Pubkey,
     pub weights_hash: [u8; 32],
     pub ipfs_cid: String,
+    /// True iff the provider published an `aleo_address` at
+    /// registration (i.e. shielded-rail x402 settlement is offered).
+    pub shielded_available: bool,
 }
 
 #[event]
@@ -274,6 +342,8 @@ pub struct ModelUpdated {
     pub version: u16,
     pub price_micro_usdc: u64,
     pub ipfs_cid: String,
+    /// True iff the post-update record advertises an `aleo_address`.
+    pub shielded_available: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -292,4 +362,6 @@ pub enum ModelRegistryError {
     ModelIdHashMismatch,
     #[msg("signer is not the creator of this model record")]
     NotCreator,
+    #[msg("aleo_address and price_micro_usdc_shielded must both be set or both be unset")]
+    MissingShieldedPrice,
 }

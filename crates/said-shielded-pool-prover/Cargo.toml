@@ -1,0 +1,43 @@
+[package]
+name = "said-shielded-pool-prover"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Off-chain Groth16 prover service for the Ghola Solana-native shielded pool. Wraps snarkjs/rapidsnark/gnark and exposes a small axum HTTP API. Phase 37."
+
+[[bin]]
+name = "said-shielded-pool-prover"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+said-shielded-pool-types = { path = "../said-shielded-pool-types" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tower = { workspace = true }
+
+# Used by the in-process Poseidon witness builder (src/witness.rs) and by
+# the gen_proof example's pure-Rust on-chain format conversion.
+light-poseidon = "0.2"
+ark-bn254 = "0.4"
+ark-ec = "0.4"
+ark-ff = "0.4"
+num-bigint = "0.4"
+num-traits = "0.2"
+clap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+groth16-solana = "0.2"
+ark-serialize = "0.4"

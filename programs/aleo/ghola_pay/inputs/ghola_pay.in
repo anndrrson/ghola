@@ -1,0 +1,32 @@
+// Example inputs for `aleo run pay …` against a local devnet.
+//
+// Usage:
+//   cd programs/aleo/ghola_pay
+//   # First mint a record to self via the dev-only mint:
+//   leo run mint_for_testing aleo1self...address 1000000u64
+//   # Take the resulting record output, paste it into r_in below, then:
+//   leo run pay
+//
+// The values below are placeholders — replace `aleo1self...` and
+// `aleo1recipient...` with real devnet addresses, and replace the
+// `r_in` record literal with whatever `mint_for_testing` returned.
+
+[pay]
+r_in: USDCx = USDCx {
+    owner: aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqs9q8g7y,
+    amount: 1000000u64,
+    gates: 0u64,
+    _nonce: 0group.public,
+};
+to: address = aleo1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz;
+amount: u64 = 250000u64;
+memo: u128 = 0u128;
+
+// TODO(verify): the exact record-literal syntax (especially the
+// `_nonce: <…>.public` suffix) tracks current snarkVM input file
+// conventions. Confirm against `aleo run --help` output before relying
+// on this file for CI.
+
+[mint_for_testing]
+to: address = aleo1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz;
+amount: u64 = 1000000u64;

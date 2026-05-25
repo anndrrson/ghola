@@ -1,0 +1,39 @@
+{
+  "description": "Single deposit of 1000 units of asset A. No inputs, one output commitment.",
+  "expected_commitment_chain": [
+    "03ff2e5c10369291285c672df1e95606bca3101e4e54984f2e621302133b749b"
+  ],
+  "expected_nullifiers": [],
+  "expected_public_inputs": {
+    "asset_id": "22802ab3cf9373867cdc8c30a2cbaffb4b2b821d2023851e2572ef956c6a0ad1",
+    "ext_data_hash": "0bd91d00442243caa16547657a8c71f669df41bbb2cc140728ab1c5a2b971731",
+    "input_nullifiers": [],
+    "output_commitments": [
+      "03ff2e5c10369291285c672df1e95606bca3101e4e54984f2e621302133b749b"
+    ],
+    "public_amount": "1000",
+    "root": "120c58f143d491e95902f7f5277778a2e0ad5168f6add75669932630ce611518"
+  },
+  "name": "deposit_only",
+  "notes": "public_amount > 0 indicates a public-side deposit into the pool.",
+  "proof": null,
+  "should_prove": true,
+  "should_verify": true,
+  "witness": {
+    "asset_id": "22802ab3cf9373867cdc8c30a2cbaffb4b2b821d2023851e2572ef956c6a0ad1",
+    "ext_data_hash": "0bd91d00442243caa16547657a8c71f669df41bbb2cc140728ab1c5a2b971731",
+    "input_indices": [],
+    "input_notes": [],
+    "input_paths": [],
+    "output_notes": [
+      {
+        "amount": 1000,
+        "asset_id": "22802ab3cf9373867cdc8c30a2cbaffb4b2b821d2023851e2572ef956c6a0ad1",
+        "blinding": "007fa8c16068ce67483b94bfbe95a39cd4f98f3488630345d97324f882977ee3",
+        "owner_pubkey": "00d579d30ed32a92609ea4d7dfe30a1b8cb1aa9821b51fb0bcad1d940faa46f8"
+      }
+    ],
+    "public_amount": "1000",
+    "spending_key": "00daead448f5a23c87b15bed64c73faa54ef061157cd14df758b3a2711e13a62"
+  }
+}

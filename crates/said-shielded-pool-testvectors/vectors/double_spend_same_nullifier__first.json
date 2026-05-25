@@ -1,0 +1,111 @@
+{
+  "description": "Initial spend of a 400-unit note. Both the proof and the on-chain submission MUST succeed.",
+  "expected_commitment_chain": [
+    "1c672752c7c93370ef0e67b30b8f3118266876892689319fb8495c76543cf420"
+  ],
+  "expected_nullifiers": [
+    "0a9c03ebfb2113252c9eb51dda472afc7408974efa094ec3c486a591074d4b48"
+  ],
+  "expected_public_inputs": {
+    "asset_id": "22802ab3cf9373867cdc8c30a2cbaffb4b2b821d2023851e2572ef956c6a0ad1",
+    "ext_data_hash": "1e53fc89bc42243c6e2027eeec6128253251eb6ef324810cbd4478c1af6cd547",
+    "input_nullifiers": [
+      "0a9c03ebfb2113252c9eb51dda472afc7408974efa094ec3c486a591074d4b48"
+    ],
+    "output_commitments": [
+      "1c672752c7c93370ef0e67b30b8f3118266876892689319fb8495c76543cf420"
+    ],
+    "public_amount": "0",
+    "root": "1b770a83ee1b3f4fcdb477f3e0f98ef3e3cfa3d74c43fd13fc9cc9aa57108c4b"
+  },
+  "name": "double_spend_same_nullifier__first",
+  "notes": "Step 1 of 2 — submit this first.",
+  "proof": null,
+  "should_prove": true,
+  "should_verify": true,
+  "witness": {
+    "asset_id": "22802ab3cf9373867cdc8c30a2cbaffb4b2b821d2023851e2572ef956c6a0ad1",
+    "ext_data_hash": "1e53fc89bc42243c6e2027eeec6128253251eb6ef324810cbd4478c1af6cd547",
+    "input_indices": [
+      0
+    ],
+    "input_notes": [
+      {
+        "amount": 400,
+        "asset_id": "22802ab3cf9373867cdc8c30a2cbaffb4b2b821d2023851e2572ef956c6a0ad1",
+        "blinding": "002b47e5002bddfa3f96989e3e82bc2559605f245db96724728faa6cd4a3edcd",
+        "owner_pubkey": "00730daf26cc13e838127d54b9661dd112b13cd197272718603c7ad575574951"
+      }
+    ],
+    "input_paths": [
+      {
+        "path_bits": [
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "siblings": [
+          "0000000000000000000000000000000000000000000000000000000000000000",
+          "2098f5fb9e239eab3ceac3f27b81e481dc3124d55ffed523a839ee8446b64864",
+          "1069673dcdb12263df301a6ff584a7ec261a44cb9dc68df067a4774460b1f1e1",
+          "18f43331537ee2af2e3d758d50f72106467c6eea50371dd528d57eb2b856d238",
+          "07f9d837cb17b0d36320ffe93ba52345f1b728571a568265caac97559dbc952a",
+          "2b94cf5e8746b3f5c9631f4c5df32907a699c58c94b2ad4d7b5cec1639183f55",
+          "2dee93c5a666459646ea7d22cca9e1bcfed71e6951b953611d11dda32ea09d78",
+          "078295e5a22b84e982cf601eb639597b8b0515a88cb5ac7fa8a4aabe3c87349d",
+          "2fa5e5f18f6027a6501bec864564472a616b2e274a41211a444cbe3a99f3cc61",
+          "0e884376d0d8fd21ecb780389e941f66e45e7acce3e228ab3e2156a614fcd747",
+          "1b7201da72494f1e28717ad1a52eb469f95892f957713533de6175e5da190af2",
+          "1f8d8822725e36385200c0b201249819a6e6e1e4650808b5bebc6bface7d7636",
+          "2c5d82f66c914bafb9701589ba8cfcfb6162b0a12acf88a8d0879a0471b5f85a",
+          "14c54148a0940bb820957f5adf3fa1134ef5c4aaa113f4646458f270e0bfbfd0",
+          "190d33b12f986f961e10c0ee44d8b9af11be25588cad89d416118e4bf4ebe80c",
+          "22f98aa9ce704152ac17354914ad73ed1167ae6596af510aa5b3649325e06c92",
+          "2a7c7c9b6ce5880b9f6f228d72bf6a575a526f29c66ecceef8b753d38bba7323",
+          "2e8186e558698ec1c67af9c14d463ffc470043c9c2988b954d75dd643f36b992",
+          "0f57c5571e9a4eab49e2c8cf050dae948aef6ead647392273546249d1c1ff10f",
+          "1830ee67b5fb554ad5f63d4388800e1cfe78e310697d46e43c9ce36134f72cca",
+          "2134e76ac5d21aab186c2be1dd8f84ee880a1e46eaf712f9d371b6df22191f3e",
+          "19df90ec844ebc4ffeebd866f33859b0c051d8c958ee3aa88f8f8df3db91a5b1",
+          "18cca2a66b5c0787981e69aefd84852d74af0e93ef4912b4648c05f722efe52b",
+          "2388909415230d1b4d1304d2d54f473a628338f2efad83fadf05644549d2538d",
+          "27171fb4a97b6cc0e9e8f543b5294de866a2af2c9c8d0b1d96e673e4529ed540",
+          "2ff6650540f629fd5711a0bc74fc0d28dcb230b9392583e5f8d59696dde6ae21"
+        ]
+      }
+    ],
+    "output_notes": [
+      {
+        "amount": 400,
+        "asset_id": "22802ab3cf9373867cdc8c30a2cbaffb4b2b821d2023851e2572ef956c6a0ad1",
+        "blinding": "0034771261e19aa70f5cf3059f7e7f8dcabf05e1212b94bdf842560171c25ded",
+        "owner_pubkey": "00730daf26cc13e838127d54b9661dd112b13cd197272718603c7ad575574951"
+      }
+    ],
+    "public_amount": "0",
+    "spending_key": "009e4711a8d62bdc2aeb6af6505cf64f4f011f3eb069c411158067ff7b96e819"
+  }
+}

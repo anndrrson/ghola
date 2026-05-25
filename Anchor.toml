@@ -2,15 +2,27 @@
 resolution = true
 skip-lint = false
 
+[workspace]
+# Explicit list — Anchor would otherwise auto-scan `programs/` and trip on
+# `programs/aleo/` (Aleo, not Solana).
+members = [
+    "programs/said-registry",
+    "programs/said-receipts",
+    "programs/ghola-model-registry",
+    "programs/said-shielded-pool",
+]
+
 [programs.localnet]
 said_registry = "3EqrapHPPQqQKeB3aykZz9AbppMBzbY9PG1fT3PA7QyR"
 said_receipts = "EwPWEHv9KVGt9KAGGaqVm3B9c6dLGSGzKZwtc5vFVJja"
 ghola_model_registry = "7hZ9oxHyFRpKHtH3jsa8NeH4HYGrPT7ZttDFtUX9naNS"
+said_shielded_pool = "5bmCDeaQceBpWgK8aADB4Tz4JzqZ9hkCi3qedC6oZR8A"
 
 [programs.devnet]
 said_registry = "3EqrapHPPQqQKeB3aykZz9AbppMBzbY9PG1fT3PA7QyR"
 said_receipts = "EwPWEHv9KVGt9KAGGaqVm3B9c6dLGSGzKZwtc5vFVJja"
 ghola_model_registry = "7hZ9oxHyFRpKHtH3jsa8NeH4HYGrPT7ZttDFtUX9naNS"
+said_shielded_pool = "5bmCDeaQceBpWgK8aADB4Tz4JzqZ9hkCi3qedC6oZR8A"
 
 [registry]
 url = "https://api.apr.dev"

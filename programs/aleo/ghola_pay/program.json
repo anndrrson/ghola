@@ -1,0 +1,13 @@
+{
+  "program": "ghola_pay.aleo",
+  "version": "0.1.0",
+  "description": "Ghola shielded payment routing — minimal pay transition consuming a USDC.a record and emitting recipient + change.",
+  "license": "MIT",
+  "development": {
+    "private_key": "APrivateKey1zkpDEVNETONLYREPLACEAtDeployTimeXXXXXXXXXXXXXXXXXXXXXXXX",
+    "view_key": "AViewKey1DEVNETONLYREPLACEAtDeployTimeXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "address": "aleo1devnetonlyreplaceatdeploytimexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  "license_file": "../../../LICENSE",
+  "dependencies": null
+}

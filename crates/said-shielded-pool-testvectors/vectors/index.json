@@ -1,0 +1,98 @@
+{
+  "count": 13,
+  "schema_version": 1,
+  "seed_hex": "0xDEADBEEF",
+  "vectors": [
+    {
+      "description": "Single deposit of 1000 units of asset A. No inputs, one output commitment.",
+      "file": "deposit_only.json",
+      "name": "deposit_only",
+      "should_prove": true,
+      "should_verify": true
+    },
+    {
+      "description": "Spend two notes of asset A (500 + 700 = 1200), produce two new notes (800 + 400). public_amount = 0.",
+      "file": "transfer_2in_2out_same_asset.json",
+      "name": "transfer_2in_2out_same_asset",
+      "should_prove": true,
+      "should_verify": true
+    },
+    {
+      "description": "Split one 1000-unit note into 300 + 700.",
+      "file": "transfer_1in_2out_split.json",
+      "name": "transfer_1in_2out_split",
+      "should_prove": true,
+      "should_verify": true
+    },
+    {
+      "description": "Merge two notes (250 + 750) into one 1000-unit note.",
+      "file": "transfer_2in_1out_merge.json",
+      "name": "transfer_2in_1out_merge",
+      "should_prove": true,
+      "should_verify": true
+    },
+    {
+      "description": "Withdraw the entire balance of a 2500-unit note. No change note.",
+      "file": "withdraw_full.json",
+      "name": "withdraw_full",
+      "should_prove": true,
+      "should_verify": true
+    },
+    {
+      "description": "Withdraw 500 of a 2000-unit note; keep a 1500-unit change note shielded.",
+      "file": "partial_withdraw_with_change_note.json",
+      "name": "partial_withdraw_with_change_note",
+      "should_prove": true,
+      "should_verify": true
+    },
+    {
+      "description": "Sum of inputs (100) + public_amount (0) ≠ sum of outputs (500). Circuit MUST reject.",
+      "file": "invalid_value_conservation.json",
+      "name": "invalid_value_conservation",
+      "should_prove": false,
+      "should_verify": false
+    },
+    {
+      "description": "Input note is asset A but output note is asset B. Circuit MUST reject.",
+      "file": "invalid_asset_mismatch.json",
+      "name": "invalid_asset_mismatch",
+      "should_prove": false,
+      "should_verify": false
+    },
+    {
+      "description": "Initial spend of a 400-unit note. Both the proof and the on-chain submission MUST succeed.",
+      "file": "double_spend_same_nullifier__first.json",
+      "name": "double_spend_same_nullifier__first",
+      "should_prove": true,
+      "should_verify": true
+    },
+    {
+      "description": "Same input note re-spent. The proof itself is still cryptographically valid, but the on-chain program MUST reject because the nullifier already exists.",
+      "file": "double_spend_same_nullifier__replay.json",
+      "name": "double_spend_same_nullifier__replay",
+      "should_prove": true,
+      "should_verify": false
+    },
+    {
+      "description": "Witness references a Merkle root that is not in the on-chain ROOT_HISTORY_SIZE = 256 window. The on-chain program MUST reject.",
+      "file": "root_not_in_history.json",
+      "name": "root_not_in_history",
+      "should_prove": true,
+      "should_verify": false
+    },
+    {
+      "description": "Output amounts sum exceeds 2^64 - 1. The 64-bit range check inside the circuit MUST reject this witness.",
+      "file": "amount_overflow.json",
+      "name": "amount_overflow",
+      "should_prove": false,
+      "should_verify": false
+    },
+    {
+      "description": "Proof is cryptographically valid and binds to ext_data_hash = ext_in_proof, but the on-chain transaction's recomputed ext_data_hash differs. Program MUST reject.",
+      "file": "ext_data_binding_mismatch.json",
+      "name": "ext_data_binding_mismatch",
+      "should_prove": true,
+      "should_verify": false
+    }
+  ]
+}

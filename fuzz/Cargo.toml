@@ -1,0 +1,88 @@
+[package]
+name = "ghola-shielded-pool-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# cargo-fuzz convention: this package lives OUTSIDE the workspace so the
+# main `cargo build --workspace` doesn't try to compile libfuzzer
+# instrumentation. cargo-fuzz invokes us via `cd fuzz && cargo fuzz run`
+# under a nightly toolchain that has the `-Z sanitizer=address` /
+# libFuzzer instrumentation plumbing.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Path deps on the shielded-pool crates under test. We pull them in
+# directly so the fuzz targets exercise the SAME code paths the HTTP
+# handlers do — not a divergent re-implementation.
+said-shielded-pool-types = { path = "../crates/said-shielded-pool-types" }
+said-shielded-pool-prover = { path = "../crates/said-shielded-pool-prover" }
+said-shielded-pool-relayer = { path = "../crates/said-shielded-pool-relayer" }
+said-shielded-pool-indexer = { path = "../crates/said-shielded-pool-indexer" }
+
+# Auxiliary encoding deps used inside fuzz targets.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+borsh = "0.10"
+light-poseidon = "0.2"
+ark-bn254 = "0.4"
+ark-ec = "0.4"
+ark-ff = "0.4"
+num-bigint = "0.4"
+
+# Used by merkle_insert to spin up two in-memory trees per fuzz input
+# (we don't depend on the indexer's `open_temp_tree` test helper since
+# it's behind `#[cfg(test)]`).
+sled = "0.34"
+
+# Fuzz targets are declared individually so cargo-fuzz can build them
+# in isolation. We also disable the default-bin so cargo doesn't try to
+# build a library root for this package.
+
+[[bin]]
+name = "prover_witness_parse"
+path = "fuzz_targets/prover_witness_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relayer_relay_payload"
+path = "fuzz_targets/relayer_relay_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "indexer_commitment_hex"
+path = "fuzz_targets/indexer_commitment_hex.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "program_args_decode"
+path = "fuzz_targets/program_args_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vk_parse"
+path = "fuzz_targets/vk_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "merkle_insert"
+path = "fuzz_targets/merkle_insert.rs"
+test = false
+doc = false
+bench = false

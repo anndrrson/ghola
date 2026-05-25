@@ -1,0 +1,12 @@
+# Imports directory.
+#
+# At integration time the canonical USDC.a bridge program (e.g.
+# `usdc_bridge.aleo` or whichever id Wormhole NTT publishes) will
+# be vendored here so `program.json -> dependencies` can reference
+# it for `leo build` resolution.
+#
+# TODO(integration): drop the bridge program's `.aleo` artifact + its
+# `program.json` snippet into this directory and add the entry to
+# `program.json -> dependencies` accordingly. Remove the interim
+# `USDCx` record declaration in `src/main.leo` in favour of the
+# imported type at that point.

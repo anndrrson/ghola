@@ -1,0 +1,56 @@
+[package]
+name = "said-shielded-pool-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Client SDK for the Ghola Solana-native shielded pool. Builds shielded notes, derives viewing keys, talks to the prover service, and assembles Solana instructions for deposit/transfer/withdraw. Used by the CLI, daemon, and downstream SDK consumers."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+said-shielded-pool-types = { path = "../said-shielded-pool-types" }
+
+# Workspace deps
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true }
+sha2 = { workspace = true }
+hkdf = { workspace = true }
+ed25519-dalek = { workspace = true }
+curve25519-dalek = { workspace = true }
+zeroize = { workspace = true }
+common-secrets = { workspace = true }
+bs58 = { workspace = true }
+tracing = { workspace = true }
+
+# Solana on-chain compatibility — we intentionally avoid pulling the entire
+# `solana-sdk` dep tree (BPF toolchain pinning is fragile, see Anchor notes
+# in MEMORY). Instead, we mirror the pattern in `said-solana`: build raw
+# instructions and let the broadcaster sign/serialize. Borsh is the only
+# wire-format dep we need for instruction payloads.
+borsh = "0.10"
+
+# Note-memo encryption (stub, TO-BE-AUDITED). ChaCha20-Poly1305 keyed by
+# HKDF(shared_secret) where shared_secret = X25519(eph_sk, recipient_ivk_pk).
+chacha20poly1305 = "0.10"
+
+# ext_data_hash uses Keccak256 by default to match EVM-side bundlers; the
+# spec agent may pin to Poseidon — see comments in `tx_builder.rs`.
+tiny-keccak = { version = "2", features = ["keccak"] }
+
+# Poseidon-BN254 hashing — Circom-compatible parameterization. Must stay
+# bit-for-bit identical with the testvectors crate, the circom circuits,
+# and the on-chain `sol_poseidon` syscall. Direct deps (not workspace).
+light-poseidon = "0.2"
+ark-bn254 = "0.4"
+ark-ff = "0.4"
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }

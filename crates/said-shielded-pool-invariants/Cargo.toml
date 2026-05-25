@@ -1,0 +1,28 @@
+[package]
+name = "said-shielded-pool-invariants"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Machine-checkable safety invariants for the Ghola SAID shielded pool. Each predicate mirrors a property enforced by the on-chain program (programs/said-shielded-pool) and is checkable off-chain by indexers, auditors, and chaos tests against a serialized snapshot. See docs/shielded-pool/INVARIANTS.md."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+said-shielded-pool-types = { path = "../said-shielded-pool-types" }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+
+# Field arithmetic + Poseidon for off-chain commitment/nullifier
+# recomputation. Versions match the in-lockfile transitive deps already
+# pulled in by `groth16-solana` and `light-poseidon` so we don't bloat
+# the dep graph.
+light-poseidon = "0.2"
+ark-bn254 = { version = "0.4", default-features = false }
+ark-ff = { version = "0.4", default-features = false }
+
+[dev-dependencies]
+serde_json = { workspace = true }

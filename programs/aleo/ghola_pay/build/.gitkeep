@@ -1,0 +1,7 @@
+# Build artifacts.
+#
+# `leo build` / `aleo build` will populate this directory with the
+# compiled program (`main.aval`), the prover/verifier keys, and the
+# bytecode (.aleo). All generated; safe to delete and rebuild.
+#
+# Not committed (this .gitkeep just preserves the directory shape).
