@@ -168,19 +168,45 @@ const QUEUE_FULL_RETRY_AFTER_SECS: u64 = 30;
 /// hit. Aligned with the per-minute window.
 const RATE_LIMIT_RETRY_AFTER_SECS: u64 = 60;
 
-/// Best-effort client IP for rate limiting. Behind a reverse proxy/CDN (the
-/// production topology) the peer address is the proxy, so we use the rightmost
-/// VALID `X-Forwarded-For` entry — proxies append on the right; the leftmost is
-/// client-controlled and trivially spoofable. The connecting peer's
-/// `SocketAddr` (for direct, proxy-less connections) is provided via
-/// `ConnectInfo` in the request extensions when the server is built with
-/// `into_make_service_with_connect_info` (see `main.rs`).
-fn client_ip(headers: &HeaderMap, conn: Option<IpAddr>) -> Option<IpAddr> {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').rev().find_map(|part| part.trim().parse().ok()))
-        .or(conn)
+/// Best-effort client IP for rate limiting.
+///
+/// `X-Forwarded-For` is honored ONLY when the immediate connecting peer
+/// (`conn`) is in the operator-configured trusted-proxy set
+/// ([`crate::config::Config::trusted_proxies`]). In that case we take the
+/// rightmost VALID XFF entry — a trusted proxy appends the real client on the
+/// right; the leftmost is client-controlled and trivially spoofable.
+///
+/// For ANY untrusted peer — a direct client connection, or a deployment with
+/// no proxy (the default, since `trusted_proxies` is empty) — we IGNORE XFF
+/// entirely and key on the real peer `SocketAddr`. Without this, a direct
+/// client could forge `X-Forwarded-For` to rotate its rate-limit identity on
+/// every request, trivially defeating the per-IP limiter.
+///
+/// The peer `SocketAddr` is provided via `ConnectInfo` in the request
+/// extensions when the server is built with
+/// `into_make_service_with_connect_info` (see `main.rs`). When it is absent
+/// (e.g. tests using a bare `axum::serve`), there is no peer to trust, so XFF
+/// is still ignored and the result is `None` (rate limiting is skipped).
+fn client_ip(
+    headers: &HeaderMap,
+    conn: Option<IpAddr>,
+    trusted_proxies: &std::collections::HashSet<IpAddr>,
+) -> Option<IpAddr> {
+    let peer = conn?;
+    if trusted_proxies.contains(&peer) {
+        // Trusted proxy: prefer the rightmost valid XFF entry it appended;
+        // fall back to the peer (the proxy itself) if XFF is missing/garbage.
+        if let Some(xff_ip) = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').rev().find_map(|part| part.trim().parse().ok()))
+        {
+            return Some(xff_ip);
+        }
+    }
+    // Untrusted peer (or no/invalid XFF from a trusted proxy): use the real
+    // socket peer address. Never trust a client-supplied XFF here.
+    Some(peer)
 }
 
 async fn relay(
@@ -201,7 +227,7 @@ async fn relay(
     // Runs first so a flood is cheap to reject — before JSON validation, the
     // dedup index, or queue accounting. We log at DEBUG only (an INFO rejection
     // rate would be a weak timing side-channel, same rationale as below).
-    let ip = client_ip(&headers, conn_ip);
+    let ip = client_ip(&headers, conn_ip, &state.config.trusted_proxies);
     if let Some(ip) = ip {
         if !state
             .ip_rate_limiter
@@ -510,5 +536,84 @@ fn estimate_eta(state: &AppState) -> Result<u64> {
         Ok(cfg.min_delay.as_secs())
     } else {
         Ok(cfg.max_delay.as_secs())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::net::IpAddr;
+
+    fn hdrs(xff: Option<&str>) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        if let Some(v) = xff {
+            h.insert("x-forwarded-for", v.parse().unwrap());
+        }
+        h
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    /// M3: with no trusted proxies (the default), a client-supplied XFF MUST be
+    /// ignored — the rate-limit key is the real peer, so XFF spoofing cannot
+    /// rotate identity.
+    #[test]
+    fn xff_ignored_when_no_trusted_proxies() {
+        let trusted = HashSet::new();
+        let got = client_ip(
+            &hdrs(Some("1.2.3.4, 5.6.7.8")),
+            Some(ip("203.0.113.9")),
+            &trusted,
+        );
+        assert_eq!(got, Some(ip("203.0.113.9")), "must key on peer, not XFF");
+    }
+
+    /// A spoofed XFF from an untrusted peer is ignored even if it rotates every
+    /// request: two different forged XFFs from the same peer map to the same
+    /// rate-limit key (the peer).
+    #[test]
+    fn spoofed_xff_cannot_rotate_identity() {
+        let trusted = HashSet::new();
+        let peer = ip("203.0.113.9");
+        let a = client_ip(&hdrs(Some("9.9.9.9")), Some(peer), &trusted);
+        let b = client_ip(&hdrs(Some("8.8.8.8")), Some(peer), &trusted);
+        assert_eq!(a, b);
+        assert_eq!(a, Some(peer));
+    }
+
+    /// When the immediate peer IS a trusted proxy, honor the rightmost valid
+    /// XFF entry (the real client the proxy appended).
+    #[test]
+    fn xff_honored_from_trusted_proxy_rightmost() {
+        let mut trusted = HashSet::new();
+        trusted.insert(ip("10.0.0.1")); // the proxy's peer address
+        let got = client_ip(
+            &hdrs(Some("1.2.3.4, 203.0.113.50")),
+            Some(ip("10.0.0.1")),
+            &trusted,
+        );
+        // Rightmost valid entry = the address the trusted proxy appended.
+        assert_eq!(got, Some(ip("203.0.113.50")));
+    }
+
+    /// A trusted proxy with a missing/garbage XFF falls back to the proxy peer.
+    #[test]
+    fn trusted_proxy_without_xff_falls_back_to_peer() {
+        let mut trusted = HashSet::new();
+        trusted.insert(ip("10.0.0.1"));
+        let got = client_ip(&hdrs(None), Some(ip("10.0.0.1")), &trusted);
+        assert_eq!(got, Some(ip("10.0.0.1")));
+    }
+
+    /// No peer (e.g. bare `axum::serve` in tests) => no rate-limit key, XFF is
+    /// never trusted on its own.
+    #[test]
+    fn no_peer_yields_none_even_with_xff() {
+        let trusted = HashSet::new();
+        let got = client_ip(&hdrs(Some("1.2.3.4")), None, &trusted);
+        assert_eq!(got, None);
     }
 }

@@ -72,6 +72,7 @@ fn test_config() -> Arc<Config> {
         max_queue_depth: 10_000,
         relay_rate_limit_per_min: 0,
         dedup_ttl_secs: 86_400,
+        trusted_proxies: std::collections::HashSet::new(),
     })
 }
 

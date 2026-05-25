@@ -96,6 +96,18 @@ pub struct Config {
     /// nullifier check remains the ultimate replay backstop. Set to 0 to
     /// disable pruning (unbounded growth — not recommended).
     pub dedup_ttl_secs: i64,
+
+    /// Set of reverse-proxy / CDN peer IPs whose `X-Forwarded-For` header is
+    /// trusted for rate-limit keying. The connecting `SocketAddr` is checked
+    /// against this set; only if the immediate peer is a trusted proxy do we
+    /// honor XFF (and take its rightmost valid entry). For ANY other peer
+    /// (i.e. a direct client connection, or no proxy deployed) we IGNORE XFF
+    /// entirely and key on the real peer address — otherwise a client can
+    /// forge XFF to rotate its rate-limit identity every request.
+    ///
+    /// Configured via `RELAY_TRUSTED_PROXIES` (comma-separated IPs). Empty by
+    /// default (the safe default: trust no XFF, always use the socket peer).
+    pub trusted_proxies: std::collections::HashSet<std::net::IpAddr>,
 }
 
 /// Default cap on pending queue depth. See [`Config::max_queue_depth`].
@@ -185,6 +197,27 @@ impl Config {
             .unwrap_or(Ok(DEFAULT_DEDUP_TTL_SECS))
             .map_err(|e| Error::Config(format!("DEDUP_TTL_SECS: {e}")))?;
 
+        // Comma-separated list of trusted reverse-proxy peer IPs. Any entry
+        // that fails to parse as an IpAddr is a config error (fail loud rather
+        // than silently trusting/ignoring a malformed proxy address).
+        let trusted_proxies = match std::env::var("RELAY_TRUSTED_PROXIES") {
+            Ok(raw) => {
+                let mut set = std::collections::HashSet::new();
+                for part in raw.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let ip = part.parse::<std::net::IpAddr>().map_err(|e| {
+                        Error::Config(format!("RELAY_TRUSTED_PROXIES entry '{part}': {e}"))
+                    })?;
+                    set.insert(ip);
+                }
+                set
+            }
+            Err(_) => std::collections::HashSet::new(),
+        };
+
         if min_delay >= max_delay {
             return Err(Error::Config(
                 "MIN_DELAY_SECS must be < MAX_DELAY_SECS".into(),
@@ -219,6 +252,7 @@ impl Config {
             max_queue_depth,
             relay_rate_limit_per_min,
             dedup_ttl_secs,
+            trusted_proxies,
         })
     }
 }
