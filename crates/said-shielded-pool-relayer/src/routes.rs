@@ -192,7 +192,13 @@ fn client_ip(
     conn: Option<IpAddr>,
     trusted_proxies: &std::collections::HashSet<IpAddr>,
 ) -> Option<IpAddr> {
-    let peer = conn?;
+    // Normalize an IPv4-mapped IPv6 peer (`::ffff:a.b.c.d`) down to its v4
+    // form before the trusted-proxy membership check. A dual-stack listener
+    // can surface a proxy that connects over IPv4 as a mapped-v6 SocketAddr;
+    // without this, an operator listing the proxy's plain v4 address in
+    // RELAY_TRUSTED_PROXIES would silently fail to match (it fails CLOSED —
+    // XFF ignored — so this is an operability fix, not a security hole).
+    let peer = normalize_peer(conn?);
     if trusted_proxies.contains(&peer) {
         // Trusted proxy: prefer the rightmost valid XFF entry it appended;
         // fall back to the peer (the proxy itself) if XFF is missing/garbage.
@@ -207,6 +213,18 @@ fn client_ip(
     // Untrusted peer (or no/invalid XFF from a trusted proxy): use the real
     // socket peer address. Never trust a client-supplied XFF here.
     Some(peer)
+}
+
+/// Collapse an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) to its canonical v4
+/// form; pass any other address through unchanged.
+fn normalize_peer(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(v6),
+        },
+        v4 => v4,
+    }
 }
 
 async fn relay(
@@ -615,5 +633,35 @@ mod tests {
         let trusted = HashSet::new();
         let got = client_ip(&hdrs(Some("1.2.3.4")), None, &trusted);
         assert_eq!(got, None);
+    }
+
+    /// Operability: a proxy listed by its plain v4 address must match even when
+    /// a dual-stack socket surfaces it as an IPv4-mapped v6 peer
+    /// (`::ffff:10.0.0.1`). Without normalization the membership check misses
+    /// and XFF is (wrongly) ignored.
+    #[test]
+    fn mapped_v6_peer_matches_listed_v4_proxy() {
+        let mut trusted = HashSet::new();
+        trusted.insert(ip("10.0.0.1")); // operator listed the plain v4 form
+        let got = client_ip(
+            &hdrs(Some("1.2.3.4, 203.0.113.50")),
+            Some(ip("::ffff:10.0.0.1")), // dual-stack socket surfaces mapped v6
+            &trusted,
+        );
+        // XFF honored => rightmost valid entry the proxy appended.
+        assert_eq!(got, Some(ip("203.0.113.50")));
+    }
+
+    /// And when no peer is mapped, normalization is a no-op: a mapped-v6 peer
+    /// that is NOT a trusted proxy still keys on its normalized v4 self.
+    #[test]
+    fn mapped_v6_untrusted_peer_keys_on_v4_form() {
+        let trusted = HashSet::new();
+        let got = client_ip(
+            &hdrs(Some("9.9.9.9")),
+            Some(ip("::ffff:203.0.113.9")),
+            &trusted,
+        );
+        assert_eq!(got, Some(ip("203.0.113.9")));
     }
 }

@@ -56,6 +56,18 @@ pub const DEFAULT_BACKFILL_LIMIT: u32 = 1000;
 /// cover the worst-case `FORESTER_POLL_SECS` plus an extra RPC retry window.
 pub const DEFAULT_STALENESS_THRESHOLD_SECS: u64 = 60;
 
+/// Default per-IP `/witness` rate limit (requests per minute). The witness path
+/// touches Poseidon hashing, so it's more expensive than a trivial GET; this
+/// bounds how fast one source can drive it. `0` disables.
+pub const DEFAULT_WITNESS_RATE_LIMIT_PER_MIN: u32 = 120;
+
+/// Default cap on concurrently-served `/witness` requests. Bounds peak CPU so a
+/// burst can't pin every core. `0` disables.
+pub const DEFAULT_WITNESS_MAX_CONCURRENCY: usize = 16;
+
+/// Default per-request `/witness` timeout (seconds).
+pub const DEFAULT_WITNESS_TIMEOUT_SECS: u64 = 10;
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub rpc_url: String,
@@ -77,6 +89,17 @@ pub struct Config {
     /// Witness API refuses to answer if the listener hasn't observed the
     /// chain in this long (seconds). See [`DEFAULT_STALENESS_THRESHOLD_SECS`].
     pub staleness_threshold_secs: u64,
+    /// Per-IP request cap (per minute) on `/witness`. `0` disables limiting.
+    pub witness_rate_limit_per_min: u32,
+    /// Max number of `/witness` requests served concurrently (bounds peak CPU).
+    /// `0` disables the cap.
+    pub witness_max_concurrency: usize,
+    /// Hard timeout (seconds) for a single `/witness` request.
+    pub witness_timeout_secs: u64,
+    /// Reverse-proxy / CDN peer IPs whose `X-Forwarded-For` is trusted for
+    /// rate-limit keying. Empty by default (trust no XFF; key on socket peer).
+    /// Same semantics as the relayer's `RELAY_TRUSTED_PROXIES`.
+    pub trusted_proxies: std::collections::HashSet<std::net::IpAddr>,
 }
 
 impl Config {
@@ -130,6 +153,39 @@ impl Config {
             DEFAULT_STALENESS_THRESHOLD_SECS,
         )?;
 
+        let witness_rate_limit_per_min = parse_env_u32(
+            "WITNESS_RATE_LIMIT_PER_MIN",
+            DEFAULT_WITNESS_RATE_LIMIT_PER_MIN,
+        )?;
+        let witness_max_concurrency = parse_env_usize(
+            "WITNESS_MAX_CONCURRENCY",
+            DEFAULT_WITNESS_MAX_CONCURRENCY,
+        )?;
+        let witness_timeout_secs = parse_env_u64(
+            "WITNESS_TIMEOUT_SECS",
+            DEFAULT_WITNESS_TIMEOUT_SECS,
+        )?;
+
+        // Comma-separated trusted reverse-proxy peer IPs. A malformed entry is
+        // a hard config error (fail loud rather than silently mis-trust).
+        let trusted_proxies = match std::env::var("INDEXER_TRUSTED_PROXIES") {
+            Ok(raw) => {
+                let mut set = std::collections::HashSet::new();
+                for part in raw.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let ip = part.parse::<std::net::IpAddr>().map_err(|e| {
+                        Error::ConfigInvalid(format!("INDEXER_TRUSTED_PROXIES entry '{part}': {e}"))
+                    })?;
+                    set.insert(ip);
+                }
+                set
+            }
+            Err(_) => std::collections::HashSet::new(),
+        };
+
         Ok(Self {
             rpc_url,
             ws_url,
@@ -143,6 +199,10 @@ impl Config {
             forester_poll_secs,
             backfill_limit,
             staleness_threshold_secs,
+            witness_rate_limit_per_min,
+            witness_max_concurrency,
+            witness_timeout_secs,
+            trusted_proxies,
         })
     }
 
@@ -174,6 +234,15 @@ fn parse_env_u64(name: &str, default: u64) -> Result<u64> {
     match std::env::var(name) {
         Ok(s) => s
             .parse::<u64>()
+            .map_err(|e| Error::ConfigInvalid(format!("{name}: {e}"))),
+        Err(_) => Ok(default),
+    }
+}
+
+fn parse_env_usize(name: &str, default: usize) -> Result<usize> {
+    match std::env::var(name) {
+        Ok(s) => s
+            .parse::<usize>()
             .map_err(|e| Error::ConfigInvalid(format!("{name}: {e}"))),
         Err(_) => Ok(default),
     }

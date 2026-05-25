@@ -447,6 +447,16 @@ impl TestIndexer {
             forester_poll_secs: 10,
             backfill_limit: 100,
             staleness_threshold_secs: overrides.staleness_threshold_secs,
+            // Witness DoS bounds — defaults are fine for chaos tests (which use
+            // a bare `axum::serve` with no ConnectInfo, so the per-IP limiter is
+            // skipped). Concurrency/timeout layers are inert at this scale.
+            witness_rate_limit_per_min:
+                said_shielded_pool_indexer::config::DEFAULT_WITNESS_RATE_LIMIT_PER_MIN,
+            witness_max_concurrency:
+                said_shielded_pool_indexer::config::DEFAULT_WITNESS_MAX_CONCURRENCY,
+            witness_timeout_secs:
+                said_shielded_pool_indexer::config::DEFAULT_WITNESS_TIMEOUT_SECS,
+            trusted_proxies: std::collections::HashSet::new(),
         };
 
         let state = AppState::new(cfg, tree);

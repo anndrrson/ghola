@@ -90,7 +90,15 @@ async fn main() -> Result<()> {
     info!(%addr, "indexer http server listening");
 
     let server = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener_sock, app).await {
+        // `into_make_service_with_connect_info` exposes the peer `SocketAddr`
+        // to handlers via `ConnectInfo`, which the per-IP witness rate limiter
+        // keys on (and only honors XFF from configured trusted proxies).
+        if let Err(e) = axum::serve(
+            listener_sock,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        {
             warn!("axum server exited: {e:?}");
         }
     });

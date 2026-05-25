@@ -10,27 +10,129 @@
 //! All responses are JSON. `commitment`, `root`, and `siblings` are
 //! returned as lowercase hex strings without `0x` prefix.
 
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json},
     routing::get,
     Router,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::timeout::TimeoutLayer;
 
 use said_shielded_pool_types::{Commitment, FIELD_BYTES, ROOT_HISTORY_SIZE, TREE_DEPTH};
 
 use crate::error::Error;
 use crate::state::AppState;
 
+/// Per-IP fixed-window rate limiter. Mirrors the relayer's
+/// `said_shielded_pool_relayer::routes::IpRateLimiter`: a coarse
+/// `IpAddr -> (window_minute, count)` map, nothing persisted or logged.
+#[derive(Clone, Default)]
+pub struct IpRateLimiter {
+    windows: Arc<Mutex<HashMap<IpAddr, (i64, u32)>>>,
+}
+
+impl IpRateLimiter {
+    /// `true` if allowed, `false` if the per-minute limit is exceeded.
+    /// `max_per_min == 0` disables limiting.
+    pub async fn check(&self, ip: IpAddr, max_per_min: u32) -> bool {
+        if max_per_min == 0 {
+            return true;
+        }
+        let now_minute = now_unix_secs() / 60;
+        let mut windows = self.windows.lock().await;
+        let entry = windows.entry(ip).or_insert((now_minute, 0));
+        if entry.0 != now_minute {
+            *entry = (now_minute, 1);
+            return true;
+        }
+        entry.1 += 1;
+        entry.1 <= max_per_min
+    }
+}
+
+fn now_unix_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Resolve the rate-limit client identity.
+///
+/// `X-Forwarded-For` is honored ONLY when the connecting peer is in
+/// `trusted_proxies` (taking the rightmost valid entry the proxy appended).
+/// For any untrusted peer we ignore XFF and key on the socket peer — otherwise
+/// a direct client could forge XFF to rotate its identity every request. An
+/// IPv4-mapped IPv6 peer (`::ffff:a.b.c.d`) is normalized to its v4 form before
+/// the trusted-proxy membership check. Returns `None` when there is no peer
+/// (e.g. tests using a bare `axum::serve`), in which case limiting is skipped.
+pub fn client_ip(
+    headers: &HeaderMap,
+    conn: Option<IpAddr>,
+    trusted_proxies: &std::collections::HashSet<IpAddr>,
+) -> Option<IpAddr> {
+    let peer = normalize_peer(conn?);
+    if trusted_proxies.contains(&peer) {
+        if let Some(xff_ip) = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').rev().find_map(|part| part.trim().parse().ok()))
+        {
+            return Some(xff_ip);
+        }
+    }
+    Some(peer)
+}
+
+/// Collapse an IPv4-mapped IPv6 address to its canonical v4 form.
+fn normalize_peer(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(v6),
+        },
+        v4 => v4,
+    }
+}
+
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    // Bound the witness path's blast radius:
+    //   - `GlobalConcurrencyLimitLayer` caps simultaneous in-flight requests so
+    //     a burst can't pin every core on the (Poseidon-touching) witness path.
+    //   - `TimeoutLayer` enforces a hard per-request deadline.
+    //   - `RequestBodyLimitLayer` cheaply rejects oversized bodies.
+    // Per-IP rate limiting is applied inside the `witness` handler itself (it
+    // needs ConnectInfo + the trusted-proxy config from AppState).
+    let max_conc = state.cfg.witness_max_concurrency;
+    let timeout = Duration::from_secs(state.cfg.witness_timeout_secs.max(1));
+
+    let router = Router::new()
         .route("/healthz", get(healthz))
         .route("/tree-state", get(tree_state))
         .route("/witness", get(witness))
         .route("/root-history", get(root_history))
-        .with_state(state)
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::SERVICE_UNAVAILABLE,
+            timeout,
+        ))
+        .layer(RequestBodyLimitLayer::new(8 * 1024));
+
+    let router = if max_conc > 0 {
+        router.layer(tower::limit::GlobalConcurrencyLimitLayer::new(max_conc))
+    } else {
+        router
+    };
+
+    router.with_state(state)
 }
 
 #[derive(Serialize)]
@@ -115,10 +217,41 @@ struct WitnessResp {
     depth: usize,
 }
 
+/// Retry-After (seconds) returned with HTTP 429 when the per-IP witness rate
+/// limit is hit. Aligned with the per-minute window.
+const WITNESS_RATE_LIMIT_RETRY_AFTER_SECS: u64 = 60;
+
 async fn witness(
     State(st): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<WitnessQuery>,
+    req: axum::extract::Request,
 ) -> Result<axum::response::Response, ApiError> {
+    // ----- per-IP rate limit (DoS bound) -----
+    // Runs before any tree work or hex parsing so a flood is cheap to reject.
+    // Keyed on the resolved client identity (trusted-proxy XFF, else peer). The
+    // peer comes from `ConnectInfo` in the request extensions (present in prod
+    // via `into_make_service_with_connect_info`; absent in bare-serve tests, in
+    // which case there's no peer to key on and limiting is skipped).
+    let conn_ip = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    if let Some(ip) = client_ip(&headers, conn_ip, &st.cfg.trusted_proxies) {
+        if !st
+            .witness_rate_limiter
+            .check(ip, st.cfg.witness_rate_limit_per_min)
+            .await
+        {
+            return Ok((
+                StatusCode::TOO_MANY_REQUESTS,
+                [("Retry-After", WITNESS_RATE_LIMIT_RETRY_AFTER_SECS.to_string())],
+                Json(serde_json::json!({ "error": "rate_limited" })),
+            )
+                .into_response());
+        }
+    }
+
     if let Some(resp) = stale_response(&st) {
         return Ok(resp);
     }

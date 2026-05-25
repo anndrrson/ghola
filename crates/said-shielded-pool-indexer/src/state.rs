@@ -12,14 +12,35 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 use crate::config::Config;
+use crate::routes::IpRateLimiter;
 use crate::solana::SolanaRpcClient;
 use crate::tree::IncrementalMerkleTree;
+
+/// The base58 system-program / default pubkey. Used as the `POOL_MINT`
+/// sentinel for indexer-only nodes that don't configure a mint; when the mint
+/// equals this, we can't derive a concrete tree PDA and fall back to
+/// program-scope-only event attribution.
+const DEFAULT_MINT_B58: &str = "11111111111111111111111111111111";
 
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<Config>,
     pub tree: Arc<RwLock<IncrementalMerkleTree>>,
     pub rpc: SolanaRpcClient,
+    /// `pool_program_id` decoded to raw 32 bytes once at startup, so the event
+    /// listener can attribute `Program data:` log lines to the emitting program
+    /// without re-decoding base58 per log line.
+    pub pool_program_id_bytes: [u8; 32],
+    /// The expected MerkleTree PDA this indexer mirrors, derived from
+    /// `(pool_program_id, pool_config, pool_mint)`. `None` for indexer-only
+    /// nodes with no configured mint (the default), in which case event
+    /// attribution relies on program-scope alone. When `Some`, tree-mutating
+    /// events whose `tree` field differs are rejected.
+    pub expected_tree_pda: Option<[u8; 32]>,
+    /// Per-IP fixed-window limiter for the (Poseidon-touching) `/witness`
+    /// endpoint. Keyed on the resolved client identity (see
+    /// [`crate::routes::client_ip`]).
+    pub witness_rate_limiter: IpRateLimiter,
     /// Unix timestamp (seconds since epoch) at which the listener last
     /// observed a fresh root from on-chain. Used by `/witness` and
     /// `/tree-state` to refuse to serve stale state (see Stream 6 of the
@@ -47,10 +68,38 @@ impl AppState {
         } else {
             0
         };
+
+        // Decode the pool program id once. `Config::from_env` already validated
+        // it is a 32-byte base58 pubkey, so this is infallible in practice; on
+        // the off chance it isn't we fall back to all-zeros (which simply means
+        // NO log line will ever attribute to "the pool program", i.e. the
+        // listener ingests nothing — fail-closed).
+        let pool_program_id_bytes = decode_pubkey(&cfg.pool_program_id).unwrap_or([0u8; 32]);
+
+        // Derive the concrete MerkleTree PDA when a real mint is configured.
+        // Indexer-only nodes leave POOL_MINT unset (defaulting to the system
+        // pubkey), in which case we can't pin a tree PDA and use scope-only
+        // attribution.
+        let expected_tree_pda = (cfg.pool_mint != DEFAULT_MINT_B58)
+            .then(|| decode_pubkey(&cfg.pool_mint))
+            .flatten()
+            .map(|mint| {
+                let pool_config =
+                    crate::forester::derive_pool_config_pda(&pool_program_id_bytes);
+                crate::forester::derive_merkle_tree_pda(
+                    &pool_program_id_bytes,
+                    &pool_config,
+                    &mint,
+                )
+            });
+
         Self {
             cfg: Arc::new(cfg),
             tree: Arc::new(RwLock::new(tree)),
             rpc,
+            pool_program_id_bytes,
+            expected_tree_pda,
+            witness_rate_limiter: IpRateLimiter::default(),
             latest_root_observed_unix: Arc::new(AtomicI64::new(bootstrap)),
         }
     }
@@ -86,4 +135,10 @@ fn now_unix() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Decode a base58 pubkey string to raw 32 bytes, or `None` if it isn't a
+/// 32-byte base58 value.
+fn decode_pubkey(s: &str) -> Option<[u8; 32]> {
+    bs58::decode(s).into_vec().ok()?.try_into().ok()
 }

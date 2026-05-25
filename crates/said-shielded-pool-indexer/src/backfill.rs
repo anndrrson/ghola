@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
-use crate::events::decode_tx_logs;
+use crate::events::decode_tx_logs_scoped;
 use crate::listener::EventListener;
 use crate::state::AppState;
 
@@ -97,7 +97,13 @@ impl Backfiller {
                     .and_then(|m| m.log_messages.as_ref())
                     .cloned()
                     .unwrap_or_default();
-                let events = decode_tx_logs(&logs);
+                // Same program-scope attribution as the live listener — only
+                // ingest events the pool program actually emitted.
+                let events = decode_tx_logs_scoped(
+                    &logs,
+                    &self.state.pool_program_id_bytes,
+                    self.state.expected_tree_pda.as_ref(),
+                );
                 if events.is_empty() {
                     continue;
                 }

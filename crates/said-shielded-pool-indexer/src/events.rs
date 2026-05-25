@@ -289,7 +289,126 @@ pub fn decode_program_data_line(line: &str) -> Result<Option<DecodedEvent>> {
     Ok(Some(decoded))
 }
 
-/// Extract all decoded events from a transaction's `logMessages`.
+/// The `tree`/PDA field carried by the three tree-mutating events. Used by
+/// [`decode_tx_logs_scoped`] to reject events that target a different tree PDA
+/// than the one this indexer mirrors.
+fn event_tree(ev: &DecodedEvent) -> Option<[u8; 32]> {
+    match ev {
+        DecodedEvent::CommitmentQueued(c) => Some(c.tree),
+        DecodedEvent::Transferred(t) => Some(t.tree),
+        DecodedEvent::RootUpdated(r) => Some(r.tree),
+        _ => None,
+    }
+}
+
+/// Extract decoded events from a transaction's `logMessages`, attributing each
+/// `Program data:` line to the program at the top of the invocation stack and
+/// keeping ONLY those emitted by `pool_program_id`.
+///
+/// # Why scope matters (security)
+///
+/// Anchor's 8-byte event discriminator is `sha256("event:<Name>")[..8]` — it is
+/// NOT program-scoped. A transaction's `logMessages` is a flat, interleaved list
+/// spanning every program invoked (including arbitrary CPIs and unrelated
+/// top-level instructions in the same tx). `getSignaturesForAddress(program)`
+/// returns every tx that so much as *referenced* the program. So a naive
+/// "scan for a known discriminator" decoder would ingest a `CommitmentQueued`
+/// log emitted by ANY third-party program that copies the discriminator,
+/// letting an attacker inject bogus leaves into the off-chain mirror and corrupt
+/// every `/witness` path. We defend by replaying Solana's invocation brackets:
+///
+/// ```text
+/// Program <pid> invoke [depth]      <- push pid
+/// Program data: <base64>            <- belongs to the current top-of-stack pid
+/// Program <pid> success | failed    <- pop
+/// ```
+///
+/// Only `Program data:` lines whose top-of-stack frame is `pool_program_id` are
+/// decoded.
+///
+/// # Tree-PDA pinning
+///
+/// When `expected_tree` is `Some`, tree-mutating events (`CommitmentQueued`,
+/// `Transferred`, `RootUpdated`) whose `tree` field doesn't equal it are
+/// dropped — a second defense so even a same-program event for a *different*
+/// tree PDA can't pollute this mirror. `None` (e.g. indexer-only nodes with no
+/// configured mint) relies on program-scope attribution alone.
+pub fn decode_tx_logs_scoped(
+    logs: &[String],
+    pool_program_id: &[u8; 32],
+    expected_tree: Option<&[u8; 32]>,
+) -> Vec<DecodedEvent> {
+    let mut out = Vec::new();
+    // Invocation stack of program ids (base58-decoded). The active emitter is
+    // the top of the stack.
+    let mut stack: Vec<[u8; 32]> = Vec::new();
+
+    for line in logs {
+        if let Some(pid) = parse_invoke_program(line) {
+            stack.push(pid);
+            continue;
+        }
+        if is_program_pop(line) {
+            stack.pop();
+            continue;
+        }
+        // A `Program data:` line is attributed to the current top-of-stack
+        // program. Decode it only when that program is the pool program.
+        if line.starts_with("Program data: ") {
+            let emitter_is_pool = stack.last() == Some(pool_program_id);
+            if !emitter_is_pool {
+                continue;
+            }
+            match decode_program_data_line(line) {
+                Ok(Some(ev)) => {
+                    if let (Some(expected), Some(got)) = (expected_tree, event_tree(&ev)) {
+                        if &got != expected {
+                            // Same program, different tree PDA — not our mirror.
+                            continue;
+                        }
+                    }
+                    out.push(ev);
+                }
+                Ok(None) => {}
+                Err(_) => {} // malformed payload from the pool program: skip.
+            }
+        }
+    }
+    out
+}
+
+/// Parse `Program <base58-pubkey> invoke [<depth>]` → the invoked program id.
+fn parse_invoke_program(line: &str) -> Option<[u8; 32]> {
+    let rest = line.strip_prefix("Program ")?;
+    // Expect: "<pubkey> invoke [<n>]"
+    let (pubkey, tail) = rest.split_once(' ')?;
+    if !tail.starts_with("invoke") {
+        return None;
+    }
+    let decoded = bs58::decode(pubkey).into_vec().ok()?;
+    decoded.try_into().ok()
+}
+
+/// True for the lines that close an invocation frame:
+/// `Program <pubkey> success` or `Program <pubkey> failed: <reason>`.
+fn is_program_pop(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("Program ") else {
+        return false;
+    };
+    let Some((_pubkey, tail)) = rest.split_once(' ') else {
+        return false;
+    };
+    tail == "success" || tail.starts_with("failed")
+}
+
+/// Extract all decoded events from a transaction's `logMessages` WITHOUT
+/// program-scope attribution.
+///
+/// DEPRECATED for ingestion: this scans every `Program data:` line regardless
+/// of which program emitted it and is vulnerable to same-discriminator
+/// injection (see [`decode_tx_logs_scoped`]). Retained only for tests and
+/// tooling that operate on logs already known to come from the pool program.
+#[cfg(test)]
 pub fn decode_tx_logs(logs: &[String]) -> Vec<DecodedEvent> {
     logs.iter()
         .filter_map(|l| decode_program_data_line(l).ok().flatten())
@@ -452,5 +571,132 @@ mod tests {
 
     fn decoded_root_bytes(ev: &DecodedEvent) -> [u8; 32] {
         ev.root().expect("root present").0
+    }
+
+    // ---- Program-scope attribution (security) --------------------------------
+
+    const POOL_PID: [u8; 32] = [1u8; 32];
+    const ATTACKER_PID: [u8; 32] = [2u8; 32];
+
+    fn pid_b58(pid: &[u8; 32]) -> String {
+        bs58::encode(pid).into_string()
+    }
+
+    /// `Program data:` line for a `CommitmentQueued` with the given tree + seed.
+    fn commitment_log(tree: [u8; 32], commitment_seed: u8) -> String {
+        let ev = CommitmentQueued {
+            tree,
+            queue_index: 1,
+            commitment: [commitment_seed; COMMITMENT_BYTES],
+            amount: 1,
+        };
+        let mut buf = COMMITMENT_QUEUED_DISC.to_vec();
+        borsh::BorshSerialize::serialize(&ev, &mut buf).unwrap();
+        use base64::Engine as _;
+        format!(
+            "Program data: {}",
+            base64::engine::general_purpose::STANDARD.encode(&buf)
+        )
+    }
+
+    /// A genuine pool-program-emitted event is decoded.
+    #[test]
+    fn scoped_accepts_event_from_pool_program() {
+        let logs = vec![
+            format!("Program {} invoke [1]", pid_b58(&POOL_PID)),
+            "Program log: Instruction: Deposit".into(),
+            commitment_log([9u8; 32], 7),
+            format!("Program {} success", pid_b58(&POOL_PID)),
+        ];
+        let events = decode_tx_logs_scoped(&logs, &POOL_PID, None);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].commitments(), vec![Commitment([7u8; 32])]);
+    }
+
+    /// THE ATTACK: a third-party program emits a `Program data:` line carrying a
+    /// valid `CommitmentQueued` discriminator. It MUST be ignored because the
+    /// emitting frame is not the pool program — even though the unscoped
+    /// `decode_tx_logs` would have ingested it.
+    #[test]
+    fn scoped_rejects_same_discriminator_from_other_program() {
+        let logs = vec![
+            format!("Program {} invoke [1]", pid_b58(&ATTACKER_PID)),
+            commitment_log([9u8; 32], 7), // forged, emitted by the attacker
+            format!("Program {} success", pid_b58(&ATTACKER_PID)),
+        ];
+        // Unscoped (legacy) decoder would wrongly accept it:
+        assert_eq!(decode_tx_logs(&logs).len(), 1);
+        // Scoped decoder rejects it.
+        assert!(decode_tx_logs_scoped(&logs, &POOL_PID, None).is_empty());
+    }
+
+    /// A forged event emitted via a CPI *inside* the pool program's frame but by
+    /// a nested attacker program is still rejected: only the top-of-stack frame
+    /// (the actual emitter) counts.
+    #[test]
+    fn scoped_rejects_event_from_inner_cpi_other_program() {
+        let logs = vec![
+            format!("Program {} invoke [1]", pid_b58(&POOL_PID)),
+            format!("Program {} invoke [2]", pid_b58(&ATTACKER_PID)),
+            commitment_log([9u8; 32], 7), // emitted while attacker is on top
+            format!("Program {} success", pid_b58(&ATTACKER_PID)),
+            format!("Program {} success", pid_b58(&POOL_PID)),
+        ];
+        assert!(decode_tx_logs_scoped(&logs, &POOL_PID, None).is_empty());
+    }
+
+    /// After a nested CPI returns, a `Program data:` line emitted back in the
+    /// pool program's frame IS accepted (stack pops correctly).
+    #[test]
+    fn scoped_accepts_after_inner_cpi_returns() {
+        let logs = vec![
+            format!("Program {} invoke [1]", pid_b58(&POOL_PID)),
+            format!("Program {} invoke [2]", pid_b58(&ATTACKER_PID)),
+            commitment_log([9u8; 32], 5), // attacker's — rejected
+            format!("Program {} success", pid_b58(&ATTACKER_PID)),
+            commitment_log([9u8; 32], 7), // pool program's — accepted
+            format!("Program {} success", pid_b58(&POOL_PID)),
+        ];
+        let events = decode_tx_logs_scoped(&logs, &POOL_PID, None);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].commitments(), vec![Commitment([7u8; 32])]);
+    }
+
+    /// Tree-PDA pinning: a pool-program event for a DIFFERENT tree PDA is
+    /// dropped when `expected_tree` is configured.
+    #[test]
+    fn scoped_rejects_wrong_tree_pda() {
+        let our_tree = [0xAA; 32];
+        let other_tree = [0xBB; 32];
+        let logs = vec![
+            format!("Program {} invoke [1]", pid_b58(&POOL_PID)),
+            commitment_log(other_tree, 7),
+            format!("Program {} success", pid_b58(&POOL_PID)),
+        ];
+        assert!(decode_tx_logs_scoped(&logs, &POOL_PID, Some(&our_tree)).is_empty());
+        // The same event for our tree IS accepted.
+        let logs_ours = vec![
+            format!("Program {} invoke [1]", pid_b58(&POOL_PID)),
+            commitment_log(our_tree, 7),
+            format!("Program {} success", pid_b58(&POOL_PID)),
+        ];
+        assert_eq!(
+            decode_tx_logs_scoped(&logs_ours, &POOL_PID, Some(&our_tree)).len(),
+            1
+        );
+    }
+
+    /// A failed inner program (`Program <pid> failed: ...`) still pops the frame.
+    #[test]
+    fn scoped_pop_handles_failed_frame() {
+        let logs = vec![
+            format!("Program {} invoke [1]", pid_b58(&POOL_PID)),
+            format!("Program {} invoke [2]", pid_b58(&ATTACKER_PID)),
+            format!("Program {} failed: custom program error: 0x1", pid_b58(&ATTACKER_PID)),
+            commitment_log([9u8; 32], 7), // back in pool frame — accepted
+            format!("Program {} success", pid_b58(&POOL_PID)),
+        ];
+        let events = decode_tx_logs_scoped(&logs, &POOL_PID, None);
+        assert_eq!(events.len(), 1);
     }
 }

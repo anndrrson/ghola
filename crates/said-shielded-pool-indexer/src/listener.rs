@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use tracing::{debug, info, warn};
 
-use crate::events::{decode_tx_logs, DecodedEvent};
+use crate::events::{decode_tx_logs_scoped, DecodedEvent};
 use crate::state::AppState;
 
 pub struct EventListener {
@@ -104,7 +104,16 @@ impl EventListener {
                     .and_then(|m| m.log_messages.as_ref())
                     .cloned()
                     .unwrap_or_default();
-                let events = decode_tx_logs(&logs);
+                // Attribute each `Program data:` line to the program at the top
+                // of the invocation stack and keep only the pool program's
+                // events (and, when a mint is configured, only this tree's PDA).
+                // Prevents a third party emitting a same-discriminator log from
+                // injecting bogus leaves into the mirror.
+                let events = decode_tx_logs_scoped(
+                    &logs,
+                    &self.state.pool_program_id_bytes,
+                    self.state.expected_tree_pda.as_ref(),
+                );
                 if events.is_empty() {
                     continue;
                 }

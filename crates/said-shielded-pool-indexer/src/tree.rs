@@ -11,6 +11,7 @@
 //! | `leaf/<idx u64 BE>`              | 32-byte leaf    |
 //! | `commit/<32-byte commitment>`    | u64 BE leaf idx |
 //! | `filled/<depth u8>`              | 32-byte node    |
+//! | `node/<depth u8><idx u64 BE>`    | 32-byte node    |
 //! | `root_hist/<seq u64 BE>`         | 32-byte root    |
 //! | `meta/root_hist_seq`             | u64 BE          |
 //!
@@ -19,6 +20,17 @@
 //! Light Protocol). For each depth `d`, it stores the most recent **left**
 //! sibling at that depth — the hash that will be paired with the next leaf
 //! when the right slot fills.
+//!
+//! `node/<depth><idx>` is a sparse cache of every internal node hash touched
+//! while inserting a leaf (depth 0 = the leaf level; depth `TREE_DEPTH` = the
+//! root). It lets [`IncrementalMerkleTree::path`] read each authentication-path
+//! sibling in a single point lookup — O(`TREE_DEPTH`) reads — instead of
+//! re-hashing the entire tree from all leaves on every witness query (which was
+//! O(2^`TREE_DEPTH`) and a trivial unauthenticated DoS). A node absent from the
+//! cache is, by construction, an all-zero right subtree and equals `Z[depth]`:
+//! every node on the rightmost frontier is (re)written on each insert, and any
+//! node fully to the left of the frontier is finalized (a completed left
+//! subtree never changes), so the latest persisted value is always current.
 //!
 //! # Concurrency
 //!
@@ -86,6 +98,15 @@ fn commit_key(c: &FieldBytes) -> Vec<u8> {
 fn filled_key(depth: usize) -> Vec<u8> {
     let mut k = b"filled/".to_vec();
     k.push(depth as u8);
+    k
+}
+
+/// Key for a cached internal node at `(depth, idx)`. `depth == 0` is the leaf
+/// level; `idx` is the node's horizontal position within that level.
+fn node_key(depth: usize, idx: u64) -> Vec<u8> {
+    let mut k = b"node/".to_vec();
+    k.push(depth as u8);
+    k.extend_from_slice(&idx.to_be_bytes());
     k
 }
 
@@ -205,6 +226,13 @@ impl IncrementalMerkleTree {
         let mut current_idx = idx;
         let zh = zero_hashes();
 
+        // Persist the node hash at every level on this leaf's path-to-root so
+        // `path()` can read siblings directly (O(TREE_DEPTH)) instead of
+        // rebuilding the whole tree from all leaves on every query. The leaf
+        // itself is node (depth 0, idx); each parent is node (d+1, idx>>(d+1)).
+        let mut batch = sled::Batch::default();
+        batch.insert(node_key(0, idx), fb_to_ivec(&current));
+
         // Walk up the tree computing the new path. At each depth d, the
         // current node is either a left sibling (current_idx even) or a
         // right sibling (odd).
@@ -219,14 +247,19 @@ impl IncrementalMerkleTree {
             };
             current = poseidon2_be(&left, &right)?;
             current_idx >>= 1;
+            // `current` is now the node at (depth d+1, position current_idx).
+            // Cache it. Re-writing a node already on the frontier is correct:
+            // its value is the latest, and a finalized left subtree's node is
+            // never revisited (so it keeps its finalized value).
+            batch.insert(node_key(d + 1, current_idx), fb_to_ivec(&current));
         }
 
         self.root = current;
         self.next_index = idx + 1;
         self.push_root_history(current)?;
 
-        // Persist atomically.
-        let mut batch = sled::Batch::default();
+        // Persist atomically (leaf + commit index + frontier + meta, plus the
+        // node-path entries already staged above).
         batch.insert(leaf_key(idx), fb_to_ivec(&commitment.0));
         batch.insert(commit_key(&commitment.0), &idx.to_be_bytes());
         for d in 0..TREE_DEPTH {
@@ -242,59 +275,41 @@ impl IncrementalMerkleTree {
         Ok(idx)
     }
 
+    /// Read the cached node hash at `(depth, idx)`, or the zero-subtree hash
+    /// `Z[depth]` if no node has been persisted there (an all-zero, never-filled
+    /// right subtree). This is the O(1) primitive behind the O(TREE_DEPTH)
+    /// [`Self::path`] derivation.
+    fn node_or_zero(&self, depth: usize, idx: u64) -> Result<FieldBytes> {
+        match self.tree.get(node_key(depth, idx))? {
+            Some(v) => fb_from_ivec(&v),
+            None => Ok(zero_hashes()[depth]),
+        }
+    }
+
     /// Compute a Merkle path (siblings + path bits) for the leaf at `index`.
     ///
     /// The siblings list goes from leaf-level (depth 0) up to the root,
     /// matching the `MerklePath` shape expected by the circuit. `path_bits[d]`
     /// is `true` iff the leaf-side of the pair at depth d is the *right*
     /// child (i.e. bit d of `index` is set).
+    ///
+    /// Cost: O(`TREE_DEPTH`) point lookups against the `node/<d><idx>` cache —
+    /// it does NOT read all leaves or re-hash the tree. (The previous
+    /// implementation rebuilt every layer from `leaves_snapshot()` on each
+    /// call, which was O(2^`TREE_DEPTH`) work and an unauthenticated DoS.)
     pub fn path(&self, index: u64) -> Result<MerklePath> {
         if index >= self.next_index {
             return Err(Error::LeafIndexOutOfRange(index, self.next_index));
         }
-        let zh = zero_hashes();
         let mut siblings = Vec::with_capacity(TREE_DEPTH);
         let mut path_bits = Vec::with_capacity(TREE_DEPTH);
 
-        // Walk up, but unlike `insert` we need the *current* sibling at each
-        // level. We re-derive node hashes by traversing pairs at each depth.
         let mut current_idx = index;
-        // current_layer carries every node at the current depth that is
-        // populated — we only need the sibling-pair containing `current_idx`,
-        // so we materialize just the necessary two leaves/nodes via direct
-        // hash recomputation.
-        //
-        // Simpler approach: rebuild only the leaves needed at each depth.
-        // For a depth-26 tree this is O(depth · leaves_in_range) which is
-        // fine for one-off witness queries; we cache nothing here because
-        // the access pattern is bursty (one client at a time).
-
-        // Read all leaves once.
-        let mut layer: Vec<FieldBytes> = self.leaves_snapshot()?;
-
         for d in 0..TREE_DEPTH {
+            // Sibling of the node at (depth d, current_idx).
             let sibling_idx = current_idx ^ 1;
-            let sibling = if (sibling_idx as usize) < layer.len() {
-                layer[sibling_idx as usize]
-            } else {
-                zh[d]
-            };
-            siblings.push(sibling);
+            siblings.push(self.node_or_zero(d, sibling_idx)?);
             path_bits.push(current_idx & 1 == 1);
-
-            // Hash the layer to produce the next layer up.
-            let parent_count = (layer.len() + 1) / 2;
-            let mut next_layer = Vec::with_capacity(parent_count);
-            for i in 0..parent_count {
-                let l = layer[2 * i];
-                let r = if 2 * i + 1 < layer.len() {
-                    layer[2 * i + 1]
-                } else {
-                    zh[d]
-                };
-                next_layer.push(poseidon2_be(&l, &r)?);
-            }
-            layer = next_layer;
             current_idx >>= 1;
         }
 
@@ -382,4 +397,117 @@ fn fb_from_ivec(v: &sled::IVec) -> Result<FieldBytes> {
     let mut out = [0u8; FIELD_BYTES];
     out.copy_from_slice(v);
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use said_shielded_pool_types::Commitment;
+
+    fn open_temp() -> (tempfile::TempDir, IncrementalMerkleTree) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = sled::open(dir.path()).expect("sled open");
+        let tree = IncrementalMerkleTree::open(db).expect("tree open");
+        (dir, tree)
+    }
+
+    fn commitment(seed: u8) -> Commitment {
+        let mut c = [0u8; FIELD_BYTES];
+        c[FIELD_BYTES - 1] = seed;
+        Commitment(c)
+    }
+
+    /// Recompute the root from a leaf + its returned authentication path and
+    /// assert it matches the tree's current root.
+    fn root_from_path(leaf: &Commitment, index: u64, path: &MerklePath) -> FieldBytes {
+        let mut current = leaf.0;
+        let mut idx = index;
+        for d in 0..TREE_DEPTH {
+            let (l, r) = if idx & 1 == 1 {
+                (path.siblings[d], current)
+            } else {
+                (current, path.siblings[d])
+            };
+            current = poseidon2_be(&l, &r).unwrap();
+            idx >>= 1;
+        }
+        current
+    }
+
+    /// Correctness: each leaf's `path()` reproduces the live root.
+    #[test]
+    fn path_reproduces_root() {
+        let (_dir, mut tree) = open_temp();
+        let mut leaves = Vec::new();
+        for i in 1..=9u8 {
+            let c = commitment(i);
+            tree.insert(c).unwrap();
+            leaves.push(c);
+        }
+        let root = tree.root().0;
+        for (i, c) in leaves.iter().enumerate() {
+            let path = tree.path(i as u64).unwrap();
+            assert_eq!(path.siblings.len(), TREE_DEPTH);
+            assert_eq!(
+                root_from_path(c, i as u64, &path),
+                root,
+                "leaf {i} path did not reproduce the root"
+            );
+        }
+    }
+
+    /// DoS regression: `path()` must derive siblings from the `node/` cache
+    /// (O(TREE_DEPTH) point lookups), NOT by re-reading every leaf. We prove
+    /// this by deleting ALL `leaf/<idx>` entries from the backing store after
+    /// insertion: the old implementation called `leaves_snapshot()` and would
+    /// error ("leaf N missing") or return a wrong path; the cache-based
+    /// implementation is unaffected and still reproduces the root.
+    #[test]
+    fn path_does_not_read_leaves() {
+        let (_dir, mut tree) = open_temp();
+        let mut leaves = Vec::new();
+        for i in 1..=9u8 {
+            let c = commitment(i);
+            tree.insert(c).unwrap();
+            leaves.push(c);
+        }
+        let root = tree.root().0;
+
+        // Nuke every leaf entry from the backing sled tree. `path()` must not
+        // touch these — only `node/<d><idx>` entries.
+        for i in 0..leaves.len() as u64 {
+            tree.tree.remove(leaf_key(i)).unwrap();
+        }
+        // Sanity: leaves really are gone (the old leaves_snapshot path would
+        // now fail).
+        assert!(tree.leaves_snapshot().is_err(), "leaves should be deleted");
+
+        for (i, c) in leaves.iter().enumerate() {
+            let path = tree
+                .path(i as u64)
+                .expect("path must succeed without leaf entries");
+            assert_eq!(
+                root_from_path(c, i as u64, &path),
+                root,
+                "leaf {i} path (cache-only) did not reproduce the root"
+            );
+        }
+    }
+
+    /// A never-filled sibling resolves to the zero-subtree hash, not a stale or
+    /// missing value — exercised by inserting a single leaf (its entire right
+    /// side is zero subtrees).
+    #[test]
+    fn single_leaf_path_uses_zero_hashes() {
+        let (_dir, mut tree) = open_temp();
+        let c = commitment(7);
+        tree.insert(c).unwrap();
+        let path = tree.path(0).unwrap();
+        let zh = zero_hashes();
+        for d in 0..TREE_DEPTH {
+            assert_eq!(path.siblings[d], zh[d], "sibling at depth {d} must be Z[d]");
+            assert!(!path.path_bits[d], "leaf 0 is always a left child");
+        }
+        assert_eq!(root_from_path(&c, 0, &path), tree.root().0);
+    }
 }

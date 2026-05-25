@@ -23,7 +23,8 @@ futures = { workspace = true }
 
 # HTTP server (witness API) and HTTP client (prover, Solana JSON-RPC).
 axum = { workspace = true }
-tower = { workspace = true }
+# `limit` enables `tower::limit::GlobalConcurrencyLimitLayer` (witness DoS cap).
+tower = { workspace = true, features = ["limit"] }
 tower-http = { workspace = true }
 reqwest = { workspace = true }
 

@@ -371,6 +371,8 @@ fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
                 || v4.is_documentation()
                 // Carrier-grade NAT 100.64.0.0/10 (often internal).
                 || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+                // Reserved / Class-E 240.0.0.0/4 (incl. 255.255.255.255).
+                || (v4.octets()[0] & 0xf0) == 0xf0
         }
         std::net::IpAddr::V6(v6) => {
             v6.is_loopback() // ::1
@@ -381,8 +383,47 @@ fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
                 || (v6.segments()[0] & 0xffc0) == 0xfe80
                 // IPv4-mapped (::ffff:a.b.c.d) — unwrap and re-check.
                 || v6.to_ipv4_mapped().map(is_blocked_ip_v4).unwrap_or(false)
+                // Any IPv6 form that embeds an IPv4 address must be re-checked
+                // against the v4 block-list, or an attacker can wrap an internal
+                // v4 (e.g. 127.0.0.1) in a transition format that slips past the
+                // v6 prefix checks above and routes to the embedded target on a
+                // host with a NAT64/6to4 path. Covers 6to4 (2002::/16), NAT64
+                // (64:ff9b::/96), and the deprecated IPv4-compatible (::a.b.c.d).
+                || embedded_ipv4(v6).map(is_blocked_ip_v4).unwrap_or(false)
         }
     }
+}
+
+/// Extract an embedded IPv4 address from an IPv6 transition format, if the
+/// address uses one. Returns `None` for ordinary IPv6 (incl. IPv4-mapped,
+/// which is handled separately by [`std::net::Ipv6Addr::to_ipv4_mapped`]).
+fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    let seg = v6.segments();
+    // 6to4: 2002:AABB:CCDD::/16 — the embedded v4 is the next two segments.
+    if seg[0] == 0x2002 {
+        return Some(std::net::Ipv4Addr::new(
+            (seg[1] >> 8) as u8,
+            (seg[1] & 0xff) as u8,
+            (seg[2] >> 8) as u8,
+            (seg[2] & 0xff) as u8,
+        ));
+    }
+    // NAT64 well-known prefix 64:ff9b::/96 — embedded v4 is the low 32 bits.
+    if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2..6] == [0, 0, 0, 0] {
+        let o = v6.octets();
+        return Some(std::net::Ipv4Addr::new(o[12], o[13], o[14], o[15]));
+    }
+    // IPv4-compatible ::a.b.c.d (deprecated): high 96 bits zero, low 32 the v4.
+    // Exclude :: and ::1 (already covered by is_unspecified/is_loopback) so we
+    // don't surface 0.0.0.x as a bogus "documentation" hit.
+    if seg[0..6] == [0, 0, 0, 0, 0, 0] {
+        let o = v6.octets();
+        let candidate = std::net::Ipv4Addr::new(o[12], o[13], o[14], o[15]);
+        if !candidate.is_unspecified() && candidate != std::net::Ipv4Addr::new(0, 0, 0, 1) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn is_blocked_ip_v4(v4: std::net::Ipv4Addr) -> bool {
@@ -526,6 +567,14 @@ impl reqwest::dns::Resolve for SsrfGuardResolver {
 fn safe_outbound_client() -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        // Disable proxy auto-detection. reqwest otherwise honors
+        // HTTP_PROXY / HTTPS_PROXY / ALL_PROXY from the environment, in which
+        // case it dials the PROXY and never consults our custom resolver — the
+        // proxy resolves the target host, bypassing the SSRF guard entirely.
+        // The whole point of the guard is that WE choose the egress IP, so we
+        // must connect directly. (If a legitimate egress proxy is ever needed,
+        // route it explicitly and re-validate the target there.)
+        .no_proxy()
         .dns_resolver(std::sync::Arc::new(SsrfGuardResolver))
         .build()
         // Builder only fails on a TLS/config error that is environment-wide and
@@ -2390,9 +2439,43 @@ mod tests {
         assert!(is_blocked_ip("fc00::1".parse::<IpAddr>().unwrap()));
         assert!(is_blocked_ip("fe80::1".parse::<IpAddr>().unwrap()));
         assert!(is_blocked_ip("::ffff:127.0.0.1".parse::<IpAddr>().unwrap())); // mapped loopback
+        // Reserved / Class-E 240.0.0.0/4 and broadcast.
+        assert!(is_blocked_ip("240.0.0.1".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip("255.255.255.255".parse::<IpAddr>().unwrap()));
         // Public addresses pass.
         assert!(!is_blocked_ip("8.8.8.8".parse::<IpAddr>().unwrap()));
         assert!(!is_blocked_ip("2606:4700::1111".parse::<IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn is_blocked_ip_unwraps_ipv6_transition_embeddings() {
+        use std::net::IpAddr;
+        // 6to4 (2002::/16) wrapping internal v4 must be blocked.
+        // 2002:7f00:0001:: embeds 127.0.0.1.
+        assert!(is_blocked_ip("2002:7f00:0001::".parse::<IpAddr>().unwrap()));
+        // 2002:a00:0001:: embeds 10.0.0.1 (private).
+        assert!(is_blocked_ip("2002:a00:1::".parse::<IpAddr>().unwrap()));
+        // 2002:a9fe:a9fe:: embeds 169.254.169.254 (cloud metadata).
+        assert!(is_blocked_ip("2002:a9fe:a9fe::".parse::<IpAddr>().unwrap()));
+        // 6to4 wrapping a PUBLIC v4 (8.8.8.8 = 0808:0808) is allowed.
+        assert!(!is_blocked_ip("2002:808:808::".parse::<IpAddr>().unwrap()));
+
+        // NAT64 64:ff9b::/96 wrapping internal v4 must be blocked.
+        // 64:ff9b::7f00:1 embeds 127.0.0.1.
+        assert!(is_blocked_ip("64:ff9b::7f00:1".parse::<IpAddr>().unwrap()));
+        // 64:ff9b::a9fe:a9fe embeds 169.254.169.254.
+        assert!(is_blocked_ip("64:ff9b::a9fe:a9fe".parse::<IpAddr>().unwrap()));
+        // NAT64 wrapping a public v4 (8.8.8.8) is allowed.
+        assert!(!is_blocked_ip("64:ff9b::808:808".parse::<IpAddr>().unwrap()));
+
+        // IPv4-compatible ::a.b.c.d (deprecated) wrapping internal v4.
+        // ::7f00:1 embeds 127.0.0.1.
+        assert!(is_blocked_ip("::7f00:1".parse::<IpAddr>().unwrap()));
+        // ::a9fe:a9fe embeds 169.254.169.254.
+        assert!(is_blocked_ip("::a9fe:a9fe".parse::<IpAddr>().unwrap()));
+        // :: and ::1 still handled by unspecified/loopback (and not misflagged).
+        assert!(is_blocked_ip("::".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip("::1".parse::<IpAddr>().unwrap()));
     }
 
     #[test]

@@ -439,7 +439,7 @@ fn decode_pubkey_b58(s: &str) -> Result<[u8; 32]> {
         .map_err(|_: Vec<u8>| Error::SolanaRpc(format!("pubkey '{s}' not 32 bytes")))
 }
 
-fn derive_pool_config_pda(program_id: &[u8; 32]) -> [u8; 32] {
+pub(crate) fn derive_pool_config_pda(program_id: &[u8; 32]) -> [u8; 32] {
     let (pk, _bump) = find_program_address(&[b"pool_config"], program_id);
     pk
 }
@@ -449,7 +449,7 @@ fn derive_verifier_key_pda(program_id: &[u8; 32], pool_config: &[u8; 32]) -> [u8
     pk
 }
 
-fn derive_merkle_tree_pda(
+pub(crate) fn derive_merkle_tree_pda(
     program_id: &[u8; 32],
     pool_config: &[u8; 32],
     mint: &[u8; 32],
@@ -466,7 +466,7 @@ fn derive_merkle_tree_pda(
 /// returning the first result that's NOT on the Ed25519 curve. For the PDAs
 /// the on-chain program declares, this always finds a valid bump within ~3
 /// iterations in practice.
-fn find_program_address(seeds: &[&[u8]], program_id: &[u8; 32]) -> ([u8; 32], u8) {
+pub(crate) fn find_program_address(seeds: &[&[u8]], program_id: &[u8; 32]) -> ([u8; 32], u8) {
     use sha2::Digest;
     const MARKER: &[u8] = b"ProgramDerivedAddress";
     for bump in (0u8..=255u8).rev() {
