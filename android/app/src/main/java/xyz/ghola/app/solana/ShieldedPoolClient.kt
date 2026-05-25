@@ -434,7 +434,18 @@ class ShieldedPoolClient(
         proof: JSONObject,
     ): JSONObject {
         val signedAt = Instant.now().toString()
-        val proofDigest = proofDigest(proof.getJSONObject("payload"))
+        val payloadObj = proof.getJSONObject("payload")
+        val proofDigest = proofDigest(payloadObj)
+        // Bind the bytes that actually get submitted to the relayer. proofDigest
+        // above only covers tx_signature/shielded_receipt_id/proof_b64/
+        // nullifier_hex; the instruction the relayer broadcasts is carried in
+        // payload.extensions (instruction_data_hex + accounts). Without folding
+        // those into the signed message, a tampered relayer response could be
+        // submitted under a device signature that never committed to it. The
+        // on-chain verifier rebinds ext_data_hash regardless, but signing the
+        // submission here means the device attestation is honest about what it
+        // approved (and a server can detect tampering before broadcast).
+        val submissionDigest = submissionDigest(payloadObj.optJSONObject("extensions"))
         val attestation = JSONObject().apply {
             put("version", "ghola-private-usdcx-signer-v1")
             put("intent_id", intent.getString("id"))
@@ -446,6 +457,7 @@ class ShieldedPoolClient(
             put("asset", intent.optString("asset", "USDCx"))
             put("policy_hash", intent.getString("policy_hash"))
             put("proof_digest", proofDigest)
+            put("submission_digest", submissionDigest)
             put("receipt_ref", "pending")
             put("signed_at", signedAt)
         }
@@ -473,6 +485,7 @@ class ShieldedPoolClient(
         "asset:${attestation.getString("asset")}",
         "policy_hash:${attestation.getString("policy_hash")}",
         "proof_digest:${attestation.getString("proof_digest")}",
+        "submission_digest:${attestation.getString("submission_digest")}",
         "receipt_ref:${attestation.getString("receipt_ref")}",
         "signed_at:${attestation.getString("signed_at")}",
     ).joinToString("\n")
@@ -493,6 +506,32 @@ class ShieldedPoolClient(
         } else {
             JSONObject.quote(obj.getString(key))
         }
+
+    /**
+     * SHA-256 over a canonical, order-preserving encoding of the instruction
+     * the relayer will broadcast: `instruction_data_hex` plus each account's
+     * (pubkey, is_signer, is_writable) in array order. Account order is part of
+     * the binding because a Solana instruction is position-sensitive — swapping
+     * two accounts changes what the instruction does. Folded into the signed
+     * attestation by [buildSignerAttestation].
+     */
+    private fun submissionDigest(extensions: JSONObject?): String {
+        val ext = extensions ?: JSONObject()
+        val dataHex = ext.optString("instruction_data_hex", "").lowercase()
+        val accounts = ext.optJSONArray("accounts") ?: JSONArray()
+        val sb = StringBuilder()
+        sb.append("ghola-private-usdcx-submission-v1\n")
+        sb.append("instruction_data_hex:").append(dataHex).append('\n')
+        sb.append("accounts:").append(accounts.length()).append('\n')
+        for (i in 0 until accounts.length()) {
+            val a = accounts.optJSONObject(i) ?: JSONObject()
+            sb.append(i).append(':')
+                .append(a.optString("pubkey", "")).append(':')
+                .append(a.optBoolean("is_signer", false)).append(':')
+                .append(a.optBoolean("is_writable", false)).append('\n')
+        }
+        return hex(sha256(sb.toString().toByteArray(Charsets.UTF_8)))
+    }
 
     private object LocalProofEngine {
         fun prove(context: Context, witness: JSONObject): JSONObject {

@@ -12,6 +12,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import xyz.ghola.app.ai.SecureStorage
+import xyz.ghola.app.crypto.SigningDomains
 import xyz.ghola.app.crypto.signWithWallet
 import xyz.ghola.app.solana.MWAConnect
 import java.io.IOException
@@ -77,6 +78,20 @@ class SiwsAuthFlow(context: Context) {
         val challengeJson = JSONObject(challengeBody)
         val nonce = challengeJson.getString("nonce")
         val challenge = challengeJson.getString("challenge")
+
+        // Cross-context-signature guard (H1). The wallet is about to sign these
+        // exact bytes; the SigningDomains registry only guarantees the SIWS
+        // domain is prefix-free vs the vault-unlock / agent-root / shielded
+        // challenges if the server-minted challenge actually begins with the
+        // registered SIWS prefix. A compromised/MITM'd cloud (e.g. before the
+        // first-party TLS pins are activated) could otherwise return arbitrary
+        // bytes for the wallet to sign. Refuse anything that doesn't carry the
+        // expected sign-in prefix so a SIWS popup can never be turned into a
+        // signature over another flow's key-deriving challenge.
+        if (!challenge.startsWith(SigningDomains.SIWS_SIGN_IN)) {
+            Log.e(TAG, "SIWS challenge missing expected sign-in prefix; refusing to sign")
+            return@withContext CloudAuthManager.AuthResult.Error("Wallet sign-in failed: unexpected challenge")
+        }
 
         val challengeBytes = challenge.toByteArray(Charsets.UTF_8)
         val sig1 = when (val out = sign(challengeBytes)) {

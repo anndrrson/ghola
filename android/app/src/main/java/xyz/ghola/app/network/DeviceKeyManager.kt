@@ -5,19 +5,35 @@ import android.util.Log
 import java.security.SecureRandom
 
 /**
- * Manages the device's persistent identity keypair.
+ * Stable per-device LABEL for the legacy thumper-relay handshake.
  *
- * Generates a stable 32-byte device key on first launch, stored in SharedPreferences.
- * The pubkey is encoded as base58 (Solana-style) for use in the auth handshake
- * and for the user to register in their thumper config on desktop.
+ * IMPORTANT: this is NOT a cryptographic keypair. The legacy relay
+ * authenticates with an EMPTY signature (see [RelayConnection.sendAuth]), so
+ * this value is only a random, stable identifier the relay echoes back — it
+ * proves nothing. The previous implementation base58-encoded the SAME 32 random
+ * bytes as both a "device_secret_hex" and a "device_pubkey", i.e. the
+ * "public key" was literally the secret, and the secret was stored in plain
+ * MODE_PRIVATE prefs. Because nothing ever consumed the secret (it was dead
+ * code) and the relay does no signature verification, that secret has been
+ * removed entirely rather than left as a footgun.
+ *
+ * The relay path itself is hard-gated to debug builds (see
+ * [xyz.ghola.app.service.ThumperAccessibilityService.connectToRelay]). If this
+ * bridge is ever promoted to production it MUST be replaced with a real
+ * Ed25519 device keypair (where the public key is derived from, and distinct
+ * from, the secret), the secret moved into EncryptedSharedPreferences, and the
+ * relay handshake changed to verify a per-nonce signature.
  */
 class DeviceKeyManager(context: Context) {
 
     companion object {
         private const val TAG = "ThumperKey"
         private const val PREFS_NAME = "thumper"
-        private const val KEY_DEVICE_SECRET = "device_secret_hex"
         private const val KEY_DEVICE_PUBKEY = "device_pubkey"
+        // Legacy row written by the pre-hardening implementation: the secret
+        // was identical to the bytes behind device_pubkey. Removed on next
+        // launch so it doesn't linger in plaintext prefs.
+        private const val LEGACY_KEY_DEVICE_SECRET = "device_secret_hex"
     }
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -25,6 +41,10 @@ class DeviceKeyManager(context: Context) {
     init {
         if (prefs.getString(KEY_DEVICE_PUBKEY, null) == null) {
             generateAndStore()
+        } else if (prefs.contains(LEGACY_KEY_DEVICE_SECRET)) {
+            // Scrub the legacy plaintext "secret" (== the device label bytes)
+            // left by older installs.
+            prefs.edit().remove(LEGACY_KEY_DEVICE_SECRET).apply()
         }
     }
 
@@ -32,25 +52,22 @@ class DeviceKeyManager(context: Context) {
         return prefs.getString(KEY_DEVICE_PUBKEY, "unknown")!!
     }
 
-    fun getDeviceSecretHex(): String {
-        return prefs.getString(KEY_DEVICE_SECRET, "")!!
-    }
-
     private fun generateAndStore() {
         val random = SecureRandom()
-        val keyBytes = ByteArray(32)
-        random.nextBytes(keyBytes)
+        val labelBytes = ByteArray(32)
+        random.nextBytes(labelBytes)
 
-        val secretHex = keyBytes.joinToString("") { "%02x".format(it) }
-        val pubkey = bs58Encode(keyBytes)
+        // Non-cryptographic device label (base58 for legible config copy/paste).
+        val deviceLabel = bs58Encode(labelBytes)
 
         prefs.edit().apply {
-            putString(KEY_DEVICE_SECRET, secretHex)
-            putString(KEY_DEVICE_PUBKEY, pubkey)
+            putString(KEY_DEVICE_PUBKEY, deviceLabel)
+            // Belt-and-braces: ensure no legacy secret row survives a re-gen.
+            remove(LEGACY_KEY_DEVICE_SECRET)
             apply()
         }
 
-        Log.i(TAG, "Generated new device identity: $pubkey")
+        Log.i(TAG, "Generated device relay label: $deviceLabel")
     }
 
     /**

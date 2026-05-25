@@ -236,7 +236,95 @@ object ShieldedPoolNativeProver {
             account.optBoolean("is_writable")
         }
         validateWithdrawAccountsAgainstWitness(accounts, witness)
+        validateProofBindsWitness(proofBundle, witness)
         return json
+    }
+
+    /**
+     * Defense-in-depth: bind the prover/relayer-returned proof_bundle back to
+     * the witness this device actually built and approved.
+     *
+     * The on-chain program already rebuilds `ext_data_hash` from the real
+     * recipient/relayer/fee context and rejects a mismatch, so a tampered
+     * relayer response cannot redirect funds on-chain. But that rejection
+     * happens AFTER the device has signed the submit attestation. Re-checking
+     * here lets us fail BEFORE signing/submitting, turning a silent on-chain
+     * revert (and a leaked nullifier/relayer round-trip) into a clear local
+     * error.
+     *
+     * Two public inputs are checked:
+     *   - `ext_data_hash`: recomputed from `_ghola_meta` (intent_id, recipient,
+     *     amount, network, asset) using the byte-identical preimage that
+     *     [ShieldedPoolClient.extDataHashHex] folded into the witness, then
+     *     compared (case-insensitively) to `proof_bundle.ext_data_hash`.
+     *   - `public_amount`: must equal the witness `public_amount`.
+     *
+     * No-ops when [witness] is null or lacks the `_ghola_meta` block (e.g. the
+     * legacy single-arg [validateProofOutput] call path) so we never weaken an
+     * existing caller, only strengthen the prove() path that has the witness.
+     */
+    private fun validateProofBindsWitness(proofBundle: JSONObject, witness: JSONObject?) {
+        val witnessObj = witness ?: return
+        val meta = witnessObj.optJSONObject("_ghola_meta") ?: return
+
+        // public_amount: witness is the source of truth for what the user
+        // approved; the proof must commit to the same spend value.
+        if (witnessObj.has("public_amount")) {
+            val witnessAmount = witnessObj.optLong("public_amount", Long.MIN_VALUE)
+            val proofAmount = proofBundle.optLong("public_amount", Long.MAX_VALUE)
+            if (witnessAmount == Long.MIN_VALUE) {
+                throw IllegalStateException("Solana shielded witness public_amount is not an integer")
+            }
+            if (proofAmount != witnessAmount) {
+                throw IllegalStateException(
+                    "Solana shielded proof public_amount ($proofAmount) does not match the approved witness amount ($witnessAmount)",
+                )
+            }
+        }
+
+        // ext_data_hash: recompute from the metadata this device approved and
+        // require the proof to commit to it. Only attempt the recompute when
+        // the meta carries the fields the preimage needs (the real-transfer
+        // witness path); otherwise leave the shape check above as the guard.
+        val intentId = meta.optString("intent_id")
+        val recipient = meta.optString("recipient")
+        if (intentId.isBlank() || recipient.isBlank() || !witnessObj.has("public_amount")) {
+            return
+        }
+        val network = meta.optString("network", "solana:devnet")
+        val asset = meta.optString("asset", "USDCx")
+        val amount = witnessObj.optLong("public_amount", 0L)
+        val expected = extDataHashHex(intentId, recipient, amount, network, asset)
+        val actual = proofBundle.optString("ext_data_hash")
+        if (!actual.equals(expected, ignoreCase = true)) {
+            throw IllegalStateException(
+                "Solana shielded proof ext_data_hash does not bind the approved recipient/amount context",
+            )
+        }
+    }
+
+    /**
+     * Byte-identical mirror of [ShieldedPoolClient.extDataHashHex] preimage so
+     * the cross-check above compares like-for-like. If that preimage changes,
+     * change it here too (and add a parity test).
+     */
+    private fun extDataHashHex(
+        intentId: String,
+        recipient: String,
+        amountMicroUsdc: Long,
+        network: String,
+        asset: String,
+    ): String {
+        val preimage = listOf(
+            "ghola-solana-shielded-ext-data-v1",
+            "intent_id:$intentId",
+            "recipient:$recipient",
+            "amount_micro_usdc:$amountMicroUsdc",
+            "network:$network",
+            "asset:$asset",
+        ).joinToString("\n").toByteArray(Charsets.UTF_8)
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(preimage)
+        return digest.joinToString("") { "%02x".format(it) }
     }
 
     private fun validateWithdrawAccountsAgainstWitness(accounts: org.json.JSONArray, witness: JSONObject?) {

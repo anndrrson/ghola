@@ -63,11 +63,14 @@ object VaultIdentity {
     /**
      * Build the bytes the wallet signs to unlock the vault.
      *
-     * Layout: `b"ghola/vault-unlock-v1\0" || userDid || salt`. The salt
-     * is per-device; the prefix is fixed; the userDid binds the
-     * signature to a specific Turnkey/Solana wallet so a stolen
-     * IndexedDB-equivalent dump can't be replayed under a different
-     * identity.
+     * Layout: `b"ghola/vault-unlock-v1 " || userDid || salt` — note the
+     * prefix ends in a SPACE (0x20), not a NUL. This exact byte string is
+     * load-bearing: it is what the wallet signs and what every existing
+     * wrapped KEK was derived against, so it must NOT be "corrected" to `\0`
+     * (doing so would brick every existing vault). The salt is per-device; the
+     * prefix is fixed; the userDid binds the signature to a specific
+     * Turnkey/Solana wallet so a stolen IndexedDB-equivalent dump can't be
+     * replayed under a different identity.
      */
     fun unlockChallenge(userDid: String, salt: ByteArray): ByteArray {
         require(salt.isNotEmpty()) { "salt must be non-empty" }

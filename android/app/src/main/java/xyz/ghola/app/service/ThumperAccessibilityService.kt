@@ -84,6 +84,21 @@ class ThumperAccessibilityService : AccessibilityService() {
     }
 
     fun connectToRelay(url: String) {
+        // SECURITY (legacy relay hard-gate). The thumper-relay WebSocket path
+        // grants whoever the relay forwards commands from FULL device control
+        // (tap/type/launch/read-screen/clipboard/notifications via
+        // CommandHandler), and it authenticates with an EMPTY signature
+        // (RelayConnection.sendAuth) keyed only on a device "pubkey" that is not
+        // a real cryptographic identity (see DeviceKeyManager). This is a
+        // development/legacy bridge ONLY. It MUST NOT ship as a production auth
+        // path. Until it moves to signed command envelopes + a trusted-
+        // controller binding, refuse to connect outside debug builds. The
+        // release network-security-config already blocks cleartext ws:// to LAN,
+        // so this is belt-and-braces on top of that.
+        if (!xyz.ghola.app.BuildConfig.DEBUG) {
+            Log.w(TAG, "Legacy thumper-relay is disabled in release builds; not connecting")
+            return
+        }
         relayConnection?.disconnect()
         val keyManager = DeviceKeyManager(this)
         relayConnection = RelayConnection(url, keyManager.getDevicePubkey(), commandHandler!!)

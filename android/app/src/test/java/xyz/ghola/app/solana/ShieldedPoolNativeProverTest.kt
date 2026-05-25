@@ -90,6 +90,90 @@ class ShieldedPoolNativeProverTest {
         assertSame(json, ShieldedPoolNativeProver.validateProofOutput(json, witness))
     }
 
+    // ── witness↔proof binding (defense-in-depth before signing) ──────────────
+
+    @Test
+    fun proofBindingMatchingExtDataHashAndAmountPasses() {
+        val context = solanaContext()
+        val recipient = Base58.encode(ByteArray(32) { 11 })
+        val witness = bindingWitness(context, recipient = recipient, amount = 1_000L)
+        val json = validProofOutput().withWithdrawAccountsFor(context).apply {
+            getJSONObject("proof_bundle")
+                .put("public_amount", 1_000L)
+                .put("ext_data_hash", expectedExtDataHash(recipient = recipient, amount = 1_000L))
+        }
+
+        assertSame(json, ShieldedPoolNativeProver.validateProofOutput(json, witness))
+    }
+
+    @Test
+    fun proofBindingTamperedAmountFailsClosed() {
+        val context = solanaContext()
+        val recipient = Base58.encode(ByteArray(32) { 11 })
+        val witness = bindingWitness(context, recipient = recipient, amount = 1_000L)
+        // ext_data_hash still matches; only public_amount is tampered.
+        val json = validProofOutput().withWithdrawAccountsFor(context).apply {
+            getJSONObject("proof_bundle")
+                .put("public_amount", 999L)
+                .put("ext_data_hash", expectedExtDataHash(recipient = recipient, amount = 1_000L))
+        }
+
+        assertThrows(IllegalStateException::class.java) {
+            ShieldedPoolNativeProver.validateProofOutput(json, witness)
+        }
+    }
+
+    @Test
+    fun proofBindingTamperedRecipientFailsClosed() {
+        val context = solanaContext()
+        val recipient = Base58.encode(ByteArray(32) { 11 })
+        val witness = bindingWitness(context, recipient = recipient, amount = 1_000L)
+        // public_amount matches; ext_data_hash binds a DIFFERENT recipient,
+        // i.e. a relayer trying to redirect the spend.
+        val attackerRecipient = Base58.encode(ByteArray(32) { 88 })
+        val json = validProofOutput().withWithdrawAccountsFor(context).apply {
+            getJSONObject("proof_bundle")
+                .put("public_amount", 1_000L)
+                .put("ext_data_hash", expectedExtDataHash(recipient = attackerRecipient, amount = 1_000L))
+        }
+
+        assertThrows(IllegalStateException::class.java) {
+            ShieldedPoolNativeProver.validateProofOutput(json, witness)
+        }
+    }
+
+    /** Witness shaped like [ShieldedPoolClient.buildWitness] output for the
+     *  binding checks: carries top-level public_amount plus the _ghola_meta
+     *  fields the ext_data_hash preimage needs. */
+    private fun bindingWitness(context: JSONObject, recipient: String, amount: Long): JSONObject =
+        JSONObject().apply {
+            put("public_amount", amount)
+            put("_ghola_meta", JSONObject().apply {
+                put("intent_id", "intent-fixture-1")
+                put("wallet_address", Base58.encode(ByteArray(32) { 10 }))
+                put("recipient", recipient)
+                put("recipient_kind", "solana_token_account")
+                put("network", "solana:devnet")
+                put("asset", "USDCx")
+                put("solana_context", context)
+            })
+        }
+
+    /** Byte-identical mirror of ShieldedPoolClient.extDataHashHex /
+     *  ShieldedPoolNativeProver.extDataHashHex preimage. */
+    private fun expectedExtDataHash(recipient: String, amount: Long): String {
+        val preimage = listOf(
+            "ghola-solana-shielded-ext-data-v1",
+            "intent_id:intent-fixture-1",
+            "recipient:$recipient",
+            "amount_micro_usdc:$amount",
+            "network:solana:devnet",
+            "asset:USDCx",
+        ).joinToString("\n").toByteArray(Charsets.UTF_8)
+        return java.security.MessageDigest.getInstance("SHA-256").digest(preimage)
+            .joinToString("") { "%02x".format(it) }
+    }
+
     private fun validProofOutput(): JSONObject {
         val account = JSONObject().apply {
             put("pubkey", Base58.encode(ByteArray(32) { 7 }))
