@@ -250,11 +250,23 @@ pub fn build_input_json(
         be32_to_decimal(&r)
     };
 
+    // H1 (2026-05-25): signed-amount range-check witness hints. The
+    // circuit's `SignedAmount64` template enforces
+    //   publicAmount == (1 - 2*isNeg) * magnitude  with magnitude < 2^64,
+    // so we supply isNeg = (public_amount < 0) and magnitude = |public_amount|.
+    let (public_amount_is_neg, public_amount_magnitude) = if witness.public_amount < 0 {
+        ("1".to_string(), (-witness.public_amount as u128).to_string())
+    } else {
+        ("0".to_string(), (witness.public_amount as u128).to_string())
+    };
+
     json!({
         "root": root_str,
         "inputNullifier": in_nullifiers,
         "outputCommitment": out_commitments,
         "publicAmount": encode_signed_public_amount(witness.public_amount),
+        "publicAmountIsNeg": public_amount_is_neg,
+        "publicAmountMagnitude": public_amount_magnitude,
         "assetId": be32_to_decimal(&asset_id),
         "extDataHash": be32_to_decimal(&witness.ext_data_hash),
         "inAmount": in_amounts,
@@ -350,5 +362,36 @@ mod tests {
         let paths = v["inPathElements"].as_array().unwrap();
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[0].as_array().unwrap().len(), TREE_DEPTH);
+        // H1: signed-amount hints. public_amount = -1000 → withdraw.
+        assert_eq!(v["publicAmountIsNeg"], "1");
+        assert_eq!(v["publicAmountMagnitude"], "1000");
+    }
+
+    #[test]
+    fn deposit_input_json_signed_amount_hints_positive() {
+        // public_amount = +1000 (deposit) → isNeg = 0, magnitude = 1000.
+        let mut asset = [0u8; 32];
+        asset[31] = 0xAA;
+        let owner_sk = [9u8; 32];
+        let owner = derive_pubkey(&owner_sk);
+        let note = Note {
+            amount: 1000,
+            asset_id: AssetId(asset),
+            owner_pubkey: owner,
+            blinding: [3u8; 32],
+        };
+        let w = TransferWitness {
+            input_notes: vec![],
+            input_paths: vec![],
+            input_indices: vec![],
+            output_notes: vec![note],
+            spending_key: owner_sk,
+            public_amount: 1000,
+            asset_id: AssetId(asset),
+            ext_data_hash: [0u8; 32],
+        };
+        let v = build_input_json(&w, &[owner_sk]);
+        assert_eq!(v["publicAmountIsNeg"], "0");
+        assert_eq!(v["publicAmountMagnitude"], "1000");
     }
 }

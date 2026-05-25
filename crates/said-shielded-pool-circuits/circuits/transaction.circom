@@ -1,5 +1,21 @@
 pragma circom 2.1.5;
 
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// !! H1 VALUE-CONSERVATION RANGE CONSTRAINTS ADDED 2026-05-25.          !!
+// !!                                                                    !!
+// !! This circuit's CONSTRAINT SYSTEM CHANGED. The previously-generated !!
+// !! proving + verifying keys are now INVALID:                          !!
+// !!   * crates/said-shielded-pool-circuits/ceremony/transaction_*.zkey !!
+// !!   * the compiled-in `VERIFYING_KEY` in                             !!
+// !!     programs/said-shielded-pool/src/verifying_key.rs               !!
+// !! BOTH no longer match this circuit. Proofs against the old keys     !!
+// !! will FAIL to verify, and (worse) the old keys do NOT enforce the   !!
+// !! new range checks. The proving + verifying keys MUST be regenerated !!
+// !! via a fresh MULTI-PARTY TRUSTED-SETUP CEREMONY (≥10 contributors,  !!
+// !! per SPEC.md §13) before ANY deploy. Do NOT ship a binary whose     !!
+// !! compiled-in VK predates this change.                               !!
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
 include "../node_modules/circomlib/circuits/poseidon.circom";
 include "../node_modules/circomlib/circuits/bitify.circom";
 include "../node_modules/circomlib/circuits/comparators.circom";
@@ -17,10 +33,20 @@ include "./merkleProof.circom";
  *   sum(input_amounts) === sum(output_amounts) + public_amount
  *
  * `public_amount` is encoded as an in-field signed value (negative values are
- * represented as `FIELD - |v|`, i.e. the field-element negation). The
- * circuit performs the conservation check in the field — the caller is
- * responsible for range-checking `public_amount` off-circuit against the
- * platform's signed-64-bit envelope.
+ * represented as `FIELD - |v|`, i.e. the field-element negation), matching
+ * `said-shielded-pool-client::tx_builder::encode_public_amount` and the
+ * prover's `encode_signed_public_amount`:
+ *   * deposit  (value enters pool): publicAmount =  amount      ∈ [0, 2^64)
+ *   * withdraw (value leaves pool): publicAmount = r - amount   ∈ (r-2^64, r)
+ *   * transfer (no net flow):       publicAmount =  0
+ *
+ * H1 (2026-05-25): the conservation check is now SOUND in-circuit:
+ *   - `publicAmount` is range-constrained to the signed-64-bit envelope
+ *     above (its magnitude fits 64 bits in exactly one of the two halves),
+ *     so it can no longer be an arbitrary field element chosen to wrap r.
+ *   - `inSumAccum`/`outSumAccum` are range-constrained to 65 bits
+ *     (64 + ceil(log2(nIns=2))), so neither side can reach the field
+ *     modulus, and `sumIn === sumOut + publicAmount` cannot wrap mod r.
  *
  * PUBLIC INPUTS (in order, must match `said-shielded-pool-types::PublicInputs`):
  *   [0] root
@@ -37,6 +63,56 @@ include "./merkleProof.circom";
  * recomputed from any other signals. It commits the proof to off-circuit
  * data (recipient, relayer fee, memo, etc.) and prevents proof malleability.
  */
+
+/*
+ * Compile-time helper: number of bits needed to bound a sum of `n` values
+ * that are each < 2^64 without any field wrap, i.e. 64 + ceil(log2(n)).
+ * `n` is a circom compile-time parameter, so this resolves at compile time.
+ */
+function sumBits(n) {
+    var extra = 0;
+    var pow = 1;        // 2^extra
+    while (pow < n) {
+        pow = pow * 2;
+        extra = extra + 1;
+    }
+    return 64 + extra;  // ceil(log2(n)) extra bits over the 64-bit elements
+}
+
+/*
+ * Range-constrain a SIGNED public amount to the protocol's signed-64-bit
+ * envelope. The witness supplies:
+ *   - `isNeg`  : 1 iff `in` is the field-negation of a positive magnitude
+ *                (i.e. a withdraw), else 0.
+ *   - `magnitude`: |in|, which MUST fit in 64 bits.
+ * and the template enforces:
+ *   - `isNeg ∈ {0,1}`,
+ *   - `magnitude < 2^64` (Num2Bits),
+ *   - `in == magnitude`            when isNeg == 0   (deposit / transfer)
+ *   - `in == -magnitude` (= r-mag) when isNeg == 1   (withdraw)
+ * Net effect: `in ∈ [0, 2^64) ∪ (r - 2^64, r)`. Arbitrary field values
+ * (the H1 wrap vector) are rejected. magnitude==0 is valid under either
+ * isNeg and yields in==0 (the pure-transfer case), which is fine.
+ */
+template SignedAmount64() {
+    signal input in;
+    signal input isNeg;       // witness hint (boolean)
+    signal input magnitude;   // witness hint (|in|, < 2^64)
+
+    // isNeg is boolean.
+    isNeg * (isNeg - 1) === 0;
+
+    // magnitude fits in 64 bits.
+    component magBits = Num2Bits(64);
+    magBits.in <== magnitude;
+
+    // Select the signed value: (1 - 2*isNeg) * magnitude.
+    //   isNeg = 0 ->  +magnitude
+    //   isNeg = 1 ->  -magnitude  (field element r - magnitude)
+    signal signed;
+    signed <== (1 - 2 * isNeg) * magnitude;
+    in === signed;
+}
 
 template Transaction(levels, nIns, nOuts) {
     // --------- PUBLIC INPUTS ---------
@@ -60,6 +136,16 @@ template Transaction(levels, nIns, nOuts) {
     signal input outBlinding[nOuts];
     signal input outOwnerPubkey[nOuts];
 
+    // H1 (2026-05-25): signed-amount range-check witness hints.
+    //   publicAmountIsNeg      = 1 iff publicAmount encodes a withdraw
+    //                            (field-negation of a positive magnitude).
+    //   publicAmountMagnitude  = |publicAmount| as an unsigned < 2^64 value.
+    // The prover/witness builder MUST set these consistently with
+    // `publicAmount`; the `SignedAmount64` template below enforces the
+    // relation, so a lying witness simply fails to satisfy the constraints.
+    signal input publicAmountIsNeg;
+    signal input publicAmountMagnitude;
+
     // ============================================================
     //  ext_data_hash binding
     // ============================================================
@@ -82,36 +168,16 @@ template Transaction(levels, nIns, nOuts) {
         outAmountBits[o].in <== outAmount[o];
     }
 
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // SECURITY TODO (H1) — UNDER-CONSTRAINED VALUE CONSERVATION.
-    //
-    // Only the per-note amounts are range-checked above (each < 2^64).
-    // The SUM accumulators `inSumAccum`/`outSumAccum` and `publicAmount`
-    // are NOT range-checked, and the conservation equation at the bottom
-    // (`inSum === outSum + publicAmount`) is evaluated in the BN254 field
-    // (modulus r ≈ 2^254). With nIns=2 the input sum can reach ~2^65 and
-    // `publicAmount` is a free field element, so an attacker can pick a
-    // `publicAmount` near r that makes the equation wrap and manufacture
-    // value. THIS MUST BE FIXED before mainnet by adding:
-    //   * `Num2Bits(65)` (or a `LessThan`) on inSumAccum[nIns] and
-    //     outSumAccum[nOuts], and
-    //   * a signed-range check on `publicAmount` (e.g. constrain it into
-    //     the [-(2^64-1), 2^64-1] signed-64 envelope: range-check both
-    //     `publicAmount` and `r - publicAmount` to <= 2^64 bits).
-    // Fixing this requires recompiling the circuit + redoing the
-    // trusted-setup ceremony, which is OUT OF SCOPE for this code change.
-    //
-    // COMPENSATING ON-CHAIN CONTROLS NOW IN PLACE (defense-in-depth, not
-    // a substitute for the circuit fix):
-    //   * `withdraw` recomputes `public_amount = encode(-(amount))` from a
-    //     u64 `amount` (so a withdraw's public_amount is bounded to a
-    //     valid 64-bit negation) and binds escrow payout to it (C1).
-    //   * `transfer` forces `public_amount == 0`.
-    //   * every public input is checked to be a CANONICAL field element
-    //     (< r) on-chain (H2), removing the non-canonical wrap freedom.
-    // These bound the *settlement* side but do NOT make the circuit sound
-    // on their own — internal note value can still wrap. Treat H1 as OPEN.
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // ============================================================
+    //  H1: signed-64-bit range check on publicAmount.
+    // ============================================================
+    // Constrains publicAmount ∈ [0, 2^64) ∪ (r - 2^64, r). Without this a
+    // prover could choose a publicAmount near r so the conservation
+    // equation below wraps mod r and forges value.
+    component publicAmountRange = SignedAmount64();
+    publicAmountRange.in        <== publicAmount;
+    publicAmountRange.isNeg     <== publicAmountIsNeg;
+    publicAmountRange.magnitude <== publicAmountMagnitude;
 
     // ============================================================
     //  INPUTS: derive owner_pubkey, commitment, nullifier; verify membership
@@ -195,14 +261,28 @@ template Transaction(levels, nIns, nOuts) {
     nullifiersDistinct.out === 0;
 
     // ============================================================
-    //  Value conservation (per-asset, in-field signed arithmetic)
+    //  H1: range-check the input/output sums so conservation can't wrap.
+    // ============================================================
+    // Each amount is already < 2^64, so a sum of `nIns` (resp. `nOuts`)
+    // of them is < nIns * 2^64 <= 2^sumBits. Constraining the sums to
+    // exactly `sumBits = 64 + ceil(log2(n))` bits proves they never reach
+    // 2^sumBits, hence stay far below the field modulus r (~2^254). With
+    // publicAmount also bounded to the signed-64-bit envelope above, the
+    // equality `sumIn === sumOut + publicAmount` below is exact integer
+    // arithmetic — it cannot be satisfied by a mod-r wrap.
+    component inSumBits = Num2Bits(sumBits(nIns));
+    inSumBits.in <== inSumAccum[nIns];
+    component outSumBits = Num2Bits(sumBits(nOuts));
+    outSumBits.in <== outSumAccum[nOuts];
+
+    // ============================================================
+    //  Value conservation (per-asset, signed arithmetic)
     //    sum(inAmount) === sum(outAmount) + publicAmount
     // ============================================================
-    // SECURITY TODO (H1): this equality is checked mod r with NO range
-    // bound on the sums or `publicAmount` — see the large warning block
-    // above. Add Num2Bits/LessThan range checks on inSumAccum[nIns],
-    // outSumAccum[nOuts], and the signed `publicAmount` before mainnet
-    // (requires circuit recompile + ceremony).
+    // H1 (2026-05-25): SOUND. `publicAmount` is range-bounded to the
+    // signed-64-bit envelope (SignedAmount64 above) and both sums are
+    // range-bounded to `sumBits` (above), so this equality holds over the
+    // integers, not just mod r — no wrap is possible.
     inSumAccum[nIns] === outSumAccum[nOuts] + publicAmount;
 }
 

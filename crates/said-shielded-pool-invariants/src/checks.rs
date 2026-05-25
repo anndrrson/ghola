@@ -61,8 +61,14 @@ pub type Result<T> = std::result::Result<T, InvariantViolation>;
 /// pool's net-flow perspective. The arithmetic equation is the same.)
 ///
 /// **Enforcement**: the Groth16 circuit (`circuits/transaction.circom`)
-/// constrains `sumIn + publicAmount = sumOut` with `publicAmount`
-/// signed-encoded via the range-check trick described in SPEC §4.1.
+/// constrains `sumIn + publicAmount = sumOut`. As of H1 (2026-05-25) the
+/// circuit ALSO range-bounds `publicAmount` to the signed-64-bit envelope
+/// (`SignedAmount64`) and both sums to 65 bits (`Num2Bits(sumBits)`), so
+/// the equality holds over the integers — it can no longer be satisfied by
+/// a mod-r wrap. This off-chain checker already modelled the sound
+/// behaviour (it works in checked `i128`/`u128`, never in the field), so
+/// it needs no change; it is the cross-check that the recovered witness
+/// satisfies the same relation the circuit now enforces.
 /// **Off-chain checker**: this function, called by the indexer + chaos
 /// harness against the recovered witness.
 pub fn inv_note_conservation(

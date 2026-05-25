@@ -1,42 +1,40 @@
 {
-  "description": "Output amounts sum exceeds 2^64 - 1. H1: the circuit's 65-bit SUM range check (outSumAccum Num2Bits(65)) plus value conservation MUST reject this witness; per-amount 64-bit checks alone would not.",
+  "description": "public_amount = 2^64, one past the signed-64-bit envelope. H1 SignedAmount64 range check MUST reject (magnitude fails Num2Bits(64)). Pre-H1 this class of value enabled field-wrap value forgery.",
   "expected_commitment_chain": [
-    "30579e21139198a3192d50ae806c6d0a13197d6ea96e9c5a7203a6253bbc93e5",
-    "286a98c836d0913c706dde0720de29ded1ee1a1ea5c3ad03554054abeedf9d7a"
+    "277b20b67f6f022f7ba360bc27c3741a11951658325aec855939f5c04cf46edc"
   ],
   "expected_nullifiers": [
-    "2221fbf8718eebb57fbf31f1cfeac388f633dcc15b9a3b90aa569d5e7382ebc5"
+    "2b1bcb1059db5624e3a00aacba4254fb78b0e2556ac83fec2b252f3caa96769e"
   ],
   "expected_public_inputs": {
     "asset_id": "22802ab3cf9373867cdc8c30a2cbaffb4b2b821d2023851e2572ef956c6a0ad1",
-    "ext_data_hash": "2dbb7d9b279f09c2a8c4e3a8a80a49cb222b0da98e5abcbff89de7a97a2a539e",
+    "ext_data_hash": "2e4ac3b7cf8c8a005e80eeb8370dcf743137b334bc6b0f1611fca63844bdfb64",
     "input_nullifiers": [
-      "2221fbf8718eebb57fbf31f1cfeac388f633dcc15b9a3b90aa569d5e7382ebc5"
+      "2b1bcb1059db5624e3a00aacba4254fb78b0e2556ac83fec2b252f3caa96769e"
     ],
     "output_commitments": [
-      "30579e21139198a3192d50ae806c6d0a13197d6ea96e9c5a7203a6253bbc93e5",
-      "286a98c836d0913c706dde0720de29ded1ee1a1ea5c3ad03554054abeedf9d7a"
+      "277b20b67f6f022f7ba360bc27c3741a11951658325aec855939f5c04cf46edc"
     ],
-    "public_amount": "0",
-    "root": "2b182d4172b452530473018930f58f1c0b9e806da78105a3c5f45d5aa43a1968"
+    "public_amount": "18446744073709551616",
+    "root": "14ac35d8d47a8bfc421ede0fd513e06fe07d0f0ae69bb80761ca0a6223994687"
   },
-  "name": "amount_overflow",
-  "notes": "Negative test (H1): sum range-check failure — structurally unprovable after the 2026-05-25 conservation constraints.",
+  "name": "public_amount_out_of_envelope",
+  "notes": "Negative test (H1): publicAmount outside [0,2^64) ∪ (r-2^64, r) is structurally unprovable.",
   "proof": null,
   "should_prove": false,
   "should_verify": false,
   "witness": {
     "asset_id": "22802ab3cf9373867cdc8c30a2cbaffb4b2b821d2023851e2572ef956c6a0ad1",
-    "ext_data_hash": "2dbb7d9b279f09c2a8c4e3a8a80a49cb222b0da98e5abcbff89de7a97a2a539e",
+    "ext_data_hash": "2e4ac3b7cf8c8a005e80eeb8370dcf743137b334bc6b0f1611fca63844bdfb64",
     "input_indices": [
       0
     ],
     "input_notes": [
       {
-        "amount": 18446744073709551615,
+        "amount": 1000,
         "asset_id": "22802ab3cf9373867cdc8c30a2cbaffb4b2b821d2023851e2572ef956c6a0ad1",
-        "blinding": "007f2902d9f941fff1d1c23df9b09955095ddd27d8265ab6b123bf8264e95a61",
-        "owner_pubkey": "00c59987bfa89bc6aeb81e6eff8124860e05de812a72edce9344f63d8d58f20b"
+        "blinding": "004811baa2818e55261d3ac7e7d18436ef794d71c4ac8c04f51578a14fd529e8",
+        "owner_pubkey": "009eccaf5599ffaf99c3d708e0765b95c52f1612e774ae06e461f54b81b534ed"
       }
     ],
     "input_paths": [
@@ -101,19 +99,13 @@
     ],
     "output_notes": [
       {
-        "amount": 18446744073709551614,
+        "amount": 1000,
         "asset_id": "22802ab3cf9373867cdc8c30a2cbaffb4b2b821d2023851e2572ef956c6a0ad1",
-        "blinding": "00e9567950f98e87473ec87dbfcb0b5bffcb229ac02fb2d0c651d2c12adb3f62",
-        "owner_pubkey": "00c59987bfa89bc6aeb81e6eff8124860e05de812a72edce9344f63d8d58f20b"
-      },
-      {
-        "amount": 2,
-        "asset_id": "22802ab3cf9373867cdc8c30a2cbaffb4b2b821d2023851e2572ef956c6a0ad1",
-        "blinding": "00b09a82c600afe79d07c57d261d1c455b5871d8f6aa59d1c956778c1a87f36a",
-        "owner_pubkey": "00c59987bfa89bc6aeb81e6eff8124860e05de812a72edce9344f63d8d58f20b"
+        "blinding": "00dc65012e91034fe23c5ba8cd0095a8b77c968af77d68f649699384065463ea",
+        "owner_pubkey": "009eccaf5599ffaf99c3d708e0765b95c52f1612e774ae06e461f54b81b534ed"
       }
     ],
-    "public_amount": "0",
-    "spending_key": "006d3a1f914c54eaba3d7448ce64071b9b3c5d1c53fde75120e992f97d62c9ce"
+    "public_amount": "18446744073709551616",
+    "spending_key": "0098ea97b1ab3849dc02cfe814f0cfa86a6bb2b1aad21e5d7f914817f8cb0714"
   }
 }

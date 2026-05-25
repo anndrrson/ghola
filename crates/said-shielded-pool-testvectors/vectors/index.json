@@ -1,5 +1,5 @@
 {
-  "count": 13,
+  "count": 14,
   "schema_version": 1,
   "seed_hex": "0xDEADBEEF",
   "vectors": [
@@ -81,9 +81,16 @@
       "should_verify": false
     },
     {
-      "description": "Output amounts sum exceeds 2^64 - 1. The 64-bit range check inside the circuit MUST reject this witness.",
+      "description": "Output amounts sum exceeds 2^64 - 1. H1: the circuit's 65-bit SUM range check (outSumAccum Num2Bits(65)) plus value conservation MUST reject this witness; per-amount 64-bit checks alone would not.",
       "file": "amount_overflow.json",
       "name": "amount_overflow",
+      "should_prove": false,
+      "should_verify": false
+    },
+    {
+      "description": "public_amount = 2^64, one past the signed-64-bit envelope. H1 SignedAmount64 range check MUST reject (magnitude fails Num2Bits(64)). Pre-H1 this class of value enabled field-wrap value forgery.",
+      "file": "public_amount_out_of_envelope.json",
+      "name": "public_amount_out_of_envelope",
       "should_prove": false,
       "should_verify": false
     },

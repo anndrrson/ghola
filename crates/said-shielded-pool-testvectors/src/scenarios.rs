@@ -637,9 +637,13 @@ pub fn scenario_root_not_in_history() -> ScenarioOutput {
 
 pub fn scenario_amount_overflow() -> ScenarioOutput {
     let mut ctx = Ctx::new(crate::VECTOR_SEED.wrapping_add(10));
-    // The circuit range-checks each amount to 64 bits and the sum to 64 bits
-    // as well. We construct an out-of-range note by setting amount to u64::MAX
-    // and a second output that would cause a sum > 2^64-1.
+    // H1 (2026-05-25): the circuit now range-checks each amount to 64 bits
+    // AND each side's SUM to `sumBits = 64 + ceil(log2(nIns/nOuts))` bits
+    // (= 65 for the 2-in/2-out shape). We construct a witness whose OUTPUT
+    // SUM exceeds 2^64-1 (u64::MAX-1 + 2 = u64::MAX+1); the per-amount
+    // checks pass individually, but the new `Num2Bits(65)` on `outSumAccum`
+    // — combined with value conservation against a 65-bit `inSumAccum` —
+    // structurally rejects the witness. Before H1 this could wrap mod r.
     let bl0 = rand_field(&mut ctx.rng);
     let in0 = make_note(u64::MAX, ctx.asset_a, ctx.owner, bl0);
     let (tree, in_cs, in_idxs) = populate_tree(&[in0.clone()]);
@@ -676,14 +680,73 @@ pub fn scenario_amount_overflow() -> ScenarioOutput {
     };
     vec![TestVector {
         name: "amount_overflow".into(),
-        description: "Output amounts sum exceeds 2^64 - 1. The 64-bit range check inside the circuit MUST reject this witness.".into(),
+        description: "Output amounts sum exceeds 2^64 - 1. H1: the circuit's 65-bit SUM range check (outSumAccum Num2Bits(65)) plus value conservation MUST reject this witness; per-amount 64-bit checks alone would not.".into(),
         witness,
         expected_public_inputs: public_inputs,
         expected_commitment_chain: vec![out_c0, out_c1],
         expected_nullifiers: vec![n0],
         should_prove: false,
         should_verify: false,
-        notes: Some("Negative test: range-check failure.".into()),
+        notes: Some("Negative test (H1): sum range-check failure — structurally unprovable after the 2026-05-25 conservation constraints.".into()),
+    }]
+}
+
+/// H1 (2026-05-25): explicit negative vector for the value-forgery wrap
+/// that the new constraints close. A pre-H1 prover could pick a
+/// `public_amount` near the field modulus r so that
+/// `sumIn === sumOut + publicAmount` holds mod r while minting value. The
+/// signed-64-bit envelope constraint on `publicAmount` (SignedAmount64)
+/// now makes any such out-of-envelope value structurally unprovable.
+///
+/// We model it as: 1 input of 1000, 1 output of 1000, but a
+/// `public_amount` of `+(2^64)` — one past the signed-64 envelope. A
+/// correct prover cannot satisfy `SignedAmount64` (magnitude 2^64 fails
+/// the Num2Bits(64) hint), so `should_prove = false`.
+pub fn scenario_public_amount_out_of_envelope() -> ScenarioOutput {
+    let mut ctx = Ctx::new(crate::VECTOR_SEED.wrapping_add(12));
+    let bl0 = rand_field(&mut ctx.rng);
+    let in0 = make_note(1000, ctx.asset_a, ctx.owner, bl0);
+    let (tree, in_cs, in_idxs) = populate_tree(&[in0.clone()]);
+
+    let bl_out = rand_field(&mut ctx.rng);
+    let out = make_note(1000, ctx.asset_a, ctx.owner, bl_out);
+    let out_c = commitment(&out);
+    let n0 = nullifier(&ctx.nk, &in_cs[0], in_idxs[0]);
+
+    let root = MerkleRoot(tree.compute_root_from_leaves());
+    let ext = make_ext_data_hash("public_amount_out_of_envelope");
+
+    // 2^64 — exactly one past the largest representable signed-64 magnitude.
+    let out_of_envelope: i128 = 1i128 << 64;
+
+    let witness = TransferWitness {
+        input_notes: vec![in0],
+        input_paths: vec![tree.path_for(in_idxs[0])],
+        input_indices: in_idxs,
+        output_notes: vec![out],
+        spending_key: ctx.spending_key,
+        public_amount: out_of_envelope,
+        asset_id: ctx.asset_a,
+        ext_data_hash: ext,
+    };
+    let public_inputs = PublicInputs {
+        root,
+        input_nullifiers: vec![n0],
+        output_commitments: vec![out_c],
+        public_amount: out_of_envelope,
+        asset_id: ctx.asset_a,
+        ext_data_hash: ext,
+    };
+    vec![TestVector {
+        name: "public_amount_out_of_envelope".into(),
+        description: "public_amount = 2^64, one past the signed-64-bit envelope. H1 SignedAmount64 range check MUST reject (magnitude fails Num2Bits(64)). Pre-H1 this class of value enabled field-wrap value forgery.".into(),
+        witness,
+        expected_public_inputs: public_inputs,
+        expected_commitment_chain: vec![out_c],
+        expected_nullifiers: vec![n0],
+        should_prove: false,
+        should_verify: false,
+        notes: Some("Negative test (H1): publicAmount outside [0,2^64) ∪ (r-2^64, r) is structurally unprovable.".into()),
     }]
 }
 
@@ -757,6 +820,7 @@ pub fn all_scenarios() -> Vec<TestVector> {
     out.extend(scenario_double_spend_same_nullifier());
     out.extend(scenario_root_not_in_history());
     out.extend(scenario_amount_overflow());
+    out.extend(scenario_public_amount_out_of_envelope());
     out.extend(scenario_ext_data_binding_mismatch());
     out
 }

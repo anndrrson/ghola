@@ -86,6 +86,13 @@ async function main() {
     21888242871839275222246405745257275088548364400416034343698204186575808495617n;
   const publicAmount = ((BN254_FIELD - DEPOSIT_AMOUNT) % BN254_FIELD).toString();
 
+  // H1 (2026-05-25): signed-amount range-check witness hints. This scenario
+  // encodes publicAmount = p - DEPOSIT_AMOUNT, i.e. the field-NEGATION of a
+  // positive magnitude → isNeg = 1, magnitude = DEPOSIT_AMOUNT. The circuit's
+  // SignedAmount64 template enforces publicAmount == (1 - 2*isNeg)*magnitude.
+  const publicAmountIsNeg = "1";
+  const publicAmountMagnitude = DEPOSIT_AMOUNT.toString();
+
   const input = {
     // public
     root,
@@ -94,6 +101,9 @@ async function main() {
     publicAmount,
     assetId,
     extDataHash,
+    // private — signed-amount hints (H1)
+    publicAmountIsNeg,
+    publicAmountMagnitude,
     // private — inputs
     inAmount: ["0", "0"],
     inBlinding: dummyBlinding.map((x) => x.toString()),
