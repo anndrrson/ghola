@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Turnkey } from "@turnkey/sdk-server";
+import {
+  fetchSessionUser,
+  sameOrigin,
+  SESSION_COOKIE_NAME,
+} from "../../auth/session/_lib";
 
 const TURNKEY_API_BASE_URL = "https://api.turnkey.com";
 
@@ -111,6 +116,45 @@ export async function POST(req: NextRequest) {
         { status: 403 }
       );
     }
+
+    // Defense-in-depth (only reachable once server signing is explicitly
+    // enabled). Reject cross-site requests so a malicious page cannot
+    // ride the user's session cookie to mint signatures (CSRF).
+    if (!sameOrigin(req)) {
+      return NextResponse.json(
+        { error: "cross-site request rejected", code: "turnkey_cross_site_rejected" },
+        { status: 403 }
+      );
+    }
+
+    // Require a valid, server-verified session before signing anything.
+    const sessionToken = req.cookies.get(SESSION_COOKIE_NAME)?.value;
+    if (!sessionToken) {
+      return NextResponse.json(
+        { error: "authentication required", code: "turnkey_auth_required" },
+        { status: 401 }
+      );
+    }
+    const session = await fetchSessionUser(sessionToken).catch(() => null);
+    if (!session || !session.ok) {
+      return NextResponse.json(
+        { error: "authentication required", code: "turnkey_auth_required" },
+        { status: 401 }
+      );
+    }
+
+    // TODO(turnkey-ownership-binding): there is currently NO server-side
+    // mapping from a Ghola user → the Turnkey sub-org / wallet they own
+    // (see apps/web/src/app/api/auth/session/_lib.ts — SessionUser only
+    // carries {id,email}). Until that binding exists (e.g. a
+    // user_id → sub_org_id table surfaced by thumper-cloud), this route
+    // can only prove the caller is *some* authenticated user, not that
+    // they own the referenced subOrgId/walletAddress. This is an IDOR
+    // gap. The ownership assertion MUST be implemented and enforced here
+    // BEFORE TURNKEY_DANGEROUS_SERVER_SIGNING_ALLOW_PRODUCTION is ever
+    // set in production. Reference the authenticated user so the binding
+    // has an obvious insertion point and the var isn't flagged unused.
+    void session.user.id;
 
     const orgId = process.env.TURNKEY_ORG_ID;
     const apiPublicKey = process.env.TURNKEY_API_PUBLIC_KEY;
