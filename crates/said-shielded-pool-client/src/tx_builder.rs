@@ -11,7 +11,7 @@
 //! ```text
 //! pool_config = PDA(["pool"],                 program_id)
 //! merkle_tree = PDA(["tree", tree_id_le8],    program_id)
-//! nullifier   = PDA(["nullifier", nf_bytes],  program_id)
+//! nullifier   = PDA(["nullifier", mint, nf_bytes], program_id)
 //! escrow      = PDA(["escrow", mint],         program_id)
 //! ```
 //!
@@ -207,9 +207,11 @@ pub fn merkle_tree_seeds(tree_id: u64) -> Vec<Vec<u8>> {
     vec![b"tree".to_vec(), tree_id.to_le_bytes().to_vec()]
 }
 
-/// PDA: `[b"nullifier", nullifier_bytes]`.
-pub fn nullifier_seeds(nf: &Nullifier) -> Vec<Vec<u8>> {
-    vec![b"nullifier".to_vec(), nf.0.to_vec()]
+/// PDA: `[b"nullifier", mint, nullifier_bytes]` — MUST match the on-chain
+/// seeds used by deposit/withdraw/transfer (see `state.rs`). The mint scopes
+/// the nullifier per-asset; omitting it derives the wrong address.
+pub fn nullifier_seeds(mint: &[u8; 32], nf: &Nullifier) -> Vec<Vec<u8>> {
+    vec![b"nullifier".to_vec(), mint.to_vec(), nf.0.to_vec()]
 }
 
 /// PDA: `[b"escrow", mint.to_bytes()]`.
@@ -1273,9 +1275,10 @@ mod tests {
         let ts = merkle_tree_seeds(7);
         assert_eq!(ts[0], b"tree");
         assert_eq!(ts[1], 7u64.to_le_bytes().to_vec());
-        let ns = nullifier_seeds(&Nullifier([1u8; 32]));
+        let ns = nullifier_seeds(&[9u8; 32], &Nullifier([1u8; 32]));
         assert_eq!(ns[0], b"nullifier");
-        assert_eq!(ns[1], vec![1u8; 32]);
+        assert_eq!(ns[1], vec![9u8; 32]);
+        assert_eq!(ns[2], vec![1u8; 32]);
         let es = escrow_seeds(&[9u8; 32]);
         assert_eq!(es[0], b"escrow");
         assert_eq!(es[1], vec![9u8; 32]);
