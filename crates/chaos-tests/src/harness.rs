@@ -330,6 +330,7 @@ impl TestRelayer {
             max_queue_depth: overrides.max_queue_depth,
             relay_rate_limit_per_min: 0,
             dedup_ttl_secs: said_shielded_pool_relayer::config::DEFAULT_DEDUP_TTL_SECS,
+            trusted_proxies: std::collections::HashSet::new(),
         };
         let cfg = Arc::new(cfg);
 

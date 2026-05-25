@@ -41,6 +41,7 @@ pub fn test_config() -> Arc<Config> {
         max_queue_depth: 10_000,
         relay_rate_limit_per_min: 0,
         dedup_ttl_secs: said_shielded_pool_relayer::config::DEFAULT_DEDUP_TTL_SECS,
+        trusted_proxies: std::collections::HashSet::new(),
     })
 }
 
