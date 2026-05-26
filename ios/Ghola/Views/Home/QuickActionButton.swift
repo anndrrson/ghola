@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct QuickActionButton: View {
+    var number: String?
     let title: String
     let icon: String
     let color: Color
@@ -9,44 +10,43 @@ struct QuickActionButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: Theme.paddingMd) {
-                Group {
-                    if isLoading {
-                        ProgressView()
-                            .tint(.white)
-                    } else {
-                        Image(systemName: icon)
-                            .font(.title3.weight(.semibold))
-                            .foregroundStyle(.white)
-                    }
-                }
-                .frame(width: 42, height: 42)
-                .background(
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [color, color.opacity(0.72)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                )
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center) {
+                    Text(number ?? "")
+                        .font(Theme.monoFont)
+                        .foregroundStyle(Theme.textTertiary)
+                        .frame(height: 18, alignment: .leading)
 
-                Text(isLoading ? "Starting..." : title)
-                    .font(.subheadline.weight(.medium))
+                    Spacer()
+
+                    Group {
+                        if isLoading {
+                            ProgressView()
+                                .tint(color)
+                        } else {
+                            Image(systemName: icon)
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(color)
+                        }
+                    }
+                    .frame(width: 26, height: 26)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(isLoading ? "STARTING" : title.uppercased())
+                    .font(Theme.monoFont.weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+                    .minimumScaleFactor(0.72)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, Theme.paddingMd + 2)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.cornerMd)
-                    .fill(Theme.surfaceGradient)
-            )
+            .padding(14)
+            .frame(maxWidth: .infinity, minHeight: 122, alignment: .leading)
+            .background(Theme.cardBg)
             .overlay(
-                RoundedRectangle(cornerRadius: Theme.cornerMd)
-                    .stroke(Theme.cardBorder, lineWidth: 1)
+                Rectangle()
+                    .stroke(Theme.border, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)

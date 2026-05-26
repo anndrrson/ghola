@@ -61,11 +61,31 @@ class AuthManager: ObservableObject {
         }
     }
 
-    func signInWithTurnkey(email: String) async {
-        error = "Wallet sign-in requires user-held Turnkey device signing and is disabled in this TestFlight. Use Sign in with Apple."
+    #if os(iOS)
+    func signInWithTurnkey(anchor: ASPresentationAnchor) async {
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
+
+        do {
+            let session = try await NativeTurnkeyAuth.signIn(anchor: anchor)
+            let response = try await CloudClient.shared.siwsSignInWithDeviceSigner(
+                walletPubkey: session.walletAddress
+            ) { challenge in
+                try await NativeTurnkeyAuth.signSIWSChallenge(
+                    challenge,
+                    walletAddress: session.walletAddress
+                )
+            }
+            await CloudClient.shared.setToken(response.token)
+            await loadProfile()
+            await registerDevice()
+            isAuthenticated = true
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 
-    #if os(iOS)
     func signInWithApple(credential: ASAuthorizationAppleIDCredential) async {
         isLoading = true
         error = nil

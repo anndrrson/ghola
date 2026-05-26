@@ -1,6 +1,7 @@
 import SwiftUI
 #if os(iOS)
 import AuthenticationServices
+import UIKit
 #endif
 
 struct OnboardingView: View {
@@ -8,100 +9,150 @@ struct OnboardingView: View {
 
     var body: some View {
         ZStack {
-            Theme.appBackgroundGradient
+            Theme.bg
                 .ignoresSafeArea()
 
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: Theme.paddingLg) {
-                    Spacer(minLength: Theme.paddingLg)
+            VStack(alignment: .leading, spacing: 0) {
+                Spacer(minLength: 34)
 
-                    VStack(spacing: 6) {
-                        Text("Ghola")
-                            .font(.system(size: 34, weight: .bold, design: .rounded))
-                            .foregroundStyle(Theme.textPrimary)
-                        Text("AI assistant for work that actually gets done.")
-                            .font(.callout)
-                            .foregroundStyle(Theme.textSecondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.horizontal, Theme.paddingLg)
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("ghola")
+                        .font(.system(size: 44, weight: .semibold, design: .default))
+                        .foregroundStyle(Theme.textPrimary)
 
-                    authCard
+                    Rectangle()
+                        .fill(Theme.accent)
+                        .frame(width: 76, height: 3)
 
-                    Spacer(minLength: Theme.paddingXl)
+                    Text("Unlock Ghola")
+                        .font(Theme.displayFont)
+                        .foregroundStyle(Theme.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("Use your device passkey to create or unlock the Ghola wallet used for approvals on this phone.")
+                        .font(Theme.bodyFont)
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: 520)
-                .padding(.bottom, Theme.paddingLg)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Spacer(minLength: 46)
+
+                authPanel
+
+                Spacer(minLength: 28)
             }
-            #if os(iOS)
-            .scrollDismissesKeyboard(.interactively)
-            #endif
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .frame(maxWidth: 540, maxHeight: .infinity, alignment: .topLeading)
             .padding(.horizontal, Theme.paddingLg)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    private var authCard: some View {
+    private var authPanel: some View {
         VStack(alignment: .leading, spacing: Theme.paddingMd) {
-            Text("Sign in to Ghola")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(Theme.textPrimary)
-            Text("Continue with your account.")
-                .font(.subheadline)
-                .foregroundStyle(Theme.textSecondary)
+            sectionLabel("GHOLA ACCESS")
 
             #if os(iOS)
-            SignInWithAppleButton(.continue) { request in
-                request.requestedScopes = [.fullName, .email]
-            } onCompletion: { result in
-                switch result {
-                case .success(let authorization):
-                    guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
-                        auth.error = "Sign in with Apple returned an unsupported credential."
-                        return
-                    }
-                    Task { await auth.signInWithApple(credential: credential) }
-                case .failure(let error):
-                    auth.error = error.localizedDescription
+            Button {
+                guard let anchor = presentationAnchor() else {
+                    auth.error = "Unable to present the Ghola passkey prompt."
+                    return
                 }
-            }
-            .signInWithAppleButtonStyle(.white)
-            .frame(height: 50)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.cornerMd))
-            .disabled(auth.isLoading)
+                Task { await auth.signInWithTurnkey(anchor: anchor) }
+            } label: {
+                HStack(spacing: 12) {
+                    if auth.isLoading {
+                        ProgressView()
+                            .tint(.black)
+                            .frame(width: 21, height: 21)
+                    } else {
+                        Image(systemName: "key.radiowaves.forward")
+                            .font(.system(size: 18, weight: .semibold))
+                            .frame(width: 21, height: 21)
+                    }
 
-            Label("Wallet sign-in is disabled until user-held signing is ready.", systemImage: "lock.shield")
-                .font(Theme.captionFont)
+                    Text(auth.isLoading ? "CONNECTING" : "CONTINUE")
+                        .font(Theme.monoFont.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+
+                    Spacer(minLength: 10)
+
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .foregroundStyle(.black)
+                .padding(.horizontal, Theme.paddingMd)
+                .frame(maxWidth: .infinity, minHeight: 58)
+                .background(Theme.accent)
+                .overlay(
+                    Rectangle()
+                        .stroke(Theme.accentSoft.opacity(0.65), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(auth.isLoading)
+            #else
+            Text("Ghola passkey sign-in is available on iOS.")
+                .font(Theme.bodyFont)
                 .foregroundStyle(Theme.textSecondary)
             #endif
+
+            VStack(alignment: .leading, spacing: 10) {
+                statusRow("01", "Ghola passkey")
+                statusRow("02", "Ghola wallet")
+                statusRow("03", "Secure session")
+            }
 
             if let error = auth.error {
                 Text(error)
-                    .font(.caption)
+                    .font(Theme.captionFont)
                     .foregroundStyle(Theme.danger)
-                    .padding(10)
+                    .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Theme.danger.opacity(0.10))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(
+                        Rectangle()
+                            .stroke(Theme.danger.opacity(0.28), lineWidth: 1)
+                    )
             }
         }
-        .padding(Theme.paddingLg)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Theme.brandSurfaceGradient)
-        )
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Theme.brandBandGradient)
-                .frame(height: 6)
-        }
+        .padding(Theme.paddingMd)
+        .background(Theme.cardBg)
         .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Theme.accentStrokeGradient, lineWidth: 1)
+            Rectangle()
+                .stroke(Theme.border, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .shadow(color: Theme.cardShadow, radius: 10, x: 0, y: 6)
     }
+
+    private func sectionLabel(_ title: String) -> some View {
+        Text("› \(title)")
+            .font(Theme.eyebrowFont)
+            .foregroundStyle(Theme.textSecondary)
+    }
+
+    private func statusRow(_ number: String, _ title: String) -> some View {
+        HStack(spacing: 12) {
+            Text(number)
+                .font(Theme.monoFont)
+                .foregroundStyle(Theme.accent)
+                .frame(width: 26, alignment: .leading)
+            Text(title.uppercased())
+                .font(Theme.monoFont)
+                .foregroundStyle(Theme.textSecondary)
+            Spacer()
+            Rectangle()
+                .fill(Theme.border)
+                .frame(width: 18, height: 1)
+        }
+    }
+
+    #if os(iOS)
+    private func presentationAnchor() -> ASPresentationAnchor? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
+    }
+    #endif
 }

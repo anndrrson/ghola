@@ -154,26 +154,7 @@ actor CloudClient {
         let d = JSONDecoder()
         return d
     }()
-    private let turnkeyGholaBaseURL = "https://ghola.xyz"
-    private let turnkeySubOrgKey = "turnkey_sub_org_id"
-    private let turnkeyWalletAddressKey = "turnkey_wallet_address"
-    private let turnkeyWalletIdKey = "turnkey_wallet_id"
-
-    private struct TurnkeyWalletResponse: Codable {
-        let subOrgId: String
-        let walletAddress: String
-        let walletId: String
-
-        enum CodingKeys: String, CodingKey {
-            case subOrgId
-            case walletAddress
-            case walletId
-        }
-    }
-
-    private struct TurnkeySignResponse: Codable {
-        let signature: String
-    }
+    private static let siwsChallengePrefix = "Sign in to Ghola\n"
 
     private struct SiwsChallengeResponse: Codable {
         let nonce: String
@@ -215,39 +196,27 @@ actor CloudClient {
         return try await post("/api/auth/email/signin", body: body, authenticated: false, scope: .auth)
     }
 
-    func turnkeySignIn(email: String) async throws -> AuthResponse {
-        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard normalizedEmail.contains("@"), normalizedEmail.contains(".") else {
-            throw CloudError.server(400, "A valid email is required for Turnkey sign-in")
+    func siwsSignInWithDeviceSigner(
+        walletPubkey: String,
+        signChallenge: @escaping @Sendable (String) async throws -> String
+    ) async throws -> AuthResponse {
+        let normalizedWallet = walletPubkey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedWallet.isEmpty else {
+            throw CloudError.server(400, "A Ghola wallet address is required for sign-in")
         }
 
-        let walletApproval = PrivacyGate.makeApproval(
-            scope: .walletProvision,
-            summary: "Create or reuse a Turnkey wallet for Ghola sign-in."
-        )
-        let wallet = try await createOrReuseTurnkeyWallet(email: normalizedEmail, approval: walletApproval)
         let challenge: SiwsChallengeResponse = try await get("/api/auth/siws/challenge", authenticated: false, scope: .auth)
-        let sigA = try await turnkeySignMessage(
-            subOrgId: wallet.subOrgId,
-            walletAddress: wallet.walletAddress,
-            message: challenge.challenge,
-            approval: walletApproval
-        )
-        let sigB = try await turnkeySignMessage(
-            subOrgId: wallet.subOrgId,
-            walletAddress: wallet.walletAddress,
-            message: challenge.challenge,
-            approval: walletApproval
-        )
-        guard sigA == sigB else {
-            throw CloudError.server(500, "Turnkey returned non-deterministic signatures")
+        guard challenge.challenge.hasPrefix(Self.siwsChallengePrefix),
+              challenge.challenge.contains("Nonce: \(challenge.nonce)") else {
+            throw CloudError.server(400, "Unexpected sign-in challenge")
         }
+        let signature = try await signChallenge(challenge.challenge)
 
         let body: [String: Any] = [
-            "wallet_pubkey": wallet.walletAddress,
+            "wallet_pubkey": normalizedWallet,
             "nonce": challenge.nonce,
             "challenge": challenge.challenge,
-            "signature": sigA,
+            "signature": signature,
         ]
         return try await post("/api/auth/siws", body: body, authenticated: false, scope: .auth)
     }
@@ -707,49 +676,6 @@ actor CloudClient {
         }
 
         return request
-    }
-
-    private func createOrReuseTurnkeyWallet(email: String, approval: PrivacyApproval) async throws -> TurnkeyWalletResponse {
-        try PrivacyGate.authorize(scope: .walletProvision, approval: approval)
-        var body: [String: Any] = ["email": email]
-        body.merge(approval.jsonFields) { _, new in new }
-        let wallet: TurnkeyWalletResponse = try await postAbsolute("/api/turnkey/create-wallet", body: body, scope: .walletProvision, approval: approval)
-        KeychainHelper.save(wallet.subOrgId, for: turnkeySubOrgKey)
-        KeychainHelper.save(wallet.walletAddress, for: turnkeyWalletAddressKey)
-        KeychainHelper.save(wallet.walletId, for: turnkeyWalletIdKey)
-        return wallet
-    }
-
-    private func turnkeySignMessage(
-        subOrgId: String,
-        walletAddress: String,
-        message: String,
-        approval: PrivacyApproval
-    ) async throws -> String {
-        try PrivacyGate.authorize(scope: .walletProvision, approval: approval)
-        let body: [String: Any] = [
-            "message": message,
-            "subOrgId": subOrgId,
-            "walletAddress": walletAddress,
-        ]
-        var approvedBody = body
-        approvedBody.merge(approval.jsonFields) { _, new in new }
-        let signed: TurnkeySignResponse = try await postAbsolute("/api/turnkey/sign-message", body: approvedBody, scope: .walletProvision, approval: approval)
-        return signed.signature
-    }
-
-    private func postAbsolute<T: Decodable>(_ path: String, body: [String: Any], scope: NetworkScope, approval: PrivacyApproval? = nil) async throws -> T {
-        try PrivacyGate.authorize(scope: scope, approval: approval)
-        guard let url = URL(string: "\(turnkeyGholaBaseURL)\(path)") else {
-            throw CloudError.invalidURL
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await session.data(for: request)
-        try validateResponse(response, data: data)
-        return try decoder.decode(T.self, from: data)
     }
 
     private func validateResponse(_ response: URLResponse, data: Data) throws {

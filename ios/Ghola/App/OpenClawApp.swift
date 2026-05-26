@@ -9,6 +9,12 @@ struct GholaApp: App {
     @StateObject private var bonjourAdvertiser = BonjourAdvertiser()
     #endif
 
+    init() {
+        #if os(iOS)
+        NativeTurnkeyAuth.configure()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             #if os(macOS)

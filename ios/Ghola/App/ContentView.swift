@@ -8,7 +8,7 @@ import AppKit
 
 struct ContentView: View {
     @EnvironmentObject var auth: AuthManager
-    @State private var selectedTab = 1 // Chat is default
+    @State private var selectedTab = 0
     #if os(iOS)
     @StateObject private var localBrowser = LocalServerBrowser()
     @State private var showLocalConnect = false
@@ -18,9 +18,10 @@ struct ContentView: View {
         if auth.isAuthenticated || CloudClient.isLocalMode {
             #if os(iOS)
             TabView(selection: $selectedTab) {
-                HomeView {
-                    selectedTab = 1
-                }
+                HomeView(
+                    onSelectChat: { selectedTab = 1 },
+                    onSelectWallet: { selectedTab = 3 }
+                )
                     .tabItem {
                         Label("Home", systemImage: "house.fill")
                     }
@@ -59,9 +60,10 @@ struct ContentView: View {
                 .navigationTitle("Ghola")
             } detail: {
                 switch selectedTab {
-                case 0: HomeView {
-                    selectedTab = 1
-                }
+                case 0: HomeView(
+                    onSelectChat: { selectedTab = 1 },
+                    onSelectWallet: { selectedTab = 3 }
+                )
                 case 2: MessagesView()
                 case 3: WalletView()
                 case 4: SettingsView()
@@ -1473,7 +1475,7 @@ private struct AddWalletContactSheet: View {
                         .autocorrectionDisabled()
                         .lineLimit(2...4)
                 } header: {
-                    Text("Turnkey wallet address")
+                    Text("Ghola wallet address")
                 } footer: {
                     Text("Stored locally in this device keychain. Ghola Cloud receives only the wallet address if you approve a send.")
                 }

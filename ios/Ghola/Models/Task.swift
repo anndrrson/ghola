@@ -283,7 +283,7 @@ enum PrivatePaymentSigningMode: String, Codable, CaseIterable {
 
     var title: String {
         switch self {
-        case .turnkeyUser: return "Turnkey user-held signer"
+        case .turnkeyUser: return "Ghola user-held signer"
         case .aleoDevice: return "Aleo device signer"
         }
     }

@@ -3,9 +3,12 @@ import SwiftUI
 struct HomeView: View {
     @EnvironmentObject var auth: AuthManager
     var onSelectChat: () -> Void = {}
+    var onSelectWallet: () -> Void = {}
     @State private var tasks: [TaskResponse] = []
     @State private var providerHealth: ProviderHealthResponse?
     @State private var connectedAccounts: [ConnectedAccountStatus] = []
+    @State private var walletBalances: WalletBalancesResponse?
+    @State private var walletAddress: String?
     @State private var isLoading = false
     @State private var creatingTaskType: String?
     @State private var selectedTask: TaskResponse?
@@ -16,29 +19,22 @@ struct HomeView: View {
     @State private var selectedQuickAction: QuickActionKind?
     @State private var isShowingSettings = false
 
-    private var greeting: String {
-        let hour = Calendar.current.component(.hour, from: Date())
-        let name = auth.profile?.displayName ?? "there"
-        switch hour {
-        case 5..<12: return "Good morning, \(name)"
-        case 12..<17: return "Good afternoon, \(name)"
-        case 17..<22: return "Good evening, \(name)"
-        default: return "Hey, \(name)"
-        }
-    }
-
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Theme.paddingLg) {
-                    heroCard
-                    quickActions
+                VStack(alignment: .leading, spacing: 28) {
+                    topBar
+                    balanceHero
+                    actionBoard
                     tasksSection
                 }
-                .padding(.vertical, Theme.paddingMd)
+                .padding(.vertical, 20)
             }
-            .background(Theme.appBackgroundGradient.ignoresSafeArea())
+            .background(Theme.bg.ignoresSafeArea())
             .navigationTitle("")
+            #if os(iOS)
+            .toolbar(.hidden, for: .navigationBar)
+            #endif
             .navigationDestination(isPresented: $isShowingSelectedTask) {
                 if let selectedTask {
                     TaskDetailView(task: selectedTask)
@@ -70,12 +66,10 @@ struct HomeView: View {
                 SettingsView()
             }
             .refreshable {
-                await loadProviderHealth()
-                await loadTasks()
+                await loadHomeData()
             }
             .task {
-                await loadProviderHealth()
-                await loadTasks()
+                await loadHomeData()
                 startActiveTaskPolling()
             }
             .onDisappear {
@@ -85,18 +79,13 @@ struct HomeView: View {
         }
     }
 
-    private var heroCard: some View {
-        HStack(alignment: .top, spacing: Theme.paddingMd) {
-            VStack(alignment: .leading, spacing: Theme.paddingSm) {
-                Text(greeting)
-                    .font(Theme.titleFont)
-                    .foregroundStyle(Theme.textPrimary)
-                Text("What can I help you move forward today?")
-                    .font(Theme.bodyFont)
-                    .foregroundStyle(Theme.textSecondary)
-            }
+    private var topBar: some View {
+        HStack(alignment: .center) {
+            Text("ghola")
+                .font(.system(size: 26, weight: .semibold, design: .default))
+                .foregroundStyle(Theme.textPrimary)
 
-            Spacer(minLength: Theme.paddingSm)
+            Spacer()
 
             Button {
                 isShowingSettings = true
@@ -104,78 +93,129 @@ struct HomeView: View {
                 Image(systemName: "gearshape.fill")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Theme.textPrimary)
-                    .frame(width: 40, height: 40)
-                    .background(
-                        Circle()
-                            .fill(Theme.surfaceGradient)
-                    )
+                    .frame(width: 42, height: 42)
+                    .background(Theme.cardBg)
                     .overlay(
-                        Circle()
-                            .stroke(Theme.cardBorder, lineWidth: 1)
+                        Rectangle()
+                            .stroke(Theme.border, lineWidth: 1)
                     )
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Settings")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Theme.paddingLg)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.cornerLg)
-                .fill(Theme.brandSurfaceGradient)
-        )
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Theme.brandBandGradient)
-                .frame(height: 6)
-        }
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.cornerLg)
-                .stroke(Theme.accentStrokeGradient, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerLg))
-        .shadow(color: Theme.cardShadow, radius: 10, x: 0, y: 6)
         .padding(.horizontal)
     }
 
-    // MARK: - Quick Actions
+    private var balanceHero: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            sectionLabel("BALANCE")
 
-    private var quickActions: some View {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("$")
+                    .font(.system(size: 38, weight: .semibold, design: .default))
+                    .foregroundStyle(Theme.textSecondary)
+
+                Text(usdcBalanceDisplay)
+                    .font(.system(size: 70, weight: .semibold, design: .default))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.58)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 12) {
+                Text("USDC")
+                    .font(Theme.monoFont.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+
+                Rectangle()
+                    .fill(Theme.border)
+                    .frame(height: 1)
+
+                Button(action: onSelectWallet) {
+                    Text(walletDisplay)
+                        .font(Theme.monoFont)
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(Theme.cardBg)
+                        .overlay(
+                            Rectangle()
+                                .stroke(Theme.border, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+
+            Rectangle()
+                .fill(Theme.accent)
+                .frame(width: 126, height: 2)
+        }
+        .padding(.horizontal)
+    }
+
+    private var actionBoard: some View {
         VStack(alignment: .leading, spacing: Theme.paddingMd) {
-            Text("Quick Actions")
-                .font(Theme.headlineFont)
+            sectionLabel("DO")
                 .padding(.horizontal)
 
-            LazyVGrid(columns: [
-                GridItem(.flexible()),
-                GridItem(.flexible()),
-            ], spacing: Theme.paddingMd) {
-                QuickActionButton(
-                    title: "Call",
-                    icon: "phone.fill",
-                    color: Theme.callGreen,
-                    isLoading: creatingTaskType == "call",
-                    action: { selectedQuickAction = .call }
-                )
-                QuickActionButton(
-                    title: "Email",
-                    icon: "envelope.fill",
-                    color: Theme.emailBlue,
-                    isLoading: creatingTaskType == "email",
-                    action: { selectedQuickAction = .email }
-                )
-                QuickActionButton(
-                    title: "Calendar",
-                    icon: "calendar",
-                    color: Theme.calendarOrange,
-                    isLoading: creatingTaskType == "calendar",
-                    action: { selectedQuickAction = .calendar }
-                )
-                QuickActionButton(
-                    title: "Chat",
-                    icon: "bubble.left.fill",
-                    color: Theme.chatPurple,
-                    action: onSelectChat
-                )
+            ZStack {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 0),
+                        GridItem(.flexible(), spacing: 0),
+                    ],
+                    spacing: 0
+                ) {
+                    QuickActionButton(
+                        number: "01",
+                        title: "Call",
+                        icon: "phone.fill",
+                        color: Theme.callGreen,
+                        isLoading: creatingTaskType == "call",
+                        action: { selectedQuickAction = .call }
+                    )
+                    QuickActionButton(
+                        number: "02",
+                        title: "Email",
+                        icon: "envelope.fill",
+                        color: Theme.emailBlue,
+                        isLoading: creatingTaskType == "email",
+                        action: { selectedQuickAction = .email }
+                    )
+                    QuickActionButton(
+                        number: "03",
+                        title: "Calendar",
+                        icon: "calendar",
+                        color: Theme.calendarOrange,
+                        isLoading: creatingTaskType == "calendar",
+                        action: { selectedQuickAction = .calendar }
+                    )
+                    QuickActionButton(
+                        number: "04",
+                        title: "Chat",
+                        icon: "bubble.left.fill",
+                        color: Theme.chatPurple,
+                        action: onSelectChat
+                    )
+                }
+
+                Button(action: onSelectChat) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 23, weight: .semibold))
+                        .foregroundStyle(.black)
+                        .frame(width: 74, height: 74)
+                        .background(Theme.textPrimary)
+                        .clipShape(Circle())
+                        .overlay(
+                            Circle()
+                                .stroke(Theme.accent.opacity(0.55), lineWidth: 2)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open chat")
             }
             .padding(.horizontal)
         }
@@ -183,8 +223,7 @@ struct HomeView: View {
 
     private var tasksSection: some View {
         VStack(alignment: .leading, spacing: Theme.paddingMd) {
-            Text("Active Tasks")
-                .font(Theme.headlineFont)
+            sectionLabel("ACTIVE")
                 .padding(.horizontal)
 
             if let tasksLoadError {
@@ -193,21 +232,17 @@ struct HomeView: View {
                     .foregroundStyle(Theme.warning)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
-                    .background(
-                        RoundedRectangle(cornerRadius: Theme.cornerMd)
-                            .fill(Theme.surfaceGradient)
-                    )
+                    .background(Theme.cardBg)
+                    .overlay(Rectangle().stroke(Theme.border, lineWidth: 1))
                     .padding(.horizontal)
             }
 
             if isLoading && tasks.isEmpty {
-                ProgressView("Loading tasks…")
+                ProgressView("Loading tasks")
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding()
-                    .background(
-                        RoundedRectangle(cornerRadius: Theme.cornerMd)
-                            .fill(Theme.surfaceGradient)
-                    )
+                    .background(Theme.cardBg)
+                    .overlay(Rectangle().stroke(Theme.border, lineWidth: 1))
                     .padding(.horizontal)
             } else if tasks.isEmpty {
                 Text("No active tasks right now.")
@@ -215,10 +250,8 @@ struct HomeView: View {
                     .foregroundStyle(Theme.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
-                    .background(
-                        RoundedRectangle(cornerRadius: Theme.cornerMd)
-                            .fill(Theme.surfaceGradient)
-                    )
+                    .background(Theme.cardBg)
+                    .overlay(Rectangle().stroke(Theme.border, lineWidth: 1))
                     .padding(.horizontal)
             } else {
                 ForEach(tasks) { task in
@@ -233,6 +266,31 @@ struct HomeView: View {
         }
     }
 
+    private var usdcBalanceDisplay: String {
+        guard let usdc = walletBalances?.usdc else { return "--" }
+        if usdc >= 1_000 {
+            return usdc.formatted(.number.precision(.fractionLength(0...1)))
+        }
+        return usdc.formatted(.number.precision(.fractionLength(2)))
+    }
+
+    private var walletDisplay: String {
+        let address = walletAddress ?? walletBalances?.address
+        guard let address, !address.isEmpty else { return "WALLET" }
+        return shortAddress(address)
+    }
+
+    private func sectionLabel(_ title: String) -> some View {
+        Text("› \(title)")
+            .font(Theme.eyebrowFont)
+            .foregroundStyle(Theme.textSecondary)
+    }
+
+    private func shortAddress(_ address: String) -> String {
+        guard address.count > 12 else { return address.uppercased() }
+        return "\(address.prefix(4))...\(address.suffix(4))".uppercased()
+    }
+
     // MARK: - Data
 
     private var errorBinding: Binding<Bool> {
@@ -240,6 +298,12 @@ struct HomeView: View {
             get: { actionError != nil },
             set: { if !$0 { actionError = nil } }
         )
+    }
+
+    private func loadHomeData() async {
+        await loadProviderHealth()
+        await loadWalletSummary()
+        await loadTasks()
     }
 
     private func loadTasks() async {
@@ -260,6 +324,14 @@ struct HomeView: View {
 
         providerHealth = try? await health
         connectedAccounts = (try? await accounts) ?? []
+    }
+
+    private func loadWalletSummary() async {
+        async let address = CloudClient.shared.getWalletAddress()
+        async let balances = CloudClient.shared.getWalletBalances()
+        let info = try? await address
+        walletAddress = info?.address
+        walletBalances = try? await balances
     }
 
     private func startActiveTaskPolling() {

@@ -6,15 +6,16 @@ struct TaskCardView: View {
     var body: some View {
         HStack(spacing: Theme.paddingMd) {
             Image(systemName: task.typeIcon)
-                .font(.title3.weight(.semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(colorForType)
-                .frame(width: 40, height: 40)
-                .background(colorForType.opacity(0.15))
-                .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSm))
+                .frame(width: 42, height: 42)
+                .background(colorForType.opacity(0.12))
+                .overlay(Rectangle().stroke(colorForType.opacity(0.38), lineWidth: 1))
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(task.taskType.capitalized)
-                    .font(.headline.weight(.semibold))
+            VStack(alignment: .leading, spacing: 5) {
+                Text(task.taskType.uppercased())
+                    .font(Theme.monoFont.weight(.semibold))
+                    .foregroundStyle(Theme.textPrimary)
 
                 Text(statusText)
                     .font(Theme.captionFont)
@@ -22,26 +23,24 @@ struct TaskCardView: View {
                     .lineLimit(2)
             }
 
-            Spacer()
+            Spacer(minLength: Theme.paddingSm)
 
-            Text(statusLabel)
-                .font(.caption.weight(.semibold))
+            Text(statusLabel.uppercased())
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .foregroundStyle(statusColor)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(statusColor.opacity(0.14))
-                .clipShape(Capsule())
+                .lineLimit(1)
+                .minimumScaleFactor(0.68)
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background(statusColor.opacity(0.10))
+                .overlay(Rectangle().stroke(statusColor.opacity(0.36), lineWidth: 1))
         }
         .padding(Theme.paddingMd)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.cornerMd)
-                .fill(Theme.surfaceGradient)
-        )
+        .background(Theme.cardBg)
         .overlay(
-            RoundedRectangle(cornerRadius: Theme.cornerMd)
-                .stroke(Theme.cardBorder, lineWidth: 1)
+            Rectangle()
+                .stroke(Theme.border, lineWidth: 1)
         )
-        .shadow(color: Theme.cardShadow, radius: 6, x: 0, y: 3)
         .padding(.horizontal)
     }
 
@@ -57,7 +56,7 @@ struct TaskCardView: View {
     private var statusText: String {
         switch task.status {
         case "pending": return "Queued"
-        case "in_progress": return "Working on it..."
+        case "in_progress": return "Working"
         case "awaiting_approval": return "Needs your approval"
         case "completed": return "Done"
         case "failed": return task.errorMessage ?? "Failed"
@@ -79,8 +78,8 @@ struct TaskCardView: View {
     private var statusLabel: String {
         switch task.status {
         case "pending": return "Queued"
-        case "in_progress": return "In progress"
-        case "awaiting_approval": return "Approval"
+        case "in_progress": return "Active"
+        case "awaiting_approval": return "Approve"
         case "completed": return "Done"
         case "failed": return "Failed"
         case "cancelled": return "Cancelled"
