@@ -1,0 +1,14 @@
+// Example inputs for `leo run mint_for_testing` against a local devnet.
+//
+// DEVNET ONLY. This program (ghola_pay_devnet.aleo) is never deployed to
+// mainnet. Usage:
+//   cd programs/aleo/ghola_pay_devnet
+//   leo run mint_for_testing aleo1self...address 1000000u64
+//   # Take the resulting record output, paste it into the `r_in` field of
+//   # ../ghola_pay/inputs/ghola_pay.in, then run `leo run pay` over there.
+//
+// Replace `aleo1zzz...` with a real devnet address.
+
+[mint_for_testing]
+to: address = aleo1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz;
+amount: u64 = 1000000u64;

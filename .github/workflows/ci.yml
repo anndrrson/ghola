@@ -91,6 +91,22 @@ jobs:
           path: apps/web/public/.well-known/sri-manifest.json
           retention-days: 90
 
+  aleo-mainnet-safe:
+    name: Aleo program mainnet-safety gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Machine gate replacing "audit the Aleo bytecode by inspection".
+      # Fails the build if programs/aleo/ghola_pay/src/main.leo (or a built
+      # build/main.aleo) declares any transition/function other than `pay`
+      # — i.e. blocks a `mint_for_testing` (or any mint) from ever shipping
+      # in the mainnet program, which would be an infinite-mint hole. Runs
+      # in merge mode here (placeholder USDCx type is allowed until bridge
+      # integration lands; the deploy-time gate `--mode=deploy` enforces
+      # that separately, immediately before a mainnet deploy).
+      - name: Aleo mainnet-safety gate (merge mode)
+        run: ./scripts/security/check-aleo-mainnet-safe.sh --mode=merge
+
   envelope-vector-drift:
     name: Envelope vector-drift gate
     runs-on: ubuntu-latest
@@ -151,6 +167,7 @@ jobs:
     needs:
       - backend
       - frontend
+      - aleo-mainnet-safe
       - envelope-vector-drift
       - android
       - docker

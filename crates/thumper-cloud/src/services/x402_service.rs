@@ -324,6 +324,16 @@ pub struct ShieldedStablecoinConfig {
     pub require_signed_receipt: bool,
     pub adapter_pubkey: Option<VerifyingKey>,
     pub verifier_ready: bool,
+    /// Minimum on-chain confirmation depth the adapter must attest before
+    /// thumper-cloud will credit a shielded settlement. The adapter
+    /// reports `confirmations` in its (signed) receipt; we reject anything
+    /// below this floor. Config-driven via
+    /// `SHIELDED_STABLECOIN_MIN_CONFIRMATIONS` (default
+    /// `DEFAULT_SHIELDED_MIN_CONFIRMATIONS`). This is interim hardening
+    /// against an adapter that signs a not-yet-final transition; it does
+    /// NOT remove the underlying trust in the adapter (see the
+    /// fully-trusted-adapter note on `verify_shielded_stablecoin_settlement`).
+    pub min_confirmations: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -755,6 +765,7 @@ fn shielded_config_from_env() -> Option<ShieldedStablecoinConfig> {
     let require_signed_receipt = shielded_adapter_signature_required();
     let adapter_pubkey = shielded_adapter_pubkey_from_env();
     let verifier_ready = shielded_verifier_ready();
+    let min_confirmations = shielded_min_confirmations();
 
     if adapter_url.trim().is_empty()
         || (destination.trim().is_empty() && !shielded_arbitrary_recipient_proofs_enabled())
@@ -778,7 +789,22 @@ fn shielded_config_from_env() -> Option<ShieldedStablecoinConfig> {
         require_signed_receipt,
         adapter_pubkey,
         verifier_ready,
+        min_confirmations,
     })
+}
+
+/// Default minimum on-chain confirmation depth required before a shielded
+/// settlement is credited. Aleo finality is probabilistic in the same
+/// shape as Solana (Tier 2K §4.5), so we require a non-zero confirmation
+/// floor by default rather than crediting a 0-confirmation transition the
+/// adapter may have observed pre-finality.
+const DEFAULT_SHIELDED_MIN_CONFIRMATIONS: u32 = 1;
+
+fn shielded_min_confirmations() -> u32 {
+    std::env::var("SHIELDED_STABLECOIN_MIN_CONFIRMATIONS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(DEFAULT_SHIELDED_MIN_CONFIRMATIONS)
 }
 
 fn shielded_adapter_signature_required() -> bool {
@@ -2166,6 +2192,23 @@ fn validate_shielded_adapter_response(
         ));
     }
 
+    // Enforce a minimum on-chain confirmation depth. The Railgun path has
+    // a `relay_only` gate but the shielded/Aleo path previously read
+    // `confirmations` only to fold it into the signed payload (~confirmations
+    // line above) and never compared it to a floor — meaning a receipt for a
+    // 0-confirmation (pre-finality) transition would settle. We now reject
+    // anything below `config.min_confirmations`. The confirmations value is
+    // covered by the adapter signature (it is part of the signed payload),
+    // so a network MITM cannot inflate it; this is a trust-the-adapter
+    // finality floor, not an independent on-chain check.
+    let confirmations = response.confirmations.unwrap_or(0);
+    if confirmations < config.min_confirmations {
+        return Err(CloudError::PaymentRequired(format!(
+            "shielded settlement has insufficient confirmations: {confirmations} < required {}",
+            config.min_confirmations
+        )));
+    }
+
     if config.require_signed_receipt {
         response
             .adapter_key_id
@@ -2368,6 +2411,32 @@ fn validate_railgun_adapter_response(
     Ok(canonical_receipt_ref.to_string())
 }
 
+// !!! TRUST BOUNDARY — READ BEFORE TOUCHING !!!
+//
+// This function does NOT verify anything on the Aleo chain. thumper-cloud
+// makes ZERO Aleo RPC / proof-verification calls. The entire "did a
+// shielded payment of >= required_amount reach the right recipient?"
+// question is answered by an off-chain adapter over HTTP, and the credited
+// amount (`paid_amount` below) is whatever that adapter's JSON claims —
+// bound ONLY by the adapter's Ed25519 signature over the receipt payload
+// (see `signed_shielded_receipt_payload` / `validate_shielded_adapter_response`).
+//
+// Consequences, until the State-C native verifier lands (see
+// docs/security/aleo-program-notes.md §"State C"):
+//   * The adapter is FULLY-TRUSTED settlement infrastructure. A compromised
+//     or buggy adapter can sign a receipt for funds that never moved and we
+//     will credit it. The signature only stops a network MITM from tampering
+//     with a receipt in flight; it does NOT make the amount on-chain-verified.
+//   * The interim hardening we DO enforce here: provider/network/asset/
+//     destination must match expectations, proof_digest must bind the
+//     client's proof, the receipt must be unexpired and not future-dated,
+//     `paid_amount >= required_amount`, and `confirmations >=
+//     config.min_confirmations`. None of these remove the adapter trust.
+//
+// TODO(State-C, big lift): port a snarkVM-native transition verifier (or an
+// on-chain zk-verifier program) into thumper-cloud and run it in parallel
+// with the adapter for >=2 weeks before trusting it, then drop the adapter.
+// Do NOT loosen the VERIFIER_READY fail-closed gate before that lands.
 pub async fn verify_shielded_stablecoin_settlement(
     _state: &AppState,
     proof: &PaymentProof,
@@ -4071,6 +4140,7 @@ mod tests {
             require_signed_receipt: true,
             adapter_pubkey: Some(pubkey),
             verifier_ready: true,
+            min_confirmations: 1,
         }
     }
 
@@ -4388,6 +4458,84 @@ mod tests {
         .unwrap();
 
         assert_eq!(receipt_ref, "abc123");
+    }
+
+    #[test]
+    fn shielded_adapter_response_rejects_below_min_confirmations() {
+        // A receipt reporting 0 confirmations must be rejected once the
+        // floor is >= 1, even if everything else (incl. the signature over
+        // a payload that itself carries confirmations:0) is valid.
+        let signer = SigningKey::from_bytes(&[31u8; 32]);
+        let config = ShieldedStablecoinConfig {
+            min_confirmations: 1,
+            ..test_shielded_config(VerifyingKey::from(&signer))
+        };
+        let proof = test_shielded_proof();
+        let mut response = signed_shielded_response(&config, &signer, &proof, 1500);
+        // Re-sign so the signature is valid for confirmations:0 — proving
+        // the rejection is the floor check, not a signature failure.
+        response.confirmations = Some(0);
+        let observed_at_unix = response.observed_at_unix.unwrap();
+        let expires_at_unix = response.expires_at_unix.unwrap();
+        let proof_digest = shielded_proof_digest(&proof).unwrap();
+        let payload = signed_shielded_receipt_payload(
+            &config,
+            &response,
+            &config.destination,
+            1000,
+            1500,
+            "abc123",
+            &proof_digest,
+            observed_at_unix,
+            expires_at_unix,
+        );
+        response.adapter_signature_b64 =
+            Some(STANDARD.encode(signer.sign(payload.as_bytes()).to_bytes()));
+
+        let err = validate_shielded_adapter_response(
+            &config,
+            &response,
+            &config.destination,
+            1000,
+            &proof,
+            "fallback",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            err.contains("insufficient confirmations"),
+            "expected confirmation-floor rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn shielded_adapter_response_enforces_configured_confirmation_floor() {
+        // signed_shielded_response sets confirmations:4; a config requiring
+        // 8 must reject it.
+        let signer = SigningKey::from_bytes(&[32u8; 32]);
+        let config = ShieldedStablecoinConfig {
+            min_confirmations: 8,
+            ..test_shielded_config(VerifyingKey::from(&signer))
+        };
+        let proof = test_shielded_proof();
+        let response = signed_shielded_response(&config, &signer, &proof, 1500);
+
+        let err = validate_shielded_adapter_response(
+            &config,
+            &response,
+            &config.destination,
+            1000,
+            &proof,
+            "fallback",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            err.contains("insufficient confirmations"),
+            "expected confirmation-floor rejection, got: {err}"
+        );
     }
 
     #[test]

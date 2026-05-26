@@ -85,12 +85,16 @@ Run the dev-only mint (so you have a record to spend) and then `pay`:
 # First, generate yourself a devnet account if you don't have one:
 leo account new
 
-# Mint a USDC.a record to yourself. (DEVNET ONLY — the mint transition
-# is deleted before mainnet deploy. See src/main.leo.)
+# Mint a USDC.a record to yourself. The mint is a DEVNET-ONLY transition
+# that lives in a SEPARATE program (ghola_pay_devnet.aleo) — it is not in
+# this mainnet program, so the mainnet source tree physically cannot
+# contain a mint. See ../ghola_pay_devnet/.
+cd ../ghola_pay_devnet
 leo run mint_for_testing aleo1yourself... 1000000u64
 
-# Paste the resulting record into inputs/ghola_pay.in (replacing the
-# placeholder `r_in`), then:
+# Paste the resulting record into ../ghola_pay/inputs/ghola_pay.in
+# (replacing the placeholder `r_in`), then run `pay` in this program:
+cd ../ghola_pay
 leo run pay
 ```
 
@@ -131,12 +135,27 @@ depends on snarkVM byte cost at the moment of deploy.
 Same shape, with `--query` and `--broadcast` pointing at the mainnet
 endpoints. **Before** running mainnet deploy:
 
-1. Delete the `mint_for_testing` transition from `src/main.leo`.
+1. Replace the placeholder `USDCx` record type in `src/main.leo` with
+   the canonical bridged USDC.a record type (this removes the
+   `INTERIM — replace with USDC.a` / `TODO(verify-before-mainnet)`
+   markers). The program must NOT deploy a self-defined placeholder
+   token.
 2. Rebuild (`leo clean && leo build`) so the artifact in `build/`
-   reflects the stripped source.
-3. Audit the resulting `build/main.aleo` bytecode by inspection —
-   confirm the bytecode contains exactly one `function` directive
-   (`pay`).
+   reflects the current source.
+3. Run the machine gate in **deploy mode** — this replaces the old
+   "audit the bytecode by inspection" step:
+
+   ```sh
+   ./scripts/security/check-aleo-mainnet-safe.sh --mode=deploy
+   ```
+
+   It fails the deploy if `src/main.leo` (or `build/main.aleo`)
+   declares any transition/function other than `pay` (i.e. blocks any
+   stray mint — the infinite-mint hole), and if the placeholder USDCx
+   markers are still present. The mint helper lives only in the
+   separate, never-deployed `ghola_pay_devnet.aleo`. Note: CI runs the
+   same gate in `--mode=merge` on every PR (blocks any mint at merge
+   time; allows the placeholder until bridge integration lands).
 4. Compute and record the program id hash; the off-chain adapter
    pins this hash and refuses transitions from any other program id.
 5. Deploy from an account whose `credits.aleo` balance covers the

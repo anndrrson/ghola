@@ -1,0 +1,13 @@
+{
+  "program": "ghola_pay_devnet.aleo",
+  "version": "0.1.0",
+  "description": "DEVNET-ONLY mint helper for ghola_pay.aleo. Mints placeholder USDCx records for local devnet / tests. NEVER deploy to mainnet.",
+  "license": "MIT",
+  "development": {
+    "private_key": "APrivateKey1zkpDEVNETONLYREPLACEAtDeployTimeXXXXXXXXXXXXXXXXXXXXXXXX",
+    "view_key": "AViewKey1DEVNETONLYREPLACEAtDeployTimeXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "address": "aleo1devnetonlyreplaceatdeploytimexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  "license_file": "../../../LICENSE",
+  "dependencies": null
+}
