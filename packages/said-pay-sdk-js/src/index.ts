@@ -1,10 +1,52 @@
 export { SAIDPayClient } from './client';
 export { SAIDPayError } from './error';
+export { GholaPrivateExecutionClient } from './private-execution';
+export { GholaTreasuryClient } from './treasury-execution';
 export {
   createRailgunX402Payment,
   encodeX402PaymentHeader,
   fetchWithRailgunX402,
 } from './railgun';
+export type {
+  GholaPrivateExecutionClientOptions,
+  PrivateExecutionEncryptedBundleV1,
+  PrivateExecutionExecuteRequestV1,
+  PrivateExecutionExecuteResponseV1,
+  PrivateExecutionFeeQuoteV1,
+  PrivateExecutionProviderResultV1,
+  PrivateExecutionReceiptV1,
+  PrivateExecutionReceiptRecordV1,
+  PrivateExecutionSimulateRequestV1,
+  PrivateExecutionSimulateResponseV1,
+  PrivateExecutionStatusV1,
+  PrivateExecutionUsageSummaryV1,
+  PrivateExecutionVerifyResponseV1,
+} from './private-execution';
+export type {
+  GholaTreasuryClientOptions,
+  TreasuryApprovalV1,
+  TreasuryAsset,
+  TreasuryCancelResponseV1,
+  TreasuryEncryptedBundleV1,
+  TreasuryExecuteRequestV1,
+  TreasuryExecuteResponseV1,
+  TreasuryExecutionReceiptV1,
+  TreasuryExecutionStatusV1,
+  TreasuryIntentObjective,
+  TreasuryIntentStatusV1,
+  TreasuryIntentV1,
+  TreasuryPartnerReconciliationV1,
+  TreasuryPolicyV1,
+  TreasuryProposalV1,
+  TreasuryRailKind,
+  TreasuryReconcileResponseV1,
+  TreasuryRouteCandidateV1,
+  TreasuryRunRequestV1,
+  TreasuryRunResponseV1,
+  TreasurySimulateRequestV1,
+  TreasurySimulationResponseV1,
+  TreasuryVerifyResponseV1,
+} from './treasury-execution';
 export type {
   SAIDPayClientOptions,
   AgentWallet,

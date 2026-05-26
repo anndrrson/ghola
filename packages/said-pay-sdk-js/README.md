@@ -2,6 +2,90 @@
 
 Agent payment helpers for Ghola/SAID.
 
+## Private execution for financial agents
+
+`GholaPrivateExecutionClient` lets AI financial agents simulate, execute, and
+verify private trading intents through Ghola. Agents bring user-approved intent;
+Ghola enforces the private rail boundary, refuses public fallback, charges an
+execution fee only when the private action is accepted, and returns a signed
+receipt.
+
+```ts
+import { GholaPrivateExecutionClient } from "@said-pay/sdk";
+
+const ghola = new GholaPrivateExecutionClient({
+  baseUrl: process.env.GHOLA_BASE_URL ?? "https://ghola.xyz",
+  apiKey: process.env.GHOLA_AGENT_API_KEY,
+});
+
+const status = await ghola.getPrivateExecutionStatus();
+if (!status.ready) {
+  throw new Error(`Private execution unavailable: ${status.blocking_reasons.join(", ")}`);
+}
+
+const simulation = await ghola.simulatePrivateIntent({
+  version: 1,
+  policy,
+  proposal,
+});
+
+if (!simulation.ok) {
+  throw new Error(`Intent blocked: ${simulation.exposure_report.blocked_reason}`);
+}
+
+const receipt = await ghola.executePrivateIntent({
+  version: 1,
+  intent_id: "intent_...",
+  owner_did: "did:key:...",
+  policy_hash: simulation.policy_hash,
+  proposal_hash: simulation.proposal_hash,
+  amount_micro_usdc: proposal.amount_micro_usdc,
+  rail: "railgun_private_swap",
+  encrypted_intent_bundle: {
+    alg: "sealed-provider-v1",
+    ciphertext: sealedIntentBundle,
+    recipient: selectedProviderRecipient,
+    aad: "ghola-private-intent-v1|intent:intent_...",
+  },
+  provider_result: signedProviderResult,
+});
+
+const verification = await ghola.verifyPrivateExecutionReceipt(receipt);
+if (!verification.ok) throw new Error("Receipt verification failed");
+
+const usage = await ghola.getPrivateExecutionUsage();
+console.log(usage.execution_count, usage.total_fee_micro_usdc);
+```
+
+The execution endpoint is ciphertext-only. The SDK and server reject payloads
+that include plaintext `strategy`, `strategy_text`, `portfolio`,
+`financial_context`, `prompt`, or `messages` keys. Seal user strategy and
+financial context to the selected provider, then submit only the encrypted
+bundle and the policy/proposal hashes.
+
+V2 execution is provider-bound by default: `provider_result` must be signed by
+the configured execution provider and must match the policy hash, proposal hash,
+amount, fee amount, and fee recipient. For local demos only, operators can set
+`GHOLA_PRIVATE_EXECUTION_ALLOW_MOCK_RESULT=true`.
+
+Required operator environment:
+
+```bash
+GHOLA_AGENT_API_KEYS='{"sk_agent_dev":{"agent_id":"agent_dev","label":"Dev Agent"}}'
+GHOLA_PRIVATE_EXECUTION_FEE_RECIPIENT="railgun:0zk..."
+GHOLA_PRIVATE_EXECUTION_SHIELDED_RAIL_READY=true
+
+# Optional
+GHOLA_PRIVATE_EXECUTION_FEE_BPS=10
+GHOLA_PRIVATE_EXECUTION_MIN_FEE_MICRO_USDC=50000
+GHOLA_PRIVATE_EXECUTION_PROVIDER_ID=mock_attested
+GHOLA_PRIVATE_EXECUTION_RECEIPT_SECRET="replace-me"
+GHOLA_PRIVATE_EXECUTION_PROVIDER_RESULT_SECRET="provider-result-secret"
+GHOLA_PRIVATE_EXECUTION_STORE=memory # or postgres
+```
+
+See `examples/private-execution.ts` for a runnable local example.
+
 ## Railgun x402
 
 `createRailgunX402Payment` builds the `x402-payment` header for

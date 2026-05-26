@@ -3,10 +3,22 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, BookOpen, Copy, Check } from "lucide-react";
+import { ArrowLeft, BookOpen, Copy, Check, ShieldCheck } from "lucide-react";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 
-type DocSection = "auth" | "chat" | "models" | "tasks" | "errors";
+type DocSection = "auth" | "chat" | "models" | "private-execution" | "tasks" | "errors";
+
+interface PrivateExecutionStatus {
+  ready: boolean;
+  supported_rails: string[];
+  fee_bps: number;
+  min_fee_micro_usdc: number;
+  fee_recipient_configured: boolean;
+  shielded_rail_ready: boolean;
+  sealed_provider_ready: boolean;
+  provider_result_required: boolean;
+  blocking_reasons: string[];
+}
 
 const API_BASE = "https://ghola.xyz";
 
@@ -15,12 +27,30 @@ export default function DocsPage() {
   const router = useRouter();
   const [section, setSection] = useState<DocSection>("auth");
   const [copied, setCopied] = useState<string | null>(null);
+  const [privateExecutionStatus, setPrivateExecutionStatus] =
+    useState<PrivateExecutionStatus | null>(null);
 
   useEffect(() => {
     if (!loading && !authenticated) {
       router.push("/signin");
     }
   }, [authenticated, loading, router]);
+
+  useEffect(() => {
+    if (loading || !authenticated) return;
+    let cancelled = false;
+    void fetch("/v1/private-intents/status", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((status) => {
+        if (!cancelled) setPrivateExecutionStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) setPrivateExecutionStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authenticated, loading]);
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -34,6 +64,7 @@ export default function DocsPage() {
     { id: "auth", label: "Authentication" },
     { id: "chat", label: "Chat Completions" },
     { id: "models", label: "Models" },
+    { id: "private-execution", label: "Private Execution" },
     { id: "tasks", label: "Tasks & Actions" },
     { id: "errors", label: "Errors" },
   ];
@@ -477,6 +508,230 @@ console.log(response.choices[0].message.content);`}
           </div>
         )}
 
+        {section === "private-execution" && (
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-xl font-medium text-[#eef1f8] mb-3">
+                Private Execution for AI Financial Agents
+              </h2>
+              <p className="text-sm text-[#8b95a8] leading-relaxed mb-3">
+                Agents bring user-approved intent. Ghola simulates the private
+                route, refuses public fallback, charges an execution fee only
+                when the private action is accepted, and returns a verifiable
+                receipt.
+              </p>
+              <p className="text-sm text-[#8b95a8] leading-relaxed">
+                Do not send plaintext strategy, portfolio, prompt, messages,
+                or financial context to the execution endpoint. Seal that data
+                to the selected provider and submit only the encrypted bundle
+                plus hashes.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <ShieldCheck
+                  className={`h-4 w-4 ${
+                    privateExecutionStatus?.ready
+                      ? "text-green-400"
+                      : "text-yellow-400"
+                  }`}
+                />
+                <h3 className="text-sm font-medium text-[#eef1f8]">
+                  Private execution status
+                </h3>
+              </div>
+              {privateExecutionStatus ? (
+                <div className="grid gap-3 text-xs sm:grid-cols-2">
+                  <StatusLine
+                    label="Readiness"
+                    value={privateExecutionStatus.ready ? "Ready" : "Blocked"}
+                  />
+                  <StatusLine
+                    label="Fee"
+                    value={`${privateExecutionStatus.fee_bps} bps / min $${(
+                      privateExecutionStatus.min_fee_micro_usdc / 1_000_000
+                    ).toFixed(2)}`}
+                  />
+                  <StatusLine
+                    label="Rails"
+                    value={
+                      privateExecutionStatus.supported_rails.join(", ") ||
+                      "None ready"
+                    }
+                  />
+                  <StatusLine
+                    label="Blocking"
+                    value={
+                      privateExecutionStatus.blocking_reasons.join(", ") ||
+                      "None"
+                    }
+                  />
+                  <StatusLine
+                    label="Provider result"
+                    value={
+                      privateExecutionStatus.provider_result_required
+                        ? "Required"
+                        : "Mock allowed"
+                    }
+                  />
+                </div>
+              ) : (
+                <p className="text-xs text-[#8b95a8]">
+                  Status unavailable in this environment.
+                </p>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] divide-y divide-[#1e2a3a]">
+              {[
+                {
+                  method: "GET",
+                  path: "/v1/private-intents/status",
+                  desc: "Read provider, rail, fee, and blocking status.",
+                },
+                {
+                  method: "POST",
+                  path: "/v1/private-intents/simulate",
+                  desc: "Preflight a policy/proposal and receive exposure + fee estimates.",
+                },
+                {
+                  method: "POST",
+                  path: "/v1/private-intents/execute",
+                  desc: "Submit sealed intent for private execution. Requires agent API key.",
+                },
+                {
+                  method: "POST",
+                  path: "/v1/private-intents/verify",
+                  desc: "Verify a private execution receipt signature.",
+                },
+                {
+                  method: "GET",
+                  path: "/v1/private-intents/usage",
+                  desc: "Read execution count, volume, and fee totals for this agent.",
+                },
+                {
+                  method: "GET",
+                  path: "/v1/private-intents/receipts",
+                  desc: "List persisted receipts for this agent.",
+                },
+              ].map((endpoint) => (
+                <div
+                  key={endpoint.path}
+                  className="flex items-center gap-4 px-4 py-3"
+                >
+                  <span
+                    className={`rounded px-2 py-0.5 text-[10px] font-medium ${
+                      endpoint.method === "GET"
+                        ? "bg-blue-400/10 text-blue-400"
+                        : "bg-green-400/10 text-green-400"
+                    }`}
+                  >
+                    {endpoint.method}
+                  </span>
+                  <code className="flex-1 text-xs text-[#8b95a8]">
+                    {endpoint.path}
+                  </code>
+                  <span className="hidden text-xs text-[#4a5568] sm:block">
+                    {endpoint.desc}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <CodeBlock
+              id="private-execution-sdk"
+              title="TypeScript SDK"
+              language="typescript"
+              code={`import { GholaPrivateExecutionClient } from "@said-pay/sdk";
+
+const ghola = new GholaPrivateExecutionClient({
+  baseUrl: "https://ghola.xyz",
+  apiKey: process.env.GHOLA_AGENT_API_KEY,
+});
+
+const status = await ghola.getPrivateExecutionStatus();
+if (!status.ready) throw new Error(status.blocking_reasons.join(", "));
+
+const simulation = await ghola.simulatePrivateIntent({
+  version: 1,
+  policy,
+  proposal,
+});
+if (!simulation.ok) throw new Error(simulation.exposure_report.blocked_reason);
+
+const receipt = await ghola.executePrivateIntent({
+  version: 1,
+  intent_id: "intent_...",
+  owner_did: "did:key:...",
+  policy_hash: simulation.policy_hash,
+  proposal_hash: simulation.proposal_hash,
+  amount_micro_usdc: proposal.amount_micro_usdc,
+  rail: "railgun_private_swap",
+  encrypted_intent_bundle: {
+    alg: "sealed-provider-v1",
+    ciphertext: sealedIntentBundle,
+    recipient: selectedProviderRecipient,
+    aad: "ghola-private-intent-v1|intent:intent_...",
+  },
+  provider_result: signedProviderResult,
+});
+
+await ghola.verifyPrivateExecutionReceipt(receipt);
+
+const usage = await ghola.getPrivateExecutionUsage();`}
+              onCopy={handleCopy}
+              copied={copied}
+            />
+
+            <CodeBlock
+              id="private-execution-env"
+              title="Operator Environment"
+              language="bash"
+              code={[
+                `GHOLA_AGENT_API_KEYS='{"sk_agent_dev":{"agent_id":"agent_dev","label":"Dev Agent"}}'`,
+                `GHOLA_PRIVATE_EXECUTION_FEE_RECIPIENT="railgun:0zk..."`,
+                "GHOLA_PRIVATE_EXECUTION_SHIELDED_RAIL_READY=true",
+                "",
+                "# Optional",
+                "GHOLA_PRIVATE_EXECUTION_FEE_BPS=10",
+                "GHOLA_PRIVATE_EXECUTION_MIN_FEE_MICRO_USDC=50000",
+                "GHOLA_PRIVATE_EXECUTION_PROVIDER_ID=mock_attested",
+                `GHOLA_PRIVATE_EXECUTION_RECEIPT_SECRET="replace-me"`,
+                `GHOLA_PRIVATE_EXECUTION_PROVIDER_RESULT_SECRET="provider-result-secret"`,
+                "GHOLA_PRIVATE_EXECUTION_STORE=memory",
+              ].join("\n")}
+              onCopy={handleCopy}
+              copied={copied}
+            />
+
+            <CodeBlock
+              id="private-execution-receipt"
+              title="Receipt Shape"
+              language="json"
+              code={`{
+  "version": 1,
+  "receipt_id": "pex_...",
+  "intent_id": "intent_...",
+  "agent_id": "agent_dev",
+  "policy_hash": "sha256...",
+  "proposal_hash": "sha256...",
+  "rail": "railgun_private_swap",
+  "amount_micro_usdc": 25000000,
+  "fee_quote": {
+    "fee_bps": 10,
+    "fee_micro_usdc": 50000,
+    "fee_recipient": "railgun:0zk..."
+  },
+  "public_fallback_used": false,
+  "signature": "..."
+}`}
+              onCopy={handleCopy}
+              copied={copied}
+            />
+          </div>
+        )}
+
         {section === "tasks" && (
           <div className="space-y-6">
             <div>
@@ -609,6 +864,17 @@ function CodeBlock({
       <pre className="p-4 text-xs text-[#8b95a8] overflow-x-auto">
         <code>{code}</code>
       </pre>
+    </div>
+  );
+}
+
+function StatusLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] uppercase tracking-[0.18em] text-[#4a5568]">
+        {label}
+      </div>
+      <div className="break-words text-[#8b95a8]">{value}</div>
     </div>
   );
 }
