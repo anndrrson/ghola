@@ -208,6 +208,18 @@ impl RpcSubmitter {
         self.with_signer(|sk| sk.verifying_key().to_bytes())
     }
 
+    /// Send a 1-lamport self-transfer and confirm it. This is a SMOKE-TEST
+    /// helper ONLY — it exercises the keypair-load → blockhash → sign → send
+    /// → confirm RPC chain end-to-end without touching the shielded-pool
+    /// program. It is NOT a decoy (a self-transfer provides zero cover and is
+    /// trivially distinguishable from a `withdraw`; see `submit_decoy`).
+    pub async fn devnet_self_transfer_smoketest(&self) -> Result<()> {
+        let payer = self.signer_pubkey()?;
+        let ix = build_self_transfer_ix(&payer, 1);
+        let signature = self.sign_and_send(ix).await?;
+        self.confirm(signature).await
+    }
+
     async fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
@@ -373,20 +385,37 @@ impl Submitter for RpcSubmitter {
     }
 
     async fn submit_decoy(&self) -> Result<()> {
-        // Self-transfer of 1 lamport. Cheap, fully indistinguishable
-        // from any other system-program transfer, and observable shape
-        // is just "relayer keypair is alive". A production deployment
-        // should swap this for a real shielded-pool no-op once the
-        // program exposes one (Phase 42).
-        let payer = self.signer_pubkey()?;
-        let ix = build_self_transfer_ix(&payer, 1);
-        let signature = self.sign_and_send(ix).await?;
-        self.confirm(signature).await
+        // V2 (design-gated): decoys are NOT implemented.
+        //
+        // The previous implementation here broadcast a 1-lamport
+        // system-program self-transfer. That provided ZERO cover: a
+        // self-transfer is trivially distinguishable on-chain from a
+        // `withdraw` instruction (different program ID, different ix shape,
+        // different account set), so it does not mix into the real-withdrawal
+        // traffic at all. Worse, `decoy.rs` documented decoys as
+        // byte-indistinguishable `withdraw{amount:0}` txs — a claim the
+        // self-transfer did not satisfy. Shipping a fake decoy is more
+        // dangerous than shipping none, because an operator could believe
+        // they have cover when they do not.
+        //
+        // A real decoy needs a program-level entrypoint that emits an
+        // on-chain-indistinguishable `withdraw{amount:0, relayer_fee:0}`
+        // bound to a live root + disposable nullifier, plus the prover/
+        // forester wiring to keep a `DecoyPool` populated. None of that
+        // exists yet. Until it does, this is a HARD no-op that returns an
+        // explicit error so the caller (and metrics/logs) reflect reality.
+        Err(Error::Submit(
+            "decoys not implemented (V2): no program entrypoint for an \
+             indistinguishable withdraw{amount:0} cover tx; refusing to \
+             emit a fake/distinguishable decoy"
+                .into(),
+        ))
     }
 }
 
 /// Build a Solana system-program `transfer` instruction from `from` to
-/// itself. Used by the decoy generator and the devnet smoke test.
+/// itself. Used by the devnet smoke test (NOT by the decoy path — see
+/// `submit_decoy`, which is a hard no-op until real decoys exist).
 pub fn build_self_transfer_ix(from: &[u8; 32], lamports: u64) -> RawInstruction {
     // System program transfer instruction discriminator is `2u32 LE`
     // followed by the lamport amount (u64 LE).

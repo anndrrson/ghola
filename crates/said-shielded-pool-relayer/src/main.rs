@@ -73,7 +73,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port)).await?;
     tracing::info!("listening on 0.0.0.0:{}", config.port);
 
+    // V2 (design-gated): decoys are NOT implemented — `submit_decoy` is a
+    // hard no-op error. If an operator configured DECOY_RATE > 0 they likely
+    // believe they have cover traffic; they do NOT. Fail LOUD at startup so
+    // the misconception is corrected before it informs a privacy decision.
+    if config.decoy_rate_per_hour > 0.0 {
+        tracing::warn!(
+            decoy_rate_per_hour = config.decoy_rate_per_hour,
+            "DECOY_RATE > 0 but decoy traffic is NOT implemented (V2): no \
+             cover traffic will be generated. Do not rely on decoys for \
+             anonymity. Set DECOY_RATE=0 to silence this warning."
+        );
+    }
+
+    // V3: surface the k_min / liveness-vs-anonymity posture at startup so the
+    // operator can see, in one line, whether thin-traffic singletons will be
+    // released (privacy degraded) or held.
+    if config.relay_k_min <= 1 {
+        tracing::warn!(
+            "RELAY_K_MIN=1 (default): a lone withdrawal CAN be released by \
+             itself at low traffic (anonymity set == 1). Set RELAY_K_MIN > 1 \
+             for meaningful timing privacy."
+        );
+    } else if config.release_below_kmin {
+        tracing::info!(
+            k_min = config.relay_k_min,
+            "RELAY_K_MIN set with RELAY_RELEASE_BELOW_KMIN=true: under-sized \
+             batches will still release (with a WARN) when traffic is thin \
+             (liveness over anonymity)."
+        );
+    } else {
+        tracing::info!(
+            k_min = config.relay_k_min,
+            "RELAY_K_MIN set with RELAY_RELEASE_BELOW_KMIN=false: thin-traffic \
+             batches will HOLD past max_delay rather than release below k_min \
+             (anonymity over liveness). Monitor queue depth."
+        );
+    }
+
     // Spawn background workers.
+    //
+    // The decoy generator is spawned for forward-compatibility, but
+    // `DecoyTrafficGenerator::run` early-returns when DECOY_RATE <= 0, and
+    // even when enabled `submit_decoy` is a hard no-op error (V2). It does no
+    // work today; it exists so the wiring is in place for when real decoys
+    // land.
     let decoy = DecoyTrafficGenerator::new(config.clone(), submitter.clone(), metrics.clone());
     let _decoy_handle = tokio::spawn(decoy.run());
     let _batcher_handle = tokio::spawn(batcher.run());

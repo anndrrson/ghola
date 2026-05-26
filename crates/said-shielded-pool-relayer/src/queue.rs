@@ -220,8 +220,24 @@ pub enum BatchDecision {
     /// No batch yet — queue is empty or below threshold and oldest item
     /// hasn't aged past min_delay.
     Hold,
-    /// Release: anonymity threshold reached AND oldest item exceeds min_delay.
-    Release { reason: ReleaseReason, take: usize },
+    /// Held SPECIFICALLY because the safety valve fired (oldest item aged
+    /// past `max_delay`) but the available batch is below `k_min` AND the
+    /// operator chose anonymity over liveness (`release_below_kmin == false`).
+    ///
+    /// Distinct from [`BatchDecision::Hold`] so the batcher can log the
+    /// privacy-vs-liveness stall loudly — this is NOT business-as-usual: a
+    /// withdrawal is being delayed beyond `max_delay` to protect the sender.
+    /// `available` is the number of pending items that *would* have released.
+    HoldBelowKMin { available: usize },
+    /// Release. `degraded` is `true` when the batch is being released below
+    /// `k_min` because `release_below_kmin` is set (liveness chosen over
+    /// anonymity) — the batcher WARN-logs in that case so the privacy
+    /// degradation is never silent.
+    Release {
+        reason: ReleaseReason,
+        take: usize,
+        degraded: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,6 +251,17 @@ pub enum ReleaseReason {
 /// Pure policy function so the batching logic is unit-testable.
 ///
 /// `now` is supplied (not read) so tests can manipulate time deterministically.
+///
+/// `k_min` is the absolute floor on released batch size (V3). When the
+/// safety valve fires but the pending population is below `k_min`:
+///   - if `release_below_kmin` is `true`, we release the under-sized batch
+///     and flag the decision `degraded` (the caller WARN-logs);
+///   - if `false`, we return [`BatchDecision::HoldBelowKMin`] and keep
+///     holding (favouring the sender's anonymity over liveness).
+///
+/// NOTE: with no decoy generator (V2), `decide_batch` cannot synthesise
+/// padding items — `k_min` can only be met by real pending withdrawals.
+/// That is precisely why the `release_below_kmin` knob has to exist.
 pub fn decide_batch(
     now: DateTime<Utc>,
     items: &[QueuedWithdrawal],
@@ -242,6 +269,8 @@ pub fn decide_batch(
     batch_size: usize,
     min_delay: std::time::Duration,
     max_delay: std::time::Duration,
+    k_min: usize,
+    release_below_kmin: bool,
 ) -> BatchDecision {
     let pending: Vec<_> = items
         .iter()
@@ -253,18 +282,46 @@ pub fn decide_batch(
 
     let oldest = pending[0]; // list_all sorted by accepted_at ASC
     let age = (now - oldest.accepted_at).to_std().unwrap_or_default();
+    // `k_min == 0` is a config bug (rejected at load), but be defensive.
+    let k_min = k_min.max(1);
 
     if age >= max_delay {
+        let take = pending.len().min(batch_size);
+        // Safety valve fired. Apply the k_min floor.
+        if take < k_min {
+            if release_below_kmin {
+                // Liveness chosen: release the under-sized batch, flagged.
+                return BatchDecision::Release {
+                    reason: ReleaseReason::MaxDelayExceeded,
+                    take,
+                    degraded: true,
+                };
+            }
+            // Anonymity chosen: keep holding past max_delay.
+            return BatchDecision::HoldBelowKMin {
+                available: pending.len(),
+            };
+        }
         return BatchDecision::Release {
             reason: ReleaseReason::MaxDelayExceeded,
-            take: pending.len().min(batch_size),
+            take,
+            degraded: false,
         };
     }
 
     if pending.len() >= anonymity_threshold && age >= min_delay {
+        let take = pending.len().min(batch_size);
+        // Normal release. With anonymity_threshold >= k_min (the typical
+        // config) this is always >= k_min; guard anyway in case an operator
+        // set k_min above the threshold — then keep accumulating (ordinary
+        // backpressure, not a stall).
+        if take < k_min {
+            return BatchDecision::Hold;
+        }
         return BatchDecision::Release {
             reason: ReleaseReason::AnonymityThresholdMet,
-            take: pending.len().min(batch_size),
+            take,
+            degraded: false,
         };
     }
 

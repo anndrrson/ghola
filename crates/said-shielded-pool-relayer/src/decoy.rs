@@ -1,52 +1,71 @@
 //! Decoy traffic generator + decoy-proof pool.
 //!
-//! # What this file owns
+//! # STATUS: DECOYS ARE NOT DELIVERED (V2, design-gated)
 //!
-//! Two coupled responsibilities:
+//! Read this before relying on anything in this module for privacy.
 //!
-//! 1. [`DecoyTrafficGenerator`] — the background tokio task that
-//!    periodically fires `submit_decoy()` on the configured
+//! **No decoy cover traffic is produced today.** The types below
+//! (`DecoyPool`, `DecoyBundle`, `DecoyTrafficGenerator`) are *scaffolding*
+//! for a future implementation. The runtime reality is:
+//!
+//!   - `DECOY_RATE` defaults to `0.0`, so the generator early-returns.
+//!   - The `DecoyPool` is NEVER populated (no prover/forester wiring
+//!     exists to mint decoy bundles), so it is always empty.
+//!   - [`crate::submit::Submitter::submit_decoy`] is a HARD NO-OP that
+//!     returns an error — it deliberately does NOT broadcast a fake /
+//!     distinguishable tx (an earlier version sent a 1-lamport
+//!     self-transfer that provided zero cover; that was removed because a
+//!     fake decoy is worse than none).
+//!   - `main.rs` logs a prominent startup WARN if `DECOY_RATE > 0`, so an
+//!     operator cannot silently believe they have cover.
+//!
+//! Consequence for the anonymity model: with no decoys, the anonymity set
+//! at low traffic collapses to the concurrent real traffic — k can be as
+//! low as 1. See the relayer README "ANONYMITY LIMITATIONS (current)".
+//!
+//! # What this file WOULD own once decoys are implemented
+//!
+//! Two coupled responsibilities (NONE live yet):
+//!
+//! 1. [`DecoyTrafficGenerator`] — a background tokio task that would
+//!    periodically fire `submit_decoy()` on the configured
 //!    [`Submitter`](crate::submit::Submitter), spaced as a Poisson
 //!    process with rate `DECOY_RATE` (env `DECOY_RATE_PER_HOUR`).
 //! 2. [`DecoyPool`] — a small in-memory cache of pre-generated decoy
-//!    proof bundles. The submitter pulls one at random, builds a
-//!    `withdraw` ix with `amount == 0 && relayer_fee == 0`, and
-//!    broadcasts.
+//!    proof bundles. The submitter would pull one at random, build a
+//!    `withdraw` ix with `amount == 0 && relayer_fee == 0`, and broadcast.
 //!
-//! # On-chain indistinguishability
+//! # Intended on-chain indistinguishability (DESIGN GOAL, NOT YET REAL)
 //!
-//! Decoys are sent as `withdraw { amount: 0, relayer_fee: 0 }`. The
-//! `transfer_checked` CPI calls in `withdraw` are `if x > 0` gated, so
-//! amount=0 skips them entirely — the resulting on-chain state delta
-//! (PDA writes, event emission) is byte-equivalent to a never-was-a-
-//! transfer no-op, AND the ix discriminator is identical to a real
-//! withdrawal. An observer reading raw tx data therefore CANNOT
-//! distinguish a decoy from a real withdraw by either the
-//! discriminator or the state delta.
+//! The DESIGN is to send decoys as `withdraw { amount: 0, relayer_fee: 0 }`.
+//! The `transfer_checked` CPI calls in `withdraw` are `if x > 0` gated, so
+//! amount=0 would skip them entirely — the on-chain state delta would be
+//! byte-equivalent to a no-op withdraw and the ix discriminator identical to
+//! a real withdrawal, so an observer could not distinguish decoy from real.
+//! THIS PROPERTY IS NOT DELIVERED: the program entrypoint that would mint
+//! such decoy proofs does not exist, so no such tx is ever broadcast. The
+//! [`DecoyBundle::ix_data`] serialization below is the intended wire format
+//! for that future entrypoint, kept layout-tested so it does not drift
+//! before it can be used.
 //!
-//! (Earlier design had a dedicated `decoy_withdraw` ix; that was
-//! deleted in a cleanup pass because the dedicated discriminator was
-//! itself the only leak.)
+//! # Decoy-pool refresh (FUTURE)
 //!
-//! # Decoy-pool refresh
-//!
-//! Decoy proofs are bound to:
+//! Decoy proofs would be bound to:
 //!   - the current `MerkleTree.root` (via `args.root`),
 //!   - a unique `args.nullifier` per decoy (must not collide with a
 //!     real nullifier),
 //!   - a `change_commitment` PDA derived from `merkle_tree.queue_tail`
 //!     at the time the decoy lands.
 //!
-//! Production wiring (Phase 42+): a background task in the indexer's
-//! forester crate watches `Withdrawn` events, and whenever the root
-//! rotates it asks the prover to mint a small batch (5-10) of fresh
-//! decoy proofs against the new root, signs them with disposable
-//! nullifiers, and pushes them into [`DecoyPool`]. Until that
-//! generator lands, the pool is empty and `submit_decoy()` falls
-//! back to a no-op (logged at DEBUG) — see [`DecoyPool::pick`].
+//! Production wiring (future): a background task in the indexer's forester
+//! crate would watch `Withdrawn` events and, on root rotation, ask the
+//! prover to mint a small batch (5-10) of fresh decoy proofs against the new
+//! root, sign them with disposable nullifiers, and push them into
+//! [`DecoyPool`]. Until then the pool is empty and `submit_decoy()` is a hard
+//! no-op error. Operator runbook: relayer README
+//! "ANONYMITY LIMITATIONS (current)".
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -176,9 +195,10 @@ impl DecoyBundle {
 /// 4. GC's bundles whose `root` is no longer in the on-chain
 ///    `root_history` window (avoid `RootNotInHistory` rejections).
 ///
-/// Until that landing, the pool is empty in production and the
-/// submitter falls back to a no-op decoy. See
-/// `docs/shielded-pool/THREAT_SCENARIOS.md` §B for the runbook.
+/// Until that landing, the pool is empty in production and
+/// [`crate::submit::Submitter::submit_decoy`] is a hard no-op error (it does
+/// NOT fall back to a fake/distinguishable tx). Operator-facing runbook:
+/// relayer `README.md` → "ANONYMITY LIMITATIONS (current)".
 #[derive(Clone, Default)]
 pub struct DecoyPool {
     bundles: Arc<Mutex<Vec<DecoyBundle>>>,
@@ -283,36 +303,33 @@ impl DecoyTrafficGenerator {
         }
     }
 
-    /// Forever loop. The caller (main.rs) spawns this with
-    /// `tokio::spawn`.
+    /// Forever loop. The caller (main.rs) spawns this with `tokio::spawn`.
+    ///
+    /// V2 (design-gated): decoys are NOT implemented, so this task does no
+    /// useful work. It early-returns in BOTH cases:
+    ///   - `DECOY_RATE <= 0` — decoys disabled (the normal, default case).
+    ///   - `DECOY_RATE  > 0` — decoys requested but `submit_decoy` is a hard
+    ///     no-op error; we do NOT enter a loop that would broadcast nothing
+    ///     while spamming warnings on every tick. The operator was already
+    ///     warned at startup (`main.rs`). We return so the scaffolding stays
+    ///     in place for when real decoys land, without burning CPU.
     pub async fn run(self) {
         let rate_per_hour = self.config.decoy_rate_per_hour;
         if rate_per_hour <= 0.0 {
             tracing::info!("decoy traffic disabled (DECOY_RATE=0)");
             return;
         }
-        let mean_secs = 3600.0 / rate_per_hour;
-        tracing::info!(rate_per_hour, mean_secs, "decoy traffic enabled");
-
-        loop {
-            // Poisson process: exponential inter-arrival.
-            let gap = {
-                let mut rng = rand::thread_rng();
-                let u: f64 = rng.gen_range(f64::EPSILON..1.0);
-                -u.ln() * mean_secs
-            };
-            tokio::time::sleep(Duration::from_secs_f64(gap)).await;
-
-            match self.submitter.submit_decoy().await {
-                Ok(()) => {
-                    self.metrics.record_decoy();
-                    tracing::debug!("decoy tx submitted");
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "decoy tx failed");
-                }
-            }
-        }
+        // DECOY_RATE > 0 but decoys are unimplemented (V2). Do not loop.
+        tracing::warn!(
+            rate_per_hour,
+            "decoy generator requested but decoys are NOT implemented (V2); \
+             generating no cover traffic. See relayer README \
+             'ANONYMITY LIMITATIONS (current)'."
+        );
+        // `_mean_secs`/the Poisson loop intentionally removed until
+        // `submit_decoy` can emit a real, indistinguishable cover tx.
+        let _ = &self.metrics;
+        let _ = &self.submitter;
     }
 }
 

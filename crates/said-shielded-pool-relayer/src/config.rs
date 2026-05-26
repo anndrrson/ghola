@@ -44,14 +44,76 @@ pub struct Config {
     pub max_delay: Duration,
 
     /// Minimum queue depth for a normal (non-safety-valve) release. This
-    /// is the k-anonymity set size: on chain, an observer sees k
-    /// withdrawals leave the relayer in a batch, so the link from a given
-    /// HTTP request to its on-chain tx has at best 1/k probability.
+    /// is the k-anonymity set size FOR TIMING/ORDERING ONLY: on chain, an
+    /// observer sees k withdrawals leave the relayer in a batch, so the link
+    /// from a given HTTP request to its on-chain tx has at best 1/k
+    /// probability.
+    ///
+    /// CRITICAL LIMITATION (V1, design-gated): this 1/k property says
+    /// NOTHING about VALUE-linkability. Withdrawal `amount` is a clear-text
+    /// `u64` on-chain (see `programs/said-shielded-pool/src/instructions/
+    /// withdraw.rs` and SPEC §1.4: "we do not hide aggregate per-asset
+    /// flow ... `public_amount` ... is public"). An on-chain observer reads
+    /// the exact amount credited to the recipient ATA and matches it against
+    /// deposit amounts. Because amounts are arbitrary high-entropy u64
+    /// values (NOT fixed denominations), a single deposit→withdrawal pair is
+    /// typically uniquely linkable BY VALUE ALONE — regardless of how large
+    /// `anonymity_threshold` (k) is. Raising k improves only timing privacy;
+    /// it does NOT make the rail an untraceable mixer. Closing this requires
+    /// fixed-denomination withdrawals at the circuit + program level (a
+    /// trusted-setup / ceremony change), out of scope for the relayer.
     pub anonymity_threshold: usize,
 
-    /// Decoy transactions per hour. 0 disables decoy traffic. Decoys add
-    /// noise to the relayer-keypair's submission cadence so an external
-    /// observer cannot infer real-withdrawal rate from on-chain frequency.
+    /// Hard floor on the number of items released in ANY batch, including
+    /// the `max_delay` safety-valve path. Distinct from
+    /// `anonymity_threshold`: the threshold gates the *normal* release path
+    /// and is bypassed by the safety valve, whereas `relay_k_min` is an
+    /// absolute lower bound the batcher will not cross while
+    /// `release_below_kmin` is `false`.
+    ///
+    /// Default is `1`, which PRESERVES the historical behaviour (a lone
+    /// withdrawal may be released by itself once it ages past `max_delay`).
+    /// That default is honest, not safe: at `k_min == 1` the effective
+    /// anonymity set at low traffic is 1 (perfect HTTP-request→tx linkage).
+    /// Set `RELAY_K_MIN` > 1 for any deployment that claims meaningful
+    /// timing privacy.
+    ///
+    /// Tradeoff: until the decoy generator is delivered (V2 — see
+    /// `decoy.rs`), there are NO decoys to pad a thin queue, so a
+    /// `relay_k_min` > 1 combined with `release_below_kmin == false` means a
+    /// thin queue will STALL past `max_delay` rather than release an
+    /// under-sized batch. See `release_below_kmin`.
+    pub relay_k_min: usize,
+
+    /// Liveness-vs-anonymity policy for the case where the queue cannot
+    /// reach `relay_k_min` by `max_delay` AND no decoys are available to pad
+    /// the batch (the current reality, since decoys are not implemented —
+    /// V2):
+    ///
+    /// - `true`  — release the under-sized batch anyway (favour LIVENESS;
+    ///   the withdrawal goes through). The batcher emits a prominent `WARN`
+    ///   "privacy degraded: released batch below k_min" so the degradation
+    ///   is never silent.
+    /// - `false` — keep HOLDING the batch until it reaches `k_min` (favour
+    ///   ANONYMITY; the withdrawal may be delayed indefinitely if traffic
+    ///   stays thin). Operators MUST monitor queue depth, because the
+    ///   `max_delay` safety valve no longer guarantees release.
+    ///
+    /// Default `true`, so out-of-the-box behaviour matches the historical
+    /// "release everything at the safety valve" semantics. With the default
+    /// `relay_k_min == 1` this flag is a no-op (a batch of 1 already meets
+    /// k_min); it only bites once an operator raises `RELAY_K_MIN`.
+    pub release_below_kmin: bool,
+
+    /// Decoy transactions per hour. 0 disables decoy traffic.
+    ///
+    /// STATUS (V2, design-gated): the decoy generator is NOT implemented —
+    /// there is no program entrypoint that emits an on-chain-indistinguishable
+    /// `withdraw{amount:0}` cover tx, and the in-relayer decoy pool is never
+    /// populated. `submit_decoy()` is therefore a hard no-op that returns an
+    /// error. Setting `DECOY_RATE` > 0 buys NO cover traffic; to prevent an
+    /// operator from believing they have cover when they do not, the relayer
+    /// logs a prominent startup `WARN` (see `main.rs`) whenever this is > 0.
     pub decoy_rate_per_hour: f64,
 
     /// Lambda for the Poisson inter-submission jitter inside a batch.
@@ -108,6 +170,28 @@ pub struct Config {
     /// Configured via `RELAY_TRUSTED_PROXIES` (comma-separated IPs). Empty by
     /// default (the safe default: trust no XFF, always use the socket peer).
     pub trusted_proxies: std::collections::HashSet<std::net::IpAddr>,
+
+    /// Optional bearer token guarding `GET /metrics`. When `Some`, the
+    /// endpoint requires `Authorization: Bearer <token>` and rejects
+    /// everything else with 401.
+    ///
+    /// Why this matters (V4): `/metrics` exposes the live anonymity-set
+    /// gauge and queue depth. Left open, an observer who polls it can read
+    /// the exact size of the most recently released batch and correlate
+    /// "last batch size == 1" with the single on-chain tx that just landed —
+    /// re-opening the very side-channel the M3 log-demotion was meant to
+    /// close. Two independent mitigations are applied:
+    ///   1. The gauge itself is COARSENED into wide buckets (see
+    ///      `metrics.rs`), so even an unauthenticated scrape never reveals
+    ///      the exact last-batch size; and the separate decoy counter is
+    ///      removed so an observer cannot subtract decoys from totals.
+    ///   2. This optional token lets an operator additionally lock the whole
+    ///      endpoint down to their monitoring system.
+    ///
+    /// Configured via `RELAY_METRICS_TOKEN`. Empty/unset = open endpoint
+    /// (acceptable ONLY because of mitigation 1). Production deployments that
+    /// expose `/metrics` beyond a trusted network SHOULD set it.
+    pub metrics_token: Option<String>,
 }
 
 /// Default cap on pending queue depth. See [`Config::max_queue_depth`].
@@ -162,6 +246,18 @@ impl Config {
         let anonymity_threshold = env_parse::<usize>("ANONYMITY_THRESHOLD")
             .unwrap_or(Ok(4))
             .map_err(|e| Error::Config(format!("ANONYMITY_THRESHOLD: {e}")))?;
+
+        // V3: hard floor on released batch size. Default 1 preserves the
+        // historical behaviour (singleton release allowed) — honestly, not
+        // safely. See the field doc on `Config::relay_k_min`.
+        let relay_k_min = env_parse::<usize>("RELAY_K_MIN")
+            .unwrap_or(Ok(1))
+            .map_err(|e| Error::Config(format!("RELAY_K_MIN: {e}")))?;
+
+        // V3: liveness-vs-anonymity policy when a thin queue can't reach
+        // k_min by max_delay. Default true = release the under-sized batch
+        // (with a WARN), matching the historical safety-valve semantics.
+        let release_below_kmin = env_bool("RELAY_RELEASE_BELOW_KMIN", true)?;
 
         let decoy_rate_per_hour = env_parse::<f64>("DECOY_RATE")
             .unwrap_or(Ok(0.0))
@@ -218,6 +314,12 @@ impl Config {
             Err(_) => std::collections::HashSet::new(),
         };
 
+        // V4: optional bearer token for `/metrics`. Empty/whitespace = unset.
+        let metrics_token = match std::env::var("RELAY_METRICS_TOKEN") {
+            Ok(t) if !t.trim().is_empty() => Some(t),
+            _ => None,
+        };
+
         if min_delay >= max_delay {
             return Err(Error::Config(
                 "MIN_DELAY_SECS must be < MAX_DELAY_SECS".into(),
@@ -227,6 +329,18 @@ impl Config {
             return Err(Error::Config(
                 "BATCH_SIZE and ANONYMITY_THRESHOLD must be > 0".into(),
             ));
+        }
+        if relay_k_min == 0 {
+            return Err(Error::Config("RELAY_K_MIN must be > 0".into()));
+        }
+        if relay_k_min > batch_size {
+            // A k_min above the batch cap can never be satisfied — a single
+            // batch can hold at most `batch_size` items, so the queue would
+            // stall forever (with release_below_kmin=false) or warn on every
+            // release (true). Fail loud at boot rather than ship a misconfig.
+            return Err(Error::Config(format!(
+                "RELAY_K_MIN ({relay_k_min}) must be <= BATCH_SIZE ({batch_size})"
+            )));
         }
         if max_queue_depth == 0 {
             return Err(Error::Config(
@@ -243,6 +357,8 @@ impl Config {
             min_delay,
             max_delay,
             anonymity_threshold,
+            relay_k_min,
+            release_below_kmin,
             decoy_rate_per_hour,
             jitter_lambda,
             max_retries,
@@ -253,10 +369,27 @@ impl Config {
             relay_rate_limit_per_min,
             dedup_ttl_secs,
             trusted_proxies,
+            metrics_token,
         })
     }
 }
 
 fn env_parse<T: std::str::FromStr>(key: &str) -> Option<std::result::Result<T, T::Err>> {
     std::env::var(key).ok().map(|v| v.parse::<T>())
+}
+
+/// Parse a boolean-ish env var. Accepts `1/0`, `true/false`, `yes/no`,
+/// `on/off` (case-insensitive). Unset → `default`. A malformed value is a
+/// hard config error (fail loud rather than silently pick a default).
+fn env_bool(key: &str, default: bool) -> Result<bool> {
+    match std::env::var(key) {
+        Err(_) => Ok(default),
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            other => Err(Error::Config(format!(
+                "{key}: expected a boolean (true/false), got '{other}'"
+            ))),
+        },
+    }
 }

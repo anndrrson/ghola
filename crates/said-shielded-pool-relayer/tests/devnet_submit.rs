@@ -26,7 +26,7 @@
 
 use std::path::PathBuf;
 
-use said_shielded_pool_relayer::submit::{RpcSubmitter, Submitter};
+use said_shielded_pool_relayer::submit::RpcSubmitter;
 
 fn keypair_path() -> PathBuf {
     if let Ok(p) = std::env::var("RELAYER_KEYPAIR_PATH") {
@@ -54,13 +54,14 @@ async fn devnet_self_transfer_confirms() {
     eprintln!("submitting 1-lamport self-transfer via {url}");
     let submitter = RpcSubmitter::new(url, kp);
 
-    // submit_decoy() builds a 1-lamport self-transfer, signs, sends,
-    // and confirms. If it returns Ok the full RPC + signing chain
-    // works end-to-end.
-    let res = submitter.submit_decoy().await;
+    // devnet_self_transfer_smoketest() builds a 1-lamport self-transfer,
+    // signs, sends, and confirms. If it returns Ok the full RPC + signing
+    // chain works end-to-end. (This is NOT submit_decoy — decoys are a hard
+    // no-op error now; see submit.rs::submit_decoy / V2.)
+    let res = submitter.devnet_self_transfer_smoketest().await;
     match res {
         Ok(()) => {
-            eprintln!("ok: decoy self-transfer confirmed on devnet");
+            eprintln!("ok: self-transfer confirmed on devnet");
             let pk = submitter.signer_pubkey().expect("signer pubkey");
             eprintln!("relayer pubkey: {}", bs58::encode(pk).into_string());
         }

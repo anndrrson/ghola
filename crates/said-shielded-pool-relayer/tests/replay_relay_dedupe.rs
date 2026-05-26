@@ -63,6 +63,8 @@ fn test_config() -> Arc<Config> {
         min_delay: Duration::from_secs(30),
         max_delay: Duration::from_secs(600),
         anonymity_threshold: 4,
+        relay_k_min: 1,
+        release_below_kmin: true,
         decoy_rate_per_hour: 0.0,
         jitter_lambda: 0.5,
         max_retries: 3,
@@ -73,6 +75,7 @@ fn test_config() -> Arc<Config> {
         relay_rate_limit_per_min: 0,
         dedup_ttl_secs: 86_400,
         trusted_proxies: std::collections::HashSet::new(),
+        metrics_token: None,
     })
 }
 

@@ -7,9 +7,39 @@
 //! clients, holds them in a persistent queue, and releases them on-chain in
 //! batches once an anonymity threshold is reached (or a safety timeout
 //! fires). Releases are interspersed with randomized inter-submission
-//! delays (Poisson jitter) and, optionally, decoy traffic so that an
-//! external observer correlating ingress to on-chain activity cannot link
-//! a given on-chain withdrawal to a specific HTTP request.
+//! delays (Poisson jitter) so that an external observer correlating ingress
+//! to on-chain activity has a harder time linking a given on-chain
+//! withdrawal to a specific HTTP request.
+//!
+//! # ANONYMITY LIMITATIONS — read before claiming this is a mixer
+//!
+//! This relayer provides **timing/ordering decorrelation of the SENDER
+//! within one relayer's own traffic, and nothing more.** It is NOT an
+//! untraceable mixer today. Specifically:
+//!
+//! 1. **Amounts are public (V1 — design-gated).** Withdrawal `amount` is a
+//!    clear-text `u64` on-chain (SPEC §1.4). An observer reads the exact
+//!    amount credited to the recipient and matches it to a deposit amount,
+//!    linking deposit→withdrawal BY VALUE ALONE, regardless of batching,
+//!    jitter, or k. There is NO value-unlinkability without fixed
+//!    denominations (a circuit + program + ceremony change, out of scope
+//!    here).
+//! 2. **Decoys are not delivered (V2 — design-gated).** `submit_decoy` is a
+//!    hard no-op; the decoy pool is never populated. With no cover traffic
+//!    the anonymity set at low volume collapses to concurrent real traffic
+//!    (k can be 1). See [`decoy`].
+//! 3. **Single trusted relayer + single fee-payer (V5/V6 — future).** One
+//!    relayer keypair fee-pays every tx; the relayer sees every `/relay`
+//!    request in plaintext and stores proof bundles + recipients + amounts
+//!    on disk. The model is "TRUST THIS OPERATOR," not "trustless against
+//!    the relayer." A multi-relayer network and per-tx payer rotation are
+//!    future work.
+//!
+//! Optional decoy traffic and a hard `k_min` floor exist as knobs/scaffolding
+//! (see [`config`]), but the two design gates above mean the rail must NOT be
+//! described to users as anonymous/untraceable in its current form. See the
+//! crate README "ANONYMITY LIMITATIONS (current)" for the operator-facing
+//! version of this.
 //!
 //! # Privacy invariants
 //!
@@ -31,7 +61,7 @@
 //! - [`queue`] — persistent queue of pending withdrawals.
 //! - [`batcher`] — background task that releases batches.
 //! - [`submit`] — submits batched withdrawals to Solana with jitter + retry.
-//! - [`decoy`] — decoy-traffic generator (framework; stub strategy).
+//! - [`decoy`] — decoy-traffic scaffolding (NOT delivered — V2; see module).
 //! - [`routes`] — axum HTTP API.
 //! - [`metrics`] — Prometheus-format metric collection.
 

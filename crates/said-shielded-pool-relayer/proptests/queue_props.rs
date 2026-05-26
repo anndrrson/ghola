@@ -200,6 +200,8 @@ proptest! {
             BATCH_SIZE,
             MIN_DELAY,
             MAX_DELAY,
+            1,    // k_min == 1 preserves historical behaviour
+            true, // release_below_kmin (irrelevant below max_delay)
         );
         // We are below threshold AND below max_delay — Release must NOT fire.
         prop_assert!(
@@ -219,7 +221,8 @@ proptest! {
         batch_size in 1usize..16,
     ) {
         let items: Vec<QueuedWithdrawal> = (0..count).map(|_| mk_at(0)).collect();
-        // Force a release: jump far past max_delay.
+        // Force a release: jump far past max_delay. k_min=1 + release allowed
+        // guarantees a release for any non-empty population.
         let result = decide_batch(
             now_at((MAX_DELAY.as_secs() + 100) as i64),
             &items,
@@ -227,8 +230,10 @@ proptest! {
             batch_size,
             MIN_DELAY,
             MAX_DELAY,
+            1,    // k_min
+            true, // release_below_kmin
         );
-        if let BatchDecision::Release { reason, take } = result {
+        if let BatchDecision::Release { reason, take, .. } = result {
             prop_assert!(take <= batch_size);
             prop_assert!(take <= count);
             // Must be the max-delay variant because we jumped past it.

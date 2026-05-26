@@ -15,20 +15,23 @@ use said_shielded_pool_relayer::metrics::Metrics;
 /// metric is a pre-bucketed gauge or counter).
 const METRIC_ALLOWLIST: &[&str] = &[
     "relayer_queue_depth",
-    "relayer_anonymity_set_size_last",
+    // V4: the exact-size gauge was replaced with a COARSE bucket gauge so
+    // polling /metrics can't reveal the exact last-batch (anonymity-set)
+    // size. The decoy counter was removed (it was a subtraction channel and
+    // decoys are unimplemented — V2).
+    "relayer_anonymity_set_bucket_last",
     "relayer_submit_latency_ms_p50",
     "relayer_submit_latency_ms_p99",
     "relayer_submit_success_total",
     "relayer_submit_failure_total",
     "relayer_submit_success_rate",
-    "relayer_decoy_tx_count_total",
 ];
 
 /// Plan-mandated label allowlist (the abstract names the plan
 /// references). The current implementation maps each to a concrete
 /// metric name via the prefix `relayer_*`.
 const ABSTRACT_LABEL_KEYS: &[&str] =
-    &["queue_depth", "anonymity_set_size", "latency_bucket", "decoy_count"];
+    &["queue_depth", "anonymity_set_size", "latency_bucket"];
 
 #[test]
 fn rendered_metrics_only_use_allowlisted_names() {
@@ -39,7 +42,6 @@ fn rendered_metrics_only_use_allowlisted_names() {
     m.observe_submit_latency(std::time::Duration::from_millis(42));
     m.record_submit_success();
     m.record_submit_failure();
-    m.record_decoy();
 
     let rendered = m.render();
     for line in rendered.lines() {
@@ -74,7 +76,7 @@ fn abstract_label_keys_documented() {
         ("queue_depth", &["relayer_queue_depth"]),
         (
             "anonymity_set_size",
-            &["relayer_anonymity_set_size_last"],
+            &["relayer_anonymity_set_bucket_last"],
         ),
         (
             "latency_bucket",
@@ -83,7 +85,6 @@ fn abstract_label_keys_documented() {
                 "relayer_submit_latency_ms_p99",
             ],
         ),
-        ("decoy_count", &["relayer_decoy_tx_count_total"]),
     ];
     // Sanity: every abstract key listed in the plan appears here.
     for ak in ABSTRACT_LABEL_KEYS {

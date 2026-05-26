@@ -430,13 +430,57 @@ async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
-async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn metrics_handler(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    // V4: optional bearer-token gate. When `RELAY_METRICS_TOKEN` is set an
+    // unauthenticated scrape is rejected with 401. When it is unset the
+    // endpoint stays open — acceptable ONLY because the rendered gauges are
+    // already side-channel-safe (the anonymity-set size is coarse-bucketed
+    // and the decoy counter is removed; see `metrics.rs`).
+    if let Some(expected) = state.config.metrics_token.as_deref() {
+        if !bearer_token_matches(&headers, expected) {
+            tracing::debug!("metrics rejected: missing/invalid bearer token");
+            return (
+                StatusCode::UNAUTHORIZED,
+                [("www-authenticate", "Bearer")],
+                "unauthorized",
+            )
+                .into_response();
+        }
+    }
     let body = state.metrics.render();
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4")],
         body,
     )
+        .into_response()
+}
+
+/// Bearer-token check for `/metrics`. Compares the
+/// `Authorization: Bearer <token>` header against the configured token with
+/// a constant-time-ish byte accumulate (the token is an operator secret, so
+/// this is belt-and-braces, not load-bearing).
+fn bearer_token_matches(headers: &HeaderMap, expected: &str) -> bool {
+    let presented = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(str::trim);
+    match presented {
+        None => false,
+        Some(tok) => {
+            let a = tok.as_bytes();
+            let b = expected.as_bytes();
+            if a.len() != b.len() {
+                return false;
+            }
+            let mut diff = 0u8;
+            for (x, y) in a.iter().zip(b.iter()) {
+                diff |= x ^ y;
+            }
+            diff == 0
+        }
+    }
 }
 
 /// Shape-only proof validation. We do NOT verify cryptographically — the
