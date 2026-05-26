@@ -153,6 +153,16 @@ export default function X402Page() {
           also be sent through local or sealed inference; shielded payment
           alone only covers settlement metadata.
         </div>
+        <div className="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-5 py-4 text-sm text-[#8b95a8] leading-relaxed">
+          For AI financial agents that need private routing and execution, use
+          the Private Execution API instead of raw x402 merchant calls. It
+          simulates leakage, embeds Ghola&apos;s execution fee, rejects plaintext
+          strategy/context, and returns a signed receipt.{" "}
+          <Link href="/developers/docs" className="text-emerald-300 hover:text-emerald-200">
+            Read the private execution guide
+          </Link>
+          .
+        </div>
       </section>
 
       {/* Features */}
@@ -225,6 +235,25 @@ export default function X402Page() {
               className="inline-flex items-center gap-2 text-[#3da8ff] hover:text-[#5bb8ff] text-sm font-medium"
             >
               Read the docs <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </div>
+          <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-8 lg:col-span-2">
+            <div className="h-10 w-10 rounded-lg bg-emerald-400/10 flex items-center justify-center mb-4">
+              <Shield className="h-5 w-5 text-emerald-300" />
+            </div>
+            <h3 className="text-xl font-medium text-[#eef1f8] mb-3">
+              Building financial agents? Use private execution.
+            </h3>
+            <p className="text-sm text-[#8b95a8] leading-relaxed mb-6">
+              The private execution API is the agent-native path for sealed
+              trading intents: status, simulation, execution, and receipt
+              verification in one SDK flow.
+            </p>
+            <Link
+              href="/developers/docs"
+              className="inline-flex items-center gap-2 text-emerald-300 hover:text-emerald-200 text-sm font-medium"
+            >
+              Private execution docs <ArrowRight className="h-3.5 w-3.5" />
             </Link>
           </div>
         </div>

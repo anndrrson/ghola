@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Key, Code, BarChart3, Zap, Cpu, Wrench } from "lucide-react";
+import { ArrowRight, Key, Code, Zap, Cpu, Wrench, ShieldCheck } from "lucide-react";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 
 export default function DevelopersPage() {
@@ -103,6 +103,26 @@ export default function DevelopersPage() {
         </div>
 
         {/* Merchant API Banner */}
+        <Link
+          href="/developers/docs"
+          className="group block rounded-xl border border-emerald-400/30 bg-emerald-400/5 p-5 hover:border-emerald-400/50 transition-colors mb-4"
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-300 mb-1.5">
+                PRIVATE EXECUTION
+              </span>
+              <h3 className="text-sm font-medium text-[#eef1f8] mb-1">
+                Private Execution API — Financial Agents
+              </h3>
+              <p className="text-xs text-[#8b95a8]">
+                Simulate, execute, charge fees, and verify receipts without exposing user strategy or financial context.
+              </p>
+            </div>
+            <ShieldCheck className="h-4 w-4 text-emerald-300 shrink-0 ml-4" />
+          </div>
+        </Link>
+
         <Link
           href="/developers/merchant"
           className="group block rounded-xl border border-[#3da8ff]/30 bg-[#3da8ff]/5 p-5 hover:border-[#3da8ff]/50 transition-colors mb-8"
