@@ -17,6 +17,7 @@
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
     "@mlc-ai/web-llm": "^0.2.83",
+    "@neondatabase/serverless": "^1.1.0",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",
     "@phala/cloud": "^0.2.9",
