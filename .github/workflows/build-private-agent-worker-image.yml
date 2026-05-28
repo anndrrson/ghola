@@ -1,0 +1,129 @@
+name: Build private-agent-worker image
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref_to_build:
+        description: "Git ref/SHA to build"
+        required: true
+      image:
+        description: "Image tag to push"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Validate the operator-supplied image tag BEFORE it reaches any
+      # build/push step. We require a ghcr.io image owned by this
+      # repository's org, scoped to this repo, with an explicit tag
+      # (and disallow `latest`, which is mutable). The validated value
+      # is re-exported from $GITHUB_OUTPUT — we never interpolate the
+      # raw input into a `run:` shell line (which would be a command
+      # injection sink) and downstream steps read the sanitized output.
+      - name: Validate image tag
+        id: image
+        env:
+          # Pass the untrusted input via env, not via ${{ }} inside the
+          # script body, so it can never break out of the shell context.
+          RAW_IMAGE: ${{ inputs.image }}
+          EXPECTED_PREFIX: ghcr.io/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          image="${RAW_IMAGE}"
+          owner_repo="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          expected_prefix="ghcr.io/${owner_repo}"
+
+          # STRING-ANCHORED validation. A `grep -E '^...$'` anchors to the
+          # end of a LINE, not the end of the STRING, so a multi-line input
+          # like $'ghcr.io/owner/repo:tag\nevil' would PASS (its first line
+          # matches) and the raw multi-line value would then be written to
+          # $GITHUB_OUTPUT. Reject any control char / whitespace up front,
+          # then match with bash `[[ =~ ]]`, which has no multiline mode and
+          # anchors `$` to the end of the whole string.
+
+          # 1) No newlines, tabs, NULs, or any other whitespace/control char.
+          #    (A valid image ref never contains whitespace.)
+          if printf '%s' "${image}" | LC_ALL=C grep -q '[[:space:][:cntrl:]]'; then
+            echo "::error::image contains whitespace or control characters; rejected."
+            exit 1
+          fi
+
+          # 2) Shape: ghcr.io/<owner>/<repo>[/<extra-path>]:<tag>
+          #    - lowercase path segments (Docker requirement)
+          #    - exactly one ':' introducing a non-empty tag
+          #    bash regex is anchored to the whole string (no /m mode).
+          if [[ ! "${image}" =~ ^ghcr\.io/[a-z0-9._-]+/[a-z0-9._/-]+:[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::image must match ghcr.io/<owner>/<repo>[/<path>]:<tag>, got '${image}'"
+            exit 1
+          fi
+
+          # 3) Pin ownership to THIS repository (prevents pushing to an
+          #    unrelated org/repo namespace with this workflow's token).
+          case "${image}" in
+            "${expected_prefix}":*|"${expected_prefix}"/*:*) ;;
+            *)
+              echo "::error::image must be under ${expected_prefix} (got '${image}')"
+              exit 1
+              ;;
+          esac
+
+          # 4) Disallow the mutable `latest` tag for a pushed artifact.
+          tag="${image##*:}"
+          if [ "${tag}" = "latest" ]; then
+            echo "::error::refusing to push a mutable ':latest' tag; use an immutable tag (e.g. a commit SHA)"
+            exit 1
+          fi
+
+          # Emit a NORMALIZED, single-token validated value (rebuilt from
+          # the validated `image`, which we have proven is single-line and
+          # shape-conforming). BASH_REMATCH[0] is the full anchored match,
+          # so it can carry nothing the regex above did not accept.
+          validated="${BASH_REMATCH[0]}"
+          if [ "${validated}" != "${image}" ]; then
+            # Defensive: should be unreachable given the anchored match, but
+            # never emit anything other than the exact validated token.
+            echo "::error::internal: validated value diverged from input; refusing."
+            exit 1
+          fi
+          printf 'tag=%s\n' "${validated}" >> "${GITHUB_OUTPUT}"
+          echo "Validated image tag: ${validated}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref_to_build }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./apps/private-agent-worker
+          file: ./apps/private-agent-worker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image.outputs.tag }}
+
+      - name: Summarize image digest
+        run: |
+          {
+            echo "### private-agent-worker image"
+            echo ""
+            echo "image=${{ steps.image.outputs.tag }}"
+            echo "digest=${{ steps.build.outputs.digest }}"
+            echo "pinned=${{ steps.image.outputs.tag }}@${{ steps.build.outputs.digest }}"
+          } >> "$GITHUB_STEP_SUMMARY"
