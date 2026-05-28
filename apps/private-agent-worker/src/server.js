@@ -308,7 +308,10 @@ async function readiness(recipient) {
       Boolean(attestation.attestation_hash));
   if (!attestedReady) missing.push("attestation");
   if (!env("PHALA_CVM_IMAGE_DIGEST", env("PRIVATE_AGENT_IMAGE_DIGEST"))) missing.push("image_digest");
-  if (!attestation.measurement_hex) {
+  const dstackQuoteReady =
+    boolEnv("PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE") &&
+    Boolean(attestation.attestation_hash);
+  if (!attestation.measurement_hex && !dstackQuoteReady) {
     missing.push("measurement");
   }
   if (!attestation.attestation_hash) {
