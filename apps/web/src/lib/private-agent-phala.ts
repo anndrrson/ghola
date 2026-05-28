@@ -31,6 +31,25 @@ interface PhalaProvisionResult {
   execution_url?: string;
 }
 
+interface PhalaProvisionResponse {
+  app_id: string;
+  compose_hash: string;
+  app_env_encrypt_pubkey: string;
+}
+
+interface PhalaCloudClient {
+  getCvmInfo(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
+  getCvmNetwork(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
+  getCvmAttestation(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
+  getCvmState(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
+  startCvm(input: { id: string }): Promise<unknown>;
+  provisionCvm(input: Record<string, unknown>): Promise<PhalaProvisionResponse>;
+  commitCvmProvision(
+    input: Record<string, unknown>,
+    options?: { schema: boolean },
+  ): Promise<unknown>;
+}
+
 function env(name: string): string | null {
   const value = process.env[name];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -75,14 +94,63 @@ function phalaWorkerImageDigest(): string {
   );
 }
 
+function liveHyperliquidEnabled(): boolean {
+  return (
+    env("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") === "tiny_fill" ||
+    env("GHOLA_HYPERLIQUID_LIVE_MODE") === "tiny_fill"
+  );
+}
+
+function liveWorkerImageConfigured(): boolean {
+  return Boolean(
+    env("GHOLA_PRIVATE_AGENT_WORKER_IMAGE") &&
+      (env("GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST") ||
+        env("GHOLA_PRIVATE_AGENT_IMAGE_DIGEST")),
+  );
+}
+
+export function phalaWorkerImageConfiguredForRequestedMode(): boolean {
+  return !liveHyperliquidEnabled() || liveWorkerImageConfigured();
+}
+
+function workerEnv(name: string, fallback: string, aliases: string[] = []): string {
+  for (const key of [name, ...aliases]) {
+    const value = env(key);
+    if (value) return value;
+  }
+  return fallback;
+}
+
+function workerLiveEnv(name: string, fallback: string, aliases: string[] = []): string {
+  return workerEnv(name, fallback, [
+    name.replace(/^PRIVATE_AGENT_/, "GHOLA_"),
+    ...aliases,
+  ]);
+}
+
+function composeEnvLine(name: string, value: string): string {
+  return `      ${name}: ${JSON.stringify(value)}`;
+}
+
 export function phalaJitProvisioningEnabled(): boolean {
   return boolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING");
 }
 
+export function phalaJitProvisioningConfigIssue(): string | null {
+  if (!phalaApiKey()) {
+    return "PHALA_CLOUD_API_KEY and GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN are required.";
+  }
+  if (!phalaWorkerExecutionToken()) {
+    return "PHALA_CLOUD_API_KEY and GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN are required.";
+  }
+  if (!phalaWorkerImageConfiguredForRequestedMode()) {
+    return "GHOLA_PRIVATE_AGENT_WORKER_IMAGE and GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST are required before provisioning Hyperliquid live mode.";
+  }
+  return null;
+}
+
 export function phalaJitProvisioningConfigured(): boolean {
-  return Boolean(
-    phalaJitProvisioningEnabled() && phalaApiKey() && phalaWorkerExecutionToken(),
-  );
+  return Boolean(phalaJitProvisioningEnabled() && !phalaJitProvisioningConfigIssue());
 }
 
 export function expectedRecipientReportDataHex(input: {
@@ -114,6 +182,16 @@ export function buildPhalaWorkerCompose(input: {
     '      PRIVATE_AGENT_EXECUTION_TOKEN: "${PRIVATE_AGENT_EXECUTION_TOKEN}"',
     '      PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE: "true"',
     `      PHALA_CVM_IMAGE_DIGEST: "${imageDigest}"`,
+    composeEnvLine("PRIVATE_AGENT_VENUE_DRY_RUN", workerEnv("PRIVATE_AGENT_VENUE_DRY_RUN", "false")),
+    composeEnvLine("PRIVATE_AGENT_GLOBAL_KILL_SWITCH", workerEnv("PRIVATE_AGENT_GLOBAL_KILL_SWITCH", "false")),
+    composeEnvLine("PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE", workerEnv("PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE", "60")),
+    composeEnvLine("PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD", "0")),
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", workerEnv("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", "false")),
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", "disabled")),
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", "5")),
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", "25", ["GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD"])),
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS", "50", ["GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS"])),
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", "12000")),
     "    volumes:",
     "      - /var/run/dstack.sock:/var/run/dstack.sock",
     "      - private-agent-data:/data",
@@ -124,14 +202,14 @@ export function buildPhalaWorkerCompose(input: {
   ].join("\n");
 }
 
-async function phalaClient(): Promise<any | null> {
+async function phalaClient(): Promise<PhalaCloudClient | null> {
   const apiKey = phalaApiKey();
   if (!apiKey) return null;
   const { createClient } = await import("@phala/cloud");
   return createClient({
     apiKey,
     ...(phalaBaseUrl() ? { baseURL: phalaBaseUrl() } : {}),
-  });
+  }) as PhalaCloudClient;
 }
 
 function firstPublicAppUrl(network: unknown, fallbackInfo?: unknown): string | null {
@@ -318,6 +396,15 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
 } = {}): Promise<PhalaProvisionResult> {
   if (!phalaJitProvisioningEnabled()) {
     return { attempted: false, ready: false, status: "disabled" };
+  }
+  const configIssue = phalaJitProvisioningConfigIssue();
+  if (configIssue) {
+    return {
+      attempted: false,
+      ready: false,
+      status: "missing_config",
+      reason: configIssue,
+    };
   }
   const client = await phalaClient();
   const token = phalaWorkerExecutionToken();

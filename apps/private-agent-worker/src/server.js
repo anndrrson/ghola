@@ -2,18 +2,51 @@ import { createHash, generateKeyPairSync, randomUUID, timingSafeEqual } from "no
 import { createServer, request as httpRequest } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { assertRecipientSecretMatches } from "./crypto/envelope.js";
+import {
+  createHyperliquidManagedAllocation,
+  executeCoinbaseOrder,
+  executeHyperliquidOrder,
+  storeCoinbaseSession,
+  storeHyperliquidSession,
+  storePrivateAgentSession,
+} from "./execution/private-execution.js";
+import { createWorkerState } from "./state/private-state.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
 const PUBLIC_KEY_HEX_RE = /^[0-9a-f]{64}$/i;
 const PLAINTEXT_LEAK_KEYS = new Set([
+  "account_id",
+  "api_key",
+  "api_key_id",
+  "api_key_name",
+  "api_secret",
+  "api_wallet",
+  "api_wallet_private_key",
+  "cdp_api_key",
+  "coinbase_api_key",
+  "coinbase_api_key_name",
+  "coinbase_key_name",
+  "coinbase_private_key",
+  "coinbase_signing_key",
+  "hyperliquid_account_id",
+  "key_secret",
+  "leverage",
+  "leverage_update",
   "messages",
+  "order_payload",
+  "orders",
   "plaintext",
   "policy",
+  "policy_text",
   "prompt",
+  "raw_order",
+  "raw_private_key",
   "source",
   "strategy",
   "strategy_text",
   "system_prompt",
+  "vault_transfer",
 ]);
 const RECIPIENT_REPORT_DOMAIN = "ghola-private-agent-recipient-v1";
 const DSTACK_QUOTE_PATHS = [
@@ -116,6 +149,8 @@ export function loadRecipient() {
     return {
       recipient_id: configuredRecipientId,
       x25519_pub_hex: configuredPublicKey.toLowerCase(),
+      x25519_secret_hex: env("PRIVATE_AGENT_X25519_SECRET_HEX") || null,
+      private_key_pkcs8_pem: env("PRIVATE_AGENT_X25519_PRIVATE_KEY_PKCS8_PEM") || null,
       created_at: null,
     };
   }
@@ -261,6 +296,11 @@ async function readiness(recipient) {
   const missing = [];
   if (!recipient?.recipient_id || !PUBLIC_KEY_HEX_RE.test(recipient.x25519_pub_hex || "")) {
     missing.push("recipient_key");
+  }
+  try {
+    assertRecipientSecretMatches(recipient);
+  } catch {
+    missing.push("recipient_secret");
   }
   const attestedReady =
     boolEnv("PRIVATE_AGENT_ATTESTED_READY") ||
@@ -412,8 +452,421 @@ function buildReceipt(body) {
   };
 }
 
+function commitment(prefix, value) {
+  return `${prefix}_${sha256Hex(canonicalJson(value)).slice(0, 48)}`;
+}
+
+function validateEncryptedBundle(bundle, recipient, fieldName) {
+  const errors = [];
+  if (!isObject(bundle)) {
+    errors.push(`${fieldName} is required`);
+    return errors;
+  }
+  if (bundle.alg !== "sealed-provider-v1" && bundle.alg !== "hpke-x25519-aes256gcm") {
+    errors.push(`${fieldName}.alg is unsupported`);
+  }
+  if (!isNonEmptyString(bundle.ciphertext)) {
+    errors.push(`${fieldName}.ciphertext is required`);
+  }
+  if (!isNonEmptyString(bundle.recipient)) {
+    errors.push(`${fieldName}.recipient is required`);
+  } else if (bundle.recipient !== recipient.recipient_id) {
+    errors.push(`${fieldName}.recipient must match worker recipient`);
+  }
+  if (!isNonEmptyString(bundle.aad)) {
+    errors.push(`${fieldName}.aad is required`);
+  }
+  if ("encapsulated_key" in bundle && !isNonEmptyString(bundle.encapsulated_key)) {
+    errors.push(`${fieldName}.encapsulated_key must be non-empty`);
+  }
+  return errors;
+}
+
+function validateHyperliquidSessionRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Hyperliquid credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  const executionMode = hyperliquidExecutionMode(body);
+  if (!["byo_api_key", "managed_testnet"].includes(executionMode)) {
+    errors.push("execution_mode is unsupported");
+  }
+  if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
+  if (!isNonEmptyString(body.policy_commitment)) errors.push("policy_commitment is required");
+  if (executionMode === "byo_api_key") {
+    if (!isNonEmptyString(body.vault_commitment)) errors.push("vault_commitment is required");
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  } else if (!isNonEmptyString(body.managed_allocation_commitment) && !isNonEmptyString(body.allocation_commitment)) {
+    errors.push("managed_allocation_commitment is required");
+  }
+  if ("encrypted_strategy_bundle" in body) {
+    errors.push(...validateEncryptedBundle(body.encrypted_strategy_bundle, recipient, "encrypted_strategy_bundle"));
+  }
+  const capped = body.session_policy;
+  if (capped !== undefined) {
+    if (!isObject(capped)) errors.push("session_policy must be an object");
+    else {
+      if (!Array.isArray(capped.market_allowlist)) errors.push("session_policy.market_allowlist is required");
+      if (!isNonEmptyString(capped.max_notional_bucket)) errors.push("session_policy.max_notional_bucket is required");
+      if (!Number.isInteger(capped.max_order_count) || capped.max_order_count < 0) {
+        errors.push("session_policy.max_order_count must be a non-negative integer");
+      }
+      if (capped.kill_switch === true) errors.push("session_policy kill switch is active");
+    }
+  }
+  return errors;
+}
+
+function validateHyperliquidOrderRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Hyperliquid credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
+  if (!isNonEmptyString(body.policy_commitment)) errors.push("policy_commitment is required");
+  const executionMode = hyperliquidExecutionMode(body);
+  if (!["byo_api_key", "managed_testnet"].includes(executionMode)) {
+    errors.push("execution_mode is unsupported");
+  }
+  if (body.encrypted_execution_vault && (body.managed_allocation_commitment || body.allocation_commitment)) {
+    errors.push("encrypted_execution_vault and managed_allocation_commitment cannot both be set");
+  }
+  const operation = body.operation_class;
+  if (!["read", "limit_order", "cancel", "reconcile"].includes(operation)) {
+    errors.push("operation_class is unsupported");
+  }
+  if (executionMode === "byo_api_key") {
+    if (!isNonEmptyString(body.vault_commitment)) errors.push("vault_commitment is required");
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  } else if (!isNonEmptyString(body.managed_allocation_commitment) && !isNonEmptyString(body.allocation_commitment)) {
+    errors.push("managed_allocation_commitment is required");
+  }
+  if ("encrypted_execution_instruction_bundle" in body) {
+    errors.push(...validateEncryptedBundle(
+      body.encrypted_execution_instruction_bundle,
+      recipient,
+      "encrypted_execution_instruction_bundle",
+    ));
+  }
+  return errors;
+}
+
+function validateHyperliquidReconcileRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Hyperliquid credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
+  const executionMode = hyperliquidExecutionMode(body);
+  if (!["byo_api_key", "managed_testnet"].includes(executionMode)) {
+    errors.push("execution_mode is unsupported");
+  }
+  if (body.encrypted_execution_vault && (body.managed_allocation_commitment || body.allocation_commitment)) {
+    errors.push("encrypted_execution_vault and managed_allocation_commitment cannot both be set");
+  }
+  if ("encrypted_execution_vault" in body) {
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  }
+  if (executionMode === "managed_testnet" && !isNonEmptyString(body.managed_allocation_commitment) && !isNonEmptyString(body.allocation_commitment)) {
+    errors.push("managed_allocation_commitment is required");
+  }
+  if ("encrypted_execution_instruction_bundle" in body) {
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_instruction_bundle, recipient, "encrypted_execution_instruction_bundle"));
+  }
+  return errors;
+}
+
+function validateHyperliquidManagedAllocationRequest(body) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Hyperliquid credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
+  if (!isNonEmptyString(body.policy_commitment)) errors.push("policy_commitment is required");
+  if (body.network && body.network !== "testnet") {
+    errors.push("network must be testnet for the Hyperliquid pilot");
+  }
+  const capped = body.session_policy;
+  if (capped !== undefined) {
+    if (!isObject(capped)) errors.push("session_policy must be an object");
+    else {
+      if (!Array.isArray(capped.market_allowlist)) errors.push("session_policy.market_allowlist is required");
+      if (!isNonEmptyString(capped.max_notional_bucket)) errors.push("session_policy.max_notional_bucket is required");
+      if (!Number.isInteger(capped.max_order_count) || capped.max_order_count < 0) {
+        errors.push("session_policy.max_order_count must be a non-negative integer");
+      }
+      if (capped.kill_switch === true) errors.push("session_policy kill switch is active");
+    }
+  }
+  return errors;
+}
+
+function hyperliquidSessionReceipt(body) {
+  const executionMode = hyperliquidExecutionMode(body);
+  const sessionCommitment = commitment("hyperliquid_session", {
+    account_commitment: body.account_commitment,
+    execution_mode: executionMode,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: body.managed_allocation_commitment || body.allocation_commitment || null,
+    policy_commitment: body.policy_commitment,
+  });
+  return {
+    version: 1,
+    status: "armed",
+    provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
+    platform_class: "hyperliquid_style_market",
+    execution_mode: executionMode,
+    hyperliquid_session_commitment: sessionCommitment,
+    account_commitment: body.account_commitment,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: body.managed_allocation_commitment || body.allocation_commitment || null,
+    policy_commitment: body.policy_commitment,
+    accepted_at: new Date().toISOString(),
+    sealed_execution_required: true,
+  };
+}
+
+function hyperliquidOrderReceipt(body, status = "submitted") {
+  const executionMode = hyperliquidExecutionMode(body);
+  const providerRefCommitment = commitment("hyperliquid_provider_ref", {
+    work_order_commitment: body.work_order_commitment,
+    operation_class: body.operation_class,
+    execution_mode: executionMode,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: body.managed_allocation_commitment || body.allocation_commitment || null,
+  });
+  return {
+    version: 1,
+    platform_class: "hyperliquid_style_market",
+    execution_mode: executionMode,
+    status,
+    work_order_commitment: body.work_order_commitment,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: body.managed_allocation_commitment || body.allocation_commitment || null,
+    provider_ref_commitment: providerRefCommitment,
+    result_commitment: commitment("hyperliquid_result", {
+      work_order_commitment: body.work_order_commitment,
+      provider_ref_commitment: providerRefCommitment,
+      status,
+    }),
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      hyperliquid_sees: "execution_account_and_order_activity",
+    },
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function hyperliquidExecutionMode(body) {
+  if (body?.execution_mode === "managed_testnet" || body?.managed_allocation_commitment || body?.allocation_commitment) {
+    return "managed_testnet";
+  }
+  if (body?.execution_mode === "byo_api_key" || !body?.execution_mode) return "byo_api_key";
+  return String(body.execution_mode);
+}
+
+function validateCoinbaseSessionRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Coinbase credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.venue_id !== "coinbase_advanced") errors.push("venue_id must be coinbase_advanced");
+  if (body.platform_class !== "coinbase_style_provider") errors.push("platform_class must be coinbase_style_provider");
+  if (!["byo_api_key", "partner_omnibus"].includes(body.execution_mode)) {
+    errors.push("execution_mode is unsupported");
+  }
+  if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
+  if (!isNonEmptyString(body.policy_commitment)) errors.push("policy_commitment is required");
+  if (body.execution_mode === "byo_api_key") {
+    if (!isNonEmptyString(body.vault_commitment)) errors.push("vault_commitment is required");
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  }
+  if (body.execution_mode === "partner_omnibus") {
+    errors.push(...validateOmnibusAllocation(body.omnibus_allocation));
+  }
+  const capped = body.session_policy;
+  if (capped !== undefined) {
+    if (!isObject(capped)) errors.push("session_policy must be an object");
+    else {
+      if (!Array.isArray(capped.market_allowlist)) errors.push("session_policy.market_allowlist is required");
+      if (!isNonEmptyString(capped.max_notional_bucket)) errors.push("session_policy.max_notional_bucket is required");
+      if (!Number.isInteger(capped.max_order_count) || capped.max_order_count < 0) {
+        errors.push("session_policy.max_order_count must be a non-negative integer");
+      }
+      if (capped.kill_switch === true) errors.push("session_policy kill switch is active");
+    }
+  }
+  return errors;
+}
+
+function validateCoinbaseOrderRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Coinbase credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.venue_id !== "coinbase_advanced") errors.push("venue_id must be coinbase_advanced");
+  if (body.platform_class !== "coinbase_style_provider") errors.push("platform_class must be coinbase_style_provider");
+  if (!["byo_api_key", "partner_omnibus"].includes(body.execution_mode)) {
+    errors.push("execution_mode is unsupported");
+  }
+  if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
+  if (!["read", "preview_order", "spot_limit_order", "spot_market_order", "cancel", "fills", "reconcile"].includes(body.operation_class)) {
+    errors.push("operation_class is unsupported");
+  }
+  if (body.execution_mode === "byo_api_key") {
+    if (!isNonEmptyString(body.vault_commitment)) errors.push("vault_commitment is required");
+    if (!isNonEmptyString(body.policy_commitment)) errors.push("policy_commitment is required");
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  }
+  if ("encrypted_execution_instruction_bundle" in body) {
+    errors.push(...validateEncryptedBundle(
+      body.encrypted_execution_instruction_bundle,
+      recipient,
+      "encrypted_execution_instruction_bundle",
+    ));
+  }
+  if (body.execution_mode === "partner_omnibus") {
+    errors.push(...validateOmnibusAllocation(body.omnibus_allocation));
+  }
+  return errors;
+}
+
+function validateCoinbaseReconcileRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Coinbase credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
+  if ("encrypted_execution_vault" in body) {
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  }
+  if ("encrypted_execution_instruction_bundle" in body) {
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_instruction_bundle, recipient, "encrypted_execution_instruction_bundle"));
+  }
+  return errors;
+}
+
+function validateOmnibusAllocation(allocation) {
+  const errors = [];
+  if (!isObject(allocation)) {
+    errors.push("omnibus_allocation is required");
+    return errors;
+  }
+  for (const key of [
+    "allocation_commitment",
+    "pool_commitment",
+    "partner_commitment",
+    "subledger_account_commitment",
+  ]) {
+    if (!isNonEmptyString(allocation[key])) errors.push(`omnibus_allocation.${key} is required`);
+  }
+  if (allocation.status && !["allocated", "pending_funding", "paused", "revoked"].includes(allocation.status)) {
+    errors.push("omnibus_allocation.status is unsupported");
+  }
+  if (allocation.status === "paused" || allocation.status === "revoked") {
+    errors.push("omnibus_allocation is not active");
+  }
+  return errors;
+}
+
+function coinbaseSessionReceipt(body) {
+  const sessionCommitment = commitment("coinbase_session", {
+    account_commitment: body.account_commitment,
+    execution_mode: body.execution_mode,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: body.omnibus_allocation?.allocation_commitment || null,
+    policy_commitment: body.policy_commitment,
+  });
+  return {
+    version: 1,
+    status: "armed",
+    provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
+    venue_id: "coinbase_advanced",
+    platform_class: "coinbase_style_provider",
+    execution_mode: body.execution_mode,
+    coinbase_session_commitment: sessionCommitment,
+    account_commitment: body.account_commitment,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: body.omnibus_allocation?.allocation_commitment || null,
+    policy_commitment: body.policy_commitment,
+    accepted_at: new Date().toISOString(),
+    sealed_execution_required: true,
+  };
+}
+
+function coinbaseOrderReceipt(body, status = "submitted") {
+  const providerRefCommitment = commitment("coinbase_provider_ref", {
+    work_order_commitment: body.work_order_commitment,
+    operation_class: body.operation_class,
+    execution_mode: body.execution_mode,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: body.omnibus_allocation?.allocation_commitment || body.allocation_commitment || null,
+  });
+  return {
+    version: 1,
+    venue_id: "coinbase_advanced",
+    platform_class: "coinbase_style_provider",
+    execution_mode: body.execution_mode || "partner_omnibus",
+    status,
+    work_order_commitment: body.work_order_commitment,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: body.omnibus_allocation?.allocation_commitment || body.allocation_commitment || null,
+    provider_ref_commitment: providerRefCommitment,
+    result_commitment: commitment("coinbase_result", {
+      work_order_commitment: body.work_order_commitment,
+      provider_ref_commitment: providerRefCommitment,
+      status,
+    }),
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      coinbase_sees: body.execution_mode === "partner_omnibus"
+        ? "partner_pooled_account_and_order_activity"
+        : "byo_account_and_order_activity",
+    },
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function omnibusAllocationReceipt(body, status = "allocated") {
+  const allocation = body.omnibus_allocation || body;
+  const allocationCommitment = allocation.allocation_commitment || commitment("omnibus_allocation", allocation);
+  return {
+    version: 1,
+    status,
+    venue_id: "coinbase_advanced",
+    platform_class: "coinbase_style_provider",
+    execution_mode: "partner_omnibus",
+    allocation_commitment: allocationCommitment,
+    pool_commitment: allocation.pool_commitment,
+    partner_commitment: allocation.partner_commitment,
+    subledger_account_commitment: allocation.subledger_account_commitment,
+    result_commitment: commitment("omnibus_allocation_result", {
+      allocation_commitment: allocationCommitment,
+      status,
+    }),
+    updated_at: new Date().toISOString(),
+  };
+}
+
 export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
+  const state = options.state || createWorkerState(dataDir());
 
   return createServer(async (req, res) => {
     try {
@@ -447,6 +900,32 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, 200, await publicRecipient(recipient));
       }
 
+      if (req.method === "POST" && url.pathname === "/hyperliquid/managed/allocations") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateHyperliquidManagedAllocationRequest(body);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid hyperliquid managed allocation request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const allocation = createHyperliquidManagedAllocation({ body, state });
+        return json(res, 201, allocation);
+      }
+
       if (req.method === "POST" && url.pathname === "/private-agent/sessions") {
         // Fail closed: a missing execution token throws a 503 (handled by the
         // outer catch) rather than allowing unauthenticated sealed execution.
@@ -473,9 +952,251 @@ export function createPrivateAgentWorkerServer(options = {}) {
           });
         }
 
+        await storePrivateAgentSession({
+          body,
+          recipient,
+          state,
+          provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
+        });
         const receipt = buildReceipt(body);
         appendSessionAudit(body, receipt);
         return json(res, 201, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/hyperliquid/sessions") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateHyperliquidSessionRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid hyperliquid private session request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        await storeHyperliquidSession({
+          body,
+          recipient,
+          state,
+          provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
+        });
+        return json(res, 201, hyperliquidSessionReceipt(body));
+      }
+
+      if (req.method === "POST" && url.pathname === "/hyperliquid/orders") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateHyperliquidOrderRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid hyperliquid private order request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const receipt = await executeHyperliquidOrder({ body, recipient, state });
+        return json(res, 202, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/hyperliquid/reconcile") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateHyperliquidReconcileRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid hyperliquid reconcile request",
+            details: errors,
+          });
+        }
+        if (body.encrypted_execution_vault && body.encrypted_execution_instruction_bundle) {
+          const receipt = await executeHyperliquidOrder({
+            body: {
+              ...body,
+              vault_commitment: body.vault_commitment || "vault_commitment_redacted",
+              policy_commitment: body.policy_commitment || "policy_commitment_redacted",
+              operation_class: "reconcile",
+            },
+            recipient,
+            state,
+          });
+          return json(res, 200, receipt);
+        }
+        return json(res, 200, hyperliquidOrderReceipt({
+          ...body,
+          vault_commitment: body.vault_commitment || "vault_commitment_redacted",
+          policy_commitment: body.policy_commitment || "policy_commitment_redacted",
+          operation_class: "reconcile",
+        }, "reconciled"));
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/coinbase/sessions") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateCoinbaseSessionRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid coinbase private session request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        await storeCoinbaseSession({
+          body,
+          recipient,
+          state,
+          provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
+        });
+        return json(res, 201, coinbaseSessionReceipt(body));
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/coinbase/orders") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateCoinbaseOrderRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid coinbase private order request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const receipt = await executeCoinbaseOrder({ body, recipient, state });
+        return json(res, 202, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/coinbase/reconcile") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateCoinbaseReconcileRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid coinbase reconcile request",
+            details: errors,
+          });
+        }
+        if (
+          body.encrypted_execution_instruction_bundle &&
+          (body.execution_mode === "partner_omnibus" || body.encrypted_execution_vault)
+        ) {
+          const receipt = await executeCoinbaseOrder({
+            body: {
+              ...body,
+              venue_id: "coinbase_advanced",
+              platform_class: "coinbase_style_provider",
+              execution_mode: body.execution_mode || "partner_omnibus",
+              operation_class: "reconcile",
+            },
+            recipient,
+            state,
+          });
+          return json(res, 200, receipt);
+        }
+        return json(res, 200, coinbaseOrderReceipt({
+          ...body,
+          venue_id: "coinbase_advanced",
+          platform_class: "coinbase_style_provider",
+          execution_mode: body.execution_mode || "partner_omnibus",
+          operation_class: "reconcile",
+        }, "reconciled"));
+      }
+
+      if (req.method === "POST" && url.pathname === "/omnibus/allocations") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        if (!isObject(body) || containsPlaintextLeakKey(body)) {
+          return json(res, 400, {
+            error: "invalid omnibus allocation request",
+            details: ["request must contain only omnibus commitments"],
+          });
+        }
+        const errors = validateOmnibusAllocation(body.omnibus_allocation || body);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid omnibus allocation request",
+            details: errors,
+          });
+        }
+        return json(res, 201, omnibusAllocationReceipt(body));
+      }
+
+      if (req.method === "POST" && url.pathname === "/omnibus/reconcile") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        if (!isObject(body) || containsPlaintextLeakKey(body)) {
+          return json(res, 400, {
+            error: "invalid omnibus reconcile request",
+            details: ["request must contain only omnibus commitments"],
+          });
+        }
+        return json(res, 200, omnibusAllocationReceipt(body, "reconciled"));
       }
 
       return json(res, 404, { error: "not found" });

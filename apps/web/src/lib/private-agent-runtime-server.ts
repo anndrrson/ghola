@@ -10,8 +10,10 @@ import {
 } from "@/lib/private-balance";
 import {
   discoverPhalaPrivateAgentProvider,
+  phalaJitProvisioningConfigIssue,
   phalaJitProvisioningConfigured,
   phalaJitProvisioningEnabled,
+  phalaWorkerImageConfiguredForRequestedMode,
 } from "@/lib/private-agent-phala";
 
 interface RelayHealth {
@@ -167,6 +169,7 @@ async function phalaProvider(): Promise<ConfidentialComputeProviderStatus> {
   const discovered = await discoverPhalaPrivateAgentProvider().catch(() => null);
   if (discovered) return discovered;
   if (phalaJitProvisioningEnabled()) {
+    const configIssue = phalaJitProvisioningConfigIssue();
     const configured = phalaJitProvisioningConfigured();
     return {
       id: "phala",
@@ -179,11 +182,11 @@ async function phalaProvider(): Promise<ConfidentialComputeProviderStatus> {
       supports_trading_execution: false,
       reason: configured
         ? "Phala just-in-time provisioning is armed. The worker starts after a paid private-agent request and remains unavailable until attestation-bound recipient evidence is verified."
-        : "Phala just-in-time provisioning is enabled but missing PHALA_CLOUD_API_KEY or GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN.",
+        : configIssue ?? "Phala just-in-time provisioning is enabled but missing required configuration.",
       evidence: {
         provisioning_enabled: true,
         execution_url_configured: false,
-        image_digest_configured: true,
+        image_digest_configured: phalaWorkerImageConfiguredForRequestedMode(),
         recipient_configured: false,
       },
     };

@@ -42,15 +42,46 @@ Provider:
 
 ## Phala first provider
 
-Build and deploy the provider worker before changing web readiness flags:
+### Local staging bootstrap
+
+For a local staging-equivalent worker URL and auth token, generate an ignored
+env file:
+
+```bash
+bash scripts/staging/private-agent-bootstrap-local.sh
+set -a; source .dev/private-agent-staging.env; set +a
+cd apps/private-agent-worker && npm start
+```
+
+Then run the sealed worker and venue canaries:
+
+```bash
+bash scripts/canary/private-agent-worker-local.sh
+node scripts/canary/private-agent-venue-live.mjs
+```
+
+The bootstrap writes `.dev/private-agent-staging.env`, which is ignored by git.
+It defaults to `PRIVATE_AGENT_VENUE_DRY_RUN=true`, so it proves sealed worker
+ingress and TEE-side decrypt/routing without touching venues.
+
+For a real staging CVM, keep the generated
+`GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN` as the shared web-to-worker token, deploy
+the worker to Phala, then replace `PRIVATE_AGENT_WORKER_URL` and
+`GHOLA_PRIVATE_AGENT_EXECUTION_URL` with the CVM HTTPS endpoint after recipient
+attestation passes.
+
+Build and deploy a fresh provider worker before changing web readiness flags:
 
 ```bash
 gh workflow run build-private-agent-worker-image.yml \
   -f ref_to_build=<git-ref-or-sha> \
-  -f image=ghcr.io/anndrrson/ghola-private-agent-worker:<tag>
+  -f image=ghcr.io/anndrrson/ghola-private-agent-worker:private-agent-worker-<git-sha>
 ```
 
-Current built worker image:
+The workflow summary prints `image`, `digest`, and `pinned`. Use the pinned
+value for the CVM image and set the matching digest in web/worker env. Do not
+arm Hyperliquid live mode with the historical image below; it is listed only as
+a prior deployment reference:
 
 ```text
 ghcr.io/anndrrson/ghola-private-agent-worker:private-agent-worker-128f9e8@sha256:9e2cb99b475ab193bfa5cc9c8c2dcd4b1ed314586ee4801aa217a2eeeb6c66f7
@@ -68,7 +99,12 @@ Set these on the web deployment to arm paid-on-demand provisioning:
 GHOLA_PRIVATE_AGENT_PROVIDER=phala
 GHOLA_PRIVATE_AGENT_JIT_PROVISIONING=true
 GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME=ghola-private-agent-worker
+GHOLA_PRIVATE_AGENT_WORKER_IMAGE=ghcr.io/anndrrson/ghola-private-agent-worker:private-agent-worker-<git-sha>
+GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST=sha256:<workflow-digest>
 GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN=<random-worker-token-not-the-phala-api-key>
+GHOLA_V6_HYPERLIQUID_PILOT_ENABLED=true
+GHOLA_HYPERLIQUID_LIVE_MODE=tiny_fill
+GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS=ready
 PHALA_CLOUD_API_KEY=<phala-cloud-api-key>
 ```
 
@@ -123,6 +159,12 @@ PRIVATE_AGENT_TEE_KIND=phala
 PRIVATE_AGENT_EXECUTION_TOKEN=<same-secret-as-GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN>
 PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE=true
 PHALA_CVM_IMAGE_DIGEST=<verified-image-digest>
+PRIVATE_AGENT_VENUE_DRY_RUN=false
+PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true
+PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=tiny_fill
+PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD=5
+PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD=25
+PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS=50
 ```
 
 Do not set `GHOLA_PRIVATE_AGENT_ATTESTED_READY=true` until the verifier has
@@ -176,6 +218,45 @@ GHOLA_BASE_URL=https://ghola.xyz bash scripts/canary/private-agent-runtime.sh --
 The first command is safe before provider launch and verifies fail-closed
 behavior. The `--require-ready` form is for production after Phala or another
 attested provider and the shielded settlement rail are live.
+
+Venue credential canary:
+
+```bash
+set -a; source .dev/private-agent-staging.env; set +a
+GHOLA_CANARY_VENUE=hyperliquid \
+GHOLA_RUN_LIVE_VENUE_CANARY=1 \
+GHOLA_CANARY_HYPERLIQUID_QUOTE_SIZE=5 \
+GHOLA_CANARY_HYPERLIQUID_MAX_SLIPPAGE_BPS=50 \
+node scripts/canary/private-agent-venue-live.mjs
+```
+
+Hyperliquid live/testnet canaries require an already-approved API/agent wallet:
+set `GHOLA_CANARY_HYPERLIQUID_ACCOUNT_ADDRESS` and
+`GHOLA_CANARY_HYPERLIQUID_API_WALLET_PRIVATE_KEY`. Coinbase BYO canaries require
+an Advanced Trade key with view+trade permissions and transfer disabled: set
+`GHOLA_CANARY_VENUE=coinbase_byo`,
+`GHOLA_CANARY_COINBASE_API_KEY_NAME`, and either
+`GHOLA_CANARY_COINBASE_API_PRIVATE_KEY_PEM_B64` or
+`GHOLA_CANARY_COINBASE_API_PRIVATE_KEY_PEM_PATH`.
+
+By default the venue canary uses Hyperliquid reconcile or Coinbase order preview
+instead of submitting an order. To run the real Hyperliquid proof, set both
+`GHOLA_CANARY_SUBMIT_ORDER=1` and `GHOLA_CANARY_ACK_TINY_ORDER_RISK=1`. The
+Hyperliquid submit canary sends a sealed `$5` quote-sized IOC tiny fill and then
+reconciles fills; it does not try to cancel the IOC order. Keep the venue on
+testnet/sandbox first, then run one mainnet canary only after the worker and web
+envs are pinned to the fresh image digest.
+
+```bash
+GHOLA_CANARY_VENUE=hyperliquid \
+GHOLA_RUN_LIVE_VENUE_CANARY=1 \
+GHOLA_CANARY_HYPERLIQUID_NETWORK=mainnet \
+GHOLA_CANARY_HYPERLIQUID_QUOTE_SIZE=5 \
+GHOLA_CANARY_HYPERLIQUID_MAX_SLIPPAGE_BPS=50 \
+GHOLA_CANARY_SUBMIT_ORDER=1 \
+GHOLA_CANARY_ACK_TINY_ORDER_RISK=1 \
+node scripts/canary/private-agent-venue-live.mjs
+```
 
 ## Rollback
 

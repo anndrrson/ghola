@@ -9,5 +9,10 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
+    "bs58": "^6.0.0"
   }
 }
