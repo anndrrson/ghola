@@ -362,6 +362,7 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
     supports_sealed_secrets: ready,
     supports_background_agents: ready,
     supports_trading_execution: ready,
+    execution_url: executionUrl,
     reason: ready
       ? null
       : "Phala worker exists but is not yet running with verified attestation-bound recipient evidence.",
@@ -389,6 +390,21 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
       phala_attestation_present: attested,
     },
   };
+}
+
+export async function discoverPhalaPrivateAgentExecutionUrl(): Promise<string | null> {
+  const client = await phalaClient();
+  if (!client) return null;
+  const name = phalaCvmName();
+  let info: unknown = null;
+  let network: unknown = null;
+  try {
+    info = await client.getCvmInfo({ id: name }, { schema: false });
+    network = await client.getCvmNetwork({ id: name }, { schema: false }).catch(() => null);
+  } catch {
+    return null;
+  }
+  return safeExecutionUrl(firstPublicAppUrl(network, info));
 }
 
 export async function ensurePhalaPrivateAgentProvisioned(input: {
