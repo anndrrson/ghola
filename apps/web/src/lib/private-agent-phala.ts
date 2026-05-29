@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import type { ConfidentialComputeProviderStatus } from "./private-agent-runtime";
 
 const DEFAULT_WORKER_IMAGE =
-  "ghcr.io/anndrrson/ghola-private-agent-worker:private-agent-worker-128f9e8@sha256:9e2cb99b475ab193bfa5cc9c8c2dcd4b1ed314586ee4801aa217a2eeeb6c66f7";
+  "ghcr.io/anndrrson/ghola:private-agent-worker-6a4f843@sha256:9b36fd7356dc8be88a685419b8af9b17bb5c46248daf942d753e928b6edc7933";
 const DEFAULT_WORKER_IMAGE_DIGEST =
-  "sha256:9e2cb99b475ab193bfa5cc9c8c2dcd4b1ed314586ee4801aa217a2eeeb6c66f7";
+  "sha256:9b36fd7356dc8be88a685419b8af9b17bb5c46248daf942d753e928b6edc7933";
 const DEFAULT_CVM_NAME = "ghola-private-agent-worker";
 const RECIPIENT_REPORT_DOMAIN = "ghola-private-agent-recipient-v1";
 

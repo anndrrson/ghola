@@ -75,16 +75,16 @@ Build and deploy a fresh provider worker before changing web readiness flags:
 ```bash
 gh workflow run build-private-agent-worker-image.yml \
   -f ref_to_build=<git-ref-or-sha> \
-  -f image=ghcr.io/anndrrson/ghola-private-agent-worker:private-agent-worker-<git-sha>
+  -f image=ghcr.io/anndrrson/ghola:private-agent-worker-<git-sha>
 ```
 
 The workflow summary prints `image`, `digest`, and `pinned`. Use the pinned
-value for the CVM image and set the matching digest in web/worker env. Do not
-arm Hyperliquid live mode with the historical image below; it is listed only as
-a prior deployment reference:
+value for the CVM image and set the matching digest in web/worker env. The
+current verified worker image built from the live Hyperliquid account-stream
+branch is:
 
 ```text
-ghcr.io/anndrrson/ghola-private-agent-worker:private-agent-worker-128f9e8@sha256:9e2cb99b475ab193bfa5cc9c8c2dcd4b1ed314586ee4801aa217a2eeeb6c66f7
+ghcr.io/anndrrson/ghola:private-agent-worker-6a4f843@sha256:9b36fd7356dc8be88a685419b8af9b17bb5c46248daf942d753e928b6edc7933
 ```
 
 Ghola supports just-in-time Phala startup. The session route only calls the
@@ -99,7 +99,7 @@ Set these on the web deployment to arm paid-on-demand provisioning:
 GHOLA_PRIVATE_AGENT_PROVIDER=phala
 GHOLA_PRIVATE_AGENT_JIT_PROVISIONING=true
 GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME=ghola-private-agent-worker
-GHOLA_PRIVATE_AGENT_WORKER_IMAGE=ghcr.io/anndrrson/ghola-private-agent-worker:private-agent-worker-<git-sha>
+GHOLA_PRIVATE_AGENT_WORKER_IMAGE=ghcr.io/anndrrson/ghola:private-agent-worker-<git-sha>
 GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST=sha256:<workflow-digest>
 GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN=<random-worker-token-not-the-phala-api-key>
 GHOLA_V6_HYPERLIQUID_PILOT_ENABLED=true
