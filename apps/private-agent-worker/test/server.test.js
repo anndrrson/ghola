@@ -218,6 +218,37 @@ async function recipientId(baseUrl) {
   return (await recipient(baseUrl)).recipient_id;
 }
 
+async function readSseEvent(response, eventName) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      buffer += decoder.decode(next.value, { stream: true });
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() || "";
+      for (const block of blocks) {
+        const event = block
+          .split("\n")
+          .find((line) => line.startsWith("event:"))
+          ?.slice("event:".length)
+          .trim();
+        const data = block
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice("data:".length).trimStart())
+          .join("\n");
+        if (event === eventName && data) return JSON.parse(data);
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  throw new Error(`SSE event ${eventName} not found`);
+}
+
 describe("private agent worker", () => {
   let dir;
   let server;
@@ -500,6 +531,36 @@ describe("private agent worker", () => {
     assert.equal(body.trading_enabled, true);
     assert.equal(JSON.stringify(body).includes("api_wallet_private_key"), false);
     assert.equal(JSON.stringify(body).includes("hyperliquid_account_id"), false);
+  });
+
+  it("streams sanitized Hyperliquid account state through sealed credentials only", async () => {
+    const vault = await encryptedHyperliquidVault(baseUrl);
+    const response = await fetch(`${baseUrl}/hyperliquid/account-stream`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        account_commitment: "acct_commitment_123",
+        vault_commitment: "hyperliquid_vault_commitment_123",
+        encrypted_execution_vault: vault.encrypted_execution_vault,
+        coin: "BTC",
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") || "", /text\/event-stream/);
+    const body = await readSseEvent(response, "account_state");
+    assert.equal(body.status, "ready_to_trade");
+    assert.equal(body.stream_status, "live");
+    assert.equal(body.visibility_summary.main_wallet_exposed, false);
+    assert.equal(body.visibility_summary.hyperliquid_sees, "execution_account_and_order_activity");
+    assert.equal(JSON.stringify(body).includes("api_wallet_private_key"), false);
+    assert.equal(JSON.stringify(body).includes("hyperliquid_account_id"), false);
+    assert.equal(JSON.stringify(body).includes("0x0000000000000000000000000000000000000001"), false);
   });
 
   it("reports missing BYO Hyperliquid credentials as venue access required", async () => {

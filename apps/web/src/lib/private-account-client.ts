@@ -50,9 +50,19 @@ export interface HyperliquidMarketSnapshot {
   best_bid: string | null;
   best_ask: string | null;
   spread_bps: number | null;
-  candles: Array<{ t: number; o: string; h: string; l: string; c: string; v: string }>;
-  bids: Array<{ px: string; sz: string }>;
-  asks: Array<{ px: string; sz: string }>;
+  mark_price: string | null;
+  oracle_price: string | null;
+  prev_day_price: string | null;
+  day_notional_volume: string | null;
+  day_base_volume: string | null;
+  open_interest: string | null;
+  funding_rate: string | null;
+  premium: string | null;
+  max_leverage: number | null;
+  candles: Array<{ t: number; T: number | null; o: string; h: string; l: string; c: string; v: string; n: number | null }>;
+  bids: Array<{ px: string; sz: string; n: number | null }>;
+  asks: Array<{ px: string; sz: string; n: number | null }>;
+  recent_trades: Array<{ side: "buy" | "sell"; px: string; sz: string; time: number }>;
 }
 
 export interface HyperliquidAccountSnapshot {
@@ -70,9 +80,54 @@ export interface HyperliquidAccountSnapshot {
   equity_bucket: "none" | "low" | "ready" | "unknown";
   position_count: number;
   open_order_count: number;
+  stream_status?:
+    | "connecting"
+    | "live"
+    | "reconnecting"
+    | "backfilling"
+    | "snapshot"
+    | "worker_unavailable"
+    | "venue_access_required"
+    | "needs_funds";
+  positions?: Array<{
+    position_commitment: string;
+    market: string;
+    side: "long" | "short";
+    size_bucket: string;
+    entry_price_bucket: string;
+    unrealized_pnl_bucket: string;
+  }>;
+  open_orders?: Array<{
+    order_handle_commitment: string;
+    market: string;
+    side: "buy" | "sell" | "unknown";
+    size_bucket: string;
+    price_bucket: string;
+    status: string;
+    reduce_only: boolean;
+  }>;
+  recent_fills?: Array<{
+    fill_commitment: string;
+    market: string;
+    side: "buy" | "sell" | "unknown";
+    size_bucket: string;
+    price_bucket: string;
+    fee_bucket: string;
+    time_bucket: string;
+  }>;
+  visibility_summary?: {
+    main_wallet_exposed: boolean;
+    ghola_operator_sees: string;
+    hyperliquid_sees: string;
+    public_chain_sees: string;
+  };
   last_checked_at: string;
+  last_event_at?: string;
   next_step: string;
 }
+
+export type HyperliquidAccountStreamStatus =
+  NonNullable<HyperliquidAccountSnapshot["stream_status"]>;
 
 export async function getHyperliquidMarketSnapshot(input: {
   network?: "mainnet" | "testnet";
@@ -94,6 +149,78 @@ export async function getHyperliquidAccountSnapshot(): Promise<HyperliquidAccoun
     method: "POST",
     body: JSON.stringify({}),
   }) as Promise<HyperliquidAccountSnapshot>;
+}
+
+export function openHyperliquidAccountStream(input: {
+  coin?: "BTC" | "ETH" | "SOL" | "HYPE";
+  onState: (snapshot: HyperliquidAccountSnapshot) => void;
+  onStatus?: (status: HyperliquidAccountStreamStatus) => void;
+  onEvent?: (event: unknown) => void;
+  onError?: (error: Error) => void;
+}) {
+  let closed = false;
+  let retryCount = 0;
+  let activeController: AbortController | null = null;
+
+  async function connect() {
+    while (!closed) {
+      activeController = new AbortController();
+      input.onStatus?.(retryCount > 0 ? "reconnecting" : "connecting");
+      try {
+        const params = new URLSearchParams();
+        if (input.coin) params.set("coin", input.coin);
+        const headers: Record<string, string> = {};
+        const token = thumperToken();
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const res = await fetch(`/v1/private-account/hyperliquid/account-stream${params.toString() ? `?${params}` : ""}`, {
+          method: "GET",
+          headers,
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: activeController.signal,
+        });
+        if (!res.ok || !res.body) throw new Error(`Account stream error ${res.status}`);
+        retryCount = 0;
+        await readPrivateAccountSse(res.body, {
+          onMessage: (event, data) => {
+            if (event === "account_state") {
+              const snapshot = data as HyperliquidAccountSnapshot;
+              input.onState(snapshot);
+              if (snapshot.stream_status) input.onStatus?.(snapshot.stream_status);
+              return;
+            }
+            if (event === "stream_status") {
+              const status = (data as { stream_status?: HyperliquidAccountStreamStatus }).stream_status;
+              if (status) input.onStatus?.(status);
+              return;
+            }
+            if (event === "account_event") {
+              input.onEvent?.(data);
+              return;
+            }
+            if (event === "error") {
+              input.onError?.(new Error((data as { error?: string }).error || "Account stream unavailable"));
+            }
+          },
+        });
+      } catch (error) {
+        if (!closed) input.onError?.(error instanceof Error ? error : new Error("Account stream unavailable"));
+      }
+      if (!closed) {
+        retryCount += 1;
+        input.onStatus?.("reconnecting");
+        await delay(Math.min(8_000, 500 * 2 ** retryCount));
+      }
+    }
+  }
+
+  void connect();
+  return {
+    close() {
+      closed = true;
+      activeController?.abort();
+    },
+  };
 }
 
 export async function createPrivateAccountIntent(input: PrivateAccountSafeInput) {
@@ -705,6 +832,53 @@ export function recommendedRail(input: {
 
 export function isPrivateModeAvailableStatus(status: GholaClaimStatus | string | undefined): boolean {
   return status === "private_mode_available" || status === "full_anonymity_available";
+}
+
+async function readPrivateAccountSse(
+  body: ReadableStream<Uint8Array>,
+  input: {
+    onMessage: (event: string, data: unknown) => void;
+  },
+) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const boundary = buffer.indexOf("\n\n");
+    if (boundary >= 0) {
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const parsed = parsePrivateAccountSseBlock(block);
+      if (parsed) input.onMessage(parsed.event, parsed.data);
+      continue;
+    }
+    const next = await reader.read();
+    if (next.done) break;
+    buffer += decoder.decode(next.value, { stream: true });
+  }
+  if (buffer.trim()) {
+    const parsed = parsePrivateAccountSseBlock(buffer);
+    if (parsed) input.onMessage(parsed.event, parsed.data);
+  }
+}
+
+function parsePrivateAccountSseBlock(block: string): { event: string; data: unknown } | null {
+  const lines = block.split("\n");
+  const event = lines.find((line) => line.startsWith("event:"))?.slice("event:".length).trim() || "message";
+  const data = lines
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trimStart())
+    .join("\n");
+  if (!data) return null;
+  try {
+    return { event, data: JSON.parse(data) };
+  } catch {
+    return null;
+  }
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function privateAccountFetch(path: string, options: RequestInit) {

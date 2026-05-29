@@ -257,7 +257,15 @@ import {
   verifierConfig,
   type PrivateShieldedVerifierError,
 } from "@/lib/private-account-verifier";
-import { shieldedPoolHealth } from "@/lib/private-account-shielded-pool";
+import {
+  defaultEd25519Verify,
+  verifyWorkerFundingAttestation,
+  type SignedWorkerFundingAttestation,
+} from "@/lib/private-account-shielded-funding";
+import {
+  shieldedPoolConfig,
+  shieldedPoolHealth,
+} from "@/lib/private-account-shielded-pool";
 import {
   AuctionOnChainError,
   prepareAuctionCloseEpochTransaction,
@@ -278,11 +286,128 @@ export const PRIVATE_ACCOUNT_HEADERS = {
   Pragma: "no-cache",
 } as const;
 
+export const PRIVATE_ACCOUNT_SSE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate",
+  Connection: "keep-alive",
+  "Content-Type": "text/event-stream; charset=utf-8",
+  Pragma: "no-cache",
+  "X-Accel-Buffering": "no",
+} as const;
+
 export function json(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
     headers: PRIVATE_ACCOUNT_HEADERS,
   });
+}
+
+function sseEncode(event: string, data: unknown) {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+function localHyperliquidAccountSse(snapshot: ReturnType<typeof localHyperliquidAccountSnapshot>) {
+  const encoder = new TextEncoder();
+  let timer: ReturnType<typeof setInterval> | null = null;
+  return new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(sseEncode("stream_status", {
+        version: 1,
+        stream_status: snapshot.stream_status,
+        updated_at: new Date().toISOString(),
+      })));
+      controller.enqueue(encoder.encode(sseEncode("account_state", snapshot)));
+      timer = setInterval(() => {
+        controller.enqueue(encoder.encode(sseEncode("stream_status", {
+          version: 1,
+          stream_status: snapshot.stream_status,
+          updated_at: new Date().toISOString(),
+        })));
+      }, 30_000);
+    },
+    cancel() {
+      if (timer) clearInterval(timer);
+      timer = null;
+    },
+  }), {
+    status: 200,
+    headers: PRIVATE_ACCOUNT_SSE_HEADERS,
+  });
+}
+
+function safePrivateAccountSseStream(body: ReadableStream<Uint8Array>) {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const reader = body.getReader();
+  let buffer = "";
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      while (true) {
+        const boundary = buffer.indexOf("\n\n");
+        if (boundary >= 0) {
+          const block = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const parsed = parseSseBlock(block);
+          if (!parsed) continue;
+          if (containsForbiddenPublicPrivateAccountField(parsed.data)) {
+            controller.enqueue(encoder.encode(sseEncode("error", {
+              version: 1,
+              stream_status: "worker_unavailable",
+              error: "forbidden_public_field",
+              next_step: "Worker returned unsafe account data.",
+              updated_at: new Date().toISOString(),
+            })));
+            await reader.cancel();
+            controller.close();
+            return;
+          }
+          controller.enqueue(encoder.encode(sseEncode(parsed.event, parsed.data)));
+          return;
+        }
+        const next = await reader.read();
+        if (next.done) {
+          if (buffer.trim()) {
+            const parsed = parseSseBlock(buffer);
+            if (parsed && !containsForbiddenPublicPrivateAccountField(parsed.data)) {
+              controller.enqueue(encoder.encode(sseEncode(parsed.event, parsed.data)));
+            }
+          }
+          controller.close();
+          return;
+        }
+        buffer += decoder.decode(next.value, { stream: true });
+      }
+    },
+    cancel() {
+      return reader.cancel();
+    },
+  });
+}
+
+function parseSseBlock(block: string): { event: string; data: unknown } | null {
+  const event = block
+    .split("\n")
+    .find((line) => line.startsWith("event:"))
+    ?.slice("event:".length)
+    .trim() || "message";
+  const dataLines = block
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trimStart());
+  if (dataLines.length === 0) return null;
+  try {
+    return { event, data: JSON.parse(dataLines.join("\n")) };
+  } catch {
+    return {
+      event: "error",
+      data: {
+        version: 1,
+        stream_status: "worker_unavailable",
+        error: "invalid_stream_event",
+        next_step: "Worker returned malformed account data.",
+        updated_at: new Date().toISOString(),
+      },
+    };
+  }
 }
 
 export async function readJson(req: Request): Promise<unknown> {
@@ -1866,6 +1991,103 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
       trading_enabled: false,
       next_step: "Wait for the private worker to come back online.",
     });
+  }
+}
+
+export async function hyperliquidAccountStreamForOwner(
+  owner: PrivateAccountRequestOwner,
+  req: Request,
+) {
+  const account = await createOrGetStoredPrivateAccount(owner);
+  const [vault, allocation, runtime] = await Promise.all([
+    getHyperliquidExecutionVaultByAccount(account.account_commitment),
+    getHyperliquidManagedAllocationByAccount(account.account_commitment),
+    getPrivateAgentRuntimeStatus().catch(() => null),
+  ]);
+  const hasVault = vault?.status === "sealed";
+  const hasManaged = allocation?.status === "allocated";
+  const accountSource = hasManaged ? "ghola_managed" as const : hasVault ? "sealed_byo" as const : "none" as const;
+  const coin = hyperliquidStreamCoin(new URL(req.url).searchParams.get("coin"));
+
+  if (!hasVault && !hasManaged) {
+    return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
+      status: "venue_access_required",
+      account_source: "none",
+      trading_enabled: false,
+      next_step: "Connect a Hyperliquid API wallet.",
+      stream_status: "venue_access_required",
+    }));
+  }
+  if (localHyperliquidPilotEnabled()) {
+    return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
+      status: "ready_to_trade",
+      account_source: accountSource,
+      trading_enabled: true,
+      next_step: "Preview trade.",
+      stream_status: "live",
+    }));
+  }
+
+  const cfg = hyperliquidWorkerConfig();
+  const workerReady = Boolean(runtime?.selected_provider);
+  if (!cfg.url || !workerReady) {
+    return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
+      status: "worker_unavailable",
+      account_source: accountSource,
+      trading_enabled: false,
+      next_step: "Wait for the private worker to come back online.",
+      stream_status: "worker_unavailable",
+    }));
+  }
+
+  const body = hasManaged && allocation
+    ? {
+        version: 1,
+        execution_mode: "managed_testnet",
+        account_commitment: account.account_commitment,
+        managed_allocation_commitment: allocation.allocation_commitment,
+        coin,
+      }
+    : {
+        version: 1,
+        execution_mode: "byo_api_key",
+        account_commitment: account.account_commitment,
+        vault_commitment: vault?.vault_commitment,
+        encrypted_execution_vault: vault?.vault.encrypted_execution_vault,
+        coin,
+      };
+  try {
+    const res = await fetch(new URL("/hyperliquid/account-stream", cfg.url), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        ...(cfg.token ? { authorization: `Bearer ${cfg.token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok || !res.body) {
+      return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
+        status: "worker_unavailable",
+        account_source: accountSource,
+        trading_enabled: false,
+        next_step: "Wait for the private worker to come back online.",
+        stream_status: "worker_unavailable",
+      }));
+    }
+    return new Response(safePrivateAccountSseStream(res.body), {
+      status: 200,
+      headers: PRIVATE_ACCOUNT_SSE_HEADERS,
+    });
+  } catch {
+    return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
+      status: "worker_unavailable",
+      account_source: accountSource,
+      trading_enabled: false,
+      next_step: "Wait for the private worker to come back online.",
+      stream_status: "worker_unavailable",
+    }));
   }
 }
 
@@ -4808,7 +5030,9 @@ function localHyperliquidAccountSnapshot(input: {
   account_source: "sealed_byo" | "ghola_managed" | "none";
   trading_enabled: boolean;
   next_step: string;
+  stream_status?: "connecting" | "live" | "reconnecting" | "backfilling" | "snapshot" | "worker_unavailable" | "venue_access_required" | "needs_funds";
 }) {
+  const now = new Date().toISOString();
   return {
     version: 1,
     platform_class: "hyperliquid_style_market" as const,
@@ -4819,7 +5043,18 @@ function localHyperliquidAccountSnapshot(input: {
     equity_bucket: input.status === "ready_to_trade" ? "ready" as const : "unknown" as const,
     position_count: 0,
     open_order_count: 0,
-    last_checked_at: new Date().toISOString(),
+    stream_status: input.stream_status || "snapshot",
+    positions: [],
+    open_orders: [],
+    recent_fills: [],
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      hyperliquid_sees: "execution_account_and_order_activity",
+      public_chain_sees: "no_direct_main_wallet_trade_settlement",
+    },
+    last_checked_at: now,
+    last_event_at: now,
     next_step: input.next_step,
   };
 }
@@ -4856,6 +5091,11 @@ function hyperliquidWorkerConfig() {
     url: process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL?.trim() || "",
     token: process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN?.trim() || "",
   };
+}
+
+function hyperliquidStreamCoin(value: unknown) {
+  const coin = stringValue(value).toUpperCase();
+  return coin === "ETH" || coin === "SOL" || coin === "HYPE" ? coin : "BTC";
 }
 
 function localHyperliquidPilotEnabled() {

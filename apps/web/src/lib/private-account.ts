@@ -62,6 +62,14 @@ export type GholaPrivateAccountActionClass =
   | "maintain_allocation"
   | "withdraw";
 
+export const GHOLA_FUNDING_AMOUNT_BUCKETS = ["5", "10", "25", "50", "100"] as const;
+
+export type GholaFundingAmountBucket = (typeof GHOLA_FUNDING_AMOUNT_BUCKETS)[number];
+
+export function isFundingAmountBucket(value: string): value is GholaFundingAmountBucket {
+  return (GHOLA_FUNDING_AMOUNT_BUCKETS as readonly string[]).includes(value);
+}
+
 export type GholaLeakageStatus =
   | "hidden_by_private_account"
   | "hidden_by_vault_netting"

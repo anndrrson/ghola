@@ -14,6 +14,8 @@
     "smoke:auction-local": "node scripts/ghola-auction-local-e2e.mjs",
     "smoke:auction-devnet": "GHOLA_AUCTION_SMOKE_CLUSTER=devnet node scripts/ghola-auction-local-e2e.mjs",
     "verify:prod:trading": "node scripts/verify-prod-trading.mjs",
+    "verify:prod:hyperliquid": "node scripts/verify-prod-hyperliquid.mjs",
+    "verify:prod:hyperliquid:live": "GHOLA_VERIFY_LIVE_SUBMIT=true node scripts/verify-prod-hyperliquid.mjs",
     "guard:auth-bundle": "node scripts/check-auth-client-bundle.mjs"
   },
   "overrides": {

@@ -15,6 +15,7 @@ local testing.
 - `GET /.well-known/private-agent-recipient`
 - `POST /private-agent/sessions`
 - `POST /hyperliquid/sessions`
+- `POST /hyperliquid/account-stream`
 - `POST /hyperliquid/orders`
 - `POST /hyperliquid/reconcile`
 - `POST /venues/coinbase/sessions`

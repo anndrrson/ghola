@@ -167,6 +167,48 @@ PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD=25
 PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS=50
 ```
 
+Set the matching web env on `ghola.xyz`:
+
+```bash
+GHOLA_V6_HYPERLIQUID_PILOT_ENABLED=true
+GHOLA_HYPERLIQUID_LIVE_MODE=tiny_fill
+GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL=https://<phala-agent-host>
+GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN=<same-secret-as-PRIVATE_AGENT_EXECUTION_TOKEN>
+GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS=ready
+```
+
+Production Hyperliquid must be verified in two steps. The no-submit verifier
+stores a sealed BYO API wallet vault and proves that production routes, auth,
+worker readiness, account snapshot, and account SSE work without sending an
+order:
+
+```bash
+cd apps/web
+GHOLA_VERIFY_EMAIL=<test-user-email> \
+GHOLA_VERIFY_PASSWORD=<test-user-password> \
+GHOLA_VERIFY_HYPERLIQUID_ACCOUNT_ADDRESS=0x... \
+GHOLA_VERIFY_HYPERLIQUID_API_WALLET_PRIVATE_KEY=0x... \
+GHOLA_VERIFY_STORE_HYPERLIQUID_VAULT_CONFIRM=I_UNDERSTAND_THIS_STORES_A_SEALED_VAULT \
+npm run verify:prod:hyperliquid
+```
+
+Only after no-submit passes, run a capped live tiny-fill canary:
+
+```bash
+cd apps/web
+GHOLA_VERIFY_EMAIL=<test-user-email> \
+GHOLA_VERIFY_PASSWORD=<test-user-password> \
+GHOLA_VERIFY_HYPERLIQUID_ACCOUNT_ADDRESS=0x... \
+GHOLA_VERIFY_HYPERLIQUID_API_WALLET_PRIVATE_KEY=0x... \
+GHOLA_VERIFY_STORE_HYPERLIQUID_VAULT_CONFIRM=I_UNDERSTAND_THIS_STORES_A_SEALED_VAULT \
+GHOLA_VERIFY_LIVE_SUBMIT_CONFIRM=I_UNDERSTAND_THIS_BROADCASTS \
+npm run verify:prod:hyperliquid:live
+```
+
+If the verifier reports `routes_ready_credentials_required`, routes are live
+but the production trading claim is still unproven because no real Hyperliquid
+API wallet was supplied.
+
 Do not set `GHOLA_PRIVATE_AGENT_ATTESTED_READY=true` until the verifier has
 checked the CVM quote, image digest, measurement, and X25519 key binding. The
 status API treats a missing recipient key as not ready even when the endpoint

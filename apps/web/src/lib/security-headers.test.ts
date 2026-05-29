@@ -170,4 +170,14 @@ describe("CSP — enforcing (allowlist loaded)", () => {
     expect(scriptSrc).toContain("'self'");
     expect(scriptSrc).toContain("'wasm-unsafe-eval'");
   });
+
+  it("allows pinned Hyperliquid public websocket endpoints", async () => {
+    const { SECURITY_HEADERS } = await importConfig("with-allowlist-hyperliquid-ws");
+    const m = headerMap(SECURITY_HEADERS);
+    const csp = m.get("content-security-policy") ?? "";
+    const directives = csp.split(";").map((d) => d.trim());
+    const connectSrc = directives.find((d) => d.startsWith("connect-src "));
+    expect(connectSrc).toContain("wss://api.hyperliquid.xyz");
+    expect(connectSrc).toContain("wss://api.hyperliquid-testnet.xyz");
+  });
 });

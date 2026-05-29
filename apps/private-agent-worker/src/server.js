@@ -9,6 +9,7 @@ import {
   executeHyperliquidOrder,
   executeSolanaPerpsOrder,
   readHyperliquidSnapshot,
+  streamHyperliquidAccountState,
   storeCoinbaseSession,
   storeHyperliquidSession,
   storePrivateAgentSession,
@@ -83,6 +84,20 @@ function json(res, status, body) {
     "content-type": "application/json",
   });
   res.end(encoded);
+}
+
+function sseHeaders(res) {
+  res.writeHead(200, {
+    "cache-control": "no-store, no-cache, must-revalidate",
+    "connection": "keep-alive",
+    "content-type": "text/event-stream; charset=utf-8",
+    "x-accel-buffering": "no",
+  });
+}
+
+function writeSse(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
 function env(name, fallback = "") {
@@ -1196,6 +1211,63 @@ export function createPrivateAgentWorkerServer(options = {}) {
         }
         const snapshot = await readHyperliquidSnapshot({ body, recipient, state });
         return json(res, 200, snapshot);
+      }
+
+      if (req.method === "POST" && url.pathname === "/hyperliquid/account-stream") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateHyperliquidAccountSnapshotRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid hyperliquid account stream request",
+            details: errors,
+            error_code: hyperliquidValidationErrorCode(errors),
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        sseHeaders(res);
+        let stop = null;
+        let closed = false;
+        req.on("close", () => {
+          closed = true;
+          if (stop) stop();
+        });
+        try {
+          stop = await streamHyperliquidAccountState({
+            body,
+            recipient,
+            state,
+            onEvent: ({ event, data }) => {
+              if (!closed) writeSse(res, event, data);
+            },
+          });
+          if (closed && stop) stop();
+        } catch (error) {
+          if (!closed) {
+            writeSse(res, "error", {
+              version: 1,
+              stream_status: "worker_unavailable",
+              error: error.code === "venue_access_required" ? "venue_access_required" : "stream_unavailable",
+              next_step: error.code === "venue_access_required"
+                ? "Connect a Hyperliquid API wallet."
+                : "Wait for the private worker to reconnect.",
+              updated_at: new Date().toISOString(),
+            });
+            res.end();
+          }
+        }
+        return;
       }
 
       if (req.method === "POST" && url.pathname === "/hyperliquid/orders") {

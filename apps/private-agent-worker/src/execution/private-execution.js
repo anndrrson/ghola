@@ -12,6 +12,7 @@ import {
   submitCoinbaseExecution,
 } from "../venues/coinbase.js";
 import {
+  createHyperliquidAccountStateStream,
   hyperliquidManagedAccountRefs,
   hyperliquidCredentialFromVault,
   loadManagedHyperliquidCredential,
@@ -282,6 +283,24 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
 }
 
 export async function readHyperliquidSnapshot({ body, recipient, state }) {
+  const { executionMode, credential } = await hyperliquidCredentialForBody({ body, recipient, state });
+  return readHyperliquidAccountSnapshot({
+    credential,
+    accountSource: executionMode === "managed_testnet" ? "ghola_managed" : "sealed_byo",
+  });
+}
+
+export async function streamHyperliquidAccountState({ body, recipient, state, onEvent }) {
+  const { executionMode, credential } = await hyperliquidCredentialForBody({ body, recipient, state });
+  return createHyperliquidAccountStateStream({
+    credential,
+    accountSource: executionMode === "managed_testnet" ? "ghola_managed" : "sealed_byo",
+    coin: typeof body.coin === "string" ? body.coin.toUpperCase() : "BTC",
+    onEvent,
+  });
+}
+
+async function hyperliquidCredentialForBody({ body, recipient, state }) {
   const executionMode = hyperliquidExecutionMode(body);
   let credential;
   if (executionMode === "managed_testnet") {
@@ -298,10 +317,7 @@ export async function readHyperliquidSnapshot({ body, recipient, state }) {
     });
     credential = hyperliquidCredentialFromVault(openedVault.json);
   }
-  return readHyperliquidAccountSnapshot({
-    credential,
-    accountSource: executionMode === "managed_testnet" ? "ghola_managed" : "sealed_byo",
-  });
+  return { executionMode, credential };
 }
 
 export async function executeCoinbaseOrder({ body, recipient, state }) {

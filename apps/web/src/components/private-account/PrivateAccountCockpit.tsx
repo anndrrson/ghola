@@ -23,6 +23,7 @@ import {
   getHyperliquidExecutionVaultStatus,
   getHyperliquidMarketSnapshot,
   getVenueExecutionVaultStatus,
+  openHyperliquidAccountStream,
   getPrivateAccountPlatformReadiness,
   getPrivateAccountReceiptDetail,
   getPrivateExecutionAccountStatus,
@@ -39,6 +40,7 @@ import {
   settlePrivateAccountAuction,
   verifyPrivateAccountConnectorNoSubmit,
   type HyperliquidAccountSnapshot,
+  type HyperliquidAccountStreamStatus,
   type HyperliquidMarketSnapshot,
   type PrivateAccountSafeInput,
 } from "@/lib/private-account-client";
@@ -65,6 +67,18 @@ import {
   validatePrivateExecutionOrderDraft,
   type PrivateExecutionOrderDraft,
 } from "@/lib/private-execution-instruction-seal";
+import {
+  hyperliquidCandlePriceRange,
+  hyperliquidCumulativeDepth,
+  hyperliquidDepthMax,
+  nearestHyperliquidCandleIndex,
+  type HyperliquidChartMode,
+} from "@/lib/hyperliquid-chart-helpers";
+import {
+  createHyperliquidLiveMarketStream,
+  type HyperliquidLiveMarketStatus,
+  type HyperliquidWebSocketConstructor,
+} from "@/lib/hyperliquid-live-market";
 import type { GholaPrivacyPreview } from "@/lib/private-account";
 import type { PrivateAccountReadinessResponse } from "@/lib/private-account-readiness";
 
@@ -540,7 +554,9 @@ export function PrivateAccountCockpit() {
   const [hyperliquidVault, setHyperliquidVault] = useState<HyperliquidVaultState | null>(null);
   const [hyperliquidAgent, setHyperliquidAgent] = useState<HyperliquidAgentState | null>(null);
   const [hyperliquidMarket, setHyperliquidMarket] = useState<HyperliquidMarketSnapshot | null>(null);
+  const [hyperliquidMarketStatus, setHyperliquidMarketStatus] = useState<HyperliquidLiveMarketStatus>("connecting");
   const [hyperliquidAccount, setHyperliquidAccount] = useState<HyperliquidAccountSnapshot | null>(null);
+  const [hyperliquidAccountStreamStatus, setHyperliquidAccountStreamStatus] = useState<HyperliquidAccountStreamStatus>("connecting");
   const [hyperliquidInterval, setHyperliquidInterval] = useState<"1m" | "5m" | "15m" | "1h">("5m");
   const [hyperliquidSetupNotice, setHyperliquidSetupNotice] = useState<SetupNoticeState | null>(null);
   const [coinbaseVault, setCoinbaseVault] = useState<VenueVaultState | null>(null);
@@ -671,53 +687,49 @@ export function PrivateAccountCockpit() {
 
   useEffect(() => {
     if (!auth.authenticated || input.platform_class !== "hyperliquid_style_market") return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    async function load() {
-      try {
-        const snapshot = await getHyperliquidMarketSnapshot({
-          network: liveHyperliquidFlow ? "mainnet" : "testnet",
-          coin: hyperliquidMarketCoin,
-          interval: hyperliquidInterval,
-        });
-        if (!cancelled) setHyperliquidMarket(snapshot);
-      } catch {
-        if (!cancelled) {
-          setHyperliquidMarket((current) => current ? { ...current, stale: true } : null);
-        }
-      } finally {
-        if (!cancelled) {
-          timer = setTimeout(load, document.hidden ? 15_000 : 4_000);
-        }
-      }
-    }
-    void load();
+    const network = liveHyperliquidFlow ? "mainnet" : "testnet";
+    setHyperliquidMarket(null);
+    setHyperliquidMarketStatus("connecting");
+    const stream = createHyperliquidLiveMarketStream({
+      network,
+      coin: hyperliquidMarketCoin,
+      interval: hyperliquidInterval,
+      webSocketCtor: typeof window !== "undefined" && "WebSocket" in window
+        ? window.WebSocket as unknown as HyperliquidWebSocketConstructor
+        : null,
+      isDocumentHidden: () => document.hidden,
+      getFallbackSnapshot: () => getHyperliquidMarketSnapshot({
+        network,
+        coin: hyperliquidMarketCoin,
+        interval: hyperliquidInterval,
+      }),
+      onSnapshot: setHyperliquidMarket,
+      onStatus: setHyperliquidMarketStatus,
+    });
+    stream.start();
     return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
+      stream.stop();
     };
   }, [auth.authenticated, hyperliquidInterval, hyperliquidMarketCoin, input.platform_class, liveHyperliquidFlow]);
 
   useEffect(() => {
     if (!auth.authenticated || input.platform_class !== "hyperliquid_style_market") return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    async function load() {
-      try {
-        const snapshot = await getHyperliquidAccountSnapshot();
-        if (!cancelled) setHyperliquidAccount(snapshot);
-      } catch {
-        if (!cancelled) setHyperliquidAccount(null);
-      } finally {
-        if (!cancelled) timer = setTimeout(load, 15_000);
-      }
-    }
-    void load();
+    setHyperliquidAccountStreamStatus("connecting");
+    const stream = openHyperliquidAccountStream({
+      coin: hyperliquidMarketCoin,
+      onState: setHyperliquidAccount,
+      onStatus: setHyperliquidAccountStreamStatus,
+      onError: () => {
+        setHyperliquidAccountStreamStatus("worker_unavailable");
+        setHyperliquidAccount((current) => current
+          ? { ...current, stream_status: "worker_unavailable", trading_enabled: false }
+          : null);
+      },
+    });
     return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
+      stream.close();
     };
-  }, [auth.authenticated, hyperliquidAgent?.status, hyperliquidVault?.ready, input.platform_class]);
+  }, [auth.authenticated, hyperliquidAgent?.status, hyperliquidMarketCoin, hyperliquidVault?.ready, input.platform_class]);
 
   useEffect(() => {
     if (!auth.authenticated) {
@@ -728,7 +740,9 @@ export function PrivateAccountCockpit() {
       setHyperliquidVault(null);
       setHyperliquidAgent(null);
       setHyperliquidMarket(null);
+      setHyperliquidMarketStatus("connecting");
       setHyperliquidAccount(null);
+      setHyperliquidAccountStreamStatus("connecting");
       setHyperliquidSetupNotice(null);
       setCoinbaseVault(null);
       setPhoenixVault(null);
@@ -1301,6 +1315,7 @@ export function PrivateAccountCockpit() {
   const waiting = claim === "wait_for_anonymity";
   const blocked = claim === "blocked_leaky_path";
   const activeQueueId = queue.find((item) => item.status === "queued" || item.status === "ready")?.queue_id;
+  const wideHyperliquidPanel = tradeFlow && input.platform_class === "hyperliquid_style_market";
   const authRedirect = liveHyperliquidFlow
     ? "/app/account?flow=hyperliquid-live"
     : tradeFlow || livePhoenixFlow
@@ -1457,15 +1472,23 @@ export function PrivateAccountCockpit() {
         }}
       />
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(360px,0.9fr)_minmax(0,1.1fr)]">
+      <div
+        className={
+          wideHyperliquidPanel
+            ? "grid gap-4 xl:grid-cols-[minmax(320px,0.72fr)_minmax(0,1.28fr)]"
+            : "grid gap-4 xl:grid-cols-[minmax(360px,0.9fr)_minmax(0,1.1fr)]"
+        }
+      >
         <section className="border border-[#1e2a3a] bg-[#0f1117] p-4 sm:p-5">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-2">
               <LockKeyhole className="h-4 w-4 text-[#a8d8ff]" />
               <div>
-                <h2 className="text-lg font-medium">What do you want to do?</h2>
+                <h2 className="text-lg font-medium">{tradeFlow ? "Trade setup" : "What do you want to do?"}</h2>
                 <p className="mt-1 text-sm text-[#8b95a8]">
-                  Pick a common action or type where you want to go.
+                  {tradeFlow
+                    ? "Choose a venue, connect your account, then preview the trade."
+                    : "Pick a common action or type where you want to go."}
                 </p>
               </div>
             </div>
@@ -1568,11 +1591,15 @@ export function PrivateAccountCockpit() {
               </>
             )}
             {input.platform_class === "hyperliquid_style_market" ? (
+              wideHyperliquidPanel ? null : (
               <HyperliquidTradingPanel
+                layout="compact"
                 market={hyperliquidMarketCoin}
                 interval={hyperliquidInterval}
                 snapshot={hyperliquidMarket}
+                marketStatus={hyperliquidMarketStatus}
                 accountSnapshot={hyperliquidAccount}
+                accountStreamStatus={hyperliquidAccountStreamStatus}
                 order={orderDraft}
                 previewCommitment={preview?.preview_commitment || null}
                 onMarketChange={selectHyperliquidMarket}
@@ -1583,6 +1610,7 @@ export function PrivateAccountCockpit() {
                   setOrderDraft(nextOrder);
                 }}
               />
+              )
             ) : (
               <PrivateOrderTicket
                 platformClass={input.platform_class}
@@ -1636,17 +1664,41 @@ export function PrivateAccountCockpit() {
             <StatusLine label="Wallet" value="hidden first" tone="good" />
           </div>
 
-          <button
-            onClick={runPreview}
-            disabled={working}
-            className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 bg-[#eef1f8] px-4 text-sm font-medium text-[#08090d] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Play className="h-4 w-4" />
-            {working ? "Checking" : preview ? "Check again" : tradeFlow ? "Preview trade" : "Check privacy"}
-          </button>
+          {!wideHyperliquidPanel && (
+            <button
+              onClick={runPreview}
+              disabled={working}
+              className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 bg-[#eef1f8] px-4 text-sm font-medium text-[#08090d] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Play className="h-4 w-4" />
+              {working ? "Checking" : preview ? "Check again" : tradeFlow ? "Preview trade" : "Check privacy"}
+            </button>
+          )}
         </section>
 
         <section className="space-y-4">
+          {wideHyperliquidPanel && (
+            <HyperliquidTradingPanel
+              layout="full"
+              market={hyperliquidMarketCoin}
+              interval={hyperliquidInterval}
+              snapshot={hyperliquidMarket}
+              marketStatus={hyperliquidMarketStatus}
+              accountSnapshot={hyperliquidAccount}
+              accountStreamStatus={hyperliquidAccountStreamStatus}
+              order={orderDraft}
+              previewCommitment={preview?.preview_commitment || null}
+              working={working}
+              onMarketChange={selectHyperliquidMarket}
+              onIntervalChange={setHyperliquidInterval}
+              onOrderChange={(nextOrder) => {
+                setPreview(null);
+                setExecution(null);
+                setOrderDraft(nextOrder);
+              }}
+              onPreview={runPreview}
+            />
+          )}
           <div className="border border-[#1e2a3a] bg-[#0f1117] p-4 sm:p-5">
             <div className="flex items-center gap-2">
               <ShieldCheck className="h-4 w-4 text-[#a8d8ff]" />
@@ -3281,82 +3333,162 @@ function PrivateOrderTicket({
 }
 
 function HyperliquidTradingPanel({
+  layout = "compact",
   market,
   interval,
   snapshot,
+  marketStatus,
   accountSnapshot,
+  accountStreamStatus,
   order,
   previewCommitment,
+  working = false,
   onMarketChange,
   onIntervalChange,
   onOrderChange,
+  onPreview,
 }: {
+  layout?: "compact" | "full";
   market: "BTC" | "ETH" | "SOL" | "HYPE";
   interval: "1m" | "5m" | "15m" | "1h";
   snapshot: HyperliquidMarketSnapshot | null;
+  marketStatus: HyperliquidLiveMarketStatus;
   accountSnapshot: HyperliquidAccountSnapshot | null;
+  accountStreamStatus: HyperliquidAccountStreamStatus;
   order: PrivateExecutionOrderDraft;
   previewCommitment: string | null;
+  working?: boolean;
   onMarketChange: (market: "BTC" | "ETH" | "SOL" | "HYPE") => void;
   onIntervalChange: (interval: "1m" | "5m" | "15m" | "1h") => void;
   onOrderChange: (order: PrivateExecutionOrderDraft) => void;
+  onPreview?: () => void;
 }) {
   const normalized = normalizeOrderForPlatform(order, "hyperliquid_style_market");
   const errors = validatePrivateExecutionOrderDraft(normalized);
   const mid = snapshot?.mid ? formatPrice(snapshot.mid) : "Loading";
   const status = accountSnapshot?.status || "venue_access_required";
+  const stats = hyperliquidMarketStats(snapshot);
+  const marketConnection = hyperliquidMarketConnectionCopy(marketStatus, snapshot);
+  const accountConnection = accountSnapshot?.stream_status || accountStreamStatus;
+  const accountLive = accountConnection === "live";
+  const fullLayout = layout === "full";
+  const [chartMode, setChartMode] = useState<HyperliquidChartMode>("candles");
+  const hasConnectedAccount = Boolean(
+    accountSnapshot && accountSnapshot.account_source !== "none" && status !== "venue_access_required",
+  );
+  const canPreviewTrade = status === "ready_to_trade" && accountLive;
 
   function update(patch: Partial<PrivateExecutionOrderDraft>) {
     onOrderChange(normalizeOrderForPlatform({ ...normalized, ...patch }, "hyperliquid_style_market"));
   }
 
   return (
-    <div className="border border-[#1e2a3a] bg-[#08090d] p-3">
+    <div className={fullLayout ? "border border-[#1e2a3a] bg-[#08090d] p-4 sm:p-5" : "border border-[#1e2a3a] bg-[#08090d] p-3"}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-center gap-2">
           <Activity className="h-4 w-4 text-[#a8d8ff]" />
           <div>
-            <h3 className="text-sm font-medium text-[#eef1f8]">Hyperliquid</h3>
-            <p className="mt-1 text-xs text-[#8b95a8]">Chart, orderbook, preview, trade.</p>
+            <h3 className={fullLayout ? "text-lg font-medium text-[#eef1f8]" : "text-sm font-medium text-[#eef1f8]"}>
+              Hyperliquid
+            </h3>
+            <p className="mt-1 text-xs text-[#8b95a8]">
+              {fullLayout ? "Live market view. Preview before anything is sent." : "Chart, orderbook, preview, trade."}
+            </p>
           </div>
         </div>
-        <span className={snapshot?.stale ? "text-xs text-amber-200" : "text-xs text-emerald-200"}>
-          {snapshot?.stale ? "market stale" : "live market"}
-        </span>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {fullLayout && <span className="text-xs text-[#8b95a8]">no key needed</span>}
+          <span className={marketConnection.tone === "good" ? "text-xs text-emerald-200" : marketConnection.tone === "bad" ? "text-xs text-red-200" : "text-xs text-amber-200"}>
+            {marketConnection.label}
+          </span>
+        </div>
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <SegmentedControl
-          label="Market"
-          value={market}
-          options={HYPERLIQUID_MARKETS}
-          onChange={(value) => onMarketChange(marketCoinFromOrder(value))}
-        />
-        <SegmentedControl
-          label="Chart"
-          value={interval}
-          options={HYPERLIQUID_INTERVALS}
-          onChange={(value) => onIntervalChange(value === "1m" || value === "15m" || value === "1h" ? value : "5m")}
-        />
-      </div>
+      {fullLayout ? (
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
+          <TerminalChips
+            label="Market"
+            value={market}
+            options={HYPERLIQUID_MARKETS}
+            onChange={(value) => onMarketChange(marketCoinFromOrder(value))}
+          />
+          <TerminalChips
+            label="Interval"
+            value={interval}
+            options={HYPERLIQUID_INTERVALS}
+            align="right"
+            onChange={(value) => onIntervalChange(value === "1m" || value === "15m" || value === "1h" ? value : "5m")}
+          />
+        </div>
+      ) : (
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <SegmentedControl
+            label="Market"
+            value={market}
+            options={HYPERLIQUID_MARKETS}
+            onChange={(value) => onMarketChange(marketCoinFromOrder(value))}
+          />
+          <SegmentedControl
+            label="Chart"
+            value={interval}
+            options={HYPERLIQUID_INTERVALS}
+            onChange={(value) => onIntervalChange(value === "1m" || value === "15m" || value === "1h" ? value : "5m")}
+          />
+        </div>
+      )}
 
-      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_190px]">
-        <div className="min-h-64 border border-[#162337] bg-[#05070b] p-3">
+      <div
+        className={
+          fullLayout
+            ? "mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_260px]"
+            : "mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]"
+        }
+      >
+        <div className="border border-[#162337] bg-[#05070b] p-3">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div>
-              <p className="text-xs text-[#6f7d9a]">{market} mid</p>
-              <p className="text-2xl font-medium text-[#eef1f8]">{mid}</p>
+              <p className="text-xs text-[#6f7d9a]">{fullLayout ? `${market}-PERP` : `${market} mid`}</p>
+              <p className={fullLayout ? "text-4xl font-medium text-[#eef1f8]" : "text-2xl font-medium text-[#eef1f8]"}>
+                {mid}
+              </p>
             </div>
             <div className="text-right text-xs text-[#8b95a8]">
-              <div>Bid {snapshot?.best_bid ? formatPrice(snapshot.best_bid) : "-"}</div>
-              <div>Ask {snapshot?.best_ask ? formatPrice(snapshot.best_ask) : "-"}</div>
+              <div>Bid {snapshot?.best_bid ? formatBookPrice(snapshot.best_bid) : "-"}</div>
+              <div>Ask {snapshot?.best_ask ? formatBookPrice(snapshot.best_ask) : "-"}</div>
               <div>Spread {snapshot?.spread_bps == null ? "-" : `${snapshot.spread_bps} bps`}</div>
+              {fullLayout && <div>Mark {snapshot?.mark_price ? formatPrice(snapshot.mark_price) : "-"}</div>}
+              {fullLayout && <div>Oracle {snapshot?.oracle_price ? formatPrice(snapshot.oracle_price) : "-"}</div>}
             </div>
           </div>
-          <HyperliquidPriceChart snapshot={snapshot} />
+          <div className={fullLayout ? "mb-3 grid gap-2 sm:grid-cols-3 2xl:grid-cols-6" : "mb-3 grid gap-2 sm:grid-cols-3"}>
+            <MarketStat label={fullLayout ? "24h" : "Move"} value={fullLayout ? stats.dayChangeLabel : stats.changeLabel} tone={fullLayout ? stats.dayChangeTone : stats.changeTone} />
+            <MarketStat label="High" value={stats.highLabel} />
+            <MarketStat label="Low" value={stats.lowLabel} />
+            {fullLayout && <MarketStat label="Volume" value={stats.volumeLabel} />}
+            {fullLayout && <MarketStat label="Open interest" value={stats.openInterestLabel} />}
+            {fullLayout && <MarketStat label="Funding" value={stats.fundingLabel} tone={stats.fundingTone} />}
+          </div>
+          <HyperliquidAdvancedChart
+            mode={fullLayout ? chartMode : "line"}
+            onModeChange={setChartMode}
+            snapshot={snapshot}
+            size={fullLayout ? "large" : "compact"}
+          />
         </div>
 
         <div className="grid gap-3">
+          {fullLayout && (
+            <HyperliquidOrderTicket
+              order={normalized}
+              errors={errors}
+              previewCommitment={previewCommitment}
+              working={working}
+              accountReady={canPreviewTrade}
+              disabledReason={hyperliquidAccountStreamLabel(accountConnection)}
+              onUpdate={update}
+              onPreview={onPreview}
+            />
+          )}
           <div className="border border-[#162337] bg-[#05070b] p-3">
             <div className="mb-2 flex items-center justify-between text-xs text-[#6f7d9a]">
               <span>Orderbook</span>
@@ -3366,27 +3498,60 @@ function HyperliquidTradingPanel({
             <div className="my-2 border-t border-[#162337]" />
             <OrderbookRows side="bid" levels={snapshot?.bids || []} />
           </div>
+          {fullLayout && <RecentTradeRows trades={snapshot?.recent_trades || []} />}
           <div className="border border-[#162337] bg-[#05070b] p-3">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <span className="text-xs text-[#6f7d9a]">Next step</span>
+              <span className={status === "ready_to_trade" ? "text-xs text-emerald-200" : "text-xs text-amber-200"}>
+                {hyperliquidAccountStatusLabel(status)}
+              </span>
+            </div>
             <StatusLine
               label="Account"
-              value={hyperliquidAccountStatusLabel(status)}
+              value={hasConnectedAccount ? hyperliquidAccountStatusLabel(status) : "not connected"}
               tone={status === "ready_to_trade" ? "good" : "warn"}
             />
             <StatusLine
               label="Equity"
-              value={accountSnapshot?.equity_bucket || "unknown"}
+              value={hasConnectedAccount ? accountSnapshot?.equity_bucket || "unknown" : "-"}
               tone={accountSnapshot?.equity_bucket === "ready" ? "good" : "warn"}
             />
             <StatusLine
-              label="Open orders"
-              value={String(accountSnapshot?.open_order_count ?? 0)}
+              label="Positions"
+              value={hasConnectedAccount ? String(accountSnapshot?.position_count ?? 0) : "-"}
               tone="good"
             />
+            <StatusLine
+              label="Open orders"
+              value={hasConnectedAccount ? String(accountSnapshot?.open_order_count ?? 0) : "-"}
+              tone="good"
+            />
+            <StatusLine
+              label="Account stream"
+              value={hyperliquidAccountStreamLabel(accountConnection)}
+              tone={accountLive ? "good" : "warn"}
+            />
+            <div className="mt-3 grid gap-2 border-t border-[#162337] pt-3">
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+                <StatusLine label="Main wallet" value="hidden" tone="good" />
+                <StatusLine label="Ghola" value="sealed runtime" tone="good" />
+                <StatusLine label="Hyperliquid sees" value="execution account + order" tone="warn" />
+                <StatusLine label="Public chain" value="no direct trade settlement" tone="good" />
+              </div>
+              {fullLayout && <HyperliquidAccountRows accountSnapshot={accountSnapshot} />}
+            </div>
+            <p className="mt-3 border-t border-[#162337] pt-3 text-xs leading-5 text-[#8b95a8]">
+              {status === "ready_to_trade"
+                ? accountLive
+                  ? "Run the privacy check, then place the capped IOC order."
+                  : "Wait for the sealed account stream before previewing."
+                : "Market data is public. Connect an API wallet to show your account and trade."}
+            </p>
           </div>
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+      {!fullLayout && <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <SegmentedControl
           label="Side"
           value={normalized.side}
@@ -3414,65 +3579,535 @@ function HyperliquidTradingPanel({
             </span>
           </div>
         </div>
-      </div>
+      </div>}
 
-      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+      {!fullLayout && <div className="mt-4 grid gap-2 sm:grid-cols-3">
         <StatusLine label="Main wallet" value="not exposed" tone="good" />
         <StatusLine label="Venue sees" value="order" tone="warn" />
         <StatusLine label="Public chain" value="not used" tone="good" />
+      </div>}
+      {!fullLayout && errors[0] && <p className="mt-3 text-xs text-amber-200">{errors[0]}</p>}
+    </div>
+  );
+}
+
+function TerminalChips({
+  label,
+  value,
+  options,
+  align = "left",
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: ReadonlyArray<readonly [string, string]>;
+  align?: "left" | "right";
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className={align === "right" ? "grid gap-1.5 lg:justify-items-end" : "grid gap-1.5"}>
+      <span className="text-xs text-[#8b95a8]">{label}</span>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map(([optionValue, optionLabel]) => {
+          const selected = optionValue === value;
+          return (
+            <button
+              key={optionValue}
+              type="button"
+              onClick={() => onChange(optionValue)}
+              className={
+                selected
+                  ? "h-8 min-w-14 border border-[#a8d8ff] bg-[#a8d8ff] px-3 text-sm font-medium text-[#08090d]"
+                  : "h-8 min-w-14 border border-[#1e2a3a] bg-[#05070b] px-3 text-sm text-[#aab5c8] hover:border-[#3da8ff]/50"
+              }
+            >
+              {optionLabel}
+            </button>
+          );
+        })}
       </div>
-      {errors[0] && <p className="mt-3 text-xs text-amber-200">{errors[0]}</p>}
-      {accountSnapshot?.next_step && status !== "ready_to_trade" && (
-        <p className="mt-3 text-xs leading-5 text-[#8b95a8]">{accountSnapshot.next_step}</p>
+    </div>
+  );
+}
+
+function HyperliquidAccountRows({ accountSnapshot }: { accountSnapshot: HyperliquidAccountSnapshot | null }) {
+  const positions = accountSnapshot?.positions || [];
+  const openOrders = accountSnapshot?.open_orders || [];
+  const fills = accountSnapshot?.recent_fills || [];
+  return (
+    <div className="grid gap-3 pt-1 text-xs">
+      <AccountMiniTable
+        title="Positions"
+        empty="No live positions"
+        rows={positions.map((position) => [
+          position.market,
+          position.side,
+          position.size_bucket,
+          position.unrealized_pnl_bucket,
+        ])}
+      />
+      <AccountMiniTable
+        title="Open orders"
+        empty="No open orders"
+        rows={openOrders.map((order) => [
+          order.market,
+          order.side,
+          order.size_bucket,
+          order.price_bucket,
+        ])}
+      />
+      <AccountMiniTable
+        title="Recent fills"
+        empty="No recent fills"
+        rows={fills.map((fill) => [
+          fill.market,
+          fill.side,
+          fill.size_bucket,
+          fill.price_bucket,
+        ])}
+      />
+    </div>
+  );
+}
+
+function AccountMiniTable({
+  title,
+  empty,
+  rows,
+}: {
+  title: string;
+  empty: string;
+  rows: string[][];
+}) {
+  return (
+    <div>
+      <div className="mb-1 text-[#6f7d9a]">{title}</div>
+      {rows.length === 0 ? (
+        <div className="text-[#59657a]">{empty}</div>
+      ) : (
+        <div className="space-y-1">
+          {rows.slice(0, 4).map((row, index) => (
+            <div key={`${title}-${index}-${row.join("-")}`} className="grid grid-cols-4 gap-2 text-[#aab5c8]">
+              {row.map((cell, cellIndex) => (
+                <span key={`${cell}-${cellIndex}`} className={cellIndex === 1 && (cell === "buy" || cell === "long") ? "text-emerald-200" : cellIndex === 1 ? "text-red-200" : ""}>
+                  {cell}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
-function HyperliquidPriceChart({ snapshot }: { snapshot: HyperliquidMarketSnapshot | null }) {
+function HyperliquidOrderTicket({
+  order,
+  errors,
+  previewCommitment,
+  working,
+  accountReady,
+  disabledReason,
+  onUpdate,
+  onPreview,
+}: {
+  order: PrivateExecutionOrderDraft;
+  errors: string[];
+  previewCommitment: string | null;
+  working: boolean;
+  accountReady: boolean;
+  disabledReason: string;
+  onUpdate: (patch: Partial<PrivateExecutionOrderDraft>) => void;
+  onPreview?: () => void;
+}) {
+  const side = order.side === "sell" ? "sell" : "buy";
+  return (
+    <div className="border border-[#162337] bg-[#05070b] p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-[#eef1f8]">Order</p>
+          <p className="mt-1 text-xs text-[#6f7d9a]">IOC tiny-fill</p>
+        </div>
+        <span className={previewCommitment && errors.length === 0 ? "text-xs text-emerald-200" : "text-xs text-amber-200"}>
+          {previewCommitment ? "previewed" : "preview first"}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => onUpdate({ side: "buy" })}
+          className={
+            side === "buy"
+              ? "h-10 border border-emerald-300/70 bg-emerald-300/15 text-sm font-medium text-emerald-100"
+              : "h-10 border border-[#1e2a3a] bg-[#08090d] text-sm text-[#aab5c8]"
+          }
+        >
+          Buy
+        </button>
+        <button
+          type="button"
+          onClick={() => onUpdate({ side: "sell" })}
+          className={
+            side === "sell"
+              ? "h-10 border border-red-300/70 bg-red-300/15 text-sm font-medium text-red-100"
+              : "h-10 border border-[#1e2a3a] bg-[#08090d] text-sm text-[#aab5c8]"
+          }
+        >
+          Sell
+        </button>
+      </div>
+
+      <div className="mt-3 grid gap-3">
+        <Select
+          label="Amount"
+          value={order.quote_size || "5"}
+          options={[["5", "$5"], ["10", "$10"], ["25", "$25"]]}
+          onChange={(value) => onUpdate({ quote_size: value })}
+        />
+        <Select
+          label="Max slippage"
+          value={order.max_slippage_bps || "50"}
+          options={[["25", "25 bps"], ["50", "50 bps"], ["100", "100 bps"]]}
+          onChange={(value) => onUpdate({ max_slippage_bps: value })}
+        />
+      </div>
+
+      <div className="mt-3 grid gap-2 border-t border-[#162337] pt-3">
+        <StatusLine label="Main wallet" value="not exposed" tone="good" />
+        <StatusLine label="Ghola" value="sealed runtime" tone="good" />
+        <StatusLine label="Venue sees" value="execution account + order" tone="warn" />
+      </div>
+
+      <button
+        type="button"
+        onClick={onPreview}
+        disabled={working || !onPreview || !accountReady}
+        className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 bg-[#eef1f8] px-3 text-sm font-medium text-[#08090d] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <Play className="h-4 w-4" />
+        {working ? "Checking" : accountReady ? previewCommitment ? "Preview again" : "Preview trade" : disabledReason}
+      </button>
+
+      {errors[0] && <p className="mt-3 text-xs leading-5 text-amber-200">{errors[0]}</p>}
+    </div>
+  );
+}
+
+function MarketStat({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  tone?: "good" | "bad" | "neutral";
+}) {
+  const valueClass =
+    tone === "good" ? "text-emerald-200" : tone === "bad" ? "text-red-200" : "text-[#eef1f8]";
+  return (
+    <div className="border border-[#162337] bg-[#08090d] px-3 py-2">
+      <p className="text-[11px] text-[#6f7d9a]">{label}</p>
+      <p className={`mt-1 text-sm font-medium ${valueClass}`}>{value}</p>
+    </div>
+  );
+}
+
+function HyperliquidAdvancedChart({
+  mode,
+  onModeChange,
+  snapshot,
+  size = "compact",
+}: {
+  mode: HyperliquidChartMode;
+  onModeChange: (mode: HyperliquidChartMode) => void;
+  snapshot: HyperliquidMarketSnapshot | null;
+  size?: "compact" | "large";
+}) {
   const candles = snapshot?.candles || [];
-  if (candles.length < 2) {
+  const bids = snapshot?.bids || [];
+  const asks = snapshot?.asks || [];
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const large = size === "large";
+  const width = 920;
+  const height = large ? 430 : 250;
+  const left = 10;
+  const right = 76;
+  const top = 18;
+  const bottom = 34;
+  const volumeTop = large ? height - 86 : height - 62;
+  const plotBottom = mode === "depth" ? height - bottom : volumeTop - 12;
+  const plotWidth = width - left - right;
+  const plotHeight = plotBottom - top;
+  const chartClass = large ? "h-[400px] w-full overflow-hidden sm:h-[430px]" : "h-56 w-full overflow-hidden";
+  const shouldShowDepth = mode === "depth";
+  const hasChartData = shouldShowDepth ? bids.length > 0 && asks.length > 0 : candles.length >= 2;
+
+  if (!hasChartData) {
     return (
-      <div className="flex h-44 items-center justify-center border border-dashed border-[#1e2a3a] text-sm text-[#6f7d9a]">
-        Loading chart
+      <div className="grid gap-2">
+        {large && <ChartModeTabs mode={mode} onModeChange={onModeChange} />}
+        <div
+          className={`flex ${large ? "h-[400px] sm:h-[430px]" : "h-56"} items-center justify-center border border-dashed border-[#1e2a3a] text-sm text-[#6f7d9a]`}
+        >
+          Loading chart
+        </div>
       </div>
     );
   }
-  const closes = candles.map((candle) => Number(candle.c)).filter((value) => Number.isFinite(value));
-  const min = Math.min(...closes);
-  const max = Math.max(...closes);
-  const range = Math.max(1, max - min);
-  const width = 640;
-  const height = 176;
-  const points = candles.map((candle, index) => {
-    const x = (index / Math.max(1, candles.length - 1)) * width;
-    const y = height - ((Number(candle.c) - min) / range) * (height - 18) - 9;
+
+  const priceRange = hyperliquidCandlePriceRange(candles);
+  const maxVolume = Math.max(1, ...candles.map((candle) => Number(candle.v)).filter((value) => Number.isFinite(value)));
+  const yForPrice = (price: number) => plotBottom - ((price - priceRange.min) / priceRange.range) * plotHeight;
+  const xForIndex = (index: number) => left + (index / Math.max(1, candles.length - 1)) * plotWidth;
+  const linePoints = candles.map((candle, index) => {
+    const x = xForIndex(index);
+    const y = yForPrice(Number(candle.c));
     return `${x.toFixed(2)},${y.toFixed(2)}`;
   }).join(" ");
-  const up = Number(candles.at(-1)?.c || 0) >= Number(candles[0]?.c || 0);
+  const last = Number(candles.at(-1)?.c || 0);
+  const up = last >= Number(candles[0]?.c || 0);
+  const lastX = xForIndex(candles.length - 1);
+  const lastY = yForPrice(last);
+  const priceTicks = [
+    priceRange.max,
+    priceRange.min + priceRange.range * 0.75,
+    priceRange.min + priceRange.range * 0.5,
+    priceRange.min + priceRange.range * 0.25,
+    priceRange.min,
+  ];
+  const hoverCandle = hoverIndex == null ? null : candles[hoverIndex] ?? null;
+  const hoverX = hoverIndex == null ? null : xForIndex(hoverIndex);
+  const hoverY = hoverCandle ? yForPrice(Number(hoverCandle.c)) : null;
+  const candleWidth = Math.max(2, Math.min(9, (plotWidth / candles.length) * 0.72));
+  const bidDepth = hyperliquidCumulativeDepth(bids, "bid");
+  const askDepth = hyperliquidCumulativeDepth(asks, "ask");
+  const depthPoints = [...bidDepth, ...askDepth];
+  const depthMinPrice = Math.min(...depthPoints.map((point) => point.px));
+  const depthMaxPrice = Math.max(...depthPoints.map((point) => point.px));
+  const depthRange = Math.max(1, depthMaxPrice - depthMinPrice);
+  const depthMax = hyperliquidDepthMax(depthPoints);
+  const xForDepthPrice = (price: number) => left + ((price - depthMinPrice) / depthRange) * plotWidth;
+  const yForDepth = (cumulative: number) => plotBottom - (cumulative / depthMax) * plotHeight;
+  const bidLine = bidDepth.map((point) => `${xForDepthPrice(point.px).toFixed(2)},${yForDepth(point.cumulative).toFixed(2)}`).join(" ");
+  const askLine = askDepth.map((point) => `${xForDepthPrice(point.px).toFixed(2)},${yForDepth(point.cumulative).toFixed(2)}`).join(" ");
+  const bidArea = bidDepth.length
+    ? `${left},${plotBottom} ${bidLine} ${xForDepthPrice(bidDepth.at(-1)?.px ?? depthMinPrice).toFixed(2)},${plotBottom}`
+    : "";
+  const askArea = askDepth.length
+    ? `${xForDepthPrice(askDepth[0]?.px ?? depthMaxPrice).toFixed(2)},${plotBottom} ${askLine} ${width - right},${plotBottom}`
+    : "";
+  const timeTicks = [0, Math.floor((candles.length - 1) / 2), candles.length - 1]
+    .map((index) => candles[index])
+    .filter(Boolean);
+
+  function handleMove(event: { currentTarget: SVGSVGElement; clientX: number }) {
+    if (shouldShowDepth) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const localX = ((event.clientX - rect.left) / rect.width) * width;
+    setHoverIndex(nearestHyperliquidCandleIndex(candles.length, localX, left, plotWidth));
+  }
+
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="h-44 w-full overflow-hidden" role="img" aria-label="Hyperliquid price chart">
-      <defs>
-        <linearGradient id="hyperliquidChartFill" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor={up ? "#6ee7b7" : "#fca5a5"} stopOpacity="0.24" />
-          <stop offset="100%" stopColor={up ? "#6ee7b7" : "#fca5a5"} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <polyline
-        points={`0,${height} ${points} ${width},${height}`}
-        fill="url(#hyperliquidChartFill)"
-        stroke="none"
-      />
-      <polyline
-        points={points}
-        fill="none"
-        stroke={up ? "#6ee7b7" : "#fca5a5"}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="3"
-      />
-    </svg>
+    <div className="grid gap-2">
+      {large && <ChartModeTabs mode={mode} onModeChange={onModeChange} />}
+      <div className="relative">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className={chartClass}
+          role="img"
+          aria-label={`Hyperliquid ${mode} chart`}
+          onMouseMove={handleMove}
+          onMouseLeave={() => setHoverIndex(null)}
+        >
+          <defs>
+            <linearGradient id="hyperliquidChartFill" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor={up ? "#6ee7b7" : "#fca5a5"} stopOpacity="0.24" />
+              <stop offset="100%" stopColor={up ? "#6ee7b7" : "#fca5a5"} stopOpacity="0" />
+            </linearGradient>
+            <linearGradient id="hyperliquidBidDepthFill" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="#6ee7b7" stopOpacity="0.24" />
+              <stop offset="100%" stopColor="#6ee7b7" stopOpacity="0" />
+            </linearGradient>
+            <linearGradient id="hyperliquidAskDepthFill" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="#fca5a5" stopOpacity="0.22" />
+              <stop offset="100%" stopColor="#fca5a5" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+
+          {(shouldShowDepth ? [depthMax, depthMax * 0.75, depthMax * 0.5, depthMax * 0.25, 0] : priceTicks).map((value) => {
+            const y = shouldShowDepth ? yForDepth(value) : yForPrice(value);
+            return (
+              <g key={value}>
+                <line x1={left} x2={width - right} y1={y} y2={y} stroke="#162337" strokeDasharray="4 6" strokeWidth="1" />
+                <text x={width - 6} y={Math.max(12, y - 4)} fill="#6f7d9a" fontSize="12" textAnchor="end">
+                  {shouldShowDepth ? formatSize(String(value)) : formatPrice(String(value))}
+                </text>
+              </g>
+            );
+          })}
+
+          {shouldShowDepth ? (
+            <>
+              {bidArea && <polyline points={bidArea} fill="url(#hyperliquidBidDepthFill)" stroke="none" />}
+              {askArea && <polyline points={askArea} fill="url(#hyperliquidAskDepthFill)" stroke="none" />}
+              {bidLine && <polyline points={bidLine} fill="none" stroke="#6ee7b7" strokeWidth="3" strokeLinejoin="round" />}
+              {askLine && <polyline points={askLine} fill="none" stroke="#fca5a5" strokeWidth="3" strokeLinejoin="round" />}
+              <text x={left} y={height - 10} fill="#6ee7b7" fontSize="12">
+                Bid {bids[0]?.px ? formatBookPrice(bids[0].px) : "-"}
+              </text>
+              <text x={width - right} y={height - 10} fill="#fca5a5" fontSize="12" textAnchor="end">
+                Ask {asks[0]?.px ? formatBookPrice(asks[0].px) : "-"}
+              </text>
+            </>
+          ) : (
+            <>
+              {mode === "line" && (
+                <>
+                  <polyline points={`${left},${plotBottom} ${linePoints} ${width - right},${plotBottom}`} fill="url(#hyperliquidChartFill)" stroke="none" />
+                  <polyline
+                    points={linePoints}
+                    fill="none"
+                    stroke={up ? "#6ee7b7" : "#fca5a5"}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="3"
+                  />
+                  <circle cx={lastX} cy={lastY} r="4" fill={up ? "#6ee7b7" : "#fca5a5"} />
+                </>
+              )}
+              {mode === "candles" && candles.map((candle, index) => {
+                const x = xForIndex(index);
+                const open = Number(candle.o);
+                const close = Number(candle.c);
+                const high = Number(candle.h);
+                const low = Number(candle.l);
+                const candleUp = close >= open;
+                const bodyTop = Math.min(yForPrice(open), yForPrice(close));
+                const bodyHeight = Math.max(1, Math.abs(yForPrice(open) - yForPrice(close)));
+                return (
+                  <g key={`${candle.t}-${index}`}>
+                    <line
+                      x1={x}
+                      x2={x}
+                      y1={yForPrice(high)}
+                      y2={yForPrice(low)}
+                      stroke={candleUp ? "#6ee7b7" : "#fca5a5"}
+                      strokeWidth="1.4"
+                    />
+                    <rect
+                      x={x - candleWidth / 2}
+                      y={bodyTop}
+                      width={candleWidth}
+                      height={bodyHeight}
+                      fill={candleUp ? "#6ee7b7" : "#fca5a5"}
+                      opacity={candleUp ? "0.82" : "0.72"}
+                    />
+                  </g>
+                );
+              })}
+              {candles.map((candle, index) => {
+                const volume = Number(candle.v);
+                const barHeight = Math.max(1, Math.min(height - volumeTop - 12, (volume / maxVolume) * (height - volumeTop - 14)));
+                const x = xForIndex(index);
+                const candleUp = Number(candle.c) >= Number(candle.o);
+                return (
+                  <rect
+                    key={`${candle.t}-volume-${index}`}
+                    x={x - candleWidth / 2}
+                    y={height - bottom - barHeight}
+                    width={candleWidth}
+                    height={barHeight}
+                    fill={candleUp ? "#2b7f65" : "#7f3d45"}
+                    opacity="0.55"
+                  />
+                );
+              })}
+              <line x1={left} x2={width - right} y1={height - bottom} y2={height - bottom} stroke="#162337" />
+              {timeTicks.map((candle, index) => (
+                <text
+                  key={`${candle.t}-${index}-tick`}
+                  x={index === 0 ? left : index === 1 ? left + plotWidth / 2 : width - right}
+                  y={height - 10}
+                  fill="#6f7d9a"
+                  fontSize="12"
+                  textAnchor={index === 0 ? "start" : index === 1 ? "middle" : "end"}
+                >
+                  {formatChartTime(candle.T || candle.t)}
+                </text>
+              ))}
+              {hoverCandle && hoverX != null && hoverY != null && (
+                <>
+                  <line x1={hoverX} x2={hoverX} y1={top} y2={height - bottom} stroke="#a8d8ff" strokeDasharray="3 5" strokeOpacity="0.5" />
+                  <line x1={left} x2={width - right} y1={hoverY} y2={hoverY} stroke="#a8d8ff" strokeDasharray="3 5" strokeOpacity="0.35" />
+                  <circle cx={hoverX} cy={hoverY} r="3.5" fill="#a8d8ff" />
+                </>
+              )}
+            </>
+          )}
+        </svg>
+
+        {hoverCandle && !shouldShowDepth && (
+          <div className="pointer-events-none absolute left-3 top-3 grid gap-1 border border-[#253349] bg-[#08090d]/95 px-3 py-2 text-xs text-[#aab5c8] shadow-lg shadow-black/30">
+            <div className="font-medium text-[#eef1f8]">{formatChartTime(hoverCandle.T || hoverCandle.t)}</div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+              <span>O {formatPrice(hoverCandle.o)}</span>
+              <span>H {formatPrice(hoverCandle.h)}</span>
+              <span>L {formatPrice(hoverCandle.l)}</span>
+              <span>C {formatPrice(hoverCandle.c)}</span>
+              <span>Vol {formatSize(hoverCandle.v)}</span>
+              <span>Trades {hoverCandle.n ?? "-"}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
+}
+
+function ChartModeTabs({
+  mode,
+  onModeChange,
+}: {
+  mode: HyperliquidChartMode;
+  onModeChange: (mode: HyperliquidChartMode) => void;
+}) {
+  const modes: Array<[HyperliquidChartMode, string]> = [
+    ["candles", "Candles"],
+    ["line", "Line"],
+    ["depth", "Depth"],
+  ];
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <span className="text-xs text-[#6f7d9a]">Chart</span>
+      <div className="flex gap-1.5">
+        {modes.map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => onModeChange(value)}
+            className={
+              mode === value
+                ? "h-7 border border-[#a8d8ff] bg-[#a8d8ff] px-3 text-xs font-medium text-[#08090d]"
+                : "h-7 border border-[#1e2a3a] bg-[#08090d] px-3 text-xs text-[#aab5c8] hover:border-[#3da8ff]/50"
+            }
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatChartTime(timestamp: number) {
+  if (!Number.isFinite(timestamp)) return "-";
+  return new Date(timestamp).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function OrderbookRows({
@@ -3482,20 +4117,57 @@ function OrderbookRows({
   side: "bid" | "ask";
   levels: HyperliquidMarketSnapshot["bids"];
 }) {
-  const shown = side === "ask" ? levels.slice(0, 5).reverse() : levels.slice(0, 5);
+  const shown = side === "ask" ? levels.slice(0, 8).reverse() : levels.slice(0, 8);
   if (shown.length === 0) {
     return <p className="py-3 text-xs text-[#6f7d9a]">Waiting for book</p>;
   }
+  const maxSize = Math.max(...shown.map((level) => Number(level.sz)).filter((value) => Number.isFinite(value)), 1);
   return (
     <div className="space-y-1">
       {shown.map((level) => (
-        <div key={`${side}-${level.px}-${level.sz}`} className="grid grid-cols-2 gap-2 text-xs">
-          <span className={side === "bid" ? "text-emerald-200" : "text-red-200"}>
-            {formatPrice(level.px)}
-          </span>
-          <span className="text-right text-[#8b95a8]">{formatSize(level.sz)}</span>
+        <div key={`${side}-${level.px}-${level.sz}`} className="relative overflow-hidden px-1 py-0.5 text-xs">
+          <div
+            className={side === "bid" ? "absolute inset-y-0 right-0 bg-emerald-300/8" : "absolute inset-y-0 right-0 bg-red-300/8"}
+            style={{ width: `${Math.max(6, (Number(level.sz) / maxSize) * 100)}%` }}
+          />
+          <div className="relative grid grid-cols-[78px_minmax(0,1fr)_32px] gap-2">
+            <span className={side === "bid" ? "text-emerald-200" : "text-red-200"}>
+              {formatBookPrice(level.px)}
+            </span>
+            <span className="text-right text-[#8b95a8]">{formatSize(level.sz)}</span>
+            <span className="text-right text-[#59657a]">{level.n ?? "-"}</span>
+          </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function RecentTradeRows({ trades }: { trades: HyperliquidMarketSnapshot["recent_trades"] }) {
+  const shown = trades.slice(0, 8);
+  return (
+    <div className="border border-[#162337] bg-[#05070b] p-3">
+      <div className="mb-2 flex items-center justify-between text-xs text-[#6f7d9a]">
+        <span>Recent trades</span>
+        <span>public</span>
+      </div>
+      {shown.length === 0 ? (
+        <p className="py-3 text-xs text-[#6f7d9a]">Waiting for trades</p>
+      ) : (
+        <div className="space-y-1">
+          {shown.map((trade) => (
+            <div key={`${trade.time}-${trade.side}-${trade.px}-${trade.sz}`} className="grid grid-cols-[72px_minmax(0,1fr)_34px] gap-2 text-xs">
+              <span className={trade.side === "buy" ? "text-emerald-200" : "text-red-200"}>
+                {formatBookPrice(trade.px)}
+              </span>
+              <span className="text-right text-[#8b95a8]">{formatSize(trade.sz)}</span>
+              <span className={trade.side === "buy" ? "text-right text-emerald-200" : "text-right text-red-200"}>
+                {trade.side === "buy" ? "B" : "S"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -3665,14 +4337,85 @@ function hyperliquidAccountStatusLabel(status: string) {
   return "connect account";
 }
 
+function hyperliquidAccountStreamLabel(status: HyperliquidAccountStreamStatus | string | undefined) {
+  if (status === "live") return "account live";
+  if (status === "backfilling") return "backfilling";
+  if (status === "reconnecting") return "reconnecting";
+  if (status === "worker_unavailable") return "worker unavailable";
+  if (status === "venue_access_required") return "connect account";
+  if (status === "needs_funds") return "needs funds";
+  if (status === "snapshot") return "snapshot";
+  return "connecting";
+}
+
+function hyperliquidMarketConnectionCopy(
+  status: HyperliquidLiveMarketStatus,
+  snapshot: HyperliquidMarketSnapshot | null,
+) {
+  if (status === "live" && !snapshot?.stale) return { label: "live stream", tone: "good" as const };
+  if (status === "fallback_polling" && !snapshot?.stale) return { label: "polling fallback", tone: "warn" as const };
+  if (status === "connecting") return { label: "connecting", tone: "warn" as const };
+  if (status === "reconnecting") return { label: "reconnecting", tone: "warn" as const };
+  if (status === "blocked") return { label: "stream blocked", tone: "bad" as const };
+  return { label: "market stale", tone: "warn" as const };
+}
+
+function hyperliquidMarketStats(snapshot: HyperliquidMarketSnapshot | null) {
+  const candles = snapshot?.candles || [];
+  const first = candles.length >= 2 ? Number(candles[0]?.c) : NaN;
+  const last = candles.length >= 2 ? Number(candles.at(-1)?.c) : NaN;
+  const highs = candles.map((candle) => Number(candle.h)).filter((value) => Number.isFinite(value));
+  const lows = candles.map((candle) => Number(candle.l)).filter((value) => Number.isFinite(value));
+  const change = Number.isFinite(first) && first !== 0 && Number.isFinite(last)
+    ? ((last - first) / first) * 100
+    : 0;
+  const current = Number(snapshot?.mark_price || snapshot?.mid || last);
+  const prevDay = Number(snapshot?.prev_day_price);
+  const dayChange = Number.isFinite(prevDay) && prevDay !== 0 && Number.isFinite(current)
+    ? ((current - prevDay) / prevDay) * 100
+    : null;
+  const funding = snapshot?.funding_rate == null ? NaN : Number(snapshot.funding_rate);
+  const openInterest = snapshot?.open_interest == null ? NaN : Number(snapshot.open_interest);
+  const openInterestNotional = Number.isFinite(openInterest) && Number.isFinite(current)
+    ? String(openInterest * current)
+    : null;
+  return {
+    changeLabel: candles.length >= 2 ? `${change >= 0 ? "+" : ""}${change.toFixed(2)}%` : "-",
+    changeTone: change >= 0 ? "good" as const : "bad" as const,
+    dayChangeLabel: dayChange == null ? "-" : `${dayChange >= 0 ? "+" : ""}${dayChange.toFixed(2)}%`,
+    dayChangeTone: dayChange == null ? "neutral" as const : dayChange >= 0 ? "good" as const : "bad" as const,
+    highLabel: highs.length ? formatPrice(String(Math.max(...highs))) : "-",
+    lowLabel: lows.length ? formatPrice(String(Math.min(...lows))) : "-",
+    volumeLabel: snapshot?.day_notional_volume ? formatCompactUsd(snapshot.day_notional_volume) : "-",
+    openInterestLabel: openInterestNotional ? formatCompactUsd(openInterestNotional) : "-",
+    fundingLabel: Number.isFinite(funding) ? `${(funding * 100).toFixed(4)}%` : "-",
+    fundingTone: !Number.isFinite(funding) || funding >= 0 ? "good" as const : "bad" as const,
+  };
+}
+
 function formatPrice(value: string) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return value;
+  if (parsed >= 10000) {
+    return parsed.toLocaleString("en-US", { maximumFractionDigits: 1 });
+  }
   if (parsed >= 1000) {
-    return parsed.toLocaleString("en-US", { maximumFractionDigits: 0 });
+    return parsed.toLocaleString("en-US", { maximumFractionDigits: 2 });
   }
   if (parsed >= 1) {
     return parsed.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  }
+  return parsed.toLocaleString("en-US", { maximumFractionDigits: 6 });
+}
+
+function formatBookPrice(value: string) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return value;
+  if (parsed >= 10000) {
+    return parsed.toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  }
+  if (parsed >= 1) {
+    return parsed.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
   return parsed.toLocaleString("en-US", { maximumFractionDigits: 6 });
 }
@@ -3681,6 +4424,15 @@ function formatSize(value: string) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return value;
   return parsed.toLocaleString("en-US", { maximumFractionDigits: 4 });
+}
+
+function formatCompactUsd(value: string) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "-";
+  return `$${Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: parsed >= 1_000_000 ? 1 : 2,
+  }).format(parsed)}`;
 }
 
 function formatValue(value: string) {

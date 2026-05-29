@@ -4,16 +4,26 @@ export type HyperliquidCandleInterval = "1m" | "5m" | "15m" | "1h";
 
 export interface HyperliquidCandle {
   t: number;
+  T: number | null;
   o: string;
   h: string;
   l: string;
   c: string;
   v: string;
+  n: number | null;
 }
 
 export interface HyperliquidBookLevel {
   px: string;
   sz: string;
+  n: number | null;
+}
+
+export interface HyperliquidRecentTrade {
+  side: "buy" | "sell";
+  px: string;
+  sz: string;
+  time: number;
 }
 
 export interface HyperliquidMarketSnapshot {
@@ -29,9 +39,19 @@ export interface HyperliquidMarketSnapshot {
   best_bid: string | null;
   best_ask: string | null;
   spread_bps: number | null;
+  mark_price: string | null;
+  oracle_price: string | null;
+  prev_day_price: string | null;
+  day_notional_volume: string | null;
+  day_base_volume: string | null;
+  open_interest: string | null;
+  funding_rate: string | null;
+  premium: string | null;
+  max_leverage: number | null;
   candles: HyperliquidCandle[];
   bids: HyperliquidBookLevel[];
   asks: HyperliquidBookLevel[];
+  recent_trades: HyperliquidRecentTrade[];
 }
 
 export interface HyperliquidMarketSnapshotInput {
@@ -55,6 +75,9 @@ const INTERVAL_MS: Record<HyperliquidCandleInterval, number> = {
   "15m": 15 * 60_000,
   "1h": 60 * 60_000,
 };
+const CANDLE_WINDOW = 240;
+const BOOK_LEVEL_WINDOW = 20;
+const RECENT_TRADE_WINDOW = 20;
 const MARKET_CACHE_TTL_MS = 4_000;
 
 type CacheRecord = {
@@ -133,9 +156,9 @@ async function fetchFreshHyperliquidMarketSnapshot(input: {
 }): Promise<HyperliquidMarketSnapshot> {
   const baseUrl = API_URLS[input.network];
   const endTime = input.now.getTime();
-  const startTime = endTime - INTERVAL_MS[input.interval] * 90;
+  const startTime = endTime - INTERVAL_MS[input.interval] * CANDLE_WINDOW;
   try {
-    const [mids, book, candles] = await Promise.all([
+    const [mids, book, candles, metaAndAssetCtxs, recentTrades] = await Promise.all([
       postInfo(input.fetchImpl, baseUrl, { type: "allMids" }),
       postInfo(input.fetchImpl, baseUrl, { type: "l2Book", coin: input.coin }),
       postInfo(input.fetchImpl, baseUrl, {
@@ -147,6 +170,8 @@ async function fetchFreshHyperliquidMarketSnapshot(input: {
           endTime,
         },
       }),
+      postInfo(input.fetchImpl, baseUrl, { type: "metaAndAssetCtxs" }).catch(() => null),
+      postInfo(input.fetchImpl, baseUrl, { type: "recentTrades", coin: input.coin }).catch(() => null),
     ]);
     return buildSnapshot({
       network: input.network,
@@ -156,6 +181,8 @@ async function fetchFreshHyperliquidMarketSnapshot(input: {
       mids,
       book,
       candles,
+      metaAndAssetCtxs,
+      recentTrades,
       stale: false,
     });
   } catch {
@@ -195,6 +222,8 @@ function buildSnapshot(input: {
   mids: unknown;
   book: unknown;
   candles: unknown;
+  metaAndAssetCtxs: unknown;
+  recentTrades: unknown;
   stale: boolean;
 }): HyperliquidMarketSnapshot {
   const bids = normalizeBookSide(input.book, 0);
@@ -202,6 +231,7 @@ function buildSnapshot(input: {
   const mid = normalizeMid(input.mids, input.coin);
   const bestBid = bids[0]?.px ?? null;
   const bestAsk = asks[0]?.px ?? null;
+  const assetContext = normalizeAssetContext(input.metaAndAssetCtxs, input.coin);
   return {
     version: 1,
     platform: "hyperliquid",
@@ -215,9 +245,11 @@ function buildSnapshot(input: {
     best_bid: bestBid,
     best_ask: bestAsk,
     spread_bps: spreadBps(bestBid, bestAsk),
+    ...assetContext,
     candles: normalizeCandles(input.candles),
     bids,
     asks,
+    recent_trades: normalizeRecentTrades(input.recentTrades),
   };
 }
 
@@ -241,9 +273,19 @@ function emptySnapshot(input: {
     best_bid: null,
     best_ask: null,
     spread_bps: null,
+    mark_price: null,
+    oracle_price: null,
+    prev_day_price: null,
+    day_notional_volume: null,
+    day_base_volume: null,
+    open_interest: null,
+    funding_rate: null,
+    premium: null,
+    max_leverage: null,
     candles: [],
     bids: [],
     asks: [],
+    recent_trades: [],
   };
 }
 
@@ -259,28 +301,85 @@ function normalizeBookSide(book: unknown, sideIndex: 0 | 1): HyperliquidBookLeve
   if (!Array.isArray(levels)) return [];
   const side = levels[sideIndex];
   if (!Array.isArray(side)) return [];
-  return side.slice(0, 10).map((level) => {
+  return side.slice(0, BOOK_LEVEL_WINDOW).map((level) => {
     if (!level || typeof level !== "object" || Array.isArray(level)) return null;
     const row = level as Record<string, unknown>;
     const px = safeDecimalString(row.px);
     const sz = safeDecimalString(row.sz);
-    return px && sz ? { px, sz } : null;
+    const n = numberValue(row.n);
+    return px && sz ? { px, sz, n } : null;
   }).filter(Boolean) as HyperliquidBookLevel[];
 }
 
 function normalizeCandles(value: unknown): HyperliquidCandle[] {
   if (!Array.isArray(value)) return [];
-  return value.slice(-90).map((item) => {
+  return value.slice(-CANDLE_WINDOW).map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return null;
     const row = item as Record<string, unknown>;
     const t = numberValue(row.t);
+    const T = numberValue(row.T);
     const o = safeDecimalString(row.o);
     const h = safeDecimalString(row.h);
     const l = safeDecimalString(row.l);
     const c = safeDecimalString(row.c);
     const v = safeDecimalString(row.v) || "0";
-    return t && o && h && l && c ? { t, o, h, l, c, v } : null;
+    const n = numberValue(row.n);
+    return t && o && h && l && c ? { t, T, o, h, l, c, v, n } : null;
   }).filter(Boolean) as HyperliquidCandle[];
+}
+
+function normalizeAssetContext(value: unknown, coin: HyperliquidMarketCoin) {
+  const empty = {
+    mark_price: null,
+    oracle_price: null,
+    prev_day_price: null,
+    day_notional_volume: null,
+    day_base_volume: null,
+    open_interest: null,
+    funding_rate: null,
+    premium: null,
+    max_leverage: null,
+  };
+  if (!Array.isArray(value) || value.length < 2) return empty;
+  const [meta, contexts] = value;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta) || !Array.isArray(contexts)) return empty;
+  const universe = (meta as Record<string, unknown>).universe;
+  if (!Array.isArray(universe)) return empty;
+  const index = universe.findIndex((asset) => {
+    return Boolean(asset && typeof asset === "object" && !Array.isArray(asset) && (asset as Record<string, unknown>).name === coin);
+  });
+  if (index < 0) return empty;
+  const asset = universe[index];
+  const context = contexts[index];
+  if (!asset || typeof asset !== "object" || Array.isArray(asset) || !context || typeof context !== "object" || Array.isArray(context)) {
+    return empty;
+  }
+  const row = context as Record<string, unknown>;
+  const maxLeverage = (asset as Record<string, unknown>).maxLeverage;
+  return {
+    mark_price: safeDecimalString(row.markPx),
+    oracle_price: safeDecimalString(row.oraclePx),
+    prev_day_price: safeDecimalString(row.prevDayPx),
+    day_notional_volume: safeDecimalString(row.dayNtlVlm),
+    day_base_volume: safeDecimalString(row.dayBaseVlm),
+    open_interest: safeDecimalString(row.openInterest),
+    funding_rate: safeSignedDecimalString(row.funding),
+    premium: safeSignedDecimalString(row.premium),
+    max_leverage: typeof maxLeverage === "number" && Number.isFinite(maxLeverage) ? Math.floor(maxLeverage) : null,
+  };
+}
+
+function normalizeRecentTrades(value: unknown): HyperliquidRecentTrade[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, RECENT_TRADE_WINDOW).map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const row = item as Record<string, unknown>;
+    const px = safeDecimalString(row.px);
+    const sz = safeDecimalString(row.sz);
+    const time = numberValue(row.time);
+    const side = row.side === "B" ? "buy" : row.side === "A" ? "sell" : null;
+    return px && sz && time && side ? { px, sz, time, side } : null;
+  }).filter(Boolean) as HyperliquidRecentTrade[];
 }
 
 function normalizeSourceTimestamp(book: unknown) {
@@ -293,6 +392,14 @@ function safeDecimalString(value: unknown) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!/^\d+(?:\.\d+)?$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function safeSignedDecimalString(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!/^-?\d+(?:\.\d+)?$/.test(trimmed)) return null;
   return trimmed;
 }
 

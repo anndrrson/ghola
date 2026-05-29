@@ -5,7 +5,9 @@ import {
 } from "./vault/route";
 import { POST as armAgent } from "./agent/session/route";
 import { POST as accountSnapshot } from "./account-snapshot/route";
+import { GET as accountStream } from "./account-stream/route";
 import { POST as allocateManaged } from "./managed-allocation/route";
+import { GET as hyperliquidRoot } from "./route";
 import { GET as hyperliquidStatus } from "./status/route";
 import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
 
@@ -26,6 +28,38 @@ function request(path: string, body?: unknown) {
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+}
+
+async function readSseEvent(res: Response, eventName: string) {
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("missing response body");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      buffer += decoder.decode(next.value, { stream: true });
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() || "";
+      for (const block of blocks) {
+        const event = block
+          .split("\n")
+          .find((line) => line.startsWith("event:"))
+          ?.slice("event:".length)
+          .trim();
+        const data = block
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice("data:".length).trimStart())
+          .join("\n");
+        if (event === eventName && data) return JSON.parse(data);
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  throw new Error(`missing SSE event ${eventName}`);
 }
 
 function vaultAad(accountCommitment: string, recipient = "mock_attested:dev") {
@@ -64,11 +98,17 @@ describe("Hyperliquid private-account routes", () => {
   it("reports missing BYO venue access without jurisdiction gating", async () => {
     process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = "true";
     process.env.GHOLA_HYPERLIQUID_LIVE_MODE = "tiny_fill";
+    const rootRes = await hyperliquidRoot(
+      request("/v1/private-account/hyperliquid"),
+    );
+    const root = await rootRes.json();
     const statusRes = await hyperliquidStatus(
       request("/v1/private-account/hyperliquid/status"),
     );
     const status = await statusRes.json();
 
+    expect(rootRes.status).toBe(200);
+    expect(root.platform_class).toBe("hyperliquid_style_market");
     expect(statusRes.status).toBe(200);
     expect(status.connection.ready).toBe(false);
     expect(status.gates.reason_codes).toContain("venue_access_required");
@@ -234,6 +274,29 @@ describe("Hyperliquid private-account routes", () => {
     expect(ready.account_source).toBe("ghola_managed");
     expect(JSON.stringify(ready)).not.toContain("hyperliquid_account_id");
     expect(JSON.stringify(ready)).not.toContain("api_wallet_private_key");
-    expect(JSON.stringify(ready)).not.toContain("orders");
+    expect(JSON.stringify(ready)).not.toContain("\"orders\"");
+  });
+
+  it("streams account state without raw venue fields", async () => {
+    await allocateManaged(
+      request("/v1/private-account/hyperliquid/managed-allocation", {
+        market_allowlist: ["BTC"],
+        max_notional_bucket: "25",
+      }),
+    );
+    const streamRes = await accountStream(
+      request("/v1/private-account/hyperliquid/account-stream?coin=BTC"),
+    );
+    const state = await readSseEvent(streamRes, "account_state");
+
+    expect(streamRes.status).toBe(200);
+    expect(streamRes.headers.get("content-type")).toContain("text/event-stream");
+    expect(state.status).toBe("ready_to_trade");
+    expect(state.stream_status).toBe("live");
+    expect(state.visibility_summary.main_wallet_exposed).toBe(false);
+    expect(state.visibility_summary.hyperliquid_sees).toContain("order");
+    expect(JSON.stringify(state)).not.toContain("hyperliquid_account_id");
+    expect(JSON.stringify(state)).not.toContain("api_wallet_private_key");
+    expect(JSON.stringify(state)).not.toContain("\"orders\"");
   });
 });
