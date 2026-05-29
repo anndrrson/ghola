@@ -43,3 +43,11 @@ ios/build/
 
 # Local native dev scratch build output (CMake)
 mac-dev/build/
+
+# ZK circuit / ceremony artifacts — regenerable or public; never commit.
+# Powers-of-Tau (.ptau) are public; r1cs/sym/wtns are circom compiler outputs.
+# These exceed/approach GitHub size limits and bloat history. Fetch/generate locally.
+*.ptau
+*.r1cs
+*.sym
+*.wtns
