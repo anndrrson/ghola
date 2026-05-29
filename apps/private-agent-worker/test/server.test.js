@@ -1175,64 +1175,77 @@ describe("private agent worker", () => {
     assert.equal(body.error_code, "connector_submit_failed");
     assert.match(body.error, /live submit is disabled/);
   });
-});
 
-test("shielded-funding/attest rejects unauthenticated requests", async () => {
-  await withServer(test, async (url) => {
-    const res = await postJson(url, "/venues/shielded-funding/attest", SEALED_HEADERS, {
-      withdraw_bundle: { instruction_data_hex: "ab", accounts: [] },
-      destination_commitment: "dest-1",
-      amount_bucket: "25",
-    });
-    assert.equal(res.status, 401);
-  }, EXEC_ENV);
-});
-
-test("shielded-funding/attest requires the sealed-execution header", async () => {
-  await withServer(test, async (url) => {
-    const token = process.env.PRIVATE_AGENT_EXECUTION_TOKEN;
-    const res = await postJson(
-      url,
-      "/venues/shielded-funding/attest",
-      { "content-type": "application/json", authorization: `Bearer ${token}` },
-      { destination_commitment: "dest-1", amount_bucket: "25" },
-    );
-    assert.equal(res.status, 400);
-  }, EXEC_ENV);
-});
-
-test("shielded-funding/attest validates the request shape", async () => {
-  await withServer(test, async (url) => {
-    const token = process.env.PRIVATE_AGENT_EXECUTION_TOKEN;
-    const res = await postJson(url, "/venues/shielded-funding/attest", authHeaders(token), {
-      destination_commitment: "dest-1",
-    });
-    assert.equal(res.status, 400);
-    const body = await res.json();
-    assert.ok(body.details.some((d) => d.includes("withdraw_bundle")));
-    assert.ok(body.details.some((d) => d.includes("amount_bucket")));
-  }, EXEC_ENV);
-});
-
-test("shielded-funding/attest returns a signed attestation in dry-run", async () => {
-  await withServer(
-    test,
-    async (url) => {
-      const token = process.env.PRIVATE_AGENT_EXECUTION_TOKEN;
-      const res = await postJson(url, "/venues/shielded-funding/attest", authHeaders(token), {
-        // Short destination so the dry-run relayer echo round-trips intact.
+  it("rejects shielded-funding attestation without a bearer token", async () => {
+    const response = await fetch(`${baseUrl}/venues/shielded-funding/attest`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
         withdraw_bundle: { instruction_data_hex: "ab", accounts: [] },
         destination_commitment: "dest-1",
         amount_bucket: "25",
-      });
-      assert.equal(res.status, 200);
-      const body = await res.json();
-      assert.equal(body.attestation.rail, "ghola_shielded_pool");
-      assert.equal(body.attestation.destination_commitment, "dest-1");
-      assert.equal(body.attestation.amount_bucket, "25");
-      assert.ok(body.signature_b64.length > 0);
-      assert.ok(body.signer_public_key_b64.length > 0);
-    },
-    { ...EXEC_ENV, PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
-  );
+      }),
+    });
+    assert.equal(response.status, 401);
+  });
+
+  it("requires the sealed-execution header for shielded-funding attestation", async () => {
+    const response = await fetch(`${baseUrl}/venues/shielded-funding/attest`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        withdraw_bundle: { instruction_data_hex: "ab", accounts: [] },
+        destination_commitment: "dest-1",
+        amount_bucket: "25",
+      }),
+    });
+    assert.equal(response.status, 400);
+  });
+
+  it("validates the shielded-funding attestation request shape", async () => {
+    const response = await fetch(`${baseUrl}/venues/shielded-funding/attest`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({ destination_commitment: "dest-1" }),
+    });
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.ok(body.details.some((d) => d.includes("withdraw_bundle")));
+    assert.ok(body.details.some((d) => d.includes("amount_bucket")));
+  });
+
+  it("returns a signed shielded-funding attestation in dry-run mode", async () => {
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "true";
+    const response = await fetch(`${baseUrl}/venues/shielded-funding/attest`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        // Short destination so the dry-run relayer echo (slice 0,16) round-trips.
+        withdraw_bundle: { instruction_data_hex: "ab", accounts: [] },
+        destination_commitment: "dest-1",
+        amount_bucket: "25",
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.attestation.rail, "ghola_shielded_pool");
+    assert.equal(body.attestation.destination_commitment, "dest-1");
+    assert.equal(body.attestation.amount_bucket, "25");
+    assert.ok(body.signature_b64.length > 0);
+    assert.ok(body.signer_public_key_b64.length > 0);
+  });
 });
