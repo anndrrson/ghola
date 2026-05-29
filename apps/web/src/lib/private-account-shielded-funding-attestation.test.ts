@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { generateKeyPairSync, sign as nodeSign } from "node:crypto";
 import {
   verifyWorkerFundingAttestation,
+  requestWorkerFundingAttestation,
+  workerFundingClientConfig,
   defaultEd25519Verify,
   NATIVE_SHIELDED_RAIL,
   type SignedWorkerFundingAttestation,
@@ -123,5 +125,95 @@ describe("verifyWorkerFundingAttestation", () => {
     const res = verifyWorkerFundingAttestation(signed, "dest-1", 3, defaultEd25519Verify);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("version_mismatch");
+  });
+});
+
+describe("requestWorkerFundingAttestation", () => {
+  const cfg = { url: "https://worker.example", token: "secret" };
+  const input = {
+    withdraw_bundle: { instruction_data_hex: "ab", accounts: [] },
+    destination_commitment: "dest-1",
+    amount_bucket: "25",
+  };
+
+  it("posts to the attest route, verifies the response, and returns the commitment", async () => {
+    const { signed } = makeSigned();
+    let captured: { url: string; init: RequestInit } | null = null;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      captured = { url, init };
+      return { ok: true, status: 200, json: async () => signed } as Response;
+    }) as unknown as typeof fetch;
+
+    const res = await requestWorkerFundingAttestation(input, cfg, 3, fetchImpl, defaultEd25519Verify);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.funding_evidence_commitment).toBe("a".repeat(64));
+
+    expect(captured).not.toBeNull();
+    expect(captured!.url).toBe("https://worker.example/venues/shielded-funding/attest");
+    const headers = captured!.init.headers as Record<string, string>;
+    expect(headers["x-ghola-sealed-execution-required"]).toBe("true");
+    expect(headers.authorization).toBe("Bearer secret");
+  });
+
+  it("fails closed when the worker is unconfigured", async () => {
+    const res = await requestWorkerFundingAttestation(input, { url: "", token: "" }, 3);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("worker_unconfigured");
+  });
+
+  it("maps a non-2xx worker response to worker_rejected", async () => {
+    const fetchImpl = (async () => ({ ok: false, status: 503, json: async () => ({}) } as Response)) as unknown as typeof fetch;
+    const res = await requestWorkerFundingAttestation(input, cfg, 3, fetchImpl, defaultEd25519Verify);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("worker_rejected");
+  });
+
+  it("maps a network throw to worker_unavailable", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("network");
+    }) as unknown as typeof fetch;
+    const res = await requestWorkerFundingAttestation(input, cfg, 3, fetchImpl, defaultEd25519Verify);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("worker_unavailable");
+  });
+
+  it("re-verifies and rejects a tampered worker response (never trusts blind)", async () => {
+    const { signed } = makeSigned();
+    const tampered: SignedWorkerFundingAttestation = {
+      ...signed,
+      attestation: { ...signed.attestation, amount_bucket: "100" },
+    };
+    const fetchImpl = (async () => ({ ok: true, status: 200, json: async () => tampered } as Response)) as unknown as typeof fetch;
+    const res = await requestWorkerFundingAttestation(input, cfg, 3, fetchImpl, defaultEd25519Verify);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("signature_invalid");
+  });
+
+  it("rejects a response bound to a different destination", async () => {
+    const { signed } = makeSigned({ destination_commitment: "dest-OTHER" });
+    const fetchImpl = (async () => ({ ok: true, status: 200, json: async () => signed } as Response)) as unknown as typeof fetch;
+    const res = await requestWorkerFundingAttestation(input, cfg, 3, fetchImpl, defaultEd25519Verify);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("destination_mismatch");
+  });
+});
+
+describe("workerFundingClientConfig", () => {
+  it("resolves url + token from env with documented fallbacks", () => {
+    expect(
+      workerFundingClientConfig({
+        GHOLA_PRIVATE_AGENT_WORKER_URL: "https://w.example",
+        PRIVATE_AGENT_EXECUTION_TOKEN: "tok",
+      }),
+    ).toEqual({ url: "https://w.example", token: "tok" });
+
+    expect(
+      workerFundingClientConfig({
+        GHOLA_CONNECTOR_SOLANA_PERPS_MARKET_URL: "https://fallback.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "tok2",
+      }),
+    ).toEqual({ url: "https://fallback.example", token: "tok2" });
+
+    expect(workerFundingClientConfig({})).toEqual({ url: "", token: "" });
   });
 });

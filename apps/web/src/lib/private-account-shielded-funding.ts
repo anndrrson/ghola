@@ -404,3 +404,125 @@ export function defaultEd25519Verify(
   const raw = spkiDer.length === 32 ? spkiDer : spkiDer.subarray(spkiDer.length - 32);
   return ed25519.verify(sig, msg, raw);
 }
+
+// ---------------------------------------------------------------------------
+// Web -> worker client for the attest route. Asks Ghola's own TEE worker to
+// fund a fresh credential out of the native shielded pool and return a signed
+// attestation, then verifies it locally before returning the persistable
+// funding_evidence_commitment. This is the call site that drives
+// POST /venues/shielded-funding/attest end to end.
+// ---------------------------------------------------------------------------
+
+/** Worker base URL — the private-agent worker that exposes the attest route. */
+const WORKER_URL_ENV = "GHOLA_PRIVATE_AGENT_WORKER_URL";
+/** Fallback URL: the worker is the same host the venue connectors target. */
+const WORKER_URL_FALLBACK_ENV = "GHOLA_CONNECTOR_SOLANA_PERPS_MARKET_URL";
+
+export interface WorkerFundingClientConfig {
+  url: string;
+  token: string;
+}
+
+/** Resolve the worker URL + execution token from env (worker auth surface). */
+export function workerFundingClientConfig(
+  env: Record<string, string | undefined> = process.env,
+): WorkerFundingClientConfig {
+  return {
+    url: (env[WORKER_URL_ENV] || env[WORKER_URL_FALLBACK_ENV] || "").trim(),
+    token: (
+      env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN ||
+      env.PRIVATE_AGENT_EXECUTION_TOKEN ||
+      ""
+    ).trim(),
+  };
+}
+
+export interface RequestWorkerFundingInput {
+  /** Prebuilt shielded withdraw bundle (from the prover/sealed runtime). */
+  withdraw_bundle: unknown;
+  /** Destination commitment of the fresh credential being funded. */
+  destination_commitment: string;
+  amount_bucket: string;
+  min_confirmations?: number;
+}
+
+export type RequestWorkerFundingResult =
+  | { ok: true; funding_evidence_commitment: string; amount_bucket: GholaFundingAmountBucket }
+  | {
+      ok: false;
+      reason: WorkerAttestationFailureReason | "worker_unconfigured" | "worker_unavailable" | "worker_rejected";
+      explanation: string;
+    };
+
+/**
+ * Drive the full native-funding handshake from the web side:
+ *   1. POST the withdraw bundle to the worker's attest route.
+ *   2. Receive the worker's Ed25519-signed attestation.
+ *   3. Re-verify it locally (signature + bindings) — never trust it blind.
+ *   4. Return the verified funding_evidence_commitment to persist.
+ *
+ * Fail-closed at every step. `fetchImpl` + `verifyEd25519` are injectable for
+ * deterministic tests.
+ */
+export async function requestWorkerFundingAttestation(
+  input: RequestWorkerFundingInput,
+  config: WorkerFundingClientConfig = workerFundingClientConfig(),
+  minConfirmations: number = shieldedPoolConfig().min_confirmations,
+  fetchImpl: typeof fetch = fetch,
+  verifyEd25519: (sig: Uint8Array, msg: Uint8Array, spkiDer: Uint8Array) => boolean = defaultEd25519Verify,
+): Promise<RequestWorkerFundingResult> {
+  if (!config.url || !config.token) {
+    return {
+      ok: false,
+      reason: "worker_unconfigured",
+      explanation: "Private-agent worker URL or execution token is not configured.",
+    };
+  }
+
+  let res: Response;
+  try {
+    res = await fetchImpl(new URL("/venues/shielded-funding/attest", config.url).toString(), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        authorization: `Bearer ${config.token}`,
+      },
+      body: JSON.stringify({
+        withdraw_bundle: input.withdraw_bundle,
+        destination_commitment: input.destination_commitment,
+        amount_bucket: input.amount_bucket,
+        ...(input.min_confirmations !== undefined
+          ? { min_confirmations: input.min_confirmations }
+          : {}),
+      }),
+    });
+  } catch {
+    return { ok: false, reason: "worker_unavailable", explanation: "Worker is unreachable." };
+  }
+
+  if (!res.ok) {
+    return {
+      ok: false,
+      reason: "worker_rejected",
+      explanation: `Worker rejected the attestation request (${res.status}).`,
+    };
+  }
+
+  let signed: SignedWorkerFundingAttestation;
+  try {
+    signed = (await res.json()) as SignedWorkerFundingAttestation;
+  } catch {
+    return { ok: false, reason: "worker_rejected", explanation: "Worker response was not valid JSON." };
+  }
+
+  // Trust nothing the worker said until the signature + bindings verify.
+  const verification = verifyWorkerFundingAttestation(
+    signed,
+    input.destination_commitment,
+    minConfirmations,
+    verifyEd25519,
+  );
+  return verification;
+}
