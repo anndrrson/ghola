@@ -17,6 +17,7 @@
 // (fetched from the shielded-pool relayer / indexer); this module decides. That
 // keeps it unit-testable without network and makes the verdict deterministic.
 
+import { ed25519 } from "@noble/curves/ed25519";
 import {
   gholaCommitment,
   isFundingAmountBucket,
@@ -251,4 +252,155 @@ export function verifiedFundingCommitment(
   verification: ShieldedFundingVerification,
 ): string | null {
   return verification.ok ? verification.funding_evidence_commitment : null;
+}
+
+// ---------------------------------------------------------------------------
+// Worker-attested funding (the "worker verifies, web trusts attested result"
+// path). The TEE worker holds the fresh credential, performs the withdraw +
+// verification in-process, and returns an Ed25519-signed attestation. The web
+// app verifies the signature against the pinned worker key and only then
+// persists the verified funding_evidence_commitment — it never trusts a
+// client-supplied commitment string.
+// ---------------------------------------------------------------------------
+
+const FUNDING_ATTESTATION_VERSION = "ghola-shielded-funding-attestation-v1";
+
+/** Pinned worker signer public key(s), base64 SPKI, comma-separated. */
+const WORKER_SIGNER_KEYS_ENV = "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64";
+
+export interface WorkerFundingAttestation {
+  version: string;
+  rail: string;
+  destination_commitment: string;
+  amount_bucket: string;
+  confirmations: number;
+  verified_at: string;
+  funding_evidence_commitment: string;
+}
+
+export interface SignedWorkerFundingAttestation {
+  attestation: WorkerFundingAttestation;
+  signature_b64: string;
+  signer_public_key_b64: string;
+}
+
+export type WorkerAttestationFailureReason =
+  | "version_mismatch"
+  | "rail_not_native"
+  | "amount_bucket_invalid"
+  | "destination_mismatch"
+  | "signer_not_pinned"
+  | "signature_invalid"
+  | "insufficient_confirmations";
+
+export type WorkerAttestationVerification =
+  | { ok: true; funding_evidence_commitment: string; amount_bucket: GholaFundingAmountBucket }
+  | { ok: false; reason: WorkerAttestationFailureReason; explanation: string };
+
+/**
+ * Canonical message bytes the worker signs. MUST byte-match the worker's
+ * `fundingAttestationMessage` (shielded_funding_attestation.js).
+ */
+function workerAttestationMessage(att: WorkerFundingAttestation): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify({
+      version: att.version,
+      rail: att.rail,
+      destination_commitment: att.destination_commitment,
+      amount_bucket: att.amount_bucket,
+      confirmations: att.confirmations,
+      verified_at: att.verified_at,
+    }),
+  );
+}
+
+function pinnedSignerKeys(): Set<string> {
+  return new Set(
+    (process.env[WORKER_SIGNER_KEYS_ENV] || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+}
+
+/**
+ * Verify a worker-signed funding attestation and bind it to the expected fresh
+ * credential. Fail-closed; on success returns the verified
+ * funding_evidence_commitment to persist.
+ *
+ * @param signed                the worker's signed attestation
+ * @param expectedDestination   the fresh credential's destination commitment
+ * @param minConfirmations      minimum confirmations required
+ * @param verifyEd25519         injected Ed25519 verifier
+ *                              (sig, msg, spkiDerPubKey) => boolean
+ */
+export function verifyWorkerFundingAttestation(
+  signed: SignedWorkerFundingAttestation,
+  expectedDestination: string,
+  minConfirmations: number,
+  verifyEd25519: (sig: Uint8Array, msg: Uint8Array, spkiDer: Uint8Array) => boolean,
+): WorkerAttestationVerification {
+  const att = signed.attestation;
+  if (att.version !== FUNDING_ATTESTATION_VERSION) {
+    return { ok: false, reason: "version_mismatch", explanation: "Unexpected attestation version." };
+  }
+  if (att.rail !== NATIVE_SHIELDED_RAIL) {
+    return { ok: false, reason: "rail_not_native", explanation: "Attestation rail is not the native pool." };
+  }
+  if (!isFundingAmountBucket(att.amount_bucket)) {
+    return { ok: false, reason: "amount_bucket_invalid", explanation: "Attested amount bucket is invalid." };
+  }
+  if (att.destination_commitment !== expectedDestination) {
+    return {
+      ok: false,
+      reason: "destination_mismatch",
+      explanation: "Attestation is for a different credential.",
+    };
+  }
+  if (att.confirmations < minConfirmations) {
+    return {
+      ok: false,
+      reason: "insufficient_confirmations",
+      explanation: "Attested confirmations are below the minimum.",
+    };
+  }
+  const pinned = pinnedSignerKeys();
+  // When no keys are pinned (dev), accept the self-described key; in production
+  // the env MUST pin keys so a rogue signer is rejected.
+  if (pinned.size > 0 && !pinned.has(signed.signer_public_key_b64)) {
+    return { ok: false, reason: "signer_not_pinned", explanation: "Worker signer key is not pinned." };
+  }
+  let sigOk = false;
+  try {
+    sigOk = verifyEd25519(
+      Uint8Array.from(Buffer.from(signed.signature_b64, "base64")),
+      workerAttestationMessage(att),
+      Uint8Array.from(Buffer.from(signed.signer_public_key_b64, "base64")),
+    );
+  } catch {
+    sigOk = false;
+  }
+  if (!sigOk) {
+    return { ok: false, reason: "signature_invalid", explanation: "Attestation signature did not verify." };
+  }
+  return {
+    ok: true,
+    funding_evidence_commitment: att.funding_evidence_commitment,
+    amount_bucket: att.amount_bucket,
+  };
+}
+
+/**
+ * Default Ed25519 verifier for worker attestations. The worker exports its
+ * public key as SPKI DER (44 bytes for Ed25519); @noble/curves expects the raw
+ * 32-byte key, which is the trailing 32 bytes of the SPKI structure. The worker
+ * signs the raw message (PureEdDSA hashes internally), so verify the raw bytes.
+ */
+export function defaultEd25519Verify(
+  sig: Uint8Array,
+  msg: Uint8Array,
+  spkiDer: Uint8Array,
+): boolean {
+  const raw = spkiDer.length === 32 ? spkiDer : spkiDer.subarray(spkiDer.length - 32);
+  return ed25519.verify(sig, msg, raw);
 }

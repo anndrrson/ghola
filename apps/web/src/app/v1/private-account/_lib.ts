@@ -2360,7 +2360,25 @@ export async function createStealthVenueAccountFromBody(
   ) {
     return { error: "sealed_stealth_secret_required" as const };
   }
-  const fundingEvidenceCommitment = stringValue(value.funding_evidence_commitment) || null;
+  // Funding evidence is NO LONGER trusted as an opaque client string. A stealth
+  // credential becomes funded only via a worker-signed attestation proving the
+  // fresh credential was funded by Ghola's OWN shielded pool. A bare
+  // funding_evidence_commitment string is ignored; an attestation that fails to
+  // verify is a hard error (never silently downgraded to unfunded).
+  let fundingEvidenceCommitment: string | null = null;
+  const attestationInput = value.worker_funding_attestation;
+  if (attestationInput && typeof attestationInput === "object") {
+    const verification = verifyWorkerFundingAttestation(
+      attestationInput as unknown as SignedWorkerFundingAttestation,
+      stringValue(value.funding_destination_commitment),
+      shieldedPoolConfig().min_confirmations,
+      defaultEd25519Verify,
+    );
+    if (!verification.ok) {
+      return { error: `funding_attestation_${verification.reason}` as const };
+    }
+    fundingEvidenceCommitment = verification.funding_evidence_commitment;
+  }
   const venueAccount = createStealthVenueAccount({
     account_commitment: account.account_commitment,
     venue_id: venueId,
