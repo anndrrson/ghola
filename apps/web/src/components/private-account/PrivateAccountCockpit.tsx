@@ -722,7 +722,7 @@ export function PrivateAccountCockpit() {
       onError: () => {
         setHyperliquidAccountStreamStatus("worker_unavailable");
         setHyperliquidAccount((current) => current
-          ? { ...current, stream_status: "worker_unavailable", trading_enabled: false }
+          ? { ...current, stream_status: "worker_unavailable" }
           : null);
       },
     });
@@ -3376,7 +3376,7 @@ function HyperliquidTradingPanel({
   const hasConnectedAccount = Boolean(
     accountSnapshot && accountSnapshot.account_source !== "none" && status !== "venue_access_required",
   );
-  const canPreviewTrade = status === "ready_to_trade" && accountLive;
+  const canPreviewTrade = status === "ready_to_trade";
 
   function update(patch: Partial<PrivateExecutionOrderDraft>) {
     onOrderChange(normalizeOrderForPlatform({ ...normalized, ...patch }, "hyperliquid_style_market"));
@@ -3544,7 +3544,7 @@ function HyperliquidTradingPanel({
               {status === "ready_to_trade"
                 ? accountLive
                   ? "Run the privacy check, then place the capped IOC order."
-                  : "Wait for the sealed account stream before previewing."
+                  : "Preview is available. Account stream will fill in when the worker update lands."
                 : "Market data is public. Connect an API wallet to show your account and trade."}
             </p>
           </div>

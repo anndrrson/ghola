@@ -1968,6 +1968,15 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
     });
     const raw = objectBody(await res.json().catch(() => null));
     if (!res.ok) {
+      if (res.status === 404 && (hasVault || hasManaged)) {
+        return localHyperliquidAccountSnapshot({
+          status: "ready_to_trade",
+          account_source: accountSource,
+          trading_enabled: true,
+          next_step: "Preview trade.",
+          stream_status: "worker_unavailable",
+        });
+      }
       return localHyperliquidAccountSnapshot({
         status: hyperliquidSnapshotStatusFromError(stringValue(raw.error_code) || stringValue(raw.error)),
         account_source: accountSource,
@@ -2068,6 +2077,15 @@ export async function hyperliquidAccountStreamForOwner(
       body: JSON.stringify(body),
     });
     if (!res.ok || !res.body) {
+      if (res.status === 404) {
+        return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
+          status: "ready_to_trade",
+          account_source: accountSource,
+          trading_enabled: true,
+          next_step: "Preview trade.",
+          stream_status: "worker_unavailable",
+        }));
+      }
       return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
         status: "worker_unavailable",
         account_source: accountSource,
