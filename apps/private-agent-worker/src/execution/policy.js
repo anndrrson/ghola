@@ -8,6 +8,7 @@ const COINBASE_ALLOWED = new Set([
   "fills",
   "reconcile",
 ]);
+const SOLANA_PERPS_ALLOWED = new Set(["read", "perp_limit_order", "cancel", "fills", "reconcile"]);
 const BLOCKED_OPERATION_WORDS = [
   "withdraw",
   "transfer",
@@ -30,7 +31,7 @@ export class ExecutionPolicyError extends Error {
 }
 
 export function assertVenueOperationAllowed(venueId, operationClass) {
-  const allowed = venueId === "coinbase_advanced" ? COINBASE_ALLOWED : HYPERLIQUID_ALLOWED;
+  const allowed = allowedOperationsForVenue(venueId);
   if (!allowed.has(operationClass)) {
     throw new ExecutionPolicyError("operation_class is unsupported");
   }
@@ -58,7 +59,7 @@ export function normalizeInstruction(value, { venue_id, operation_class }) {
   assertVenueOperationAllowed(venue_id, op);
   const order = value.order && typeof value.order === "object" ? value.order : null;
   const cancel = value.cancel && typeof value.cancel === "object" ? value.cancel : null;
-  if (["limit_order", "spot_limit_order", "spot_market_order", "preview_order"].includes(op)) {
+  if (["limit_order", "spot_limit_order", "spot_market_order", "preview_order", "perp_limit_order"].includes(op)) {
     if (!order) throw new ExecutionPolicyError("execution instruction order is required");
     return {
       version: 1,
@@ -203,12 +204,25 @@ export function enforceInstructionPolicy({ body, instruction, session, state }) 
     if (!count.ok) throw new ExecutionPolicyError("private execution rate limit exceeded", 429);
   }
   if (state && policy?.policy_commitment && Number.isInteger(policy.max_order_count)) {
-    const countedOps = ["limit_order", "spot_limit_order", "spot_market_order", "preview_order"];
+    const countedOps = ["limit_order", "spot_limit_order", "spot_market_order", "preview_order", "perp_limit_order"];
     if (countedOps.includes(instruction.operation_class)) {
       const count = state.incrementPolicyCount(policy.policy_commitment, policy.max_order_count);
       if (!count.ok) throw new ExecutionPolicyError("session policy order count exceeded");
     }
   }
+}
+
+function allowedOperationsForVenue(venueId) {
+  if (venueId === "coinbase_advanced") return COINBASE_ALLOWED;
+  if (
+    venueId === "phoenix" ||
+    venueId === "drift" ||
+    venueId === "backpack" ||
+    venueId === "solana_perps"
+  ) {
+    return SOLANA_PERPS_ALLOWED;
+  }
+  return HYPERLIQUID_ALLOWED;
 }
 
 function enforceHyperliquidTinyFillPolicy({ body, instruction, state, notional }) {

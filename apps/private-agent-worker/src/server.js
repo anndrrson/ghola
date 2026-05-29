@@ -7,9 +7,11 @@ import {
   createHyperliquidManagedAllocation,
   executeCoinbaseOrder,
   executeHyperliquidOrder,
+  executeSolanaPerpsOrder,
   storeCoinbaseSession,
   storeHyperliquidSession,
   storePrivateAgentSession,
+  verifySolanaPerpsOrderNoSubmit,
 } from "./execution/private-execution.js";
 import { createWorkerState } from "./state/private-state.js";
 
@@ -34,7 +36,9 @@ const PLAINTEXT_LEAK_KEYS = new Set([
   "leverage",
   "leverage_update",
   "messages",
+  "mnemonic",
   "order_payload",
+  "order_params",
   "orders",
   "plaintext",
   "policy",
@@ -42,11 +46,14 @@ const PLAINTEXT_LEAK_KEYS = new Set([
   "prompt",
   "raw_order",
   "raw_private_key",
+  "secret_key",
+  "seed_phrase",
   "source",
   "strategy",
   "strategy_text",
   "system_prompt",
   "vault_transfer",
+  "wallet_private_key",
 ]);
 const RECIPIENT_REPORT_DOMAIN = "ghola-private-agent-recipient-v1";
 const DSTACK_QUOTE_PATHS = [
@@ -308,7 +315,10 @@ async function readiness(recipient) {
       Boolean(attestation.attestation_hash));
   if (!attestedReady) missing.push("attestation");
   if (!env("PHALA_CVM_IMAGE_DIGEST", env("PRIVATE_AGENT_IMAGE_DIGEST"))) missing.push("image_digest");
-  if (!attestation.measurement_hex) {
+  const dstackQuoteReady =
+    boolEnv("PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE") &&
+    Boolean(attestation.attestation_hash);
+  if (!attestation.measurement_hex && !dstackQuoteReady) {
     missing.push("measurement");
   }
   if (!attestation.attestation_hash) {
@@ -609,6 +619,14 @@ function validateHyperliquidManagedAllocationRequest(body) {
   return errors;
 }
 
+function hyperliquidValidationErrorCode(errors) {
+  return errors.some((error) =>
+    /encrypted_execution_vault|vault_commitment|execution credentials|API wallet/i.test(error)
+  )
+    ? "venue_access_required"
+    : "connector_submit_failed";
+}
+
 function hyperliquidSessionReceipt(body) {
   const executionMode = hyperliquidExecutionMode(body);
   const sessionCommitment = commitment("hyperliquid_session", {
@@ -629,6 +647,9 @@ function hyperliquidSessionReceipt(body) {
     vault_commitment: body.vault_commitment || null,
     allocation_commitment: body.managed_allocation_commitment || body.allocation_commitment || null,
     policy_commitment: body.policy_commitment,
+    venue_access_source: executionMode === "byo_api_key" ? "user_provided_credentials" : "ghola_managed_testnet",
+    ghola_access_role: "private_execution_router",
+    venue_gate: "venue_accepts_or_rejects_credentials",
     accepted_at: new Date().toISOString(),
     sealed_execution_required: true,
   };
@@ -661,6 +682,9 @@ function hyperliquidOrderReceipt(body, status = "submitted") {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
       hyperliquid_sees: "execution_account_and_order_activity",
+      venue_access_source: executionMode === "byo_api_key" ? "user_provided_credentials" : "ghola_managed_testnet",
+      ghola_access_role: "private_execution_router",
+      venue_gate: "venue_accepts_or_rejects_credentials",
     },
     updated_at: new Date().toISOString(),
   };
@@ -761,6 +785,58 @@ function validateCoinbaseReconcileRequest(body, recipient) {
   return errors;
 }
 
+function validateSolanaPerpsOrderRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Solana perps credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.platform_class !== "solana_perps_market") errors.push("platform_class must be solana_perps_market");
+  if (body.venue_id && !["phoenix", "drift", "backpack", "solana_perps"].includes(body.venue_id)) {
+    errors.push("venue_id is unsupported");
+  }
+  if (!["user_stealth", "ghola_pooled", undefined, null].includes(body.execution_mode)) {
+    errors.push("execution_mode is unsupported");
+  }
+  if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
+  if (!["read", "perp_limit_order", "cancel", "fills", "reconcile"].includes(body.operation_class)) {
+    errors.push("operation_class is unsupported");
+  }
+  if ("encrypted_execution_vault" in body) {
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  } else if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
+    errors.push("encrypted_execution_vault is required for live Solana perps submit");
+  }
+  if ("encrypted_execution_instruction_bundle" in body) {
+    errors.push(...validateEncryptedBundle(
+      body.encrypted_execution_instruction_bundle,
+      recipient,
+      "encrypted_execution_instruction_bundle",
+    ));
+  } else {
+    errors.push("encrypted_execution_instruction_bundle is required");
+  }
+  return errors;
+}
+
+function validateSolanaPerpsReconcileRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Solana perps credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
+  if (body.venue_id && !["phoenix", "drift", "backpack", "solana_perps"].includes(body.venue_id)) {
+    errors.push("venue_id is unsupported");
+  }
+  if ("encrypted_execution_instruction_bundle" in body) {
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_instruction_bundle, recipient, "encrypted_execution_instruction_bundle"));
+  }
+  return errors;
+}
+
 function validateOmnibusAllocation(allocation) {
   const errors = [];
   if (!isObject(allocation)) {
@@ -838,6 +914,45 @@ function coinbaseOrderReceipt(body, status = "submitted") {
       coinbase_sees: body.execution_mode === "partner_omnibus"
         ? "partner_pooled_account_and_order_activity"
         : "byo_account_and_order_activity",
+    },
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function solanaPerpsOrderReceipt(body, status = "submitted") {
+  const venueId = ["phoenix", "drift", "backpack"].includes(body.venue_id) ? body.venue_id : "phoenix";
+  const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
+  const providerRefCommitment = commitment(`${venueId}_provider_ref`, {
+    work_order_commitment: body.work_order_commitment,
+    operation_class: body.operation_class,
+    execution_mode: executionMode,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: body.allocation_commitment || null,
+  });
+  return {
+    version: 1,
+    venue_id: venueId,
+    platform_class: "solana_perps_market",
+    execution_mode: executionMode,
+    status,
+    work_order_commitment: body.work_order_commitment,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: body.allocation_commitment || null,
+    provider_ref_commitment: providerRefCommitment,
+    result_commitment: commitment(`${venueId}_result`, {
+      work_order_commitment: body.work_order_commitment,
+      provider_ref_commitment: providerRefCommitment,
+      status,
+    }),
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      solana_perps_sees: executionMode === "ghola_pooled"
+        ? "pooled_venue_account_and_order_activity"
+        : "stealth_venue_account_and_order_activity",
+      venue_access_source: executionMode,
+      venue_gate: "venue_accepts_or_rejects_account_and_order",
+      public_chain_sees: "venue_account_activity_visible_if_public_settlement",
     },
     updated_at: new Date().toISOString(),
   };
@@ -977,6 +1092,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           return json(res, 400, {
             error: "invalid hyperliquid private session request",
             details: errors,
+            error_code: hyperliquidValidationErrorCode(errors),
           });
         }
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
@@ -1008,6 +1124,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           return json(res, 400, {
             error: "invalid hyperliquid private order request",
             details: errors,
+            error_code: hyperliquidValidationErrorCode(errors),
           });
         }
         if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
@@ -1034,6 +1151,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           return json(res, 400, {
             error: "invalid hyperliquid reconcile request",
             details: errors,
+            error_code: hyperliquidValidationErrorCode(errors),
           });
         }
         if (body.encrypted_execution_vault && body.encrypted_execution_instruction_bundle) {
@@ -1156,6 +1274,100 @@ export function createPrivateAgentWorkerServer(options = {}) {
         }, "reconciled"));
       }
 
+      if (req.method === "POST" && url.pathname === "/venues/solana-perps/orders") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateSolanaPerpsOrderRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid solana perps private order request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const receipt = await executeSolanaPerpsOrder({ body, recipient, state });
+        return json(res, 202, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/solana-perps/verify") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateSolanaPerpsOrderRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid solana perps private verification request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const receipt = await verifySolanaPerpsOrderNoSubmit({ body, recipient, state });
+        return json(res, 200, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/solana-perps/reconcile") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateSolanaPerpsReconcileRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid solana perps reconcile request",
+            details: errors,
+          });
+        }
+        if (body.encrypted_execution_instruction_bundle) {
+          const receipt = await executeSolanaPerpsOrder({
+            body: {
+              ...body,
+              venue_id: body.venue_id || "phoenix",
+              platform_class: "solana_perps_market",
+              execution_mode: body.execution_mode || "user_stealth",
+              operation_class: "reconcile",
+            },
+            recipient,
+            state,
+          });
+          return json(res, 200, receipt);
+        }
+        return json(res, 200, solanaPerpsOrderReceipt({
+          ...body,
+          venue_id: body.venue_id || "phoenix",
+          platform_class: "solana_perps_market",
+          execution_mode: body.execution_mode || "user_stealth",
+          operation_class: "reconcile",
+        }, "reconciled"));
+      }
+
       if (req.method === "POST" && url.pathname === "/omnibus/allocations") {
         const token = requiredAuthToken();
         if (!tokensEqual(bearer(req), token)) {
@@ -1203,6 +1415,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
     } catch (error) {
       return json(res, error.status || 500, {
         error: error.message || "internal error",
+        error_code: error.code || error.error_code || undefined,
       });
     }
   });

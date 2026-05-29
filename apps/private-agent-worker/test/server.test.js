@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ed25519 } from "@noble/curves/ed25519";
+import { Keypair } from "@solana/web3.js";
 import {
   createPrivateAgentWorkerServer,
   loadRecipient,
@@ -164,6 +165,30 @@ async function encryptedCoinbaseVault(baseUrl) {
     `recipient:${target.recipient_id}`,
     "mode:byo_api_key",
     "network:sandbox",
+  ].join("|"));
+}
+
+async function encryptedSolanaPerpsVault(baseUrl) {
+  const target = await recipient(baseUrl);
+  const keypair = Keypair.generate();
+  return sealedBundle(baseUrl, {
+    version: 1,
+    kind: "ghola_solana_perps_execution_vault",
+    venue_id: "phoenix",
+    network: "mainnet",
+    authority: keypair.publicKey.toBase58(),
+    wallet_private_key: Array.from(keypair.secretKey),
+    api_url: "https://perp-api.phoenix.trade",
+    rpc_url: "https://api.mainnet-beta.solana.com",
+    trader_pda_index: 0,
+    trader_subaccount_index: 0,
+  }, [
+    "ghola/solana-perps-execution-vault-v1",
+    "account:acct_commitment_123",
+    `recipient:${target.recipient_id}`,
+    "mode:user_stealth",
+    "network:mainnet",
+    "venue:phoenix",
   ].join("|"));
 }
 
@@ -409,6 +434,8 @@ describe("private agent worker", () => {
     assert.equal(body.status, "submitted");
     assert.match(body.provider_ref_commitment, /^hyperliquid_provider_ref_/);
     assert.equal(body.visibility_summary.main_wallet_exposed, false);
+    assert.equal(body.visibility_summary.venue_access_source, "user_provided_credentials");
+    assert.equal(body.visibility_summary.venue_gate, "venue_accepts_or_rejects_credentials");
     assert.equal(JSON.stringify(body).includes("sealed-hyperliquid-vault"), false);
 
     const cancelResponse = await fetch(`${baseUrl}/hyperliquid/orders`, {
@@ -447,6 +474,28 @@ describe("private agent worker", () => {
     const cancelBody = await cancelResponse.json();
     assert.equal(cancelBody.status, "cancelled");
     assert.equal(JSON.stringify(cancelBody).includes("connector_work_order_123"), false);
+  });
+
+  it("reports missing BYO Hyperliquid credentials as venue access required", async () => {
+    const response = await fetch(`${baseUrl}/hyperliquid/orders`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        work_order_commitment: "connector_work_order_missing_access_123",
+        policy_commitment: "hyperliquid_policy_commitment_123",
+        operation_class: "limit_order",
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.error_code, "venue_access_required");
+    assert.match(body.details.join(" "), /vault_commitment|encrypted_execution_vault/);
   });
 
   it("allocates and submits Hyperliquid managed testnet work without raw credentials", async () => {
@@ -875,5 +924,229 @@ describe("private agent worker", () => {
     assert.equal(response.status, 400);
     const body = await response.json();
     assert.match(body.details.join(" "), /plaintext Coinbase/);
+  });
+
+  it("submits Solana perps orders through sealed instructions only", async () => {
+    const workOrderCommitment = "connector_work_order_phoenix_123";
+    const response = await fetch(`${baseUrl}/venues/solana-perps/orders`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        venue_id: "phoenix",
+        platform_class: "solana_perps_market",
+        execution_mode: "user_stealth",
+        work_order_commitment: workOrderCommitment,
+        encrypted_execution_vault: await encryptedSolanaPerpsVault(baseUrl),
+        policy_commitment: "phoenix_policy_commitment_123",
+        operation_class: "perp_limit_order",
+        encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+          venue_id: "phoenix",
+          work_order_commitment: workOrderCommitment,
+          operation_class: "perp_limit_order",
+          order: {
+            market: "SOL-PERP",
+            side: "buy",
+            base_size: "0.1",
+            limit_price: "100",
+            tif: "Gtc",
+          },
+        }),
+        session_policy: {
+          market_allowlist: ["SOL-PERP"],
+          max_notional_bucket: "25",
+          max_order_count: 5,
+          kill_switch: false,
+        },
+      }),
+    });
+
+    assert.equal(response.status, 202);
+    const body = await response.json();
+    assert.equal(body.venue_id, "phoenix");
+    assert.equal(body.platform_class, "solana_perps_market");
+    assert.equal(body.execution_mode, "user_stealth");
+    assert.equal(body.status, "submitted");
+    assert.equal(body.visibility_summary.main_wallet_exposed, false);
+    assert.equal(body.visibility_summary.solana_perps_sees, "stealth_venue_account_and_order_activity");
+    assert.equal(JSON.stringify(body).includes("SOL-PERP"), false);
+    assert.equal(JSON.stringify(body).includes("wallet_private_key"), false);
+  });
+
+  it("reconciles Solana perps work orders without exposing raw venue details", async () => {
+    const response = await fetch(`${baseUrl}/venues/solana-perps/reconcile`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        venue_id: "phoenix",
+        work_order_commitment: "connector_work_order_phoenix_reconcile_123",
+        provider_ref_commitment: "phoenix_provider_ref_123",
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.status, "reconciled");
+    assert.equal(body.platform_class, "solana_perps_market");
+    assert.equal(body.visibility_summary.main_wallet_exposed, false);
+  });
+
+  it("verifies Solana perps no-submit readiness without broadcasting", async () => {
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE = "sdk_runner";
+    process.env.PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET = "true";
+    process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD = "5";
+    process.env.PRIVATE_AGENT_SOLANA_PERPS_NO_SUBMIT_LOCAL_CHECKS = "true";
+    const workOrderCommitment = "connector_work_order_phoenix_verify_123";
+    const response = await fetch(`${baseUrl}/venues/solana-perps/verify`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        venue_id: "phoenix",
+        platform_class: "solana_perps_market",
+        execution_mode: "user_stealth",
+        work_order_commitment: workOrderCommitment,
+        encrypted_execution_vault: await encryptedSolanaPerpsVault(baseUrl),
+        policy_commitment: "phoenix_policy_commitment_123",
+        operation_class: "perp_limit_order",
+        encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+          venue_id: "phoenix",
+          work_order_commitment: workOrderCommitment,
+          operation_class: "perp_limit_order",
+          order: {
+            market: "SOL",
+            side: "buy",
+            quote_size: "5",
+            limit_price: "250",
+            tif: "Ioc",
+            live_order_mode: "tiny_fill",
+          },
+        }),
+        session_policy: {
+          market_allowlist: ["SOL"],
+          max_notional_bucket: "5",
+          max_order_count: 5,
+          kill_switch: false,
+        },
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.status, "verified_no_funds");
+    assert.equal(body.checks.transaction_broadcast, false);
+    assert.equal(body.checks.order_packet_built, true);
+    assert.equal(body.visibility_summary.public_chain_sees, "no_transaction_sent");
+    assert.equal(JSON.stringify(body).includes("wallet_private_key"), false);
+  });
+
+  it("requires an explicit no-submit header for Solana perps verification", async () => {
+    const response = await fetch(`${baseUrl}/venues/solana-perps/verify`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        venue_id: "phoenix",
+        platform_class: "solana_perps_market",
+        execution_mode: "user_stealth",
+        work_order_commitment: "connector_work_order_phoenix_verify_missing_header",
+        operation_class: "perp_limit_order",
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.match(body.error, /no-submit verification header/);
+  });
+
+  it("rejects plaintext Solana perps secrets or orders", async () => {
+    const response = await fetch(`${baseUrl}/venues/solana-perps/orders`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        venue_id: "phoenix",
+        platform_class: "solana_perps_market",
+        execution_mode: "user_stealth",
+        work_order_commitment: "connector_work_order_phoenix_plaintext_123",
+        operation_class: "perp_limit_order",
+        nested: {
+          wallet_private_key: "raw-solana-key",
+          order_params: { market: "SOL-PERP", size: "raw" },
+        },
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.match(body.details.join(" "), /plaintext Solana perps/);
+  });
+
+  it("fails closed for live Solana perps submit until the SDK runner is configured", async () => {
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    const workOrderCommitment = "connector_work_order_phoenix_live_disabled_123";
+    const response = await fetch(`${baseUrl}/venues/solana-perps/orders`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        venue_id: "phoenix",
+        platform_class: "solana_perps_market",
+        execution_mode: "user_stealth",
+        work_order_commitment: workOrderCommitment,
+        encrypted_execution_vault: await encryptedSolanaPerpsVault(baseUrl),
+        policy_commitment: "phoenix_policy_commitment_123",
+        operation_class: "perp_limit_order",
+        encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+          venue_id: "phoenix",
+          work_order_commitment: workOrderCommitment,
+          operation_class: "perp_limit_order",
+          order: {
+            market: "SOL-PERP",
+            side: "buy",
+            base_size: "0.1",
+            limit_price: "100",
+          },
+        }),
+        session_policy: {
+          market_allowlist: ["SOL-PERP"],
+          max_notional_bucket: "25",
+          max_order_count: 5,
+          kill_switch: false,
+        },
+      }),
+    });
+
+    assert.equal(response.status, 503);
+    const body = await response.json();
+    assert.equal(body.error_code, "connector_submit_failed");
+    assert.match(body.error, /live submit is disabled/);
   });
 });

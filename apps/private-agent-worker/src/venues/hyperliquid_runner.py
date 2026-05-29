@@ -5,8 +5,8 @@ import time
 from decimal import Decimal, ROUND_DOWN, InvalidOperation, localcontext
 
 
-def fail(message):
-    print(json.dumps({"status": "failed", "error": message}))
+def fail(message, error_code="connector_submit_failed"):
+    print(json.dumps({"status": "failed", "error": message, "error_code": error_code}))
     sys.exit(1)
 
 
@@ -32,8 +32,11 @@ def main():
         if credential.get("network") == "testnet"
         else "https://api.hyperliquid.xyz"
     )
-    wallet = Account.from_key(credential["api_wallet_private_key"])
-    account_address = credential["account_address"].lower()
+    try:
+        wallet = Account.from_key(credential["api_wallet_private_key"])
+        account_address = credential["account_address"].lower()
+    except Exception:
+        fail("hyperliquid credentials are invalid", "venue_access_required")
     exchange = Exchange(wallet, base_url=base_url, account_address=account_address)
     op = instruction.get("operation_class")
 
@@ -70,7 +73,7 @@ def main():
             }))
             return
     except Exception:
-        fail("hyperliquid request failed")
+        fail("hyperliquid request failed", "venue_rejected")
 
     fail("unsupported hyperliquid operation")
 
@@ -88,9 +91,9 @@ def resolve_limit_order(info, order, account_address):
         quote_size = Decimal(str(order.get("quote_size") or "0"))
         slippage_bps = Decimal(str(order.get("max_slippage_bps") or "50"))
     except (InvalidOperation, ValueError):
-        fail("invalid hyperliquid tiny fill order")
+        fail("invalid hyperliquid tiny fill order", "venue_rejected")
     if quote_size <= 0 or slippage_bps <= 0:
-        fail("invalid hyperliquid tiny fill order")
+        fail("invalid hyperliquid tiny fill order", "venue_rejected")
 
     try:
         mids = info.all_mids()
@@ -104,12 +107,12 @@ def resolve_limit_order(info, order, account_address):
     slippage = slippage_bps / Decimal("10000")
     limit = mid * (Decimal("1") + slippage if order.get("side") == "buy" else Decimal("1") - slippage)
     if limit <= 0:
-        fail("invalid hyperliquid tiny fill limit")
+        fail("invalid hyperliquid tiny fill limit", "venue_rejected")
 
     price = price_to_5_sig(limit)
     base_size = floor_decimal(quote_size / price, coin_size_decimals(info, coin))
     if base_size <= 0:
-        fail("hyperliquid tiny fill size is below venue minimum")
+        fail("hyperliquid tiny fill size is below venue minimum", "venue_rejected")
     return {
         "base_size": decimal_text(base_size),
         "limit_price": decimal_text(price),
@@ -126,7 +129,7 @@ def check_account_value(info, account_address, quote_size):
             "0"
         ))
         if account_value > 0 and account_value < quote_size:
-            fail("hyperliquid account has insufficient available value")
+            fail("hyperliquid account has insufficient available value", "venue_rejected")
     except SystemExit:
         raise
     except Exception:

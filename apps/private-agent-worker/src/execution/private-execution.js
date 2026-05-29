@@ -17,6 +17,12 @@ import {
   loadManagedHyperliquidCredential,
   submitHyperliquidExecution,
 } from "../venues/hyperliquid.js";
+import {
+  normalizeSolanaPerpsVenueId,
+  solanaPerpsCredentialFromVault,
+  submitSolanaPerpsExecution,
+  verifySolanaPerpsNoSubmit,
+} from "../venues/solana_perps.js";
 
 export class PrivateExecutionError extends Error {
   constructor(message, status = 400) {
@@ -261,6 +267,9 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
       hyperliquid_sees: "execution_account_and_order_activity",
+      venue_access_source: executionMode === "byo_api_key" ? "user_provided_credentials" : "ghola_managed_testnet",
+      ghola_access_role: "private_execution_router",
+      venue_gate: "venue_accepts_or_rejects_credentials",
       public_chain_sees: allocation
         ? "no_public_wallet_settlement"
         : instruction.order?.live_order_mode === "tiny_fill"
@@ -356,6 +365,129 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
     }
   }
   return state.putIdempotency(body.work_order_commitment, receipt);
+}
+
+export async function executeSolanaPerpsOrder({ body, recipient, state }) {
+  const cached = state.getIdempotency(body.work_order_commitment);
+  if (cached?.receipt) return cached.receipt;
+  const venueId = normalizeSolanaPerpsVenueId(body.venue_id);
+  const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
+  let credential = null;
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
+    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+      aadPrefix: "ghola/solana-perps-execution-vault-v1",
+      expectedKind: "ghola_solana_perps_execution_vault",
+    });
+    credential = solanaPerpsCredentialFromVault(openedVault.json);
+  }
+  const session = state.findSession({
+    venue_id: venueId,
+    vault_commitment: body.vault_commitment || undefined,
+    allocation_commitment: body.allocation_commitment || undefined,
+    policy_commitment: body.policy_commitment || undefined,
+  });
+  const instruction = resolvePrivateCancelTarget(await instructionForBody({
+    body,
+    recipient,
+    venue_id: venueId,
+    session,
+  }), { state, venue_id: venueId });
+  enforceInstructionPolicy({ body, instruction, session, state });
+  const clientOrderId = state.deriveClientOrderId(venueId, body.work_order_commitment);
+  const adapterResult = await submitSolanaPerpsExecution({
+    credential,
+    instruction,
+    clientOrderId,
+    venueId,
+    executionMode,
+  });
+  const receipt = executionReceipt({
+    venue_id: venueId,
+    platform_class: "solana_perps_market",
+    execution_mode: executionMode,
+    body,
+    status: adapterResult.status,
+    provider_ref_seed: adapterResult.provider_ref_seed,
+    result_seed: adapterResult.result_seed,
+    fills: adapterResult.fills,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      solana_perps_sees: executionMode === "ghola_pooled"
+        ? "pooled_venue_account_and_order_activity"
+        : "stealth_venue_account_and_order_activity",
+      venue_access_source: executionMode,
+      ghola_access_role: "sealed_private_execution_router",
+      venue_gate: "venue_accepts_or_rejects_account_and_order",
+      public_chain_sees: "venue_account_activity_visible_if_public_settlement",
+    },
+  });
+  return state.putIdempotency(body.work_order_commitment, receipt);
+}
+
+export async function verifySolanaPerpsOrderNoSubmit({ body, recipient, state }) {
+  const venueId = normalizeSolanaPerpsVenueId(body.venue_id);
+  const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
+  const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+    aadPrefix: "ghola/solana-perps-execution-vault-v1",
+    expectedKind: "ghola_solana_perps_execution_vault",
+  });
+  const credential = solanaPerpsCredentialFromVault(openedVault.json);
+  const session = state.findSession({
+    venue_id: venueId,
+    vault_commitment: body.vault_commitment || undefined,
+    allocation_commitment: body.allocation_commitment || undefined,
+    policy_commitment: body.policy_commitment || undefined,
+  });
+  const instruction = resolvePrivateCancelTarget(await instructionForBody({
+    body,
+    recipient,
+    venue_id: venueId,
+    session,
+  }), { state, venue_id: venueId });
+  enforceInstructionPolicy({ body, instruction, session, state: null });
+  const clientOrderId = state.deriveClientOrderId(venueId, body.work_order_commitment);
+  const adapterResult = await verifySolanaPerpsNoSubmit({
+    credential,
+    instruction,
+    clientOrderId,
+    venueId,
+    executionMode,
+  });
+  const providerRefCommitment = commitment(`${venueId}_provider_ref`, adapterResult.provider_ref_seed);
+  return {
+    version: 1,
+    venue_id: venueId,
+    platform_class: "solana_perps_market",
+    execution_mode: executionMode,
+    status: "verified_no_funds",
+    work_order_commitment: body.work_order_commitment,
+    vault_commitment: body.vault_commitment || null,
+    provider_ref_commitment: providerRefCommitment,
+    result_commitment: commitment(`${venueId}_result`, {
+      work_order_commitment: body.work_order_commitment,
+      provider_ref_commitment: providerRefCommitment,
+      status: "verified_no_funds",
+      seed: adapterResult.result_seed,
+    }),
+    verification_commitment: commitment("solana_perps_no_submit_verification", {
+      work_order_commitment: body.work_order_commitment,
+      provider_ref_commitment: providerRefCommitment,
+      result_seed: adapterResult.result_seed,
+      checks: adapterResult.checks,
+    }),
+    checks: adapterResult.checks,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      solana_perps_sees: "no_submit_order_packet_prepared",
+      venue_access_source: executionMode,
+      ghola_access_role: "sealed_private_execution_router",
+      venue_gate: "not_tested_without_submit",
+      public_chain_sees: "no_transaction_sent",
+    },
+    updated_at: new Date().toISOString(),
+  };
 }
 
 async function instructionForBody({ body, recipient, venue_id, session }) {
