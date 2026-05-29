@@ -8,22 +8,23 @@ const MAINNET_API_URL = "https://api.hyperliquid.xyz";
 const TESTNET_API_URL = "https://api.hyperliquid-testnet.xyz";
 
 export class HyperliquidExecutionError extends Error {
-  constructor(message, status = 502) {
+  constructor(message, status = 502, code = "connector_submit_failed") {
     super(message);
     this.name = "HyperliquidExecutionError";
     this.status = status;
+    this.code = code;
   }
 }
 
 export function hyperliquidCredentialFromVault(vault) {
   if (!vault || typeof vault !== "object") {
-    throw new HyperliquidExecutionError("hyperliquid execution vault is invalid", 400);
+    throw new HyperliquidExecutionError("hyperliquid execution vault is invalid", 400, "venue_access_required");
   }
   if (vault.kind !== "ghola_hyperliquid_execution_vault") {
-    throw new HyperliquidExecutionError("hyperliquid execution vault kind is invalid", 400);
+    throw new HyperliquidExecutionError("hyperliquid execution vault kind is invalid", 400, "venue_access_required");
   }
   if (!vault.hyperliquid_account_address || !vault.api_wallet_private_key) {
-    throw new HyperliquidExecutionError("hyperliquid execution credentials are missing", 400);
+    throw new HyperliquidExecutionError("hyperliquid execution credentials are missing", 400, "venue_access_required");
   }
   return {
     network: vault.network === "testnet" ? "testnet" : "mainnet",
@@ -213,7 +214,12 @@ function defaultRunner(payload) {
       clearTimeout(timeout);
       const text = Buffer.concat(stdout).toString("utf8");
       if (code !== 0) {
-        reject(new HyperliquidExecutionError("hyperliquid runner failed", 502));
+        const parsed = parseRunnerFailure(text);
+        reject(new HyperliquidExecutionError(
+          parsed.message,
+          parsed.status,
+          parsed.code,
+        ));
         return;
       }
       try {
@@ -225,4 +231,26 @@ function defaultRunner(payload) {
     child.stdin.write(JSON.stringify(payload));
     child.stdin.end();
   });
+}
+
+function parseRunnerFailure(text) {
+  try {
+    const body = JSON.parse(text || "{}");
+    const message = typeof body.error === "string" && body.error.trim()
+      ? body.error.trim()
+      : "hyperliquid runner failed";
+    const code = body.error_code === "venue_rejected"
+      ? "venue_rejected"
+      : body.error_code === "venue_access_required"
+        ? "venue_access_required"
+        : "connector_submit_failed";
+    const status = code === "venue_rejected" ? 422 : code === "venue_access_required" ? 400 : 502;
+    return { message, code, status };
+  } catch {
+    return {
+      message: "hyperliquid runner failed",
+      code: "connector_submit_failed",
+      status: 502,
+    };
+  }
 }

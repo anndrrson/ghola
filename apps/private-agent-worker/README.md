@@ -20,6 +20,9 @@ local testing.
 - `POST /venues/coinbase/sessions`
 - `POST /venues/coinbase/orders`
 - `POST /venues/coinbase/reconcile`
+- `POST /venues/solana-perps/orders`
+- `POST /venues/solana-perps/verify`
+- `POST /venues/solana-perps/reconcile`
 - `POST /omnibus/allocations`
 - `POST /omnibus/reconcile`
 
@@ -29,6 +32,22 @@ Hyperliquid account IDs, API secrets, prompts, strategy text, policies, and raw
 order payloads are rejected recursively. V1 hides this material from the normal
 Ghola app/operator, but Hyperliquid still sees the execution account and order
 activity.
+
+The Solana perps endpoints are the Phoenix/Drift/Backpack-style venue pilot
+surface. They accept commitment-only work orders plus sealed instruction
+bundles, reject raw Solana secrets and raw order payloads, and return
+commitment receipts that distinguish main-wallet exposure from venue-visible
+account/order activity. Live submit is disabled unless
+`PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE=sdk_runner` and
+`PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET=true` are configured. The current live
+path uses the official Phoenix Rise SDK to submit capped `tiny_fill` IOC orders
+from a sealed Phoenix trader-authority vault.
+
+`POST /venues/solana-perps/verify` is the production no-funds verification
+lane. It requires `x-ghola-no-submit-verify: true`, opens the same sealed
+Phoenix vault and instruction bundles as live submit, checks the live gates,
+RPC reachability, Phoenix SDK readiness, and order-packet construction, and
+returns `verified_no_funds` without broadcasting a transaction.
 
 Live execution is performed only inside this worker. The worker opens
 `sealed-provider-v1` vaults/instructions with its attestation-bound X25519 key,
@@ -60,6 +79,12 @@ the cockpit flow before work-order creation, `preview:<preview_commitment>`.
   allocations
 - `PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_PATH` or
   `PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON` for partner omnibus
+- `PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE=sdk_runner` for Phoenix live,
+  otherwise `disabled`
+- `PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET=true` for Phoenix live,
+  otherwise `false`
+- `PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD=5`
+- `PRIVATE_AGENT_SOLANA_RPC_URL`
 - `PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS=12000`
 
 When `PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE=true`, the worker requests a dstack
