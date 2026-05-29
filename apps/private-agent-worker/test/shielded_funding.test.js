@@ -173,12 +173,14 @@ test("fundFreshCredential polls until confirmed", async () => {
       ];
       let i = 0;
       const fetchImpl = async (url) => {
-        if (url.includes("/relay")) {
-          return { ok: true, status: 200, json: async () => ({ relay_id: "relay-1" }) };
+        // Status URLs (/status/relay-1) contain the "/relay" substring, so
+        // match the more specific /status/ route first.
+        if (url.includes("/status/")) {
+          const body = statuses[Math.min(i, statuses.length - 1)];
+          i += 1;
+          return { ok: true, status: 200, json: async () => body };
         }
-        const body = statuses[Math.min(i, statuses.length - 1)];
-        i += 1;
-        return { ok: true, status: 200, json: async () => body };
+        return { ok: true, status: 200, json: async () => ({ relay_id: "relay-1" }) };
       };
       const obs = await fundFreshCredential({
         withdraw_bundle: BUNDLE,
@@ -205,10 +207,10 @@ test("fundFreshCredential returns last non-confirmed observation on timeout (fai
     async () => {
       let clock = 0;
       const fetchImpl = async (url) => {
-        if (url.includes("/relay")) {
-          return { ok: true, status: 200, json: async () => ({ relay_id: "relay-1" }) };
+        if (url.includes("/status/")) {
+          return { ok: true, status: 200, json: async () => ({ status: "pending", confirmations: 0 }) };
         }
-        return { ok: true, status: 200, json: async () => ({ status: "pending", confirmations: 0 }) };
+        return { ok: true, status: 200, json: async () => ({ relay_id: "relay-1" }) };
       };
       const obs = await fundFreshCredential({
         withdraw_bundle: BUNDLE,
