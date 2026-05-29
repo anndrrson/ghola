@@ -1176,3 +1176,63 @@ describe("private agent worker", () => {
     assert.match(body.error, /live submit is disabled/);
   });
 });
+
+test("shielded-funding/attest rejects unauthenticated requests", async () => {
+  await withServer(test, async (url) => {
+    const res = await postJson(url, "/venues/shielded-funding/attest", SEALED_HEADERS, {
+      withdraw_bundle: { instruction_data_hex: "ab", accounts: [] },
+      destination_commitment: "dest-1",
+      amount_bucket: "25",
+    });
+    assert.equal(res.status, 401);
+  }, EXEC_ENV);
+});
+
+test("shielded-funding/attest requires the sealed-execution header", async () => {
+  await withServer(test, async (url) => {
+    const token = process.env.PRIVATE_AGENT_EXECUTION_TOKEN;
+    const res = await postJson(
+      url,
+      "/venues/shielded-funding/attest",
+      { "content-type": "application/json", authorization: `Bearer ${token}` },
+      { destination_commitment: "dest-1", amount_bucket: "25" },
+    );
+    assert.equal(res.status, 400);
+  }, EXEC_ENV);
+});
+
+test("shielded-funding/attest validates the request shape", async () => {
+  await withServer(test, async (url) => {
+    const token = process.env.PRIVATE_AGENT_EXECUTION_TOKEN;
+    const res = await postJson(url, "/venues/shielded-funding/attest", authHeaders(token), {
+      destination_commitment: "dest-1",
+    });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.details.some((d) => d.includes("withdraw_bundle")));
+    assert.ok(body.details.some((d) => d.includes("amount_bucket")));
+  }, EXEC_ENV);
+});
+
+test("shielded-funding/attest returns a signed attestation in dry-run", async () => {
+  await withServer(
+    test,
+    async (url) => {
+      const token = process.env.PRIVATE_AGENT_EXECUTION_TOKEN;
+      const res = await postJson(url, "/venues/shielded-funding/attest", authHeaders(token), {
+        // Short destination so the dry-run relayer echo round-trips intact.
+        withdraw_bundle: { instruction_data_hex: "ab", accounts: [] },
+        destination_commitment: "dest-1",
+        amount_bucket: "25",
+      });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.attestation.rail, "ghola_shielded_pool");
+      assert.equal(body.attestation.destination_commitment, "dest-1");
+      assert.equal(body.attestation.amount_bucket, "25");
+      assert.ok(body.signature_b64.length > 0);
+      assert.ok(body.signer_public_key_b64.length > 0);
+    },
+    { ...EXEC_ENV, PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
+  );
+});

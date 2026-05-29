@@ -15,6 +15,10 @@ import {
   verifySolanaPerpsOrderNoSubmit,
 } from "./execution/private-execution.js";
 import { createWorkerState } from "./state/private-state.js";
+import {
+  attestFreshCredentialFunded,
+  FundingAttestationError,
+} from "./venues/shielded_funding_attestation.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
 const PUBLIC_KEY_HEX_RE = /^[0-9a-f]{64}$/i;
@@ -1001,6 +1005,41 @@ function omnibusAllocationReceipt(body, status = "allocated") {
   };
 }
 
+function validateShieldedFundingAttestRequest(body) {
+  const errors = [];
+  if (!isObject(body)) {
+    errors.push("request body must be an object");
+    return errors;
+  }
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext secret fields");
+  }
+  const bundle = body.withdraw_bundle;
+  if (!isObject(bundle)) {
+    errors.push("withdraw_bundle is required");
+  } else {
+    if (!isNonEmptyString(bundle.instruction_data_hex)) {
+      errors.push("withdraw_bundle.instruction_data_hex is required");
+    }
+    if (!Array.isArray(bundle.accounts)) {
+      errors.push("withdraw_bundle.accounts must be an array");
+    }
+  }
+  if (!isNonEmptyString(body.destination_commitment)) {
+    errors.push("destination_commitment is required");
+  }
+  if (!isNonEmptyString(body.amount_bucket)) {
+    errors.push("amount_bucket is required");
+  }
+  if (
+    body.min_confirmations !== undefined &&
+    !(Number.isInteger(body.min_confirmations) && body.min_confirmations > 0)
+  ) {
+    errors.push("min_confirmations must be a positive integer when provided");
+  }
+  return errors;
+}
+
 export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
   const state = options.state || createWorkerState(dataDir());
@@ -1458,6 +1497,46 @@ export function createPrivateAgentWorkerServer(options = {}) {
           });
         }
         return json(res, 200, omnibusAllocationReceipt(body, "reconciled"));
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/shielded-funding/attest") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateShieldedFundingAttestRequest(body);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid shielded funding attestation request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        try {
+          const signed = await attestFreshCredentialFunded({
+            withdraw_bundle: body.withdraw_bundle,
+            destination_commitment: body.destination_commitment,
+            amount_bucket: body.amount_bucket,
+            minConfirmations: Number.isInteger(body.min_confirmations)
+              ? body.min_confirmations
+              : undefined,
+          });
+          return json(res, 200, signed);
+        } catch (err) {
+          if (err instanceof FundingAttestationError) {
+            return json(res, err.status, { error: err.message, code: err.code });
+          }
+          throw err;
+        }
       }
 
       return json(res, 404, { error: "not found" });
