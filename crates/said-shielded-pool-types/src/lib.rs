@@ -25,23 +25,27 @@ pub const FIELD_BYTES: usize = 32;
 pub type FieldBytes = [u8; FIELD_BYTES];
 
 /// Asset identifier — Poseidon(token_mint_pubkey). 32 bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// `Debug` is hand-written (see bottom of file) to print only a short
+/// non-reversible tag — never the full field element — so a stray `{:?}`
+/// in a log/panic cannot dump linkable on-chain values verbatim.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AssetId(pub FieldBytes);
 
 /// Commitment = Poseidon(amount, asset_id, owner_pubkey, blinding).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Commitment(pub FieldBytes);
 
 /// Nullifier = Poseidon(spending_key, commitment, leaf_index).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Nullifier(pub FieldBytes);
 
 /// Merkle root of the commitment tree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MerkleRoot(pub FieldBytes);
 
-/// Shielded note (UTXO).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Shielded note (UTXO). `Debug` is hand-written to fully redact contents
+/// (amount/owner/blinding open the UTXO).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Note {
     pub amount: u64,
     pub asset_id: AssetId,
@@ -70,19 +74,19 @@ pub struct SpendingKey(pub FieldBytes);
 /// nullifier-deriving key. Together they re-derive every nullifier the
 /// agent will emit, enabling complete spend-side auditability without
 /// authorization power.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct FullViewingKey {
     pub ak: FieldBytes,
     pub nk: FieldBytes,
 }
 
 /// Incoming Viewing Key — decrypt incoming notes only (no nullifier derivation).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct IncomingViewingKey(pub FieldBytes);
 
 /// Groth16 proof in BN254 affine, big-endian — matches `groth16-solana`
 /// (Lightprotocol/groth16-solana) expected encoding.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Groth16Proof {
     /// G1 point (compressed = 32 bytes, uncompressed = 64). We carry both
     /// forms; on-chain the program uses compressed via `alt_bn128_g1_decompress`.
@@ -98,7 +102,7 @@ pub struct Groth16Proof {
 
 /// Public inputs to the transfer circuit. Field order MUST match
 /// `circuits/transaction.circom`'s public signal declaration. See SPEC.md §4.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PublicInputs {
     pub root: MerkleRoot,
     pub input_nullifiers: Vec<Nullifier>,
@@ -109,7 +113,7 @@ pub struct PublicInputs {
 }
 
 /// A complete proof bundle ready for on-chain submission.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProofBundle {
     pub proof: Groth16Proof,
     pub public_inputs: PublicInputs,
@@ -126,7 +130,7 @@ pub struct ProofBundle {
 /// secret-bearing fields. The witness JSON written to the prover's
 /// temp dir is additionally cleaned up via the `TempArtifacts` RAII
 /// guard in `said-shielded-pool-prover::backend::snarkjs`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TransferWitness {
     pub input_notes: Vec<Note>,
     pub input_paths: Vec<MerklePath>,
@@ -182,7 +186,7 @@ impl Zeroize for Note {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MerklePath {
     pub siblings: Vec<FieldBytes>, // length = TREE_DEPTH
     pub path_bits: Vec<bool>,      // length = TREE_DEPTH
@@ -249,6 +253,69 @@ pub struct BatchedUpdateWitness {
     pub path_elements: Vec<Vec<String>>,
 }
 
+// ============================================================================
+//  Redacting `Debug` impls (zero-leakage hardening)
+// ============================================================================
+//
+// None of the secret- or linkable-bearing types derive `Debug`. Instead we
+// hand-write `Debug` so that a stray `{:?}` (in a log line, a `.expect(...)`
+// payload, a panic during unwinding, or a `#[derive(Debug)]` on an enclosing
+// type) can NEVER print key material or a full on-chain-linkable field element.
+//
+//   * Secret-bearing types (Note, MerklePath, viewing keys, witnesses, proofs)
+//     print only a type tag with NO contents.
+//   * Linkable-but-public scalars (AssetId/Commitment/Nullifier/MerkleRoot)
+//     print a short, non-reversible 3-byte prefix tag, mirroring
+//     `common-secrets::ScrubbedString`, enough to disambiguate in a trace
+//     without echoing the whole value.
+
+/// Write a short non-reversible tag (first 3 bytes as hex + ellipsis) for a
+/// linkable-but-public field element. Never the full value.
+fn write_short_tag(f: &mut std::fmt::Formatter<'_>, bytes: &[u8]) -> std::fmt::Result {
+    for b in bytes.iter().take(3) {
+        write!(f, "{b:02x}")?;
+    }
+    f.write_str("…")
+}
+
+macro_rules! impl_short_tag_debug {
+    ($ty:ident) => {
+        impl std::fmt::Debug for $ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, concat!(stringify!($ty), "("))?;
+                write_short_tag(f, &self.0)?;
+                f.write_str(")")
+            }
+        }
+    };
+}
+impl_short_tag_debug!(AssetId);
+impl_short_tag_debug!(Commitment);
+impl_short_tag_debug!(Nullifier);
+impl_short_tag_debug!(MerkleRoot);
+
+macro_rules! impl_redacted_debug {
+    ($ty:ident) => {
+        impl std::fmt::Debug for $ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(concat!(stringify!($ty), "(<redacted>)"))
+            }
+        }
+    };
+}
+// Secret-bearing: print nothing but the type name.
+impl_redacted_debug!(Note);
+impl_redacted_debug!(MerklePath);
+impl_redacted_debug!(FullViewingKey);
+impl_redacted_debug!(IncomingViewingKey);
+impl_redacted_debug!(Groth16Proof);
+impl_redacted_debug!(TransferWitness);
+// PublicInputs carries the clear-text `public_amount` (the dispositive
+// amount-linkage of Part 2) alongside already-tagged commitments/nullifiers;
+// redact the whole struct so logs never echo the amount.
+impl_redacted_debug!(PublicInputs);
+impl_redacted_debug!(ProofBundle);
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("invalid encoding: {0}")]
@@ -299,6 +366,60 @@ mod tests {
         // Public fields preserved.
         assert_eq!(w.asset_id.0, [0xAA; 32]);
         assert_eq!(w.ext_data_hash, [0xEE; 32]);
+    }
+
+    #[test]
+    fn debug_impls_redact_secrets_and_tag_linkables() {
+        let note = Note {
+            amount: 0xDEAD_BEEF,
+            asset_id: AssetId([0xAA; 32]),
+            owner_pubkey: [0xBB; 32],
+            blinding: [0xCC; 32],
+        };
+        // Secret-bearing types: full redaction, NO contents.
+        let d = format!("{note:?}");
+        assert_eq!(d, "Note(<redacted>)");
+        assert!(!d.contains("bb") && !d.contains("cc") && !d.contains("3735928559"));
+
+        let w = TransferWitness {
+            input_notes: vec![note.clone()],
+            input_paths: vec![MerklePath {
+                siblings: vec![[0xDD; 32]; TREE_DEPTH],
+                path_bits: vec![true; TREE_DEPTH],
+            }],
+            input_indices: vec![7],
+            output_notes: vec![],
+            spending_key: [0x77; 32],
+            public_amount: -123_456,
+            asset_id: AssetId([0xAA; 32]),
+            ext_data_hash: [0xEE; 32],
+        };
+        let dw = format!("{w:?}");
+        assert_eq!(dw, "TransferWitness(<redacted>)");
+        assert!(!dw.contains("77") && !dw.contains("123456") && !dw.contains("dd"));
+
+        // Viewing keys fully redacted.
+        assert_eq!(
+            format!("{:?}", IncomingViewingKey([0x99; 32])),
+            "IncomingViewingKey(<redacted>)"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                FullViewingKey {
+                    ak: [1; 32],
+                    nk: [2; 32]
+                }
+            ),
+            "FullViewingKey(<redacted>)"
+        );
+
+        // Linkable-but-public scalars: short non-reversible tag only (3 bytes),
+        // never the full 32-byte value.
+        let c = format!("{:?}", Commitment([0xAB; 32]));
+        assert_eq!(c, "Commitment(ababab…)");
+        assert!(!c.contains(&"ab".repeat(32)));
+        assert!(format!("{:?}", MerkleRoot([0x01; 32])).starts_with("MerkleRoot(010101…"));
     }
 
     #[test]

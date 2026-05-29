@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use thumper_types::{EnclaveKeyId, TeeKind};
+use ghola_assistant_types::{EnclaveKeyId, TeeKind};
 
 /// A fully verified attestation, ready for the relay to insert into its
 /// in-memory attested-providers map.

@@ -30,7 +30,7 @@ pub use tdx::{verify_tdx, verify_tdx_with_root};
 pub use types::{AttestationError, AttestedEnclave, NitroAttestation};
 
 use ed25519_dalek::VerifyingKey;
-use thumper_types::{EnclaveKeyId, TeeKind};
+use ghola_assistant_types::{EnclaveKeyId, TeeKind};
 
 use sha2::{Digest, Sha256};
 

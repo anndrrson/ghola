@@ -75,8 +75,13 @@ impl Scanner {
             if crate::note::commitment(&memo.note).0 != candidate.commitment {
                 continue;
             }
+            // `NoteMemo` zeroizes on drop, so we can't move `note` out of it
+            // (partial move from a `Drop` type). Clone instead: the cloned
+            // `Note` is owned by `ScannedNote` and itself zeroizes on drop,
+            // while `memo` (and its copy of the note) is scrubbed when it
+            // drops at the end of this iteration — no plain copy lingers.
             out.push(ScannedNote {
-                note: memo.note,
+                note: memo.note.clone(),
                 leaf_index: candidate.leaf_index,
                 commitment: candidate.commitment,
             });

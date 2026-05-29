@@ -10,8 +10,8 @@ ignore = [
     # ----- RUSTSEC-2023-0071 -----
     # sqlx-mysql RSA timing side-channel.
     #
-    # Ghola services (gateway, cloud, home, receipts, orni-models-api,
-    # thumper-cloud) all enable only the `postgres` and `sqlite` features
+    # Ghola services (gateway, cloud, home, receipts, ghola-models-api,
+    # ghola-cloud) all enable only the `postgres` and `sqlite` features
     # of sqlx, never `mysql`. The vulnerable MySQL TLS auth path is
     # therefore unreachable. No upstream fix has been released for the
     # underlying `rsa` crate side-channel (it requires constant-time
@@ -61,7 +61,7 @@ ignore = [
     # ----- RUSTSEC-2021-0127 -----
     # `serde_cbor 0.11.2` is unmaintained (archived upstream; alternatives
     # are `ciborium`/`minicbor`). Pulled in transitively only by
-    # `aws-nitro-enclaves-nsm-api 0.4.0` → `thumper-gpu-provider` (the AWS
+    # `aws-nitro-enclaves-nsm-api 0.4.0` → `ghola-gpu-provider` (the AWS
     # Nitro attestation path). Out of the shielded-pool audit scope; the
     # Nitro path has its own threat model in SECURITY.md. Migration tracked
     # upstream in aws-nitro-enclaves-*. MUST stay in sync with deny.toml,

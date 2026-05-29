@@ -8,6 +8,7 @@ import {
   executeCoinbaseOrder,
   executeHyperliquidOrder,
   executeSolanaPerpsOrder,
+  readHyperliquidSnapshot,
   storeCoinbaseSession,
   storeHyperliquidSession,
   storePrivateAgentSession,
@@ -565,6 +566,27 @@ function validateHyperliquidOrderRequest(body, recipient) {
   return errors;
 }
 
+function validateHyperliquidAccountSnapshotRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Hyperliquid credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
+  const executionMode = hyperliquidExecutionMode(body);
+  if (!["byo_api_key", "managed_testnet"].includes(executionMode)) {
+    errors.push("execution_mode is unsupported");
+  }
+  if (executionMode === "byo_api_key") {
+    if (!isNonEmptyString(body.vault_commitment)) errors.push("vault_commitment is required");
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  } else if (!isNonEmptyString(body.managed_allocation_commitment) && !isNonEmptyString(body.allocation_commitment)) {
+    errors.push("managed_allocation_commitment is required");
+  }
+  return errors;
+}
+
 function validateHyperliquidReconcileRequest(body, recipient) {
   const errors = [];
   if (!isObject(body)) return ["request body must be an object"];
@@ -1108,6 +1130,33 @@ export function createPrivateAgentWorkerServer(options = {}) {
           provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
         });
         return json(res, 201, hyperliquidSessionReceipt(body));
+      }
+
+      if (req.method === "POST" && url.pathname === "/hyperliquid/account-snapshot") {
+        const token = requiredAuthToken();
+        if (!tokensEqual(bearer(req), token)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const body = await readJson(req);
+        const errors = validateHyperliquidAccountSnapshotRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid hyperliquid account snapshot request",
+            details: errors,
+            error_code: hyperliquidValidationErrorCode(errors),
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const snapshot = await readHyperliquidSnapshot({ body, recipient, state });
+        return json(res, 200, snapshot);
       }
 
       if (req.method === "POST" && url.pathname === "/hyperliquid/orders") {

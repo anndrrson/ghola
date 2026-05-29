@@ -28,9 +28,9 @@ const funnelDisplay = Funnel_Display({
 // site ever moves off the apex domain this is the one place to flip.
 const SITE_URL = "https://ghola.xyz";
 
-const SHARED_TITLE = "ghola — the most private AI";
+const SHARED_TITLE = "ghola — private execution for onchain finance";
 const SHARED_DESCRIPTION =
-  "Private AI that runs locally when possible, or through sealed cloud inference with auditable receipts.";
+  "Private execution accounts for onchain finance with anonymity previews, private balance rails, and auditable privacy receipts.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -77,39 +77,11 @@ export default function RootLayout({
       <head>
         <meta name="theme-color" content="#08090d" />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-        {/* ───────────── Resource hints ─────────────
-            preconnect = warm TCP+TLS+DNS for hosts we *will* hit on
-            the critical path. dns-prefetch = lighter, just resolves
-            DNS — used for hosts we *might* hit but don't want to pay
-            the TLS handshake cost on every cold load.
-
-            Origins targeted:
-              • api.devnet.solana.com         — registry RPC for the
-                ModelIntegrityBadge / on-chain lookup.
-              • huggingface.co                — WebLLM model weight CDN.
-              • raw.githubusercontent.com     — WebLLM WASM model-lib CDN.
-              • ghola-api.onrender.com        — said-cloud (DNS only,
-                most visitors don't hit it until they sign in).
-              • ghola-gateway.onrender.com    — gateway (same).
-
-            `crossOrigin` is required on preconnect for any origin we
-            fetch with CORS, otherwise the browser opens a second
-            anonymous connection and the preconnect is wasted. */}
-        <link
-          rel="preconnect"
-          href="https://api.devnet.solana.com"
-          crossOrigin="anonymous"
-        />
-        <link
-          rel="preconnect"
-          href="https://huggingface.co"
-          crossOrigin="anonymous"
-        />
-        <link
-          rel="preconnect"
-          href="https://raw.githubusercontent.com"
-          crossOrigin="anonymous"
-        />
+        {/* DNS-only hints keep cold loads light. Heavy RPC/model hosts are
+            warmed when their feature surfaces load, not on the public hero. */}
+        <link rel="dns-prefetch" href="https://api.devnet.solana.com" />
+        <link rel="dns-prefetch" href="https://huggingface.co" />
+        <link rel="dns-prefetch" href="https://raw.githubusercontent.com" />
         <link rel="dns-prefetch" href="https://ghola-api.onrender.com" />
         <link rel="dns-prefetch" href="https://ghola-gateway.onrender.com" />
       </head>

@@ -69,20 +69,38 @@ class AuthManager: ObservableObject {
 
         do {
             let session = try await NativeTurnkeyAuth.signIn(anchor: anchor)
-            let response = try await CloudClient.shared.siwsSignInWithDeviceSigner(
-                walletPubkey: session.walletAddress
-            ) { challenge in
-                try await NativeTurnkeyAuth.signSIWSChallenge(
-                    challenge,
-                    walletAddress: session.walletAddress
-                )
-            }
-            await CloudClient.shared.setToken(response.token)
-            await loadProfile()
-            await registerDevice()
-            isAuthenticated = true
+            try await finishNativeGholaSignIn(session: session)
         } catch {
-            self.error = error.localizedDescription
+            self.error = Self.gholaSignInMessage(for: error)
+        }
+    }
+
+    func requestGholaEmailCode(email: String) async -> NativeTurnkeyEmailChallenge? {
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
+
+        do {
+            return try await NativeTurnkeyAuth.startEmailSignIn(email: email)
+        } catch {
+            self.error = Self.gholaSignInMessage(for: error)
+            return nil
+        }
+    }
+
+    func completeGholaEmailSignIn(challenge: NativeTurnkeyEmailChallenge, code: String) async {
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
+
+        do {
+            let session = try await NativeTurnkeyAuth.completeEmailSignIn(
+                challenge: challenge,
+                code: code
+            )
+            try await finishNativeGholaSignIn(session: session)
+        } catch {
+            self.error = Self.gholaSignInMessage(for: error)
         }
     }
 
@@ -116,7 +134,39 @@ class AuthManager: ObservableObject {
             self.error = error.localizedDescription
         }
     }
+
+    private func finishNativeGholaSignIn(session: NativeTurnkeySession) async throws {
+        let response = try await CloudClient.shared.siwsSignInWithDeviceSigner(
+            walletPubkey: session.walletAddress
+        ) { challenge in
+            try await NativeTurnkeyAuth.signSIWSChallenge(
+                challenge,
+                walletAddress: session.walletAddress
+            )
+        }
+        await CloudClient.shared.setToken(response.token)
+        await loadProfile()
+        await registerDevice()
+        isAuthenticated = true
+    }
     #endif
+
+    private static func gholaSignInMessage(for error: Error) -> String {
+        let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else {
+            return "Ghola couldn't complete sign-in. Please try again."
+        }
+
+        let lowercased = message.lowercased()
+        if lowercased.contains("turnkey") ||
+            lowercased.contains("auth proxy") ||
+            lowercased.contains("organization") ||
+            lowercased.contains("configured") {
+            return "Ghola couldn't complete sign-in. Please try again."
+        }
+
+        return message
+    }
 
     // MARK: - Sign Out
 

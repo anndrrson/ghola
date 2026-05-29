@@ -1,6 +1,9 @@
+"use client";
+
 import Link from "next/link";
 import { ArrowRight, LockKeyhole, ShieldCheck, Wallet } from "lucide-react";
 import { PrivateBalancePanel } from "@/components/private-balance";
+import { RequireThumperAuth } from "@/components/RequireThumperAuth";
 
 const principles = [
   {
@@ -22,7 +25,11 @@ const principles = [
 
 export default function PrivateBalancePage() {
   return (
-    <main className="min-h-screen bg-[#08090d] pt-16 text-[#eef1f8]">
+    <RequireThumperAuth
+      title="Sign in to view Balance"
+      detail="Your private balance loads after account sign-in."
+    >
+      <main className="min-h-screen bg-[#08090d] pt-16 text-[#eef1f8]">
       <section className="border-b border-[#151b26] px-5 py-16 sm:px-8 sm:py-24 lg:px-10">
         <div className="mx-auto max-w-6xl">
           <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-[#6f7d9a]">
@@ -85,6 +92,7 @@ export default function PrivateBalancePage() {
           </Link>
         </div>
       </section>
-    </main>
+      </main>
+    </RequireThumperAuth>
   );
 }

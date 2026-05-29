@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-eif.sh — package the thumper-gpu-provider Docker image into a
+# build-eif.sh — package the ghola-gpu-provider Docker image into a
 # Nitro Enclave Image File (EIF) and record its PCR0..2 measurements.
 #
 # Requirements (host):

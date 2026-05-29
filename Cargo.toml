@@ -22,17 +22,17 @@ members = [
     "integration-tests",
 
     # Assistant (Thumper)
-    "crates/thumper-types",
-    "crates/thumper-relay",
-    "crates/thumper-mcp",
-    "crates/thumper-cli",
-    "crates/thumper-cloud",
-    "crates/thumper-gpu-provider",
+    "crates/ghola-assistant-types",
+    "crates/ghola-relay",
+    "crates/ghola-mcp",
+    "crates/ghola-cli",
+    "crates/ghola-cloud",
+    "crates/ghola-gpu-provider",
     "crates/ghola-home",
 
     # Marketplace (Orni Models)
-    "crates/orni-models-types",
-    "crates/orni-models-api",
+    "crates/ghola-models-types",
+    "crates/ghola-models-api",
 
     # Tier 2 schema-only first PRs (no behavior change; types only)
     "crates/ghola-zkml-types",
@@ -86,7 +86,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 # Pinned to 2021. Bumping to 2024 surfaces pattern-binding-modifier
-# changes across many existing crates (thumper-cloud, etc.). Until
+# changes across many existing crates (ghola-cloud, etc.). Until
 # those are migrated as a focused pass, the simple_asn1/time/time-macros
 # lockfile pin keeps modern dep-graphs compatible.
 edition = "2021"
@@ -190,12 +190,12 @@ said-mcp = { path = "mcp-server" }
 said-daemon = { path = "daemon" }
 
 # Internal — Thumper
-thumper-types = { path = "crates/thumper-types" }
-thumper-relay = { path = "crates/thumper-relay" }
-thumper-mcp = { path = "crates/thumper-mcp" }
+ghola-assistant-types = { path = "crates/ghola-assistant-types" }
+ghola-relay = { path = "crates/ghola-relay" }
+ghola-mcp = { path = "crates/ghola-mcp" }
 
 # Internal — Orni Models marketplace
-orni-models-types = { path = "crates/orni-models-types" }
+ghola-models-types = { path = "crates/ghola-models-types" }
 
 [profile.release]
 overflow-checks = true

@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod auction;
 pub mod attest_evidence;
 pub mod deposit;
 pub mod governance;
@@ -9,6 +10,7 @@ pub mod update_root;
 pub mod withdraw;
 
 pub use admin::*;
+pub use auction::*;
 pub use attest_evidence::*;
 pub use deposit::*;
 pub use governance::*;

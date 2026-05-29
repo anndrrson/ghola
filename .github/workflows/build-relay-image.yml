@@ -18,6 +18,38 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate image tag
+        id: image
+        env:
+          RAW_IMAGE: ${{ inputs.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${RAW_IMAGE}"
+          owner_repo="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          expected_prefix="ghcr.io/${owner_repo}"
+          if printf '%s' "${image}" | LC_ALL=C grep -q '[[:space:][:cntrl:]]'; then
+            echo "::error::image contains whitespace or control characters; rejected."
+            exit 1
+          fi
+          if [[ ! "${image}" =~ ^ghcr\.io/[a-z0-9._-]+/[a-z0-9._/-]+:[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::image must match ghcr.io/<owner>/<repo>[/<path>]:<tag>, got '${image}'"
+            exit 1
+          fi
+          case "${image}" in
+            "${expected_prefix}":*|"${expected_prefix}"/*:*) ;;
+            *)
+              echo "::error::image must be under ${expected_prefix} (got '${image}')"
+              exit 1
+              ;;
+          esac
+          tag="${image##*:}"
+          if [ "${tag}" = "latest" ]; then
+            echo "::error::refusing to push mutable ':latest'; use an immutable tag"
+            exit 1
+          fi
+          printf 'tag=%s\n' "${BASH_REMATCH[0]}" >> "${GITHUB_OUTPUT}"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -40,4 +72,4 @@ jobs:
           file: ./Dockerfile.relay
           platforms: linux/amd64
           push: true
-          tags: ${{ inputs.image }}
+          tags: ${{ steps.image.outputs.tag }}

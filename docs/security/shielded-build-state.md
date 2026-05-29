@@ -40,7 +40,7 @@ snapshots at the time of writing; chase the symbol if drift suspected.
 `SettlementVerifyError::SolanaNotRouted` or `AleoNotImplemented` for
 both arms (`settlement.rs:72-79`). No caller in the tree routes through
 this enum yet — the live shielded validator path is the parallel
-`PaymentPayload` flow in `thumper-cloud` (see Layer 4). The enum is
+`PaymentPayload` flow in `ghola-cloud` (see Layer 4). The enum is
 schema-only, exactly as the Tier 2K doc described it would be on its
 first PR.
 
@@ -53,7 +53,7 @@ first PR.
   are wired into the agent x402 client.
 - No `X402AleoPayload` companion variant has been added to this struct;
   callers wanting shielded settlement must use the parallel
-  `PaymentPayload` shape in `thumper-cloud` (Layer 4).
+  `PaymentPayload` shape in `ghola-cloud` (Layer 4).
 
 **Gap.** The Tier 2K doc proposed extending `X402PaymentPayload` itself
 into a tagged enum (§4.2). Instead, the project shipped the standalone
@@ -70,7 +70,7 @@ enum into the payment payload, or formally deprecate one path.
 
 **Status: shipped.**
 
-- Caller side (Rust): `crates/thumper-cloud/src/services/x402_service.rs:1399-1515`
+- Caller side (Rust): `crates/ghola-cloud/src/services/x402_service.rs:1399-1515`
   (`verify_shielded_stablecoin_settlement`).
 - Adapter side (TS, Next.js route): `apps/web/src/app/api/aleo-shielded/verify/route.ts:449-701`.
 - Health check: `apps/web/src/app/api/aleo-shielded/health/route.ts:54-94`.
@@ -119,7 +119,7 @@ exists to *produce* these receipts on the recipient side.
 - Bearer-token auth: `route.ts:106-128` (`authorizeVerifierRequest`),
   paired with `verifierAuthRequired()` (`route.ts:79-88`).
 - Authenticated callers can also resolve their own wallet recipient
-  via `/api/wallet/private/recipient` against thumper-cloud
+  via `/api/wallet/private/recipient` against ghola-cloud
   (`route.ts:111-125`).
 - Caller-side bearer injection: `x402_service.rs:1456-1458`.
 
@@ -131,9 +131,9 @@ exists to *produce* these receipts on the recipient side.
 
 **Status: shipped.**
 
-- `crates/thumper-cloud/src/services/private_settlement_service.rs:609-706`
+- `crates/ghola-cloud/src/services/private_settlement_service.rs:609-706`
   (`create_private_transfer_intent`).
-- `crates/thumper-cloud/src/services/private_settlement_service.rs:736-945`
+- `crates/ghola-cloud/src/services/private_settlement_service.rs:736-945`
   (`submit_signed_private_transfer`).
 - DB tables (referenced in queries): `private_wallet_transfers`,
   `private_wallet_transfer_audit_events`, `private_wallet_receipt_exports`.
@@ -149,7 +149,7 @@ exists to *produce* these receipts on the recipient side.
 
 **Status: shipped (metadata-only).**
 
-- `crates/thumper-cloud/src/services/private_settlement_service.rs:1039-1108`
+- `crates/ghola-cloud/src/services/private_settlement_service.rs:1039-1108`
   (`export_private_transfer_receipt`).
 - Export record persisted to `private_wallet_receipt_exports`.
 - Export disclosure text:
@@ -168,7 +168,7 @@ the underlying cryptography. See Layer 9.
 
 **Status: shipped.**
 
-- `crates/thumper-cloud/src/services/private_settlement_service.rs:1188-1253`
+- `crates/ghola-cloud/src/services/private_settlement_service.rs:1188-1253`
   (`institutional_readiness`).
 - Blocks rollout until verifier ready, signer ready, funded smoke test
   passed, server-held signing disabled, audit export enabled, zero
@@ -318,13 +318,13 @@ client. This is one of the largest unbuilt pieces in the stack.
 **Status: shipped (in-memory).**
 
 - Struct field:
-  `crates/thumper-cloud/src/services/x402_service.rs:208`
+  `crates/ghola-cloud/src/services/x402_service.rs:208`
   (`VerifiedPayment.settlement_rail`).
 - Populated to `solana_public_stablecoin`
   (`x402_service.rs:1162`) or `shielded_stablecoin`
   (`x402_service.rs:1593`).
 - Propagated into the OpenAI-compat completion response
-  (`crates/thumper-cloud/src/routes/openai_compat.rs:555`).
+  (`crates/ghola-cloud/src/routes/openai_compat.rs:555`).
 
 ### `settlement_rail` on the canonical receipt body anchored on-chain
 
@@ -452,8 +452,8 @@ cannot sign their own outbound payment.
   declared in `render.yaml` for an Aleo node, and no fallback indexer
   list.
 - Per the Render-deployment memory (April 2026 snapshot), Ghola
-  operates three Render services (said-cloud, thumper-cloud,
-  thumper-relay) — none of them host or proxy Aleo state.
+  operates three Render services (said-cloud, ghola-cloud,
+  ghola-relay) — none of them host or proxy Aleo state.
 
 ---
 

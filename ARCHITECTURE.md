@@ -194,7 +194,7 @@ locally and can re-verify against the on-chain root using only public
 information (no Ghola server in the path).
 
 **Status.** ✅ shipped. `apps/web/src/lib/receipt.ts` defines
-`ReceiptV1` with both signatures. `crates/thumper-gpu-provider/src/
+`ReceiptV1` with both signatures. `crates/ghola-gpu-provider/src/
 receipt.rs` mints `provider_signature` in-enclave (v2; falls back to
 honest `tee_kind: "none"` while v3 lands).
 `apps/web/src/components/chat/ReceiptBadge.tsx` exposes a Verify modal

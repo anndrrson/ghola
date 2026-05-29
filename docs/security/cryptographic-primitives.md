@@ -62,7 +62,7 @@ without the recipient's private key, which never leaves the enclave.
 ### What the enclave does
 
 1. Verifies the `sender_did` is in the active DID set (`did_set`
-   snapshot from thumper-cloud, refreshed periodically).
+   snapshot from ghola-cloud, refreshed periodically).
 2. Recomputes `shared = X25519_ECDH(enclave_priv, eph_pub)`.
 3. Derives `key = HKDF-SHA256(shared, "ghola-envelope-v1", info=session_id)`.
 4. Decrypts with the AAD bound to `(session_id, sender_did)`.
@@ -144,7 +144,7 @@ the on-chain batch root independently of the receipts service.
 The relay accepts a provider as "attested" only after verifying:
 
 1. The provider sent a `ProviderAttestPayload` with a vendor quote
-   from the NSM (`crates/thumper-relay/src/handlers.rs::handle_provider_attest`).
+   from the NSM (`crates/ghola-relay/src/handlers.rs::handle_provider_attest`).
 2. The quote's `user_data` field binds the provider's claimed
    X25519 + Ed25519 pubkeys + a freshness timestamp (so a recorded
    quote can't be replayed past expiry).
@@ -153,7 +153,7 @@ The relay accepts a provider as "attested" only after verifying:
 4. The quote's signature chain links to the AWS Nitro root CA.
 
 **Hardening (Tier 1E, shipped)**: in release builds the dev bypass
-(`THUMPER_ALLOW_UNATTESTED=1`) compiles to `false` regardless of env
+(`GHOLA_ALLOW_UNATTESTED=1`) compiles to `false` regardless of env
 state. Production cannot be coerced into accepting a synthetic quote
 by flipping an env var.
 
@@ -212,7 +212,7 @@ Listed in [SECURITY.md](../../SECURITY.md), summarised here:
 - `apps/web/src/lib/envelope.ts` — wire format
 - `apps/web/src/lib/sealed-stream.ts` — client streaming
 - `apps/web/src/lib/vault-x25519.ts` — deterministic vault key derivation
-- `crates/thumper-relay/src/handlers.rs` — server-side verification
-- `crates/thumper-gpu-provider/src/enclave.rs` — enclave-side key gen + signing
+- `crates/ghola-relay/src/handlers.rs` — server-side verification
+- `crates/ghola-gpu-provider/src/enclave.rs` — enclave-side key gen + signing
 - `programs/said-receipts/src/lib.rs` — on-chain batch anchor
 - `programs/ghola-model-registry/src/lib.rs` — content-addressed model registry (scaffolded)

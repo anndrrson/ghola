@@ -1,0 +1,25 @@
+name: Auth Canary
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  auth-canary:
+    name: Live Auth Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      AUTH_SMOKE_BASE_URL: ${{ vars.GHOLA_WEB_BASE_URL || vars.GHOLA_WEB_URL || 'https://ghola.xyz' }}
+      AUTH_SMOKE_EMAIL: ${{ secrets.GHOLA_AUTH_SMOKE_EMAIL }}
+      AUTH_SMOKE_PASSWORD: ${{ secrets.GHOLA_AUTH_SMOKE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run live auth smoke
+        run: node apps/web/scripts/smoke-auth.mjs

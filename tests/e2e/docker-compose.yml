@@ -3,8 +3,8 @@
 # Brings up:
 #   - postgres (single DB shared by relay + receipts service)
 #   - solana-test-validator
-#   - thumper-relay
-#   - thumper-gpu-provider (mock-nitro, no real attestation HW)
+#   - ghola-relay
+#   - ghola-gpu-provider (mock-nitro, no real attestation HW)
 #   - said-receipts-service (RECEIPTS_BATCH_INTERVAL_SECS=5 so the test
 #     doesn't wait an hour for a batch flush)
 #
@@ -54,38 +54,38 @@ services:
       timeout: 3s
       retries: 40
 
-  thumper-relay:
+  ghola-relay:
     build:
       context: ../..
       dockerfile: Dockerfile.relay
     environment:
-      THUMPER_RELAY_BIND: 0.0.0.0:7654
-      THUMPER_DEV_MODE: "true"
+      GHOLA_RELAY_BIND: 0.0.0.0:7654
+      GHOLA_DEV_MODE: "true"
       # Test-mode flag lets the relay accept providers without a real
       # Nitro quote — uses the said-attest mock path. The provider
       # below runs with --features mock-nitro.
-      THUMPER_ALLOW_UNATTESTED: "1"
-      RUST_LOG: thumper_relay=debug,info
+      GHOLA_ALLOW_UNATTESTED: "1"
+      RUST_LOG: ghola_relay=debug,info
     ports:
       - "7654:7654"
     depends_on:
       postgres:
         condition: service_healthy
 
-  thumper-gpu-provider:
+  ghola-gpu-provider:
     build:
       context: ../..
       dockerfile: tests/e2e/Dockerfile.provider-mock
     environment:
-      RELAY_URL: ws://thumper-relay:7654/ws
+      RELAY_URL: ws://ghola-relay:7654/ws
       PROVIDER_NAME: e2e-mock
       MODELS: llama3:8b
       TEE_KIND: none
       # Mock provider uses the fake Ollama responder below.
       OLLAMA_URL: http://mock-ollama:11434
-      RUST_LOG: thumper_gpu_provider=debug,info
+      RUST_LOG: ghola_gpu_provider=debug,info
     depends_on:
-      - thumper-relay
+      - ghola-relay
       - mock-ollama
 
   mock-ollama:

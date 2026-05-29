@@ -56,6 +56,8 @@ jobs:
         env:
           GIT_COMMIT: ${{ github.sha }}
         run: ./scripts/verify-reproducible-build.sh
+      - name: Auth client bundle guard
+        run: npm run guard:auth-bundle
       # Tier 1C — supply-chain hardening. The build step writes an SRI
       # manifest to public/.well-known/sri-manifest.json. Surface its
       # top-level hash in the CI run summary so it's discoverable from

@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RELAY_BASE_URL: ${{ vars.GHOLA_RELAY_BASE_URL || 'https://ghola-relay.onrender.com' }}
-      CLOUD_BASE_URL: ${{ vars.GHOLA_CLOUD_BASE_URL || 'https://thumper-cloud.onrender.com' }}
+      CLOUD_BASE_URL: ${{ vars.GHOLA_CLOUD_BASE_URL || 'https://ghola-cloud.onrender.com' }}
       RECEIPTS_BASE_URL: ${{ vars.GHOLA_RECEIPTS_BASE_URL || 'https://ghola-receipts.onrender.com' }}
       WEB_BASE_URL: ${{ vars.GHOLA_WEB_BASE_URL || 'https://ghola.xyz' }}
       REQUIRE_PRIVATE_CAPACITY: ${{ vars.REQUIRE_PRIVATE_CAPACITY || 'false' }}
@@ -31,7 +31,7 @@ jobs:
           body="$(curl -fsS "${CLOUD_BASE_URL}/health")"
           status="$(echo "${body}" | jq -r '.status // empty')"
           service="$(echo "${body}" | jq -r '.service // empty')"
-          if [ -z "${status}" ] || [ "${service}" != "thumper-cloud" ]; then
+          if [ -z "${status}" ] || [ "${service}" != "ghola-cloud" ]; then
             echo "/health did not return the standard JSON contract"
             echo "${body}"
             exit 1
@@ -46,7 +46,7 @@ jobs:
             cat /tmp/cloud_ready_body.json
             exit 1
           fi
-          jq -e '.service == "thumper-cloud" and (.checks | type == "object")' /tmp/cloud_ready_body.json >/dev/null
+          jq -e '.service == "ghola-cloud" and (.checks | type == "object")' /tmp/cloud_ready_body.json >/dev/null
 
       - name: Check receipts health alias
         run: |
@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           body="$(curl -fsS "${RELAY_BASE_URL}/health")"
-          jq -e '.service == "thumper-relay" and .status == "ok"' <<<"${body}" >/dev/null
+          jq -e '.service == "ghola-relay" and .status == "ok"' <<<"${body}" >/dev/null
           private_ready="$(echo "${body}" | jq -r '.private_ready // false')"
           if [ "${private_ready}" != "true" ]; then
             echo "/health private_ready is not true"
@@ -96,7 +96,7 @@ jobs:
             cat /tmp/relay_ready_body.json
             exit 1
           fi
-          jq -e '.service == "thumper-relay" and .private_ready == true' /tmp/relay_ready_body.json >/dev/null
+          jq -e '.service == "ghola-relay" and .private_ready == true' /tmp/relay_ready_body.json >/dev/null
 
       - name: Check /ready/private capacity contract
         run: |

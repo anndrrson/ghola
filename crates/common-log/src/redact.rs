@@ -46,32 +46,67 @@ use tracing_subscriber::Layer;
 /// names (e.g. `recipient_b58`) are NOT auto-matched — the audit pass
 /// explicitly catalogs every emit site, so adding an alias here is a
 /// conscious act. Keep this in lockstep with `docs/shielded-pool/OPERATIONS.md` § 2.
+// Only SECRET or sensitive-LINKABLE field names belong here. Public,
+// on-chain-derivable protocol state (Merkle `root`, `asset_id`, `leaf_index`,
+// `siblings`/`path_*`, `next_index`, `queue_depth`) is deliberately NOT listed —
+// the forester/indexer log it for operability and it leaks no secret. See
+// `docs/shielded-pool/LOGGING.md`.
 pub const DENY_LIST: &[&str] = &[
+    // recipients / note owners
     "recipient",
     "recipient_pubkey",
+    "recipient_b58",
+    "owner",
+    "owner_pubkey",
+    // amounts — clear-text amount is the dispositive deposit→withdrawal linkage
     "amount",
+    "public_amount",
+    "fee",
+    "relayer_fee",
+    // commitments / nullifiers (linkable; kept from original list)
     "commitment",
     "nullifier",
+    // proofs
     "proof",
     "proof_a",
     "proof_b",
     "proof_c",
+    // key material
     "spending_key",
     "sk",
+    "private_key",
+    "signing_key",
+    "keypair",
+    "key",
+    "seed",
+    "secret",
     "viewing_key",
     "ivk",
     "fvk",
     "nk",
+    "ak",
+    "eph_sk", // note: eph_PK is public (goes on-chain) — not listed
+    "shared",
+    "shared_secret",
+    "okm",
+    // notes / memos / witnesses / blinding
+    "note",
+    "memo",
+    "note_memo",
     "witness",
+    "blinding",
+    // on-chain signatures
     "signature",
     "tx_signature",
-    "signing_key",
+    // prover artifacts (paths/buffers that transit the spending key)
+    "input_json",
+    "wtns",
 ];
 
 /// Returns true iff `name` is on the workspace deny-list.
 #[inline]
 pub fn is_denied(name: &str) -> bool {
-    DENY_LIST.iter().any(|d| *d == name)
+    DENY_LIST.contains(&name)
 }
 
 /// Redact a single value according to the current log level.
@@ -215,8 +250,23 @@ mod tests {
         assert!(is_denied("recipient"));
         assert!(is_denied("proof_a"));
         assert!(is_denied("signing_key"));
+        // Newly-cataloged aliases / secret-bearing field names.
+        assert!(is_denied("recipient_b58"));
+        assert!(is_denied("public_amount"));
+        assert!(is_denied("blinding"));
+        assert!(is_denied("eph_sk"));
+        assert!(is_denied("note_memo"));
+        // Public, on-chain-derivable state is intentionally NOT redacted
+        // (logged for operability).
+        assert!(!is_denied("root"));
+        assert!(!is_denied("leaf_index"));
+        assert!(!is_denied("next_index"));
+        assert!(!is_denied("eph_pk")); // ephemeral PUBLIC key
+                                       // Still exact-match: a benign field that merely contains a denied
+                                       // substring is NOT auto-matched (no false-positive redaction).
         assert!(!is_denied("queue_depth"));
-        assert!(!is_denied("recipient_b58")); // subspan: not auto-matched
+        assert!(!is_denied("commitment_count")); // subspan of "commitment"
+        assert!(!is_denied("amount_of_retries")); // subspan of "amount"
     }
 
     #[test]

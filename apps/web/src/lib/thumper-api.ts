@@ -28,10 +28,33 @@ import type {
   CommerceReceiptExport,
 } from "./thumper-types";
 
-const THUMPER_API_BASE =
-  typeof window === "undefined"
+function thumperApiBase() {
+  return typeof window === "undefined"
     ? process.env.NEXT_PUBLIC_THUMPER_API_URL || "https://thumper-cloud.onrender.com"
     : process.env.NEXT_PUBLIC_THUMPER_API_URL || "";
+}
+
+function thumperFetchUrl(path: string) {
+  // Cookie-backed session routes live in this Next app. They must remain
+  // same-origin even when production has a public upstream API URL configured.
+  if (path.startsWith("/api/auth/session/")) return path;
+  return `${thumperApiBase()}${path}`;
+}
+
+function publicErrorMessage(path: string, status: number, rawError?: string) {
+  const fallback = `API error ${status}`;
+  const safeRawError = rawError && rawError !== fallback ? rawError : "";
+
+  if (!path.startsWith("/api/auth/session/")) {
+    return safeRawError || fallback;
+  }
+
+  if (status === 401) return safeRawError || "Email or password is incorrect.";
+  if (status === 403) return "Sign in is temporarily unavailable. Please refresh and try again.";
+  if (status === 404) return "Sign in is temporarily unavailable. Please refresh and try again.";
+  if (status >= 500) return "Sign in is temporarily unavailable. Please try again in a moment.";
+  return safeRawError || "Sign in failed. Please try again.";
+}
 
 function safeGetLocalStorage(key: string): string | null {
   try {
@@ -155,7 +178,7 @@ export function thumperLogout() {
       credentials: "same-origin",
     }).catch(() => {});
   } else if (token) {
-    fetch(`${THUMPER_API_BASE}/api/auth/logout`, {
+    fetch(`${thumperApiBase()}/api/auth/logout`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     }).catch(() => {});
@@ -175,7 +198,7 @@ async function thumperFetch<T>(
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
-  const res = await fetch(`${THUMPER_API_BASE}${path}`, {
+  const res = await fetch(thumperFetchUrl(path), {
     ...options,
     headers,
     credentials: options.credentials ?? "same-origin",
@@ -184,8 +207,11 @@ async function thumperFetch<T>(
     const body = await res
       .json()
       .catch(() => ({ error: `API error ${res.status}` }));
-    const err = new Error(body.error || `API error ${res.status}`) as Error & { status: number };
+    const err = new Error(
+      publicErrorMessage(path, res.status, body.error),
+    ) as Error & { status: number; path?: string };
     err.status = res.status;
+    err.path = path;
     throw err;
   }
   const text = await res.text();

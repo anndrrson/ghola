@@ -99,6 +99,7 @@ pub async fn consume_refresh_token(
     db: &sqlx::PgPool,
     refresh_token: &str,
 ) -> AppResult<(String, i64, uuid::Uuid)> {
+    use rand::RngCore;
     use sha2::{Digest, Sha256};
 
     let token_hash = {
@@ -107,6 +108,10 @@ pub async fn consume_refresh_token(
         format!("{:x}", hasher.finalize())
     };
 
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(format!("refresh_tokens transaction failed: {e}")))?;
     let now = chrono::Utc::now();
     let row = sqlx::query_as::<
         _,
@@ -116,10 +121,10 @@ pub async fn consume_refresh_token(
             Option<chrono::DateTime<chrono::Utc>>,
         ),
     >(
-        "SELECT user_id, expires_at, revoked_at FROM refresh_tokens WHERE token_hash = $1"
+        "SELECT user_id, expires_at, revoked_at FROM refresh_tokens WHERE token_hash = $1 FOR UPDATE"
     )
     .bind(&token_hash)
-    .fetch_optional(db)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| AppError::Internal(format!("refresh_tokens lookup failed: {e}")))?
     .ok_or_else(|| AppError::Unauthorized("unknown refresh token".into()))?;
@@ -132,24 +137,47 @@ pub async fn consume_refresh_token(
         return Err(AppError::Unauthorized("refresh token expired".into()));
     }
 
-    let (new_token, new_exp) = create_refresh_token(db, user_id).await?;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let new_token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     let new_hash = {
         let mut hasher = Sha256::new();
         hasher.update(new_token.as_bytes());
         format!("{:x}", hasher.finalize())
     };
+    let new_expires_at = now + chrono::Duration::seconds(REFRESH_TOKEN_TTL_SECONDS as i64);
 
     sqlx::query(
-        "UPDATE refresh_tokens SET revoked_at = $1, rotated_to_hash = $2 WHERE token_hash = $3",
+        "INSERT INTO refresh_tokens (token_hash, user_id, issued_at, expires_at) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(&new_hash)
+    .bind(user_id)
+    .bind(now)
+    .bind(new_expires_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::Internal(format!("refresh_tokens insert failed: {e}")))?;
+
+    let updated = sqlx::query(
+        "UPDATE refresh_tokens SET revoked_at = $1, rotated_to_hash = $2 WHERE token_hash = $3 AND revoked_at IS NULL",
     )
     .bind(now)
     .bind(&new_hash)
     .bind(&token_hash)
-    .execute(db)
+    .execute(&mut *tx)
     .await
     .map_err(|e| AppError::Internal(format!("refresh_tokens rotate failed: {e}")))?;
 
-    Ok((new_token, new_exp, user_id))
+    if updated.rows_affected() != 1 {
+        return Err(AppError::Unauthorized("refresh token revoked".into()));
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(format!("refresh_tokens commit failed: {e}")))?;
+
+    Ok((new_token, new_expires_at.timestamp(), user_id))
 }
 
 /// Verify an Ed25519 detached signature from a base58 Solana pubkey.

@@ -19,11 +19,11 @@ COPY crates/said-wasm/Cargo.toml crates/said-wasm/Cargo.toml
 COPY crates/said-x402/Cargo.toml crates/said-x402/Cargo.toml
 COPY crates/said-turnkey/Cargo.toml crates/said-turnkey/Cargo.toml
 COPY crates/ghola-gateway/Cargo.toml crates/ghola-gateway/Cargo.toml
-COPY crates/thumper-types/Cargo.toml crates/thumper-types/Cargo.toml
-COPY crates/thumper-relay/Cargo.toml crates/thumper-relay/Cargo.toml
-COPY crates/thumper-mcp/Cargo.toml crates/thumper-mcp/Cargo.toml
-COPY crates/thumper-cli/Cargo.toml crates/thumper-cli/Cargo.toml
-COPY crates/thumper-cloud/Cargo.toml crates/thumper-cloud/Cargo.toml
+COPY crates/ghola-assistant-types/Cargo.toml crates/ghola-assistant-types/Cargo.toml
+COPY crates/ghola-relay/Cargo.toml crates/ghola-relay/Cargo.toml
+COPY crates/ghola-mcp/Cargo.toml crates/ghola-mcp/Cargo.toml
+COPY crates/ghola-cli/Cargo.toml crates/ghola-cli/Cargo.toml
+COPY crates/ghola-cloud/Cargo.toml crates/ghola-cloud/Cargo.toml
 COPY crates/ghola-home/Cargo.toml crates/ghola-home/Cargo.toml
 COPY mcp-server/Cargo.toml mcp-server/Cargo.toml
 COPY cli/Cargo.toml cli/Cargo.toml

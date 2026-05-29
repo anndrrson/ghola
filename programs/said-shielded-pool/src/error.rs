@@ -54,4 +54,28 @@ pub enum ShieldedPoolError {
     CommitmentMismatch,
     #[msg("CommitmentRecord has already been folded into the tree")]
     CommitmentAlreadyInserted,
+
+    // ---- Shielded batch-auction rail ----
+    #[msg("Auction epoch is not open for new orders")]
+    AuctionNotOpen,
+    #[msg("Auction epoch has not reached its close slot")]
+    AuctionCloseNotReached,
+    #[msg("Auction epoch already closed")]
+    AuctionAlreadyClosed,
+    #[msg("Auction batch is full")]
+    AuctionBatchFull,
+    #[msg("Auction clearing counts must match committed order count")]
+    AuctionClearingCountsInvalid,
+    #[msg("Auction clearing is not ready for settlement")]
+    AuctionClearingNotReady,
+    #[msg("Auction order owner mismatch")]
+    AuctionOrderOwnerMismatch,
+    #[msg("Auction order cannot be cancelled before epoch expiry")]
+    AuctionOrderNotExpired,
+    #[msg("Auction clearing verifier key has not been regenerated and enabled")]
+    AuctionVerifierUnavailable,
+    #[msg("Auction clearing proof public inputs do not match epoch state")]
+    AuctionProofPublicInputMismatch,
+    #[msg("Auction order nullifier already used")]
+    AuctionOrderNullifierAlreadyUsed,
 }

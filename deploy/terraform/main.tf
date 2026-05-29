@@ -46,6 +46,11 @@ variable "instance_type" {
 variable "eif_s3_uri" {
   type        = string
   description = "S3 URI of the EIF to load, e.g. s3://ghola-eifs/ghola-provider-abc123.eif"
+
+  validation {
+    condition     = can(regex("^s3://[^/]+/.+", var.eif_s3_uri))
+    error_message = "eif_s3_uri must be an S3 object URI such as s3://bucket/path/file.eif."
+  }
 }
 
 variable "ops_ssh_cidr" {
@@ -76,6 +81,11 @@ variable "relay_port" {
   type        = number
   default     = 443
   description = "Relay TCP port. Almost always 443."
+}
+
+locals {
+  eif_s3_parts  = regex("^s3://([^/]+)/(.+)$", var.eif_s3_uri)
+  eif_s3_bucket = local.eif_s3_parts[0]
 }
 
 # ---- Networking ----
@@ -230,10 +240,8 @@ resource "aws_iam_role_policy" "host" {
           "s3:ListBucket"
         ]
         Resource = [
-          # Allow any bucket — operator passes the URI at apply time.
-          # Tighten with a specific bucket ARN before production.
-          "arn:aws:s3:::*",
-          "arn:aws:s3:::*/*"
+          "arn:aws:s3:::${local.eif_s3_bucket}",
+          "arn:aws:s3:::${local.eif_s3_bucket}/*"
         ]
       }
     ]

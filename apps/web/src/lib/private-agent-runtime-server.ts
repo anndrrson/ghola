@@ -113,6 +113,7 @@ function relayProvider(
   const attestedProviderCount =
     providers.length || relayHealth?.attested_provider_count || 0;
   const executionConfigured = envSet("GHOLA_PRIVATE_AGENT_EXECUTION_URL");
+  const executionUrl = process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() || null;
   const ready =
     relayHealth?.private_capacity_ready === true &&
     attestedProviderCount > 0 &&
@@ -135,6 +136,7 @@ function relayProvider(
     supports_sealed_secrets: ready,
     supports_background_agents: ready,
     supports_trading_execution: ready,
+    execution_url: executionUrl,
     reason,
     ...(selected?.enclave_key_id && selected?.enclave_x25519_pub_hex
       ? {
@@ -196,6 +198,10 @@ async function phalaProvider(): Promise<ConfidentialComputeProviderStatus> {
     "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
     "PHALA_AGENT_ENDPOINT",
   );
+  const executionUrl =
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
+    process.env.PHALA_AGENT_ENDPOINT?.trim() ||
+    null;
   const apiConfigured = envSet("PHALA_CLOUD_API_KEY", "PHALA_API_KEY");
   const verifierConfigured = envSet(
     "PHALA_ATTESTATION_VERIFIER_URL",
@@ -239,6 +245,7 @@ async function phalaProvider(): Promise<ConfidentialComputeProviderStatus> {
     supports_sealed_secrets: available,
     supports_background_agents: available,
     supports_trading_execution: available,
+    execution_url: executionUrl,
     reason,
     ...(recipientConfigured
       ? {
@@ -272,6 +279,10 @@ function gensynProvider(): ConfidentialComputeProviderStatus {
     "GENSYN_PRIVATE_AGENT_EXECUTION_URL",
     "GENSYN_API_URL",
   );
+  const executionUrl =
+    process.env.GENSYN_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
+    process.env.GENSYN_API_URL?.trim() ||
+    null;
   const verifierConfigured = envSet("GENSYN_ATTESTATION_VERIFIER_URL");
   const recipientId = process.env.GENSYN_ENCLAVE_KEY_ID || "";
   const recipientX25519 = process.env.GENSYN_ENCLAVE_X25519_PUB_HEX || "";
@@ -293,6 +304,7 @@ function gensynProvider(): ConfidentialComputeProviderStatus {
     supports_sealed_secrets: confidentialReady,
     supports_background_agents: confidentialReady,
     supports_trading_execution: confidentialReady,
+    execution_url: executionUrl,
     reason: confidentialReady
       ? null
       : configured

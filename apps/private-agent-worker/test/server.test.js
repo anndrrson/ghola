@@ -476,6 +476,32 @@ describe("private agent worker", () => {
     assert.equal(JSON.stringify(cancelBody).includes("connector_work_order_123"), false);
   });
 
+  it("reads Hyperliquid account readiness through sealed credentials only", async () => {
+    const vault = await encryptedHyperliquidVault(baseUrl);
+    const response = await fetch(`${baseUrl}/hyperliquid/account-snapshot`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        account_commitment: "acct_commitment_123",
+        vault_commitment: "hyperliquid_vault_commitment_123",
+        encrypted_execution_vault: vault.encrypted_execution_vault,
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.status, "ready_to_trade");
+    assert.equal(body.account_source, "sealed_byo");
+    assert.equal(body.trading_enabled, true);
+    assert.equal(JSON.stringify(body).includes("api_wallet_private_key"), false);
+    assert.equal(JSON.stringify(body).includes("hyperliquid_account_id"), false);
+  });
+
   it("reports missing BYO Hyperliquid credentials as venue access required", async () => {
     const response = await fetch(`${baseUrl}/hyperliquid/orders`, {
       method: "POST",

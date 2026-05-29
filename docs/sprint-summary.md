@@ -56,7 +56,7 @@ node scripts/compute-weights-manifest.mjs Llama-3.2-1B-Instruct-q4f16_1-MLC
 | NVIDIA H100 CC | ✅ wired + tested | `crates/said-attest/src/h100.rs` (NRAS-stand-in for CI; real PKI in TODO(h100-prod) block) |
 | Intel TDX | ✅ wired + tested | `crates/said-attest/src/tdx.rs` (DCAP-stand-in for CI; real PKI in TODO(tdx-prod) block) |
 
-Dispatch in `crates/thumper-relay/src/handlers.rs::handle_provider_attest` routes by `payload.tee_kind`. Compile-time release deny on `THUMPER_ALLOW_UNATTESTED`.
+Dispatch in `crates/ghola-relay/src/handlers.rs::handle_provider_attest` routes by `payload.tee_kind`. Compile-time release deny on `GHOLA_ALLOW_UNATTESTED`.
 
 ## Tier 1C — Supply-chain hardening
 
@@ -83,7 +83,7 @@ diff <(jq -S . public/.well-known/sri-manifest.json) <(curl -s https://ghola.xyz
 
 ## Tier 1E — Compile-time attestation deny
 
-`THUMPER_ALLOW_UNATTESTED=1` env var has zero effect in `--release` builds (`crates/thumper-relay/src/handlers.rs::allow_unattested` checks `cfg!(debug_assertions)`). Debug builds + the test suite still honor it.
+`GHOLA_ALLOW_UNATTESTED=1` env var has zero effect in `--release` builds (`crates/ghola-relay/src/handlers.rs::allow_unattested` checks `cfg!(debug_assertions)`). Debug builds + the test suite still honor it.
 
 ## Public verification surfaces
 
@@ -125,11 +125,11 @@ Every Tier 2 primitive named in the strategic plan now has both a design doc (`d
 
 | Item | Where | Test |
 |---|---|---|
-| Body-size limits | `crates/thumper-relay/src/config.rs` (1 MiB / 4 MiB sealed) + receipts (64 KiB) | `rejects_oversized_body` |
-| CORS lockdown | `crates/thumper-relay/src/lib.rs::build_app` | `cors_preflight_*` (3 tests) |
+| Body-size limits | `crates/ghola-relay/src/config.rs` (1 MiB / 4 MiB sealed) + receipts (64 KiB) | `rejects_oversized_body` |
+| CORS lockdown | `crates/ghola-relay/src/lib.rs::build_app` | `cors_preflight_*` (3 tests) |
 | Cross-Origin-Resource-Policy | tower-http SetResponseHeaderLayer | `cross_origin_resource_policy_header_present` |
 | Provider plurality / random select | `apps/web/src/lib/sovereignty.ts::selectRoute("private")` | sovereignty.test.ts |
-| Compile-time unattested deny | `crates/thumper-relay/src/handlers.rs::allow_unattested` | relay tests baseline |
+| Compile-time unattested deny | `crates/ghola-relay/src/handlers.rs::allow_unattested` | relay tests baseline |
 | Fail-closed E2E sealing | `apps/web/src/app/chat/page.tsx` (no plaintext fallback on Turnkey error) | — |
 
 ## Threat-model claims (from SECURITY.md)
@@ -156,7 +156,7 @@ Every Tier 2 primitive named in the strategic plan now has both a design doc (`d
 |---|---|
 | Total commits this sprint | 38+ |
 | Web vitest tests | 80 passing / 2 failing (both in untracked WIP files) |
-| Rust tests | 144 across 7 crates (thumper-relay 58, said-attest 21, receipts-service 12, x402 12, pir-types 16, bbs-types 15, zkml-types 10) |
+| Rust tests | 144 across 7 crates (ghola-relay 58, said-attest 21, receipts-service 12, x402 12, pir-types 16, bbs-types 15, zkml-types 10) |
 | New routes shipped | 4 (`/models/local`, `/settings/cache`, `/security/audit-trail`, `/api/csp-report`) |
 | New design docs | 5 (Tier 2G, 2H, 2J, 2K, Tier 3) |
 | New schema-only crates | 3 (ghola-zkml-types, said-bbs-types, said-pir-types) |

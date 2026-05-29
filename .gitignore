@@ -30,6 +30,14 @@ ios/Ghola.xcodeproj/
 ios/build/
 .env*.local
 
+# Terraform local plans, state, and operator-specific variable files.
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.plan
+*.auto.tfvars
+*.auto.tfvars.json
+
 # Stream 10 — hardening evidence raw artifacts (manifests live elsewhere)
 /artifacts/hardening-evidence/
 

@@ -51,6 +51,8 @@ console.log(`[venue-canary] worker=${trimUrl(workerUrl)} recipient=${recipient.r
 
 if (venue === "hyperliquid") {
   await runHyperliquid();
+} else if (venue === "phoenix") {
+  await runPhoenix();
 } else if (venue === "coinbase_byo") {
   await runCoinbaseByo();
 } else if (venue === "coinbase_omnibus") {
@@ -145,6 +147,100 @@ async function runHyperliquid() {
     encrypted_execution_instruction_bundle: await instructionBundle({
       workOrderCommitment: reconcileWork,
       venueId: "hyperliquid",
+      operationClass: "reconcile",
+      reconcile: { market },
+    }),
+    session_policy: sessionPolicy,
+  });
+}
+
+async function runPhoenix() {
+  const authorityPrivateKey = live
+    ? required("GHOLA_CANARY_PHOENIX_AUTHORITY_PRIVATE_KEY")
+    : "11111111111111111111111111111111";
+  const market = env("GHOLA_CANARY_PHOENIX_MARKET", "SOL").toUpperCase();
+  const side = env("GHOLA_CANARY_PHOENIX_SIDE", "buy").toLowerCase();
+  const quoteSize = env("GHOLA_CANARY_PHOENIX_QUOTE_SIZE", "5");
+  const limitPrice = env("GHOLA_CANARY_PHOENIX_LIMIT_PRICE", "250");
+  const accountCommitment = commitment("phoenix_account", { canaryId, market });
+  const vaultCommitment = commitment("phoenix_vault", { accountCommitment, market });
+  const policyCommitment = commitment("phoenix_policy", { canaryId, market });
+  const sessionPolicy = {
+    market_allowlist: [market],
+    max_notional_bucket: env("GHOLA_CANARY_MAX_NOTIONAL_BUCKET", "25"),
+    max_order_count: 10,
+    kill_switch: false,
+  };
+  if (submitOrder) {
+    assertTinyFillCanarySize(quoteSize, "GHOLA_CANARY_PHOENIX_QUOTE_SIZE");
+  }
+  const encryptedVault = await sealedBundle({
+    version: 1,
+    kind: "ghola_solana_perps_execution_vault",
+    venue_id: "phoenix",
+    network: "mainnet",
+    execution_mode: "user_stealth",
+    wallet_private_key: authorityPrivateKey,
+    rpc_url: env("GHOLA_CANARY_SOLANA_RPC_URL") || env("PRIVATE_AGENT_SOLANA_RPC_URL") || null,
+    api_url: env("GHOLA_CANARY_PHOENIX_API_URL") || null,
+    trader_pda_index: Number.parseInt(env("GHOLA_CANARY_PHOENIX_TRADER_PDA_INDEX", "0"), 10),
+    trader_subaccount_index: Number.parseInt(env("GHOLA_CANARY_PHOENIX_TRADER_SUBACCOUNT_INDEX", "0"), 10),
+    allowed_operations: ["read", "perp_limit_order", "cancel", "fills", "reconcile"],
+    blocked_operations: ["withdraw", "vault_transfer", "leverage_escalation", "staking", "raw_custody_transfer"],
+  }, [
+    "ghola/solana-perps-execution-vault-v1",
+    `account:${accountCommitment}`,
+    `recipient:${recipient.recipient_id}`,
+    "mode:user_stealth",
+    "network:mainnet",
+    "venue:phoenix",
+  ].join("|"));
+
+  const orderWork = commitment("work_order", { canaryId, venue, op: "perp_limit_order" });
+  await expect(
+    submitOrder ? "phoenix tiny-fill IOC order" : "phoenix dry-run order",
+    "/venues/solana-perps/orders",
+    202,
+    {
+      version: 1,
+      venue_id: "phoenix",
+      platform_class: "solana_perps_market",
+      execution_mode: "user_stealth",
+      work_order_commitment: orderWork,
+      vault_commitment: vaultCommitment,
+      policy_commitment: policyCommitment,
+      operation_class: "perp_limit_order",
+      encrypted_execution_vault: encryptedVault,
+      encrypted_execution_instruction_bundle: await instructionBundle({
+        workOrderCommitment: orderWork,
+        venueId: "phoenix",
+        operationClass: "perp_limit_order",
+        order: {
+          market,
+          side,
+          quote_size: quoteSize,
+          limit_price: limitPrice,
+          live_order_mode: "tiny_fill",
+          tif: "Ioc",
+        },
+      }),
+      session_policy: sessionPolicy,
+    },
+  );
+
+  const reconcileWork = commitment("work_order", { canaryId, venue, op: "reconcile" });
+  await expect("phoenix reconcile", "/venues/solana-perps/reconcile", 200, {
+    version: 1,
+    venue_id: "phoenix",
+    platform_class: "solana_perps_market",
+    execution_mode: "user_stealth",
+    work_order_commitment: reconcileWork,
+    vault_commitment: vaultCommitment,
+    policy_commitment: policyCommitment,
+    encrypted_execution_vault: encryptedVault,
+    encrypted_execution_instruction_bundle: await instructionBundle({
+      workOrderCommitment: reconcileWork,
+      venueId: "phoenix",
       operationClass: "reconcile",
       reconcile: { market },
     }),
@@ -503,16 +599,16 @@ function boolEnv(name) {
   return env(name).toLowerCase() === "1" || env(name).toLowerCase() === "true";
 }
 
-function assertTinyFillCanarySize(value) {
+function assertTinyFillCanarySize(value, label = "GHOLA_CANARY_HYPERLIQUID_QUOTE_SIZE") {
   if (!/^\d+(\.\d+)?$/.test(value)) {
-    fail("GHOLA_CANARY_HYPERLIQUID_QUOTE_SIZE must be a decimal dollar amount");
+    fail(`${label} must be a decimal dollar amount`);
   }
   const size = Number(value);
   if (!Number.isFinite(size) || size <= 0) {
-    fail("GHOLA_CANARY_HYPERLIQUID_QUOTE_SIZE must be greater than zero");
+    fail(`${label} must be greater than zero`);
   }
   if (size > 25) {
-    fail("GHOLA_CANARY_HYPERLIQUID_QUOTE_SIZE must stay at or below $25 for the live canary");
+    fail(`${label} must stay at or below $25 for the live canary`);
   }
 }
 

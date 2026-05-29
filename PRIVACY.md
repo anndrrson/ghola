@@ -54,13 +54,13 @@ Railgun x402 requests use the OHTTP relay path automatically in the web app
 when `NEXT_PUBLIC_OHTTP_RELAY_URL` is configured. Custom clients can pass an
 `ohttpRelay` URL explicitly. The relay only accepts
 `POST /v1/chat/completions` inside that tunnel and forwards a narrow allowlist
-of content, authorization, and payment headers to `thumper-cloud`. Cookies,
+of content, authorization, and payment headers to `ghola-cloud`. Cookies,
 referrers, forwarded IPs, request IDs, wallet identifiers, user identifiers,
 and viewing-key-like headers are stripped.
 
 This improves network-layer privacy by separating the browser source IP from
 the payment/inference endpoint. It does not hide request bodies from
-`thumper-cloud`; it is a network blind relay, not encrypted remote compute.
+`ghola-cloud`; it is a network blind relay, not encrypted remote compute.
 
 ## Browser Local Mode
 

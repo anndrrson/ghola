@@ -116,3 +116,48 @@ pub struct EvidenceAttested {
     pub evidence_root: [u8; 32],
     pub commit_slot: u64,
 }
+
+#[event]
+pub struct AuctionMarketInitialized {
+    pub auction_market: Pubkey,
+    pub market_commitment: [u8; 32],
+    pub mint: Pubkey,
+    pub batch_size: u16,
+}
+
+#[event]
+pub struct AuctionEpochOpened {
+    pub auction_epoch: Pubkey,
+    pub auction_market: Pubkey,
+    pub epoch_id: u64,
+    pub closes_slot: u64,
+}
+
+#[event]
+pub struct AuctionOrderCommitted {
+    pub auction_epoch: Pubkey,
+    pub order_commitment: [u8; 32],
+    pub side: u8,
+    pub amount_bucket: u16,
+}
+
+#[event]
+pub struct AuctionEpochCleared {
+    pub auction_epoch: Pubkey,
+    pub clearing_commitment: [u8; 32],
+    pub matched_count: u16,
+    pub rolled_count: u16,
+}
+
+#[event]
+pub struct AuctionClearingSettled {
+    pub auction_epoch: Pubkey,
+    pub clearing_commitment: [u8; 32],
+    pub settlement_commitment: [u8; 32],
+}
+
+#[event]
+pub struct AuctionOrderCancelled {
+    pub auction_epoch: Pubkey,
+    pub order_commitment: [u8; 32],
+}

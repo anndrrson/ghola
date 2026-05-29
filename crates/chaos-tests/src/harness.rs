@@ -71,17 +71,13 @@ impl MockProver {
                         .await;
                 }
                 Mock::given(any())
-                    .respond_with(
-                        ResponseTemplate::new(200).set_body_json(valid_proof_response()),
-                    )
+                    .respond_with(ResponseTemplate::new(200).set_body_json(valid_proof_response()))
                     .mount(&server)
                     .await;
             }
             ProverBehavior::ReturnValidProof => {
                 Mock::given(any())
-                    .respond_with(
-                        ResponseTemplate::new(200).set_body_json(valid_proof_response()),
-                    )
+                    .respond_with(ResponseTemplate::new(200).set_body_json(valid_proof_response()))
                     .mount(&server)
                     .await;
             }
@@ -160,36 +156,28 @@ impl MockRpc {
                 }
                 Mock::given(method("POST"))
                     .and(path("/"))
-                    .respond_with(
-                        ResponseTemplate::new(200).set_body_json(healthy_rpc_response()),
-                    )
+                    .respond_with(ResponseTemplate::new(200).set_body_json(healthy_rpc_response()))
                     .mount(&server)
                     .await;
             }
             RpcBehavior::StaleStateForever => {
                 Mock::given(method("POST"))
                     .and(path("/"))
-                    .respond_with(
-                        ResponseTemplate::new(200).set_body_json(stale_rpc_response()),
-                    )
+                    .respond_with(ResponseTemplate::new(200).set_body_json(stale_rpc_response()))
                     .mount(&server)
                     .await;
             }
             RpcBehavior::SignatureUnknownForever => {
                 Mock::given(method("POST"))
                     .and(path("/"))
-                    .respond_with(
-                        ResponseTemplate::new(200).set_body_json(unknown_sig_response()),
-                    )
+                    .respond_with(ResponseTemplate::new(200).set_body_json(unknown_sig_response()))
                     .mount(&server)
                     .await;
             }
             RpcBehavior::Healthy => {
                 Mock::given(method("POST"))
                     .and(path("/"))
-                    .respond_with(
-                        ResponseTemplate::new(200).set_body_json(healthy_rpc_response()),
-                    )
+                    .respond_with(ResponseTemplate::new(200).set_body_json(healthy_rpc_response()))
                     .mount(&server)
                     .await;
             }
@@ -331,6 +319,10 @@ impl TestRelayer {
             relay_rate_limit_per_min: 0,
             dedup_ttl_secs: said_shielded_pool_relayer::config::DEFAULT_DEDUP_TTL_SECS,
             trusted_proxies: std::collections::HashSet::new(),
+            // k-anonymity policy (defaults: k_min=1, release-everything).
+            relay_k_min: 1,
+            release_below_kmin: true,
+            metrics_token: None,
         };
         let cfg = Arc::new(cfg);
 
@@ -428,8 +420,8 @@ impl TestIndexer {
         let tmpdir = tempfile::tempdir()?;
         let db_path = tmpdir.path().join("indexer.db");
         let db = sled_open(&db_path)?;
-        let tree = IncrementalMerkleTree::open(db)
-            .map_err(|e| anyhow::anyhow!("tree open: {e:?}"))?;
+        let tree =
+            IncrementalMerkleTree::open(db).map_err(|e| anyhow::anyhow!("tree open: {e:?}"))?;
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let addr = listener.local_addr()?;
@@ -454,8 +446,7 @@ impl TestIndexer {
                 said_shielded_pool_indexer::config::DEFAULT_WITNESS_RATE_LIMIT_PER_MIN,
             witness_max_concurrency:
                 said_shielded_pool_indexer::config::DEFAULT_WITNESS_MAX_CONCURRENCY,
-            witness_timeout_secs:
-                said_shielded_pool_indexer::config::DEFAULT_WITNESS_TIMEOUT_SECS,
+            witness_timeout_secs: said_shielded_pool_indexer::config::DEFAULT_WITNESS_TIMEOUT_SECS,
             trusted_proxies: std::collections::HashSet::new(),
         };
 

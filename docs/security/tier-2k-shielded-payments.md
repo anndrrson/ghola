@@ -39,7 +39,7 @@ SHIELDED_STABLECOIN_REQUIRE_SIGNED_RECEIPT=true
 SHIELDED_STABLECOIN_VERIFIER_READY=false
 ```
 
-`render.yaml` and the live `thumper-cloud` Render service carry the non-secret
+`render.yaml` and the live `ghola-cloud` Render service carry the non-secret
 Aleo defaults. The rail remains
 disabled until the deployment-specific adapter URL, recipient, and verifier
 public key are present:
@@ -65,7 +65,7 @@ the expected state is `aleo_usdcx_shielded.configured=true`,
 `aleo_usdcx_shielded.adapter_signature_required=true`, and
 `aleo_usdcx_shielded.adapter_signature_configured=true`.
 
-The adapter contract is deliberately small: `thumper-cloud` posts to
+The adapter contract is deliberately small: `ghola-cloud` posts to
 `{SHIELDED_STABLECOIN_ADAPTER_URL}/verify` with the requested amount, provider
 metadata, destination, and the caller's shielded proof payload. The adapter must
 return `settled=true`, an amount at least equal to the required amount, and a
@@ -74,7 +74,7 @@ provider, network, asset, destination, proof digest, observation time,
 expiration time, and an Ed25519 signature from
 `SHIELDED_STABLECOIN_ADAPTER_PUBKEY`. The signed payload binds the receipt to
 the exact amount, recipient, proof digest, expiry, and nullifier/receipt
-reference, so `thumper-cloud` will reject a tampered or replayed adapter
+reference, so `ghola-cloud` will reject a tampered or replayed adapter
 response. The nullifier/receipt is recorded in `x402_payments.tx_signature`
 under a `shielded:<provider>:...` replay key.
 

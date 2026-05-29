@@ -35,10 +35,17 @@ export interface PrivateAgentSessionValidationResult {
 }
 
 const PLAINTEXT_LEAK_KEYS = new Set([
+  "account_id",
+  "api_key",
+  "api_secret",
+  "hyperliquid_account_id",
   "messages",
+  "order_payload",
+  "orders",
   "plaintext",
   "policy",
   "prompt",
+  "raw_order",
   "source",
   "strategy",
   "strategy_text",
@@ -54,8 +61,11 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 function containsPlaintextLeakKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsPlaintextLeakKey);
   if (!isObject(value)) return false;
-  return Object.keys(value).some((key) => PLAINTEXT_LEAK_KEYS.has(key));
+  return Object.entries(value).some(([key, child]) =>
+    PLAINTEXT_LEAK_KEYS.has(key) || containsPlaintextLeakKey(child)
+  );
 }
 
 function validateEncryptedBundle(value: unknown): string[] {

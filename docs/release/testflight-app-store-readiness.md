@@ -77,7 +77,7 @@ Set the production backend environment:
 APPLE_CLIENT_ID=xyz.ghola.ios
 ```
 
-Then deploy `thumper-cloud` and verify:
+Then deploy `ghola-cloud` and verify:
 
 ```sh
 curl -s https://thumper-cloud.onrender.com/health | tr ',' '\n' | rg 'apple|google'
@@ -114,8 +114,8 @@ Keep the demo honest: Ghola minimizes off-chain leakage and puts the user in con
 ## Commands used for release verification
 
 ```sh
-cargo fmt --check -p thumper-cloud
-cargo check -p thumper-cloud
+cargo fmt --check -p ghola-cloud
+cargo check -p ghola-cloud
 xcodebuild -project ios/Ghola.xcodeproj -scheme Ghola_iOS -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
 xcodebuild test -project ios/Ghola.xcodeproj -scheme Ghola_iOS -destination 'platform=iOS Simulator,id=<simulator-id>' CODE_SIGNING_ALLOWED=NO
 ```

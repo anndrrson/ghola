@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
+import { PrivateAccountFundingPanel } from "@/components/private-account/PrivateAccountFundingPanel";
 import { getBalance } from "@/lib/api";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import {
@@ -614,6 +615,10 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
             </p>
           )}
         </div>
+      </div>
+
+      <div className="mt-4">
+        <PrivateAccountFundingPanel onChanged={refreshPrivateBalance} />
       </div>
 
       {topUpOpen && (

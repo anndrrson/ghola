@@ -15,6 +15,7 @@ import {
   hyperliquidManagedAccountRefs,
   hyperliquidCredentialFromVault,
   loadManagedHyperliquidCredential,
+  readHyperliquidAccountSnapshot,
   submitHyperliquidExecution,
 } from "../venues/hyperliquid.js";
 import {
@@ -278,6 +279,29 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     },
   });
   return state.putIdempotency(body.work_order_commitment, receipt);
+}
+
+export async function readHyperliquidSnapshot({ body, recipient, state }) {
+  const executionMode = hyperliquidExecutionMode(body);
+  let credential;
+  if (executionMode === "managed_testnet") {
+    const allocationCommitment = body.managed_allocation_commitment || body.allocation_commitment;
+    const record = state.getHyperliquidManagedAllocation(allocationCommitment);
+    if (!record?.allocation || record.allocation.status !== "allocated") {
+      throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
+    }
+    credential = loadManagedHyperliquidCredential(record.allocation);
+  } else {
+    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+      aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+      expectedKind: "ghola_hyperliquid_execution_vault",
+    });
+    credential = hyperliquidCredentialFromVault(openedVault.json);
+  }
+  return readHyperliquidAccountSnapshot({
+    credential,
+    accountSource: executionMode === "managed_testnet" ? "ghola_managed" : "sealed_byo",
+  });
 }
 
 export async function executeCoinbaseOrder({ body, recipient, state }) {

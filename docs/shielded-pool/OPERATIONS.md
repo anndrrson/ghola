@@ -955,7 +955,7 @@ The fix in time-macros 0.2.27 transitively requires edition 2024 via
 `constant_time_eq 0.4.2`. The Ghola workspace is pinned to edition 2021
 (`workspace.package.edition`) because bumping to 2024 surfaces
 pattern-binding-modifier changes across many existing crates
-(thumper-cloud, etc.). Migration is tracked as a focused pass.
+(ghola-cloud, etc.). Migration is tracked as a focused pass.
 
 ### RUSTSEC-2024-0388 — `derivative` unmaintained
 

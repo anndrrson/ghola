@@ -23,6 +23,8 @@ type PixelFieldProps = {
   seed?: number;
   /** Freeze on a single frame without unmounting. */
   paused?: boolean;
+  /** Maximum redraw rate. The browser may still composite at display rate. */
+  maxFps?: number;
   className?: string;
 };
 
@@ -188,6 +190,7 @@ export function PixelField({
   speed = 0.35,
   seed = 50,
   paused = false,
+  maxFps = 42,
   className = "",
 }: PixelFieldProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -195,16 +198,19 @@ export function PixelField({
   const colorRef = useRef<RGB>(parseHexColor(color));
   const speedRef = useRef(speed);
   const pausedRef = useRef(paused);
+  const maxFpsRef = useRef(maxFps);
   const visibleRef = useRef(true);
   const reducedMotionRef = useRef(false);
   const startRef = useRef(0);
+  const lastDrawRef = useRef(0);
   const sizeRef = useRef({ width: 0, height: 0, dpr: 1 });
 
   useEffect(() => {
     colorRef.current = parseHexColor(color);
     speedRef.current = speed;
     pausedRef.current = paused;
-  }, [color, speed, paused]);
+    maxFpsRef.current = maxFps;
+  }, [color, speed, paused, maxFps]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -217,7 +223,8 @@ export function PixelField({
       const rect = canvas.getBoundingClientRect();
       const width = Math.max(1, Math.floor(rect.width));
       const height = Math.max(1, Math.floor(rect.height));
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+      const dprCap = window.innerWidth < 768 ? 1.15 : 1.45;
+      const dpr = Math.min(window.devicePixelRatio || 1, dprCap);
       sizeRef.current = { width, height, dpr };
       canvas.width = Math.floor(width * dpr);
       canvas.height = Math.floor(height * dpr);
@@ -280,7 +287,13 @@ export function PixelField({
 
     let raf = 0;
     const tick = (now: number) => {
-      if (visibleRef.current) draw(now);
+      if (visibleRef.current) {
+        const frameInterval = 1000 / clamp(maxFpsRef.current, 1, 60);
+        if (!lastDrawRef.current || now - lastDrawRef.current >= frameInterval) {
+          lastDrawRef.current = now;
+          draw(now);
+        }
+      }
       if (!reducedMotionRef.current && !pausedRef.current) {
         raf = requestAnimationFrame(tick);
       }

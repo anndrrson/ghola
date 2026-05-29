@@ -30,7 +30,7 @@ This doc is broader. It spans:
 | L3 | Policy | §2.3, §3 step 4 | Turnkey policy engine (memory-only, not in this repo) |
 | L4 | Payment | §2.4 (reference only) | [tier-2k-shielded-payments.md](./tier-2k-shielded-payments.md) |
 | L5 | Settlement / dispute | §2.5 | Escrow PDA design (forward-looking) |
-| L6 | Audit / selective disclosure | §2.6, §4 | `crates/thumper-cloud/src/services/private_settlement_service.rs` |
+| L6 | Audit / selective disclosure | §2.6, §4 | `crates/ghola-cloud/src/services/private_settlement_service.rs` |
 
 Tier 2K is the **fourth** of those six. The other five are layered
 around it and constrain its design: L1 decides who is allowed to ask
@@ -294,7 +294,7 @@ Policy hash is the canonical SHA-256 of `(version, max_per_call,
 daily_cap, allowlist, time_window, kill_switch)`. It is bound into
 each signer attestation (already enforced in the user-held shielded
 flow at
-`crates/thumper-cloud/src/services/private_settlement_service.rs:379-393`),
+`crates/ghola-cloud/src/services/private_settlement_service.rs:379-393`),
 so a tampered policy invalidates the receipt.
 
 ### Decisions still owed (L3)
@@ -320,7 +320,7 @@ Summary only:
   nullifier_hex, epoch }` (`crates/said-x402/src/settlement.rs:47-51`).
 - Verification: signed-receipt envelope from the Aleo verifier
   adapter (`apps/web/src/app/api/aleo-shielded/verify/route.ts`,
-  `crates/thumper-cloud/src/services/x402_service.rs:1399-1515`).
+  `crates/ghola-cloud/src/services/x402_service.rs:1399-1515`).
 - Bridge: USDC (Solana) → USDC.a (Aleo) via a single bridge,
   refilled out-of-band. Not yet implemented (Layer 8 in
   [shielded-build-state.md](./shielded-build-state.md)).
@@ -369,7 +369,7 @@ Design:
 ### 2.6 L6 — Audit / selective disclosure
 
 Today's "selective disclosure" is hashed-metadata export
-(`crates/thumper-cloud/src/services/private_settlement_service.rs:1039-1108`).
+(`crates/ghola-cloud/src/services/private_settlement_service.rs:1039-1108`).
 It is not a ZK proof — it is a redacted JSON dump. The audit layer
 this document specifies replaces that with one of two predicate
 proofs at v1 (see §4):
@@ -406,11 +406,11 @@ correspond to the layers above.
      recipient: <provider_aleo_addr>, model: ghola_pay.aleo }
 
 3. Agent (running locally) requests a signature from Ghola:
-   POST thumper-cloud /v1/agents/{agent_id}/pay
+   POST ghola-cloud /v1/agents/{agent_id}/pay
      { rail: "aleo_usdcx_shielded", amount: 2400,
        recipient: <provider_aleo_addr>, intent_id: ... }
 
-   thumper-cloud:
+   ghola-cloud:
      a. checks daily-cap policy (server-side, time-windowed)     (L3)
      b. constructs the Aleo transition payload
      c. asks Turnkey to sign with the agent sub-org's Aleo key   (L2)
@@ -544,7 +544,7 @@ Four phases, keyed to Tier 2K §6 and to the build-state inventory.
 
 Exit criteria: institutional readiness flag flips true (already
 gated, see
-`crates/thumper-cloud/src/services/private_settlement_service.rs:1188-1253`).
+`crates/ghola-cloud/src/services/private_settlement_service.rs:1188-1253`).
 
 ### Phase 1 — Agent-as-payer on public rail
 
@@ -626,7 +626,7 @@ Work:
 - Prover wrapper crate (wasm + native Rust).
 - Verifier wasm shipped under `/r/`.
 - Replace the metadata-only "selective disclosure export"
-  (`crates/thumper-cloud/src/services/private_settlement_service.rs:1039-1108`)
+  (`crates/ghola-cloud/src/services/private_settlement_service.rs:1039-1108`)
   with a real ZK-proof-emitting endpoint.
 
 ## 6. Engineering estimate
@@ -717,9 +717,9 @@ Code anchors (cited inline above):
 - `crates/said-x402/src/settlement.rs` —
   `X402SettlementProof` enum.
 - `crates/said-x402/src/lib.rs` — `X402PaymentPayload`.
-- `crates/thumper-cloud/src/services/x402_service.rs` — shielded
+- `crates/ghola-cloud/src/services/x402_service.rs` — shielded
   adapter caller, signed-receipt verification, payment rail kinds.
-- `crates/thumper-cloud/src/services/private_settlement_service.rs`
+- `crates/ghola-cloud/src/services/private_settlement_service.rs`
   — intent / proof / verified-receipt / selective-disclosure
   export.
 - `apps/web/src/app/api/aleo-shielded/verify/route.ts` — Aleo

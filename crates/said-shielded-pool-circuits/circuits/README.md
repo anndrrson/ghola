@@ -22,6 +22,7 @@ Deltas vs. Nova:
 | File | Purpose |
 | --- | --- |
 | `transaction.circom`  | Main 2-in / 2-out transfer circuit (depth-26). |
+| `auctionClearing.circom` | Shielded batch-auction clearing proof for 64-order epochs. |
 | `merkleProof.circom`  | Depth-26 Poseidon Merkle inclusion proof. |
 | `keypair.circom`      | `ak = Poseidon(sk)` + Penumbra-style nullifier. |
 | `commitment.circom`   | `cm = Poseidon4(amount, asset_id, owner_pubkey, blinding)`. |
@@ -41,6 +42,27 @@ Must match `said-shielded-pool-types::PublicInputs` and `SPEC.md`:
   ext_data_hash ]
 ```
 
+## Auction clearing public signals
+
+`auctionClearing.circom` intentionally uses eight public inputs so it can share
+the Anchor verifier wrapper shape:
+
+```text
+[ auction_order_root,
+  clearing_price_commitment,
+  matched_root,
+  rolled_root,
+  matched_count,
+  rolled_count,
+  settlement_commitment,
+  clearing_commitment ]
+```
+
+The v1 policy proves a deterministic partition: active orders are exactly
+matched or rolled, matched buy/sell counts are equal, matched prices cross the
+uniform clearing price, and rolled prices do not. Bumping the batch size or
+policy requires a new circuit, ceremony, and compiled verifier key.
+
 ## Prerequisites
 
 - Node.js **20+**
@@ -54,12 +76,18 @@ npm install
 ```
 
 This pulls `circomlib` into `node_modules/`. The circuits import from
-`../node_modules/circomlib/circuits/...`.
+`node_modules/circomlib/circuits/...`.
 
 ## Compile
 
 ```bash
-circom transaction.circom --r1cs --wasm --sym -o ../artifacts/
+npm run compile
+```
+
+For the auction circuit:
+
+```bash
+npm run compile:auction
 ```
 
 Outputs into `../artifacts/`:

@@ -10,7 +10,7 @@
 //! and NEGATE the G1 `A` point so the on-chain single-pairing check
 //! works out. See `src/encoding.rs` for the gory details.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -24,7 +24,9 @@ use serde::Deserialize;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use crate::backend::Backend;
+use common_secrets::Zeroizing;
+
+use crate::backend::{Backend, SecureTempDir};
 use crate::config::Config;
 use crate::encoding::{
     be_bytes_32_to_decimal, field_str_to_be_bytes_32, hex_str_to_be_bytes_32, negate_g1_a,
@@ -54,10 +56,11 @@ impl Backend for SnarkjsBackend {
         ensure_exists(&zkey)?;
         ensure_exists(&wasm)?;
 
-        // RAII: the temp dir is removed on success, error, AND panic.
-        // The witness JSON contains the spending key in clear; we must
-        // not leave it on disk past the lifetime of this function.
-        let workdir = TempArtifacts::create_under(&self.cfg.artifacts_dir)?;
+        // RAII: the temp dir is removed on success, error, AND panic, with
+        // an unpredictable 0700 name and overwrite-before-unlink. The
+        // witness JSON contains the spending key in clear; we must not
+        // leave it on disk past the lifetime of this function.
+        let workdir = SecureTempDir::create_under(&self.cfg.artifacts_dir)?;
         let input_json = workdir.path().join("input.json");
         let witness_wtns = workdir.path().join("witness.wtns");
         let proof_json = workdir.path().join("proof.json");
@@ -67,8 +70,18 @@ impl Backend for SnarkjsBackend {
         //    The exact field names must match `transaction.circom` — we
         //    delegate that mapping to the client crate; here we serialize
         //    the public payload (the rest is reconstructed below).
-        let circom_input = circom_input_from_witness(&witness)?;
-        tokio::fs::write(&input_json, serde_json::to_vec_pretty(&circom_input)?).await?;
+        //    The serialized bytes embed the spending key (as decimal), so
+        //    we hold them in a `Zeroizing<Vec<u8>>` that scrubs on drop.
+        //    NOTE: the intermediate `serde_json::Value` (and the `String`
+        //    it holds the key in) cannot be scrubbed — serde_json owns
+        //    those allocations — so we minimize its lifetime and drop it
+        //    immediately after producing the byte buffer.
+        let input_bytes: Zeroizing<Vec<u8>> = {
+            let circom_input = circom_input_from_witness(&witness)?;
+            Zeroizing::new(serde_json::to_vec_pretty(&circom_input)?)
+        };
+        tokio::fs::write(&input_json, &*input_bytes).await?;
+        drop(input_bytes);
 
         // 2. Run `snarkjs wtns calculate <wasm> <input.json> <witness.wtns>`
         run_snarkjs(
@@ -118,10 +131,7 @@ impl Backend for SnarkjsBackend {
         Ok(tokio::fs::read(&vk_path).await?)
     }
 
-    async fn prove_forester(
-        &self,
-        witness: BatchedUpdateWitness,
-    ) -> Result<ForesterProofBundle> {
+    async fn prove_forester(&self, witness: BatchedUpdateWitness) -> Result<ForesterProofBundle> {
         let zkey = self.cfg.forester_zkey_path();
         let wasm = self.cfg.forester_wasm_path();
         ensure_exists(&zkey)?;
@@ -155,7 +165,7 @@ impl Backend for SnarkjsBackend {
         // the FULL set of pending commitments in clear, which (if
         // observed mid-prove) lets an attacker correlate the queue
         // contents with the upcoming `update_root_via_proof` tx.
-        let workdir = TempArtifacts::create_under(&self.cfg.artifacts_dir)?;
+        let workdir = SecureTempDir::create_under(&self.cfg.artifacts_dir)?;
         let input_json = workdir.path().join("input.json");
         let witness_wtns = workdir.path().join("witness.wtns");
         let proof_json = workdir.path().join("proof.json");
@@ -163,9 +173,17 @@ impl Backend for SnarkjsBackend {
 
         // Build the circom input.json — the circuit takes ALL fields as
         // decimal strings (or arrays of them). We translate the hex BE
-        // 32-byte wire form into decimal here.
-        let circom_input = build_forester_circom_input(&witness)?;
-        tokio::fs::write(&input_json, serde_json::to_vec_pretty(&circom_input)?).await?;
+        // 32-byte wire form into decimal here. The serialized bytes carry
+        // the full pending-commitment set in clear, so we hold them in a
+        // `Zeroizing<Vec<u8>>` that scrubs on drop. (As in `prove`, the
+        // intermediate `serde_json::Value` cannot be scrubbed; we drop it
+        // as soon as the bytes are produced.)
+        let input_bytes: Zeroizing<Vec<u8>> = {
+            let circom_input = build_forester_circom_input(&witness)?;
+            Zeroizing::new(serde_json::to_vec_pretty(&circom_input)?)
+        };
+        tokio::fs::write(&input_json, &*input_bytes).await?;
+        drop(input_bytes);
 
         run_snarkjs(
             &[
@@ -214,7 +232,11 @@ fn build_forester_circom_input(w: &BatchedUpdateWitness) -> Result<serde_json::V
     let path_elements_dec: Vec<Vec<String>> = w
         .path_elements
         .iter()
-        .map(|row| row.iter().map(|s| hex_to_dec(s)).collect::<Result<Vec<_>>>())
+        .map(|row| {
+            row.iter()
+                .map(|s| hex_to_dec(s))
+                .collect::<Result<Vec<_>>>()
+        })
         .collect::<Result<Vec<_>>>()?;
 
     Ok(serde_json::json!({
@@ -338,48 +360,10 @@ fn ensure_exists(p: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// RAII guard for the snarkjs scratch directory.
-///
-/// The directory contains `input.json` — which embeds the spending key
-/// and per-input blinding factors in clear — as well as the witness
-/// file (`witness.wtns`) which is a bit-for-bit functionally equivalent
-/// representation. Both MUST be removed when the proof attempt ends,
-/// whether by success, error, or panic.
-///
-/// We replace the previous "best-effort cleanup on success path only"
-/// pattern with a `Drop` impl so the cleanup is invariant under early
-/// returns, `?`-propagation, and unwinding. The on-disk window is
-/// further capped by the per-subprocess `tokio::time::timeout` below.
-struct TempArtifacts {
-    path: PathBuf,
-}
-
-impl TempArtifacts {
-    fn create_under(base: &Path) -> Result<Self> {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let path = base.join(format!(".prover-{nanos}"));
-        std::fs::create_dir_all(&path)?;
-        Ok(Self { path })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempArtifacts {
-    fn drop(&mut self) {
-        // Best-effort: if the dir was already removed (e.g. a sibling
-        // process tried to GC us) or the disk is gone, swallow it —
-        // there's nothing actionable in a Drop. The privacy story
-        // depends on the dir being gone at this point, and the only
-        // way it isn't is if the OS itself is broken.
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
+// The snarkjs scratch directory is managed by the shared
+// `crate::backend::SecureTempDir` guard (random 0700 name, overwrite-
+// before-unlink in `Drop`). The on-disk window is further capped by the
+// per-subprocess `tokio::time::timeout` below.
 
 /// Run a snarkjs subprocess with a hard wall-clock timeout.
 ///
@@ -393,9 +377,9 @@ impl Drop for TempArtifacts {
 ///
 /// Privacy reason: the witness file written to the temp dir contains
 /// the spending key and per-input blinding factors. A hung snarkjs
-/// could otherwise sit on that file indefinitely. The `TempArtifacts`
-/// guard above deletes the file when the proof attempt returns; the
-/// timeout here ensures the proof attempt DOES return.
+/// could otherwise sit on that file indefinitely. The `SecureTempDir`
+/// guard deletes the file when the proof attempt returns; the timeout
+/// here ensures the proof attempt DOES return.
 async fn run_snarkjs(args: &[&str], timeout_ms: u64) -> Result<()> {
     let mut cmd = Command::new("snarkjs");
     cmd.args(args)
@@ -433,7 +417,7 @@ async fn run_snarkjs(args: &[&str], timeout_ms: u64) -> Result<()> {
                 // through `tracing::warn!(error = %e, ...)` in the
                 // relayer. Redact any long hex-looking run before
                 // surfacing.
-                let safe_stderr = redact_stderr(&stderr);
+                let safe_stderr = crate::backend::redact::redact_stderr(&stderr);
                 return Err(Error::BackendSpawnFailed(format!(
                     "snarkjs {args:?} exited {}: {safe_stderr}",
                     status
@@ -462,20 +446,32 @@ async fn run_snarkjs(args: &[&str], timeout_ms: u64) -> Result<()> {
 
 // --------------- input/output JSON wire formats ---------------
 
-/// Minimal circom-compatible input shape. The real circuit (see
-/// `crates/said-shielded-pool-circuits/transaction.circom`) takes many
-/// more fields; we serialize the witness verbatim and trust that field
-/// names already match. If they don't, a follow-up mapping pass lives
-/// in the client crate (Phase 38).
-fn circom_input_from_witness(w: &TransferWitness) -> Result<serde_json::Value> {
-    serde_json::to_value(w).map_err(Into::into)
+/// Build the circom-compatible `input.json` for the transaction circuit.
+///
+/// This delegates to [`crate::witness::build_input_json`], which renders
+/// every field element as a DECIMAL STRING under the circuit's signal
+/// names (`root`, `inputNullifier`, `inPathElements`, `publicAmount`,
+/// `publicAmountIsNeg`/`publicAmountMagnitude`, …), pads to the fixed
+/// 2-in/2-out shape, and computes nullifiers/commitments/root with
+/// circom-compatible Poseidon. A previous version serialized the witness
+/// verbatim (`serde_json::to_value`), which emitted Rust snake_case field
+/// names and 32-element BYTE ARRAYS — input that `snarkjs wtns calculate`
+/// rejects (and whose echoed stderr leaked the spending key). Both
+/// backends now route through this single mapping.
+///
+/// v1 single-key model: every real input is spent by `w.spending_key`, so
+/// we hand `build_input_json` that key per real input. Pure deposits have
+/// no real inputs and fall back to the witness key for dummy derivation.
+pub(crate) fn circom_input_from_witness(w: &TransferWitness) -> Result<serde_json::Value> {
+    let sk_per_input = vec![w.spending_key; w.input_notes.len()];
+    Ok(crate::witness::build_input_json(w, &sk_per_input))
 }
 
 #[derive(Debug, Deserialize)]
 struct SnarkjsProofJson {
-    pi_a: Vec<String>, // [x, y, 1] — projective; we drop the 1.
+    pi_a: Vec<String>,      // [x, y, 1] — projective; we drop the 1.
     pi_b: Vec<Vec<String>>, // [[x0, x1], [y0, y1], [1, 0]]
-    pi_c: Vec<String>, // [x, y, 1]
+    pi_c: Vec<String>,      // [x, y, 1]
     #[allow(dead_code)]
     protocol: Option<String>,
     #[allow(dead_code)]
@@ -602,6 +598,10 @@ fn read_field(s: &str) -> Result<FieldBytes> {
     field_str_to_be_bytes_32(s)
 }
 
+// stderr redaction lives in the shared `crate::backend::redact` module so
+// both this backend and the rapidsnark backend route stderr through the
+// same logic (which also neutralizes the JSON byte-array form of the key).
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,96 +619,82 @@ mod tests {
         assert_eq!(v.pi_c.len(), 3);
     }
 
+    /// The prove path must emit circom input.json: DECIMAL STRINGS under the
+    /// circuit's signal names — not a verbatim serde dump of the witness
+    /// (Rust field names + 32-element byte arrays), which snarkjs rejects and
+    /// whose echoed stderr leaked the spending key.
     #[test]
-    fn redact_stderr_scrubs_long_hex_runs() {
-        let input = "Error: invalid input at line 12:\n  \"spending_key\": \"deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567\"\n";
-        let out = super::redact_stderr(input);
-        assert!(
-            !out.contains("deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567"),
-            "hex run leaked: {out}"
-        );
-        assert!(out.contains("<hex-redacted"));
-    }
+    fn circom_input_uses_signal_names_and_decimal_strings_not_byte_arrays() {
+        // Field elements must be < the BN254 modulus, so keep them small
+        // (leading bytes zero) — Poseidon rejects inputs ≥ p.
+        let mut asset_bytes = [0u8; 32];
+        asset_bytes[31] = 0xAA;
+        let asset = AssetId(asset_bytes);
+        let owner_sk: FieldBytes = [7u8; 32];
+        let note = said_shielded_pool_types::Note {
+            amount: 1000,
+            asset_id: asset,
+            owner_pubkey: [0u8; 32],
+            blinding: [3u8; 32],
+        };
+        // Deposit: no real inputs, one real output, public_amount = -1000.
+        let w = TransferWitness {
+            input_notes: vec![],
+            input_paths: vec![],
+            input_indices: vec![],
+            output_notes: vec![note],
+            spending_key: owner_sk,
+            public_amount: -1000,
+            asset_id: asset,
+            ext_data_hash: [0u8; 32],
+        };
 
-    #[test]
-    fn redact_stderr_scrubs_long_decimal_runs() {
-        // Circom field elements often appear as 76-digit decimals.
-        let input = "Mismatch at signal spending_key: 12345678901234567890123456789012345678901234567890";
-        let out = super::redact_stderr(input);
-        assert!(
-            !out.contains("12345678901234567890123456789012345678901234567890"),
-            "decimal run leaked: {out}"
-        );
-    }
+        let v = circom_input_from_witness(&w).unwrap();
+        let obj = v.as_object().expect("input.json must be a JSON object");
 
-    #[test]
-    fn redact_stderr_truncates_overlong_lines() {
-        let s = "x".repeat(4096);
-        let out = super::redact_stderr(&s);
-        // Cap is 1024 chars per the helper.
-        assert!(out.len() <= 1100, "len={}", out.len());
-    }
-
-    #[test]
-    fn redact_stderr_preserves_short_diagnostic_text() {
-        let s = "snarkjs: cannot read circuit_final.zkey";
-        let out = super::redact_stderr(s);
-        assert_eq!(out, s);
-    }
-}
-
-/// Redact a snarkjs child-process stderr buffer before it flows into a
-/// user-visible / log-visible error message.
-///
-/// Snarkjs's input-validation errors quote the offending `input.json`
-/// field — for our circuit that file contains the **spending key in
-/// clear**. The pattern of leak is always the same: a long run of hex
-/// or decimal digits embedded in the error string. We:
-///
-/// 1. Truncate the buffer to 1024 chars (more than enough for the
-///    snarkjs error preamble, none of the multi-kilobyte echo).
-/// 2. Replace any run of ≥16 consecutive hex digits with
-///    `<hex-redacted N>`.
-/// 3. Replace any run of ≥32 consecutive decimal digits with
-///    `<dec-redacted N>` (matches BN254 field-element printouts).
-///
-/// Conservative by design: false positives are diagnostic noise,
-/// false negatives are key-material leaks.
-fn redact_stderr(s: &str) -> String {
-    // Cap length first — anything past 1024 chars is almost certainly
-    // an echoed input.json dump, not useful diagnostic text.
-    let truncated: String = if s.len() > 1024 {
-        format!("{}…[truncated {} chars]", &s[..1024], s.len() - 1024)
-    } else {
-        s.to_string()
-    };
-
-    // Two-pass replacement: hex then decimal. We walk the string and
-    // emit segments, redacting runs that exceed the thresholds.
-    let hex_redacted = redact_runs(&truncated, 16, |c: char| c.is_ascii_hexdigit(), "hex");
-    redact_runs(&hex_redacted, 32, |c: char| c.is_ascii_digit(), "dec")
-}
-
-fn redact_runs(s: &str, min_len: usize, pred: impl Fn(char) -> bool, label: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut current_run = String::new();
-    for ch in s.chars() {
-        if pred(ch) {
-            current_run.push(ch);
-        } else {
-            if current_run.len() >= min_len {
-                out.push_str(&format!("<{}-redacted {} chars>", label, current_run.len()));
-            } else {
-                out.push_str(&current_run);
-            }
-            current_run.clear();
-            out.push(ch);
+        // Circuit signal names present.
+        for sig in [
+            "root",
+            "inputNullifier",
+            "outputCommitment",
+            "publicAmount",
+            "publicAmountIsNeg",
+            "publicAmountMagnitude",
+            "assetId",
+            "extDataHash",
+            "inAmount",
+            "inBlinding",
+            "inPrivateKey",
+            "inLeafIndex",
+            "inPathElements",
+            "outAmount",
+            "outBlinding",
+            "outOwnerPubkey",
+        ] {
+            assert!(obj.contains_key(sig), "missing circuit signal `{sig}`");
         }
+        // Verbatim Rust witness field names must be ABSENT.
+        for f in ["spending_key", "input_notes", "output_notes", "input_paths"] {
+            assert!(!obj.contains_key(f), "leaked Rust field `{f}`");
+        }
+
+        // Scalars are decimal strings; path is [TREE_DEPTH] of strings.
+        assert!(v["assetId"].is_string());
+        assert!(v["root"].is_string());
+        assert!(v["inputNullifier"][0].is_string());
+        let path0 = v["inPathElements"][0].as_array().expect("path is array");
+        assert_eq!(path0.len(), TREE_DEPTH);
+        assert!(path0[0].is_string());
+
+        // The spending key must not appear anywhere as a JSON byte array.
+        let dump = serde_json::to_string(&v).unwrap();
+        assert!(
+            !dump.contains("[7,7,7,7,7,7,7,7"),
+            "spending key leaked as byte array"
+        );
+
+        // H1 signed-amount hints reflect the deposit sign (publicAmount<0).
+        assert_eq!(v["publicAmountIsNeg"], "1");
+        assert_eq!(v["publicAmountMagnitude"], "1000");
     }
-    if current_run.len() >= min_len {
-        out.push_str(&format!("<{}-redacted {} chars>", label, current_run.len()));
-    } else {
-        out.push_str(&current_run);
-    }
-    out
 }

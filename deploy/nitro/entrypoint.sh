@@ -107,7 +107,7 @@ sleep 2
 # whole tree down — same semantics as `exec`, just with bash still
 # in the chain to manage the children.
 echo "==> enclave-vsock-client pid=${VSOCK_PID}, ollama pid=${OLLAMA_PID}"
-/usr/local/bin/thumper-gpu-provider &
+/usr/local/bin/ghola-gpu-provider &
 PROVIDER_PID=$!
 
 # Propagate SIGTERM (nitro-cli terminate-enclave) to children cleanly.

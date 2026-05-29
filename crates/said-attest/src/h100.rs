@@ -30,7 +30,7 @@
 //! `jsonwebtoken` crate to keep the platform-tools rustc 1.75 build
 //! lane tidy). We verify the signature with `ed25519-dalek` against a
 //! root public key supplied by the operator via the env var
-//! `THUMPER_NVIDIA_NRAS_ROOT_PEM`.
+//! `GHOLA_NVIDIA_NRAS_ROOT_PEM`.
 
 // TODO(h100-prod): everything in this module is feature-flagged for a
 // synthetic, single-key signing path (Ed25519 over the JWT signing
@@ -56,7 +56,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use thumper_types::{EnclaveKeyId, TeeKind};
+use ghola_assistant_types::{EnclaveKeyId, TeeKind};
 
 use crate::{AttestationError, AttestedEnclave, ATTESTATION_TTL_SECS};
 
@@ -117,7 +117,7 @@ struct H100Claims {
 /// On a production node this returns NVIDIA's NRAS leaf-signing key
 /// (after validating an `x5c` chain to a pinned root — see the
 /// TODO(h100-prod) block). For now we accept a 32-byte Ed25519 public
-/// key, hex-encoded, supplied via `THUMPER_NVIDIA_NRAS_ROOT_PEM`. The
+/// key, hex-encoded, supplied via `GHOLA_NVIDIA_NRAS_ROOT_PEM`. The
 /// env-var name retains the future PEM shape so the contract doesn't
 /// change when we cut over.
 ///
@@ -125,7 +125,7 @@ struct H100Claims {
 /// must explicitly trust a key. This is the same fail-closed posture
 /// as `GHOLA_ATTEST_SIGNING_PUB` in the Nitro path.
 pub fn nras_root_pub_from_env() -> Option<VerifyingKey> {
-    let raw = std::env::var("THUMPER_NVIDIA_NRAS_ROOT_PEM").ok()?;
+    let raw = ghola_assistant_types::env_compat("GHOLA_NVIDIA_NRAS_ROOT_PEM", "THUMPER_NVIDIA_NRAS_ROOT_PEM").ok()?;
     let trimmed = raw.trim();
     // Tolerate the hex-only short form (32 bytes) we use in CI. A
     // real PEM-encoded key path is handled by the TODO(h100-prod)
@@ -207,7 +207,7 @@ fn verify_h100_cc_inner(
         Some(pk) => pk,
         None => nras_root_pub_from_env().ok_or_else(|| {
             AttestationError::CertChain(
-                "THUMPER_NVIDIA_NRAS_ROOT_PEM unset; refusing H100 CC attestation".into(),
+                "GHOLA_NVIDIA_NRAS_ROOT_PEM unset; refusing H100 CC attestation".into(),
             )
         })?,
     };

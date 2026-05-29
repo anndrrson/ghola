@@ -279,11 +279,13 @@ pub async fn relay(
 
     if !upstream.status().is_success() {
         let status = upstream.status().as_u16();
-        let error_body = upstream.text().await.unwrap_or_default();
-        tracing::warn!("Relay upstream error {status}: {error_body}");
-        return Err(AppError::BadRequest(format!(
-            "Provider returned {status}: {error_body}"
-        )));
+        let body_len = upstream
+            .text()
+            .await
+            .map(|body| body.len())
+            .unwrap_or_default();
+        tracing::warn!(status, body_len, "relay upstream returned an error");
+        return Err(AppError::BadRequest(format!("Provider returned {status}")));
     }
 
     // Stream the response back

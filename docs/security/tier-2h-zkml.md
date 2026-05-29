@@ -129,7 +129,7 @@ prime field, with optional Groth16 wrapping for short verifier
 bytecode on EVM-class chains.
 
 **Pros.** Conceptual simplicity. You write the inference loop in Rust
-the same way you'd write `crates/thumper-gpu-provider/src/enclave.rs`,
+the same way you'd write `crates/ghola-gpu-provider/src/enclave.rs`,
 and the zkVM produces a proof of that exact execution. No
 circuit-compiler-induced semantic drift between what the model
 actually computes and what the circuit "thinks" it computes — the
@@ -180,7 +180,7 @@ benchmarks for fold-friendly ML circuits we're not there yet on
 
 **Ship EZKL (§2.1) for v1.** Specifically: per-response Halo2 proof
 over BN254, produced by a sidecar prover the provider runs alongside
-each `thumper-gpu-provider` enclave, attached to the v3 receipt
+each `ghola-gpu-provider` enclave, attached to the v3 receipt
 as an optional field, verified client-side in WASM at the same
 trust boundary that already runs the SRI integrity check.
 
@@ -243,14 +243,14 @@ ghola is uniquely placed to serve.
 | TS verifier wrapper (WASM bindings around EZKL's verifier) | new module `apps/web/src/lib/zkml-verify.ts` |
 | Verifier-key pinning + circuit id resolution | extend `apps/web/src/lib/webgpu-inference.ts` next to `DEFAULT_WEBGPU_MODEL_INTEGRITY` |
 | Receipt schema bump (v3) | `apps/web/src/lib/receipt.ts` — new optional `zkml_proof` field |
-| Provider integration | `crates/thumper-gpu-provider` calls into `ghola-zkml-prover` after inference completes |
+| Provider integration | `crates/ghola-gpu-provider` calls into `ghola-zkml-prover` after inference completes |
 | Registry program update | `programs/ghola-model-registry/src/lib.rs` — add `zkml_verifying_key_hash: Option<[u8; 32]>` and `zkml_circuit_id: Option<String>` |
 | On-chain verifier (optional, v1.1) | new program `programs/ghola-zkml-verifier` using `alt_bn128_pairing` |
 
 ### 4.2 Prover sidecar architecture
 
 The prover is a **separate process from the enclave**. The enclave
-(`crates/thumper-gpu-provider`) runs the model and emits the response
+(`crates/ghola-gpu-provider`) runs the model and emits the response
 + a witness manifest (prompt tokens, output tokens, intermediate
 activations needed by the circuit) over a local Unix socket to the
 sidecar. The sidecar runs EZKL's GPU prover against the pinned
@@ -458,7 +458,7 @@ calendar weeks at 60% allocation.
 | Layer | Effort |
 |---|---|
 | EZKL integration + ONNX import for Llama-3.2-1B-q4f16_1; quantisation tuning; vector tests against reference forward pass | 2.5 wk |
-| `crates/ghola-zkml-prover` — sidecar service, local socket IPC with `thumper-gpu-provider`, GPU prover invocation, async result delivery, witness lifecycle (delete-after-prove) | 2.0 wk |
+| `crates/ghola-zkml-prover` — sidecar service, local socket IPC with `ghola-gpu-provider`, GPU prover invocation, async result delivery, witness lifecycle (delete-after-prove) | 2.0 wk |
 | `crates/ghola-zkml-types` — shared `ZkmlProof` + `CircuitId` + public-inputs types, canonical encoding | 0.5 wk |
 | Receipt v3 schema bump in `apps/web/src/lib/receipt.ts` + canonicalisation discipline + golden-vector tests | 1.0 wk |
 | `apps/web/src/lib/zkml-verify.ts` — WASM verifier wrapper, SRI pinning, public-input cross-check, registry fetch + vk-hash check | 1.5 wk |
@@ -486,7 +486,7 @@ by the EZKL ONNX importer's idiosyncrasies on each new architecture
 - Solana alt_bn128 syscalls — Solana v1.18 release notes (`alt_bn128_addition`, `alt_bn128_multiplication`, `alt_bn128_pairing`)
 - `apps/web/src/lib/receipt.ts` — current receipt shape (v1/v2)
 - `apps/web/src/lib/webgpu-inference.ts:39` — `DEFAULT_WEBGPU_MODEL_INTEGRITY`, the SRI pinning pattern the zkML verifier mirrors
-- `crates/thumper-gpu-provider/src/enclave.rs` — where the prover sidecar IPC attaches
+- `crates/ghola-gpu-provider/src/enclave.rs` — where the prover sidecar IPC attaches
 - `programs/ghola-model-registry/src/lib.rs` — registry to extend with verifying-key fields
 - `docs/security/cryptographic-primitives.md` — sibling deep doc
 - `docs/security/tier-2k-shielded-payments.md` — payment-side companion

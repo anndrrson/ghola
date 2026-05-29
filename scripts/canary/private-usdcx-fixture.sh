@@ -2,7 +2,7 @@
 set -euo pipefail
 
 WEB_BASE_URL="${GHOLA_WEB_URL:-https://ghola.xyz}"
-THUMPER_BASE_URL="${THUMPER_BASE_URL:-https://thumper-cloud.onrender.com}"
+GHOLA_BASE_URL="${GHOLA_BASE_URL:-https://thumper-cloud.onrender.com}"
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -16,7 +16,7 @@ need curl
 need jq
 
 printf 'Running no-funds shielded settlement fixture tests...\n'
-cargo test -p thumper-cloud shielded_fixture_canary -- --test-threads=1 --nocapture
+cargo test -p ghola-cloud shielded_fixture_canary -- --test-threads=1 --nocapture
 
 printf 'Checking public web Aleo verifier health redaction...\n'
 web_health="$(curl -fsS "${WEB_BASE_URL}/api/aleo-shielded/health")"
@@ -57,7 +57,7 @@ jq -e '.settled == false and (.error | test("authenticated|auth"; "i"))' "$verif
 rm -f "$verify_body"
 
 printf 'Checking thumper payment rail health...\n'
-payments="$(curl -fsS "${THUMPER_BASE_URL}/health/payments")"
+payments="$(curl -fsS "${GHOLA_BASE_URL}/health/payments")"
 printf '%s' "$payments" | jq -e '
   .rails.aleo_usdcx_shielded.ready == true
   and .rails.aleo_usdcx_shielded.configured == true
@@ -69,7 +69,7 @@ printf '%s' "$payments" | jq -e '
 ' >/dev/null
 
 printf 'Checking thumper privacy guardrails...\n'
-privacy="$(curl -fsS "${THUMPER_BASE_URL}/health/privacy")"
+privacy="$(curl -fsS "${GHOLA_BASE_URL}/health/privacy")"
 printf '%s' "$privacy" | jq -e '
   .strict_local_default == true
   and .approval_enforcement_enabled == true

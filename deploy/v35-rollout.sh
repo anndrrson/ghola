@@ -63,9 +63,9 @@ require_cmd() {
 
 # ---- subcommand: ohttp-key ----
 cmd_ohttp_key() {
-    log "minting OHTTP gateway keypair (cargo run -p thumper-relay -- generate-ohttp-key)"
+    log "minting OHTTP gateway keypair (cargo run -p ghola-relay -- generate-ohttp-key)"
     if (( DRY_RUN )); then
-        printf 'DRY-RUN: cargo run -p thumper-relay --bin thumper-relay -- generate-ohttp-key\n' >&2
+        printf 'DRY-RUN: cargo run -p ghola-relay --bin ghola-relay -- generate-ohttp-key\n' >&2
         printf 'DRY-RUN: → would print GHOLA_OHTTP_KEY_SECRET_HEX / _PUBLIC_HEX / _KEYCONFIG_HEX\n' >&2
         return 0
     fi
@@ -75,7 +75,7 @@ cmd_ohttp_key() {
     # --unsafe-secrets-to-stdout is passed (it always prints to stdout
     # already; the file write is the operator's choice).
     cd "${REPO_ROOT}"
-    cargo run --quiet -p thumper-relay --bin thumper-relay -- generate-ohttp-key
+    cargo run --quiet -p ghola-relay --bin ghola-relay -- generate-ohttp-key
     cat <<'EOF' >&2
 
 NEXT (manual, Render dashboard — see ROLLOUT_V35.md Step 3):

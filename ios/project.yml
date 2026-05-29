@@ -23,6 +23,9 @@ packages:
   MLXSwiftExamples:
     url: https://github.com/ml-explore/mlx-swift-examples
     minorVersion: "2.29.1"
+  TurnkeySwift:
+    url: https://github.com/tkhq/swift-sdk
+    from: "4.0.0"
 
 targets:
   Ghola:
@@ -44,6 +47,14 @@ targets:
         INFOPLIST_KEY_NSBonjourServices: "_ghola._tcp."
         INFOPLIST_KEY_UILaunchStoryboardName: LaunchScreen
         INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+        INFOPLIST_KEY_GHOLATurnkeyOrganizationID: "$(GHOLA_TURNKEY_ORG_ID)"
+        INFOPLIST_KEY_GHOLATurnkeyAuthProxyConfigID: "$(GHOLA_TURNKEY_AUTH_PROXY_CONFIG_ID)"
+        INFOPLIST_KEY_GHOLATurnkeyRPID: "$(GHOLA_TURNKEY_RP_ID)"
+        INFOPLIST_KEY_GHOLATurnkeyAppScheme: "$(GHOLA_TURNKEY_APP_SCHEME)"
+        GHOLA_TURNKEY_ORG_ID: "c518c546-674f-466d-86dc-17ed819da23f"
+        GHOLA_TURNKEY_AUTH_PROXY_CONFIG_ID: "c488409f-bfac-4dd9-a935-b32488591646"
+        GHOLA_TURNKEY_RP_ID: ghola.xyz
+        GHOLA_TURNKEY_APP_SCHEME: ghola
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         SUPPORTS_MACCATALYST: false
@@ -70,6 +81,8 @@ targets:
         product: MLXLLM
       - package: MLXSwiftExamples
         product: MLXLMCommon
+      - package: TurnkeySwift
+        product: TurnkeySwift
 
   GholaTests:
     type: bundle.unit-test

@@ -144,6 +144,64 @@ export async function submitHyperliquidExecution({
   };
 }
 
+export async function readHyperliquidAccountSnapshot({
+  credential,
+  accountSource = "sealed_byo",
+  fetchImpl = fetch,
+}) {
+  assertHyperliquidPilotNetwork(credential, { operation_class: "read" });
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    return {
+      version: 1,
+      status: "ready_to_trade",
+      account_source: accountSource,
+      trading_enabled: true,
+      equity_bucket: "ready",
+      position_count: 0,
+      open_order_count: 0,
+      last_checked_at: new Date().toISOString(),
+      next_step: "Preview trade",
+    };
+  }
+  const [state, openOrders] = await Promise.all([
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "clearinghouseState",
+      user: credential.account_address,
+    }),
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "openOrders",
+      user: credential.account_address,
+    }),
+  ]);
+  const accountValue = decimalNumber(
+    state?.marginSummary?.accountValue ??
+      state?.crossMarginSummary?.accountValue ??
+      "0",
+  );
+  const positionCount = Array.isArray(state?.assetPositions)
+    ? state.assetPositions.filter((item) => decimalNumber(item?.position?.szi ?? "0") !== 0).length
+    : 0;
+  const openOrderCount = Array.isArray(openOrders) ? openOrders.length : 0;
+  const status = accountValue >= 5 ? "ready_to_trade" : "needs_funds";
+  return {
+    version: 1,
+    status,
+    account_source: accountSource,
+    trading_enabled: status === "ready_to_trade",
+    equity_bucket: accountValue <= 0
+      ? "none"
+      : accountValue < 5
+        ? "low"
+        : "ready",
+    position_count: positionCount,
+    open_order_count: openOrderCount,
+    last_checked_at: new Date().toISOString(),
+    next_step: status === "ready_to_trade"
+      ? "Preview trade"
+      : "Add collateral on Hyperliquid, then check again.",
+  };
+}
+
 function managedHyperliquidAccounts() {
   const raw = process.env.PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON ||
     readManagedAccountsPath();
@@ -162,6 +220,23 @@ function managedHyperliquidAccounts() {
     ...account,
     network: account.network === "mainnet" ? "mainnet" : "testnet",
   }));
+}
+
+async function postHyperliquidInfo(fetchImpl, baseUrl, body) {
+  const res = await fetchImpl(`${baseUrl}/info`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new HyperliquidExecutionError("hyperliquid account read failed", 502, "connector_submit_failed");
+  }
+  return res.json();
+}
+
+function decimalNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function readManagedAccountsPath() {

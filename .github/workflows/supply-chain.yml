@@ -1,7 +1,8 @@
 # Supply-chain hardening checks.
 #
 # Stream 8 of the Phase-45 production-hardening pass.
-# Runs cargo-audit, cargo-deny, npm audit, and a snarkjs version-pin check.
+# Runs cargo-audit, cargo-deny, npm audit, secret scanning, and a snarkjs
+# version-pin check.
 # Independent of ci.yml so a failure here does not block functional CI
 # (and vice versa); both must pass for a PR to land in `audit-v1`.
 
@@ -21,6 +22,20 @@ permissions:
   contents: read
 
 jobs:
+  secret-scan:
+    name: gitleaks secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+
   cargo-audit:
     name: cargo audit (RustSec)
     runs-on: ubuntu-latest

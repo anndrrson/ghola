@@ -101,6 +101,13 @@ function liveHyperliquidEnabled(): boolean {
   );
 }
 
+function liveSolanaPerpsEnabled(): boolean {
+  return (
+    env("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE") === "sdk_runner" ||
+    env("GHOLA_SOLANA_PERPS_LIVE_MODE") === "sdk_runner"
+  );
+}
+
 function liveWorkerImageConfigured(): boolean {
   return Boolean(
     env("GHOLA_PRIVATE_AGENT_WORKER_IMAGE") &&
@@ -110,7 +117,7 @@ function liveWorkerImageConfigured(): boolean {
 }
 
 export function phalaWorkerImageConfiguredForRequestedMode(): boolean {
-  return !liveHyperliquidEnabled() || liveWorkerImageConfigured();
+  return (!liveHyperliquidEnabled() && !liveSolanaPerpsEnabled()) || liveWorkerImageConfigured();
 }
 
 function workerEnv(name: string, fallback: string, aliases: string[] = []): string {
@@ -144,7 +151,7 @@ export function phalaJitProvisioningConfigIssue(): string | null {
     return "PHALA_CLOUD_API_KEY and GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN are required.";
   }
   if (!phalaWorkerImageConfiguredForRequestedMode()) {
-    return "GHOLA_PRIVATE_AGENT_WORKER_IMAGE and GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST are required before provisioning Hyperliquid live mode.";
+    return "GHOLA_PRIVATE_AGENT_WORKER_IMAGE and GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST are required before provisioning live venue mode.";
   }
   return null;
 }
@@ -191,6 +198,11 @@ export function buildPhalaWorkerCompose(input: {
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", "5")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", "25", ["GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS", "50", ["GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS"])),
+    composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE", "disabled", ["GHOLA_SOLANA_PERPS_LIVE_MODE"])),
+    composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET", "false", ["GHOLA_SOLANA_PERPS_ALLOW_MAINNET"])),
+    composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD", "5", ["GHOLA_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD"])),
+    composeEnvLine("PRIVATE_AGENT_SOLANA_RPC_URL", workerEnv("PRIVATE_AGENT_SOLANA_RPC_URL", "", ["GHOLA_SOLANA_RPC_URL", "SOLANA_RPC_URL"])),
+    composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_PRIORITY_FEE_MICRO_LAMPORTS", workerEnv("PRIVATE_AGENT_SOLANA_PERPS_PRIORITY_FEE_MICRO_LAMPORTS", "0", ["GHOLA_SOLANA_PERPS_PRIORITY_FEE_MICRO_LAMPORTS"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", "12000")),
     "    volumes:",
     "      - /var/run/dstack.sock:/var/run/dstack.sock",
@@ -362,6 +374,7 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
     supports_sealed_secrets: ready,
     supports_background_agents: ready,
     supports_trading_execution: ready,
+    execution_url: executionUrl,
     reason: ready
       ? null
       : "Phala worker exists but is not yet running with verified attestation-bound recipient evidence.",
@@ -389,6 +402,21 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
       phala_attestation_present: attested,
     },
   };
+}
+
+export async function discoverPhalaPrivateAgentExecutionUrl(): Promise<string | null> {
+  const client = await phalaClient();
+  if (!client) return null;
+  const name = phalaCvmName();
+  let info: unknown = null;
+  let network: unknown = null;
+  try {
+    info = await client.getCvmInfo({ id: name }, { schema: false });
+    network = await client.getCvmNetwork({ id: name }, { schema: false }).catch(() => null);
+  } catch {
+    return null;
+  }
+  return safeExecutionUrl(firstPublicAppUrl(network, info));
 }
 
 export async function ensurePhalaPrivateAgentProvisioned(input: {

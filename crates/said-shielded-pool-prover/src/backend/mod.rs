@@ -17,11 +17,14 @@ use crate::error::{Error, Result};
 
 pub mod gnark;
 pub mod rapidsnark;
+pub(crate) mod redact;
 pub mod snarkjs;
+pub(crate) mod tempdir;
 
 pub use gnark::GnarkBackend;
 pub use rapidsnark::RapidsnarkBackend;
 pub use snarkjs::SnarkjsBackend;
+pub(crate) use tempdir::SecureTempDir;
 
 /// Which circuit the backend should prove against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,10 +42,7 @@ pub trait Backend: Send + Sync + 'static {
     /// Run the Groth16 prover for the forester (batched commitment-insertion)
     /// circuit. Default impl returns `BackendNotImplemented` so legacy
     /// backends can opt-in incrementally.
-    async fn prove_forester(
-        &self,
-        _witness: BatchedUpdateWitness,
-    ) -> Result<ForesterProofBundle> {
+    async fn prove_forester(&self, _witness: BatchedUpdateWitness) -> Result<ForesterProofBundle> {
         Err(Error::BackendNotImplemented(
             "prove_forester not implemented for this backend",
         ))

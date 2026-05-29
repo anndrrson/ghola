@@ -52,7 +52,7 @@
 //!     "signature":         "<base64>"            // signs every other field
 //!   }
 //! We verify the signature with `ed25519-dalek` against a root public key
-//! supplied by the operator via `THUMPER_INTEL_TDX_ROOT_PEM` — same
+//! supplied by the operator via `GHOLA_INTEL_TDX_ROOT_PEM` — same
 //! env-var contract h100.rs uses for NRAS.
 
 // TODO(tdx-prod): everything in this module is feature-flagged for a
@@ -95,7 +95,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use thumper_types::{EnclaveKeyId, TeeKind};
+use ghola_assistant_types::{EnclaveKeyId, TeeKind};
 
 use crate::{AttestationError, AttestedEnclave, ATTESTATION_TTL_SECS};
 
@@ -160,15 +160,15 @@ struct TdxClaims {
 /// On a production node this returns the Intel PCS-issued attestation
 /// signing key (after validating an Intel-rooted chain — see the
 /// `TODO(tdx-prod)` block). For now we accept a 32-byte Ed25519 public
-/// key, hex-encoded, supplied via `THUMPER_INTEL_TDX_ROOT_PEM`. The env
+/// key, hex-encoded, supplied via `GHOLA_INTEL_TDX_ROOT_PEM`. The env
 /// var name retains the future PEM shape so the contract doesn't change
 /// when we cut over.
 ///
 /// CI default: when unset, the verifier refuses every quote — the relay
 /// must explicitly trust a key. This is the same fail-closed posture as
-/// `THUMPER_NVIDIA_NRAS_ROOT_PEM` in the H100 path.
+/// `GHOLA_NVIDIA_NRAS_ROOT_PEM` in the H100 path.
 pub fn tdx_root_pub_from_env() -> Option<VerifyingKey> {
-    let raw = std::env::var("THUMPER_INTEL_TDX_ROOT_PEM").ok()?;
+    let raw = ghola_assistant_types::env_compat("GHOLA_INTEL_TDX_ROOT_PEM", "THUMPER_INTEL_TDX_ROOT_PEM").ok()?;
     let trimmed = raw.trim();
     // Tolerate the hex-only short form (32 bytes) we use in CI. A real
     // PEM-encoded key path is handled by the TODO(tdx-prod) production
@@ -247,7 +247,7 @@ fn verify_tdx_inner(
         Some(pk) => pk,
         None => tdx_root_pub_from_env().ok_or_else(|| {
             AttestationError::CertChain(
-                "THUMPER_INTEL_TDX_ROOT_PEM unset; refusing TDX attestation".into(),
+                "GHOLA_INTEL_TDX_ROOT_PEM unset; refusing TDX attestation".into(),
             )
         })?,
     };

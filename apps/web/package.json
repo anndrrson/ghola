@@ -4,11 +4,17 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build && node scripts/build-sri-manifest.mjs && node scripts/build-inline-csp.mjs",
-    "build:no-sri": "next build",
+    "build": "next build && node scripts/check-auth-client-bundle.mjs && node scripts/build-sri-manifest.mjs && node scripts/build-inline-csp.mjs",
+    "build:no-sri": "next build && node scripts/check-auth-client-bundle.mjs && node scripts/build-inline-csp.mjs",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:auth": "vitest run src/lib/thumper-api.test.ts src/app/api/auth/session/email/signin/route.test.ts src/app/api/auth/session/email/signup/route.test.ts",
+    "smoke:auth": "node scripts/smoke-auth.mjs",
+    "smoke:auction-local": "node scripts/ghola-auction-local-e2e.mjs",
+    "smoke:auction-devnet": "GHOLA_AUCTION_SMOKE_CLUSTER=devnet node scripts/ghola-auction-local-e2e.mjs",
+    "verify:prod:trading": "node scripts/verify-prod-trading.mjs",
+    "guard:auth-bundle": "node scripts/check-auth-client-bundle.mjs"
   },
   "overrides": {
     "postcss": "8.5.15",

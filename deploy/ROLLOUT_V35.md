@@ -15,11 +15,11 @@ A scripted subset of the steps below lives in
 
 ---
 
-## Step 1 — Confirm `thumper-cloud` builds clean from `main`
+## Step 1 — Confirm `ghola-cloud` builds clean from `main`
 
 **Command.**
 ```bash
-cd /path/to/ghola && cargo build -p thumper-cloud
+cd /path/to/ghola && cargo build -p ghola-cloud
 ```
 
 **Success.** Build finishes with `Finished` and no warnings about
@@ -39,7 +39,7 @@ needed.
 
 **Command.**
 ```bash
-cargo run -p thumper-relay --bin thumper-relay -- generate-ohttp-key \
+cargo run -p ghola-relay --bin ghola-relay -- generate-ohttp-key \
     > ohttp.key.env
 chmod 600 ohttp.key.env
 ```
@@ -52,24 +52,24 @@ The subcommand prints three lines:
 **Success.** Three non-empty hex lines in `ohttp.key.env`.
 
 **Failure.** Subcommand panics or doesn't exist (binary built before
-the OHTTP feature landed). Verify `crates/thumper-relay/src/main.rs`
+the OHTTP feature landed). Verify `crates/ghola-relay/src/main.rs`
 has the `generate-ohttp-key` arm; rebuild.
 
 **Rollback.** `rm ohttp.key.env`. No deployed state touched.
 
 ---
 
-## Step 3 — Set Render envs on `thumper-relay`
+## Step 3 — Set Render envs on `ghola-relay`
 
-Open the Render dashboard → `thumper-relay` service → Environment.
+Open the Render dashboard → `ghola-relay` service → Environment.
 Add / update:
 
 | Key | Value source |
 |---|---|
 | `GHOLA_OHTTP_KEY_SECRET_HEX` | the secret line from Step 2 |
 | `GHOLA_OHTTP_KEY_ID` | `1` (increment only on key rotation) |
-| `THUMPER_CLOUD_DID_SET_URL` | `https://thumper-cloud.onrender.com/v1/did-set` |
-| `THUMPER_CLOUD_RELAY_API_KEY` | 32+ random bytes; same value as Step 4 |
+| `GHOLA_CLOUD_DID_SET_URL` | `https://thumper-cloud.onrender.com/v1/did-set` |
+| `GHOLA_CLOUD_RELAY_API_KEY` | 32+ random bytes; same value as Step 4 |
 | `GHOLA_KMS_MEASUREMENT_PUBKEY_PEM` | placeholder for now; populated in Step 6 |
 
 **Success.** Render redeploys the relay; `/health` returns 200 and
@@ -85,20 +85,20 @@ non-OHTTP path keeps working.
 
 ---
 
-## Step 4 — Set Render envs on `thumper-cloud`
+## Step 4 — Set Render envs on `ghola-cloud`
 
-Render dashboard → `thumper-cloud` → Environment.
+Render dashboard → `ghola-cloud` → Environment.
 
 | Key | Value source |
 |---|---|
-| `THUMPER_CLOUD_RELAY_API_KEY` | identical to the value set in Step 3 |
+| `GHOLA_CLOUD_RELAY_API_KEY` | identical to the value set in Step 3 |
 
 **Success.** Cloud redeploys; subsequent calls to
 `POST /v1/did-set` with the matching API key in
 `x-relay-api-key` return 200. The relay's
 `did_set` refresh task starts logging successful refreshes.
 
-**Failure.** Cloud logs `THUMPER_CLOUD_RELAY_API_KEY unset; refusing
+**Failure.** Cloud logs `GHOLA_CLOUD_RELAY_API_KEY unset; refusing
 /v1/did-set` → env wasn't saved. Cloud returns 500 on the route.
 
 **Rollback.** Delete the env; the did_set refresh task on the relay
@@ -142,7 +142,7 @@ deletion window, not instant deletion.
 
 ## Step 6 — Wire the KMS pubkey into the relay
 
-In the Render dashboard, set on `thumper-relay`:
+In the Render dashboard, set on `ghola-relay`:
 
 | Key | Value source |
 |---|---|

@@ -53,6 +53,18 @@ pub const MAX_FEE_BPS: u16 = 1000;
 /// Maximum number of authorized forester signers.
 pub const FORESTER_SET_LEN: usize = 4;
 
+/// Maximum number of committed orders an on-chain auction epoch can admit.
+/// Larger batches should be split across epochs to keep account arithmetic
+/// bounded and predictable.
+pub const AUCTION_BATCH_SIZE: u16 = 64;
+
+pub const AUCTION_STATUS_OPEN: u8 = 0;
+pub const AUCTION_STATUS_CLOSED: u8 = 1;
+pub const AUCTION_STATUS_CLEARED: u8 = 2;
+pub const AUCTION_STATUS_SETTLED: u8 = 3;
+pub const AUCTION_STATUS_EXPIRED: u8 = 4;
+pub const AUCTION_STATUS_CANCELLED: u8 = 5;
+
 /// Global pool configuration. PDA seeds: `[b"pool_config"]`.
 ///
 /// **V2 layout** — V1 deployments must be migrated via
@@ -377,6 +389,91 @@ pub struct CommitmentRecord {
     /// Whether this commitment has been folded into the tree yet.
     pub inserted: bool,
     /// PDA bump.
+    pub bump: u8,
+}
+
+/// Shielded batch-auction market. PDA seeds:
+/// `[b"auction_market", pool_config.key(), mint.key(), market_commitment]`.
+#[account]
+#[derive(InitSpace)]
+pub struct AuctionMarket {
+    pub pool_config: Pubkey,
+    pub mint: Pubkey,
+    pub authority: Pubkey,
+    pub market_commitment: [u8; 32],
+    pub asset_id: [u8; 32],
+    pub auction_verifier_key_hash: [u8; 32],
+    pub batch_size: u16,
+    pub status: u8,
+    pub bump: u8,
+}
+
+/// One uniform-clearing auction window. PDA seeds:
+/// `[b"auction_epoch", auction_market.key(), epoch_id.to_le_bytes()]`.
+#[account]
+#[derive(InitSpace)]
+pub struct AuctionEpoch {
+    pub auction_market: Pubkey,
+    pub epoch_id: u64,
+    pub order_root: [u8; 32],
+    pub opened_slot: u64,
+    pub closes_slot: u64,
+    pub order_count: u16,
+    pub matched_count: u16,
+    pub rolled_count: u16,
+    pub status: u8,
+    pub clearing_commitment: [u8; 32],
+    pub clearing_price_commitment: [u8; 32],
+    pub proof_commitment: [u8; 32],
+    pub settlement_commitment: [u8; 32],
+    pub bump: u8,
+}
+
+/// Commitment-only order ticket for a shielded auction epoch. PDA seeds:
+/// `[b"auction_order", auction_epoch.key(), order_commitment]`.
+#[account]
+#[derive(InitSpace)]
+pub struct AuctionOrderCommitment {
+    pub auction_epoch: Pubkey,
+    pub owner: Pubkey,
+    pub order_commitment: [u8; 32],
+    pub order_nullifier: [u8; 32],
+    pub price_bucket_commitment: [u8; 32],
+    pub institution_policy_commitment: [u8; 32],
+    pub side: u8,
+    pub amount_bucket: u16,
+    pub status: u8,
+    pub created_slot: u64,
+    pub bump: u8,
+}
+
+/// Per-market order nullifier. Existence prevents replaying one hidden order
+/// across epochs. PDA seeds:
+/// `[b"auction_order_nullifier", auction_market.key(), order_nullifier]`.
+#[account]
+#[derive(InitSpace)]
+pub struct AuctionOrderNullifier {
+    pub auction_market: Pubkey,
+    pub order_nullifier: [u8; 32],
+    pub consumed_slot: u64,
+    pub bump: u8,
+}
+
+/// Commitment-only clearing record. PDA seeds:
+/// `[b"auction_clearing", auction_epoch.key()]`.
+#[account]
+#[derive(InitSpace)]
+pub struct AuctionClearing {
+    pub auction_epoch: Pubkey,
+    pub clearing_commitment: [u8; 32],
+    pub clearing_price_commitment: [u8; 32],
+    pub matched_root: [u8; 32],
+    pub rolled_root: [u8; 32],
+    pub proof_commitment: [u8; 32],
+    pub settlement_commitment: [u8; 32],
+    pub matched_count: u16,
+    pub rolled_count: u16,
+    pub status: u8,
     pub bump: u8,
 }
 

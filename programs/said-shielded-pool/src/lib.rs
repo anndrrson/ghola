@@ -33,6 +33,8 @@ pub mod state;
 pub mod verifying_key;
 #[cfg(feature = "real-verifier")]
 pub mod forester_verifying_key;
+#[cfg(all(feature = "real-verifier", feature = "auction-verifier-ready"))]
+pub mod auction_verifying_key;
 
 pub use instructions::*;
 
@@ -80,6 +82,51 @@ pub mod said_shielded_pool {
     /// Forester-submitted batched root rotation, Groth16-verified.
     pub fn update_root_via_proof(ctx: Context<UpdateRoot>, args: UpdateRootArgs) -> Result<()> {
         instructions::update_root::update_root_handler(ctx, args)
+    }
+
+    /// Initialize a commitment-only shielded batch-auction market.
+    pub fn init_auction_market(
+        ctx: Context<InitAuctionMarket>,
+        args: InitAuctionMarketArgs,
+    ) -> Result<()> {
+        instructions::auction::init_auction_market_handler(ctx, args)
+    }
+
+    /// Open one batch-auction epoch for uniform clearing.
+    pub fn open_auction_epoch(
+        ctx: Context<OpenAuctionEpoch>,
+        args: OpenAuctionEpochArgs,
+    ) -> Result<()> {
+        instructions::auction::open_auction_epoch_handler(ctx, args)
+    }
+
+    /// Commit one shielded order ticket to an open auction epoch.
+    pub fn commit_auction_order(
+        ctx: Context<CommitAuctionOrder>,
+        args: CommitAuctionOrderArgs,
+    ) -> Result<()> {
+        instructions::auction::commit_auction_order_handler(ctx, args)
+    }
+
+    /// Close an epoch with a commitment-only clearing proof.
+    pub fn close_auction_epoch(
+        ctx: Context<CloseAuctionEpoch>,
+        args: CloseAuctionEpochArgs,
+    ) -> Result<()> {
+        instructions::auction::close_auction_epoch_handler(ctx, args)
+    }
+
+    /// Mark a cleared auction as settled.
+    pub fn settle_auction_clearing(
+        ctx: Context<SettleAuctionClearing>,
+        args: SettleAuctionClearingArgs,
+    ) -> Result<()> {
+        instructions::auction::settle_auction_clearing_handler(ctx, args)
+    }
+
+    /// Cancel an order commitment after its epoch expires.
+    pub fn cancel_expired_auction_order(ctx: Context<CancelExpiredAuctionOrder>) -> Result<()> {
+        instructions::auction::cancel_expired_auction_order_handler(ctx)
     }
 
     // --- admin (immediate) ---

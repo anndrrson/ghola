@@ -11,7 +11,7 @@ required on the ops box).
 ## Architecture at a glance
 
 ```
-Web (ghola.xyz) ──seal()──► thumper-relay ──WS──► thumper-gpu-provider
+Web (ghola.xyz) ──seal()──► ghola-relay ──WS──► ghola-gpu-provider
                                                   (inside Nitro EIF)
                               │                          │
                               │                          ├─ /dev/nsm attest
@@ -34,7 +34,7 @@ the corresponding care.
 | Key | Storage | Used by | Public half published as |
 |---|---|---|---|
 | **Ghola allowlist signing key** (Ed25519) | Offline / HSM. Air-gapped laptop, paper backup. | Ops, when stamping each new enclave measurement. | `GHOLA_ATTEST_SIGNING_PUB` env on relay and said-receipts. |
-| **Provider auth key** (Ed25519) | AWS SSM Parameter Store SecureString `/ghola/provider/auth-key`. | The thumper-gpu-provider EIF (loaded by user-data at boot). | Registered in the relay's accept-list table. |
+| **Provider auth key** (Ed25519) | AWS SSM Parameter Store SecureString `/ghola/provider/auth-key`. | The ghola-gpu-provider EIF (loaded by user-data at boot). | Registered in the relay's accept-list table. |
 | **said-receipts deploy keypair** (Solana Ed25519) | Offline; the operator wallet that holds upgrade authority. | `anchor deploy` and subsequent `set-upgrade-authority` runs. | Pinned in `Anchor.toml` under `[programs.devnet]` / `[programs.mainnet]`. |
 | **Turnkey KEK** (P-256, server-side) | Inside Turnkey — never leaves the HSM. | said-turnkey crate via `TURNKEY_PRIVATE_KEY_KEK_ID`. | Not published; only the Turnkey key ID is. |
 
@@ -66,7 +66,7 @@ deploy/nitro/sign-allowlist/target/release/ghola-sign-allowlist \
 
 Publish the resulting hex string to:
 
-- `crates/thumper-relay`: env `GHOLA_ATTEST_SIGNING_PUB=<hex>`
+- `crates/ghola-relay`: env `GHOLA_ATTEST_SIGNING_PUB=<hex>`
 - `crates/said-receipts-service`: env `GHOLA_ATTEST_SIGNING_PUB=<hex>`
 - (recorded in 1Password under "Ghola / allowlist pubkey".)
 
@@ -94,7 +94,7 @@ PY
 ```
 
 Register the public hex with the relay's accept-list. Today this is a
-manual edit to `crates/thumper-relay/src/config.rs` (`ProviderAcceptList`);
+manual edit to `crates/ghola-relay/src/config.rs` (`ProviderAcceptList`);
 v2.1 will move it into Postgres.
 
 ### 1.3 Generate the said-receipts Solana keypair
@@ -129,7 +129,7 @@ TURNKEY_ORG_ID=... TURNKEY_API_KEY=... \
 # private half stays in Turnkey).
 TURNKEY_PRIVATE_KEY_KEK_ID="$(jq -r .private_key_id kek.json)"
 fly secrets set TURNKEY_PRIVATE_KEY_KEK_ID="$TURNKEY_PRIVATE_KEY_KEK_ID" \
-    --app thumper-relay
+    --app ghola-relay
 ```
 
 ### 1.5 said-receipts program deploy

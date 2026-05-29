@@ -95,7 +95,7 @@ The protocol team explicitly does **not** ask the auditor to opine on:
 5. **Adjacent SAID / Thumper subsystems.** Specifically:
    `said-attest`, `said-receipts-service`, `said-cloud`,
    `thumper-*`, `ghola-gateway`, `ghola-home`,
-   `orni-models-*`. One unrelated `cargo test` failure exists in
+   `ghola-models-*`. One unrelated `cargo test` failure exists in
    the SAID nitro-attestation surface (`sealed_round_trip_mock_nitro`)
    — out of scope.
 
@@ -398,7 +398,7 @@ of these as known and accepted for audit-v1.
 
 9. **`cargo deny` advisory on `serde_cbor`.** A transitive
    dependency of `aws-nitro-enclaves-nsm-api` (used only by
-   `thumper-gpu-provider`, **out of scope**) pulls `serde_cbor`,
+   `ghola-gpu-provider`, **out of scope**) pulls `serde_cbor`,
    which has an unmaintained advisory. The current
    `.github/evidence-baseline.json` records
    `streams.supply_chain.deny_pass: false` faithfully. To bypass,
@@ -564,7 +564,7 @@ inherits these caveats:
   and records `executed: true` with a non-skipped `corpus_hash`.
 - **`streams.supply_chain.deny_pass: false`** — `cargo deny` reports
   an advisory on `serde_cbor` (transitively pulled by
-  `aws-nitro-enclaves-nsm-api` in the unrelated `thumper-gpu-provider`
+  `aws-nitro-enclaves-nsm-api` in the unrelated `ghola-gpu-provider`
   crate). Documented in § 8 (Known Limitations) and tracked as a
   follow-up; does not affect the shielded-pool surface.
 

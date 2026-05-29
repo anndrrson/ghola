@@ -28,7 +28,7 @@ honestly disclose the limits of what we can do about the sixth.
 |---|---|
 | User prompt confidentiality in Private mode | X25519 sealed envelope to an attested enclave's per-session key. Relay forwards opaque bytes; it cannot decrypt. See `apps/web/src/lib/sealed-stream.ts`, `apps/web/src/lib/envelope.ts`. |
 | User prompt confidentiality in Local mode | In-browser WebGPU inference. No network call per message. `apps/web/src/lib/webgpu-inference.ts`. |
-| Provider integrity | AWS Nitro attestation with PCR verification. Release builds **cannot** be configured to skip attestation — the `THUMPER_ALLOW_UNATTESTED` env var is compile-time-disabled under `--release`. See `crates/thumper-relay/src/handlers.rs::allow_unattested`. |
+| Provider integrity | AWS Nitro attestation with PCR verification. Release builds **cannot** be configured to skip attestation — the `GHOLA_ALLOW_UNATTESTED` env var is compile-time-disabled under `--release`. See `crates/ghola-relay/src/handlers.rs::allow_unattested`. |
 | Receipt integrity | Ed25519 signature over canonical body, optional in-enclave provider co-signature, Merkle-batched and anchored to Solana every interval. Public verifier at `/r/[hash]`. |
 | Replay defense | Per-session AAD binding in the envelope; nonce + replay cache on the relay's auth path. |
 | Coercion resistance | Wallet-native identity (Turnkey-held Ed25519). ghola the company never holds the user's signing key in plaintext; export is encrypted P-256 to browser. |
@@ -118,7 +118,7 @@ A determined reviewer can also verify:
 - **Source provenance** — every commit that ships to ghola.xyz is on
   `main` of [github.com/anndrrson/ghola](https://github.com/anndrrson/ghola).
   The web client is built from `apps/web/`; the relay from
-  `crates/thumper-relay/`.
+  `crates/ghola-relay/`.
 
 ## Roadmap to peak
 

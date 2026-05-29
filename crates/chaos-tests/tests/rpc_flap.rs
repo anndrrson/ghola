@@ -25,10 +25,7 @@ struct FlapSubmitter {
 
 #[async_trait]
 impl Submitter for FlapSubmitter {
-    async fn submit_one(
-        &self,
-        _w: &QueuedWithdrawal,
-    ) -> said_shielded_pool_relayer::Result<()> {
+    async fn submit_one(&self, _w: &QueuedWithdrawal) -> said_shielded_pool_relayer::Result<()> {
         let n = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
         self.attempt_log.lock().push(Instant::now());
         if n <= self.fail_first {
@@ -99,6 +96,10 @@ fn cfg(max_retries: u32, initial_ms: u64, max_ms: u64) -> Arc<Config> {
         relay_rate_limit_per_min: 0,
         dedup_ttl_secs: said_shielded_pool_relayer::config::DEFAULT_DEDUP_TTL_SECS,
         trusted_proxies: std::collections::HashSet::new(),
+        // k-anonymity policy (defaults: k_min=1, release-everything).
+        relay_k_min: 1,
+        release_below_kmin: true,
+        metrics_token: None,
     })
 }
 
@@ -115,14 +116,7 @@ async fn submit_recovers_after_n_failures_with_backoff() {
 
     let cfg = cfg(5, 50, 1000);
     let start = Instant::now();
-    let res = submit_batch(
-        submitter.as_ref(),
-        &queue,
-        &cfg,
-        &metrics,
-        vec![w.clone()],
-    )
-    .await;
+    let res = submit_batch(submitter.as_ref(), &queue, &cfg, &metrics, vec![w.clone()]).await;
     let elapsed = start.elapsed();
     res.expect("submit_batch ok");
 
@@ -155,14 +149,7 @@ async fn submit_fails_after_max_retries_exhausted() {
     queue.insert(&w).unwrap();
 
     let cfg = cfg(3, 10, 50);
-    let _ = submit_batch(
-        submitter.as_ref(),
-        &queue,
-        &cfg,
-        &metrics,
-        vec![w.clone()],
-    )
-    .await;
+    let _ = submit_batch(submitter.as_ref(), &queue, &cfg, &metrics, vec![w.clone()]).await;
 
     let attempts = submitter.attempts.load(Ordering::SeqCst);
     assert_eq!(attempts, 3, "expected exactly max_retries attempts");

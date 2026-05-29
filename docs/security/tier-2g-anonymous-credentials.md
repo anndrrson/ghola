@@ -20,7 +20,7 @@ All section references are to source files in this repo.
 
 Today every sealed-inference request carries an Ed25519 DID in the
 envelope header. From `apps/web/src/lib/envelope.ts` and the matching
-parser in `crates/thumper-relay/src/auth.rs::parse_envelope_header`,
+parser in `crates/ghola-relay/src/auth.rs::parse_envelope_header`,
 the relay-visible header is:
 
 ```
@@ -35,7 +35,7 @@ The relay validates the request by (i) parsing the header, (ii)
 verifying the Ed25519 signature against `sender_did`, (iii) confirming
 `sender_did ∈ did_set`, (iv) replay-checking the nonce, and (v)
 applying a **per-DID** rate limit
-(`crates/thumper-relay/src/auth.rs::validate_sealed_envelope_bytes`).
+(`crates/ghola-relay/src/auth.rs::validate_sealed_envelope_bytes`).
 Step (iii) is the whole leak: the relay must know which DID this is in
 order to authorise the call, and the DID is stable across requests.
 
@@ -49,7 +49,7 @@ relay and an enclave still sees:
 | Transport | Source IP (mitigated by OHTTP, `apps/web/src/lib/ohttp.ts`), TLS fingerprint, timing |
 | Payment retry | x402 `from` pubkey on the public chain (Tier 2K closes this) |
 | Sealed body | Encrypted, but request *size* and response *size* are observable |
-| Subscription state | Joins `sender_did` to "this DID is on Pro tier, billed via Turnkey customer C" inside `thumper-cloud` |
+| Subscription state | Joins `sender_did` to "this DID is on Pro tier, billed via Turnkey customer C" inside `ghola-cloud` |
 
 Crucially, today's `sender_did` is the **same** Ed25519 key that signs
 x402 payments, signs the user's receipts (`signer_did` in
@@ -62,7 +62,7 @@ pseudonym in the stack.
 | Adversary | Capability | What they learn today |
 |---|---|---|
 | **Passive relay observer** | Reads request headers in front of `validate_sealed_envelope_bytes`. | Stable DID, request cadence, payload sizes. Sufficient to fingerprint a single user across weeks. |
-| **Active provider operator** | Runs `thumper-relay`. | All of the above plus the join `sender_did → customer_id → email/phone` from the cloud control plane. |
+| **Active provider operator** | Runs `ghola-relay`. | All of the above plus the join `sender_did → customer_id → email/phone` from the cloud control plane. |
 | **Colluding chain analyst** | RPC indexer + Turnkey breach OR off-chain doxx. | Closes wallet → DID → enclave-traffic chain in one hop. |
 | **Subpoenaed cloud operator** | Compelled to produce records keyed by user identity. | Hands over the full `sender_did` → person mapping; the privacy claim collapses to "trust us." |
 
@@ -222,10 +222,10 @@ WASM perf tuning bigint arithmetic needs on the browser side.
 |---|---|
 | BBS+ issuer (in-enclave) | new crate `crates/said-bbs-issuer` |
 | Shared types (credential, presentation, predicates) | new crate `crates/said-bbs-types` |
-| Relay verifier | `crates/thumper-relay/src/auth.rs` — new function `verify_bbs_presentation` |
+| Relay verifier | `crates/ghola-relay/src/auth.rs` — new function `verify_bbs_presentation` |
 | TS client (presentation builder) | new module `apps/web/src/lib/anon-cred.ts` |
 | Envelope wire format bump | `apps/web/src/lib/envelope.ts` + `crates/said-envelope` — add `presentation_proof` field |
-| Revocation accumulator state | new endpoint `GET /v1/anon-cred/accumulator?epoch=N` in thumper-cloud |
+| Revocation accumulator state | new endpoint `GET /v1/anon-cred/accumulator?epoch=N` in ghola-cloud |
 | Receipt schema bump | `apps/web/src/lib/receipt.ts` — replace `signer_did + signature` with `presentation_proof + nullifier` |
 
 ### 4.2 Issuer location and key ceremony
@@ -277,7 +277,7 @@ presentation, not within either.
 ### 4.4 Relay verifier
 
 `validate_sealed_envelope_bytes`
-(`crates/thumper-relay/src/auth.rs:235`) is updated to dispatch on a
+(`crates/ghola-relay/src/auth.rs:235`) is updated to dispatch on a
 new envelope-header flag:
 
 ```rust
@@ -501,7 +501,7 @@ touches both the client envelope and the relay rate limiter.
 - [AnonCreds 2.0 specification](https://hyperledger.github.io/anoncreds-spec/) — alternative we rejected
 - RFC 9576 — Privacy Pass redemption (MAC-Wegman-Carter family)
 - `draft-irtf-cfrg-hash-to-curve` — hash-to-curve for BLS12-381
-- `crates/thumper-relay/src/auth.rs` — current per-DID auth path
+- `crates/ghola-relay/src/auth.rs` — current per-DID auth path
 - `apps/web/src/lib/envelope.ts` — sealed envelope wire format
 - `apps/web/src/lib/sealed-stream.ts` — sealed inference client
 - `apps/web/src/lib/vault-x25519.ts` — pattern for Turnkey-derived deterministic key

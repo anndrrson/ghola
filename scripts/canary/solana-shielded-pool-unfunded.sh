@@ -21,16 +21,16 @@ if command -v /usr/libexec/java_home >/dev/null 2>&1; then
 fi
 
 printf '1/7 Rust: checking thumper-cloud shielded rail compile...\n'
-(cd "$ROOT" && cargo check -p thumper-cloud)
+(cd "$ROOT" && cargo check -p ghola-cloud)
 
 printf '2/7 Rust: checking Solana shielded-pool health gating...\n'
-(cd "$ROOT" && cargo test -p thumper-cloud solana_shielded_pool_runtime_status_requires_account_context --lib)
+(cd "$ROOT" && cargo test -p ghola-cloud solana_shielded_pool_runtime_status_requires_account_context --lib)
 
 printf '3/7 Rust: checking Solana relay payload validation and pool-context binding...\n'
-(cd "$ROOT" && cargo test -p thumper-cloud solana_shielded_relay_payload --lib)
+(cd "$ROOT" && cargo test -p ghola-cloud solana_shielded_relay_payload --lib)
 
 printf '4/7 Rust: checking no-funds signed fixture canary behavior...\n'
-(cd "$ROOT" && cargo test -p thumper-cloud shielded_fixture_canary --lib -- --test-threads=1)
+(cd "$ROOT" && cargo test -p ghola-cloud shielded_fixture_canary --lib -- --test-threads=1)
 
 printf '5/7 Android: checking native prover output validation...\n'
 (cd "$ANDROID_DIR" && ./gradlew :app:testSeekerDebugUnitTest --tests xyz.ghola.app.solana.ShieldedPoolNativeProverTest)

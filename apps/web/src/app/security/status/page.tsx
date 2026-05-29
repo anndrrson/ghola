@@ -12,12 +12,8 @@ import {
   fetchPrivateAvailability,
   selectRoute,
   thumperRelayBase,
-  type AttestedEnclaveInfo,
 } from "@/lib/sovereignty";
-import {
-  computeLoadedWeightFingerprint,
-  type WeightFingerprint,
-} from "@/lib/webgpu-inference";
+import { computeLoadedWeightFingerprint } from "@/lib/webgpu-inference";
 
 // Live security status. Every claim on the SECURITY.md page resolves
 // to an indicator here that's computed from the live system — not a
@@ -64,6 +60,35 @@ interface PaymentsHealth {
   rails?: Record<string, PaymentRailHealth>;
 }
 
+interface EnterpriseGateHealth {
+  status?: "ready" | "blocked";
+  findings?: {
+    critical_open?: number | null;
+    high_open?: number | null;
+  };
+  checks?: Array<{
+    check?: string;
+    status?: "ready" | "missing" | "blocked";
+    reason?: string | null;
+  }>;
+  external_security_review?: {
+    firms?: string[];
+    report_hash?: string | null;
+    retest_status?: string | null;
+  };
+  custody_compliance?: {
+    custody_model?: string | null;
+    signoff_hash?: string | null;
+  };
+  soc2_type2?: {
+    auditor?: string | null;
+    report_hash?: string | null;
+  };
+  runbook_drills?: {
+    evidence_hash?: string | null;
+  };
+}
+
 const INITIAL: ChecksState = [
   { label: "Attested provider pool", state: "pending", detail: "probing /providers/attested…" },
   { label: "Private-mode readiness", state: "pending", detail: "probing /ready/private…" },
@@ -78,6 +103,7 @@ const INITIAL: ChecksState = [
   { label: "Remote prompt boundary", state: "pending", detail: "probing /health/privacy…" },
   { label: "Shielded rail readiness", state: "pending", detail: "probing /health/payments…" },
   { label: "Blind x402 transport", state: "pending", detail: "checking OHTTP relay configuration…" },
+  { label: "Enterprise external gate", state: "pending", detail: "probing /api/security/enterprise-gate…" },
 ];
 
 export default function SecurityStatusPage() {
@@ -579,6 +605,47 @@ export default function SecurityStatusPage() {
       } catch (err) {
         next[12] = {
           label: "Blind x402 transport",
+          state: "fail",
+          detail: err instanceof Error ? err.message : "probe failed",
+        };
+      }
+
+      // 14. Enterprise external gate — public evidence that full
+      //     enterprise blockers are still in place until external
+      //     reports, retests, counsel signoff, SOC 2 Type II, and
+      //     runbook drills are accepted.
+      try {
+        const res = await fetch("/api/security/enterprise-gate", {
+          method: "GET",
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          next[13] = {
+            label: "Enterprise external gate",
+            state: "fail",
+            detail: `enterprise gate status unreachable — HTTP ${res.status}`,
+          };
+        } else {
+          const body = (await res.json()) as EnterpriseGateHealth;
+          const blocked = (body.checks ?? []).filter((check) => check.status !== "ready");
+          next[13] =
+            body.status === "ready"
+              ? {
+                  label: "Enterprise external gate",
+                  state: "ok",
+                  detail: "external security, custody/compliance, SOC 2 Type II, and runbook evidence accepted",
+                  evidence: `critical=${body.findings?.critical_open ?? "?"}; high=${body.findings?.high_open ?? "?"}; reports=${body.external_security_review?.report_hash ?? "n/a"}; soc2=${body.soc2_type2?.report_hash ?? "n/a"}`,
+                }
+              : {
+                  label: "Enterprise external gate",
+                  state: "warn",
+                  detail: `blocked: ${blocked.map((check) => check.reason ?? check.check ?? "missing_evidence").join(", ")}`,
+                  evidence: `critical=${body.findings?.critical_open ?? "?"}; high=${body.findings?.high_open ?? "?"}; custody=${body.custody_compliance?.custody_model ?? "unset"}; soc2=${body.soc2_type2?.auditor ?? "unset"}`,
+                };
+        }
+      } catch (err) {
+        next[13] = {
+          label: "Enterprise external gate",
           state: "fail",
           detail: err instanceof Error ? err.message : "probe failed",
         };

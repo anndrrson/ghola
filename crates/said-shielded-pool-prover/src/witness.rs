@@ -70,11 +70,7 @@ pub fn commitment_hash(
 /// nullifier this way (note: the circuit uses `inPrivateKey` directly
 /// as the nullifying key for the v1 single-key model). Mirrors
 /// `said-shielded-pool-testvectors::poseidon::nullifier`.
-pub fn nullifier_hash(
-    sk: &FieldBytes,
-    commitment: &FieldBytes,
-    leaf_index: u64,
-) -> FieldBytes {
+pub fn nullifier_hash(sk: &FieldBytes, commitment: &FieldBytes, leaf_index: u64) -> FieldBytes {
     let idx = pack_u64_be(leaf_index);
     poseidon_n(&[sk, commitment, &idx])
 }
@@ -109,7 +105,7 @@ fn dummy_input(slot: usize) -> (FieldBytes, FieldBytes, u64, MerklePath, u64) {
     // (sk, blinding, leaf_index, path, amount=0)
     let mut sk = [0u8; 32];
     sk[31] = (slot as u8) + 1; // "1", "2", … so we get the same dummies the
-                                // legacy node script used.
+                               // legacy node script used.
     let mut bl = [0u8; 32];
     // Match build_deposit_input.js: dummyBlinding = [101, 102]
     bl[31] = 100 + slot as u8 + 1;
@@ -133,13 +129,13 @@ fn dummy_output(slot: usize, owner: &FieldBytes, asset_id: &FieldBytes) -> Note 
 /// circuit-fixed 2-in / 2-out shape, and emit a snarkjs-compatible
 /// input.json `Value` ready to be written to disk.
 ///
+/// Real-vs-dummy is decided by `witness.input_notes.len()` (slots beyond
+/// it are padded with deterministic dummy notes), NOT by `sk_per_input`.
 /// `sk_per_input` carries the spending key for each *real* input note;
-/// dummy inputs always use the canonical (1, 2, …) deterministic dummy
-/// keys. If `sk_per_input` is empty all inputs are treated as dummies.
-pub fn build_input_json(
-    witness: &TransferWitness,
-    sk_per_input: &[FieldBytes],
-) -> Value {
+/// any slot it doesn't cover falls back to `witness.spending_key` (the v1
+/// single-key model). Dummy padding inputs always use the canonical
+/// (1, 2, …) deterministic dummy keys.
+pub fn build_input_json(witness: &TransferWitness, sk_per_input: &[FieldBytes]) -> Value {
     let asset_id = witness.asset_id.0;
 
     // --- INPUTS ---
@@ -159,7 +155,10 @@ pub fn build_input_json(
                 .cloned()
                 .unwrap_or_else(empty_path);
             let idx = witness.input_indices.get(slot).copied().unwrap_or(0);
-            let sk = sk_per_input.get(slot).copied().unwrap_or(witness.spending_key);
+            let sk = sk_per_input
+                .get(slot)
+                .copied()
+                .unwrap_or(witness.spending_key);
 
             // Sanity: commitment computed with the in-circuit owner = Poseidon1(sk).
             let owner = derive_pubkey(&sk);
@@ -217,12 +216,7 @@ pub fn build_input_json(
         } else {
             dummy_output(slot, &default_owner, &asset_id)
         };
-        let c = commitment_hash(
-            note.amount,
-            &asset_id,
-            &note.owner_pubkey,
-            &note.blinding,
-        );
+        let c = commitment_hash(note.amount, &asset_id, &note.owner_pubkey, &note.blinding);
         out_amounts.push(note.amount.to_string());
         out_blindings.push(be32_to_decimal(&note.blinding));
         out_owners.push(be32_to_decimal(&note.owner_pubkey));
@@ -255,7 +249,10 @@ pub fn build_input_json(
     //   publicAmount == (1 - 2*isNeg) * magnitude  with magnitude < 2^64,
     // so we supply isNeg = (public_amount < 0) and magnitude = |public_amount|.
     let (public_amount_is_neg, public_amount_magnitude) = if witness.public_amount < 0 {
-        ("1".to_string(), (-witness.public_amount as u128).to_string())
+        (
+            "1".to_string(),
+            (-witness.public_amount as u128).to_string(),
+        )
     } else {
         ("0".to_string(), (witness.public_amount as u128).to_string())
     };

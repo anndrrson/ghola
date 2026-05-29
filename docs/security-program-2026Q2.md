@@ -24,6 +24,8 @@ A production deploy is blocked unless all are true:
 3. Relay private readiness is healthy (`private_ready=true`).
 4. Known `High` findings = `0`.
 5. Known `Critical` findings = `0`.
+6. Full enterprise/institutional production surfaces stay blocked until
+   `/api/security/enterprise-gate` returns `status=ready`.
 
 Tracked source of truth:
 
@@ -137,6 +139,19 @@ Every external assessment must provide:
 4. Affected assets and blast radius.
 5. Concrete remediation guidance.
 6. Retest result after fix.
+
+## Full Enterprise Gate Evidence
+
+The enterprise gate is intentionally stricter than the tiny-fill public launch
+gate. It must remain `blocked` until all signed artifacts exist:
+
+1. Frozen review baseline hash set.
+2. External protocol/crypto and web/API/cloud reports passed.
+3. High/Critical retest evidence passed.
+4. Self-custody legal/compliance signoff signed.
+5. SOC 2 Type II report issued.
+6. Tabletop and live non-destructive runbook drill evidence accepted.
+7. Explicit zero Critical and zero High open finding counts.
 
 ## Exit Criteria (Program Success)
 

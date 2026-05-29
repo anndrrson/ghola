@@ -14,7 +14,7 @@ Browser ──► Cloudflare OHTTP relay ──► ghola-relay (OHTTP Gateway) �
 ```
 
 For Railgun x402, the same gateway can also blind
-`POST /v1/chat/completions` before forwarding to `thumper-cloud`. That path is
+`POST /v1/chat/completions` before forwarding to `ghola-cloud`. That path is
 strictly path-allowlisted and strips cookies, referrers, forwarded IPs, request
 IDs, wallet identifiers, user identifiers, and viewing-key-like headers.
 
@@ -23,7 +23,7 @@ IDs, wallet identifiers, user identifiers, and viewing-key-like headers.
 On a workstation with the relay binary:
 
 ```
-$ cargo run -p thumper-relay --bin thumper-relay -- generate-ohttp-key --key-id 1
+$ cargo run -p ghola-relay --bin ghola-relay -- generate-ohttp-key --key-id 1
 # OHTTP gateway keypair (RFC 9458)
 # key_id = 1
 GHOLA_OHTTP_KEY_SECRET_HEX=<32-byte hex>
@@ -67,7 +67,7 @@ If the gateway will also serve Railgun x402, set the upstream cloud base URL on
 `ghola-relay`:
 
 ```
-THUMPER_CLOUD_BASE_URL=https://<thumper-cloud-host>
+GHOLA_CLOUD_BASE_URL=https://<thumper-cloud-host>
 ```
 
 The default is `https://thumper-cloud.onrender.com`.
@@ -164,7 +164,7 @@ Then on the relay logs (`render logs --service ghola-relay`):
 Rotation is fully manual in v3.5; we'll move to automated weekly
 rotation in v3.6. Steps:
 
-1. `thumper-relay generate-ohttp-key --key-id N+1` on a workstation;
+1. `ghola-relay generate-ohttp-key --key-id N+1` on a workstation;
    pipe the secret into SSM under a fresh parameter name.
 2. Configure the relay with both keys, prioritising the new one:
    - `GHOLA_OHTTP_KEY_SECRET_HEX` = new secret
@@ -188,7 +188,7 @@ To disable OHTTP without a deploy:
   service). The frontend reverts sealed inference and Railgun x402 to their
   direct paths.
 - Stop passing `ohttpRelay` to custom Railgun x402 clients. They will use the
-  direct `thumper-cloud` endpoint while still requiring the shielded payment
+  direct `ghola-cloud` endpoint while still requiring the shielded payment
   rail.
 - Optionally unset `GHOLA_OHTTP_KEY_SECRET_HEX` on `ghola-relay` to
   drop the `/ohttp-*` routes entirely. The legacy

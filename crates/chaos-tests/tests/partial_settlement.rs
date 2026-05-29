@@ -29,10 +29,7 @@ struct NeverConfirms {
 
 #[async_trait]
 impl Submitter for NeverConfirms {
-    async fn submit_one(
-        &self,
-        _w: &QueuedWithdrawal,
-    ) -> said_shielded_pool_relayer::Result<()> {
+    async fn submit_one(&self, _w: &QueuedWithdrawal) -> said_shielded_pool_relayer::Result<()> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Err(said_shielded_pool_relayer::Error::Submit(
             "confirmation timeout".into(),
@@ -94,17 +91,15 @@ async fn never_confirms_marks_failed_not_confirmed() {
         relay_rate_limit_per_min: 0,
         dedup_ttl_secs: said_shielded_pool_relayer::config::DEFAULT_DEDUP_TTL_SECS,
         trusted_proxies: std::collections::HashSet::new(),
+        // k-anonymity policy (defaults: k_min=1, release-everything).
+        relay_k_min: 1,
+        release_below_kmin: true,
+        metrics_token: None,
     });
 
-    submit_batch(
-        submitter.as_ref(),
-        &queue,
-        &cfg,
-        &metrics,
-        vec![w.clone()],
-    )
-    .await
-    .unwrap();
+    submit_batch(submitter.as_ref(), &queue, &cfg, &metrics, vec![w.clone()])
+        .await
+        .unwrap();
 
     // The submitter was called exactly `max_retries` times (1). NO extra
     // calls — that's the idempotency invariant.
@@ -118,8 +113,7 @@ async fn never_confirms_marks_failed_not_confirmed() {
     // mapping is therefore `Failed` (not `Confirmed`).
     let final_state = queue.get(w.id).unwrap().unwrap();
     assert_eq!(final_state.status, WithdrawalStatus::Failed);
-    let client_status =
-        said_shielded_pool_relayer::routes::status_response(final_state.status);
+    let client_status = said_shielded_pool_relayer::routes::status_response(final_state.status);
     // We can't pattern-match on a non-`PartialEq` enum, so check via
     // the serialised form.
     let s = serde_json::to_value(&client_status).unwrap();
@@ -133,8 +127,7 @@ async fn submitted_status_collapses_to_submitted_for_client() {
     // invariant documented in `routes::status_response`. We test it from
     // the chaos suite so a future refactor that accidentally splits the
     // two doesn't silently re-leak the timing distinction.
-    let batched =
-        said_shielded_pool_relayer::routes::status_response(WithdrawalStatus::Batched);
+    let batched = said_shielded_pool_relayer::routes::status_response(WithdrawalStatus::Batched);
     let submitted =
         said_shielded_pool_relayer::routes::status_response(WithdrawalStatus::Submitted);
     let s1 = serde_json::to_value(&batched).unwrap();

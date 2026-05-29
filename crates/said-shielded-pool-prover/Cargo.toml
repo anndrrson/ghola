@@ -14,8 +14,10 @@ path = "src/lib.rs"
 
 [dependencies]
 said-shielded-pool-types = { path = "../said-shielded-pool-types" }
+common-secrets = { workspace = true }
 
 tokio = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

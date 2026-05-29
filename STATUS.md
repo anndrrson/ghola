@@ -14,7 +14,7 @@ Last updated: 2026-05-14.
 | Service | URL | Purpose |
 |---|---|---|
 | Web app | https://ghola.xyz | Next.js front-end, auto-deployed from `main` to Vercel |
-| Relay | https://ghola-relay.onrender.com | `thumper-relay`: `/health`, `/providers/attested`, `/inference/sealed`, `/attestations/:hash` |
+| Relay | https://ghola-relay.onrender.com | `ghola-relay`: `/health`, `/providers/attested`, `/inference/sealed`, `/attestations/:hash` |
 | Receipts anchor | https://ghola-receipts.onrender.com | `said-receipts-service`: Merkle batcher + Solana publisher (boot pending dashboard DB link) |
 
 Each is reachable without auth for the public-shaped endpoints. Try:
@@ -51,8 +51,8 @@ curl https://ghola-relay.onrender.com/providers/attested
 | [`crates/said-envelope/`](./crates/said-envelope/) | `said-envelope-v1` sealed wire format — X25519 + AES-256-GCM + HKDF-SHA256 + Ed25519. Vector tests live in this crate. |
 | [`crates/said-attest/`](./crates/said-attest/) | AWS Nitro attestation verifier (`nitro.rs`), Ghola allowlist verifier (`allowlist.rs`), `verify_attestation` entry point in `lib.rs`. |
 | [`crates/said-turnkey/`](./crates/said-turnkey/) | Turnkey HSM-backed key wrap — P-256 X-Stamp adapter for browser-side Ed25519 signing. |
-| [`crates/thumper-relay/`](./crates/thumper-relay/) | Provider intake + sealed-inference forwarder + attested-providers state. Deployed at `ghola-relay.onrender.com`. |
-| [`crates/thumper-gpu-provider/`](./crates/thumper-gpu-provider/) | In-enclave provider runtime — Ollama bridge, per-message receipt signer, WS reconnect loop. |
+| [`crates/ghola-relay/`](./crates/ghola-relay/) | Provider intake + sealed-inference forwarder + attested-providers state. Deployed at `ghola-relay.onrender.com`. |
+| [`crates/ghola-gpu-provider/`](./crates/ghola-gpu-provider/) | In-enclave provider runtime — Ollama bridge, per-message receipt signer, WS reconnect loop. |
 | [`crates/said-receipts-service/`](./crates/said-receipts-service/) | Off-chain Merkle batcher + Solana publisher. Deployed at `ghola-receipts.onrender.com`. |
 | [`crates/ghola-home/`](./crates/ghola-home/) | Local-mode bridge — Ollama on `127.0.0.1:7878` for Layer 1 Local transport. |
 
@@ -106,12 +106,12 @@ cd apps/web && npm run build
   countersigned by the enclave (`provider_signature`).
 - Defined in [`apps/web/src/lib/receipt.ts`](./apps/web/src/lib/receipt.ts);
   matched on the producer side in
-  [`crates/thumper-gpu-provider/src/receipt.rs`](./crates/thumper-gpu-provider/src/receipt.rs).
+  [`crates/ghola-gpu-provider/src/receipt.rs`](./crates/ghola-gpu-provider/src/receipt.rs).
 
 ### `ProviderAttestPayload`
 - Provider → relay handshake message containing the vendor quote +
   Ghola allowlist signature, consumed by `verify_attestation`.
-- Defined in [`crates/thumper-types/src/command.rs`](./crates/thumper-types/src/command.rs).
+- Defined in [`crates/ghola-assistant-types/src/command.rs`](./crates/ghola-assistant-types/src/command.rs).
 
 ---
 
@@ -157,7 +157,7 @@ verifiable attestation hash on every receipt.
 | Date | Commit | What |
 |---|---|---|
 | 2026-05-14 | `d833a55` | Default sealed `model_id` to `llama3.2:3b` to match the deployed Ollama model |
-| 2026-05-14 | `0c0488a` | WebSocket reconnect loop on `thumper-gpu-provider` (exponential backoff 1s → 60s) |
+| 2026-05-14 | `0c0488a` | WebSocket reconnect loop on `ghola-gpu-provider` (exponential backoff 1s → 60s) |
 | 2026-05-14 | `cdb625b` | CSP `connect-src` allowlist for `ghola-relay` + `ghola-receipts` |
 | 2026-05-13 | `a992606` | Bump Rust to 1.85.0 in EIF builder (edition2024 transitive dep) |
 | 2026-05-13 | `257e90e` | `--allowerasing` on AL2023 runtime `dnf install` (curl-minimal conflict) |

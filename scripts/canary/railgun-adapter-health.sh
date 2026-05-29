@@ -13,7 +13,7 @@ Required:
   RAILGUN_EVM_RECIPIENT or RAILGUN_RECIPIENT
 
 Optional:
-  THUMPER_BASE_URL                         thumper-cloud URL for --check-thumper
+  GHOLA_BASE_URL                         thumper-cloud URL for --check-thumper
   RAILGUN_EVM_ADAPTER_AUTH_TOKEN          emitted as placeholder unless --emit-secrets
   RAILGUN_EVM_ADAPTER_PUBKEY              32-byte Ed25519 pubkey, hex or base64
   RAILGUN_ADAPTER_SIGNING_PRIVATE_KEY_PEM derive pubkey if pubkey is not set
@@ -24,7 +24,7 @@ Examples:
   RAILGUN_EVM_RECIPIENT=0zk... \
     scripts/canary/railgun-adapter-health.sh
 
-  THUMPER_BASE_URL=https://thumper-cloud.onrender.com \
+  GHOLA_BASE_URL=https://thumper-cloud.onrender.com \
     scripts/canary/railgun-adapter-health.sh --check-thumper
 EOF
 }
@@ -177,13 +177,13 @@ if [ -z "$PUBKEY" ]; then
 fi
 
 if [ "$CHECK_THUMPER" = true ]; then
-  THUMPER_BASE_URL="${THUMPER_BASE_URL:-}"
-  if [ -z "$THUMPER_BASE_URL" ]; then
-    printf 'THUMPER_BASE_URL is required with --check-thumper\n' >&2
+  GHOLA_BASE_URL="${GHOLA_BASE_URL:-}"
+  if [ -z "$GHOLA_BASE_URL" ]; then
+    printf 'GHOLA_BASE_URL is required with --check-thumper\n' >&2
     exit 2
   fi
   thumper_body="$(mktemp)"
-  curl -fsS "${THUMPER_BASE_URL%/}/health/payments" -o "$thumper_body"
+  curl -fsS "${GHOLA_BASE_URL%/}/health/payments" -o "$thumper_body"
   jq -e '
     .rails.railgun_evm_shielded.ready == true
     and .rails.railgun_evm_shielded.configured == true
@@ -203,7 +203,7 @@ fi
 
 printf 'Railgun adapter health passed for %s (%s/%s).\n' "$ADAPTER_URL" "$NETWORK" "$ASSET" >&2
 if [ "$CHECK_THUMPER" = true ]; then
-  printf 'thumper-cloud railgun_evm_shielded health passed for %s.\n' "$THUMPER_BASE_URL" >&2
+  printf 'thumper-cloud railgun_evm_shielded health passed for %s.\n' "$GHOLA_BASE_URL" >&2
 fi
 
 cat <<EOF

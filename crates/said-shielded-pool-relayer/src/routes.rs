@@ -13,7 +13,8 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{FromRequest, FromRequestParts, Path, State};
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -29,7 +30,9 @@ use crate::config::Config;
 use crate::dedup::{Dedup, DedupOutcome};
 use crate::error::{Error, Result};
 use crate::metrics::Metrics;
-use crate::queue::{ProofBlob, QueuedAccountMeta, QueuedWithdrawal, WithdrawalQueue, WithdrawalStatus};
+use crate::queue::{
+    ProofBlob, QueuedAccountMeta, QueuedWithdrawal, WithdrawalQueue, WithdrawalStatus,
+};
 
 /// Per-IP fixed-window rate limiter for `POST /relay`.
 ///
@@ -95,9 +98,7 @@ impl AppState {
         metrics: Arc<Metrics>,
         batcher: &Batcher,
     ) -> Self {
-        let dedup = Arc::new(
-            Dedup::open_temporary().expect("in-memory dedup must open"),
-        );
+        let dedup = Arc::new(Dedup::open_temporary().expect("in-memory dedup must open"));
         Self::with_dedup(queue, config, metrics, batcher, dedup)
     }
 
@@ -127,7 +128,90 @@ pub fn router(state: AppState) -> Router {
         .route("/status/{id}", get(status))
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics_handler))
+        // Privacy: axum's built-in 404/405 responses echo method/path detail.
+        // Route everything unmatched through the same opaque body the rest of
+        // the service uses, so a prober can't fingerprint the routing table.
+        .fallback(opaque_not_found)
         .with_state(state)
+}
+
+/// Uniform opaque body for any client-side reject (400 / 404 / 405). The
+/// service already maps its own [`Error`] to `{"error":"bad request"}` /
+/// `"internal error"` via [`crate::error`]; these extractors and the router
+/// fallback make axum's *built-in* rejections (malformed JSON, bad path
+/// params, no-route, wrong-method) speak the same opaque dialect instead of
+/// echoing serde/uuid/method/path parse detail to the client.
+fn opaque_bad_request() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error": "bad request"})),
+    )
+        .into_response()
+}
+
+/// Router fallback for unmatched routes / methods. Returns the same opaque
+/// 400 body rather than axum's default 404/405 (which would leak the fact
+/// that a path is/ isn't a real route, and the allowed methods).
+async fn opaque_not_found() -> Response {
+    opaque_bad_request()
+}
+
+/// `Json<T>` wrapper whose extractor rejections are mapped to the opaque
+/// `{"error":"bad request"}` body. axum's stock [`Json`] rejection echoes the
+/// serde/schema error (field name, expected type, byte offset) straight into
+/// the 400 body — a schema-disclosure + fingerprinting leak. We swallow that
+/// detail and log it at `tracing::debug!` only.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpaqueJson<T>(pub T);
+
+impl<T, S> FromRequest<S> for OpaqueJson<T>
+where
+    Json<T>: FromRequest<S>,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request(
+        req: axum::extract::Request,
+        state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(OpaqueJson(value)),
+            Err(rejection) => {
+                // The real rejection (serde detail) is DEBUG-only; never the body.
+                tracing::debug!(rejection = %rejection.into_response().status(), "json extractor rejected (debug-only)");
+                Err(opaque_bad_request())
+            }
+        }
+    }
+}
+
+/// `Path<T>` wrapper whose extractor rejections are mapped to the opaque
+/// `{"error":"bad request"}` body. axum's stock [`Path`] rejection echoes the
+/// parse error (e.g. "Invalid URL: ... is not a valid uuid") into the 400
+/// body. We swallow that and log it at `tracing::debug!` only.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpaquePath<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for OpaquePath<T>
+where
+    Path<T>: FromRequestParts<S>,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        match Path::<T>::from_request_parts(parts, state).await {
+            Ok(Path(value)) => Ok(OpaquePath(value)),
+            Err(rejection) => {
+                tracing::debug!(rejection = %rejection.into_response().status(), "path extractor rejected (debug-only)");
+                Err(opaque_bad_request())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,7 +392,10 @@ async fn relay(
     // would let an operator with read-only log access reconstruct
     // a "duplicate-detection rate" timing channel.
     let request_id = Uuid::new_v4();
-    match state.dedup.check_and_record(&req.proof_bundle.0, request_id)? {
+    match state
+        .dedup
+        .check_and_record(&req.proof_bundle.0, request_id)?
+    {
         DedupOutcome::Fresh => {
             // Fall through to queue-depth + enqueue.
         }
@@ -375,7 +462,11 @@ async fn relay(
     state.wake_batcher.notify_one();
 
     let eta_seconds = estimate_eta(&state).unwrap_or(state.config.min_delay.as_secs());
-    Ok(Json(RelayResponse { id: request_id, eta_seconds }).into_response())
+    Ok(Json(RelayResponse {
+        id: request_id,
+        eta_seconds,
+    })
+    .into_response())
 }
 
 /// Client-visible status. Note the deliberate collapse: `Batched` and
@@ -408,7 +499,7 @@ pub fn status_response(s: WithdrawalStatus) -> ClientStatus {
 
 async fn status(
     State(state): State<AppState>,
-    Path(id): Path<Uuid>,
+    OpaquePath(id): OpaquePath<Uuid>,
 ) -> Result<Json<StatusResponse>> {
     match state.queue.get(id)? {
         None => {
@@ -496,10 +587,9 @@ fn bearer_token_matches(headers: &HeaderMap, expected: &str) -> bool {
 ///   - `input_nullifiers` and `output_commitments` exist as non-empty arrays
 ///     of reasonable size.
 fn validate_proof_shape(pb: &ProofBlob) -> Result<()> {
-    let obj = pb
-        .0
-        .as_object()
-        .ok_or_else(|| Error::BadRequest("proof_bundle must be an object".into()))?;
+    let obj =
+        pb.0.as_object()
+            .ok_or_else(|| Error::BadRequest("proof_bundle must be an object".into()))?;
 
     if let Some(proof) = obj.get("proof").and_then(|v| v.as_object()) {
         for key in ["a", "b", "c"] {
@@ -514,9 +604,7 @@ fn validate_proof_shape(pb: &ProofBlob) -> Result<()> {
             }
         }
     }
-    let nested_pi = obj
-        .get("public_inputs")
-        .and_then(|v| v.as_object());
+    let nested_pi = obj.get("public_inputs").and_then(|v| v.as_object());
 
     let check_array = |key: &str| -> Result<()> {
         let arr = nested_pi
@@ -553,8 +641,7 @@ fn decode_recipient(s: &str) -> Result<[u8; 32]> {
 fn bs58_decode(s: &str) -> Result<Vec<u8>> {
     // Minimal pure-Rust bs58 implementation to avoid adding bs58 to deps.
     // Adequate for input validation. The on-chain check is the real arbiter.
-    const ALPHABET: &[u8] =
-        b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     let mut map = [255u8; 128];
     for (i, c) in ALPHABET.iter().enumerate() {
         map[*c as usize] = i as u8;

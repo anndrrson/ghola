@@ -16,9 +16,9 @@ pragma circom 2.1.5;
 // !! compiled-in VK predates this change.                               !!
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-include "../node_modules/circomlib/circuits/poseidon.circom";
-include "../node_modules/circomlib/circuits/bitify.circom";
-include "../node_modules/circomlib/circuits/comparators.circom";
+include "node_modules/circomlib/circuits/poseidon.circom";
+include "node_modules/circomlib/circuits/bitify.circom";
+include "node_modules/circomlib/circuits/comparators.circom";
 
 include "./keypair.circom";
 include "./commitment.circom";

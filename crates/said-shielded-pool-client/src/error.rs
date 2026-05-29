@@ -27,6 +27,29 @@ pub enum Error {
     #[error("mismatched asset ids in transfer")]
     AssetMismatch,
 
+    /// An input note's Merkle path recomputes to a root that is not in the
+    /// caller-supplied set of trusted/expected roots. This is the H2
+    /// anti-tagging guard: a malicious indexer that serves a structurally
+    /// valid but UNIQUE root (to fingerprint the spender on-chain) is
+    /// rejected here, before the spend is proved or submitted. The
+    /// expected roots MUST come from a trust domain independent of the
+    /// indexer that served the path (see
+    /// [`crate::witness::WitnessBuilder::expected_roots`]).
+    #[error("merkle root not in expected set: input {input_index} recomputed root not recognized")]
+    RootMismatch {
+        /// Index (within the builder's input list) of the offending note.
+        input_index: usize,
+    },
+
+    /// [`crate::witness::WitnessBuilder::try_build`] was called with one or
+    /// more real (non-dummy) input notes but no `expected_roots` were
+    /// supplied, so the client cannot fail-closed against indexer root
+    /// tagging (H2). Call
+    /// [`crate::witness::WitnessBuilder::expected_roots`] with roots read
+    /// from an independent trust domain.
+    #[error("missing expected_roots: real inputs require a trusted root set for the H2 anti-tagging check")]
+    MissingExpectedRoots,
+
     /// Invalid public/private key material — wrong length, zero, etc.
     #[error("invalid key: {0}")]
     InvalidKey(&'static str),

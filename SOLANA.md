@@ -54,8 +54,8 @@ Implementation: `crates/said-cloud/src/auth.rs`, `crates/said-cloud/src/routes/a
 
 ## Payments — USDC
 
-- **Marketplace** (`crates/orni-models-api`) — USDC deposits verified on-chain, creator payouts split 85/15 (creator/platform)
-- **Assistant** (`crates/thumper-cloud`) — subscription tiers settle in USDC for crypto-native users
+- **Marketplace** (`crates/ghola-models-api`) — USDC deposits verified on-chain, creator payouts split 85/15 (creator/platform)
+- **Assistant** (`crates/ghola-cloud`) — subscription tiers settle in USDC for crypto-native users
 - **Gateway** (`crates/ghola-gateway`, `crates/said-x402`) — `x402` payment-required HTTP: a 402 response carries a USDC quote, the client pays on-chain, retries with proof
 - **Per-call pricing** — `ServiceRecord.price_micro_usdc` (u64) advertises a service's price on-chain for headless-merchant resolution
 

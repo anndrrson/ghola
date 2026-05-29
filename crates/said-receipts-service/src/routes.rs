@@ -45,7 +45,7 @@ fn uptime_secs() -> u64 {
 }
 
 /// HTTP-surface hardening knobs for the receipts service. Mirrors the
-/// shape of `thumper_relay::config::RelayConfig` so operators can reason
+/// shape of `ghola_relay::config::RelayConfig` so operators can reason
 /// about both services with the same mental model.
 #[derive(Debug, Clone)]
 pub struct ReceiptsServiceConfig {
@@ -61,7 +61,7 @@ pub struct ReceiptsServiceConfig {
 
 impl ReceiptsServiceConfig {
     /// Construct from environment. Matches the env-var conventions used
-    /// elsewhere in the workspace (THUMPER_/SAID_/RECEIPTS_ prefixes).
+    /// elsewhere in the workspace (GHOLA_/SAID_/RECEIPTS_ prefixes).
     pub fn from_env() -> Self {
         let max_body = std::env::var("RECEIPTS_MAX_BODY_SIZE_BYTES")
             .ok()

@@ -87,7 +87,7 @@ Enormous, and structurally hard.
   promise) leaves us at 3–6 s/token — a chat experience that feels
   broken. The Tier 2A enclave path delivers 50–100 ms/token. Two
   orders of magnitude is not a "tune the implementation" gap.
-- **Coordination surface.** The relay (`crates/thumper-relay`) would
+- **Coordination surface.** The relay (`crates/ghola-relay`) would
   have to be re-architected from a passive forwarder into an active
   MPC coordinator: routing each sealed envelope to `k` enclaves in
   lockstep, handling per-round commit/reveal traffic, detecting
@@ -307,7 +307,7 @@ engineering.
   before going on the wire. Behind a feature flag,
   `settings.network_privacy`. Initial work: ~2 wk.
 - **Relay ingress.** Either run a Nym-aware service endpoint (a Nym
-  client process that bridges to `thumper-relay` over localhost) or use
+  client process that bridges to `ghola-relay` over localhost) or use
   a third-party Nym SOCKS5 exit that forwards to our public relay. The
   former is cleaner and avoids trusting a third-party exit; ~2–3 wk of
   ops setup.
@@ -403,7 +403,7 @@ shipping all of them.
   layer; the integration point for any Tier 3N work
 - `apps/web/src/lib/ohttp.ts` — current network-metadata mitigation,
   superseded (additively, not replaced) by Nym in Tier 3N
-- `crates/thumper-relay` — relay; new Nym-aware ingress endpoint
+- `crates/ghola-relay` — relay; new Nym-aware ingress endpoint
   lives here
 
 ## Next concrete action

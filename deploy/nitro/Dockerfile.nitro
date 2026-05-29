@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.6
 #
-# Ghola v2 — thumper-gpu-provider Nitro Enclave image.
+# Ghola v2 — ghola-gpu-provider Nitro Enclave image.
 #
 # This Dockerfile produces the Docker image that `nitro-cli build-enclave`
 # turns into an EIF. The image is NOT meant to be run directly under
@@ -21,7 +21,7 @@
 #      installed (Ollama lives inside the enclave alongside the provider
 #      so the model weights are never exposed to the host).
 #
-# The EIF init system enters `/usr/local/bin/thumper-gpu-provider`.
+# The EIF init system enters `/usr/local/bin/ghola-gpu-provider`.
 
 # -------- Stage 1: builder --------
 FROM amazonlinux:2023 AS builder
@@ -72,7 +72,7 @@ COPY packages/ packages/
 # smoke tests use deploy/nitro/Dockerfile.nitro.mock (or just run the
 # binary on the host with --features mock-nitro).
 RUN cargo build --release \
-        -p thumper-gpu-provider \
+        -p ghola-gpu-provider \
         --features aws-nitro-enclaves-nsm-api
 
 # Build the in-enclave vsock client. It lives in a standalone Cargo
@@ -110,7 +110,7 @@ RUN curl -fsSL https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERS
     && /usr/local/bin/ollama --version
 
 # Provider binary.
-COPY --from=builder /src/target/release/thumper-gpu-provider /usr/local/bin/thumper-gpu-provider
+COPY --from=builder /src/target/release/ghola-gpu-provider /usr/local/bin/ghola-gpu-provider
 
 # Enclave-side vsock env-channel client. Pulls PROVIDER_AUTH_KEY +
 # ALLOWLIST_SIG_B64 from the host's vsock-env-server (port 8444) so the

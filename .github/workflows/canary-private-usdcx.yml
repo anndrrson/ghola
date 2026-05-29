@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 20
     env:
       GHOLA_WEB_URL: ${{ vars.GHOLA_WEB_URL || 'https://ghola.xyz' }}
-      THUMPER_BASE_URL: ${{ vars.THUMPER_BASE_URL || 'https://thumper-cloud.onrender.com' }}
+      GHOLA_BASE_URL: ${{ vars.GHOLA_BASE_URL || 'https://thumper-cloud.onrender.com' }}
     steps:
       - uses: actions/checkout@v4
 

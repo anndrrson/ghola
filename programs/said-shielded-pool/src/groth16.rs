@@ -51,6 +51,10 @@ pub struct VerifyInputs<'a> {
 ///     (`circuits/batchedUpdate.circom`), vk in
 ///     [`crate::forester_verifying_key`]. Only used by
 ///     `update_root_via_proof`.
+///   - `AuctionClearing` — the shielded batch auction clearing circuit
+///     (`circuits/auctionClearing.circom`). This is intentionally
+///     feature-gated separately so production cannot accidentally deploy
+///     before a fresh auction ceremony has generated a real vk.
 ///
 /// Both circuits intentionally declare `nPublic == 8` so we can keep one
 /// `NUM_PUBLIC_INPUTS` constant and one shared `VerifyInputs` shape; the
@@ -60,6 +64,7 @@ pub struct VerifyInputs<'a> {
 pub enum CircuitKind {
     Transfer,
     Forester,
+    AuctionClearing,
 }
 
 /// Verifies a Groth16 proof against the on-chain verifier key.
@@ -83,6 +88,15 @@ pub fn verify(inputs: VerifyInputs<'_>) -> Result<()> {
 /// `programs/said-shielded-pool/src/instructions/update_root.rs`.
 pub fn verify_forester(inputs: VerifyInputs<'_>) -> Result<()> {
     verify_with_kind(inputs, CircuitKind::Forester)
+}
+
+/// Verify a proof against the auction clearing vk.
+///
+/// With `real-verifier` enabled this fails closed unless the binary is also
+/// built with `auction-verifier-ready`, which should only happen after the
+/// auction circuit has a reviewed ceremony and generated `auction_verifying_key.rs`.
+pub fn verify_auction_clearing(inputs: VerifyInputs<'_>) -> Result<()> {
+    verify_with_kind(inputs, CircuitKind::AuctionClearing)
 }
 
 fn verify_with_kind(inputs: VerifyInputs<'_>, kind: CircuitKind) -> Result<()> {
@@ -117,6 +131,16 @@ fn verify_with_kind(inputs: VerifyInputs<'_>, kind: CircuitKind) -> Result<()> {
         let vk = match kind {
             CircuitKind::Transfer => &crate::verifying_key::VERIFYING_KEY,
             CircuitKind::Forester => &crate::forester_verifying_key::VERIFYING_KEY,
+            CircuitKind::AuctionClearing => {
+                #[cfg(feature = "auction-verifier-ready")]
+                {
+                    &crate::auction_verifying_key::VERIFYING_KEY
+                }
+                #[cfg(not(feature = "auction-verifier-ready"))]
+                {
+                    return err!(ShieldedPoolError::AuctionVerifierUnavailable);
+                }
+            }
         };
 
         let mut verifier = Groth16Verifier::new(

@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    extract::{Query, State},
-    http::{HeaderMap, StatusCode},
+    extract::{FromRequestParts, Query, State},
+    http::{request::Parts, HeaderMap, StatusCode},
     response::{IntoResponse, Json},
     routing::get,
     Router,
@@ -104,6 +104,51 @@ fn normalize_peer(ip: IpAddr) -> IpAddr {
     }
 }
 
+/// The single opaque body the indexer returns for ANY client-side error
+/// (malformed query/path, extractor rejection, unknown route/method). The
+/// real reason is logged at `tracing::debug!` and never put on the wire, so
+/// the HTTP surface can't be used to probe parser internals or distinguish
+/// failure modes.
+fn opaque_bad_request() -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": "bad request" })),
+    )
+        .into_response()
+}
+
+/// `Query<T>` wrapper that collapses EVERY extractor rejection (missing param,
+/// parse failure, malformed query string) into the indexer's fixed opaque
+/// `{"error":"bad request"}` body. The default `Query` rejection echoes serde
+/// detail like "missing query parameter `commitment`" / parse messages, which
+/// is a response-surface leak; we log that detail at `debug!` instead.
+pub struct OpaqueQuery<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for OpaqueQuery<T>
+where
+    Query<T>: FromRequestParts<S, Rejection = axum::extract::rejection::QueryRejection>,
+    S: Send + Sync,
+{
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match Query::<T>::from_request_parts(parts, state).await {
+            Ok(Query(value)) => Ok(Self(value)),
+            Err(rejection) => {
+                tracing::debug!(reason = %rejection, "rejected query extraction");
+                Err(opaque_bad_request())
+            }
+        }
+    }
+}
+
+/// Router fallback for unknown routes / unsupported methods. Returns the same
+/// fixed opaque body as every other client error so a probe can't enumerate
+/// which paths exist via differing 404/405 bodies.
+async fn opaque_fallback() -> axum::response::Response {
+    opaque_bad_request()
+}
+
 pub fn router(state: AppState) -> Router {
     // Bound the witness path's blast radius:
     //   - `GlobalConcurrencyLimitLayer` caps simultaneous in-flight requests so
@@ -120,6 +165,9 @@ pub fn router(state: AppState) -> Router {
         .route("/tree-state", get(tree_state))
         .route("/witness", get(witness))
         .route("/root-history", get(root_history))
+        // 404/405 return the same opaque body as every other client error so a
+        // probe can't enumerate routes/methods via differing error bodies.
+        .fallback(opaque_fallback)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::SERVICE_UNAVAILABLE,
             timeout,
@@ -143,6 +191,10 @@ struct HealthResp {
 }
 
 async fn healthz(State(st): State<AppState>) -> impl IntoResponse {
+    // NOTE (zero-leakage review): `next_index`/`depth` are intentionally
+    // public — they are on-chain-derivable tree state (the queue position is
+    // emitted by the program and the depth is a protocol constant). This is
+    // NOT a leak; do not redact it.
     let tree = st.tree.read().await;
     Json(HealthResp {
         ok: true,
@@ -161,6 +213,11 @@ struct TreeStateResp {
 }
 
 async fn tree_state(State(st): State<AppState>) -> axum::response::Response {
+    // NOTE (zero-leakage review): `root`, `next_index`, `depth`, and the
+    // staleness `age_secs` are intentionally public — all are on-chain-derivable
+    // shielded-pool state (the root is published on-chain, the index is the
+    // queue position, depth/history-size are protocol constants). This is NOT a
+    // leak; do not redact it.
     if let Some(resp) = stale_response(&st) {
         return resp;
     }
@@ -224,7 +281,7 @@ const WITNESS_RATE_LIMIT_RETRY_AFTER_SECS: u64 = 60;
 async fn witness(
     State(st): State<AppState>,
     headers: HeaderMap,
-    Query(q): Query<WitnessQuery>,
+    OpaqueQuery(q): OpaqueQuery<WitnessQuery>,
     req: axum::extract::Request,
 ) -> Result<axum::response::Response, ApiError> {
     // ----- per-IP rate limit (DoS bound) -----
@@ -245,7 +302,10 @@ async fn witness(
         {
             return Ok((
                 StatusCode::TOO_MANY_REQUESTS,
-                [("Retry-After", WITNESS_RATE_LIMIT_RETRY_AFTER_SECS.to_string())],
+                [(
+                    "Retry-After",
+                    WITNESS_RATE_LIMIT_RETRY_AFTER_SECS.to_string(),
+                )],
                 Json(serde_json::json!({ "error": "rate_limited" })),
             )
                 .into_response());
@@ -268,9 +328,7 @@ async fn witness(
     let commitment = Commitment(c);
 
     let tree = st.tree.read().await;
-    let leaf_index = tree
-        .leaf_index_of(&commitment)?
-        .ok_or(ApiError::NotFound)?;
+    let leaf_index = tree.leaf_index_of(&commitment)?.ok_or(ApiError::NotFound)?;
     let path = tree.path(leaf_index)?;
     let siblings = path.siblings.iter().map(hex::encode).collect();
 
@@ -319,21 +377,134 @@ impl From<Error> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        // Internal/database detail is logged server-side only; clients always
-        // get a generic 500 body. BadRequest carries client-actionable
-        // validation text (e.g. "commitment must be 32 bytes"), which is safe
-        // to surface.
-        let (status, msg): (StatusCode, String) = match self {
-            Self::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
-            Self::NotFound => (StatusCode::NOT_FOUND, "commitment not found".into()),
+        // Zero-leakage policy: clients NEVER receive parser/validation/internal
+        // detail. BadRequest's inner message (e.g. "commitment hex: <serde
+        // detail>", "commitment must be 32 bytes, got X") is logged at `debug!`
+        // and replaced with a fixed opaque body so the HTTP surface can't be
+        // used to probe input-parsing internals. Internal detail is logged at
+        // `error!` and likewise collapsed to a generic 500. NotFound keeps a
+        // fixed string ("commitment not found") because absence is an intended,
+        // detail-free protocol signal.
+        let (status, msg): (StatusCode, &str) = match self {
+            Self::BadRequest(m) => {
+                tracing::debug!(reason = %m, "rejected request (bad request)");
+                (StatusCode::BAD_REQUEST, "bad request")
+            }
+            Self::NotFound => (StatusCode::NOT_FOUND, "commitment not found"),
             Self::Internal(detail) => {
                 tracing::error!(error = %detail, "indexer internal error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal error".to_string(),
-                )
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
             }
         };
         (status, Json(serde_json::json!({ "error": msg }))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::extract::FromRequestParts;
+    use axum::http::Request;
+
+    /// Collect a response body into a `String` for assertions.
+    async fn body_string(resp: axum::response::Response) -> String {
+        let bytes = to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .expect("read body");
+        String::from_utf8(bytes.to_vec()).expect("utf8 body")
+    }
+
+    /// The `BadRequest` mapping must surface the FIXED opaque body and NEVER
+    /// the inner (potentially parser-derived) detail.
+    #[tokio::test]
+    async fn bad_request_maps_to_opaque_body() {
+        let detail = "commitment must be 32 bytes, got 7";
+        let resp = ApiError::BadRequest(detail.to_string()).into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = body_string(resp).await;
+        assert_eq!(body, r#"{"error":"bad request"}"#);
+        // No inner detail leaks onto the wire.
+        assert!(!body.contains("32 bytes"), "leaked length detail: {body}");
+        assert!(!body.contains("got 7"), "leaked length detail: {body}");
+    }
+
+    /// `NotFound` stays a fixed, detail-free protocol signal.
+    #[tokio::test]
+    async fn not_found_maps_to_fixed_string() {
+        let resp = ApiError::NotFound.into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            body_string(resp).await,
+            r#"{"error":"commitment not found"}"#
+        );
+    }
+
+    /// `Internal` is opaque (detail logged at ERROR, not surfaced).
+    #[tokio::test]
+    async fn internal_maps_to_opaque_body() {
+        let resp = ApiError::Internal("sled: backing store on fire".to_string()).into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = body_string(resp).await;
+        assert_eq!(body, r#"{"error":"internal error"}"#);
+        assert!(!body.contains("sled"), "leaked internal detail: {body}");
+    }
+
+    /// Drive the `OpaqueQuery<WitnessQuery>` extractor with a URI and return
+    /// the body of whatever rejection (or success) it produces.
+    async fn extract_witness_query(uri: &str) -> (StatusCode, String) {
+        let req = Request::builder().uri(uri).body(()).expect("build request");
+        let (mut parts, _) = req.into_parts();
+        match OpaqueQuery::<WitnessQuery>::from_request_parts(&mut parts, &()).await {
+            Ok(_) => (StatusCode::OK, String::new()),
+            Err(resp) => {
+                let status = resp.status();
+                (status, body_string(resp).await)
+            }
+        }
+    }
+
+    /// A missing `commitment` param must yield the opaque body with NO serde
+    /// "missing query parameter" detail.
+    #[tokio::test]
+    async fn opaque_query_missing_param_is_opaque() {
+        let (status, body) = extract_witness_query("/witness").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, r#"{"error":"bad request"}"#);
+        assert!(
+            !body.to_lowercase().contains("commitment") && !body.contains("missing"),
+            "leaked extractor detail: {body}"
+        );
+    }
+
+    /// A garbage query string that fails to deserialize into `WitnessQuery`
+    /// must also collapse to the opaque body (no serde detail).
+    #[tokio::test]
+    async fn opaque_query_garbage_is_opaque() {
+        // `commitment` expects a string; a repeated/array-shaped param trips
+        // the serde_urlencoded deserializer used by `Query`.
+        let (status, body) = extract_witness_query("/witness?not_commitment=foo").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, r#"{"error":"bad request"}"#);
+        assert!(!body.contains("commitment"), "leaked field name: {body}");
+    }
+
+    /// The witness handler maps a wrong-length / bad-hex commitment to
+    /// `BadRequest` *inside* the handler; assert that path is opaque too
+    /// (mirrors `witness()`'s hex-decode + length-check error mapping).
+    #[tokio::test]
+    async fn handler_length_check_is_opaque() {
+        // 14 hex chars => 7 bytes, not FIELD_BYTES.
+        let short = "aabbccddeeff00";
+        let bytes = hex::decode(short).unwrap();
+        let resp = ApiError::BadRequest(format!(
+            "commitment must be {FIELD_BYTES} bytes, got {}",
+            bytes.len()
+        ))
+        .into_response();
+        let body = body_string(resp).await;
+        assert_eq!(body, r#"{"error":"bad request"}"#);
+        assert!(!body.contains("got 7"), "leaked length: {body}");
     }
 }

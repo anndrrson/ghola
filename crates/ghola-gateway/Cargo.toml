@@ -31,7 +31,7 @@ said-x402 = { workspace = true }
 said-solana = { path = "../said-solana" }
 
 # Direct (same pattern said-cloud uses)
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "chrono", "uuid"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "chrono", "uuid", "derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }

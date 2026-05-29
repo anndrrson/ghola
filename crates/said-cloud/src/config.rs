@@ -1,5 +1,7 @@
 use std::env;
 
+const DEV_JWT_SECRET: &str = "dev-secret-change-me";
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
@@ -42,6 +44,27 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Self {
+        let runtime_env = env::var("APP_ENV")
+            .or_else(|_| env::var("ENVIRONMENT"))
+            .or_else(|_| env::var("RUST_ENV"))
+            .unwrap_or_else(|_| "development".into());
+        let is_local = matches!(
+            runtime_env.as_str(),
+            "development" | "dev" | "local" | "test" | "testing"
+        );
+        let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| {
+            if is_local {
+                DEV_JWT_SECRET.into()
+            } else {
+                panic!("JWT_SECRET required outside local/test environments")
+            }
+        });
+        if !is_local && jwt_secret == DEV_JWT_SECRET {
+            panic!(
+                "JWT_SECRET must not use the development sentinel outside local/test environments"
+            );
+        }
+
         Self {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL required"),
             bind_addr: env::var("BIND_ADDR")
@@ -50,7 +73,7 @@ impl Config {
                     env::var("PORT").map(|p| format!("0.0.0.0:{p}"))
                 })
                 .unwrap_or_else(|_| "0.0.0.0:8080".into()),
-            jwt_secret: env::var("JWT_SECRET").unwrap_or_else(|_| "dev-secret-change-me".into()),
+            jwt_secret,
             base_url: env::var("BASE_URL")
                 .unwrap_or_else(|_| "https://ghola-api.onrender.com".into()),
             frontend_url: env::var("FRONTEND_URL").unwrap_or_else(|_| "https://ghola.xyz".into()),

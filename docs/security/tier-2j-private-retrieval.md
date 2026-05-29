@@ -240,7 +240,7 @@ commitment, and bounded to a few MiB per user even at p99 vault size.
 | SimplePIR client (TS, WASM-backed) | new module `apps/web/src/lib/pir-client.ts` |
 | Shared wire types | new crate `crates/said-pir-types` (or merge into `said-types`) |
 | Vault index format + hint precompute | hooks into `apps/web/src/lib/chat-vault.ts` and the cloud-side vault index |
-| Hint-storage endpoints | new `GET /v1/pir/hint?vault_id=…` and `POST /v1/pir/query` in `crates/thumper-cloud` |
+| Hint-storage endpoints | new `GET /v1/pir/hint?vault_id=…` and `POST /v1/pir/query` in `crates/ghola-cloud` |
 | Hint invalidation hooks | wherever vault add/remove lands today (`chat-vault.ts` write path) |
 
 ### 4.2 Server-side index + hint
@@ -455,7 +455,7 @@ calendar weeks at 60% allocation.
 | SimplePIR Rust crate adoption (Blyss `pir-rs` or own port), WASM bindings, perf tuning for browser bigint arithmetic | 3.5 wk |
 | `apps/web/src/lib/pir-client.ts` — query build, hint cache, recover, integration with the assistant tool-call runtime in `chat-stream.ts` | 2.0 wk |
 | `crates/said-pir-server` — `Answer` endpoint, hint precompute on write, hint epoch tracking, OHTTP-compatible request shape | 2.0 wk |
-| Hint storage in `thumper-cloud` — blob endpoint, eviction, `vault_id` commitment derivation | 1.0 wk |
+| Hint storage in `ghola-cloud` — blob endpoint, eviction, `vault_id` commitment derivation | 1.0 wk |
 | Hint invalidation hooks on vault add/remove + record-size bucketing | 1.0 wk |
 | End-to-end tests across realistic vault sizes (100, 1 000, 10 000, 100 000 docs), latency telemetry, hint-refresh fault injection | 2.0 wk |
 | Internal threat-model review + external audit (PIR is in scope of the same crypto audit window as Tier 2G) | 1.5 wk |
@@ -477,7 +477,7 @@ Additional effort on top of v1:
 | OnionPIR Rust integration (`spiral-rs` or `onionPIR` port), RLWE parameter selection, WASM tuning for the homomorphic combine step | 3.0 wk |
 | 3-replica corpus sync layer on Tier 2F (piggybacks the existing gossip; non-trivial because corpus updates are larger than DID-set updates) | 2.0 wk |
 | Client-side share splitting, multi-leg OHTTP routing, response combination | 2.0 wk |
-| External-RAG tool-call routing in the MCP layer (`crates/thumper-mcp`) | 1.5 wk |
+| External-RAG tool-call routing in the MCP layer (`crates/ghola-mcp`) | 1.5 wk |
 | **v2 Total (on top of v1, and after Tier 2F)** | **~8–10 engineer-weeks** |
 
 ## 9. References
@@ -494,7 +494,7 @@ Additional effort on top of v1:
 - `apps/web/src/lib/chat-vault.ts` — vault-fetch entry point (today's plaintext path)
 - `apps/web/src/lib/vault-x25519.ts` — at-rest encryption that PIR layers on top of
 - `apps/web/src/lib/sealed-stream.ts` — sealed-inference client (sibling channel)
-- `crates/thumper-relay/src/auth.rs` — where the PIR query endpoint will live alongside `/v1/sealed`
+- `crates/ghola-relay/src/auth.rs` — where the PIR query endpoint will live alongside `/v1/sealed`
 - `docs/security/cryptographic-primitives.md` — sibling deep doc
 - `docs/security/tier-2g-anonymous-credentials.md` — request-identifier companion
 - `docs/security/tier-2k-shielded-payments.md` — payment-side companion

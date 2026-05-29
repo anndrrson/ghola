@@ -52,9 +52,27 @@
 //! [32 .. 44)   nonce         — 12-byte ChaCha20-Poly1305 nonce (from HKDF)
 //! [44 ..   )   ct || tag     — ChaCha20-Poly1305 output (plaintext + 16B tag)
 //! ```
-//! Minimum length = 32 + 12 + 16 = 60 bytes (empty plaintext + tag).
+//! ## Length-hiding plaintext padding (M1)
 //!
-//! The plaintext is `serde_json(NoteMemo)`.
+//! `serde_json(NoteMemo)` is variable length — chiefly because `amount`
+//! serializes as a variable-width decimal string and `tag` is optional.
+//! ChaCha20-Poly1305 adds no padding, so the on-chain blob length would
+//! otherwise leak the magnitude of the note amount (and the presence of a
+//! tag). To close that side channel, the JSON is wrapped to a CONSTANT
+//! plaintext length before AEAD:
+//!
+//! ```text
+//! padded = u32_le(json.len()) || json || zero_pad   // exactly MEMO_PLAINTEXT_LEN bytes
+//! ```
+//!
+//! Decryption reads the `u32` length prefix and slices the JSON back out.
+//! Because every memo is padded to the same `MEMO_PLAINTEXT_LEN`, every
+//! ciphertext (and thus every on-chain blob) is the same length regardless
+//! of amount or tag presence.
+//!
+//! Minimum length = 32 + 12 + 16 = 60 bytes (empty plaintext + tag); with
+//! padding the ciphertext is always `MEMO_PLAINTEXT_LEN + TAG_LEN` bytes, so
+//! the blob is always `EPH_PK_LEN + NONCE_LEN + MEMO_PLAINTEXT_LEN + TAG_LEN`.
 
 use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce};
 use common_secrets::Zeroizing;
@@ -82,13 +100,57 @@ const TAG_LEN: usize = 16;
 /// Smallest valid blob: eph_pk + nonce + (empty ciphertext + tag).
 const MIN_BLOB_LEN: usize = EPH_PK_LEN + NONCE_LEN + TAG_LEN;
 
+/// Number of leading bytes encoding the actual JSON length (u32 little-endian).
+const LEN_PREFIX: usize = 4;
+
+/// Fixed plaintext length fed to the AEAD, regardless of memo contents
+/// (M1 length-hiding). Layout: `u32_le(json_len) || json || zero_pad`.
+///
+/// Sizing: the largest `serde_json(NoteMemo)` is a worst-case
+/// `amount = u64::MAX` (20 decimal digits) plus three 32-byte fields and an
+/// optional 32-byte `tag`, each serialized as a JSON array of up-to-3-digit
+/// numbers, plus structural punctuation — measured at ~603 bytes. We round
+/// up to 768 (the next power-of-two-ish boundary) to leave ample headroom
+/// for the 4-byte length prefix and any future memo field. Encryption fails
+/// closed ([`Error::Encryption`]) if a serialized memo ever exceeds the
+/// budget rather than silently leaking length.
+const MEMO_PLAINTEXT_LEN: usize = 768;
+
 /// Plaintext that gets sealed inside the memo blob.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Debug` is hand-written to redact the contents (mirrors `Note`'s
+/// `Debug` in `said-shielded-pool-types`) and the memo zeroizes on drop so
+/// the decrypted note does not linger in freed memory.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NoteMemo {
     /// The recipient's note in cleartext (amount, asset, owner, blinding).
     pub note: Note,
     /// Optional 32-byte free-form tag (e.g. invoice ID).
     pub tag: Option<[u8; 32]>,
+}
+
+// Secret-bearing: never print the note (amount/owner/blinding) or tag.
+impl std::fmt::Debug for NoteMemo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NoteMemo(<redacted>)")
+    }
+}
+
+impl Zeroize for NoteMemo {
+    fn zeroize(&mut self) {
+        // `Note::zeroize` scrubs amount/asset/owner/blinding.
+        self.note.zeroize();
+        if let Some(tag) = self.tag.as_mut() {
+            tag.zeroize();
+        }
+        self.tag = None;
+    }
+}
+
+impl Drop for NoteMemo {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
 }
 
 /// Encrypt a note memo for a recipient identified by their IVK.
@@ -115,14 +177,18 @@ pub fn encrypt_note_for(ivk: &IncomingViewingKey, memo: &NoteMemo) -> Result<Vec
     // 5. HKDF → (key, nonce), salted with the transcript (eph_pk||recipient_pk).
     let (key, nonce) = derive_key_nonce(&shared, &eph_pk, &recipient_pk);
 
-    // 6. AEAD encrypt.
+    // 6. Serialize + pad to a FIXED length so the ciphertext (and thus the
+    //    on-chain blob) does not leak the amount magnitude or tag presence
+    //    (M1). Layout: u32_le(json_len) || json || zero pad → MEMO_PLAINTEXT_LEN.
+    let plaintext = pad_memo_plaintext(memo)?;
+
+    // 7. AEAD encrypt.
     let cipher = ChaCha20Poly1305::new((key.as_slice()).into());
-    let plaintext = serde_json::to_vec(memo).map_err(Error::Json)?;
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(nonce.as_slice()), plaintext.as_ref())
         .map_err(|_| Error::Encryption("aead encrypt failed"))?;
 
-    // 7. Wire: eph_pk(32) || nonce(12) || ct||tag.
+    // 8. Wire: eph_pk(32) || nonce(12) || ct||tag.
     let mut out = Vec::with_capacity(EPH_PK_LEN + NONCE_LEN + ciphertext.len());
     out.extend_from_slice(&eph_pk);
     out.extend_from_slice(nonce.as_slice());
@@ -166,11 +232,60 @@ pub fn try_decrypt_note(ivk: &IncomingViewingKey, blob: &[u8]) -> Result<Option<
     let cipher = ChaCha20Poly1305::new((key.as_slice()).into());
     match cipher.decrypt(Nonce::from_slice(&nonce_bytes), ciphertext) {
         Ok(plaintext) => {
-            let memo: NoteMemo = serde_json::from_slice(&plaintext).map_err(Error::Json)?;
+            // The AEAD hands back the note's JSON in clear. Hold it in
+            // `Zeroizing` so it is scrubbed on every exit path (the
+            // `from_slice` parse, the `?` error, and normal return) rather
+            // than leaking the cleartext note into a freed `Vec`.
+            let plaintext = Zeroizing::new(plaintext);
+            // Strip the fixed-length padding (M1): u32_le len prefix tells us
+            // how many JSON bytes follow; the rest is zero pad. `json`
+            // borrows `plaintext`, so it stays alive until after the parse.
+            let json = unpad_memo_plaintext(&plaintext)?;
+            let memo: NoteMemo = serde_json::from_slice(json).map_err(Error::Json)?;
+            // `plaintext` (and its borrowed `json`) drops + scrubs here.
             Ok(Some(memo))
         }
         Err(_) => Ok(None),
     }
+}
+
+/// Serialize a [`NoteMemo`] to JSON and pad it to exactly
+/// [`MEMO_PLAINTEXT_LEN`] bytes: `u32_le(json_len) || json || zero pad`.
+///
+/// Fails closed if the serialized memo (plus the length prefix) would not
+/// fit — never silently truncates or leaks length.
+fn pad_memo_plaintext(memo: &NoteMemo) -> Result<Zeroizing<Vec<u8>>> {
+    // `json` holds the secret note in clear — scrub it on drop.
+    let json = Zeroizing::new(serde_json::to_vec(memo).map_err(Error::Json)?);
+    if LEN_PREFIX + json.len() > MEMO_PLAINTEXT_LEN {
+        return Err(Error::Encryption(
+            "memo too large for fixed plaintext budget",
+        ));
+    }
+    // The padded plaintext also carries the cleartext note; return it in
+    // `Zeroizing` so the caller's copy (fed to the AEAD) scrubs too.
+    let mut buf = Zeroizing::new(vec![0u8; MEMO_PLAINTEXT_LEN]);
+    buf[..LEN_PREFIX].copy_from_slice(&(json.len() as u32).to_le_bytes());
+    buf[LEN_PREFIX..LEN_PREFIX + json.len()].copy_from_slice(&json);
+    Ok(buf)
+}
+
+/// Reverse [`pad_memo_plaintext`]: read the `u32_le` length prefix and return
+/// the JSON slice. Rejects a plaintext that isn't the fixed length or whose
+/// declared length runs past the buffer.
+fn unpad_memo_plaintext(plaintext: &[u8]) -> Result<&[u8]> {
+    if plaintext.len() != MEMO_PLAINTEXT_LEN {
+        return Err(Error::Encryption("memo plaintext not fixed length"));
+    }
+    let json_len = u32::from_le_bytes(
+        plaintext[..LEN_PREFIX]
+            .try_into()
+            .map_err(|_| Error::Encryption("memo length prefix"))?,
+    ) as usize;
+    if LEN_PREFIX + json_len > MEMO_PLAINTEXT_LEN {
+        return Err(Error::Encryption("memo length prefix out of range"));
+    }
+    Ok(&plaintext[LEN_PREFIX..LEN_PREFIX + json_len])
 }
 
 /// Derive the recipient's static X25519 SECRET key from their IVK.
@@ -346,10 +461,122 @@ mod tests {
     }
 
     #[test]
+    fn ciphertext_length_independent_of_amount_and_tag() {
+        // M1: blobs for wildly different amounts (and tag present vs absent)
+        // must have EQUAL length so on-chain blob length leaks nothing.
+        let ivk = IncomingViewingKey([5u8; 32]);
+
+        let small = NoteMemo {
+            note: Note {
+                amount: 1,
+                asset_id: AssetId([1u8; 32]),
+                owner_pubkey: [2u8; 32],
+                blinding: [3u8; 32],
+            },
+            tag: None,
+        };
+        let large = NoteMemo {
+            note: Note {
+                amount: u64::MAX,
+                asset_id: AssetId([0xFF; 32]),
+                owner_pubkey: [0xFF; 32],
+                blinding: [0xFF; 32],
+            },
+            tag: Some([0xFF; 32]),
+        };
+
+        let blob_small = encrypt_note_for(&ivk, &small).unwrap();
+        let blob_large = encrypt_note_for(&ivk, &large).unwrap();
+        assert_eq!(
+            blob_small.len(),
+            blob_large.len(),
+            "memo blob length must not depend on amount/tag"
+        );
+        // And the length is the constant we expect.
+        let expected = EPH_PK_LEN + NONCE_LEN + MEMO_PLAINTEXT_LEN + TAG_LEN;
+        assert_eq!(blob_small.len(), expected);
+
+        // Both still round-trip correctly through the padding.
+        let got_small = try_decrypt_note(&ivk, &blob_small).unwrap().unwrap();
+        assert_eq!(got_small.note.amount, 1);
+        assert_eq!(got_small.tag, None);
+        let got_large = try_decrypt_note(&ivk, &blob_large).unwrap().unwrap();
+        assert_eq!(got_large.note.amount, u64::MAX);
+        assert_eq!(got_large.tag, Some([0xFF; 32]));
+    }
+
+    #[test]
+    fn pad_unpad_roundtrips() {
+        let memo = sample_memo();
+        let padded = pad_memo_plaintext(&memo).unwrap();
+        assert_eq!(padded.len(), MEMO_PLAINTEXT_LEN, "fixed plaintext length");
+        let json = unpad_memo_plaintext(&padded).unwrap();
+        let back: NoteMemo = serde_json::from_slice(json).unwrap();
+        assert_eq!(back.note.amount, memo.note.amount);
+        assert_eq!(back.tag, memo.tag);
+    }
+
+    #[test]
     fn derive_key_nonce_returns_zeroizing() {
         let shared = [0xABu8; 32];
         let (k, n) = derive_key_nonce(&shared, &[1u8; 32], &[2u8; 32]);
         assert_eq!(k.len(), 32);
         assert_eq!(n.len(), 12);
+    }
+
+    #[test]
+    fn note_memo_debug_is_redacted() {
+        // Use distinctive secret bytes so we can prove none leak into Debug.
+        let memo = NoteMemo {
+            note: Note {
+                amount: 0xDEAD_BEEF,
+                asset_id: AssetId([0xAA; 32]),
+                owner_pubkey: [0xBB; 32],
+                blinding: [0xCC; 32],
+            },
+            tag: Some([0xDD; 32]),
+        };
+        let dbg = format!("{:?}", memo);
+        assert_eq!(dbg, "NoteMemo(<redacted>)");
+        // None of the secret material may appear in the rendered Debug.
+        assert!(!dbg.contains("3735928559"), "amount must not leak"); // 0xDEADBEEF
+        assert!(!dbg.contains("deadbeef"));
+        assert!(!dbg.contains("187"), "owner byte (0xBB) must not leak");
+        assert!(!dbg.contains("204"), "blinding byte (0xCC) must not leak");
+        assert!(!dbg.contains("170"), "asset byte (0xAA) must not leak");
+    }
+
+    #[test]
+    fn note_memo_zeroizes() {
+        let mut memo = NoteMemo {
+            note: Note {
+                amount: 0xDEAD_BEEF,
+                asset_id: AssetId([0xAA; 32]),
+                owner_pubkey: [0xBB; 32],
+                blinding: [0xCC; 32],
+            },
+            tag: Some([0xDD; 32]),
+        };
+        memo.zeroize();
+        assert_eq!(memo.note.amount, 0, "amount scrubbed");
+        assert_eq!(memo.note.owner_pubkey, [0u8; 32], "owner scrubbed");
+        assert_eq!(memo.note.blinding, [0u8; 32], "blinding scrubbed");
+        assert_eq!(memo.note.asset_id.0, [0u8; 32], "asset scrubbed");
+        assert_eq!(memo.tag, None, "tag cleared");
+    }
+
+    #[test]
+    fn roundtrip_still_works_after_zeroizing_hardening() {
+        // Regression: wrapping plaintext/pad buffers in `Zeroizing` must not
+        // change the encrypt -> decrypt result.
+        let ivk = IncomingViewingKey([5u8; 32]);
+        let memo = sample_memo();
+        let blob = encrypt_note_for(&ivk, &memo).unwrap();
+        let got = try_decrypt_note(&ivk, &blob).unwrap().unwrap();
+        assert_eq!(got.note.amount, memo.note.amount);
+        assert_eq!(got.note.asset_id, memo.note.asset_id);
+        assert_eq!(got.note.owner_pubkey, memo.note.owner_pubkey);
+        assert_eq!(got.note.blinding, memo.note.blinding);
+        assert_eq!(got.tag, memo.tag);
     }
 }

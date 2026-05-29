@@ -423,6 +423,9 @@ function safeSolanaPerpsError(error) {
   if (/401|403|auth|access|invite|permission|unauthorized/i.test(message)) {
     return new SolanaPerpsExecutionError("solana perps venue access was rejected", 400, "venue_access_required");
   }
+  if (/insufficient|not enough|funds|lamports|balance/i.test(message)) {
+    return new SolanaPerpsExecutionError("solana perps account needs funds", 402, "needs_funds");
+  }
   if (/insufficient|simulation|blockhash|rejected|failed/i.test(message)) {
     return new SolanaPerpsExecutionError("solana perps venue rejected the transaction", 422, "venue_rejected");
   }

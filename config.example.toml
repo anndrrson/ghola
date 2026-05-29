@@ -14,7 +14,7 @@ device_pubkey = "device_pubkey_placeholder"
 timeout_secs = 10
 
 # --- Relay server env vars ---
-# THUMPER_RELAY_BIND=0.0.0.0:8080    # Bind address
-# THUMPER_DEV_MODE=true               # Skip Ed25519 signature verification
-# THUMPER_RATE_LIMIT=30               # Max messages per second per connection
-# THUMPER_MAX_MSG_SIZE=131072         # Max WebSocket message size (128 KiB)
+# GHOLA_RELAY_BIND=0.0.0.0:8080    # Bind address
+# GHOLA_DEV_MODE=true               # Skip Ed25519 signature verification
+# GHOLA_RATE_LIMIT=30               # Max messages per second per connection
+# GHOLA_MAX_MSG_SIZE=131072         # Max WebSocket message size (128 KiB)

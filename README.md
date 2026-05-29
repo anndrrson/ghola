@@ -14,7 +14,7 @@ Today's AI lives in walled gardens. Your context is trapped in one provider, you
 |---|---|---|
 | **Identity (SAID)** | `crates/said-*`, `programs/said-registry` | Self-custodied AI data wallet + on-chain Solana identity registry. One seed phrase, portable across every provider. UCAN-scoped capabilities. |
 | **Assistant** | `crates/thumper-*`, `android/`, `ios/` | Turnkey AI personal assistant — voice calls (Bland AI), email (Gmail), calendar, device control. Primary target: Solana Seeker. |
-| **Marketplace** | `crates/orni-models-*`, `apps/orni-models-web` | Creator-friendly AI model marketplace. Creators fine-tune + monetize; users browse + chat. USDC payments with 85/15 creator split. |
+| **Marketplace** | `crates/ghola-models-*`, `apps/orni-models-web` | Creator-friendly AI model marketplace. Creators fine-tune + monetize; users browse + chat. USDC payments with 85/15 creator split. |
 | **Gateway** | `crates/ghola-gateway`, `crates/said-x402` | x402 payment-required HTTP, billing-as-a-service, and the on-ramps that let agents transact across the other three pillars. |
 
 They share one wallet, one auth model (Sign In With Solana), one billing surface.
@@ -99,13 +99,13 @@ ghola/
 │   ├── said-wasm/              # Browser wallet (WASM)
 │   ├── said-x402/              # x402 payment-required HTTP
 │   ├── said-turnkey/           # Turnkey wallet integration
-│   ├── thumper-types/          # Assistant shared types
-│   ├── thumper-cloud/          # Assistant server (calls, email, tasks)
-│   ├── thumper-relay/          # Device <-> cloud relay (axum + WS)
-│   ├── thumper-mcp/            # MCP tools (23 tools, 8 YAML flows)
-│   ├── thumper-cli/            # CLI binary
-│   ├── orni-models-api/        # Marketplace backend (chat, payments, creators)
-│   ├── orni-models-types/      # Marketplace shared types
+│   ├── ghola-assistant-types/          # Assistant shared types
+│   ├── ghola-cloud/          # Assistant server (calls, email, tasks)
+│   ├── ghola-relay/          # Device <-> cloud relay (axum + WS)
+│   ├── ghola-mcp/            # MCP tools (23 tools, 8 YAML flows)
+│   ├── ghola-cli/            # CLI binary
+│   ├── ghola-models-api/        # Marketplace backend (chat, payments, creators)
+│   ├── ghola-models-types/      # Marketplace shared types
 │   ├── ghola-gateway/          # x402 + USDC billing + agent registry
 │   └── ghola-home/             # Unified web BFF
 ├── programs/
@@ -149,7 +149,7 @@ EXPO_PUBLIC_BUILD_TYPE=mwa npx eas build -p android --profile dapp-store --local
 # Run the cloud locally (assistant)
 DATABASE_URL=postgres://... \
 JWT_SECRET=... \
-cargo run -p thumper-cloud
+cargo run -p ghola-cloud
 ```
 
 Detailed environment variables, deployment notes, and per-pillar guides live in each crate's README.

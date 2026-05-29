@@ -186,6 +186,12 @@ fn startup_issues(
     if config.accepted_mints.is_empty() {
         issues.push("ACCEPTED_STABLECOINS produced zero accepted mints".to_string());
     }
+    // SOLANA_RPC_URL defaults to devnet when unset (see config.rs). In
+    // production that silently verifies x402 payments against the wrong
+    // network; refuse to boot. Same heuristic as load_accepted_mints.
+    if config.solana_rpc_url.contains("devnet") || config.solana_rpc_url.contains("localhost") {
+        issues.push("SOLANA_RPC_URL points at devnet/localhost in production".to_string());
+    }
     issues
 }
 
@@ -278,6 +284,25 @@ mod tests {
         cfg.allow_unverified_xpayment = true;
         cfg.escrow_wallet_address = None;
         let issues = startup_issues(&cfg, 0, true, true);
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn production_flags_devnet_rpc_url() {
+        let mut cfg = base_config();
+        cfg.solana_rpc_url = "https://api.devnet.solana.com".into();
+        let issues = startup_issues(&cfg, 1, true, false);
+        assert_eq!(
+            issues,
+            vec!["SOLANA_RPC_URL points at devnet/localhost in production".to_string()]
+        );
+    }
+
+    #[test]
+    fn devnet_rpc_url_allowed_outside_production() {
+        let mut cfg = base_config();
+        cfg.solana_rpc_url = "https://api.devnet.solana.com".into();
+        let issues = startup_issues(&cfg, 1, false, false);
         assert!(issues.is_empty());
     }
 

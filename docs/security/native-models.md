@@ -302,7 +302,7 @@ What we are **not** defending against, in the same spirit as the
   variant at
   [`src/debug/res/xml/network_security_config.xml`](../../android/app/src/debug/res/xml/network_security_config.xml)
   permits localhost cleartext + user-installed CAs so Charles Proxy
-  and LAN-hosted thumper-cloud still work in development. **Residual
+  and LAN-hosted ghola-cloud still work in development. **Residual
   gap:** this is a *static* allowlist audit; we have not yet captured
   packet traces from each runtime library in isolation to confirm
   zero outbound attempts at the syscall level. A runtime library

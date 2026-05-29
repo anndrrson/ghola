@@ -10,7 +10,7 @@ Owner placeholders should be replaced with real GitHub handles.
 | ID | Priority | Status | Owner | Due | Task | Acceptance Criteria | Evidence |
 |---|---|---|---|---|---|---|---|
 | SEC-001 | P0 | done | `@security-owner` | 2026-05-16 | Enforce deploy gate: CI + canary + `private_ready=true` + zero High/Critical | Merge to `main` blocked when any condition fails | [`.github/workflows/ci.yml`](/Users/andersonobrien/Downloads/ghola/.github/workflows/ci.yml) |
-| SEC-002 | P0 | done | `@relay-owner` | 2026-05-16 | Keep `/ready/private` as deploy/runtime SLO signal | Endpoint returns 200 only when private stack ready | [`crates/thumper-relay/src/handlers.rs`](/Users/andersonobrien/Downloads/ghola/crates/thumper-relay/src/handlers.rs) |
+| SEC-002 | P0 | done | `@relay-owner` | 2026-05-16 | Keep `/ready/private` as deploy/runtime SLO signal | Endpoint returns 200 only when private stack ready | [`crates/ghola-relay/src/handlers.rs`](/Users/andersonobrien/Downloads/ghola/crates/ghola-relay/src/handlers.rs) |
 | SEC-003 | P0 | todo | `@secops-owner` | 2026-05-16 | Define formal severity and SLA policy | Critical=24h, High=72h documented and acknowledged | Policy doc link + approval comment |
 | SEC-004 | P0 | todo | `@secops-owner` | 2026-05-16 | Establish findings tracker lifecycle | Findings file update process documented | Process doc + sample update PR |
 
@@ -45,7 +45,7 @@ Owner placeholders should be replaced with real GitHub handles.
 
 | ID | Priority | Status | Owner | Due | Task | Acceptance Criteria | Evidence |
 |---|---|---|---|---|---|---|---|
-| SEC-040 | P0 | in_progress | `@secops-owner` | 2026-06-27 | Alert on private-path degradation events | Alerts fire for readiness fail, forced-open-switch, proof verification fail | Frontend/relay structured events in [`apps/web/src/app/chat/page.tsx`](/Users/andersonobrien/Downloads/ghola/apps/web/src/app/chat/page.tsx), [`apps/web/src/lib/sealed-stream.ts`](/Users/andersonobrien/Downloads/ghola/apps/web/src/lib/sealed-stream.ts), [`crates/thumper-relay/src/handlers.rs`](/Users/andersonobrien/Downloads/ghola/crates/thumper-relay/src/handlers.rs) |
+| SEC-040 | P0 | in_progress | `@secops-owner` | 2026-06-27 | Alert on private-path degradation events | Alerts fire for readiness fail, forced-open-switch, proof verification fail | Frontend/relay structured events in [`apps/web/src/app/chat/page.tsx`](/Users/andersonobrien/Downloads/ghola/apps/web/src/app/chat/page.tsx), [`apps/web/src/lib/sealed-stream.ts`](/Users/andersonobrien/Downloads/ghola/apps/web/src/lib/sealed-stream.ts), [`crates/ghola-relay/src/handlers.rs`](/Users/andersonobrien/Downloads/ghola/crates/ghola-relay/src/handlers.rs) |
 | SEC-041 | P1 | todo | `@infra-owner` | 2026-06-27 | DB exfiltration and credential abuse detection | Detection rules cover suspicious access and privilege spikes | Rule config + test events |
 | SEC-042 | P0 | todo | `@incident-owner` | 2026-06-27 | Incident runbooks for privacy downgrade, key compromise, DB compromise | Runbooks complete and linked in on-call handbook | Runbook links |
 | SEC-043 | P0 | todo | `@incident-owner` | 2026-06-27 | Run tabletop + restore drill | Drill completed with action items tracked | Postmortem + action tracker |

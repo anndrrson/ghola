@@ -5,7 +5,10 @@
   "description": "Circom 2 circuits for the Ghola SAID Solana-native zk-shielded pool (anonymous-agents track, Phase 37).",
   "license": "Apache-2.0",
   "scripts": {
-    "compile": "circom transaction.circom --r1cs --wasm --sym -o ../artifacts/",
+    "compile": "npm run compile:transaction && npm run compile:forester && npm run compile:auction",
+    "compile:transaction": "circom transaction.circom --r1cs --wasm --sym -o ../artifacts/",
+    "compile:forester": "circom batchedUpdate.circom --r1cs --wasm --sym -o ../artifacts/",
+    "compile:auction": "circom auctionClearing.circom --r1cs --wasm --sym -o ../artifacts/",
     "setup": "snarkjs groth16 setup ../artifacts/transaction.r1cs ../artifacts/pot16_final.ptau ../artifacts/circuit_0000.zkey",
     "contribute": "snarkjs zkey contribute ../artifacts/circuit_0000.zkey ../artifacts/circuit_0001.zkey --name=\"contributor-1\" -v",
     "export-vkey": "snarkjs zkey export verificationkey ../artifacts/circuit_0001.zkey ../artifacts/verification_key.json"

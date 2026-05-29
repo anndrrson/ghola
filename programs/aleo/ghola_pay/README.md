@@ -45,12 +45,12 @@ Per Tier 2K §2.2 step 3, the client:
    }
    ```
 
-5. The merchant/provider's `thumper-cloud` instance hands the payload
+5. The merchant/provider's `ghola-cloud` instance hands the payload
    to the shielded adapter (`SHIELDED_STABLECOIN_ADAPTER_URL`). The
    adapter fetches the transition from an Aleo node, decrypts the
    recipient record with the provider's view key, and confirms
    `amount >= max_amount_required`. The adapter returns a signed
-   receipt that `thumper-cloud` records as the canonical
+   receipt that `ghola-cloud` records as the canonical
    shielded settlement.
 
 The program is the **on-chain** half of that flow. The adapter is the
@@ -176,7 +176,7 @@ exists. Treasury action item tracked separately.
   for v1) or a different settlement cadence than per-call x402.
 - **Refund flow.** If the provider fails to render the inference, the
   refund path lives in the Ghola receipts service (call credit is
-  refunded off-chain via `thumper-cloud`). No on-chain refund
+  refunded off-chain via `ghola-cloud`). No on-chain refund
   transition exists; reversing a shielded payment would require a
   separate transition consuming the recipient's record, which only
   the recipient can sign.

@@ -297,7 +297,7 @@ export async function deleteNode(id: string) {
 const ORNI_API_BASE =
   process.env.NEXT_PUBLIC_ORNI_API_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
-  "http://localhost:8081/api";
+  "https://orni-models-api.onrender.com/api";
 
 function getOrniToken(): string | null {
   if (typeof window === "undefined") return null;

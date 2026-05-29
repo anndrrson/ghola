@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use said_attest::{
     measurement_digest, pack_user_data, verify_attestation_with_root, AttestationError,
 };
-use thumper_types::TeeKind;
+use ghola_assistant_types::TeeKind;
 
 struct Chain {
     root_der: Vec<u8>,

@@ -31,8 +31,8 @@ use crate::state::AppState;
 /// `prev_hash` is the hash of the most recent event for the same tenant (NULL
 /// tenant events share a global chain).
 ///
-/// This function is fire-and-forget; errors are logged but not propagated so
-/// that business logic is never blocked by audit failures.
+/// This compatibility helper logs failures. Callers that need fail-closed
+/// audit durability should call `emit_required` and propagate the error.
 pub async fn emit(
     db: &PgPool,
     tenant_id: Option<Uuid>,
@@ -59,6 +59,31 @@ pub async fn emit(
     }
 }
 
+/// Append an audit event and propagate any failure to the caller.
+pub async fn emit_required(
+    db: &PgPool,
+    tenant_id: Option<Uuid>,
+    actor_did: &str,
+    actor_user_id: Option<Uuid>,
+    event_type: &str,
+    resource_type: Option<&str>,
+    resource_id: Option<&str>,
+    details: serde_json::Value,
+) -> AppResult<()> {
+    emit_inner(
+        db,
+        tenant_id,
+        actor_did,
+        actor_user_id,
+        event_type,
+        resource_type,
+        resource_id,
+        details,
+    )
+    .await?;
+    Ok(())
+}
+
 async fn emit_inner(
     db: &PgPool,
     tenant_id: Option<Uuid>,
@@ -69,6 +94,16 @@ async fn emit_inner(
     resource_id: Option<&str>,
     details: serde_json::Value,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = db.begin().await?;
+    let lock_scope = tenant_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "__global__".to_string());
+
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(&lock_scope)
+        .execute(&mut *tx)
+        .await?;
+
     // Fetch the hash of the previous event for this tenant (or global).
     let prev_hash: Option<String> = sqlx::query_scalar(
         r#"SELECT event_hash FROM audit_events
@@ -78,7 +113,7 @@ async fn emit_inner(
            LIMIT 1"#,
     )
     .bind(tenant_id)
-    .fetch_optional(db)
+    .fetch_optional(&mut *tx)
     .await?;
 
     // Assign a new UUID now so it can be part of the hash.
@@ -113,9 +148,10 @@ async fn emit_inner(
     .bind(&prev_hash)
     .bind(&event_hash)
     .bind(now)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
 
+    tx.commit().await?;
     Ok(())
 }
 
@@ -165,6 +201,29 @@ pub struct VerifyChainRequest {
     pub limit: Option<i64>,
 }
 
+async fn require_tenant_membership(
+    db: &PgPool,
+    tenant_id: Option<Uuid>,
+    user_id: Uuid,
+) -> AppResult<Uuid> {
+    let tid = tenant_id.ok_or_else(|| {
+        AppError::BadRequest("tenant_id is required for tenant audit access".into())
+    })?;
+
+    let member: Option<(String,)> =
+        sqlx::query_as("SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2")
+            .bind(tid)
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?;
+
+    if member.is_none() {
+        return Err(AppError::Unauthorized("Not a member of this tenant".into()));
+    }
+
+    Ok(tid)
+}
+
 // ── Handlers ───────────────────────────────────────────────────────────────────
 
 /// GET /v1/audit — paginated event query (JWT protected)
@@ -178,19 +237,7 @@ pub async fn list_events(
         .parse()
         .map_err(|_| AppError::Unauthorized("Invalid token".into()))?;
 
-    // If a tenant_id is specified, verify the caller is a member.
-    if let Some(tid) = params.tenant_id {
-        let member: Option<(String,)> =
-            sqlx::query_as("SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2")
-                .bind(tid)
-                .bind(user_id)
-                .fetch_optional(&state.db)
-                .await?;
-
-        if member.is_none() {
-            return Err(AppError::Unauthorized("Not a member of this tenant".into()));
-        }
-    }
+    let tid = require_tenant_membership(&state.db, params.tenant_id, user_id).await?;
 
     let page = params.page.unwrap_or(1).max(1);
     let limit = params.limit.unwrap_or(50).clamp(1, 500);
@@ -208,7 +255,7 @@ pub async fn list_events(
            ORDER BY created_at DESC
            LIMIT $8 OFFSET $9"#,
     )
-    .bind(params.tenant_id)
+    .bind(tid)
     .bind(&params.event_type)
     .bind(&params.actor_did)
     .bind(&params.resource_type)
@@ -230,7 +277,7 @@ pub async fn list_events(
              AND ($6::timestamptz IS NULL OR created_at >= $6)
              AND ($7::timestamptz IS NULL OR created_at <= $7)"#,
     )
-    .bind(params.tenant_id)
+    .bind(tid)
     .bind(&params.event_type)
     .bind(&params.actor_did)
     .bind(&params.resource_type)
@@ -261,18 +308,7 @@ pub async fn export_events(
         .parse()
         .map_err(|_| AppError::Unauthorized("Invalid token".into()))?;
 
-    if let Some(tid) = params.tenant_id {
-        let member: Option<(String,)> =
-            sqlx::query_as("SELECT role FROM tenant_members WHERE tenant_id = $1 AND user_id = $2")
-                .bind(tid)
-                .bind(user_id)
-                .fetch_optional(&state.db)
-                .await?;
-
-        if member.is_none() {
-            return Err(AppError::Unauthorized("Not a member of this tenant".into()));
-        }
-    }
+    let tid = require_tenant_membership(&state.db, params.tenant_id, user_id).await?;
 
     let limit = params.limit.unwrap_or(10_000).clamp(1, 100_000);
 
@@ -286,7 +322,7 @@ pub async fn export_events(
            ORDER BY created_at ASC
            LIMIT $6"#,
     )
-    .bind(params.tenant_id)
+    .bind(tid)
     .bind(&params.event_type)
     .bind(&params.actor_did)
     .bind(params.since)

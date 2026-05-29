@@ -23,6 +23,7 @@ export interface ConfidentialComputeProviderStatus {
   supports_background_agents: boolean;
   supports_trading_execution: boolean;
   reason: string | null;
+  execution_url?: string | null;
   sealed_recipient?: {
     recipient_id: string;
     x25519_pub_hex: string;

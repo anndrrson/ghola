@@ -31,9 +31,19 @@ use crate::error::{Error, Result};
 /// The blob is captured as a `serde_json::Value` so we still validate it
 /// is well-formed JSON (rejecting trivial garbage early) without
 /// interpreting the contents.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ProofBlob(pub serde_json::Value);
+
+// Redacting `Debug`: the proof blob carries field elements (nullifiers,
+// commitments) that must NEVER reach a log line, a panic payload, or an
+// enclosing `#[derive(Debug)]`. Mirror the redacting pattern in
+// `said-shielded-pool-types` — print only a type tag, never contents.
+impl std::fmt::Debug for ProofBlob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProofBlob(<redacted>)")
+    }
+}
 
 /// Coarse status visible to the client via `/status/:id`.
 ///
@@ -75,7 +85,7 @@ pub struct QueuedAccountMeta {
 /// A single queued withdrawal. The on-chain signature is intentionally
 /// NOT stored; only the abstract status, so even a compromised DB cannot
 /// produce a request->tx link table.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct QueuedWithdrawal {
     pub id: Uuid,
     pub proof_bundle: ProofBlob,
@@ -105,6 +115,29 @@ pub struct QueuedWithdrawal {
     pub status: WithdrawalStatus,
     /// How many submit attempts have happened. Reset to 0 on accept.
     pub attempts: u32,
+}
+
+// Redacting `Debug`: a stray `{:?}` (log line, `.expect(...)`, panic during
+// unwinding, or an enclosing `#[derive(Debug)]`) must NEVER print the
+// recipient, fees, proof bundle, or instruction data — those are the
+// secret/linkable fields. We print ONLY the ops-useful non-sensitive ones
+// (id, status, attempts, accepted_at) and mark the rest `<redacted>`,
+// mirroring the redacting pattern in `said-shielded-pool-types`.
+impl std::fmt::Debug for QueuedWithdrawal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueuedWithdrawal")
+            .field("id", &self.id)
+            .field("status", &self.status)
+            .field("attempts", &self.attempts)
+            .field("accepted_at", &self.accepted_at)
+            .field("proof_bundle", &"<redacted>")
+            .field("recipient", &"<redacted>")
+            .field("fee", &"<redacted>")
+            .field("relayer_fee", &"<redacted>")
+            .field("instruction_data", &"<redacted>")
+            .field("accounts", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Persistent, async-friendly queue.
@@ -141,8 +174,7 @@ impl WithdrawalQueue {
         // `serde_json::Value` (relayer treats it as opaque), which bincode
         // can't round-trip through `deserialize_any`. JSON is more
         // verbose but the storage cost is negligible for queue depth.
-        let value = serde_json::to_vec(w)
-            .map_err(|e| Error::Queue(format!("serialize: {e}")))?;
+        let value = serde_json::to_vec(w).map_err(|e| Error::Queue(format!("serialize: {e}")))?;
         self.tree.insert(key, value)?;
         // Flush is async/best-effort; sled's WAL still gives crash-safety.
         Ok(())
@@ -326,4 +358,67 @@ pub fn decide_batch(
     }
 
     BatchDecision::Hold
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Zero-leakage regression: `{:?}` on a `QueuedWithdrawal` must NEVER
+    /// print the recipient bytes, fees, proof bundle, or instruction data,
+    /// while still surfacing the ops-useful id/status.
+    #[test]
+    fn queued_withdrawal_debug_redacts_secrets() {
+        let w = QueuedWithdrawal {
+            id: Uuid::nil(),
+            proof_bundle: ProofBlob(serde_json::json!({
+                "proof": {"a": "0xdeadbeef", "b": "0xfeedface", "c": "0xc0ffee"}
+            })),
+            recipient: [0xAB; 32],
+            fee: 12345,
+            relayer_fee: 678,
+            instruction_data: vec![0xCA, 0xFE, 0xBA, 0xBE],
+            accounts: vec![QueuedAccountMeta {
+                pubkey: "SoMeSecretPubkey".into(),
+                is_signer: true,
+                is_writable: true,
+            }],
+            accepted_at: Utc::now(),
+            status: WithdrawalStatus::Pending,
+            attempts: 2,
+        };
+
+        let dbg = format!("{w:?}");
+
+        // Secret/linkable fields must be absent.
+        assert!(!dbg.contains("ab"), "recipient byte run leaked: {dbg}");
+        assert!(!dbg.contains("12345"), "fee leaked: {dbg}");
+        assert!(!dbg.contains("678"), "relayer_fee leaked: {dbg}");
+        assert!(!dbg.contains("deadbeef"), "proof bytes leaked: {dbg}");
+        assert!(!dbg.contains("feedface"), "proof bytes leaked: {dbg}");
+        assert!(!dbg.contains("c0ffee"), "proof bytes leaked: {dbg}");
+        assert!(!dbg.contains("cafebabe"), "instruction_data leaked: {dbg}");
+        assert!(
+            !dbg.contains("SoMeSecretPubkey"),
+            "account pubkey leaked: {dbg}"
+        );
+
+        // Non-sensitive ops fields must still be present.
+        assert!(dbg.contains("QueuedWithdrawal"), "type tag missing: {dbg}");
+        assert!(
+            dbg.contains("00000000-0000-0000-0000-000000000000"),
+            "id missing: {dbg}"
+        );
+        assert!(dbg.contains("Pending"), "status missing: {dbg}");
+        assert!(dbg.contains("redacted"), "redaction marker missing: {dbg}");
+    }
+
+    /// A standalone `ProofBlob` redacts to a bare type tag.
+    #[test]
+    fn proof_blob_debug_is_opaque() {
+        let pb = ProofBlob(serde_json::json!({"a": "0xdeadbeef"}));
+        let dbg = format!("{pb:?}");
+        assert_eq!(dbg, "ProofBlob(<redacted>)");
+        assert!(!dbg.contains("deadbeef"));
+    }
 }

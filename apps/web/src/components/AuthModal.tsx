@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { thumperSignIn, thumperSignUp } from "@/lib/thumper-api";
@@ -52,9 +52,13 @@ export function AuthModal({
   const [loading, setLoading] = useState(false);
   const [mounted, setMounted] = useState(open);
   const [visible, setVisible] = useState(false);
+  const fieldId = useId();
   const isSignup = mode === "signup";
   const isPrivateChat = reason === "chat-private";
   const strength = passwordStrength(password);
+  const nameId = `${fieldId}-name`;
+  const emailId = `${fieldId}-email`;
+  const passwordId = `${fieldId}-password`;
 
   useEffect(() => {
     if (open) {
@@ -158,17 +162,18 @@ export function AuthModal({
           {isPrivateChat
             ? "Your question is saved and will send after private setup finishes."
             : isSignup
-              ? "Start a private AI session without leaving this page."
-              : "Sign in and continue to your private AI."}
+              ? "Start using Ghola without leaving this page."
+              : "Sign in to continue to Ghola."}
         </p>
 
         <form onSubmit={submit} className="mt-6 space-y-4">
           {isSignup && (
             <div>
-              <label className="mb-1.5 block text-sm text-[#8b95a8]">
+              <label htmlFor={nameId} className="mb-1.5 block text-sm text-[#8b95a8]">
                 Name
               </label>
               <input
+                id={nameId}
                 type="text"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
@@ -180,10 +185,11 @@ export function AuthModal({
           )}
 
           <div>
-            <label className="mb-1.5 block text-sm text-[#8b95a8]">
+            <label htmlFor={emailId} className="mb-1.5 block text-sm text-[#8b95a8]">
               Email
             </label>
             <input
+              id={emailId}
               type="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
@@ -194,10 +200,11 @@ export function AuthModal({
           </div>
 
           <div>
-            <label className="mb-1.5 block text-sm text-[#8b95a8]">
+            <label htmlFor={passwordId} className="mb-1.5 block text-sm text-[#8b95a8]">
               Password
             </label>
             <input
+              id={passwordId}
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
