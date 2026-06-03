@@ -7,9 +7,11 @@ import {
   normalizeInstruction,
 } from "./policy.js";
 import {
+  assertCoinbaseKeyPermissions,
   coinbaseCredentialFromVault,
   loadPartnerCoinbaseCredential,
   submitCoinbaseExecution,
+  verifyCoinbaseNoSubmit,
 } from "../venues/coinbase.js";
 import {
   createHyperliquidAccountStateStream,
@@ -18,13 +20,21 @@ import {
   loadManagedHyperliquidCredential,
   readHyperliquidAccountSnapshot,
   submitHyperliquidExecution,
+  verifyHyperliquidNoSubmit,
 } from "../venues/hyperliquid.js";
 import {
+  loadPooledSolanaPerpsCredential,
   normalizeSolanaPerpsVenueId,
   solanaPerpsCredentialFromVault,
   submitSolanaPerpsExecution,
   verifySolanaPerpsNoSubmit,
 } from "../venues/solana_perps.js";
+import {
+  jupiterCredentialFromVault,
+  loadPooledJupiterCredential,
+  submitJupiterSwapExecution,
+  verifyJupiterSwapNoSubmit as verifyJupiterSwapNoSubmitAdapter,
+} from "../venues/jupiter.js";
 
 export class PrivateExecutionError extends Error {
   constructor(message, status = 400) {
@@ -33,6 +43,8 @@ export class PrivateExecutionError extends Error {
     this.status = status;
   }
 }
+
+const AUTOPILOT_INTERNAL_INSTRUCTION = Symbol("ghola.autopilot.internal_instruction");
 
 export function commitment(prefix, value) {
   return `${prefix}_${sha256Hex(canonicalJson(value)).slice(0, 48)}`;
@@ -59,22 +71,22 @@ export async function storePrivateAgentSession({ body, recipient, state, provide
     strategy_policy: policy,
     created_at: new Date().toISOString(),
   };
-  state.putSession(session);
+  await state.putSession(session);
   return session;
 }
 
 export async function storeHyperliquidSession({ body, recipient, state, provider }) {
-  const executionMode = body.execution_mode === "managed_testnet" ? "managed_testnet" : "byo_api_key";
+  const executionMode = hyperliquidExecutionMode(body);
   if (executionMode === "byo_api_key") {
     await openSealedBundle(body.encrypted_execution_vault, recipient, {
       aadPrefix: "ghola/hyperliquid-execution-vault-v1",
       expectedKind: "ghola_hyperliquid_execution_vault",
     });
   } else if (body.managed_allocation?.credential_ref) {
-    state.putHyperliquidManagedAllocation(body.managed_allocation);
+    await state.putHyperliquidManagedAllocation(body.managed_allocation);
   } else {
     const allocationCommitment = body.managed_allocation_commitment || body.allocation_commitment;
-    if (!state.getHyperliquidManagedAllocation(allocationCommitment)) {
+    if (!await state.getHyperliquidManagedAllocation(allocationCommitment)) {
       throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
     }
   }
@@ -111,36 +123,54 @@ export async function storeHyperliquidSession({ body, recipient, state, provider
     strategy_policy: strategyPolicy,
     created_at: new Date().toISOString(),
   };
-  state.putSession(session);
+  await state.putSession(session);
   return session;
 }
 
-export function createHyperliquidManagedAllocation({ body, state }) {
-  const network = body.network === "testnet" ? "testnet" : "testnet";
-  const refs = hyperliquidManagedAccountRefs();
+export async function createHyperliquidManagedAllocation({ body, state }) {
+  const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "managed_testnet";
+  const network = executionMode === "ghola_pooled" ? "mainnet" : "testnet";
+  const refs = hyperliquidManagedAccountRefs()
+    .filter((ref) => ref.network === network);
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true" && refs.length === 0) {
-    throw new PrivateExecutionError("hyperliquid managed testnet pool is unavailable", 503);
+    throw new PrivateExecutionError(
+      executionMode === "ghola_pooled"
+        ? "hyperliquid pooled mainnet account pool is unavailable"
+        : "hyperliquid managed testnet pool is unavailable",
+      503,
+    );
   }
   const selected = refs.length > 0
     ? refs[managedCredentialIndex(body.account_commitment, refs.length)]
     : {
         credential_ref: commitment("hyperliquid_managed_credential", {
           account_commitment: body.account_commitment,
+          execution_mode: executionMode,
           network,
           dry_run: true,
         }),
         network,
         market_allowlist: [],
       };
-  if (selected.network !== "testnet") {
-    throw new PrivateExecutionError("hyperliquid managed pilot is testnet-only", 400);
+  if (selected.network !== network) {
+    throw new PrivateExecutionError("hyperliquid allocation network is unavailable", 400);
   }
   const policy = publicSessionPolicy(body.session_policy, body.policy_commitment);
+  const poolCommitment = commitment("hyperliquid_managed_pool", {
+    execution_mode: executionMode,
+    network,
+    credential_count: refs.length,
+  });
+  const poolShareCommitment = commitment("hyperliquid_pool_share", {
+    account_commitment: body.account_commitment,
+    pool_commitment: poolCommitment,
+    eligibility_commitment: body.eligibility_commitment || null,
+  });
   const allocation = {
     version: 1,
     venue_id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
-    execution_mode: "managed_testnet",
+    execution_mode: executionMode,
     network,
     status: "allocated",
     account_commitment: body.account_commitment,
@@ -148,17 +178,20 @@ export function createHyperliquidManagedAllocation({ body, state }) {
       account_commitment: body.account_commitment,
       policy_commitment: body.policy_commitment,
       credential_ref: selected.credential_ref,
+      execution_mode: executionMode,
       network,
+      eligibility_commitment: body.eligibility_commitment || null,
     }),
     policy_commitment: body.policy_commitment,
-    pool_commitment: commitment("hyperliquid_managed_pool", {
-      network,
-      credential_count: refs.length,
-    }),
+    pool_commitment: poolCommitment,
+    pool_share_commitment: poolShareCommitment,
     subledger_account_commitment: commitment("hyperliquid_managed_subledger", {
       account_commitment: body.account_commitment,
       network,
+      pool_share_commitment: poolShareCommitment,
     }),
+    eligibility_commitment: body.eligibility_commitment || null,
+    funding_evidence_commitment: body.funding_evidence_commitment || null,
     credential_ref: selected.credential_ref,
     session_policy: policy,
     allowed_operations: ["read", "limit_order", "cancel", "reconcile"],
@@ -167,11 +200,14 @@ export function createHyperliquidManagedAllocation({ body, state }) {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
       hyperliquid_sees: "execution_account_and_order_activity",
-      public_chain_sees: "no_public_wallet_settlement",
+      public_chain_sees: executionMode === "ghola_pooled"
+        ? "private_funding_evidence_required"
+        : "no_public_wallet_settlement",
     },
     created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   };
-  state.putHyperliquidManagedAllocation(allocation);
+  await state.putHyperliquidManagedAllocation(allocation);
   return publicHyperliquidManagedAllocation(allocation);
 }
 
@@ -189,7 +225,7 @@ export async function storeCoinbaseSession({ body, recipient, state, provider })
     });
     strategyPolicy = sanitizeStrategyPolicy(openedStrategy.json.policy);
   }
-  if (body.omnibus_allocation) state.putOmnibusAllocation(body.omnibus_allocation);
+  if (body.omnibus_allocation) await state.putOmnibusAllocation(body.omnibus_allocation);
   const sessionPolicy = publicSessionPolicy(body.session_policy, body.policy_commitment);
   const session = {
     session_commitment: commitment("coinbase_session", {
@@ -210,69 +246,88 @@ export async function storeCoinbaseSession({ body, recipient, state, provider })
     strategy_policy: strategyPolicy,
     created_at: new Date().toISOString(),
   };
-  state.putSession(session);
+  await state.putSession(session);
   return session;
 }
 
 export async function executeHyperliquidOrder({ body, recipient, state }) {
-  const cached = state.getIdempotency(body.work_order_commitment);
+  const cached = await state.getIdempotency(body.work_order_commitment);
   if (cached?.receipt) return cached.receipt;
   const executionMode = hyperliquidExecutionMode(body);
   let credential;
   let allocation = null;
-  if (executionMode === "managed_testnet") {
+  if (isHyperliquidAllocationMode(executionMode)) {
     const allocationCommitment = body.managed_allocation_commitment || body.allocation_commitment;
-    const record = state.getHyperliquidManagedAllocation(allocationCommitment);
+    const record = await state.getHyperliquidManagedAllocation(allocationCommitment);
     if (!record?.allocation || record.allocation.status !== "allocated") {
       throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
     }
     allocation = record.allocation;
     credential = loadManagedHyperliquidCredential(allocation);
   } else {
-    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/hyperliquid-execution-vault-v1",
-      expectedKind: "ghola_hyperliquid_execution_vault",
-    });
-    credential = hyperliquidCredentialFromVault(openedVault.json);
+    if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
+      credential = dryRunHyperliquidCredential();
+    } else {
+      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+        aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+        expectedKind: "ghola_hyperliquid_execution_vault",
+      });
+      credential = hyperliquidCredentialFromVault(openedVault.json);
+    }
   }
-  const session = state.findSession({
+  const session = await state.findSession({
     venue_id: "hyperliquid",
     vault_commitment: executionMode === "byo_api_key" ? body.vault_commitment : undefined,
-    allocation_commitment: executionMode === "managed_testnet"
+    allocation_commitment: isHyperliquidAllocationMode(executionMode)
       ? body.managed_allocation_commitment || body.allocation_commitment
       : undefined,
     policy_commitment: body.policy_commitment,
   });
-  const instruction = resolvePrivateCancelTarget(await instructionForBody({
+  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
     body,
     recipient,
     venue_id: "hyperliquid",
     session,
   }), { state, venue_id: "hyperliquid" });
-  enforceInstructionPolicy({ body, instruction, session, state });
-  const cloid = state.deriveHyperliquidCloid(body.work_order_commitment);
+  await enforceInstructionPolicy({ body, instruction, session, state });
+  const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
   const adapterResult = await submitHyperliquidExecution({
     credential,
     instruction,
     cloid,
   });
+  await state.putExecutionAttempt(body.work_order_commitment, {
+    venue_id: "hyperliquid",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: executionMode,
+    provider_ref_seed: adapterResult.provider_ref_seed,
+    result_seed: adapterResult.result_seed,
+    fills: adapterResult.fills,
+    final_proof: adapterResult.final_proof || null,
+    status: adapterResult.status,
+    created_at: new Date().toISOString(),
+  });
   const receipt = executionReceipt({
     venue_id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
     execution_mode: executionMode,
+    instruction,
     body,
     status: adapterResult.status,
     provider_ref_seed: adapterResult.provider_ref_seed,
     result_seed: adapterResult.result_seed,
     fills: adapterResult.fills,
+    final_proof: adapterResult.final_proof,
     visibility_summary: {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
       hyperliquid_sees: "execution_account_and_order_activity",
-      venue_access_source: executionMode === "byo_api_key" ? "user_provided_credentials" : "ghola_managed_testnet",
+      venue_access_source: hyperliquidVenueAccessSource(executionMode),
       ghola_access_role: "private_execution_router",
       venue_gate: "venue_accepts_or_rejects_credentials",
-      public_chain_sees: allocation
+      public_chain_sees: executionMode === "ghola_pooled"
+        ? "private_funding_evidence_required"
+        : allocation
         ? "no_public_wallet_settlement"
         : instruction.order?.live_order_mode === "tiny_fill"
           ? "no_ghola_public_settlement"
@@ -286,7 +341,9 @@ export async function readHyperliquidSnapshot({ body, recipient, state }) {
   const { executionMode, credential } = await hyperliquidCredentialForBody({ body, recipient, state });
   return readHyperliquidAccountSnapshot({
     credential,
-    accountSource: executionMode === "managed_testnet" ? "ghola_managed" : "sealed_byo",
+    accountSource: executionMode === "ghola_pooled"
+      ? "ghola_pooled"
+      : executionMode === "managed_testnet" ? "ghola_managed" : "sealed_byo",
   });
 }
 
@@ -294,48 +351,118 @@ export async function streamHyperliquidAccountState({ body, recipient, state, on
   const { executionMode, credential } = await hyperliquidCredentialForBody({ body, recipient, state });
   return createHyperliquidAccountStateStream({
     credential,
-    accountSource: executionMode === "managed_testnet" ? "ghola_managed" : "sealed_byo",
+    accountSource: executionMode === "ghola_pooled"
+      ? "ghola_pooled"
+      : executionMode === "managed_testnet" ? "ghola_managed" : "sealed_byo",
     coin: typeof body.coin === "string" ? body.coin.toUpperCase() : "BTC",
     onEvent,
   });
 }
 
+export async function verifyVenueCredential({ body, recipient }) {
+  const venueId = body.venue_id;
+  if (venueId === "coinbase_advanced") {
+    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+      aadPrefix: "ghola/coinbase-advanced-execution-vault-v1",
+      expectedKind: "ghola_coinbase_advanced_execution_vault",
+    });
+    const credential = coinbaseCredentialFromVault(openedVault.json);
+    const permissions = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true"
+      ? { can_view: true, can_trade: true, can_transfer: false, portfolio_commitment_seed: "dry-run" }
+      : await assertCoinbaseKeyPermissions(credential);
+    return credentialVerificationResult({
+      venue_id: "coinbase_advanced",
+      source: "coinbase_key_permissions",
+      can_read: permissions.can_view === true,
+      can_trade: permissions.can_trade === true,
+      can_withdraw: permissions.can_transfer === true,
+      evidence_seed: {
+        portfolio: permissions.portfolio_commitment_seed,
+      },
+    });
+  }
+  if (venueId === "hyperliquid") {
+    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+      aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+      expectedKind: "ghola_hyperliquid_execution_vault",
+    });
+    const credential = hyperliquidCredentialFromVault(openedVault.json);
+    const snapshot = await readHyperliquidAccountSnapshot({
+      credential,
+      accountSource: "sealed_byo",
+    });
+    return credentialVerificationResult({
+      venue_id: "hyperliquid",
+      source: "hyperliquid_account_readiness",
+      can_read: snapshot.status === "ready_to_trade",
+      can_trade: snapshot.trading_enabled === true,
+      can_withdraw: false,
+      evidence_seed: {
+        account_source: snapshot.account_source,
+        status: snapshot.status,
+      },
+    });
+  }
+  if (venueId === "jupiter") {
+    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+      aadPrefix: "ghola/solana-swap-execution-vault-v1",
+      expectedKind: "ghola_solana_swap_execution_vault",
+    });
+    jupiterCredentialFromVault(openedVault.json);
+    return credentialVerificationResult({
+      venue_id: "jupiter",
+      source: "solana_swap_vault_shape",
+      can_read: true,
+      can_trade: true,
+      can_withdraw: false,
+      evidence_seed: {
+        credential_loaded: true,
+      },
+    });
+  }
+  throw new PrivateExecutionError("venue credential verification is unsupported", 404);
+}
+
 async function hyperliquidCredentialForBody({ body, recipient, state }) {
   const executionMode = hyperliquidExecutionMode(body);
   let credential;
-  if (executionMode === "managed_testnet") {
+  if (isHyperliquidAllocationMode(executionMode)) {
     const allocationCommitment = body.managed_allocation_commitment || body.allocation_commitment;
-    const record = state.getHyperliquidManagedAllocation(allocationCommitment);
+    const record = await state.getHyperliquidManagedAllocation(allocationCommitment);
     if (!record?.allocation || record.allocation.status !== "allocated") {
       throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
     }
     credential = loadManagedHyperliquidCredential(record.allocation);
   } else {
-    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/hyperliquid-execution-vault-v1",
-      expectedKind: "ghola_hyperliquid_execution_vault",
-    });
-    credential = hyperliquidCredentialFromVault(openedVault.json);
+    if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
+      credential = dryRunHyperliquidCredential();
+    } else {
+      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+        aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+        expectedKind: "ghola_hyperliquid_execution_vault",
+      });
+      credential = hyperliquidCredentialFromVault(openedVault.json);
+    }
   }
   return { executionMode, credential };
 }
 
 export async function executeCoinbaseOrder({ body, recipient, state }) {
-  const cached = state.getIdempotency(body.work_order_commitment);
+  const cached = await state.getIdempotency(body.work_order_commitment);
   if (cached?.receipt) return cached.receipt;
-  const session = state.findSession({
+  const session = await state.findSession({
     venue_id: "coinbase_advanced",
     vault_commitment: body.vault_commitment || undefined,
     policy_commitment: body.policy_commitment || undefined,
     allocation_commitment: body.omnibus_allocation?.allocation_commitment || body.allocation_commitment || undefined,
   });
-  const instruction = resolvePrivateCancelTarget(await instructionForBody({
+  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
     body,
     recipient,
     venue_id: "coinbase_advanced",
     session,
   }), { state, venue_id: "coinbase_advanced" });
-  enforceInstructionPolicy({ body, instruction, session, state });
+  await enforceInstructionPolicy({ body, instruction, session, state });
 
   let credential;
   if (body.execution_mode === "partner_omnibus") {
@@ -343,8 +470,8 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
       ? dryRunCoinbaseCredential()
       : loadPartnerCoinbaseCredential(process.env);
     if (body.omnibus_allocation) {
-      state.putOmnibusAllocation(body.omnibus_allocation);
-      state.reserveOmnibus({
+      await state.putOmnibusAllocation(body.omnibus_allocation);
+      await state.reserveOmnibus({
         allocation_commitment: body.omnibus_allocation.allocation_commitment,
         allocation: body.omnibus_allocation,
         work_order_commitment: body.work_order_commitment,
@@ -352,14 +479,18 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
       });
     }
   } else {
-    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/coinbase-advanced-execution-vault-v1",
-      expectedKind: "ghola_coinbase_advanced_execution_vault",
-    });
-    credential = coinbaseCredentialFromVault(openedVault.json);
+    if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
+      credential = dryRunCoinbaseCredential();
+    } else {
+      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+        aadPrefix: "ghola/coinbase-advanced-execution-vault-v1",
+        expectedKind: "ghola_coinbase_advanced_execution_vault",
+      });
+      credential = coinbaseCredentialFromVault(openedVault.json);
+    }
   }
 
-  const clientOrderId = state.deriveClientOrderId("ghola", body.work_order_commitment);
+  const clientOrderId = await state.deriveClientOrderId("ghola", body.work_order_commitment);
   let adapterResult;
   try {
     adapterResult = await submitCoinbaseExecution({
@@ -369,7 +500,7 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
     });
   } catch (error) {
     if (body.execution_mode === "partner_omnibus" && body.omnibus_allocation?.allocation_commitment) {
-      state.releaseOmnibus({
+      await state.releaseOmnibus({
         allocation_commitment: body.omnibus_allocation.allocation_commitment,
         work_order_commitment: body.work_order_commitment,
       });
@@ -381,11 +512,13 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
     venue_id: "coinbase_advanced",
     platform_class: "coinbase_style_provider",
     execution_mode: body.execution_mode,
+    instruction,
     body,
     status: adapterResult.status,
     provider_ref_seed: adapterResult.provider_ref_seed,
     result_seed: adapterResult.result_seed,
     fills: adapterResult.fills,
+    final_proof: adapterResult.final_proof,
     visibility_summary: {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
@@ -394,9 +527,20 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
         : "byo_account_and_order_activity",
     },
   });
+  await state.putExecutionAttempt(body.work_order_commitment, {
+    venue_id: "coinbase_advanced",
+    platform_class: "coinbase_style_provider",
+    execution_mode: body.execution_mode,
+    provider_ref_seed: adapterResult.provider_ref_seed,
+    result_seed: adapterResult.result_seed,
+    fills: adapterResult.fills,
+    final_proof: adapterResult.final_proof || null,
+    status: adapterResult.status,
+    created_at: new Date().toISOString(),
+  });
   if (body.execution_mode === "partner_omnibus" && body.omnibus_allocation?.allocation_commitment) {
     for (const fill of receipt.fill_commitments || []) {
-      state.settleOmnibusFill({
+      await state.settleOmnibusFill({
         allocation_commitment: body.omnibus_allocation.allocation_commitment,
         work_order_commitment: body.work_order_commitment,
         fill_commitment: fill,
@@ -408,32 +552,36 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
 }
 
 export async function executeSolanaPerpsOrder({ body, recipient, state }) {
-  const cached = state.getIdempotency(body.work_order_commitment);
+  const cached = await state.getIdempotency(body.work_order_commitment);
   if (cached?.receipt) return cached.receipt;
   const venueId = normalizeSolanaPerpsVenueId(body.venue_id);
   const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
   let credential = null;
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
-    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-      aadPrefix: "ghola/solana-perps-execution-vault-v1",
-      expectedKind: "ghola_solana_perps_execution_vault",
-    });
-    credential = solanaPerpsCredentialFromVault(openedVault.json);
+    if (executionMode === "ghola_pooled") {
+      credential = loadPooledSolanaPerpsCredential(venueId);
+    } else {
+      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+        aadPrefix: "ghola/solana-perps-execution-vault-v1",
+        expectedKind: "ghola_solana_perps_execution_vault",
+      });
+      credential = solanaPerpsCredentialFromVault(openedVault.json);
+    }
   }
-  const session = state.findSession({
+  const session = await state.findSession({
     venue_id: venueId,
     vault_commitment: body.vault_commitment || undefined,
     allocation_commitment: body.allocation_commitment || undefined,
     policy_commitment: body.policy_commitment || undefined,
   });
-  const instruction = resolvePrivateCancelTarget(await instructionForBody({
+  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
     body,
     recipient,
     venue_id: venueId,
     session,
   }), { state, venue_id: venueId });
-  enforceInstructionPolicy({ body, instruction, session, state });
-  const clientOrderId = state.deriveClientOrderId(venueId, body.work_order_commitment);
+  await enforceInstructionPolicy({ body, instruction, session, state });
+  const clientOrderId = await state.deriveClientOrderId(venueId, body.work_order_commitment);
   const adapterResult = await submitSolanaPerpsExecution({
     credential,
     instruction,
@@ -441,15 +589,28 @@ export async function executeSolanaPerpsOrder({ body, recipient, state }) {
     venueId,
     executionMode,
   });
+  await state.putExecutionAttempt(body.work_order_commitment, {
+    venue_id: venueId,
+    platform_class: "solana_perps_market",
+    execution_mode: executionMode,
+    provider_ref_seed: adapterResult.provider_ref_seed,
+    result_seed: adapterResult.result_seed,
+    fills: adapterResult.fills,
+    final_proof: adapterResult.final_proof || null,
+    status: adapterResult.status,
+    created_at: new Date().toISOString(),
+  });
   const receipt = executionReceipt({
     venue_id: venueId,
     platform_class: "solana_perps_market",
     execution_mode: executionMode,
+    instruction,
     body,
     status: adapterResult.status,
     provider_ref_seed: adapterResult.provider_ref_seed,
     result_seed: adapterResult.result_seed,
     fills: adapterResult.fills,
+    final_proof: adapterResult.final_proof,
     visibility_summary: {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
@@ -465,28 +626,232 @@ export async function executeSolanaPerpsOrder({ body, recipient, state }) {
   return state.putIdempotency(body.work_order_commitment, receipt);
 }
 
+export async function executeJupiterSwapOrder({ body, recipient, state }) {
+  const cached = await state.getIdempotency(body.work_order_commitment);
+  if (cached?.receipt) return cached.receipt;
+  const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
+  let credential = null;
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
+    if (executionMode === "ghola_pooled") {
+      credential = loadPooledJupiterCredential();
+    } else {
+      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+        aadPrefix: "ghola/solana-swap-execution-vault-v1",
+        expectedKind: "ghola_solana_swap_execution_vault",
+      });
+      credential = jupiterCredentialFromVault(openedVault.json);
+    }
+  }
+  const session = await state.findSession({
+    venue_id: "jupiter",
+    vault_commitment: body.vault_commitment || undefined,
+    allocation_commitment: body.allocation_commitment || undefined,
+    policy_commitment: body.policy_commitment || undefined,
+  });
+  const instruction = await instructionForBody({
+    body,
+    recipient,
+    venue_id: "jupiter",
+    session,
+  });
+  await enforceInstructionPolicy({ body, instruction, session, state });
+  const clientOrderId = await state.deriveClientOrderId("jupiter", body.work_order_commitment);
+  const adapterResult = await submitJupiterSwapExecution({
+    credential,
+    instruction,
+    clientOrderId,
+    executionMode,
+  });
+  await state.putExecutionAttempt(body.work_order_commitment, {
+    venue_id: "jupiter",
+    platform_class: "solana_swap_aggregator",
+    execution_mode: executionMode,
+    provider_ref_seed: adapterResult.provider_ref_seed,
+    result_seed: adapterResult.result_seed,
+    fills: adapterResult.fills,
+    final_proof: adapterResult.final_proof || null,
+    status: adapterResult.status,
+    created_at: new Date().toISOString(),
+  });
+  const receipt = executionReceipt({
+    venue_id: "jupiter",
+    platform_class: "solana_swap_aggregator",
+    execution_mode: executionMode,
+    instruction,
+    body,
+    status: adapterResult.status,
+    provider_ref_seed: adapterResult.provider_ref_seed,
+    result_seed: adapterResult.result_seed,
+    fills: adapterResult.fills,
+    final_proof: adapterResult.final_proof,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      jupiter_sees: executionMode === "ghola_pooled"
+        ? "pooled_swap_authority_and_route"
+        : "stealth_swap_authority_and_route",
+      venue_access_source: executionMode,
+      ghola_access_role: "sealed_private_execution_router",
+      venue_gate: "jupiter_accepts_or_rejects_swap",
+      public_chain_sees: "swap_authority_activity_visible_if_public_settlement",
+    },
+  });
+  return state.putIdempotency(body.work_order_commitment, receipt);
+}
+
+export async function executeAutopilotOrder({
+  venue_id,
+  operation_class,
+  work_order_commitment,
+  policy_commitment,
+  session_policy,
+  instruction,
+  execution = {},
+  recipient,
+  state,
+}) {
+  const body = {
+    version: 1,
+    work_order_commitment,
+    policy_commitment,
+    session_policy,
+    operation_class,
+    [AUTOPILOT_INTERNAL_INSTRUCTION]: instruction,
+    ...execution,
+  };
+  if (venue_id === "jupiter") {
+    return executeJupiterSwapOrder({
+      body: {
+        ...body,
+        venue_id: "jupiter",
+        platform_class: "solana_swap_aggregator",
+        execution_mode: execution.execution_mode || "ghola_pooled",
+      },
+      recipient,
+      state,
+    });
+  }
+  if (venue_id === "phoenix") {
+    return executeSolanaPerpsOrder({
+      body: {
+        ...body,
+        venue_id: "phoenix",
+        platform_class: "solana_perps_market",
+        execution_mode: execution.execution_mode || "ghola_pooled",
+      },
+      recipient,
+      state,
+    });
+  }
+  if (venue_id === "hyperliquid") {
+    return executeHyperliquidOrder({
+      body: {
+        ...body,
+        venue_id: "hyperliquid",
+        platform_class: "hyperliquid_style_market",
+        execution_mode: execution.execution_mode || "ghola_pooled",
+      },
+      recipient,
+      state,
+    });
+  }
+  if (venue_id === "coinbase_advanced") {
+    return executeCoinbaseOrder({
+      body: {
+        ...body,
+        venue_id: "coinbase_advanced",
+        platform_class: "coinbase_style_provider",
+        execution_mode: execution.execution_mode || "partner_omnibus",
+      },
+      recipient,
+      state,
+    });
+  }
+  throw new PrivateExecutionError("autopilot venue is unsupported", 400);
+}
+
+export async function verifyAutopilotOrder({
+  venue_id,
+  operation_class,
+  work_order_commitment,
+  policy_commitment,
+  session_policy,
+  instruction,
+  execution = {},
+  recipient,
+  state,
+}) {
+  const body = {
+    version: 1,
+    work_order_commitment,
+    policy_commitment,
+    session_policy,
+    operation_class,
+    [AUTOPILOT_INTERNAL_INSTRUCTION]: instruction,
+    ...execution,
+  };
+  if (venue_id === "jupiter") {
+    return verifyJupiterSwapNoSubmit({
+      body: {
+        ...body,
+        venue_id: "jupiter",
+        platform_class: "solana_swap_aggregator",
+        execution_mode: execution.execution_mode || "user_stealth",
+      },
+      recipient,
+      state,
+    });
+  }
+  if (venue_id === "hyperliquid") {
+    return verifyHyperliquidOrderNoSubmit({
+      body: {
+        ...body,
+        venue_id: "hyperliquid",
+        platform_class: "hyperliquid_style_market",
+        execution_mode: execution.execution_mode || "byo_api_key",
+      },
+      recipient,
+      state,
+    });
+  }
+  if (venue_id === "coinbase_advanced") {
+    return verifyCoinbaseOrderNoSubmit({
+      body: {
+        ...body,
+        venue_id: "coinbase_advanced",
+        platform_class: "coinbase_style_provider",
+        execution_mode: execution.execution_mode || "byo_api_key",
+      },
+      recipient,
+      state,
+    });
+  }
+  throw new PrivateExecutionError("autopilot venue is unsupported", 400);
+}
+
 export async function verifySolanaPerpsOrderNoSubmit({ body, recipient, state }) {
   const venueId = normalizeSolanaPerpsVenueId(body.venue_id);
   const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
-  const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
-    aadPrefix: "ghola/solana-perps-execution-vault-v1",
-    expectedKind: "ghola_solana_perps_execution_vault",
-  });
-  const credential = solanaPerpsCredentialFromVault(openedVault.json);
-  const session = state.findSession({
+  const credential = executionMode === "ghola_pooled"
+    ? loadPooledSolanaPerpsCredential(venueId)
+    : solanaPerpsCredentialFromVault((await openSealedBundle(body.encrypted_execution_vault, recipient, {
+        aadPrefix: "ghola/solana-perps-execution-vault-v1",
+        expectedKind: "ghola_solana_perps_execution_vault",
+      })).json);
+  const session = await state.findSession({
     venue_id: venueId,
     vault_commitment: body.vault_commitment || undefined,
     allocation_commitment: body.allocation_commitment || undefined,
     policy_commitment: body.policy_commitment || undefined,
   });
-  const instruction = resolvePrivateCancelTarget(await instructionForBody({
+  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
     body,
     recipient,
     venue_id: venueId,
     session,
   }), { state, venue_id: venueId });
-  enforceInstructionPolicy({ body, instruction, session, state: null });
-  const clientOrderId = state.deriveClientOrderId(venueId, body.work_order_commitment);
+  await enforceInstructionPolicy({ body, instruction, session, state: null });
+  const clientOrderId = await state.deriveClientOrderId(venueId, body.work_order_commitment);
   const adapterResult = await verifySolanaPerpsNoSubmit({
     credential,
     instruction,
@@ -530,7 +895,282 @@ export async function verifySolanaPerpsOrderNoSubmit({ body, recipient, state })
   };
 }
 
+export async function verifyCoinbaseOrderNoSubmit({ body, recipient, state }) {
+  const session = await state.findSession({
+    venue_id: "coinbase_advanced",
+    vault_commitment: body.vault_commitment || undefined,
+    policy_commitment: body.policy_commitment || undefined,
+    allocation_commitment: body.omnibus_allocation?.allocation_commitment || body.allocation_commitment || undefined,
+  });
+  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
+    body,
+    recipient,
+    venue_id: "coinbase_advanced",
+    session,
+  }), { state, venue_id: "coinbase_advanced" });
+  await enforceInstructionPolicy({ body, instruction, session, state: null });
+
+  let credential;
+  if (body.execution_mode === "partner_omnibus") {
+    credential = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true"
+      ? dryRunCoinbaseCredential()
+      : loadPartnerCoinbaseCredential(process.env);
+  } else if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
+    credential = dryRunCoinbaseCredential();
+  } else {
+    const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+      aadPrefix: "ghola/coinbase-advanced-execution-vault-v1",
+      expectedKind: "ghola_coinbase_advanced_execution_vault",
+    });
+    credential = coinbaseCredentialFromVault(openedVault.json);
+  }
+
+  const clientOrderId = await state.deriveClientOrderId("ghola", body.work_order_commitment);
+  const adapterResult = await verifyCoinbaseNoSubmit({
+    credential,
+    instruction,
+    clientOrderId,
+  });
+  const providerRefCommitment = commitment("coinbase_provider_ref", adapterResult.provider_ref_seed);
+  return {
+    version: 1,
+    venue_id: "coinbase_advanced",
+    platform_class: "coinbase_style_provider",
+    execution_mode: body.execution_mode || "byo_api_key",
+    status: "verified_no_funds",
+    work_order_commitment: body.work_order_commitment,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: body.omnibus_allocation?.allocation_commitment || body.allocation_commitment || null,
+    provider_ref_commitment: providerRefCommitment,
+    result_commitment: commitment("coinbase_result", {
+      work_order_commitment: body.work_order_commitment,
+      provider_ref_commitment: providerRefCommitment,
+      status: "verified_no_funds",
+      seed: adapterResult.result_seed,
+    }),
+    verification_commitment: commitment("coinbase_no_submit_verification", {
+      work_order_commitment: body.work_order_commitment,
+      provider_ref_commitment: providerRefCommitment,
+      result_seed: adapterResult.result_seed,
+      checks: adapterResult.checks,
+    }),
+    checks: adapterResult.checks,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      coinbase_sees: "no_submit_order_request_prepared",
+      venue_access_source: body.execution_mode === "partner_omnibus" ? "partner_omnibus" : "user_provided_credentials",
+      ghola_access_role: "sealed_private_execution_router",
+      venue_gate: "not_tested_without_submit",
+      public_chain_sees: "no_transaction_sent",
+    },
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export async function verifyJupiterSwapNoSubmit({ body, recipient, state }) {
+  const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
+  const credential = executionMode === "ghola_pooled"
+    ? loadPooledJupiterCredential()
+    : jupiterCredentialFromVault((await openSealedBundle(body.encrypted_execution_vault, recipient, {
+        aadPrefix: "ghola/solana-swap-execution-vault-v1",
+        expectedKind: "ghola_solana_swap_execution_vault",
+      })).json);
+  const session = await state.findSession({
+    venue_id: "jupiter",
+    vault_commitment: body.vault_commitment || undefined,
+    allocation_commitment: body.allocation_commitment || undefined,
+    policy_commitment: body.policy_commitment || undefined,
+  });
+  const instruction = await instructionForBody({
+    body,
+    recipient,
+    venue_id: "jupiter",
+    session,
+  });
+  await enforceInstructionPolicy({ body, instruction, session, state: null });
+  const clientOrderId = await state.deriveClientOrderId("jupiter", body.work_order_commitment);
+  const adapterResult = await verifyJupiterSwapNoSubmitAdapter({
+    credential,
+    instruction,
+    clientOrderId,
+    executionMode,
+  });
+  const providerRefCommitment = commitment("jupiter_provider_ref", adapterResult.provider_ref_seed);
+  return {
+    version: 1,
+    venue_id: "jupiter",
+    platform_class: "solana_swap_aggregator",
+    execution_mode: executionMode,
+    status: "verified_no_funds",
+    work_order_commitment: body.work_order_commitment,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: body.allocation_commitment || null,
+    provider_ref_commitment: providerRefCommitment,
+    result_commitment: commitment("jupiter_result", {
+      work_order_commitment: body.work_order_commitment,
+      provider_ref_commitment: providerRefCommitment,
+      status: "verified_no_funds",
+      seed: adapterResult.result_seed,
+    }),
+    verification_commitment: commitment("jupiter_no_submit_verification", {
+      work_order_commitment: body.work_order_commitment,
+      provider_ref_commitment: providerRefCommitment,
+      result_seed: adapterResult.result_seed,
+      checks: adapterResult.checks,
+    }),
+    checks: adapterResult.checks,
+    final_proof: adapterResult.final_proof,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      jupiter_sees: "no_submit_swap_transaction_prepared",
+      venue_access_source: executionMode,
+      ghola_access_role: "sealed_private_execution_router",
+      venue_gate: "not_tested_without_submit",
+      public_chain_sees: "no_transaction_sent",
+    },
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state }) {
+  const executionMode = hyperliquidExecutionMode(body);
+  let credential;
+  let allocation = null;
+  if (isHyperliquidAllocationMode(executionMode)) {
+    const allocationCommitment = body.managed_allocation_commitment || body.allocation_commitment;
+    const record = await state.getHyperliquidManagedAllocation(allocationCommitment);
+    if (!record?.allocation || record.allocation.status !== "allocated") {
+      throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
+    }
+    allocation = record.allocation;
+    credential = loadManagedHyperliquidCredential(allocation);
+  } else {
+    if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !body.encrypted_execution_vault) {
+      credential = dryRunHyperliquidCredential();
+    } else {
+      const openedVault = await openSealedBundle(body.encrypted_execution_vault, recipient, {
+        aadPrefix: "ghola/hyperliquid-execution-vault-v1",
+        expectedKind: "ghola_hyperliquid_execution_vault",
+      });
+      credential = hyperliquidCredentialFromVault(openedVault.json);
+    }
+  }
+  const session = await state.findSession({
+    venue_id: "hyperliquid",
+    vault_commitment: executionMode === "byo_api_key" ? body.vault_commitment : undefined,
+    allocation_commitment: isHyperliquidAllocationMode(executionMode)
+      ? body.managed_allocation_commitment || body.allocation_commitment
+      : undefined,
+    policy_commitment: body.policy_commitment,
+  });
+  const instruction = await resolvePrivateCancelTarget(await instructionForBody({
+    body,
+    recipient,
+    venue_id: "hyperliquid",
+    session,
+  }), { state, venue_id: "hyperliquid" });
+  await enforceInstructionPolicy({ body, instruction, session, state: null });
+  const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
+  const adapterResult = await verifyHyperliquidNoSubmit({
+    credential,
+    instruction,
+    cloid,
+    executionMode,
+  });
+  const providerRefCommitment = commitment("hyperliquid_provider_ref", adapterResult.provider_ref_seed);
+  return {
+    version: 1,
+    platform_class: "hyperliquid_style_market",
+    execution_mode: executionMode,
+    status: "verified_no_funds",
+    work_order_commitment: body.work_order_commitment,
+    vault_commitment: body.vault_commitment || null,
+    allocation_commitment: allocation?.allocation_commitment || body.managed_allocation_commitment || body.allocation_commitment || null,
+    provider_ref_commitment: providerRefCommitment,
+    result_commitment: commitment("hyperliquid_result", {
+      work_order_commitment: body.work_order_commitment,
+      provider_ref_commitment: providerRefCommitment,
+      status: "verified_no_funds",
+      seed: adapterResult.result_seed,
+    }),
+    verification_commitment: commitment("hyperliquid_no_submit_verification", {
+      work_order_commitment: body.work_order_commitment,
+      provider_ref_commitment: providerRefCommitment,
+      result_seed: adapterResult.result_seed,
+      checks: adapterResult.checks,
+    }),
+    checks: adapterResult.checks,
+    visibility_summary: {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      hyperliquid_sees: "no_submit_order_request_prepared",
+      venue_access_source: hyperliquidVenueAccessSource(executionMode),
+      ghola_access_role: "sealed_private_execution_router",
+      venue_gate: "not_tested_without_submit",
+      public_chain_sees: "no_transaction_sent",
+    },
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export async function reconcileStoredExecution({ body, state, venue_id, platform_class }) {
+  const attempted = await state.getExecutionAttempt(body.work_order_commitment);
+  const cached = (await state.getIdempotency(body.work_order_commitment))?.receipt || null;
+  const status = attempted?.status === "failed" ? "failed" : "reconciled";
+  const providerRefSeed = attempted?.provider_ref_seed ||
+    cached?.provider_ref_commitment ||
+    {
+      venue: venue_id,
+      work_order_commitment: body.work_order_commitment,
+      reconciliation_only: true,
+    };
+  const resultSeed = attempted?.result_seed ||
+    cached?.result_commitment ||
+    {
+      kind: `${venue_id}_reconcile`,
+      status,
+      work_order_commitment: body.work_order_commitment,
+    };
+  const finalProof = attempted?.final_proof || {
+    version: 1,
+    proof_kind: "connector_execution_reconciliation_v1",
+    status,
+    venue_id,
+    broadcast_performed: Boolean(attempted || cached),
+    final_venue_execution_proven: Boolean(attempted || cached),
+    final_fill_proven: Array.isArray(attempted?.fills) && attempted.fills.length > 0,
+    checked_at: new Date().toISOString(),
+  };
+  return executionReceipt({
+    venue_id,
+    platform_class,
+    execution_mode: body.execution_mode,
+    body: {
+      ...body,
+      operation_class: "reconcile",
+    },
+    status,
+    provider_ref_seed: providerRefSeed,
+    result_seed: resultSeed,
+    fills: attempted?.fills || cached?.fill_commitments || [],
+    final_proof: finalProof,
+    visibility_summary: cached?.visibility_summary || {
+      main_wallet_exposed: false,
+      ghola_operator_sees: "commitment_and_ciphertext_only",
+      public_chain_sees: "reconciled_from_worker_state",
+    },
+  });
+}
+
 async function instructionForBody({ body, recipient, venue_id, session }) {
+  if (body[AUTOPILOT_INTERNAL_INSTRUCTION]) {
+    return normalizeInstruction(body[AUTOPILOT_INTERNAL_INSTRUCTION], {
+      venue_id,
+      operation_class: body.operation_class,
+    });
+  }
   if (body.encrypted_execution_instruction_bundle) {
     const opened = await openSealedBundle(body.encrypted_execution_instruction_bundle, recipient, {
       aadPrefix: "ghola/private-execution-instruction-v1",
@@ -565,15 +1205,15 @@ async function instructionForBody({ body, recipient, venue_id, session }) {
   throw new PrivateExecutionError("encrypted execution instruction is required");
 }
 
-function resolvePrivateCancelTarget(instruction, { state, venue_id }) {
+async function resolvePrivateCancelTarget(instruction, { state, venue_id }) {
   const target = instruction?.cancel?.target_work_order_commitment;
   if (instruction?.operation_class !== "cancel" || !target) return instruction;
-  if (!state.getIdempotency(target)?.receipt) {
+  if (!(await state.getIdempotency(target))?.receipt) {
     throw new PrivateExecutionError("cancel target work order is unknown");
   }
   const clientOrderId = venue_id === "hyperliquid"
-    ? state.deriveHyperliquidCloid(target)
-    : state.deriveClientOrderId("ghola", target);
+    ? await state.deriveHyperliquidCloid(target)
+    : await state.deriveClientOrderId("ghola", target);
   return {
     ...instruction,
     cancel: {
@@ -584,11 +1224,22 @@ function resolvePrivateCancelTarget(instruction, { state, venue_id }) {
 }
 
 function hyperliquidExecutionMode(body) {
+  if (body.execution_mode === "ghola_pooled") return "ghola_pooled";
   return body.execution_mode === "managed_testnet" ||
       body.managed_allocation_commitment ||
-      body.allocation_commitment
+      (body.allocation_commitment && body.execution_mode !== "byo_api_key")
     ? "managed_testnet"
     : "byo_api_key";
+}
+
+function isHyperliquidAllocationMode(mode) {
+  return mode === "managed_testnet" || mode === "ghola_pooled";
+}
+
+function hyperliquidVenueAccessSource(mode) {
+  if (mode === "ghola_pooled") return "ghola_pooled_venue_account";
+  if (mode === "managed_testnet") return "ghola_managed_testnet";
+  return "user_provided_credentials";
 }
 
 function managedCredentialIndex(seed, length) {
@@ -607,6 +1258,7 @@ function executionReceipt(input) {
   const fillCommitments = Array.isArray(input.fills)
     ? input.fills.map((fill) => commitment(`${input.venue_id}_fill`, fill))
     : [];
+  const mandate = input.instruction?.mandate || null;
   return {
     version: 1,
     venue_id: input.venue_id === "hyperliquid" ? undefined : input.venue_id,
@@ -626,9 +1278,42 @@ function executionReceipt(input) {
       status: input.status,
       seed: input.result_seed,
     }),
+    mandate_commitment: mandate
+      ? commitment("agent_mandate", {
+          work_order_commitment: input.body.work_order_commitment,
+          venue_id: input.venue_id,
+          operation_class: input.instruction?.operation_class || null,
+          mandate,
+        })
+      : null,
+    mandate_status: mandate ? "enforced" : undefined,
     fill_commitments: fillCommitments,
+    final_proof: input.final_proof || null,
     visibility_summary: input.visibility_summary,
     updated_at: new Date().toISOString(),
+  };
+}
+
+function credentialVerificationResult(input) {
+  const verificationCommitment = commitment("venue_credential_verification", {
+    venue_id: input.venue_id,
+    source: input.source,
+    can_read: input.can_read,
+    can_trade: input.can_trade,
+    can_withdraw: input.can_withdraw,
+    evidence_seed: input.evidence_seed,
+  });
+  return {
+    version: 1,
+    venue_id: input.venue_id,
+    status: input.can_read && input.can_trade && !input.can_withdraw ? "verified" : "blocked",
+    can_read: input.can_read === true,
+    can_trade: input.can_trade === true,
+    can_withdraw: input.can_withdraw === true,
+    verification_commitment: verificationCommitment,
+    evidence_commitment: commitment("venue_credential_verification_evidence", input.evidence_seed || {}),
+    source: input.source,
+    checked_at: new Date().toISOString(),
   };
 }
 
@@ -674,6 +1359,16 @@ function dryRunCoinbaseCredential() {
     api_key_name: "organizations/dry-run/apiKeys/dry-run",
     api_private_key_pem: "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIGvY6aoo2dGd5dbwG7Hz3Tj8MwbD0QuR4APs8dP8s91BoAoGCCqGSM49\nAwEHoUQDQgAEUxJ3vyaSbfNuLS9wEVxAIUlA7PAwHFrs4zSj34tpf8jEABERLQzt\nBmg+ObHTkW0HnqRyx5m8lxbvqD8AqXjp3w==\n-----END EC PRIVATE KEY-----",
     portfolio_id: null,
+  };
+}
+
+function dryRunHyperliquidCredential() {
+  return {
+    network: "testnet",
+    base_url: "https://api.hyperliquid-testnet.xyz",
+    account_address: "0x0000000000000000000000000000000000000001",
+    api_wallet_private_key: "0x1111111111111111111111111111111111111111111111111111111111111111",
+    agent_name: "dry-run-byo",
   };
 }
 

@@ -4,21 +4,37 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertRecipientSecretMatches } from "./crypto/envelope.js";
 import {
+  capabilityRequired,
+  verifyWorkerCapability,
+} from "./auth/capability.js";
+import {
+  controlAutopilotSession,
+  createAutopilotSession,
+  listAutopilotEvents,
+  startAutopilotLoop,
+} from "./execution/autopilot.js";
+import {
   createHyperliquidManagedAllocation,
   executeCoinbaseOrder,
   executeHyperliquidOrder,
+  executeJupiterSwapOrder,
   executeSolanaPerpsOrder,
   readHyperliquidSnapshot,
+  reconcileStoredExecution,
   streamHyperliquidAccountState,
   storeCoinbaseSession,
   storeHyperliquidSession,
   storePrivateAgentSession,
+  verifyVenueCredential,
+  verifyHyperliquidOrderNoSubmit,
+  verifyJupiterSwapNoSubmit,
   verifySolanaPerpsOrderNoSubmit,
 } from "./execution/private-execution.js";
-import { createWorkerState } from "./state/private-state.js";
+import { createConfiguredWorkerState } from "./state/private-state.js";
 import {
   attestFreshCredentialFunded,
   FundingAttestationError,
+  fundingSigningIdentity,
 } from "./venues/shielded_funding_attestation.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -119,10 +135,12 @@ function sha256Hex(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export function recipientReportDataHex(recipient) {
-  return `0x${sha256Hex(
-    `${RECIPIENT_REPORT_DOMAIN}\0${recipient.recipient_id}\0${recipient.x25519_pub_hex}`,
-  )}`;
+export function recipientReportDataHex(recipient, fundingSignerPublicKeyB64 = "") {
+  const fields = [RECIPIENT_REPORT_DOMAIN, recipient.recipient_id, recipient.x25519_pub_hex];
+  if (String(fundingSignerPublicKeyB64 || "").trim()) {
+    fields.push(String(fundingSignerPublicKeyB64).trim());
+  }
+  return `0x${sha256Hex(fields.join("\0"))}`;
 }
 
 function derivePublicHex(publicKey) {
@@ -244,8 +262,8 @@ function extractMeasurementHex(quote) {
   );
 }
 
-async function loadDstackAttestation(recipient) {
-  const reportDataHex = recipientReportDataHex(recipient);
+async function loadDstackAttestation(recipient, fundingSignerPublicKeyB64 = "") {
+  const reportDataHex = recipientReportDataHex(recipient, fundingSignerPublicKeyB64);
   if (attestationCache?.report_data_hex === reportDataHex) return attestationCache;
 
   const staticQuoteJson = env("PRIVATE_AGENT_DSTACK_QUOTE_JSON");
@@ -281,9 +299,9 @@ async function loadDstackAttestation(recipient) {
   return null;
 }
 
-async function attestationMetadata(recipient) {
+async function attestationMetadata(recipient, fundingSignerPublicKeyB64 = "") {
   const dynamic = boolEnv("PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE")
-    ? await loadDstackAttestation(recipient)
+    ? await loadDstackAttestation(recipient, fundingSignerPublicKeyB64)
     : null;
   return {
     attestation_hash:
@@ -295,15 +313,17 @@ async function attestationMetadata(recipient) {
       dynamic?.measurement_hex ||
       null,
     quote_hash: dynamic?.attestation_hash ?? null,
-    report_data_hex: dynamic?.report_data_hex ?? recipientReportDataHex(recipient),
+    report_data_hex: dynamic?.report_data_hex ?? recipientReportDataHex(recipient, fundingSignerPublicKeyB64),
   };
 }
 
 async function publicRecipient(recipient) {
-  const attestation = await attestationMetadata(recipient);
+  const fundingSigner = fundingSigningIdentity();
+  const attestation = await attestationMetadata(recipient, fundingSigner.public_key_b64);
   return {
     recipient_id: recipient.recipient_id,
     x25519_pub_hex: recipient.x25519_pub_hex,
+    funding_signer_public_key_b64: fundingSigner.public_key_b64,
     tee_kind: env("PRIVATE_AGENT_TEE_KIND", "phala"),
     measurement_hex: attestation.measurement_hex,
     attestation_hash: attestation.attestation_hash,
@@ -319,7 +339,8 @@ async function publicRecipient(recipient) {
 }
 
 async function readiness(recipient) {
-  const attestation = await attestationMetadata(recipient);
+  const fundingSigner = fundingSigningIdentity();
+  const attestation = await attestationMetadata(recipient, fundingSigner.public_key_b64);
   const missing = [];
   if (!recipient?.recipient_id || !PUBLIC_KEY_HEX_RE.test(recipient.x25519_pub_hex || "")) {
     missing.push("recipient_key");
@@ -343,6 +364,9 @@ async function readiness(recipient) {
   }
   if (!attestation.attestation_hash) {
     missing.push("attestation_hash");
+  }
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true" && !env("PRIVATE_AGENT_FUNDING_SIGNING_KEY")) {
+    missing.push("funding_signer");
   }
 
   return {
@@ -387,6 +411,73 @@ function tokensEqual(a, b) {
   const bb = Buffer.from(b);
   if (ab.length !== bb.length) return false;
   return timingSafeEqual(ab, bb);
+}
+
+async function authorizeWorkerRequest(req, { path, scope, body = {}, state, expected = {} }) {
+  const rawBearer = bearer(req);
+  if (rawBearer.startsWith("ghcap_v1.")) {
+    await verifyWorkerCapability({
+      token: rawBearer,
+      req,
+      path,
+      scope,
+      body,
+      state,
+      expected,
+    });
+    return null;
+  }
+  if (capabilityRequired()) {
+    return {
+      status: 401,
+      body: {
+        error: "worker_capability_required",
+        error_code: "worker_capability_required",
+      },
+    };
+  }
+  const token = requiredAuthToken();
+  if (!tokensEqual(rawBearer, token)) {
+    return { status: 401, body: { error: "unauthorized" } };
+  }
+  return null;
+}
+
+function authJson(res, rejected) {
+  if (!rejected) return false;
+  json(res, rejected.status, rejected.body);
+  return true;
+}
+
+function capabilityExpectedFromBody(body = {}, overrides = {}) {
+  return {
+    owner_commitment: body.owner_commitment,
+    account_commitment: body.account_commitment,
+    session_commitment: body.session_commitment,
+    autopilot_session_id: body.autopilot_session_id,
+    venue_id: body.venue_id,
+    platform_class: body.platform_class,
+    execution_mode: body.execution_mode,
+    operation_class: body.operation_class,
+    work_order_commitment: body.work_order_commitment,
+    policy_commitment: body.policy_commitment,
+    allocation_commitment: body.allocation_commitment,
+    vault_commitment: body.vault_commitment,
+    ...overrides,
+  };
+}
+
+async function readAuthorizedJson(req, res, { path, scope, state, expected = {} }) {
+  const body = await readJson(req);
+  const rejected = await authorizeWorkerRequest(req, {
+    path,
+    scope,
+    body,
+    state,
+    expected: typeof expected === "function" ? expected(body) : expected,
+  });
+  if (authJson(res, rejected)) return { rejected: true, body: null };
+  return { rejected: false, body };
 }
 
 async function readJson(req) {
@@ -520,7 +611,7 @@ function validateHyperliquidSessionRequest(body, recipient) {
   }
   if (body.version !== 1) errors.push("version must be 1");
   const executionMode = hyperliquidExecutionMode(body);
-  if (!["byo_api_key", "managed_testnet"].includes(executionMode)) {
+  if (!["byo_api_key", "managed_testnet", "ghola_pooled"].includes(executionMode)) {
     errors.push("execution_mode is unsupported");
   }
   if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
@@ -559,7 +650,7 @@ function validateHyperliquidOrderRequest(body, recipient) {
   if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
   if (!isNonEmptyString(body.policy_commitment)) errors.push("policy_commitment is required");
   const executionMode = hyperliquidExecutionMode(body);
-  if (!["byo_api_key", "managed_testnet"].includes(executionMode)) {
+  if (!["byo_api_key", "managed_testnet", "ghola_pooled"].includes(executionMode)) {
     errors.push("execution_mode is unsupported");
   }
   if (body.encrypted_execution_vault && (body.managed_allocation_commitment || body.allocation_commitment)) {
@@ -594,7 +685,7 @@ function validateHyperliquidAccountSnapshotRequest(body, recipient) {
   if (body.version !== 1) errors.push("version must be 1");
   if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
   const executionMode = hyperliquidExecutionMode(body);
-  if (!["byo_api_key", "managed_testnet"].includes(executionMode)) {
+  if (!["byo_api_key", "managed_testnet", "ghola_pooled"].includes(executionMode)) {
     errors.push("execution_mode is unsupported");
   }
   if (executionMode === "byo_api_key") {
@@ -615,7 +706,7 @@ function validateHyperliquidReconcileRequest(body, recipient) {
   if (body.version !== 1) errors.push("version must be 1");
   if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
   const executionMode = hyperliquidExecutionMode(body);
-  if (!["byo_api_key", "managed_testnet"].includes(executionMode)) {
+  if (!["byo_api_key", "managed_testnet", "ghola_pooled"].includes(executionMode)) {
     errors.push("execution_mode is unsupported");
   }
   if (body.encrypted_execution_vault && (body.managed_allocation_commitment || body.allocation_commitment)) {
@@ -624,7 +715,9 @@ function validateHyperliquidReconcileRequest(body, recipient) {
   if ("encrypted_execution_vault" in body) {
     errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
   }
-  if (executionMode === "managed_testnet" && !isNonEmptyString(body.managed_allocation_commitment) && !isNonEmptyString(body.allocation_commitment)) {
+  if ((executionMode === "managed_testnet" || executionMode === "ghola_pooled") &&
+    !isNonEmptyString(body.managed_allocation_commitment) &&
+    !isNonEmptyString(body.allocation_commitment)) {
     errors.push("managed_allocation_commitment is required");
   }
   if ("encrypted_execution_instruction_bundle" in body) {
@@ -642,8 +735,17 @@ function validateHyperliquidManagedAllocationRequest(body) {
   if (body.version !== 1) errors.push("version must be 1");
   if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
   if (!isNonEmptyString(body.policy_commitment)) errors.push("policy_commitment is required");
-  if (body.network && body.network !== "testnet") {
-    errors.push("network must be testnet for the Hyperliquid pilot");
+  const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "managed_testnet";
+  if (executionMode === "managed_testnet" && body.network && body.network !== "testnet") {
+    errors.push("network must be testnet for the Hyperliquid managed pilot");
+  }
+  if (executionMode === "ghola_pooled") {
+    if (body.network && body.network !== "mainnet") {
+      errors.push("network must be mainnet for Hyperliquid Vault Mode");
+    }
+    if (!isNonEmptyString(body.eligibility_commitment)) {
+      errors.push("eligibility_commitment is required for Hyperliquid Vault Mode");
+    }
   }
   const capped = body.session_policy;
   if (capped !== undefined) {
@@ -688,7 +790,7 @@ function hyperliquidSessionReceipt(body) {
     vault_commitment: body.vault_commitment || null,
     allocation_commitment: body.managed_allocation_commitment || body.allocation_commitment || null,
     policy_commitment: body.policy_commitment,
-    venue_access_source: executionMode === "byo_api_key" ? "user_provided_credentials" : "ghola_managed_testnet",
+    venue_access_source: hyperliquidVenueAccessSource(executionMode),
     ghola_access_role: "private_execution_router",
     venue_gate: "venue_accepts_or_rejects_credentials",
     accepted_at: new Date().toISOString(),
@@ -723,7 +825,7 @@ function hyperliquidOrderReceipt(body, status = "submitted") {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
       hyperliquid_sees: "execution_account_and_order_activity",
-      venue_access_source: executionMode === "byo_api_key" ? "user_provided_credentials" : "ghola_managed_testnet",
+      venue_access_source: hyperliquidVenueAccessSource(executionMode),
       ghola_access_role: "private_execution_router",
       venue_gate: "venue_accepts_or_rejects_credentials",
     },
@@ -732,11 +834,20 @@ function hyperliquidOrderReceipt(body, status = "submitted") {
 }
 
 function hyperliquidExecutionMode(body) {
-  if (body?.execution_mode === "managed_testnet" || body?.managed_allocation_commitment || body?.allocation_commitment) {
+  if (body?.execution_mode === "ghola_pooled") return "ghola_pooled";
+  if (body?.execution_mode === "managed_testnet" || body?.managed_allocation_commitment || (
+    body?.allocation_commitment && body?.execution_mode !== "byo_api_key"
+  )) {
     return "managed_testnet";
   }
   if (body?.execution_mode === "byo_api_key" || !body?.execution_mode) return "byo_api_key";
   return String(body.execution_mode);
+}
+
+function hyperliquidVenueAccessSource(executionMode) {
+  if (executionMode === "ghola_pooled") return "ghola_pooled_venue_account";
+  if (executionMode === "managed_testnet") return "ghola_managed_testnet";
+  return "user_provided_credentials";
 }
 
 function validateCoinbaseSessionRequest(body, recipient) {
@@ -844,10 +955,14 @@ function validateSolanaPerpsOrderRequest(body, recipient) {
   if (!["read", "perp_limit_order", "cancel", "fills", "reconcile"].includes(body.operation_class)) {
     errors.push("operation_class is unsupported");
   }
+  const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
   if ("encrypted_execution_vault" in body) {
     errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
-  } else if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
+  } else if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true" && executionMode !== "ghola_pooled") {
     errors.push("encrypted_execution_vault is required for live Solana perps submit");
+  }
+  if (executionMode === "ghola_pooled" && !isNonEmptyString(body.allocation_commitment)) {
+    errors.push("allocation_commitment is required for pooled Solana perps submit");
   }
   if ("encrypted_execution_instruction_bundle" in body) {
     errors.push(...validateEncryptedBundle(
@@ -874,6 +989,60 @@ function validateSolanaPerpsReconcileRequest(body, recipient) {
   }
   if ("encrypted_execution_instruction_bundle" in body) {
     errors.push(...validateEncryptedBundle(body.encrypted_execution_instruction_bundle, recipient, "encrypted_execution_instruction_bundle"));
+  }
+  return errors;
+}
+
+function validateSolanaSwapOrderRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Jupiter credentials, strategy, prompt, policy, or swap payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.platform_class !== "solana_swap_aggregator") errors.push("platform_class must be solana_swap_aggregator");
+  if (body.venue_id && body.venue_id !== "jupiter") errors.push("venue_id must be jupiter");
+  if (!["user_stealth", "ghola_pooled", undefined, null].includes(body.execution_mode)) {
+    errors.push("execution_mode is unsupported");
+  }
+  if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
+  if (!["read", "preview_order", "swap", "reconcile"].includes(body.operation_class)) {
+    errors.push("operation_class is unsupported");
+  }
+  const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "user_stealth";
+  if ("encrypted_execution_vault" in body) {
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  } else if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true" && executionMode !== "ghola_pooled") {
+    errors.push("encrypted_execution_vault is required for live Jupiter submit");
+  }
+  if (executionMode === "ghola_pooled" && !isNonEmptyString(body.allocation_commitment)) {
+    errors.push("allocation_commitment is required for pooled Jupiter submit");
+  }
+  if ("encrypted_execution_instruction_bundle" in body) {
+    errors.push(...validateEncryptedBundle(
+      body.encrypted_execution_instruction_bundle,
+      recipient,
+      "encrypted_execution_instruction_bundle",
+    ));
+  } else {
+    errors.push("encrypted_execution_instruction_bundle is required");
+  }
+  return errors;
+}
+
+function validateSolanaSwapReconcileRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext Jupiter credentials, strategy, prompt, policy, or swap payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
+  if ("encrypted_execution_instruction_bundle" in body) {
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_instruction_bundle, recipient, "encrypted_execution_instruction_bundle"));
+  }
+  if ("encrypted_execution_vault" in body) {
+    errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
   }
   return errors;
 }
@@ -1055,9 +1224,66 @@ function validateShieldedFundingAttestRequest(body) {
   return errors;
 }
 
+function validateCredentialVerifyRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) {
+    errors.push("request body must be an object");
+    return errors;
+  }
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy text, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.venue_id)) errors.push("venue_id is required");
+  if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
+  errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
+  return errors;
+}
+
+function validateAutopilotSessionRequest(body, recipient) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy text, or order payloads");
+  }
+  if (body.version !== 1 && body.version !== 2 && body.version !== undefined) {
+    errors.push("version must be 1 or 2");
+  }
+  if (!isNonEmptyString(body.owner_commitment)) errors.push("owner_commitment is required");
+  const policy = body.session_policy;
+  if (policy !== undefined && !isObject(policy)) errors.push("session_policy must be an object");
+  if (isObject(policy)) {
+    if (policy.venue_allowlist !== undefined && !Array.isArray(policy.venue_allowlist)) {
+      errors.push("session_policy.venue_allowlist must be an array");
+    }
+    if (policy.market_allowlist !== undefined && !Array.isArray(policy.market_allowlist)) {
+      errors.push("session_policy.market_allowlist must be an array");
+    }
+    if (policy.kill_switch === true) errors.push("session_policy kill switch is active");
+  }
+  const access = body.venue_access || body.venue_vaults;
+  if (access !== undefined && !isObject(access)) errors.push("venue_access must be an object");
+  if (isObject(access)) {
+    for (const [venue, value] of Object.entries(access)) {
+      if (!isObject(value)) {
+        errors.push(`venue_access.${venue} must be an object`);
+        continue;
+      }
+      if ("encrypted_execution_vault" in value && value.encrypted_execution_vault !== null) {
+        errors.push(...validateEncryptedBundle(
+          value.encrypted_execution_vault,
+          recipient,
+          `venue_access.${venue}.encrypted_execution_vault`,
+        ));
+      }
+    }
+  }
+  return errors;
+}
+
 export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
-  const state = options.state || createWorkerState(dataDir());
+  const state = options.state || createConfiguredWorkerState(dataDir());
 
   return createServer(async (req, res) => {
     try {
@@ -1091,15 +1317,233 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, 200, await publicRecipient(recipient));
       }
 
-      if (req.method === "POST" && url.pathname === "/hyperliquid/managed/allocations") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
+      if (req.method === "POST" && url.pathname === "/autopilot/sessions") {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "autopilot:control",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateAutopilotSessionRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid autopilot session request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const session = await createAutopilotSession({
+          body,
+          recipient,
+          state,
+          provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
+        });
+        return json(res, 201, {
+          version: 1,
+          session,
+          events: await state.listAutopilotEvents(session.autopilot_session_id),
+        });
+      }
+
+      const autopilotControl = url.pathname.match(/^\/autopilot\/sessions\/([^/]+)\/(pause|resume|kill)$/);
+      if (req.method === "POST" && autopilotControl) {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const rejected = await authorizeWorkerRequest(req, {
+          path: url.pathname,
+          scope: "autopilot:control",
+          body: {},
+          state,
+          expected: {
+            autopilot_session_id: autopilotControl[1],
+            action: autopilotControl[2],
+          },
+        });
+        if (authJson(res, rejected)) return;
+        const result = await controlAutopilotSession({
+          sessionId: autopilotControl[1],
+          action: autopilotControl[2],
+          state,
+          recipient,
+        });
+        if (!result) return json(res, 404, { error: "autopilot_session_not_found" });
+        return json(res, 200, { version: 1, ...result });
+      }
+
+      const autopilotSession = url.pathname.match(/^\/autopilot\/sessions\/([^/]+)$/);
+      if (req.method === "GET" && autopilotSession) {
+        const rejected = await authorizeWorkerRequest(req, {
+          path: url.pathname,
+          scope: "autopilot:read",
+          body: {},
+          state,
+          expected: { autopilot_session_id: autopilotSession[1] },
+        });
+        if (authJson(res, rejected)) return;
+        const result = await listAutopilotEvents({
+          sessionId: autopilotSession[1],
+          state,
+        });
+        if (!result) return json(res, 404, { error: "autopilot_session_not_found" });
+        return json(res, 200, { version: 1, ...result });
+      }
+
+      const autopilotDecisions = url.pathname.match(/^\/autopilot\/sessions\/([^/]+)\/decisions$/);
+      if (req.method === "GET" && autopilotDecisions) {
+        const rejected = await authorizeWorkerRequest(req, {
+          path: url.pathname,
+          scope: "autopilot:read",
+          body: {},
+          state,
+          expected: { autopilot_session_id: autopilotDecisions[1] },
+        });
+        if (authJson(res, rejected)) return;
+        const result = await listAutopilotEvents({
+          sessionId: autopilotDecisions[1],
+          state,
+        });
+        if (!result) return json(res, 404, { error: "autopilot_session_not_found" });
+        return json(res, 200, {
+          version: 1,
+          session: result.session,
+          decisions: await state.listAutopilotDecisions(autopilotDecisions[1]),
+        });
+      }
+
+      const autopilotPositions = url.pathname.match(/^\/autopilot\/sessions\/([^/]+)\/positions$/);
+      if (req.method === "GET" && autopilotPositions) {
+        const rejected = await authorizeWorkerRequest(req, {
+          path: url.pathname,
+          scope: "autopilot:read",
+          body: {},
+          state,
+          expected: { autopilot_session_id: autopilotPositions[1] },
+        });
+        if (authJson(res, rejected)) return;
+        const result = await listAutopilotEvents({
+          sessionId: autopilotPositions[1],
+          state,
+        });
+        if (!result) return json(res, 404, { error: "autopilot_session_not_found" });
+        return json(res, 200, {
+          version: 1,
+          session: result.session,
+          positions: await state.listAutopilotPositions(autopilotPositions[1]),
+        });
+      }
+
+      const autopilotOpportunities = url.pathname.match(/^\/autopilot\/sessions\/([^/]+)\/opportunities$/);
+      if (req.method === "GET" && autopilotOpportunities) {
+        const rejected = await authorizeWorkerRequest(req, {
+          path: url.pathname,
+          scope: "autopilot:read",
+          body: {},
+          state,
+          expected: { autopilot_session_id: autopilotOpportunities[1] },
+        });
+        if (authJson(res, rejected)) return;
+        const result = await listAutopilotEvents({
+          sessionId: autopilotOpportunities[1],
+          state,
+        });
+        if (!result) return json(res, 404, { error: "autopilot_session_not_found" });
+        return json(res, 200, {
+          version: 1,
+          session: result.session,
+          opportunities: await state.listAutopilotOpportunities(autopilotOpportunities[1]),
+        });
+      }
+
+      const autopilotEvents = url.pathname.match(/^\/autopilot\/sessions\/([^/]+)\/events$/);
+      if (req.method === "GET" && autopilotEvents) {
+        const rejected = await authorizeWorkerRequest(req, {
+          path: url.pathname,
+          scope: "autopilot:read",
+          body: {},
+          state,
+          expected: { autopilot_session_id: autopilotEvents[1] },
+        });
+        if (authJson(res, rejected)) return;
+        const initial = await listAutopilotEvents({
+          sessionId: autopilotEvents[1],
+          state,
+        });
+        if (!initial) return json(res, 404, { error: "autopilot_session_not_found" });
+        if (initial.session.status === "running") {
+          startAutopilotLoop({ sessionId: initial.session.autopilot_session_id, state, recipient });
+        }
+        sseHeaders(res);
+        let closed = false;
+        const seen = new Set();
+        const emitCurrent = async () => {
+          const current = await listAutopilotEvents({
+            sessionId: autopilotEvents[1],
+            state,
+          });
+          if (!current) {
+            writeSse(res, "stream_status", {
+              version: 1,
+              stream_status: "closed",
+              error: "autopilot_session_not_found",
+              updated_at: new Date().toISOString(),
+            });
+            res.end();
+            return false;
+          }
+          writeSse(res, "session_state", current.session);
+          for (const event of current.events) {
+            if (seen.has(event.event_id)) continue;
+            seen.add(event.event_id);
+            writeSse(res, event.type, event);
+          }
+          writeSse(res, "stream_status", {
+            version: 1,
+            stream_status: "live",
+            updated_at: new Date().toISOString(),
+          });
+          return true;
+        };
+        await emitCurrent();
+        const timer = setInterval(async () => {
+          if (closed || !(await emitCurrent())) {
+            clearInterval(timer);
+          }
+        }, 5_000);
+        timer.unref?.();
+        req.on("close", () => {
+          closed = true;
+          clearInterval(timer);
+        });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/hyperliquid/managed/allocations") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "session:create",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "hyperliquid",
+            platform_class: "hyperliquid_style_market",
+            operation_class: "managed_allocation",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateHyperliquidManagedAllocationRequest(body);
         if (errors.length > 0) {
           return json(res, 400, {
@@ -1113,22 +1557,25 @@ export function createPrivateAgentWorkerServer(options = {}) {
             missing: ready.missing,
           });
         }
-        const allocation = createHyperliquidManagedAllocation({ body, state });
+        const allocation = await createHyperliquidManagedAllocation({ body, state });
         return json(res, 201, allocation);
       }
 
       if (req.method === "POST" && url.pathname === "/private-agent/sessions") {
         // Fail closed: a missing execution token throws a 503 (handled by the
         // outer catch) rather than allowing unauthenticated sealed execution.
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
 
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "session:create",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateSessionRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
@@ -1154,15 +1601,50 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, 201, receipt);
       }
 
-      if (req.method === "POST" && url.pathname === "/hyperliquid/sessions") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
+      if (req.method === "POST" && url.pathname === "/venues/credentials/verify") {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "credential:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateCredentialVerifyRequest(body, recipient);
+        if (errors.length) {
+          return json(res, 400, {
+            error: "invalid credential verification request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const verification = await verifyVenueCredential({ body, recipient, state });
+        return json(res, 200, verification);
+      }
+
+      if (req.method === "POST" && url.pathname === "/hyperliquid/sessions") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "session:create",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "hyperliquid",
+            platform_class: "hyperliquid_style_market",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateHyperliquidSessionRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
@@ -1187,14 +1669,20 @@ export function createPrivateAgentWorkerServer(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/hyperliquid/account-snapshot") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "reconcile:read",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "hyperliquid",
+            platform_class: "hyperliquid_style_market",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateHyperliquidAccountSnapshotRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
@@ -1214,14 +1702,20 @@ export function createPrivateAgentWorkerServer(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/hyperliquid/account-stream") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "reconcile:read",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "hyperliquid",
+            platform_class: "hyperliquid_style_market",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateHyperliquidAccountSnapshotRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
@@ -1271,14 +1765,20 @@ export function createPrivateAgentWorkerServer(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/hyperliquid/orders") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:submit",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "hyperliquid",
+            platform_class: "hyperliquid_style_market",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateHyperliquidOrderRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
@@ -1297,15 +1797,58 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, 202, receipt);
       }
 
-      if (req.method === "POST" && url.pathname === "/hyperliquid/reconcile") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
+      if (req.method === "POST" && url.pathname === "/hyperliquid/verify") {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        if (req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "hyperliquid",
+            platform_class: "hyperliquid_style_market",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateHyperliquidOrderRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid hyperliquid private verification request",
+            details: errors,
+            error_code: hyperliquidValidationErrorCode(errors),
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const receipt = await verifyHyperliquidOrderNoSubmit({ body, recipient, state });
+        return json(res, 200, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/hyperliquid/reconcile") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "reconcile:read",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "hyperliquid",
+            platform_class: "hyperliquid_style_market",
+            operation_class: "reconcile",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateHyperliquidReconcileRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
@@ -1314,36 +1857,34 @@ export function createPrivateAgentWorkerServer(options = {}) {
             error_code: hyperliquidValidationErrorCode(errors),
           });
         }
-        if (body.encrypted_execution_vault && body.encrypted_execution_instruction_bundle) {
-          const receipt = await executeHyperliquidOrder({
-            body: {
-              ...body,
-              vault_commitment: body.vault_commitment || "vault_commitment_redacted",
-              policy_commitment: body.policy_commitment || "policy_commitment_redacted",
-              operation_class: "reconcile",
-            },
-            recipient,
-            state,
-          });
-          return json(res, 200, receipt);
-        }
-        return json(res, 200, hyperliquidOrderReceipt({
-          ...body,
-          vault_commitment: body.vault_commitment || "vault_commitment_redacted",
-          policy_commitment: body.policy_commitment || "policy_commitment_redacted",
-          operation_class: "reconcile",
-        }, "reconciled"));
+        return json(res, 200, await reconcileStoredExecution({
+          body: {
+            ...body,
+            vault_commitment: body.vault_commitment || "vault_commitment_redacted",
+            policy_commitment: body.policy_commitment || "policy_commitment_redacted",
+            operation_class: "reconcile",
+          },
+          state,
+          venue_id: "hyperliquid",
+          platform_class: "hyperliquid_style_market",
+        }));
       }
 
       if (req.method === "POST" && url.pathname === "/venues/coinbase/sessions") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "session:create",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "coinbase_advanced",
+            platform_class: "coinbase_style_provider",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateCoinbaseSessionRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
@@ -1367,14 +1908,20 @@ export function createPrivateAgentWorkerServer(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/venues/coinbase/orders") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:submit",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "coinbase_advanced",
+            platform_class: "coinbase_style_provider",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateCoinbaseOrderRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
@@ -1393,37 +1940,28 @@ export function createPrivateAgentWorkerServer(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/venues/coinbase/reconcile") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "reconcile:read",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "coinbase_advanced",
+            platform_class: "coinbase_style_provider",
+            execution_mode: body.execution_mode || "partner_omnibus",
+            operation_class: "reconcile",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateCoinbaseReconcileRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
             error: "invalid coinbase reconcile request",
             details: errors,
           });
-        }
-        if (
-          body.encrypted_execution_instruction_bundle &&
-          (body.execution_mode === "partner_omnibus" || body.encrypted_execution_vault)
-        ) {
-          const receipt = await executeCoinbaseOrder({
-            body: {
-              ...body,
-              venue_id: "coinbase_advanced",
-              platform_class: "coinbase_style_provider",
-              execution_mode: body.execution_mode || "partner_omnibus",
-              operation_class: "reconcile",
-            },
-            recipient,
-            state,
-          });
-          return json(res, 200, receipt);
         }
         return json(res, 200, coinbaseOrderReceipt({
           ...body,
@@ -1435,14 +1973,20 @@ export function createPrivateAgentWorkerServer(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/venues/solana-perps/orders") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:submit",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: body.venue_id || "phoenix",
+            platform_class: "solana_perps_market",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateSolanaPerpsOrderRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
@@ -1461,17 +2005,23 @@ export function createPrivateAgentWorkerServer(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/venues/solana-perps/verify") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
         if (req.headers["x-ghola-no-submit-verify"] !== "true") {
           return json(res, 400, { error: "no-submit verification header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: body.venue_id || "phoenix",
+            platform_class: "solana_perps_market",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateSolanaPerpsOrderRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
@@ -1490,14 +2040,22 @@ export function createPrivateAgentWorkerServer(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/venues/solana-perps/reconcile") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "reconcile:read",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: body.venue_id || "phoenix",
+            platform_class: "solana_perps_market",
+            execution_mode: body.execution_mode || "user_stealth",
+            operation_class: "reconcile",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateSolanaPerpsReconcileRequest(body, recipient);
         if (errors.length > 0) {
           return json(res, 400, {
@@ -1505,38 +2063,138 @@ export function createPrivateAgentWorkerServer(options = {}) {
             details: errors,
           });
         }
-        if (body.encrypted_execution_instruction_bundle) {
-          const receipt = await executeSolanaPerpsOrder({
-            body: {
-              ...body,
-              venue_id: body.venue_id || "phoenix",
-              platform_class: "solana_perps_market",
-              execution_mode: body.execution_mode || "user_stealth",
-              operation_class: "reconcile",
-            },
-            recipient,
-            state,
-          });
-          return json(res, 200, receipt);
-        }
-        return json(res, 200, solanaPerpsOrderReceipt({
-          ...body,
+        return json(res, 200, await reconcileStoredExecution({
+          body: {
+            ...body,
+            venue_id: body.venue_id || "phoenix",
+            platform_class: "solana_perps_market",
+            execution_mode: body.execution_mode || "user_stealth",
+            operation_class: "reconcile",
+          },
+          state,
           venue_id: body.venue_id || "phoenix",
           platform_class: "solana_perps_market",
-          execution_mode: body.execution_mode || "user_stealth",
-          operation_class: "reconcile",
-        }, "reconciled"));
+        }));
       }
 
-      if (req.method === "POST" && url.pathname === "/omnibus/allocations") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
+      if (req.method === "POST" && url.pathname === "/venues/solana-swap/orders") {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:submit",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "jupiter",
+            platform_class: "solana_swap_aggregator",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateSolanaSwapOrderRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid jupiter private swap request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const receipt = await executeJupiterSwapOrder({ body, recipient, state });
+        return json(res, 202, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/solana-swap/verify") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "jupiter",
+            platform_class: "solana_swap_aggregator",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateSolanaSwapOrderRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid jupiter private verification request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const receipt = await verifyJupiterSwapNoSubmit({ body, recipient, state });
+        return json(res, 200, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/solana-swap/reconcile") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "reconcile:read",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "jupiter",
+            platform_class: "solana_swap_aggregator",
+            execution_mode: body.execution_mode || "user_stealth",
+            operation_class: "reconcile",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateSolanaSwapReconcileRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid jupiter reconcile request",
+            details: errors,
+          });
+        }
+        return json(res, 200, await reconcileStoredExecution({
+          body: {
+            ...body,
+            venue_id: "jupiter",
+            platform_class: "solana_swap_aggregator",
+            execution_mode: body.execution_mode || "user_stealth",
+          },
+          state,
+          venue_id: "jupiter",
+          platform_class: "solana_swap_aggregator",
+        }));
+      }
+
+      if (req.method === "POST" && url.pathname === "/omnibus/allocations") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "session:create",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body.omnibus_allocation || body, {
+            operation_class: "omnibus_allocation",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         if (!isObject(body) || containsPlaintextLeakKey(body)) {
           return json(res, 400, {
             error: "invalid omnibus allocation request",
@@ -1554,14 +2212,19 @@ export function createPrivateAgentWorkerServer(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/omnibus/reconcile") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "reconcile:read",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body.omnibus_allocation || body, {
+            operation_class: "reconcile",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         if (!isObject(body) || containsPlaintextLeakKey(body)) {
           return json(res, 400, {
             error: "invalid omnibus reconcile request",
@@ -1572,14 +2235,20 @@ export function createPrivateAgentWorkerServer(options = {}) {
       }
 
       if (req.method === "POST" && url.pathname === "/venues/shielded-funding/attest") {
-        const token = requiredAuthToken();
-        if (!tokensEqual(bearer(req), token)) {
-          return json(res, 401, { error: "unauthorized" });
-        }
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
         }
-        const body = await readJson(req);
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "shielded_funding",
+            operation_class: "funding_attestation",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
         const errors = validateShieldedFundingAttestRequest(body);
         if (errors.length > 0) {
           return json(res, 400, {

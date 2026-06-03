@@ -53,8 +53,14 @@ export function assertHyperliquidPilotNetwork(credential, instruction = null) {
     throw new HyperliquidExecutionError("hyperliquid mainnet read mode is disabled", 400);
   }
   if (operationClass === "cancel") {
-    if (liveMode === "tiny_fill") return;
+    if (liveMode === "tiny_fill" || liveMode === "full_ticket") return;
     throw new HyperliquidExecutionError("hyperliquid mainnet cancel mode is disabled", 400);
+  }
+  if (liveMode === "full_ticket") {
+    if (operationClass !== "limit_order") {
+      throw new HyperliquidExecutionError("hyperliquid mainnet submit requires limit_order operation", 400);
+    }
+    return;
   }
   if (operationClass !== "limit_order" || liveMode !== "tiny_fill") {
     throw new HyperliquidExecutionError("hyperliquid mainnet submit requires tiny_fill live mode", 400);
@@ -76,16 +82,17 @@ export function hyperliquidManagedAccountRefs() {
 }
 
 export function loadManagedHyperliquidCredential(allocation) {
-  if (allocation?.network !== "testnet") {
+  if (allocation?.network !== "testnet" && allocation?.execution_mode !== "ghola_pooled") {
     throw new HyperliquidExecutionError("hyperliquid managed pilot is testnet-only", 400);
   }
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    const network = allocation?.execution_mode === "ghola_pooled" ? "mainnet" : "testnet";
     return {
-      network: "testnet",
-      base_url: TESTNET_API_URL,
+      network,
+      base_url: network === "testnet" ? TESTNET_API_URL : MAINNET_API_URL,
       account_address: "0x0000000000000000000000000000000000000001",
       api_wallet_private_key: "0x1111111111111111111111111111111111111111111111111111111111111111",
-      agent_name: "dry-run-managed",
+      agent_name: allocation?.execution_mode === "ghola_pooled" ? "dry-run-ghola-pooled" : "dry-run-managed",
     };
   }
   const accounts = managedHyperliquidAccounts();
@@ -100,7 +107,7 @@ export function loadManagedHyperliquidCredential(allocation) {
     base_url: selected.network === "testnet" ? TESTNET_API_URL : MAINNET_API_URL,
     account_address: String(selected.account_address || "").toLowerCase(),
     api_wallet_private_key: String(selected.api_wallet_private_key || "").toLowerCase(),
-    agent_name: selected.agent_name || "managed-testnet",
+    agent_name: selected.agent_name || (allocation?.execution_mode === "ghola_pooled" ? "ghola-pooled" : "managed-testnet"),
   };
   if (!/^0x[0-9a-f]{40}$/i.test(credential.account_address)) {
     throw new HyperliquidExecutionError("hyperliquid managed account address is invalid", 503);
@@ -147,6 +154,46 @@ export async function submitHyperliquidExecution({
     },
     fills: Array.isArray(result.fills) ? result.fills.slice(0, 25) : [],
   };
+}
+
+export async function verifyHyperliquidNoSubmit({
+  credential,
+  instruction,
+  cloid,
+  executionMode = "byo_api_key",
+  runner = defaultRunner,
+}) {
+  assertHyperliquidPilotNetwork(credential, instruction);
+  if (
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" ||
+    process.env.PRIVATE_AGENT_HYPERLIQUID_NO_SUBMIT_LOCAL_CHECKS === "true"
+  ) {
+    return hyperliquidNoSubmitResult({
+      instruction,
+      cloid,
+      executionMode,
+      runnerResult: {
+        sdk_checked: true,
+        api_wallet_loaded: true,
+        market_data_checked: true,
+        account_state_checked: true,
+        order_request_checked: true,
+      },
+    });
+  }
+  const runnerResult = await runner({
+    credential,
+    instruction,
+    cloid,
+    verify_no_submit: true,
+    timeout_ms: Number.parseInt(process.env.PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS || "12000", 10),
+  });
+  return hyperliquidNoSubmitResult({
+    instruction,
+    cloid,
+    executionMode,
+    runnerResult,
+  });
 }
 
 export async function readHyperliquidAccountSnapshot({
@@ -581,8 +628,50 @@ function hyperliquidAccountVisibility(accountSource) {
     main_wallet_exposed: false,
     ghola_operator_sees: "commitment_and_ciphertext_only",
     hyperliquid_sees: "execution_account_and_order_activity",
-    venue_access_source: accountSource === "ghola_managed" ? "ghola_managed_testnet" : "user_provided_credentials",
+    venue_access_source: accountSource === "ghola_pooled"
+      ? "ghola_pooled_venue_account"
+      : accountSource === "ghola_managed" ? "ghola_managed_testnet" : "user_provided_credentials",
     public_chain_sees: "no_direct_main_wallet_trade_settlement",
+  };
+}
+
+function hyperliquidNoSubmitResult({ instruction, cloid, executionMode, runnerResult }) {
+  const market = instruction.order?.market || instruction.cancel?.market || null;
+  const checks = {
+    sealed_vault_opened: true,
+    sealed_instruction_opened: true,
+    authority_derived: runnerResult.api_wallet_loaded === true,
+    api_wallet_loaded: runnerResult.api_wallet_loaded === true,
+    policy_enforced: true,
+    live_gate_enforced: true,
+    rpc_reachable: runnerResult.market_data_checked === true,
+    hyperliquid_api_reachable: runnerResult.market_data_checked === true,
+    phoenix_sdk_ready: runnerResult.sdk_checked === true,
+    hyperliquid_sdk_ready: runnerResult.sdk_checked === true,
+    account_read_checked: runnerResult.account_state_checked === true,
+    order_packet_built: runnerResult.order_request_checked === true,
+    order_request_built: runnerResult.order_request_checked === true,
+    transaction_broadcast: false,
+  };
+  return {
+    status: "verified_no_funds",
+    provider_ref_seed: {
+      venue: "hyperliquid",
+      cloid,
+      execution_mode: executionMode,
+      no_submit: true,
+    },
+    result_seed: {
+      kind: "hyperliquid_no_submit_verification",
+      operation_class: instruction.operation_class,
+      market_commitment: market ? `hyperliquid_market_${sha256Hex(String(market)).slice(0, 32)}` : null,
+      sdk_checked: checks.hyperliquid_sdk_ready,
+      market_data_checked: checks.hyperliquid_api_reachable,
+      account_state_checked: checks.account_read_checked,
+      order_request_checked: checks.order_request_built,
+      transaction_broadcast: false,
+    },
+    checks,
   };
 }
 

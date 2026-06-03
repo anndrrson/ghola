@@ -104,6 +104,46 @@ describe("solana perps live connector", () => {
     );
   });
 
+  it("blocks live Solana perps orders above the slippage cap", async () => {
+    process.env.PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS = "25";
+    const keypair = Keypair.generate();
+    const credential = solanaPerpsCredentialFromVault({
+      version: 1,
+      kind: "ghola_solana_perps_execution_vault",
+      venue_id: "phoenix",
+      network: "mainnet",
+      authority: keypair.publicKey.toBase58(),
+      wallet_private_key: Array.from(keypair.secretKey),
+    });
+
+    await assert.rejects(
+      () => submitSolanaPerpsExecution({
+        credential,
+        venueId: "phoenix",
+        executionMode: "user_stealth",
+        clientOrderId: "phoenix_client_order_slippage",
+        instruction: {
+          version: 1,
+          venue_id: "phoenix",
+          operation_class: "perp_limit_order",
+          order: {
+            market: "SOL-PERP",
+            side: "buy",
+            quote_size: "5",
+            limit_price: "100",
+            max_slippage_bps: "50",
+            tif: "Ioc",
+            live_order_mode: "tiny_fill",
+          },
+        },
+        runner: async () => {
+          throw new Error("runner should not be called");
+        },
+      }),
+      /slippage/,
+    );
+  });
+
   it("classifies insufficient Solana perps funds separately from venue rejection", async () => {
     const keypair = Keypair.generate();
     const credential = solanaPerpsCredentialFromVault({

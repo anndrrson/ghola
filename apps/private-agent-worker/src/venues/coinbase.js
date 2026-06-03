@@ -116,6 +116,7 @@ export async function submitCoinbaseExecution({
   clientOrderId,
   fetchImpl = fetch,
 }) {
+  assertCoinbaseLiveEnabled(credential, instruction);
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
     await assertCoinbaseKeyPermissions(credential, fetchImpl);
   }
@@ -198,6 +199,77 @@ export async function submitCoinbaseExecution({
       product_id: payload.product_id,
     },
   };
+}
+
+export async function verifyCoinbaseNoSubmit({
+  credential,
+  instruction,
+  clientOrderId,
+  fetchImpl = fetch,
+}) {
+  assertCoinbaseLiveEnabled(credential, instruction);
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
+    await assertCoinbaseKeyPermissions(credential, fetchImpl);
+  }
+  const payload = instruction.order
+    ? buildCoinbaseOrderPayload(instruction, clientOrderId, credential)
+    : null;
+  return {
+    status: "verified_no_funds",
+    provider_ref_seed: {
+      venue: "coinbase_advanced",
+      client_order_id: clientOrderId,
+      no_submit: true,
+    },
+    result_seed: {
+      kind: "coinbase_no_submit",
+      product_id: payload?.product_id || instruction.cancel?.market || null,
+      order_request_built: Boolean(payload || instruction.cancel || instruction.reconcile),
+    },
+    checks: {
+      coinbase_api_reachable: true,
+      coinbase_order_request_built: Boolean(payload || instruction.cancel || instruction.reconcile),
+      transaction_broadcast: false,
+    },
+  };
+}
+
+function assertCoinbaseLiveEnabled(credential, instruction) {
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") return;
+  if (process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE !== "full") {
+    throw new CoinbaseExecutionError("coinbase live submit is disabled", 503);
+  }
+  if (credential?.network !== "mainnet" && credential?.network !== "sandbox") {
+    throw new CoinbaseExecutionError("coinbase execution network is unsupported", 400);
+  }
+  const allowed = new Set(["preview_order", "spot_limit_order", "spot_market_order", "cancel", "fills", "reconcile"]);
+  if (!allowed.has(instruction.operation_class)) {
+    throw new CoinbaseExecutionError("coinbase operation is unsupported", 400);
+  }
+  if (!instruction.order) return;
+  const productId = String(instruction.order.market || "").trim().toUpperCase();
+  const productAllowlist = coinbaseProductAllowlist();
+  if (productAllowlist.size > 0 && !productAllowlist.has(productId)) {
+    throw new CoinbaseExecutionError("coinbase product is outside allowlist", 400);
+  }
+  if (productAllowlist.size === 0 && process.env.NODE_ENV === "production") {
+    throw new CoinbaseExecutionError("coinbase product allowlist is not configured", 503);
+  }
+  const notional = estimateCoinbaseNotionalUsd(instruction.order);
+  const maxNotional = Math.min(
+    capUsd(
+      process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD ||
+        process.env.GHOLA_COINBASE_LIVE_MAX_NOTIONAL_USD,
+      1_000,
+    ),
+    capUsd(process.env.PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD || process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD, 1_000),
+  );
+  if (!Number.isFinite(notional) || notional <= 0) {
+    throw new CoinbaseExecutionError("coinbase live order notional must be positive", 400);
+  }
+  if (notional > maxNotional) {
+    throw new CoinbaseExecutionError("coinbase live order exceeds notional cap", 400);
+  }
 }
 
 export async function reconcileCoinbaseExecution({ credential, instruction, clientOrderId, fetchImpl = fetch }) {
@@ -300,6 +372,32 @@ function safeCoinbaseBaseUrl(baseUrl, network) {
   } catch {
     return fallback;
   }
+}
+
+function coinbaseProductAllowlist() {
+  const configured = process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS ||
+    process.env.GHOLA_COINBASE_ALLOWED_PRODUCTS ||
+    "";
+  return new Set(
+    configured
+      .split(",")
+      .map((product) => product.trim().toUpperCase())
+      .filter(Boolean),
+  );
+}
+
+function estimateCoinbaseNotionalUsd(order) {
+  const quote = Number.parseFloat(String(order.quote_size || ""));
+  if (Number.isFinite(quote) && quote > 0) return quote;
+  const base = Number.parseFloat(String(order.base_size || ""));
+  const price = Number.parseFloat(String(order.limit_price || ""));
+  if (Number.isFinite(base) && Number.isFinite(price) && base > 0 && price > 0) return base * price;
+  return 0;
+}
+
+function capUsd(value, fallback) {
+  const parsed = Number.parseFloat(String(value || ""));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function base64UrlJson(value) {

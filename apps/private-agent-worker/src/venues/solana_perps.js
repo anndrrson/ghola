@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import bs58 from "bs58";
 import {
   ComputeBudgetProgram,
@@ -11,6 +12,7 @@ import {
 import { AccountRole } from "@solana/kit";
 import {
   createPhoenixClient,
+  placeLimitOrder,
   placeMarketOrder,
   Side,
 } from "@ellipsis-labs/rise";
@@ -78,6 +80,46 @@ export function solanaPerpsCredentialFromVault(vault) {
       0,
     ),
   };
+}
+
+export function loadPooledSolanaPerpsCredential(venueId = "phoenix") {
+  const normalizedVenueId = normalizeSolanaPerpsVenueId(venueId);
+  if (normalizedVenueId !== "phoenix") {
+    throw new SolanaPerpsExecutionError("only phoenix pooled solana perps pilot is enabled", 400, "venue_rejected");
+  }
+  const raw = process.env.PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON ||
+    process.env.PRIVATE_AGENT_SOLANA_PERPS_POOL_VAULT_JSON ||
+    readPooledVaultPath(process.env.PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_PATH) ||
+    readPooledVaultPath(process.env.PRIVATE_AGENT_SOLANA_PERPS_POOL_VAULT_PATH);
+  if (!raw && process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    const keypair = Keypair.generate();
+    return {
+      venueId: "phoenix",
+      network: "mainnet",
+      authority: keypair.publicKey.toBase58(),
+      keypair,
+      apiUrl: DEFAULT_PHOENIX_API_URL,
+      rpcUrl: DEFAULT_SOLANA_RPC_URL,
+      traderPdaIndex: 0,
+      traderSubaccountIndex: 0,
+      priorityFeeMicroLamports: 0,
+    };
+  }
+  if (!raw) {
+    throw new SolanaPerpsExecutionError("pooled Phoenix trading authority is unavailable", 503, "venue_access_required");
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return solanaPerpsCredentialFromVault({
+      kind: "ghola_solana_perps_execution_vault",
+      venue_id: "phoenix",
+      network: "mainnet",
+      ...parsed,
+    });
+  } catch (error) {
+    if (error instanceof SolanaPerpsExecutionError) throw error;
+    throw new SolanaPerpsExecutionError("pooled Phoenix trading authority is invalid JSON", 503, "venue_access_required");
+  }
 }
 
 export async function submitSolanaPerpsExecution({
@@ -208,13 +250,7 @@ async function checkPhoenixNoSubmit({ credential, instruction, clientOrderId }) 
   });
   try {
     await client.exchange.ready();
-    await client.orderPackets.buildMarketOrderPacket({
-      symbol: order.market,
-      side: order.side === "buy" ? Side.Bid : Side.Ask,
-      baseUnits: orderBaseUnits(order),
-      priceLimitUsd: order.limit_price,
-      clientOrderId: clientOrderIdBigInt(clientOrderId),
-    });
+    await buildPhoenixOrderPacket({ client, order, clientOrderId });
     return {
       rpc_checked: true,
       phoenix_checked: true,
@@ -227,7 +263,7 @@ async function checkPhoenixNoSubmit({ credential, instruction, clientOrderId }) 
 
 function assertSolanaPerpsLiveEnabled(venueId, instruction, credential) {
   const liveMode = process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE || "disabled";
-  if (liveMode !== "sdk_runner") {
+  if (liveMode !== "sdk_runner" && liveMode !== "full_ticket") {
     throw new SolanaPerpsExecutionError(
       "solana perps live submit is disabled",
       503,
@@ -255,16 +291,40 @@ function assertSolanaPerpsLiveEnabled(venueId, instruction, credential) {
     throw new SolanaPerpsExecutionError("solana perps live pilot only supports tiny-fill orders", 400);
   }
   const order = instruction.order || {};
-  if (order.live_order_mode !== "tiny_fill" || order.tif !== "Ioc") {
+  if (liveMode !== "full_ticket" && (order.live_order_mode !== "tiny_fill" || order.tif !== "Ioc")) {
     throw new SolanaPerpsExecutionError("solana perps live order must use tiny_fill IOC mode", 400);
   }
+  if (liveMode === "full_ticket" && order.post_only === true) {
+    throw new SolanaPerpsExecutionError("phoenix post-only submit is not enabled yet", 400, "venue_rejected");
+  }
   const notional = estimateOrderNotionalUsd(order);
-  const cap = Math.min(capUsd(process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD, 5), 25);
+  const cap = liveMode === "full_ticket"
+    ? Math.min(
+      capUsd(process.env.PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD, 0),
+      capUsd(process.env.PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD || process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD, 1_000),
+    )
+    : Math.min(capUsd(process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD, 50), 50);
+  if (liveMode === "full_ticket" && cap <= 0) {
+    throw new SolanaPerpsExecutionError("solana perps full-ticket max notional is not configured", 400);
+  }
+  const slippage = Number.parseInt(order.max_slippage_bps || "50", 10);
+  const maxSlippage = Math.min(
+    capBps(
+      process.env.PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS ||
+        process.env.GHOLA_SOLANA_PERPS_MAX_SLIPPAGE_BPS ||
+        process.env.GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS,
+      100,
+    ),
+    100,
+  );
+  if (!Number.isInteger(slippage) || slippage < 1 || slippage > maxSlippage) {
+    throw new SolanaPerpsExecutionError("solana perps slippage is outside policy", 400, "venue_rejected");
+  }
   if (notional <= 0) {
     throw new SolanaPerpsExecutionError("solana perps live order notional must be positive", 400);
   }
   if (notional > cap) {
-    throw new SolanaPerpsExecutionError("solana perps tiny-fill exceeds live notional cap", 400);
+    throw new SolanaPerpsExecutionError("solana perps live order exceeds live notional cap", 400);
   }
 }
 
@@ -287,14 +347,11 @@ async function runPhoenixLiveOrder({ credential, instruction, clientOrderId }) {
   });
   try {
     await client.exchange.ready();
-    const packet = await client.orderPackets.buildMarketOrderPacket({
-      symbol: order.market,
-      side: order.side === "buy" ? Side.Bid : Side.Ask,
-      baseUnits: orderBaseUnits(order),
-      priceLimitUsd: order.limit_price,
-      clientOrderId: clientOrderIdBigInt(clientOrderId),
-    });
-    const signature = await placeMarketOrder(
+    const packet = await buildPhoenixOrderPacket({ client, order, clientOrderId });
+    const place = order.order_type === "limit" && order.live_order_mode !== "tiny_fill"
+      ? placeLimitOrder
+      : placeMarketOrder;
+    const signature = await place(
       transactionClient,
       {
         authority: credential.authority,
@@ -393,10 +450,36 @@ function secretBytes(value) {
   }
 }
 
-function orderBaseUnits(order) {
+async function buildPhoenixOrderPacket({ client, order, clientOrderId }) {
+  if (order.post_only === true) {
+    throw new SolanaPerpsExecutionError("phoenix post-only order packet is not enabled yet", 400, "venue_rejected");
+  }
+  if (order.order_type === "limit" && order.live_order_mode !== "tiny_fill") {
+    return client.orderPackets.buildLimitOrderPacket({
+      symbol: order.market,
+      side: order.side === "buy" ? Side.Bid : Side.Ask,
+      baseUnits: orderBaseUnits(order, order.limit_price),
+      priceUsd: order.limit_price,
+      clientOrderId: clientOrderIdBigInt(clientOrderId),
+    });
+  }
+  const priceLimitUsd = order.limit_price;
+  if (!priceLimitUsd) {
+    throw new SolanaPerpsExecutionError("phoenix market order requires a price limit", 400, "venue_rejected");
+  }
+  return client.orderPackets.buildMarketOrderPacket({
+    symbol: order.market,
+    side: order.side === "buy" ? Side.Bid : Side.Ask,
+    baseUnits: orderBaseUnits(order, priceLimitUsd),
+    priceLimitUsd,
+    clientOrderId: clientOrderIdBigInt(clientOrderId),
+  });
+}
+
+function orderBaseUnits(order, priceLimitUsd = order.limit_price) {
   if (order.base_size) return order.base_size;
   const quote = Number.parseFloat(order.quote_size || "");
-  const price = Number.parseFloat(order.limit_price || "");
+  const price = Number.parseFloat(priceLimitUsd || "");
   if (Number.isFinite(quote) && Number.isFinite(price) && quote > 0 && price > 0) {
     return trimDecimal(quote / price);
   }
@@ -451,6 +534,20 @@ function integerValue(value, fallback) {
 function capUsd(value, fallback) {
   const parsed = Number.parseFloat(String(value || ""));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function capBps(value, fallback) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readPooledVaultPath(path) {
+  if (!path) return "";
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    throw new SolanaPerpsExecutionError("pooled Phoenix trading authority file is unreadable", 503, "venue_access_required");
+  }
 }
 
 function sha256Hex(value) {

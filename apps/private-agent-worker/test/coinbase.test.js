@@ -57,7 +57,9 @@ describe("coinbase live adapter", () => {
 
   it("preflights permissions and submits redacted order calls with mocked network", async () => {
     const oldDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    const oldLiveMode = process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
     delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
     const credential = testCredential();
     const calls = [];
     const fetchImpl = async (url, init) => {
@@ -94,11 +96,91 @@ describe("coinbase live adapter", () => {
     } finally {
       if (oldDryRun === undefined) delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
       else process.env.PRIVATE_AGENT_VENUE_DRY_RUN = oldDryRun;
+      if (oldLiveMode === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = oldLiveMode;
     }
     assert.equal(result.status, "submitted");
     assert.equal(calls.length, 2);
     assert.match(calls[0].authorization, /^Bearer /);
     assert.equal(calls[1].url, "https://api-sandbox.coinbase.com/api/v3/brokerage/orders");
     assert.equal(JSON.stringify(result).includes("api_private_key"), false);
+  });
+
+  it("blocks products outside the Coinbase live allowlist before key preflight", async () => {
+    const oldDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    const oldLiveMode = process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+    const oldProducts = process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS;
+    delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
+    process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS = "BTC-USD";
+    try {
+      await assert.rejects(
+        () => submitCoinbaseExecution({
+          credential: testCredential(),
+          clientOrderId: "coinbase_product_blocked",
+          fetchImpl: async () => {
+            throw new Error("fetch should not be called");
+          },
+          instruction: {
+            operation_class: "spot_limit_order",
+            order: {
+              market: "SOL-USD",
+              side: "buy",
+              quote_size: "5",
+              limit_price: "100",
+              tif: "gtc",
+            },
+          },
+        }),
+        /outside allowlist/,
+      );
+    } finally {
+      if (oldDryRun === undefined) delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+      else process.env.PRIVATE_AGENT_VENUE_DRY_RUN = oldDryRun;
+      if (oldLiveMode === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = oldLiveMode;
+      if (oldProducts === undefined) delete process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS;
+      else process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS = oldProducts;
+    }
+  });
+
+  it("blocks Coinbase live orders above the notional cap before key preflight", async () => {
+    const oldDryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    const oldLiveMode = process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+    const oldProducts = process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS;
+    const oldCap = process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD;
+    delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
+    process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS = "BTC-USD";
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD = "1000";
+    try {
+      await assert.rejects(
+        () => submitCoinbaseExecution({
+          credential: testCredential(),
+          clientOrderId: "coinbase_notional_blocked",
+          fetchImpl: async () => {
+            throw new Error("fetch should not be called");
+          },
+          instruction: {
+            operation_class: "spot_market_order",
+            order: {
+              market: "BTC-USD",
+              side: "buy",
+              quote_size: "1001",
+            },
+          },
+        }),
+        /notional cap/,
+      );
+    } finally {
+      if (oldDryRun === undefined) delete process.env.PRIVATE_AGENT_VENUE_DRY_RUN;
+      else process.env.PRIVATE_AGENT_VENUE_DRY_RUN = oldDryRun;
+      if (oldLiveMode === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = oldLiveMode;
+      if (oldProducts === undefined) delete process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS;
+      else process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS = oldProducts;
+      if (oldCap === undefined) delete process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD;
+      else process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD = oldCap;
+    }
   });
 });
