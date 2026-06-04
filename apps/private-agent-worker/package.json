@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
+    "canary:arb:prod": "node ../../scripts/canary/private-agent-arb-production.mjs",
     "test": "node --test"
   },
   "engines": {

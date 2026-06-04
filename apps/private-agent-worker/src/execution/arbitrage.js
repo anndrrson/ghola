@@ -92,7 +92,8 @@ export async function runGuardedArbitrageTick({
   });
   let preflightReceipts;
   try {
-    preflightReceipts = await Promise.all([
+    const started = Date.now();
+    const preflight = Promise.all([
       verifyOrder({
         venue_id: opportunity.buy_venue,
         operation_class: operationForVenue(opportunity.buy_venue),
@@ -116,6 +117,9 @@ export async function runGuardedArbitrageTick({
         state,
       }),
     ]);
+    preflightReceipts = await withTimeout(preflight, config.max_execution_skew_ms, "arb_pair_preflight_timeout");
+    const latencyMs = Date.now() - started;
+    if (latencyMs > config.max_execution_skew_ms) throw new Error("arb_pair_preflight_skew_exceeded");
   } catch (error) {
     await appendEvent(state, session, "arb_reject", "Arbitrage pair preflight failed before submit.", {
       pair_commitment: pairCommitment,
@@ -131,6 +135,7 @@ export async function runGuardedArbitrageTick({
       verification_commitment: receipt.verification_commitment,
       result_commitment: receipt.result_commitment,
     })),
+    max_execution_skew_ms: config.max_execution_skew_ms,
   }, now);
   const buyLeg = executeOrder({
     venue_id: opportunity.buy_venue,
@@ -157,7 +162,10 @@ export async function runGuardedArbitrageTick({
 
   let receipts;
   try {
-    receipts = await Promise.all([buyLeg, sellLeg]);
+    const started = Date.now();
+    receipts = await withTimeout(Promise.all([buyLeg, sellLeg]), config.max_execution_skew_ms, "arb_pair_submit_timeout");
+    const latencyMs = Date.now() - started;
+    if (latencyMs > config.max_execution_skew_ms) throw new Error("arb_pair_submit_skew_exceeded");
   } catch (error) {
     await appendEvent(state, session, "unhedged_leg_requires_human", "One arbitrage leg failed before pair reconciliation.", {
       pair_commitment: pairCommitment,
@@ -213,29 +221,35 @@ export async function bestArbitrageOpportunity({ session, env = process.env, fet
         const grossEdgeBps = ((sell.price - buy.price) / buy.price) * 10_000;
         const costBps = feeBps(buy.venue_id, env) + feeBps(sell.venue_id, env) + Number(session.session_policy.max_slippage_bps || 0) * 2;
         const netEdgeBps = Math.round(grossEdgeBps - costBps);
+        const marketDataSkewMs = Math.abs(new Date(left.fetched_at).getTime() - new Date(right.fetched_at).getTime());
+        const reasonCodes = [
+          ...(netEdgeBps >= minNetEdgeBps(session, env) ? [] : ["net_edge_below_threshold"]),
+          ...(marketDataSkewMs <= maxMarketSkewMs(env) ? [] : ["market_data_skew_exceeded"]),
+        ];
         const legNotionalUsd = Math.min(
           bucketToUsd(session.session_policy.max_notional_bucket),
           remainingDailyNotional(session),
           capUsd(env.PRIVATE_AGENT_ARB_MAX_LEG_NOTIONAL_USD, Number.POSITIVE_INFINITY),
         );
+        if (legNotionalUsd <= 0) reasonCodes.push("notional_cap_exhausted");
         candidates.push({
           version: 1,
           opportunity_id: `arbopp_${digest({ market, buy, sell, now: now.toISOString() }).slice(0, 24)}`,
-          status: netEdgeBps >= minNetEdgeBps(session, env) && legNotionalUsd > 0 ? "ready" : "blocked",
+          status: reasonCodes.length === 0 ? "ready" : "blocked",
           market,
           buy_venue: buy.venue_id,
           sell_venue: sell.venue_id,
           buy_price: buy.price,
           sell_price: sell.price,
+          buy_fetched_at: buy.fetched_at,
+          sell_fetched_at: sell.fetched_at,
+          market_data_skew_ms: marketDataSkewMs,
           gross_edge_bps: Math.round(grossEdgeBps),
           estimated_cost_bps: Math.round(costBps),
           net_edge_bps: netEdgeBps,
           min_net_edge_bps: minNetEdgeBps(session, env),
           leg_notional_usd: legNotionalUsd,
-          reason_codes: [
-            ...(netEdgeBps >= minNetEdgeBps(session, env) ? [] : ["net_edge_below_threshold"]),
-            ...(legNotionalUsd > 0 ? [] : ["notional_cap_exhausted"]),
-          ],
+          reason_codes: reasonCodes,
           created_at: now.toISOString(),
         });
       }
@@ -289,18 +303,77 @@ async function marketSnapshots({ session, env, fetchImpl, now }) {
     const sell = capUsd(env.PRIVATE_AGENT_ARB_FORCE_SELL_PRICE, base * 1.03);
     const spotVenue = session.session_policy.venue_allowlist.includes("coinbase_advanced") ? "coinbase_advanced" : "jupiter";
     return [
-      snapshot({ venue_id: spotVenue, market, price: base, now, source: "forced" }),
-      snapshot({ venue_id: "hyperliquid", market, price: sell, now, source: "forced" }),
+      snapshot({ venue_id: spotVenue, market, price: base, now, source: "forced", latency_ms: 0 }),
+      snapshot({ venue_id: "hyperliquid", market, price: sell, now, source: "forced", latency_ms: 0 }),
     ];
   }
-  const out = [];
+  const timeoutMs = marketFetchTimeoutMs(env);
+  const markets = session.session_policy.market_allowlist
+    .map(normalizeMarket)
+    .filter((item) => SUPPORTED_MARKETS.has(item));
+  const tasks = [];
   for (const venue of readyVenues(session)) {
-    for (const market of session.session_policy.market_allowlist.map(normalizeMarket).filter((item) => SUPPORTED_MARKETS.has(item))) {
-      const price = await fetchVenuePrice({ venue, market, fetchImpl }).catch(() => null);
-      if (price) out.push(snapshot({ venue_id: venue, market, price, now, source: "live" }));
+    if (venue === "hyperliquid") {
+      tasks.push(fetchHyperliquidSnapshots({ markets, fetchImpl, timeoutMs }));
+      continue;
+    }
+    for (const market of markets) {
+      tasks.push(fetchTimedVenueSnapshot({ venue, market, fetchImpl, timeoutMs }));
     }
   }
-  return out;
+  return (await Promise.all(tasks)).flat().filter(Boolean);
+}
+
+async function fetchTimedVenueSnapshot({ venue, market, fetchImpl, timeoutMs }) {
+  const started = Date.now();
+  const price = await withTimeout(
+    fetchVenuePrice({ venue, market, fetchImpl }),
+    timeoutMs,
+    "market_fetch_timeout",
+  ).catch(() => null);
+  if (!price) return null;
+  return snapshot({
+    venue_id: venue,
+    market,
+    price,
+    now: new Date(),
+    source: "live",
+    latency_ms: Date.now() - started,
+  });
+}
+
+async function fetchHyperliquidSnapshots({ markets, fetchImpl, timeoutMs }) {
+  const started = Date.now();
+  const request = fetchImpl("https://api.hyperliquid.xyz/info", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "allMids" }),
+  });
+  const response = await withTimeout(
+    request,
+    timeoutMs,
+    "market_fetch_timeout",
+  ).catch(() => null);
+  if (!response?.ok) return [];
+  const mids = await withTimeout(response.json(), timeoutMs, "market_parse_timeout").catch(() => null);
+  if (!mids || typeof mids !== "object") return [];
+  const fetchedAt = new Date();
+  return markets
+    .map((market) => {
+      const price = numberValue(mids[baseMarket(market)]);
+      return price
+        ? snapshot({
+            venue_id: "hyperliquid",
+            market,
+            price,
+            now: fetchedAt,
+            source: "live",
+            latency_ms: Date.now() - started,
+          })
+        : null;
+    })
+    .filter(Boolean);
 }
 
 async function fetchVenuePrice({ venue, market, fetchImpl }) {
@@ -437,12 +510,19 @@ function readyVenues(session) {
     .filter((venue) => session.venue_access?.[venue]?.status === "ready");
 }
 
-function snapshot({ venue_id, market, price, now, source }) {
-  return { venue_id, market, price, fetched_at: now.toISOString(), source };
+function snapshot({ venue_id, market, price, now, source, latency_ms = 0 }) {
+  return { venue_id, market, price, fetched_at: now.toISOString(), source, latency_ms };
 }
 
 function publicSnapshot(snapshot) {
-  return { venue_id: snapshot.venue_id, market: snapshot.market, price: snapshot.price, source: snapshot.source };
+  return {
+    venue_id: snapshot.venue_id,
+    market: snapshot.market,
+    price: snapshot.price,
+    source: snapshot.source,
+    fetched_at: snapshot.fetched_at,
+    latency_ms: snapshot.latency_ms,
+  };
 }
 
 function publicOpportunity(value) {
@@ -459,6 +539,7 @@ function publicOpportunity(value) {
     net_edge_bps: value.net_edge_bps,
     min_net_edge_bps: value.min_net_edge_bps,
     leg_notional_bucket: String(value.leg_notional_usd || "0"),
+    market_data_skew_ms: value.market_data_skew_ms,
     reason_codes: value.reason_codes || [],
     created_at: value.created_at,
   };
@@ -505,6 +586,20 @@ function capMs(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function marketFetchTimeoutMs(env) {
+  return Math.min(
+    capMs(env.PRIVATE_AGENT_ARB_MARKET_FETCH_TIMEOUT_MS, 1_200),
+    capMs(env.PRIVATE_AGENT_ARB_MAX_EXECUTION_SKEW_MS, 2_000),
+  );
+}
+
+function maxMarketSkewMs(env) {
+  return capMs(
+    env.PRIVATE_AGENT_ARB_MAX_MARKET_DATA_SKEW_MS,
+    capMs(env.PRIVATE_AGENT_ARB_MAX_EXECUTION_SKEW_MS, 2_000),
+  );
+}
+
 function normalizeMarket(value) {
   const upper = String(value || "").trim().toUpperCase();
   if (upper === "SOL" || upper === "SOLANA" || upper === "SOL/USDC") return "SOL-USD";
@@ -529,4 +624,14 @@ function trim(value) {
 
 function digest(value) {
   return createHash("sha256").update(JSON.stringify(value, Object.keys(value || {}).sort())).digest("hex");
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }

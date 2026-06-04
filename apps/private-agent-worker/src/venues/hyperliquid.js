@@ -49,7 +49,7 @@ export function assertHyperliquidPilotNetwork(credential, instruction = null) {
   const liveMode = process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE || "disabled";
   const operationClass = instruction?.operation_class || "read";
   if (operationClass === "read" || operationClass === "reconcile") {
-    if (liveMode === "read_only" || liveMode === "tiny_fill") return;
+    if (liveMode === "read_only" || liveMode === "tiny_fill" || liveMode === "full_ticket") return;
     throw new HyperliquidExecutionError("hyperliquid mainnet read mode is disabled", 400);
   }
   if (operationClass === "cancel") {

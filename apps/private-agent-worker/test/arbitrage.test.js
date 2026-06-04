@@ -79,6 +79,50 @@ describe("guarded arbitrage autopilot", () => {
     assert.equal(checked.reason_codes.includes("max_leg_notional_required"), true);
   });
 
+  it("fetches live venue snapshots concurrently", async () => {
+    delete process.env.PRIVATE_AGENT_ARB_SIGNAL_MODE;
+    let active = 0;
+    let maxActive = 0;
+    const found = await bestArbitrageOpportunity({
+      session: sessionStub(),
+      env: process.env,
+      now: new Date("2026-06-03T12:02:00.000Z"),
+      fetchImpl: async (url) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await delay(15);
+        active -= 1;
+        if (String(url).includes("coinbase.com")) {
+          return jsonResponse({ price: "100" });
+        }
+        return jsonResponse({ SOL: "103" });
+      },
+    });
+
+    assert.equal(found.ok, true);
+    assert.ok(maxActive > 1);
+  });
+
+  it("rejects opportunities when live quote skew exceeds the execution budget", async () => {
+    delete process.env.PRIVATE_AGENT_ARB_SIGNAL_MODE;
+    process.env.PRIVATE_AGENT_ARB_MAX_MARKET_DATA_SKEW_MS = "1";
+
+    const rejected = await bestArbitrageOpportunity({
+      session: sessionStub(),
+      env: process.env,
+      now: new Date("2026-06-03T12:03:00.000Z"),
+      fetchImpl: async (url) => {
+        if (String(url).includes("hyperliquid")) await delay(20);
+        return String(url).includes("coinbase.com")
+          ? jsonResponse({ price: "100" })
+          : jsonResponse({ SOL: "103" });
+      },
+    });
+
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.error, "market_data_skew_exceeded");
+  });
+
   it("submits and records a bounded dry-run arbitrage pair", async () => {
     const state = createWorkerState(dir);
     const recipient = { recipient_id: "did:key:test-arb-worker" };
@@ -157,5 +201,18 @@ function sessionStub() {
       hyperliquid: { status: "ready", execution_mode: "byo_api_key" },
     },
     daily_notional_used_bucket: "0",
+  };
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function jsonResponse(body) {
+  return {
+    ok: true,
+    async json() {
+      return body;
+    },
   };
 }

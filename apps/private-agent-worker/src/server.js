@@ -25,6 +25,7 @@ import {
   storeCoinbaseSession,
   storeHyperliquidSession,
   storePrivateAgentSession,
+  verifyCoinbaseOrderNoSubmit,
   verifyVenueCredential,
   verifyHyperliquidOrderNoSubmit,
   verifyJupiterSwapNoSubmit,
@@ -36,6 +37,13 @@ import {
   FundingAttestationError,
   fundingSigningIdentity,
 } from "./venues/shielded_funding_attestation.js";
+import {
+  hyperliquidManagedAccountRefs,
+  loadManagedHyperliquidCredential,
+} from "./venues/hyperliquid.js";
+import { loadPooledSolanaPerpsCredential } from "./venues/solana_perps.js";
+import { loadPooledJupiterCredential } from "./venues/jupiter.js";
+import { loadPartnerCoinbaseCredential } from "./venues/coinbase.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
 const PUBLIC_KEY_HEX_RE = /^[0-9a-f]{64}$/i;
@@ -508,6 +516,221 @@ function containsPlaintextLeakKey(value) {
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+const POOLED_READINESS_VENUES = ["hyperliquid", "phoenix", "jupiter", "coinbase"];
+
+function validatePooledReadinessRequest(body) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.operation_class !== "pooled_readiness") {
+    errors.push("operation_class must be pooled_readiness");
+  }
+  if (body.venues !== undefined) {
+    if (!Array.isArray(body.venues)) {
+      errors.push("venues must be an array");
+    } else {
+      for (const venue of body.venues) {
+        if (!POOLED_READINESS_VENUES.includes(String(venue))) {
+          errors.push(`venue ${String(venue)} is unsupported`);
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+function pooledReadinessVenueIds(body = {}) {
+  if (!Array.isArray(body.venues) || body.venues.length === 0) return POOLED_READINESS_VENUES;
+  return [...new Set(body.venues.map((venue) => String(venue)).filter((venue) =>
+    POOLED_READINESS_VENUES.includes(venue)
+  ))];
+}
+
+function stateStoreMode() {
+  return String(process.env.PRIVATE_AGENT_STATE_STORE || process.env.GHOLA_PRIVATE_AGENT_STATE_STORE || "json")
+    .trim()
+    .toLowerCase();
+}
+
+function sharedStateReady() {
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    return { ready: true, mode: stateStoreMode(), reason_codes: [] };
+  }
+  const mode = stateStoreMode();
+  const ready = ["postgres", "postgresql", "neon"].includes(mode);
+  return {
+    ready,
+    mode,
+    reason_codes: ready ? [] : ["worker_state_store_not_shared"],
+  };
+}
+
+function positiveCap(name, fallbackName = null) {
+  const raw = process.env[name] || (fallbackName ? process.env[fallbackName] : "") || "";
+  const value = Number.parseFloat(raw);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function bpsCap(name, fallbackName = null) {
+  const raw = process.env[name] || (fallbackName ? process.env[fallbackName] : "") || "";
+  const value = Number.parseInt(raw, 10);
+  return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+function commaListEnv(...names) {
+  for (const name of names) {
+    const raw = process.env[name] || "";
+    const values = raw.split(",").map((value) => value.trim()).filter(Boolean);
+    if (values.length) return values;
+  }
+  return [];
+}
+
+function pooledVenueReadiness(venueId, sharedState) {
+  const reasonCodes = [];
+  const dryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true";
+  if (!sharedState.ready) reasonCodes.push(...sharedState.reason_codes);
+  try {
+    if (venueId === "hyperliquid") {
+      if (process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET !== "true") {
+        reasonCodes.push("hyperliquid_mainnet_worker_disabled");
+      }
+      if (process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE !== "full_ticket") {
+        reasonCodes.push("hyperliquid_live_mode_disabled");
+      }
+      if (positiveCap("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD") <= 0) {
+        reasonCodes.push("hyperliquid_max_order_cap_missing");
+      }
+      if (positiveCap("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD") <= 0) {
+        reasonCodes.push("hyperliquid_daily_cap_missing");
+      }
+      if (bpsCap("PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS") <= 0) {
+        reasonCodes.push("hyperliquid_slippage_cap_missing");
+      }
+      const refs = dryRun ? [{ network: "mainnet" }] : hyperliquidManagedAccountRefs();
+      const mainnetRefs = refs.filter((ref) => ref.network === "mainnet");
+      if (mainnetRefs.length === 0) reasonCodes.push("hyperliquid_pooled_account_pool_missing");
+      if (!dryRun && mainnetRefs[0]) {
+        loadManagedHyperliquidCredential({
+          execution_mode: "ghola_pooled",
+          network: "mainnet",
+          credential_ref: mainnetRefs[0].credential_ref,
+        });
+      }
+      return pooledVenueReadinessResult(venueId, reasonCodes, {
+        credential_count: mainnetRefs.length,
+      });
+    }
+    if (venueId === "phoenix") {
+      if (process.env.PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET !== "true") {
+        reasonCodes.push("phoenix_mainnet_worker_disabled");
+      }
+      if (process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE !== "full_ticket") {
+        reasonCodes.push("phoenix_live_mode_disabled");
+      }
+      if (positiveCap("PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD") <= 0) {
+        reasonCodes.push("phoenix_max_order_cap_missing");
+      }
+      if (bpsCap("PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS", "GHOLA_SOLANA_PERPS_MAX_SLIPPAGE_BPS") <= 0) {
+        reasonCodes.push("phoenix_slippage_cap_missing");
+      }
+      const credential = dryRun ? { authority: "dry-run" } : loadPooledSolanaPerpsCredential("phoenix");
+      return pooledVenueReadinessResult(venueId, reasonCodes, {
+        authority_commitment: commitment("phoenix_pooled_authority", credential.authority || "configured"),
+      });
+    }
+    if (venueId === "jupiter") {
+      if (process.env.PRIVATE_AGENT_JUPITER_LIVE_MODE !== "full") {
+        reasonCodes.push("jupiter_live_mode_disabled");
+      }
+      if (!env("PRIVATE_AGENT_JUPITER_API_KEY", env("JUPITER_API_KEY", env("GHOLA_JUPITER_API_KEY")))) {
+        reasonCodes.push("jupiter_api_key_missing");
+      }
+      if (commaListEnv("PRIVATE_AGENT_JUPITER_ALLOWED_INPUT_MINTS", "GHOLA_JUPITER_ALLOWED_INPUT_MINTS").length === 0) {
+        reasonCodes.push("jupiter_input_mint_allowlist_missing");
+      }
+      if (commaListEnv("PRIVATE_AGENT_JUPITER_ALLOWED_OUTPUT_MINTS", "GHOLA_JUPITER_ALLOWED_OUTPUT_MINTS").length === 0) {
+        reasonCodes.push("jupiter_output_mint_allowlist_missing");
+      }
+      if (positiveCap("PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD", "GHOLA_JUPITER_LIVE_MAX_NOTIONAL_USD") <= 0) {
+        reasonCodes.push("jupiter_max_order_cap_missing");
+      }
+      if (bpsCap("PRIVATE_AGENT_JUPITER_MAX_SLIPPAGE_BPS", "GHOLA_JUPITER_MAX_SLIPPAGE_BPS") <= 0) {
+        reasonCodes.push("jupiter_slippage_cap_missing");
+      }
+      const credential = dryRun ? { authority: "dry-run" } : loadPooledJupiterCredential();
+      return pooledVenueReadinessResult(venueId, reasonCodes, {
+        authority_commitment: commitment("jupiter_pooled_authority", credential.authority || "configured"),
+      });
+    }
+    if (venueId === "coinbase") {
+      if (process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE !== "full") {
+        reasonCodes.push("coinbase_live_mode_disabled");
+      }
+      if (commaListEnv("PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS", "GHOLA_COINBASE_ALLOWED_PRODUCTS").length === 0) {
+        reasonCodes.push("coinbase_product_allowlist_missing");
+      }
+      if (positiveCap("PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD", "GHOLA_COINBASE_LIVE_MAX_NOTIONAL_USD") <= 0) {
+        reasonCodes.push("coinbase_max_order_cap_missing");
+      }
+      const credential = dryRun ? { api_key_name: "dry-run" } : loadPartnerCoinbaseCredential();
+      return pooledVenueReadinessResult(venueId, reasonCodes, {
+        credential_commitment: commitment("coinbase_partner_pool_key", credential.api_key_name || "configured"),
+      });
+    }
+  } catch (error) {
+    reasonCodes.push(pooledCredentialErrorCode(venueId, error));
+  }
+  return pooledVenueReadinessResult(venueId, reasonCodes);
+}
+
+function pooledCredentialErrorCode(venueId, error) {
+  if (venueId === "hyperliquid") return "hyperliquid_pooled_account_pool_missing";
+  if (venueId === "phoenix") return "phoenix_pooled_authority_missing";
+  if (venueId === "jupiter") return "jupiter_pooled_authority_missing";
+  if (venueId === "coinbase") return "coinbase_omnibus_pool_not_ready";
+  return error?.code || "pooled_credential_unavailable";
+}
+
+function pooledVenueReadinessResult(venueId, reasonCodes, extra = {}) {
+  const uniqueReasons = [...new Set(reasonCodes)];
+  return {
+    venue_id: venueId,
+    status: uniqueReasons.length === 0 ? "ready" : "blocked",
+    ready: uniqueReasons.length === 0,
+    reason_codes: uniqueReasons,
+    ...extra,
+  };
+}
+
+function pooledReadinessResponse(body) {
+  const sharedState = sharedStateReady();
+  const venues = pooledReadinessVenueIds(body).map((venueId) =>
+    pooledVenueReadiness(venueId, sharedState)
+  );
+  const globalReasons = [...new Set(sharedState.reason_codes)];
+  const venueReasons = venues.flatMap((venue) =>
+    venue.reason_codes.map((reason) => `${venue.venue_id}:${reason}`)
+  );
+  const reasonCodes = [...new Set([...globalReasons, ...venueReasons])];
+  return {
+    version: 1,
+    status: reasonCodes.length === 0 ? "ready" : "blocked",
+    ready: reasonCodes.length === 0,
+    operation_class: "pooled_readiness",
+    state_store: {
+      mode: sharedState.mode,
+      shared: sharedState.ready,
+    },
+    venues,
+    reason_codes: reasonCodes,
+    checked_at: new Date().toISOString(),
+  };
 }
 
 function validateSessionRequest(body, recipient) {
@@ -1317,6 +1540,30 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, 200, await publicRecipient(recipient));
       }
 
+      if (req.method === "POST" && url.pathname === "/venues/pools/readiness") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "credential:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            operation_class: "pooled_readiness",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validatePooledReadinessRequest(body);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid pooled readiness request",
+            details: errors,
+          });
+        }
+        return json(res, 200, pooledReadinessResponse(body));
+      }
+
       if (req.method === "POST" && url.pathname === "/autopilot/sessions") {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
@@ -1937,6 +2184,41 @@ export function createPrivateAgentWorkerServer(options = {}) {
         }
         const receipt = await executeCoinbaseOrder({ body, recipient, state });
         return json(res, 202, receipt);
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/coinbase/verify") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        if (req.headers["x-ghola-no-submit-verify"] !== "true") {
+          return json(res, 400, { error: "no-submit verification header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "order:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            venue_id: "coinbase_advanced",
+            platform_class: "coinbase_style_provider",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateCoinbaseOrderRequest(body, recipient);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid coinbase private verification request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const receipt = await verifyCoinbaseOrderNoSubmit({ body, recipient, state });
+        return json(res, 200, receipt);
       }
 
       if (req.method === "POST" && url.pathname === "/venues/coinbase/reconcile") {

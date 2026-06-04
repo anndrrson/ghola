@@ -305,6 +305,27 @@ function capabilityToken({
   return `ghcap_v1.${payloadB64}.${signature}`;
 }
 
+function enablePooledReadinessEnv() {
+  process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "full_ticket";
+  process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD = "1000";
+  process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD = "5000";
+  process.env.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS = "100";
+  process.env.PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE = "full_ticket";
+  process.env.PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD = "1000";
+  process.env.PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS = "100";
+  process.env.PRIVATE_AGENT_JUPITER_LIVE_MODE = "full";
+  process.env.PRIVATE_AGENT_JUPITER_API_KEY = "test-jupiter-api-key";
+  process.env.PRIVATE_AGENT_JUPITER_ALLOWED_INPUT_MINTS = JUPITER_SOL_MINT;
+  process.env.PRIVATE_AGENT_JUPITER_ALLOWED_OUTPUT_MINTS = JUPITER_USDC_MINT;
+  process.env.PRIVATE_AGENT_JUPITER_MAX_SLIPPAGE_BPS = "100";
+  process.env.PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD = "1000";
+  process.env.PRIVATE_AGENT_COINBASE_LIVE_MODE = "full";
+  process.env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS = "BTC-USD,ETH-USD,SOL-USD";
+  process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD = "1000";
+}
+
 describe("private agent worker", () => {
   let dir;
   let server;
@@ -441,6 +462,117 @@ describe("private agent worker", () => {
     assert.equal(replayed.status, 403);
     const replayBody = await replayed.json();
     assert.equal(replayBody.error_code, "worker_capability_replayed");
+  });
+
+  it("requires scoped worker capabilities for pooled readiness probes", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    const response = await fetch(`${baseUrl}/venues/pools/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        operation_class: "pooled_readiness",
+        venues: ["hyperliquid"],
+      }),
+    });
+
+    assert.equal(response.status, 401);
+    const body = await response.json();
+    assert.equal(body.error_code, "worker_capability_required");
+  });
+
+  it("reports redacted pooled readiness through a scoped worker capability", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    enablePooledReadinessEnv();
+    const body = {
+      version: 1,
+      operation_class: "pooled_readiness",
+      venues: ["hyperliquid", "phoenix", "jupiter", "coinbase"],
+    };
+    const token = capabilityToken({
+      path: "/venues/pools/readiness",
+      scope: "credential:verify",
+      body,
+      expected: { operation_class: "pooled_readiness" },
+    });
+    const response = await fetch(`${baseUrl}/venues/pools/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal(response.status, 200);
+    const readiness = await response.json();
+    assert.equal(readiness.status, "ready");
+    assert.equal(readiness.ready, true);
+    assert.deepEqual(readiness.reason_codes, []);
+    assert.deepEqual(
+      readiness.venues.map((venue) => [venue.venue_id, venue.status]),
+      [
+        ["hyperliquid", "ready"],
+        ["phoenix", "ready"],
+        ["jupiter", "ready"],
+        ["coinbase", "ready"],
+      ],
+    );
+    const serialized = JSON.stringify(readiness).toLowerCase();
+    assert.equal(serialized.includes("api_wallet_private_key"), false);
+    assert.equal(serialized.includes("wallet_private_key"), false);
+    assert.equal(serialized.includes("api_private_key_pem"), false);
+    assert.equal(serialized.includes("credential_ref"), false);
+  });
+
+  it("blocks live pooled readiness when worker state is not shared", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    process.env.PRIVATE_AGENT_STATE_STORE = "json";
+    enablePooledReadinessEnv();
+    process.env.PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON = JSON.stringify({
+      accounts: [{
+        network: "mainnet",
+        account_address: "0x0000000000000000000000000000000000000001",
+        api_wallet_private_key: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      }],
+    });
+    const body = {
+      version: 1,
+      operation_class: "pooled_readiness",
+      venues: ["hyperliquid"],
+    };
+    const token = capabilityToken({
+      path: "/venues/pools/readiness",
+      scope: "credential:verify",
+      body,
+      expected: { operation_class: "pooled_readiness" },
+    });
+    const response = await fetch(`${baseUrl}/venues/pools/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal(response.status, 200);
+    const readiness = await response.json();
+    assert.equal(readiness.status, "blocked");
+    assert.equal(readiness.ready, false);
+    assert.equal(readiness.state_store.mode, "json");
+    assert.equal(readiness.state_store.shared, false);
+    assert.ok(readiness.reason_codes.includes("worker_state_store_not_shared"));
   });
 
   it("does not submit Hyperliquid orders from reconcile requests", async () => {
@@ -705,6 +837,56 @@ describe("private agent worker", () => {
     assert.match(body.verification_commitment, /^venue_credential_verification_/);
     assert.equal(JSON.stringify(body).includes("api_private_key_pem"), false);
     assert.equal(JSON.stringify(body).includes("sealed-provider-v1"), false);
+  });
+
+  it("verifies Coinbase no-submit readiness without broadcasting", async () => {
+    const vault = await encryptedCoinbaseVault(baseUrl);
+    const response = await fetch(`${baseUrl}/venues/coinbase/verify`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        venue_id: "coinbase_advanced",
+        platform_class: "coinbase_style_provider",
+        execution_mode: "byo_api_key",
+        work_order_commitment: "connector_work_order_coinbase_verify_123",
+        vault_commitment: "coinbase_vault_commitment_123",
+        policy_commitment: "coinbase_policy_commitment_123",
+        operation_class: "spot_market_order",
+        encrypted_execution_vault: vault,
+        encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+          venue_id: "coinbase_advanced",
+          work_order_commitment: "connector_work_order_coinbase_verify_123",
+          operation_class: "spot_market_order",
+          order: {
+            market: "BTC-USD",
+            side: "buy",
+            quote_size: "5",
+            order_type: "market",
+            size_mode: "quote",
+            tif: "ioc",
+          },
+        }),
+        session_policy: {
+          market_allowlist: ["BTC-USD"],
+          max_notional_bucket: "25",
+          max_order_count: 5,
+          kill_switch: false,
+        },
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.status, "verified_no_funds");
+    assert.equal(body.checks.transaction_broadcast, false);
+    assert.equal(body.checks.coinbase_order_request_built, true);
+    assert.equal(JSON.stringify(body).includes("api_private_key_pem"), false);
   });
 
   it("streams sanitized Hyperliquid account state through sealed credentials only", async () => {
