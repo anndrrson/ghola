@@ -562,7 +562,10 @@ function sharedStateReady() {
     return { ready: true, mode: stateStoreMode(), reason_codes: [] };
   }
   const mode = stateStoreMode();
-  const ready = ["postgres", "postgresql", "neon"].includes(mode);
+  const singleCvmPersistentStateOk =
+    process.env.PRIVATE_AGENT_STATE_SINGLE_CVM_OK === "true" &&
+    ["json", "file"].includes(mode);
+  const ready = ["postgres", "postgresql", "neon"].includes(mode) || singleCvmPersistentStateOk;
   return {
     ready,
     mode,
