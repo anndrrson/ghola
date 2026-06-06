@@ -39,6 +39,7 @@ ios/build/
 *.plan
 *.auto.tfvars
 *.auto.tfvars.json
+deploy/private-agent-pooled-credentials*.env
 
 # Stream 10 — hardening evidence raw artifacts (manifests live elsewhere)
 /artifacts/hardening-evidence/

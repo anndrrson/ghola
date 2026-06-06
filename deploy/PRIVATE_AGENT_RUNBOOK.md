@@ -153,6 +153,65 @@ the lease before calling Phala `stopCvm`, so scheduled checks are safe during
 active usage. Vercel's daily cron can remain as a backstop, but Cloudflare is
 the cost-control path.
 
+### Pooled venue credentials
+
+Pooled live trading is only green when the Phala worker can load executable
+venue credentials inside the TEE. Production readiness flags such as
+`GHOLA_HYPERLIQUID_POOLED_ACCOUNT_POOL_READY=true` are not enough; those flags
+only describe launch posture on the web side. The worker still needs sealed
+credential material.
+
+Create a local, gitignored file:
+
+```bash
+deploy/private-agent-pooled-credentials.env
+```
+
+Required keys:
+
+```bash
+PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON='{"accounts":[{"network":"mainnet","account_address":"0x...","api_wallet_private_key":"0x..."}]}'
+PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON='{"kind":"ghola_solana_perps_execution_vault","network":"mainnet","wallet_private_key":[...]}'
+PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON='{"kind":"ghola_solana_swap_execution_vault","network":"mainnet","wallet_private_key":[...]}'
+PRIVATE_AGENT_JUPITER_API_KEY='...'
+PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON='{"kind":"ghola_coinbase_advanced_execution_vault","network":"mainnet","api_key_name":"...","api_private_key_pem":"-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----"}'
+```
+
+If quoting multiline JSON or PEM is awkward, provide any JSON value as
+`*_JSON_B64`; the installer decodes it before pushing sealed envs.
+
+Validate without touching production:
+
+```bash
+node scripts/install-phala-pooled-credentials.mjs \
+  --env deploy/private-agent-pooled-credentials.env \
+  --dry-run
+```
+
+Install into the Phala CVM:
+
+```bash
+node scripts/install-phala-pooled-credentials.mjs \
+  --env deploy/private-agent-pooled-credentials.env
+```
+
+The script validates credential shape, pushes only the required sealed env keys
+with `phala envs update`, deletes its temp env file, then checks:
+
+```bash
+curl -fsS https://ghola.xyz/v1/private-account/live-trading/status
+```
+
+Expected result after a successful install:
+
+```json
+{
+  "live_submit_mode": "pooled_and_byo",
+  "pooled_live_trading_enabled": true,
+  "pooled_reason_codes": []
+}
+```
+
 You can also deploy `apps/private-agent-worker/docker-compose.phala.yml`
 manually as the Phala CVM payload, then fetch the worker recipient metadata:
 
