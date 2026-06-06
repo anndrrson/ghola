@@ -1,0 +1,11 @@
+name = "ghola-idle-cron"
+main = "src/index.mjs"
+compatibility_date = "2025-12-01"
+workers_dev = true
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[vars]
+GHOLA_IDLE_ENDPOINT_URL = "https://ghola.xyz/api/private-agent/idle"
+GHOLA_IDLE_TIMEOUT_MS = "10000"

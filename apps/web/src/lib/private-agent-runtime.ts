@@ -42,6 +42,7 @@ export interface ConfidentialComputeProviderStatus {
     provisioning_enabled?: boolean;
     cvm_status?: string | null;
     report_data_bound?: boolean;
+    funding_signer_bound?: boolean;
     phala_attestation_present?: boolean;
   };
 }

@@ -11,11 +11,21 @@ import {
   type ConfidentialComputeProviderId,
 } from "@/lib/private-agent-runtime";
 import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server";
-import { ensurePhalaPrivateAgentProvisioned, phalaWorkerExecutionToken } from "@/lib/private-agent-phala";
+import {
+  ensurePhalaPrivateAgentProvisioned,
+  markPhalaPrivateAgentActivity,
+  phalaWorkerExecutionToken,
+  privateAgentRemoteExecutionDisabled,
+  wakePhalaPrivateAgentForUse,
+} from "@/lib/private-agent-phala";
 import {
   buildAcceptedPrivateAgentSession,
   validatePrivateAgentSessionRequest,
 } from "@/lib/private-agent-session";
+import {
+  workerAuthorizationHeader,
+  workerCapabilityExpectedFromBody,
+} from "@/lib/private-agent-capability";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -100,14 +110,14 @@ function executionUrlForProvider(provider: ConfidentialComputeProviderId): strin
   return null;
 }
 
-function providerBearer(provider: ConfidentialComputeProviderId): string | null {
+function providerToken(provider: ConfidentialComputeProviderId): string | null {
   const token =
     provider === "phala"
       ? phalaWorkerExecutionToken()
       : provider === "gensyn"
         ? process.env.GENSYN_API_KEY
         : process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN;
-  return token ? `Bearer ${token}` : null;
+  return token || null;
 }
 
 async function reservePrivateAgentCompute(input: {
@@ -217,15 +227,38 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  if (privateAgentRemoteExecutionDisabled()) {
+    return json(
+      {
+        error: "sealed private-agent execution is disabled",
+        blocking_reasons: ["operator_spend_lock"],
+      },
+      503,
+    );
+  }
+
   let runtime = await getPrivateAgentRuntimeStatus();
   let provisioning: Awaited<ReturnType<typeof ensurePhalaPrivateAgentProvisioned>> | null = null;
   if (!runtime.remote_execution_ready) {
-    provisioning = await ensurePhalaPrivateAgentProvisioned({
+    provisioning = await wakePhalaPrivateAgentForUse({
+      reason: "private_agent_session_request",
       waitForReadyMs: 45_000,
+      leaseMs: Math.max(
+        PRIVATE_AGENT_SESSION_RESERVATION_SECONDS * 1000 + 10 * 60_000,
+        30 * 60_000,
+      ),
     });
     if (provisioning.attempted || provisioning.ready) {
       runtime = await getPrivateAgentRuntimeStatus();
     }
+  } else if (runtime.selected_provider === "phala") {
+    await markPhalaPrivateAgentActivity({
+      reason: "private_agent_session_request",
+      leaseMs: Math.max(
+        PRIVATE_AGENT_SESSION_RESERVATION_SECONDS * 1000 + 10 * 60_000,
+        30 * 60_000,
+      ),
+    });
   }
   if (!runtime.remote_execution_ready || !runtime.selected_provider) {
     return json(
@@ -296,6 +329,19 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const upstreamPath = "/private-agent/sessions";
+  const upstreamBody = {
+    ...validation.request,
+    selected_provider: runtime.selected_provider,
+  };
+  const authorization = workerAuthorizationHeader({
+    fallbackToken: providerToken(runtime.selected_provider),
+    method: "POST",
+    path: upstreamPath,
+    scope: "session:create",
+    body: upstreamBody,
+    expected: workerCapabilityExpectedFromBody(upstreamBody),
+  });
   const headers = new Headers({
     "content-type": "application/json",
     accept: "application/json",
@@ -303,18 +349,14 @@ export async function POST(req: NextRequest) {
     "x-ghola-private-agent-provider": runtime.selected_provider,
     "x-ghola-private-agent-reservation-id": reservationId,
   });
-  const providerAuth = providerBearer(runtime.selected_provider);
-  if (providerAuth) headers.set("authorization", providerAuth);
+  if (authorization) headers.set("authorization", authorization);
 
   const upstream = await fetchWithTimeout(
-    new URL("/private-agent/sessions", executionUrl),
+    new URL(upstreamPath, executionUrl),
     {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        ...validation.request,
-        selected_provider: runtime.selected_provider,
-      }),
+      body: JSON.stringify(upstreamBody),
       cache: "no-store",
     },
   ).catch(() => null);
@@ -340,6 +382,16 @@ export async function POST(req: NextRequest) {
       },
       upstream.status,
     );
+  }
+
+  if (runtime.selected_provider === "phala") {
+    await markPhalaPrivateAgentActivity({
+      reason: "private_agent_session_accepted",
+      leaseMs: Math.max(
+        PRIVATE_AGENT_SESSION_RESERVATION_SECONDS * 1000 + 10 * 60_000,
+        30 * 60_000,
+      ),
+    });
   }
 
   return new NextResponse(upstream.body, {

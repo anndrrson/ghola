@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 import type { ConfidentialComputeProviderStatus } from "./private-agent-runtime";
+import {
+  getPrivateAgentRuntimeLease,
+  markPrivateAgentRuntimeActivity,
+  markPrivateAgentRuntimeStopped,
+  privateAgentRuntimeLeaseActive,
+} from "./private-agent-runtime-lease";
 
 const DEFAULT_WORKER_IMAGE =
   "ghcr.io/anndrrson/ghola:private-agent-worker-6a4f843@sha256:9b36fd7356dc8be88a685419b8af9b17bb5c46248daf942d753e928b6edc7933";
@@ -11,6 +17,7 @@ const RECIPIENT_REPORT_DOMAIN = "ghola-private-agent-recipient-v1";
 interface PhalaRecipientMetadata {
   recipient_id?: string;
   x25519_pub_hex?: string;
+  funding_signer_public_key_b64?: string | null;
   tee_kind?: string | null;
   measurement_hex?: string | null;
   attestation_hash?: string | null;
@@ -31,6 +38,21 @@ interface PhalaProvisionResult {
   execution_url?: string;
 }
 
+interface PhalaIdleStopResult {
+  attempted: boolean;
+  stopped: boolean;
+  status:
+    | "disabled"
+    | "missing_config"
+    | "lease_active"
+    | "already_stopped"
+    | "stopped"
+    | "failed";
+  reason?: string;
+  cvm_name?: string;
+  lease_expires_at?: string | null;
+}
+
 interface PhalaProvisionResponse {
   app_id: string;
   compose_hash: string;
@@ -43,6 +65,7 @@ interface PhalaCloudClient {
   getCvmAttestation(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
   getCvmState(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
   startCvm(input: { id: string }): Promise<unknown>;
+  stopCvm(input: { id: string }): Promise<unknown>;
   provisionCvm(input: Record<string, unknown>): Promise<PhalaProvisionResponse>;
   commitCvmProvision(
     input: Record<string, unknown>,
@@ -57,6 +80,12 @@ function env(name: string): string | null {
 
 function boolEnv(name: string): boolean {
   return env(name)?.toLowerCase() === "true";
+}
+
+function intEnv(name: string, fallback: number, min: number, max: number): number {
+  const value = Number.parseInt(env(name) ?? "", 10);
+  if (!Number.isInteger(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
 }
 
 function sha256Hex(value: string): string {
@@ -140,7 +169,39 @@ function composeEnvLine(name: string, value: string): string {
 }
 
 export function phalaJitProvisioningEnabled(): boolean {
-  return boolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING");
+  return !privateAgentRemoteExecutionDisabled() && boolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING");
+}
+
+export function phalaIdleShutdownEnabled(): boolean {
+  if (env("GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN")?.toLowerCase() === "false") {
+    return false;
+  }
+  return boolEnv("GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN") || boolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING");
+}
+
+export function phalaIdleLeaseMs(): number {
+  const minutes = intEnv("GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES", 30, 5, 12 * 60);
+  return intEnv("GHOLA_PRIVATE_AGENT_IDLE_AFTER_MS", minutes * 60_000, 5 * 60_000, 12 * 60 * 60_000);
+}
+
+export async function markPhalaPrivateAgentActivity(input: {
+  reason: string;
+  leaseMs?: number;
+  now?: Date;
+}) {
+  return markPrivateAgentRuntimeActivity({
+    provider_id: "phala",
+    reason: input.reason,
+    lease_ms: input.leaseMs ?? phalaIdleLeaseMs(),
+    now: input.now,
+  });
+}
+
+export function privateAgentRemoteExecutionDisabled(): boolean {
+  return (
+    boolEnv("GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED") ||
+    boolEnv("GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN")
+  );
 }
 
 export function phalaJitProvisioningConfigIssue(): string | null {
@@ -163,10 +224,25 @@ export function phalaJitProvisioningConfigured(): boolean {
 export function expectedRecipientReportDataHex(input: {
   recipientId: string;
   x25519PubHex: string;
+  fundingSignerPublicKeyB64?: string | null;
 }): string {
-  return `0x${sha256Hex(
-    `${RECIPIENT_REPORT_DOMAIN}\0${input.recipientId}\0${input.x25519PubHex.toLowerCase()}`,
-  )}`;
+  const fields = [
+    RECIPIENT_REPORT_DOMAIN,
+    input.recipientId,
+    input.x25519PubHex.toLowerCase(),
+  ];
+  const fundingSignerPublicKeyB64 = input.fundingSignerPublicKeyB64?.trim();
+  if (fundingSignerPublicKeyB64) fields.push(fundingSignerPublicKeyB64);
+  return `0x${sha256Hex(fields.join("\0"))}`;
+}
+
+function pinnedFundingSignerKeys(): Set<string> {
+  return new Set(
+    (env("GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64") ?? "")
+      .split(",")
+      .map((key) => key.trim())
+      .filter(Boolean),
+  );
 }
 
 export function buildPhalaWorkerCompose(input: {
@@ -347,11 +423,17 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
         new URL("/.well-known/private-agent-recipient", executionUrl),
       )
     : null;
+  const fundingSignerPublicKeyB64 = recipient?.funding_signer_public_key_b64?.trim() || "";
+  const pinnedFundingSigners = pinnedFundingSignerKeys();
+  const fundingSignerBound =
+    !fundingSignerPublicKeyB64 ||
+    (pinnedFundingSigners.size > 0 && pinnedFundingSigners.has(fundingSignerPublicKeyB64));
   const expectedReportData =
     recipient?.recipient_id && recipient?.x25519_pub_hex
       ? expectedRecipientReportDataHex({
           recipientId: recipient.recipient_id,
           x25519PubHex: recipient.x25519_pub_hex,
+          fundingSignerPublicKeyB64: fundingSignerBound ? fundingSignerPublicKeyB64 : null,
         })
       : null;
   const reportDataBound =
@@ -361,6 +443,7 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
     typeof recipient?.recipient_id === "string" &&
     validX25519Hex(recipient.x25519_pub_hex) &&
     recipient.attested_ready === true &&
+    fundingSignerBound &&
     reportDataBound;
   const attested = attestationPresent(attestation);
   const ready = status === "running" && Boolean(executionUrl) && recipientReady && attested;
@@ -399,6 +482,7 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
       provisioning_enabled: phalaJitProvisioningEnabled(),
       cvm_status: status || null,
       report_data_bound: reportDataBound,
+      funding_signer_bound: fundingSignerBound,
       phala_attestation_present: attested,
     },
   };
@@ -422,6 +506,14 @@ export async function discoverPhalaPrivateAgentExecutionUrl(): Promise<string | 
 export async function ensurePhalaPrivateAgentProvisioned(input: {
   waitForReadyMs?: number;
 } = {}): Promise<PhalaProvisionResult> {
+  if (privateAgentRemoteExecutionDisabled()) {
+    return {
+      attempted: false,
+      ready: false,
+      status: "disabled",
+      reason: "Remote private-agent execution is disabled by operator spend lock.",
+    };
+  }
   if (!phalaJitProvisioningEnabled()) {
     return { attempted: false, ready: false, status: "disabled" };
   }
@@ -551,4 +643,120 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
           ) || undefined
         : undefined,
   };
+}
+
+export async function wakePhalaPrivateAgentForUse(input: {
+  reason: string;
+  waitForReadyMs?: number;
+  leaseMs?: number;
+}): Promise<PhalaProvisionResult> {
+  if (privateAgentRemoteExecutionDisabled()) {
+    return ensurePhalaPrivateAgentProvisioned({
+      waitForReadyMs: input.waitForReadyMs,
+    });
+  }
+  await markPhalaPrivateAgentActivity({
+    reason: input.reason,
+    leaseMs: input.leaseMs,
+  });
+  const result = await ensurePhalaPrivateAgentProvisioned({
+    waitForReadyMs: input.waitForReadyMs,
+  });
+  if (result.ready || result.attempted) {
+    await markPhalaPrivateAgentActivity({
+      reason: result.ready ? `${input.reason}:ready` : `${input.reason}:${result.status}`,
+      leaseMs: input.leaseMs,
+    });
+  }
+  return result;
+}
+
+export async function stopIdlePhalaPrivateAgent(input: {
+  now?: Date;
+  force?: boolean;
+} = {}): Promise<PhalaIdleStopResult> {
+  const now = input.now ?? new Date();
+  const name = phalaCvmName();
+  if (!phalaIdleShutdownEnabled() && !input.force) {
+    return {
+      attempted: false,
+      stopped: false,
+      status: "disabled",
+      reason: "Phala idle shutdown is disabled.",
+      cvm_name: name,
+    };
+  }
+  if (!phalaApiKey()) {
+    return {
+      attempted: false,
+      stopped: false,
+      status: "missing_config",
+      reason: "PHALA_CLOUD_API_KEY is required to stop the Phala worker.",
+      cvm_name: name,
+    };
+  }
+
+  const lease = await getPrivateAgentRuntimeLease("phala");
+  if (!input.force && privateAgentRuntimeLeaseActive(lease, now)) {
+    return {
+      attempted: false,
+      stopped: false,
+      status: "lease_active",
+      reason: "Recent private-agent use is still inside the active lease window.",
+      cvm_name: name,
+      lease_expires_at: lease?.lease_expires_at ?? null,
+    };
+  }
+
+  const client = await phalaClient();
+  if (!client) {
+    return {
+      attempted: false,
+      stopped: false,
+      status: "missing_config",
+      reason: "PHALA_CLOUD_API_KEY is required to stop the Phala worker.",
+      cvm_name: name,
+    };
+  }
+
+  try {
+    const state = await client.getCvmState({ id: name }, { schema: false });
+    const status =
+      state && typeof state === "object"
+        ? String((state as Record<string, unknown>).status ?? "")
+        : "";
+    if (status === "stopped" || status === "stopping") {
+      await markPrivateAgentRuntimeStopped({
+        provider_id: "phala",
+        reason: "idle_stop_already_stopped",
+        now,
+      });
+      return {
+        attempted: false,
+        stopped: false,
+        status: "already_stopped",
+        cvm_name: name,
+      };
+    }
+    await client.stopCvm({ id: name });
+    await markPrivateAgentRuntimeStopped({
+      provider_id: "phala",
+      reason: "idle_stop",
+      now,
+    });
+    return {
+      attempted: true,
+      stopped: true,
+      status: "stopped",
+      cvm_name: name,
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      stopped: false,
+      status: "failed",
+      reason: error instanceof Error ? error.message : "Phala idle stop failed.",
+      cvm_name: name,
+    };
+  }
 }

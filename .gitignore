@@ -25,6 +25,8 @@ android/app/google-services.json
 local.properties
 .claude/
 .vercel
+.wrangler/
+**/.wrangler/
 .dev/
 ios/Ghola.xcodeproj/
 ios/build/

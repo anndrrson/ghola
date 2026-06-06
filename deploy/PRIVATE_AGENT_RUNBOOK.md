@@ -102,6 +102,7 @@ GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME=ghola-private-agent-worker
 GHOLA_PRIVATE_AGENT_WORKER_IMAGE=ghcr.io/anndrrson/ghola:private-agent-worker-<git-sha>
 GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST=sha256:<workflow-digest>
 GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN=<random-worker-token-not-the-phala-api-key>
+GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64=<worker-funding-signer-spki-b64>
 GHOLA_V6_HYPERLIQUID_PILOT_ENABLED=true
 GHOLA_HYPERLIQUID_LIVE_MODE=tiny_fill
 GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS=ready
@@ -120,6 +121,37 @@ CVM, waits briefly for readiness, then returns a provisioning response if the
 worker is still booting. User payload forwarding remains fail-closed until the
 worker publishes recipient evidence bound to a dstack quote and Phala reports
 CVM attestation.
+
+### Idle shutdown without Vercel Pro
+
+Ghola records a short server-side runtime lease whenever a real user action
+needs the private worker: pooled venue access, no-submit preview, connector
+submit, or private-agent session creation. Passive page loads and status probes
+do not wake Phala.
+
+Use Cloudflare Worker Cron to stop the CVM after the lease expires while keeping
+Vercel on the Hobby plan:
+
+```bash
+GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN=true
+GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES=30
+GHOLA_PRIVATE_AGENT_IDLE_CRON_SECRET=<random-idle-cron-secret>
+```
+
+Deploy the Worker in `deploy/cloudflare/ghola-idle-cron`:
+
+```bash
+cd deploy/cloudflare/ghola-idle-cron
+npx wrangler secret put GHOLA_IDLE_CRON_SECRET
+npx wrangler deploy
+```
+
+Set `GHOLA_IDLE_CRON_SECRET` to the same value as
+`GHOLA_PRIVATE_AGENT_IDLE_CRON_SECRET`. The Worker runs every 15 minutes and
+calls `GET https://ghola.xyz/api/private-agent/idle`. The web endpoint checks
+the lease before calling Phala `stopCvm`, so scheduled checks are safe during
+active usage. Vercel's daily cron can remain as a backstop, but Cloudflare is
+the cost-control path.
 
 You can also deploy `apps/private-agent-worker/docker-compose.phala.yml`
 manually as the Phala CVM payload, then fetch the worker recipient metadata:
@@ -159,12 +191,19 @@ PRIVATE_AGENT_TEE_KIND=phala
 PRIVATE_AGENT_EXECUTION_TOKEN=<same-secret-as-GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN>
 PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE=true
 PHALA_CVM_IMAGE_DIGEST=<verified-image-digest>
+PRIVATE_AGENT_FUNDING_SIGNING_KEY=<base64-pkcs8-ed25519-private-key>
 PRIVATE_AGENT_VENUE_DRY_RUN=false
 PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true
 PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=tiny_fill
 PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD=5
 PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD=25
 PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS=50
+# Optional Jupiter private swap pilot.
+PRIVATE_AGENT_JUPITER_LIVE_MODE=full
+PRIVATE_AGENT_JUPITER_API_KEY=<jupiter-api-key>
+PRIVATE_AGENT_JUPITER_ALLOWED_INPUT_MINTS=<comma-separated-mainnet-mints>
+PRIVATE_AGENT_JUPITER_ALLOWED_OUTPUT_MINTS=<comma-separated-mainnet-mints>
+PRIVATE_AGENT_JUPITER_POOLED_VAULT_PATH=/secrets/jupiter-pooled-vault.json
 ```
 
 Set the matching web env on `ghola.xyz`:
@@ -175,12 +214,97 @@ GHOLA_HYPERLIQUID_LIVE_MODE=tiny_fill
 GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL=https://<phala-agent-host>
 GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN=<same-secret-as-PRIVATE_AGENT_EXECUTION_TOKEN>
 GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS=ready
+GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64=<worker-funding-signer-spki-b64>
+GHOLA_PRIVATE_ACCOUNT_COORDINATOR_MAX_STALE_MS=90000000
+# Optional Jupiter private swap pilot.
+GHOLA_VENUE_JUPITER_PILOT_ENABLED=true
+GHOLA_JUPITER_LIVE_MODE=full
+GHOLA_CONNECTOR_SOLANA_SWAP_AGGREGATOR_URL=https://<phala-agent-host>
+GHOLA_CONNECTOR_SOLANA_SWAP_AGGREGATOR_TOKEN=<same-secret-as-PRIVATE_AGENT_EXECUTION_TOKEN>
+GHOLA_CONNECTOR_SOLANA_SWAP_AGGREGATOR_READINESS=ready
 ```
+
+## Agent Passport and guarded arbitrage
+
+Agent Passport links must use sealed user-provided venue credentials. The web
+server records only vault/capability commitments; the private worker opens the
+sealed vault and verifies that the credential can read and trade while
+withdraw/transfer authority is blocked. Do not mark a venue ready from a client
+permission attestation alone.
+
+Required web env:
+
+```bash
+GHOLA_PRIVATE_AGENT_EXECUTION_URL=https://<phala-agent-host>
+GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN=<same-secret-as-PRIVATE_AGENT_EXECUTION_TOKEN>
+```
+
+Required worker env for live guarded arbitrage:
+
+```bash
+PRIVATE_AGENT_ARB_LIVE_SUBMIT=true
+PRIVATE_AGENT_ARB_MAX_LEG_NOTIONAL_USD=5
+PRIVATE_AGENT_ARB_DAILY_NOTIONAL_CAP_USD=25
+PRIVATE_AGENT_ARB_MIN_NET_EDGE_BPS=50
+PRIVATE_AGENT_ARB_MAX_EXECUTION_SKEW_MS=2000
+PRIVATE_AGENT_ARB_MARKET_FETCH_TIMEOUT_MS=1200
+PRIVATE_AGENT_ARB_MAX_MARKET_DATA_SKEW_MS=2000
+```
+
+Optional fee assumptions:
+
+```bash
+PRIVATE_AGENT_ARB_COINBASE_ADVANCED_FEE_BPS=60
+PRIVATE_AGENT_ARB_HYPERLIQUID_FEE_BPS=5
+PRIVATE_AGENT_ARB_JUPITER_FEE_BPS=10
+```
+
+The worker fails closed if any required arbitrage cap is missing. Each pair
+execution runs a no-submit preflight for both legs first; only if both preflights
+pass does the worker submit the bounded buy/sell legs. If one submitted leg
+fails before reconciliation, the session pauses and emits
+`unhedged_leg_requires_human`.
+
+Run the production guarded-arbitrage canary before enabling user access. The
+default mode verifies sealed Coinbase and Hyperliquid credentials, live market
+data freshness, paired no-submit order construction, and no-broadcast receipts:
+
+```bash
+cd apps/private-agent-worker
+PRIVATE_AGENT_WORKER_URL=https://<phala-agent-host> \
+PRIVATE_AGENT_EXECUTION_TOKEN=<worker-token-or-use-capability-secret> \
+PRIVATE_AGENT_WORKER_CAPABILITY_SECRET=<optional-prod-capability-secret> \
+GHOLA_ARB_CANARY_MARKET=SOL-USD \
+GHOLA_ARB_CANARY_LEG_NOTIONAL_USD=5 \
+GHOLA_ARB_CANARY_COINBASE_API_KEY_NAME=<coinbase-api-key-name> \
+GHOLA_ARB_CANARY_COINBASE_API_PRIVATE_KEY_PEM_B64=<base64-pem> \
+GHOLA_ARB_CANARY_HYPERLIQUID_ACCOUNT_ADDRESS=0x... \
+GHOLA_ARB_CANARY_HYPERLIQUID_API_WALLET_PRIVATE_KEY=0x... \
+npm run canary:arb:prod
+```
+
+Only after no-submit passes, run the tiny-live pair canary:
+
+```bash
+GHOLA_ARB_CANARY_LIVE_SUBMIT=true \
+GHOLA_ARB_CANARY_ACK_TINY_LIVE=I_UNDERSTAND_THIS_BROADCASTS \
+GHOLA_ARB_CANARY_REQUIRE_EDGE=true \
+npm run canary:arb:prod
+```
+
+The canary writes a redacted report to
+`.dev/ghola-arb-production-canary.json` by default.
+
+Supported v1 pairs:
+
+- Coinbase Advanced spot to Hyperliquid perp for `BTC-USD`, `ETH-USD`, `SOL-USD`.
+- Jupiter SOL swap to Hyperliquid SOL perp for `SOL-USD`.
 
 Production Hyperliquid must be verified in two steps. The no-submit verifier
 stores a sealed BYO API wallet vault and proves that production routes, auth,
-worker readiness, account snapshot, and account SSE work without sending an
-order:
+worker readiness, account snapshot, account SSE, sealed instruction opening,
+policy gates, Hyperliquid SDK availability, market/account reads, and capped IOC
+order-request construction work without broadcasting an order:
 
 ```bash
 cd apps/web
@@ -192,7 +316,9 @@ GHOLA_VERIFY_STORE_HYPERLIQUID_VAULT_CONFIRM=I_UNDERSTAND_THIS_STORES_A_SEALED_V
 npm run verify:prod:hyperliquid
 ```
 
-Only after no-submit passes, run a capped live tiny-fill canary:
+This certificate proves readiness to attempt broadcast, not final venue
+acceptance, API-wallet approval, or a fill. Only after no-submit passes, run a
+capped live tiny-fill canary:
 
 ```bash
 cd apps/web
@@ -215,6 +341,10 @@ status API treats a missing recipient key as not ready even when the endpoint
 and API key are configured.
 
 Never reuse `PHALA_CLOUD_API_KEY` as `GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN`.
+Never leave `GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64` empty in production. The web
+app rejects signed funding attestations from unpinned worker keys outside
+local/test mode, and the worker reports not-ready for live venue mode unless
+`PRIVATE_AGENT_FUNDING_SIGNING_KEY` is configured.
 The Phala API key is only for provisioning. The worker token only authorizes
 Ghola to submit already-sealed private-agent session envelopes to the worker.
 
@@ -261,14 +391,32 @@ The first command is safe before provider launch and verifies fail-closed
 behavior. The `--require-ready` form is for production after Phala or another
 attested provider and the shielded settlement rail are live.
 
+Verified Private Mode canaries:
+
+```bash
+GHOLA_BASE_URL=https://ghola.xyz \
+GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN=<internal-token> \
+node scripts/canary/private-mode-verified-canaries.mjs .dev/private-mode-canaries.json
+```
+
+The payload must contain `unfunded`, `funded_program`, and `funded_relayer`
+entries with `receipt_id`, `destination_commitment`, `amount_bucket`,
+`asset_bucket`, and `expected_result`. The web app replays each receipt through
+the configured shielded verifier and stores only verifier-derived canary
+commitments; raw `evidence_commitment` strings no longer make production
+canaries green.
+
 Venue credential canary:
 
 ```bash
 set -a; source .dev/private-agent-staging.env; set +a
 GHOLA_CANARY_VENUE=hyperliquid \
 GHOLA_RUN_LIVE_VENUE_CANARY=1 \
+GHOLA_CANARY_LIVE_MODE=full_ticket \
 GHOLA_CANARY_HYPERLIQUID_QUOTE_SIZE=5 \
 GHOLA_CANARY_HYPERLIQUID_MAX_SLIPPAGE_BPS=50 \
+GHOLA_CANARY_REPORT_URL=https://ghola.xyz/v1/private-account/live-trading/canary-report \
+GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN=<internal-token> \
 node scripts/canary/private-agent-venue-live.mjs
 ```
 
@@ -279,13 +427,18 @@ an Advanced Trade key with view+trade permissions and transfer disabled: set
 `GHOLA_CANARY_VENUE=coinbase_byo`,
 `GHOLA_CANARY_COINBASE_API_KEY_NAME`, and either
 `GHOLA_CANARY_COINBASE_API_PRIVATE_KEY_PEM_B64` or
-`GHOLA_CANARY_COINBASE_API_PRIVATE_KEY_PEM_PATH`.
+`GHOLA_CANARY_COINBASE_API_PRIVATE_KEY_PEM_PATH`. Jupiter canaries use
+`GHOLA_CANARY_VENUE=jupiter`; live mode requires
+`GHOLA_CANARY_JUPITER_AUTHORITY_PRIVATE_KEY`, strict input/output mint
+allowlists, and the worker-side `PRIVATE_AGENT_JUPITER_API_KEY`.
 
-By default the venue canary uses Hyperliquid reconcile or Coinbase order preview
-instead of submitting an order. To run the real Hyperliquid proof, set both
-`GHOLA_CANARY_SUBMIT_ORDER=1` and `GHOLA_CANARY_ACK_TINY_ORDER_RISK=1`. The
-Hyperliquid submit canary sends a sealed `$5` quote-sized IOC tiny fill and then
-reconciles fills; it does not try to cancel the IOC order. Keep the venue on
+By default the venue canary uses no-submit/preview flows and does not write live
+launch evidence. To create a green launch canary, set
+`GHOLA_CANARY_SUBMIT_ORDER=1`, `GHOLA_CANARY_ACK_TINY_ORDER_RISK=1`,
+`GHOLA_CANARY_LIVE_MODE=full_ticket`, `GHOLA_CANARY_REPORT_URL`, and the web
+`GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN`. The script submits the sealed order,
+reconciles the venue, then stores only redacted receipt/result commitments in
+`/v1/private-account/live-trading/canary-report`. Keep the venue on
 testnet/sandbox first, then run one mainnet canary only after the worker and web
 envs are pinned to the fresh image digest.
 
@@ -293,10 +446,13 @@ envs are pinned to the fresh image digest.
 GHOLA_CANARY_VENUE=hyperliquid \
 GHOLA_RUN_LIVE_VENUE_CANARY=1 \
 GHOLA_CANARY_HYPERLIQUID_NETWORK=mainnet \
+GHOLA_CANARY_LIVE_MODE=full_ticket \
 GHOLA_CANARY_HYPERLIQUID_QUOTE_SIZE=5 \
 GHOLA_CANARY_HYPERLIQUID_MAX_SLIPPAGE_BPS=50 \
 GHOLA_CANARY_SUBMIT_ORDER=1 \
 GHOLA_CANARY_ACK_TINY_ORDER_RISK=1 \
+GHOLA_CANARY_REPORT_URL=https://ghola.xyz/v1/private-account/live-trading/canary-report \
+GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN=<internal-token> \
 node scripts/canary/private-agent-venue-live.mjs
 ```
 

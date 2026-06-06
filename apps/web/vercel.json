@@ -4,6 +4,10 @@
     {
       "path": "/v1/private-account/funding/batch/cron",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/private-agent/idle",
+      "schedule": "0 1 * * *"
     }
   ]
 }

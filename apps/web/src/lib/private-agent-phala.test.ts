@@ -2,16 +2,27 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildPhalaWorkerCompose,
   expectedRecipientReportDataHex,
+  markPhalaPrivateAgentActivity,
+  phalaIdleLeaseMs,
+  phalaIdleShutdownEnabled,
   phalaJitProvisioningConfigIssue,
   phalaJitProvisioningConfigured,
   phalaWorkerImageConfiguredForRequestedMode,
+  stopIdlePhalaPrivateAgent,
 } from "./private-agent-phala";
+import { resetPrivateAgentRuntimeLeaseStoreForTests } from "./private-agent-runtime-lease";
 
 const ORIGINAL_ENV = { ...process.env };
 const TEST_ENV_KEYS = [
   "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN",
+  "GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES",
+  "GHOLA_PRIVATE_AGENT_IDLE_AFTER_MS",
+  "GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN",
   "GHOLA_PRIVATE_AGENT_IMAGE_DIGEST",
   "GHOLA_PRIVATE_AGENT_JIT_PROVISIONING",
+  "GHOLA_PRIVATE_AGENT_LEASE_STORE",
+  "GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED",
+  "GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN",
   "GHOLA_PRIVATE_AGENT_WORKER_IMAGE",
   "GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST",
   "GHOLA_HYPERLIQUID_LIVE_MODE",
@@ -27,6 +38,7 @@ const TEST_ENV_KEYS = [
 ];
 
 afterEach(() => {
+  resetPrivateAgentRuntimeLeaseStoreForTests();
   for (const key of TEST_ENV_KEYS) {
     if (ORIGINAL_ENV[key] === undefined) {
       delete process.env[key];
@@ -124,9 +136,49 @@ describe("private-agent Phala provisioning", () => {
       recipientId: "phala:cvm:two",
       x25519PubHex: "11".repeat(32),
     });
+    const withFundingSigner = expectedRecipientReportDataHex({
+      recipientId: "phala:cvm:one",
+      x25519PubHex: "11".repeat(32),
+      fundingSignerPublicKeyB64: "MCowBQYDK2VwAyEA0000000000000000000000000000000000000000000=",
+    });
 
     expect(first).toMatch(/^0x[0-9a-f]{64}$/);
     expect(second).toMatch(/^0x[0-9a-f]{64}$/);
     expect(first).not.toBe(second);
+    expect(withFundingSigner).not.toBe(first);
+  });
+
+  it("uses a bounded idle lease and allows explicit idle shutdown disable", () => {
+    setTestEnv({
+      GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "true",
+      GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES: "10",
+    });
+
+    expect(phalaIdleShutdownEnabled()).toBe(true);
+    expect(phalaIdleLeaseMs()).toBe(10 * 60_000);
+
+    process.env.GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN = "false";
+    expect(phalaIdleShutdownEnabled()).toBe(false);
+  });
+
+  it("does not stop Phala while a private-agent lease is active", async () => {
+    setTestEnv({
+      GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN: "true",
+      GHOLA_PRIVATE_AGENT_LEASE_STORE: "memory",
+      PHALA_CLOUD_API_KEY: "phala-key",
+    });
+    const now = new Date("2026-06-06T12:00:00.000Z");
+    await markPhalaPrivateAgentActivity({
+      reason: "test_active_use",
+      leaseMs: 30 * 60_000,
+      now,
+    });
+
+    const result = await stopIdlePhalaPrivateAgent({ now });
+
+    expect(result.status).toBe("lease_active");
+    expect(result.attempted).toBe(false);
+    expect(result.stopped).toBe(false);
+    expect(result.lease_expires_at).toBe("2026-06-06T12:30:00.000Z");
   });
 });
