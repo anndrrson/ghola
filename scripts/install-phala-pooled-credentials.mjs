@@ -21,6 +21,12 @@ const VENUE_SECRET_KEYS = {
   ],
   coinbase: ["PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON"],
 };
+const JSON_SECRET_KEYS = new Set([
+  "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON",
+  "PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON",
+  "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON",
+  "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON",
+]);
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.env) {
@@ -98,21 +104,32 @@ const cvmName =
   process.env.GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME ||
   "ghola-private-agent-worker-no-submit-f510d61";
 
-const sealedEnv = Object.fromEntries(selectedSecretKeys.map((key) => [key, pooledEnv[key]]));
+const pooledSealedEnv = Object.fromEntries(selectedSecretKeys.map((key) => [key, pooledEnv[key]]));
+const workerSealedEnv = args.workerEnv ? readEnvFile(args.workerEnv) : {};
+const sealedEnv = { ...workerSealedEnv, ...pooledSealedEnv };
 
 console.log(JSON.stringify({
   installing_to_cvm: cvmName,
   dry_run: args.dryRun,
   allow_partial: args.allowPartial,
+  sealed_env_mode: args.workerEnv ? "worker_env_plus_pooled_credentials" : "pooled_credentials_only",
   requested_venues: requestedVenues,
   complete_venues: completeVenues,
   selected_venues: selectedCompleteVenues,
   missing_for_requested_venues: selectedMissing,
   validated: validation,
-  sealed_env_keys: Object.keys(sealedEnv),
+  pooled_sealed_env_keys: Object.keys(pooledSealedEnv),
+  sealed_env_key_count: Object.keys(sealedEnv).length,
 }, null, 2));
 
 if (args.dryRun) process.exit(0);
+if (!args.workerEnv) {
+  fail([
+    "Refusing to update Phala with pooled keys only.",
+    "Phala sealed env updates replace the worker env set for this CVM.",
+    "Pass --worker-env <full-phala-worker.env> so runtime config, image pins, funding signer, and pooled credentials are sealed together.",
+  ].join("\n"));
+}
 
 const prodEnv = args.vercel === false ? new Map() : pullVercelProductionEnv();
 const phalaApiKey =
@@ -147,6 +164,7 @@ try {
   const summary = {
     live_submit_mode: status.live_submit_mode,
     pooled_live_trading_enabled: status.pooled_live_trading_enabled,
+    pooled_live_venues: status.pooled_live_venues,
     pooled_reason_codes: status.pooled_reason_codes,
   };
   console.log(JSON.stringify({ public_status_after_install: summary }, null, 2));
@@ -158,10 +176,11 @@ try {
 }
 
 function parseArgs(argv) {
-  const parsed = { dryRun: false, vercel: true, env: "", cvm: "", venues: "", allowPartial: false };
+  const parsed = { dryRun: false, vercel: true, env: "", workerEnv: "", cvm: "", venues: "", allowPartial: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--env") parsed.env = argv[++i] || "";
+    else if (arg === "--worker-env") parsed.workerEnv = argv[++i] || "";
     else if (arg === "--cvm") parsed.cvm = argv[++i] || "";
     else if (arg === "--venues") parsed.venues = argv[++i] || "";
     else if (arg === "--allow-partial") parsed.allowPartial = true;
@@ -177,8 +196,8 @@ function usage(error = "") {
   if (error) console.error(error);
   console.error([
     "Usage:",
-    "  node scripts/install-phala-pooled-credentials.mjs --env deploy/private-agent-pooled-credentials.env",
-    "  node scripts/install-phala-pooled-credentials.mjs --env deploy/private-agent-pooled-credentials.env --allow-partial --venues phoenix",
+    "  node scripts/install-phala-pooled-credentials.mjs --env deploy/private-agent-pooled-credentials.env --worker-env .dev/phala-worker.env",
+    "  node scripts/install-phala-pooled-credentials.mjs --env deploy/private-agent-pooled-credentials.env --worker-env .dev/phala-worker.env --allow-partial --venues phoenix",
     "",
     "The env file must contain:",
     ...REQUIRED_SECRET_KEYS.map((key) => `  ${key}=...`),
@@ -339,8 +358,22 @@ function pullVercelProductionEnv() {
 
 function serializeEnv(env) {
   return Object.entries(env)
-    .map(([key, value]) => `${key}=${JSON.stringify(String(value))}`)
+    .map(([key, value]) => `${key}=${serializeEnvValue(key, value)}`)
     .join("\n") + "\n";
+}
+
+function serializeEnvValue(key, value) {
+  const string = String(value ?? "");
+  if (!string) return "";
+  if (JSON_SECRET_KEYS.has(key)) {
+    try {
+      return JSON.stringify(JSON.parse(string));
+    } catch {
+      fail(`${key} is not valid JSON.`);
+    }
+  }
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(string)) return string;
+  return `'${string.replace(/'/g, "'\\''").replace(/\n/g, "\\n")}'`;
 }
 
 function run(command, argv, options = {}) {

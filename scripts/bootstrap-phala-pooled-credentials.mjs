@@ -19,6 +19,12 @@ const REQUIRED_KEYS = [
   "PRIVATE_AGENT_JUPITER_API_KEY",
   "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON",
 ];
+const JSON_SECRET_KEYS = new Set([
+  "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON",
+  "PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON",
+  "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON",
+  "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON",
+]);
 
 const args = parseArgs(process.argv.slice(2));
 const outPath = resolve(root, args.out || DEFAULT_OUT);
@@ -229,10 +235,14 @@ function readEnvFile(path) {
 
 function unquote(value) {
   const trimmed = value.trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return trimmed.slice(1, -1).replace(/\\n/g, "\n");
+    }
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
     return trimmed.slice(1, -1).replace(/\\n/g, "\n");
   }
   return trimmed;
@@ -240,8 +250,22 @@ function unquote(value) {
 
 function serializeEnv(env) {
   return Object.entries(env)
-    .map(([key, value]) => `${key}=${JSON.stringify(String(value))}`)
+    .map(([key, value]) => `${key}=${serializeEnvValue(key, value)}`)
     .join("\n") + "\n";
+}
+
+function serializeEnvValue(key, value) {
+  const string = String(value ?? "");
+  if (!string) return "";
+  if (JSON_SECRET_KEYS.has(key)) {
+    try {
+      return JSON.stringify(JSON.parse(string));
+    } catch {
+      fail(`${key} is not valid JSON.`);
+    }
+  }
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(string)) return string;
+  return `'${string.replace(/'/g, "'\\''").replace(/\n/g, "\\n")}'`;
 }
 
 function relativeRoot(path) {
