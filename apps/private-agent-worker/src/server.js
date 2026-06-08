@@ -214,6 +214,21 @@ function canonicalJson(value) {
   return JSON.stringify(value, Object.keys(value || {}).sort());
 }
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function gholaCommitment(prefix, value) {
+  return `${prefix}_${sha256Hex(stableJson(value)).slice(0, 48)}`;
+}
+
 function postUnixJson({ socketPath, path, body }) {
   return new Promise((resolve, reject) => {
     const encoded = Buffer.from(JSON.stringify(body));
@@ -343,6 +358,84 @@ async function publicRecipient(recipient) {
       (boolEnv("PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE") &&
         Boolean(attestation.attestation_hash)),
     expires_at_unix: null,
+  };
+}
+
+async function runtimeHealthEvidence(recipient, ready, observedAt = new Date()) {
+  const fundingSigner = fundingSigningIdentity();
+  const attestation = await attestationMetadata(recipient, fundingSigner.public_key_b64);
+  const imageDigest = env("PHALA_CVM_IMAGE_DIGEST", env("PRIVATE_AGENT_IMAGE_DIGEST", null));
+  const provider = env("PRIVATE_AGENT_PROVIDER_ID", "phala");
+  const teeKind = env("PRIVATE_AGENT_TEE_KIND", "phala");
+  const attestedReady =
+    boolEnv("PRIVATE_AGENT_ATTESTED_READY") ||
+    (boolEnv("PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE") &&
+      Boolean(attestation.attestation_hash));
+  const measurement = attestation.measurement_hex ||
+    imageDigest ||
+    attestation.quote_hash ||
+    attestation.attestation_hash ||
+    null;
+  const policy = {
+    sealed_execution_required: true,
+    plaintext_rejected: true,
+    provider,
+    tee_kind: teeKind,
+    recipient_id: recipient.recipient_id,
+    report_data_hex: attestation.report_data_hex,
+    funding_signer_public_key_b64: fundingSigner.public_key_b64 || null,
+  };
+  const runtimeAttestationCommitment = attestation.attestation_hash
+    ? gholaCommitment("runtime_attestation", {
+        attestation_hash: attestation.attestation_hash,
+        quote_hash: attestation.quote_hash,
+        report_data_hex: attestation.report_data_hex,
+        recipient_id: recipient.recipient_id,
+        funding_signer_public_key_b64: fundingSigner.public_key_b64 || null,
+      })
+    : null;
+  const runtimeMeasurementCommitment = measurement
+    ? gholaCommitment("runtime_measurement", measurement)
+    : null;
+  const runtimePolicyCommitment = gholaCommitment("runtime_policy", policy);
+  const status = ready.ready && runtimeAttestationCommitment && runtimeMeasurementCommitment
+    ? "green"
+    : "red";
+  return {
+    service: "ghola-private-agent-worker",
+    status,
+    ok: status === "green",
+    ready: ready.ready,
+    attested: attestedReady,
+    attested_ready: attestedReady,
+    sealed_execution_required: true,
+    plaintext_rejected: true,
+    provider,
+    tee_kind: teeKind,
+    observed_at: observedAt.toISOString(),
+    checked_at: observedAt.toISOString(),
+    runtime_health_commitment: gholaCommitment("runtime_health", {
+      status,
+      recipient_id: recipient.recipient_id,
+      report_data_hex: attestation.report_data_hex,
+      runtime_attestation_commitment: runtimeAttestationCommitment,
+      runtime_measurement_commitment: runtimeMeasurementCommitment,
+      runtime_policy_commitment: runtimePolicyCommitment,
+      observed_at: observedAt.toISOString(),
+    }),
+    runtime_attestation_commitment: runtimeAttestationCommitment,
+    runtime_measurement_commitment: runtimeMeasurementCommitment,
+    runtime_policy_commitment: runtimePolicyCommitment,
+    runtime_measurement: measurement,
+    measurement_hex: attestation.measurement_hex,
+    attestation_hash: attestation.attestation_hash,
+    image_digest: imageDigest,
+    report_data_hex: attestation.report_data_hex,
+    quote_hash: attestation.quote_hash,
+    missing: ready.missing,
+    reason: status === "green"
+      ? null
+      : ready.missing[0] || "sealed runtime health evidence is incomplete",
   };
 }
 
@@ -1517,16 +1610,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
       const ready = await readiness(recipient);
 
       if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/healthz")) {
-        return json(res, ready.ready ? 200 : 503, {
-          service: "ghola-private-agent-worker",
-          ready: ready.ready,
-          attested: boolEnv("PRIVATE_AGENT_ATTESTED_READY"),
-          sealed_execution_required: true,
-          plaintext_rejected: true,
-          provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
-          tee_kind: env("PRIVATE_AGENT_TEE_KIND", "phala"),
-          missing: ready.missing,
-        });
+        return json(res, ready.ready ? 200 : 503, await runtimeHealthEvidence(recipient, ready));
       }
 
       if (req.method === "GET" && url.pathname === "/ready") {
