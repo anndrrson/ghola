@@ -17,6 +17,13 @@ const args = parseArgs(process.argv.slice(2));
 if (!args.env) {
   usage("Missing --env <pooled-credentials.env>");
 }
+if (!existsSync(args.env)) {
+  fail([
+    `Missing pooled credential file: ${args.env}`,
+    "Create deploy/private-agent-pooled-credentials.env from deploy/private-agent-pooled-credentials.env.example.",
+    "The file is gitignored because it must contain real venue signing credentials.",
+  ].join("\n"));
+}
 
 const pooledEnv = readEnvFile(args.env);
 normalizeB64Json(pooledEnv, [
