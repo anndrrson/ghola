@@ -12,6 +12,15 @@ const REQUIRED_SECRET_KEYS = [
   "PRIVATE_AGENT_JUPITER_API_KEY",
   "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON",
 ];
+const VENUE_SECRET_KEYS = {
+  hyperliquid: ["PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"],
+  phoenix: ["PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON"],
+  jupiter: [
+    "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON",
+    "PRIVATE_AGENT_JUPITER_API_KEY",
+  ],
+  coinbase: ["PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON"],
+};
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.env) {
@@ -38,29 +47,49 @@ normalizeAlias(pooledEnv, "PRIVATE_AGENT_JUPITER_API_KEY", [
 ]);
 
 const missing = REQUIRED_SECRET_KEYS.filter((key) => !nonEmpty(pooledEnv[key]));
-if (missing.length) {
+const requestedVenues = selectedVenues(args.venues);
+const completeVenues = requestedVenues.filter((venue) =>
+  VENUE_SECRET_KEYS[venue].every((key) => nonEmpty(pooledEnv[key])),
+);
+const selectedCompleteVenues = args.allowPartial ? completeVenues : requestedVenues;
+const selectedSecretKeys = [...new Set(selectedCompleteVenues.flatMap((venue) => VENUE_SECRET_KEYS[venue]))];
+const selectedMissing = [...new Set(requestedVenues
+  .flatMap((venue) => VENUE_SECRET_KEYS[venue])
+  .filter((key) => !nonEmpty(pooledEnv[key])))];
+
+if (!args.allowPartial && missing.length) {
   fail(`Missing required pooled credential env(s): ${missing.join(", ")}`);
 }
+if (args.allowPartial && selectedCompleteVenues.length === 0) {
+  fail(`No complete pooled venue credentials found. Missing: ${selectedMissing.join(", ")}`);
+}
 
-const validation = {
-  hyperliquid_accounts: validateHyperliquidPool(
+const validation = {};
+if (selectedCompleteVenues.includes("hyperliquid")) {
+  validation.hyperliquid_accounts = validateHyperliquidPool(
     jsonValue(pooledEnv.PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON, "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"),
-  ),
-  phoenix_authority: validateSolanaVault(
+  );
+}
+if (selectedCompleteVenues.includes("phoenix")) {
+  validation.phoenix_authority = validateSolanaVault(
     jsonValue(pooledEnv.PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON, "PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON"),
     "phoenix",
-  ),
-  jupiter_authority: validateSolanaVault(
+  );
+}
+if (selectedCompleteVenues.includes("jupiter")) {
+  validation.jupiter_authority = validateSolanaVault(
     jsonValue(pooledEnv.PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON, "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON"),
     "jupiter",
-  ),
-  jupiter_api_key: pooledEnv.PRIVATE_AGENT_JUPITER_API_KEY.length >= 12,
-  coinbase_pool: validateCoinbaseVault(
+  );
+  validation.jupiter_api_key = pooledEnv.PRIVATE_AGENT_JUPITER_API_KEY.length >= 12;
+}
+if (selectedCompleteVenues.includes("coinbase")) {
+  validation.coinbase_pool = validateCoinbaseVault(
     jsonValue(pooledEnv.PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON, "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON"),
-  ),
-};
+  );
+}
 
-if (!validation.jupiter_api_key) {
+if (validation.jupiter_api_key === false) {
   fail("PRIVATE_AGENT_JUPITER_API_KEY looks too short.");
 }
 
@@ -69,22 +98,16 @@ const cvmName =
   process.env.GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME ||
   "ghola-private-agent-worker-no-submit-f510d61";
 
-const sealedEnv = {
-  PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON:
-    pooledEnv.PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON,
-  PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON:
-    pooledEnv.PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON,
-  PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON:
-    pooledEnv.PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON,
-  PRIVATE_AGENT_JUPITER_API_KEY:
-    pooledEnv.PRIVATE_AGENT_JUPITER_API_KEY,
-  PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON:
-    pooledEnv.PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON,
-};
+const sealedEnv = Object.fromEntries(selectedSecretKeys.map((key) => [key, pooledEnv[key]]));
 
 console.log(JSON.stringify({
   installing_to_cvm: cvmName,
   dry_run: args.dryRun,
+  allow_partial: args.allowPartial,
+  requested_venues: requestedVenues,
+  complete_venues: completeVenues,
+  selected_venues: selectedCompleteVenues,
+  missing_for_requested_venues: selectedMissing,
   validated: validation,
   sealed_env_keys: Object.keys(sealedEnv),
 }, null, 2));
@@ -135,11 +158,13 @@ try {
 }
 
 function parseArgs(argv) {
-  const parsed = { dryRun: false, vercel: true, env: "", cvm: "" };
+  const parsed = { dryRun: false, vercel: true, env: "", cvm: "", venues: "", allowPartial: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--env") parsed.env = argv[++i] || "";
     else if (arg === "--cvm") parsed.cvm = argv[++i] || "";
+    else if (arg === "--venues") parsed.venues = argv[++i] || "";
+    else if (arg === "--allow-partial") parsed.allowPartial = true;
     else if (arg === "--dry-run") parsed.dryRun = true;
     else if (arg === "--no-vercel") parsed.vercel = false;
     else if (arg === "-h" || arg === "--help") usage();
@@ -153,6 +178,7 @@ function usage(error = "") {
   console.error([
     "Usage:",
     "  node scripts/install-phala-pooled-credentials.mjs --env deploy/private-agent-pooled-credentials.env",
+    "  node scripts/install-phala-pooled-credentials.mjs --env deploy/private-agent-pooled-credentials.env --allow-partial --venues phoenix",
     "",
     "The env file must contain:",
     ...REQUIRED_SECRET_KEYS.map((key) => `  ${key}=...`),
@@ -160,6 +186,18 @@ function usage(error = "") {
     "JSON values may also be provided as *_B64.",
   ].join("\n"));
   process.exit(error ? 1 : 0);
+}
+
+function selectedVenues(raw) {
+  const venues = raw
+    ? raw.split(",").map((venue) => venue.trim()).filter(Boolean)
+    : Object.keys(VENUE_SECRET_KEYS);
+  for (const venue of venues) {
+    if (!Object.prototype.hasOwnProperty.call(VENUE_SECRET_KEYS, venue)) {
+      fail(`Unsupported pooled venue: ${venue}`);
+    }
+  }
+  return [...new Set(venues)];
 }
 
 function readEnvFile(path) {
@@ -199,9 +237,15 @@ function readEnvFile(path) {
 
 function unquote(value) {
   const trimmed = value.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return trimmed.slice(1, -1).replace(/\\n/g, "\n");
+    }
+  }
   if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    trimmed.startsWith("'") && trimmed.endsWith("'")
   ) {
     return trimmed.slice(1, -1).replace(/\\n/g, "\n");
   }
