@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   discoverPhalaPrivateAgentExecutionUrl,
-  ensurePhalaPrivateAgentProvisioned,
+  wakePhalaPrivateAgentForUse,
 } from "@/lib/private-agent-phala";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +20,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  const provisioning = await ensurePhalaPrivateAgentProvisioned({
+  const provisioning = await wakePhalaPrivateAgentForUse({
+    reason: "operator_provision",
     waitForReadyMs: 180_000,
   });
   const executionUrl = await discoverPhalaPrivateAgentExecutionUrl();

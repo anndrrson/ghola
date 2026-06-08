@@ -467,7 +467,7 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
             recipient_id: recipient.recipient_id,
             x25519_pub_hex: recipient.x25519_pub_hex,
             tee_kind: recipient.tee_kind ?? "phala",
-            measurement_hex: recipient.measurement_hex ?? null,
+            measurement_hex: recipient.measurement_hex ?? recipient.image_digest ?? null,
             attestation_hash: recipient.attestation_hash ?? recipient.quote_hash ?? null,
             expires_at_unix: recipient.expires_at_unix ?? null,
           },
