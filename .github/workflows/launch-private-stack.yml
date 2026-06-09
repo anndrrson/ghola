@@ -44,6 +44,12 @@ on:
         description: "Git ref containing the private trading web app"
         required: true
         default: "claude/sweet-davinci-z7m2io"
+      arm_phala:
+        description: "Arm Phala spend (provisions the paid worker CVM). Default deploys dark: spend lockdown on, no Phala key in Vercel."
+        required: true
+        default: "false"
+        type: choice
+        options: ["false", "true"]
 
 permissions:
   contents: read
@@ -79,7 +85,9 @@ jobs:
           missing=()
           [ -n "${VERCEL_TOKEN}" ] || missing+=("VERCEL_TOKEN")
           [ -n "${DB_URL}" ] || missing+=("GHOLA_PRIVATE_ACCOUNT_DATABASE_URL")
-          [ -n "${PHALA_KEY}" ] || missing+=("PHALA_CLOUD_API_KEY")
+          if [ "${{ inputs.arm_phala }}" = "true" ]; then
+            [ -n "${PHALA_KEY}" ] || missing+=("PHALA_CLOUD_API_KEY (required because arm_phala=true)")
+          fi
           if [ "${#missing[@]}" -gt 0 ]; then
             {
               echo "## Launch blocked: missing repository secrets"
@@ -133,12 +141,29 @@ jobs:
             printf '%s' "$value" | npx vercel@latest env add "$name" production --token "$VERCEL_TOKEN" >/dev/null
             echo "set $name"
           }
+          rmenv() {
+            npx vercel@latest env rm "$1" production --yes --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
+            echo "removed $1"
+          }
           setenv GHOLA_PRIVATE_ACCOUNT_DATABASE_URL "$DB_URL"
-          setenv PHALA_CLOUD_API_KEY "$PHALA_KEY"
           setenv GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN "$EXEC_TOKEN"
           setenv GHOLA_PRIVATE_AGENT_PROVISION_TOKEN "$PROV_TOKEN"
           setenv GHOLA_PRIVATE_AGENT_PROVIDER "phala"
-          setenv GHOLA_PRIVATE_AGENT_JIT_PROVISIONING "true"
+          if [ "${{ inputs.arm_phala }}" = "true" ]; then
+            # Deliberate re-arm: Phala key present, JIT on, lockdowns off.
+            setenv PHALA_CLOUD_API_KEY "$PHALA_KEY"
+            setenv GHOLA_PRIVATE_AGENT_JIT_PROVISIONING "true"
+            setenv GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN "false"
+            setenv GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED "false"
+            setenv GHOLA_PRIVATE_AGENT_SPEND_ARMED "true"
+          else
+            # Dark deploy: web surface live, Phala spend impossible.
+            rmenv PHALA_CLOUD_API_KEY
+            setenv GHOLA_PRIVATE_AGENT_JIT_PROVISIONING "false"
+            setenv GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN "true"
+            setenv GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED "true"
+            setenv GHOLA_PRIVATE_AGENT_SPEND_ARMED "false"
+          fi
           setenv GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME "ghola-private-agent-worker"
           setenv GHOLA_PRIVATE_AGENT_WORKER_IMAGE "$WORKER_IMAGE"
           setenv GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST "$WORKER_IMAGE_DIGEST"
@@ -162,6 +187,7 @@ jobs:
           echo "- $url" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Provision worker CVM via app
+        if: ${{ inputs.arm_phala == 'true' }}
         env:
           PROV_TOKEN: ${{ steps.tokens.outputs.prov_token }}
         run: |
@@ -209,7 +235,14 @@ jobs:
           else
             echo "- auth smoke: skipped (no smoke secrets)" >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "$hl" | grep -q '"pilot_stage"[: ]*"live_pilot"' \
-            && echo "- hyperliquid pilot: live_pilot" >> "$GITHUB_STEP_SUMMARY" \
-            || { echo "- hyperliquid pilot: NOT live (see status above for reason_codes)" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
+          if [ "${{ inputs.arm_phala }}" = "true" ]; then
+            echo "$hl" | grep -q '"pilot_stage"[: ]*"live_pilot"' \
+              && echo "- hyperliquid pilot: live_pilot" >> "$GITHUB_STEP_SUMMARY" \
+              || { echo "- hyperliquid pilot: NOT live (see status above for reason_codes)" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
+          else
+            echo "$hl" | grep -q '"platform_class"' \
+              && echo "- hyperliquid routes: deployed (dark mode; worker not armed)" >> "$GITHUB_STEP_SUMMARY" \
+              || { echo "- hyperliquid routes: MISSING from deployment" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
+            echo "- phala spend: locked down (arm with arm_phala=true when ready)" >> "$GITHUB_STEP_SUMMARY"
+          fi
           exit $fail
