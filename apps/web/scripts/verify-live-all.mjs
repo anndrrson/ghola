@@ -66,9 +66,13 @@ try {
     liveTradingGate.ok &&
       (
         liveTradingGate.body?.pooled_live_trading_enabled !== true ||
-        liveTradingGate.body?.pooled_worker_readiness?.ready === true
+        liveTradingGate.body?.pooled_worker_readiness?.ready === true ||
+        (Array.isArray(liveTradingGate.body?.pooled_live_venues) && liveTradingGate.body.pooled_live_venues.length > 0)
       ),
-    liveTradingGate.body?.pooled_worker_readiness || { status: "not_reported" },
+    {
+      ...(liveTradingGate.body?.pooled_worker_readiness || { status: "not_reported" }),
+      pooled_live_venues: liveTradingGate.body?.pooled_live_venues || [],
+    },
   );
   if (requirePublicLive && liveTradingGate.body?.live_trading_enabled !== true) {
     throw new Error("Public live trading gate is not green.");
