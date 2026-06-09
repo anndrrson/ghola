@@ -44,7 +44,7 @@ on:
       deploy_ref:
         description: "Git ref containing the private trading web app"
         required: true
-        default: "claude/sweet-davinci-z7m2io"
+        default: "codex/ghola-deploy-cspfix"
       arm_phala:
         description: "Arm Phala spend (provisions the paid worker CVM). Default deploys dark: spend lockdown on, no Phala key in Vercel."
         required: true
