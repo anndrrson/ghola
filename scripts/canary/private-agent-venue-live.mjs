@@ -301,13 +301,7 @@ async function runPhoenix({ executionMode = env("GHOLA_CANARY_PHOENIX_EXECUTION_
       order_type: "limit",
       tif: "Ioc",
     };
-  const orderResult = await expect(
-    submitOrder
-      ? canaryLiveMode === "tiny_fill" ? "phoenix tiny-fill IOC order" : "phoenix full-ticket order"
-      : "phoenix dry-run order",
-    "/venues/solana-perps/orders",
-    202,
-    stripUndefined({
+  const orderBody = stripUndefined({
       version: 1,
       venue_id: "phoenix",
       platform_class: "solana_perps_market",
@@ -325,8 +319,23 @@ async function runPhoenix({ executionMode = env("GHOLA_CANARY_PHOENIX_EXECUTION_
         order,
       }),
       session_policy: sessionPolicy,
-    }),
-  );
+    });
+  const orderResult = submitOrder
+    ? await expect(
+      canaryLiveMode === "tiny_fill" ? "phoenix tiny-fill IOC order" : "phoenix full-ticket order",
+      "/venues/solana-perps/orders",
+      202,
+      orderBody,
+    )
+    : await expect(
+      "phoenix no-submit pooled verification",
+      "/venues/solana-perps/verify",
+      200,
+      orderBody,
+      {
+        "x-ghola-no-submit-verify": "true",
+      },
+    );
 
   const reconcileWork = commitment("work_order", { canaryId, venue, op: "reconcile" });
   const reconcileResult = await expect("phoenix reconcile", "/venues/solana-perps/reconcile", 200, stripUndefined({
@@ -347,7 +356,17 @@ async function runPhoenix({ executionMode = env("GHOLA_CANARY_PHOENIX_EXECUTION_
     }),
     session_policy: sessionPolicy,
   }));
-  if (!submitOrder || canaryLiveMode !== "full_ticket") return null;
+  if (!submitOrder) {
+    return buildCapitalFreeCanaryReport({
+      venueId: "phoenix",
+      network: "mainnet",
+      orderResult,
+      reconcileResult,
+      orderNotionalUsd: Number(quoteSize),
+      maxSlippageBps: Number(maxSlippageBps),
+    });
+  }
+  if (canaryLiveMode !== "full_ticket") return null;
   return buildCanaryReport({
     venueId: "phoenix",
     network: "mainnet",
@@ -535,7 +554,7 @@ async function runJupiter({ executionMode = env("GHOLA_CANARY_JUPITER_EXECUTION_
     assertFullTicketCanarySize(quoteSize, "GHOLA_CANARY_JUPITER_QUOTE_SIZE");
     orderResult = await expect("jupiter live swap", "/venues/solana-swap/orders", 202, orderBody);
   } else {
-    await expect("jupiter no-submit swap", "/venues/solana-swap/verify", 200, orderBody, {
+    orderResult = await expect("jupiter no-submit swap", "/venues/solana-swap/verify", 200, orderBody, {
       "x-ghola-no-submit-verify": "true",
     });
   }
@@ -559,7 +578,16 @@ async function runJupiter({ executionMode = env("GHOLA_CANARY_JUPITER_EXECUTION_
     }),
     session_policy: sessionPolicy,
   }));
-  if (!submitOrder) return null;
+  if (!submitOrder) {
+    return buildCapitalFreeCanaryReport({
+      venueId: "jupiter",
+      network: "mainnet",
+      orderResult,
+      reconcileResult,
+      orderNotionalUsd: Number(quoteSize),
+      maxSlippageBps: Number(maxSlippageBps),
+    });
+  }
   return buildCanaryReport({
     venueId: "jupiter",
     network: "mainnet",
@@ -731,6 +759,58 @@ function buildCanaryReport({
     max_slippage_bps: Math.floor(slippageBps),
     receipt_commitment: commitmentFromResult(orderResult) || commitment("canary_receipt", { canaryId, venueId, orderResult }),
     result_commitment: commitmentFromResult(reconcileResult) || commitment("canary_result", { canaryId, venueId, reconcileResult }),
+    observed_at: new Date().toISOString(),
+  };
+}
+
+function buildCapitalFreeCanaryReport({
+  venueId,
+  network,
+  orderResult,
+  reconcileResult,
+  orderNotionalUsd,
+  maxSlippageBps,
+}) {
+  const notional = finitePositive(orderNotionalUsd, "capital-free proof notional");
+  const maxOrderNotionalUsd = finitePositive(
+    env("GHOLA_CANARY_MAX_ORDER_NOTIONAL_USD") ||
+      env("GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD") ||
+      "1000",
+    "capital-free max order notional",
+  );
+  const dailyCapUsd = finitePositive(
+    env("GHOLA_CANARY_DAILY_CAP_USD") ||
+      env("GHOLA_LIVE_TRADING_DAILY_CAP_USD") ||
+      "5000",
+    "capital-free daily cap",
+  );
+  const slippageBps = finitePositive(
+    maxSlippageBps || env("GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS", "100"),
+    "capital-free max slippage",
+  );
+  if (notional > maxOrderNotionalUsd) {
+    fail(`capital-free proof notional ${notional} exceeds report max order cap ${maxOrderNotionalUsd}`);
+  }
+  if (network !== "mainnet") {
+    fail(`capital-free no-submit proofs require mainnet, got ${network || "unknown"}`);
+  }
+  return {
+    report_id: `${canaryId}_${venueId}_capital_free`,
+    venue_id: venueId,
+    network: "mainnet",
+    status: "green",
+    live_mode: "no_submit",
+    canary_kind: "capital_free_no_submit",
+    broadcast_performed: false,
+    reconcile_status: "reconciled",
+    order_notional_usd: notional,
+    max_order_notional_usd: maxOrderNotionalUsd,
+    daily_cap_usd: dailyCapUsd,
+    max_slippage_bps: Math.floor(slippageBps),
+    receipt_commitment: commitmentFromResult(orderResult) ||
+      commitment("capital_free_canary_receipt", { canaryId, venueId, orderResult }),
+    result_commitment: commitmentFromResult(reconcileResult) ||
+      commitment("capital_free_canary_result", { canaryId, venueId, reconcileResult }),
     observed_at: new Date().toISOString(),
   };
 }

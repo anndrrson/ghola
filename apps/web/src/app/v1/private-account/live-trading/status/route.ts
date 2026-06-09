@@ -20,12 +20,19 @@ const VENUES = [
 ] as const;
 
 export async function GET() {
-  const [reports, workerReadiness] = await Promise.all([
+  const [reports, capitalFreeProofs, workerReadiness] = await Promise.all([
     Promise.all(VENUES.map((venue) => getLatestLiveTradingCanaryReport(venue.id))),
+    Promise.all(VENUES.map((venue) => getLatestLiveTradingCanaryReport(venue.id, "capital_free_no_submit"))),
     getPooledWorkerReadiness(process.env),
   ]);
   const venues = VENUES.map((venue, index) =>
-    venuePooledLiveGate(venue.id, process.env, evaluateCanary(venue.id, reports[index]), workerReadiness)
+    venuePooledLiveGate(
+      venue.id,
+      process.env,
+      evaluateCanary(venue.id, reports[index]),
+      evaluateCapitalFreeProof(venue.id, capitalFreeProofs[index]),
+      workerReadiness,
+    )
   );
   const pooledGlobalFailures = pooledLiveGateFailures(process.env, workerReadiness);
   const byoGlobalFailures = byoLiveGateFailures(process.env);
@@ -34,6 +41,9 @@ export async function GET() {
   );
   const pooledReadyVenueIds = venues
     .filter((venue) => venue.status === "green")
+    .map((venue) => venue.id);
+  const pooledCapitalFreeProvenVenueIds = venues
+    .filter((venue) => venue.capital_free_proof_status === "green")
     .map((venue) => venue.id);
   const pooledGreen = pooledGlobalFailures.length === 0 && pooledReadyVenueIds.length > 0;
   const publicLiveCopyAllowed = process.env.GHOLA_LIVE_TRADING_PUBLIC_ENABLED === "true";
@@ -58,6 +68,7 @@ export async function GET() {
     byo_live_trading_enabled: byoGreen,
     pooled_live_trading_enabled: pooledGreen,
     pooled_live_venues: pooledReadyVenueIds,
+    pooled_capital_free_proven_venues: pooledCapitalFreeProvenVenueIds,
     public_live_copy_allowed: publicLiveCopyAllowed,
     public_market_data_enabled: publicLiveCopyAllowed,
     default_access_mode: "ghola_auto_access",
@@ -86,6 +97,8 @@ export async function GET() {
         status: venue.status,
         canary_status: venue.canary_status,
         canary_evidence_commitment: venue.canary_report?.evidence_commitment ?? null,
+        capital_free_proof_status: venue.capital_free_proof_status,
+        capital_free_proof_evidence_commitment: venue.capital_free_proof_report?.evidence_commitment ?? null,
         reason_codes: venue.reason_codes,
       })),
       byo_global_failures: byoGlobalFailures,
@@ -199,6 +212,7 @@ function venuePooledLiveGate(
   id: (typeof VENUES)[number]["id"],
   env: Record<string, string | undefined>,
   canary: ReturnType<typeof evaluateCanary>,
+  capitalFreeProof: ReturnType<typeof evaluateCapitalFreeProof>,
   workerReadiness: PooledWorkerReadiness,
 ) {
   const reasonCodes: string[] = [];
@@ -283,6 +297,9 @@ function venuePooledLiveGate(
     canary_report: canary.report,
     canary_required: false,
     canary_reason_codes: canary.reason_codes,
+    capital_free_proof_status: capitalFreeProof.status,
+    capital_free_proof_report: capitalFreeProof.report,
+    capital_free_proof_reason_codes: capitalFreeProof.reason_codes,
     reason_codes: [...new Set(reasonCodes)],
   };
 }
@@ -361,6 +378,66 @@ function evaluateCanary(
       daily_cap_usd: report.daily_cap_usd,
       max_slippage_bps: report.max_slippage_bps,
     },
+  };
+}
+
+function evaluateCapitalFreeProof(
+  venueId: PrivateLiveTradingVenueId,
+  report: PrivateLiveTradingCanaryReportRecordV1 | null,
+) {
+  if (!report) {
+    return {
+      status: "missing" as const,
+      reason_codes: ["capital_free_no_submit_proof_missing"],
+      report: null,
+    };
+  }
+
+  const reasonCodes: string[] = [];
+  const now = Date.now();
+  const observedAt = Date.parse(report.observed_at);
+  const expiresAt = Date.parse(report.expires_at);
+  const maxStaleMs = positiveIntegerEnv("GHOLA_LIVE_TRADING_CANARY_MAX_STALE_MS", 24 * 60 * 60 * 1_000);
+  const requiredMaxOrderUsd = positiveNumberEnv("GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD", 1_000);
+  const requiredDailyCapUsd = positiveNumberEnv("GHOLA_LIVE_TRADING_DAILY_CAP_USD", 5_000);
+  const requiredMaxSlippageBps = positiveIntegerEnv("GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS", 100);
+
+  if (report.venue_id !== venueId) reasonCodes.push("capital_free_proof_wrong_venue");
+  if (report.network !== "mainnet") reasonCodes.push("capital_free_proof_wrong_network");
+  if (report.status !== "green") reasonCodes.push("capital_free_proof_failed");
+  if (report.live_mode !== "no_submit" || report.canary_kind !== "capital_free_no_submit") {
+    reasonCodes.push("capital_free_no_submit_proof_required");
+  }
+  if (report.broadcast_performed) reasonCodes.push("capital_free_proof_broadcast_performed");
+  if (report.reconcile_status !== "reconciled") reasonCodes.push("capital_free_proof_reconcile_missing");
+  if (!report.receipt_commitment || !report.result_commitment) reasonCodes.push("capital_free_proof_commitment_missing");
+  if (
+    !Number.isFinite(report.order_notional_usd) ||
+    report.order_notional_usd <= 0 ||
+    report.order_notional_usd > requiredMaxOrderUsd
+  ) {
+    reasonCodes.push("capital_free_proof_order_notional_invalid");
+  }
+  if (
+    !sameNumber(report.max_order_notional_usd, requiredMaxOrderUsd) ||
+    !sameNumber(report.daily_cap_usd, requiredDailyCapUsd) ||
+    report.max_slippage_bps > requiredMaxSlippageBps
+  ) {
+    reasonCodes.push("capital_free_proof_cap_mismatch");
+  }
+  if (
+    !Number.isFinite(observedAt) ||
+    !Number.isFinite(expiresAt) ||
+    expiresAt <= now ||
+    now - observedAt > maxStaleMs
+  ) {
+    reasonCodes.push("capital_free_proof_stale");
+  }
+
+  return {
+    status: reasonCodes.length === 0 ? "green" as const : "red" as const,
+    reason_codes: reasonCodes,
+    report,
   };
 }
 

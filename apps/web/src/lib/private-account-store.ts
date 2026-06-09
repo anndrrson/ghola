@@ -177,6 +177,7 @@ export interface PrivateModeCanaryRecordV1 {
 }
 
 export type PrivateLiveTradingVenueId = "hyperliquid" | "phoenix" | "jupiter" | "coinbase";
+export type PrivateLiveTradingCanaryKind = "full_ticket_broadcast" | "capital_free_no_submit";
 
 export interface PrivateLiveTradingCanaryReportRecordV1 {
   version: 1;
@@ -184,8 +185,8 @@ export interface PrivateLiveTradingCanaryReportRecordV1 {
   venue_id: PrivateLiveTradingVenueId;
   network: "mainnet";
   status: "green" | "red";
-  live_mode: "full_ticket";
-  canary_kind: "full_ticket_broadcast";
+  live_mode: "full_ticket" | "no_submit";
+  canary_kind: PrivateLiveTradingCanaryKind;
   broadcast_performed: boolean;
   reconcile_status: "reconciled" | "submitted" | "failed";
   order_notional_usd: number;
@@ -3779,7 +3780,10 @@ export async function putLiveTradingCanaryReport(
   const sql = await getSql();
   if (!sql) {
     liveTradingCanaryReports.set(record.report_id, record);
-    await putBlobJson(liveTradingCanaryReportLatestPath(record.venue_id), record);
+    await putBlobJson(liveTradingCanaryReportLatestPath(record.venue_id, record.canary_kind), record);
+    if (record.canary_kind === "full_ticket_broadcast") {
+      await putBlobJson(liveTradingCanaryReportLegacyLatestPath(record.venue_id), record);
+    }
     await putBlobJson(liveTradingCanaryReportArchivePath(record), record);
     return record;
   }
@@ -3849,21 +3853,31 @@ export async function putLiveTradingCanaryReport(
 
 export async function getLatestLiveTradingCanaryReport(
   venueId: PrivateLiveTradingVenueId,
+  canaryKind: PrivateLiveTradingCanaryKind = "full_ticket_broadcast",
 ): Promise<PrivateLiveTradingCanaryReportRecordV1 | null> {
   const sql = await getSql();
   if (!sql) {
     const fromBlob = await readBlobJson<PrivateLiveTradingCanaryReportRecordV1>(
-      liveTradingCanaryReportLatestPath(venueId),
+      liveTradingCanaryReportLatestPath(venueId, canaryKind),
     );
     if (fromBlob) return fromBlob;
+    if (canaryKind === "full_ticket_broadcast") {
+      const legacy = await readBlobJson<PrivateLiveTradingCanaryReportRecordV1>(
+        liveTradingCanaryReportLegacyLatestPath(venueId),
+      );
+      if (legacy?.canary_kind === "full_ticket_broadcast" || legacy?.canary_kind == null) {
+        return legacy;
+      }
+    }
     return Array.from(liveTradingCanaryReports.values())
-      .filter((record) => record.venue_id === venueId)
+      .filter((record) => record.venue_id === venueId && record.canary_kind === canaryKind)
       .sort((a, b) => b.observed_at.localeCompare(a.observed_at))[0] ?? null;
   }
   await ensureSchema(sql);
   const rows = (await sql`
     SELECT * FROM private_account_live_trading_canary_reports
     WHERE venue_id = ${venueId}
+      AND canary_kind = ${canaryKind}
     ORDER BY observed_at DESC
     LIMIT 1
   `) as LiveTradingCanaryReportRow[];
@@ -5225,7 +5239,14 @@ function privateModeCanaryArchivePath(record: PrivateModeCanaryRecordV1): string
   ].join("/");
 }
 
-function liveTradingCanaryReportLatestPath(venueId: PrivateLiveTradingVenueId): string {
+function liveTradingCanaryReportLatestPath(
+  venueId: PrivateLiveTradingVenueId,
+  canaryKind: PrivateLiveTradingCanaryKind,
+): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/live-trading-canaries/by-venue/${venueId}/${canaryKind}/latest.json`;
+}
+
+function liveTradingCanaryReportLegacyLatestPath(venueId: PrivateLiveTradingVenueId): string {
   return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/live-trading-canaries/by-venue/${venueId}/latest.json`;
 }
 
@@ -6227,14 +6248,17 @@ function modeCanaryRow(row: ModeCanaryRow): PrivateModeCanaryRecordV1 {
 }
 
 function liveTradingCanaryReportRow(row: LiveTradingCanaryReportRow): PrivateLiveTradingCanaryReportRecordV1 {
+  const canaryKind = row.canary_kind === "capital_free_no_submit"
+    ? "capital_free_no_submit"
+    : "full_ticket_broadcast";
   return {
     version: 1,
     report_id: row.report_id,
     venue_id: row.venue_id as PrivateLiveTradingVenueId,
     network: "mainnet",
     status: row.status as PrivateLiveTradingCanaryReportRecordV1["status"],
-    live_mode: "full_ticket",
-    canary_kind: "full_ticket_broadcast",
+    live_mode: canaryKind === "capital_free_no_submit" ? "no_submit" : "full_ticket",
+    canary_kind: canaryKind,
     broadcast_performed: Boolean(row.broadcast_performed),
     reconcile_status: row.reconcile_status as PrivateLiveTradingCanaryReportRecordV1["reconcile_status"],
     order_notional_usd: Number(row.order_notional_usd),

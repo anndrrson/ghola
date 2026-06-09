@@ -66,13 +66,21 @@ function parseCanaryReport(body: Record<string, unknown>):
   const status = stringField(body.status);
   if (status !== "green" && status !== "red") reasonCodes.push("status_invalid");
 
-  if (stringField(body.live_mode) !== "full_ticket") reasonCodes.push("full_ticket_live_mode_required");
-  if (stringField(body.canary_kind) !== "full_ticket_broadcast") {
-    reasonCodes.push("full_ticket_broadcast_canary_required");
+  const canaryKind = stringField(body.canary_kind);
+  const capitalFree = canaryKind === "capital_free_no_submit";
+  if (canaryKind !== "full_ticket_broadcast" && canaryKind !== "capital_free_no_submit") {
+    reasonCodes.push("canary_kind_invalid");
+  }
+  const liveMode = stringField(body.live_mode);
+  if (capitalFree) {
+    if (liveMode !== "no_submit") reasonCodes.push("capital_free_no_submit_live_mode_required");
+  } else if (liveMode !== "full_ticket") {
+    reasonCodes.push("full_ticket_live_mode_required");
   }
 
   const broadcastPerformed = body.broadcast_performed === true;
-  if (status === "green" && !broadcastPerformed) reasonCodes.push("broadcast_required_for_green_canary");
+  if (capitalFree && broadcastPerformed) reasonCodes.push("capital_free_canary_must_not_broadcast");
+  if (!capitalFree && status === "green" && !broadcastPerformed) reasonCodes.push("broadcast_required_for_green_canary");
 
   const reconcileStatus = stringField(body.reconcile_status);
   if (!isReconcileStatus(reconcileStatus)) reasonCodes.push("reconcile_status_invalid");
@@ -115,12 +123,14 @@ function parseCanaryReport(body: Record<string, unknown>):
   }
 
   const createdAt = new Date().toISOString();
+  const normalizedLiveMode = capitalFree ? "no_submit" : "full_ticket";
+  const normalizedCanaryKind = capitalFree ? "capital_free_no_submit" : "full_ticket_broadcast";
   const evidencePayload = {
     venue_id: venueId,
     network,
     status,
-    live_mode: "full_ticket",
-    canary_kind: "full_ticket_broadcast",
+    live_mode: normalizedLiveMode,
+    canary_kind: normalizedCanaryKind,
     broadcast_performed: broadcastPerformed,
     reconcile_status: reconcileStatus,
     order_notional_usd: orderNotionalUsd,
@@ -133,8 +143,12 @@ function parseCanaryReport(body: Record<string, unknown>):
     observed_at: observedAt.toISOString(),
     expires_at: expiresAt.toISOString(),
   };
-  const evidenceCommitment = gholaCommitment("live_trading_canary_report", evidencePayload);
-  const reportId = safeReportId(stringField(body.report_id)) ?? `live_canary_${venueId}_${evidenceCommitment.slice(-24)}`;
+  const evidenceCommitment = gholaCommitment(
+    capitalFree ? "live_trading_capital_free_canary_report" : "live_trading_canary_report",
+    evidencePayload,
+  );
+  const reportId = safeReportId(stringField(body.report_id)) ??
+    `${capitalFree ? "capital_free_canary" : "live_canary"}_${venueId}_${evidenceCommitment.slice(-24)}`;
 
   return {
     ok: true,
@@ -144,8 +158,8 @@ function parseCanaryReport(body: Record<string, unknown>):
       venue_id: venueId,
       network: "mainnet",
       status,
-      live_mode: "full_ticket",
-      canary_kind: "full_ticket_broadcast",
+      live_mode: normalizedLiveMode,
+      canary_kind: normalizedCanaryKind,
       broadcast_performed: broadcastPerformed,
       reconcile_status: reconcileStatus,
       order_notional_usd: orderNotionalUsd,

@@ -244,6 +244,53 @@ describe("private account live trading launch gate", () => {
       { id: "coinbase", status: "red" },
     ]);
   });
+
+  it("surfaces a capital-free no-submit proof without treating it as a funded broadcast canary", async () => {
+    enableGreenGateEnv();
+    enablePooledWorkerEnv();
+    const reportRes = await POSTCanaryReport(new Request("https://ghola.example/v1/private-account/live-trading/canary-report", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer internal_live_canary_token_32_bytes",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(capitalFreeCanaryBody("phoenix")),
+    }));
+    expect(reportRes.status).toBe(202);
+    const reportBody = await reportRes.json();
+    expect(reportBody.report).toMatchObject({
+      venue_id: "phoenix",
+      live_mode: "no_submit",
+      canary_kind: "capital_free_no_submit",
+      broadcast_performed: false,
+    });
+
+    const fetchSpy = mockPooledWorkerPartiallyReady();
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(body.live_submit_mode).toBe("pooled_and_byo");
+    expect(body.pooled_live_venues).toEqual(["phoenix"]);
+    expect(body.pooled_capital_free_proven_venues).toEqual(["phoenix"]);
+
+    const phoenix = body.required_venues.find((venue: { id: string }) => venue.id === "phoenix");
+    expect(phoenix).toMatchObject({
+      id: "phoenix",
+      status: "green",
+      canary_status: "missing",
+      capital_free_proof_status: "green",
+      capital_free_proof_reason_codes: [],
+    });
+    expect(phoenix.capital_free_proof_report).toMatchObject({
+      venue_id: "phoenix",
+      live_mode: "no_submit",
+      canary_kind: "capital_free_no_submit",
+      broadcast_performed: false,
+      reconcile_status: "reconciled",
+      order_notional_usd: 5,
+    });
+  });
 });
 
 function clearGateEnv() {
@@ -358,6 +405,26 @@ function greenCanaryBody(venueId: "hyperliquid" | "phoenix" | "jupiter" | "coinb
     max_slippage_bps: 100,
     receipt_commitment: `receipt_${venueId}_commitment`,
     result_commitment: `result_${venueId}_commitment`,
+    observed_at: new Date().toISOString(),
+  };
+}
+
+function capitalFreeCanaryBody(venueId: "hyperliquid" | "phoenix" | "jupiter" | "coinbase") {
+  return {
+    report_id: `canary_${venueId}_capital_free_green`,
+    venue_id: venueId,
+    network: "mainnet",
+    status: "green",
+    live_mode: "no_submit",
+    canary_kind: "capital_free_no_submit",
+    broadcast_performed: false,
+    reconcile_status: "reconciled",
+    order_notional_usd: 5,
+    max_order_notional_usd: 1000,
+    daily_cap_usd: 5000,
+    max_slippage_bps: 100,
+    receipt_commitment: `receipt_${venueId}_capital_free_commitment`,
+    result_commitment: `result_${venueId}_capital_free_commitment`,
     observed_at: new Date().toISOString(),
   };
 }
