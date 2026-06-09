@@ -25,6 +25,26 @@ const JSON_SECRET_KEYS = new Set([
   "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON",
   "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON",
 ]);
+const CREDENTIAL_INTAKE_KEYS = [
+  "PRIVATE_AGENT_HYPERLIQUID_APPROVAL_EVIDENCE",
+  "PRIVATE_AGENT_SOLANA_PERPS_POOLED_AUTHORITY_SOURCE",
+  "PRIVATE_AGENT_JUPITER_POOLED_AUTHORITY_SOURCE",
+  "PRIVATE_AGENT_JUPITER_API_KEY_EVIDENCE",
+  "PRIVATE_AGENT_JUPITER_AUTHORITY_FUNDING_EVIDENCE",
+  "PRIVATE_AGENT_COINBASE_OMNIBUS_EVIDENCE",
+  "PRIVATE_AGENT_COINBASE_TRANSFERS_DISABLED_CONFIRMED",
+];
+const REQUIRED_INSTALL_EVIDENCE_KEYS = [
+  "PRIVATE_AGENT_HYPERLIQUID_APPROVAL_EVIDENCE",
+  "PRIVATE_AGENT_JUPITER_API_KEY_EVIDENCE",
+  "PRIVATE_AGENT_JUPITER_AUTHORITY_FUNDING_EVIDENCE",
+  "PRIVATE_AGENT_COINBASE_OMNIBUS_EVIDENCE",
+  "PRIVATE_AGENT_COINBASE_TRANSFERS_DISABLED_CONFIRMED",
+];
+const BOOLEAN_EVIDENCE_KEYS = new Set([
+  "PRIVATE_AGENT_COINBASE_TRANSFERS_DISABLED_CONFIRMED",
+]);
+const PLACEHOLDER_RE = /(?:REPLACE|PLACEHOLDER|EXAMPLE|TODO|DUMMY|FAKE|TEST_ONLY)/i;
 
 const args = parseArgs(process.argv.slice(2));
 const outPath = resolve(root, args.out || DEFAULT_OUT);
@@ -50,6 +70,9 @@ if (!nonEmpty(merged.PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON)) {
   merged.PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON = JSON.stringify(
     solanaVault("ghola_solana_perps_execution_vault"),
   );
+  if (!nonEmpty(merged.PRIVATE_AGENT_SOLANA_PERPS_POOLED_AUTHORITY_SOURCE)) {
+    merged.PRIVATE_AGENT_SOLANA_PERPS_POOLED_AUTHORITY_SOURCE = "generated_by_bootstrap_unfunded";
+  }
   generated.push("phoenix_authority");
 }
 
@@ -57,25 +80,31 @@ if (!nonEmpty(merged.PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON)) {
   merged.PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON = JSON.stringify(
     solanaVault("ghola_solana_swap_execution_vault"),
   );
+  if (!nonEmpty(merged.PRIVATE_AGENT_JUPITER_POOLED_AUTHORITY_SOURCE)) {
+    merged.PRIVATE_AGENT_JUPITER_POOLED_AUTHORITY_SOURCE = "generated_by_bootstrap_unfunded";
+  }
   generated.push("jupiter_authority");
 }
 
 const installEnv = {};
-for (const key of REQUIRED_KEYS) {
+for (const key of [...REQUIRED_KEYS, ...CREDENTIAL_INTAKE_KEYS]) {
   installEnv[key] = merged[key] || "";
 }
 
 writeFileSync(outPath, serializeEnv(installEnv), { mode: 0o600 });
 
 const status = summarize(installEnv);
+const evidence = summarizeEvidence(installEnv);
 console.log(JSON.stringify({
   output: relativeRoot(outPath),
   wrote_gitignored_secret_file: true,
   generated,
   present: status.present,
   missing: status.missing,
-  next_command: status.missing.length === 0
-    ? `node scripts/install-phala-pooled-credentials.mjs --env ${relativeRoot(outPath)}`
+  evidence_present: evidence.present,
+  evidence_missing: evidence.missing,
+  next_command: status.missing.length === 0 && evidence.missing.length === 0
+    ? `node scripts/install-phala-pooled-credentials.mjs --env ${relativeRoot(outPath)} --worker-env .dev/phala-worker.env`
     : null,
 }, null, 2));
 
@@ -83,20 +112,29 @@ if (args.install) {
   if (status.missing.length > 0) {
     fail(`Not installing; missing required external credential(s): ${status.missing.join(", ")}`);
   }
+  if (evidence.missing.length > 0) {
+    fail(`Not installing; missing credential intake evidence: ${evidence.missing.join(", ")}`);
+  }
+  if (!args.workerEnv) {
+    fail("Not installing; pass --worker-env <full-phala-worker.env> so Phala receives a complete sealed env.");
+  }
   run("node", [
     "scripts/install-phala-pooled-credentials.mjs",
     "--env",
     relativeRoot(outPath),
+    "--worker-env",
+    args.workerEnv,
   ]);
 }
 
 function parseArgs(argv) {
-  const parsed = { env: [], out: DEFAULT_OUT, install: false };
+  const parsed = { env: [], out: DEFAULT_OUT, install: false, workerEnv: "" };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--env") parsed.env.push(argv[++i] || "");
     else if (arg === "--out") parsed.out = argv[++i] || DEFAULT_OUT;
     else if (arg === "--install") parsed.install = true;
+    else if (arg === "--worker-env") parsed.workerEnv = argv[++i] || "";
     else if (arg === "-h" || arg === "--help") usage();
     else usage(`Unknown argument: ${arg}`);
   }
@@ -107,11 +145,11 @@ function usage(error = "") {
   if (error) console.error(error);
   console.error([
     "Usage:",
-    "  node scripts/bootstrap-phala-pooled-credentials.mjs [--env extra.env] [--install]",
+    "  node scripts/bootstrap-phala-pooled-credentials.mjs [--env extra.env] [--worker-env .dev/phala-worker.env] [--install]",
     "",
     "Creates or updates deploy/private-agent-pooled-credentials.env.",
-    "Generates Phoenix and Jupiter Solana authority keys when absent.",
-    "Does not generate external exchange credentials for Hyperliquid, Jupiter API, or Coinbase.",
+    "Generates Phoenix and Jupiter Solana authority keys when absent, marked as generated/unfunded.",
+    "Does not generate external exchange credentials or approval evidence for Hyperliquid, Jupiter API, or Coinbase.",
   ].join("\n"));
   process.exit(error ? 1 : 0);
 }
@@ -181,6 +219,22 @@ function summarize(env) {
     else missing.push(key);
   }
   return { present, missing };
+}
+
+function summarizeEvidence(env) {
+  const present = [];
+  const missing = [];
+  for (const key of REQUIRED_INSTALL_EVIDENCE_KEYS) {
+    if (validInstallEvidence(key, env[key])) present.push(key);
+    else missing.push(key);
+  }
+  return { present, missing };
+}
+
+function validInstallEvidence(key, value) {
+  const string = String(value || "").trim();
+  if (BOOLEAN_EVIDENCE_KEYS.has(key)) return string.toLowerCase() === "true";
+  return nonEmpty(string) && !PLACEHOLDER_RE.test(string);
 }
 
 function envSubset(env) {
