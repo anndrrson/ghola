@@ -180,6 +180,7 @@ import {
   getPrivateFundingBatchByEvidence,
   getPrivacyBudget,
   getQueuedAction,
+  getGholaBalanceSnapshot,
   getPrivateFundingImportByNullifier,
   getPrivateFundingInstruction,
   listAllPrivateFundingImports,
@@ -197,6 +198,7 @@ import {
   listLinkabilityScores,
   listPlatformRotations,
   listQueuedActions,
+  listGholaBalanceLedgerEntries,
   listPrivateAccountReceipts,
   putPrivateAccountRecord,
   putPrivateAccountApproval,
@@ -237,6 +239,7 @@ import {
   putPrivateAuctionOrder,
   putPrivateAuctionPreparedTransaction,
   putQueuedAction,
+  putGholaBalanceLedgerEntry,
   recordPrivacyBudgetEvent,
   updatePrivateAccountIntentStatus,
   updateQueuedActionStatus,
@@ -264,6 +267,9 @@ import {
   type PrivateLinkabilityScoreRecordV1,
   type PrivateQueuedActionRecordV1,
   type PrivateVaultStateRecordV1,
+  type PrivateGholaBalanceLedgerEntryRecordV1,
+  type PrivateGholaBalanceSnapshotV1,
+  type PrivateVenueEligibilityRecordV1,
 } from "@/lib/private-account-store";
 import {
   evidenceChainFromBatch,
@@ -326,6 +332,144 @@ export function json(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
     headers: PRIVATE_ACCOUNT_HEADERS,
+  });
+}
+
+const MICRO_USDC_PER_USD = 1_000_000;
+
+function amountBucketMicroUsdc(bucket: string): number {
+  if (!isFundingAmountBucket(bucket)) return 0;
+  return Number.parseInt(bucket, 10) * MICRO_USDC_PER_USD;
+}
+
+function microUsdcToUsdString(value: number): string {
+  const rounded = Math.trunc(value);
+  const sign = rounded < 0 ? "-" : "";
+  const abs = Math.abs(rounded);
+  const dollars = Math.floor(abs / MICRO_USDC_PER_USD);
+  const cents = Math.floor((abs % MICRO_USDC_PER_USD) / 10_000);
+  return `${sign}${dollars}.${String(cents).padStart(2, "0")}`;
+}
+
+function publicGholaBalanceSnapshot(snapshot: PrivateGholaBalanceSnapshotV1) {
+  return {
+    version: 1,
+    owner_commitment: snapshot.owner_commitment,
+    account_commitment: snapshot.account_commitment,
+    available_micro_usdc: snapshot.available_micro_usdc,
+    reserved_margin_micro_usdc: snapshot.reserved_margin_micro_usdc,
+    open_notional_micro_usdc: snapshot.open_notional_micro_usdc,
+    realized_pnl_micro_usdc: snapshot.realized_pnl_micro_usdc,
+    unrealized_pnl_micro_usdc: snapshot.unrealized_pnl_micro_usdc,
+    equity_micro_usdc: snapshot.equity_micro_usdc,
+    withdrawable_micro_usdc: snapshot.withdrawable_micro_usdc,
+    available_usd: microUsdcToUsdString(snapshot.available_micro_usdc),
+    reserved_margin_usd: microUsdcToUsdString(snapshot.reserved_margin_micro_usdc),
+    open_notional_usd: microUsdcToUsdString(snapshot.open_notional_micro_usdc),
+    realized_pnl_usd: microUsdcToUsdString(snapshot.realized_pnl_micro_usdc),
+    unrealized_pnl_usd: microUsdcToUsdString(snapshot.unrealized_pnl_micro_usdc),
+    equity_usd: microUsdcToUsdString(snapshot.equity_micro_usdc),
+    withdrawable_usd: microUsdcToUsdString(snapshot.withdrawable_micro_usdc),
+    ledger_entry_count: snapshot.ledger_entry_count,
+    updated_at: snapshot.updated_at,
+  };
+}
+
+function publicGholaBalanceLedgerEntry(record: PrivateGholaBalanceLedgerEntryRecordV1) {
+  return {
+    version: 1,
+    ledger_entry_id: record.ledger_entry_id,
+    account_commitment: record.account_commitment,
+    idempotency_key: record.idempotency_key,
+    entry_kind: record.entry_kind,
+    venue_id: record.venue_id,
+    available_delta_micro_usdc: record.available_delta_micro_usdc,
+    reserved_margin_delta_micro_usdc: record.reserved_margin_delta_micro_usdc,
+    open_notional_delta_micro_usdc: record.open_notional_delta_micro_usdc,
+    realized_pnl_delta_micro_usdc: record.realized_pnl_delta_micro_usdc,
+    unrealized_pnl_delta_micro_usdc: record.unrealized_pnl_delta_micro_usdc,
+    available_delta_usd: microUsdcToUsdString(record.available_delta_micro_usdc),
+    reserved_margin_delta_usd: microUsdcToUsdString(record.reserved_margin_delta_micro_usdc),
+    open_notional_delta_usd: microUsdcToUsdString(record.open_notional_delta_micro_usdc),
+    realized_pnl_delta_usd: microUsdcToUsdString(record.realized_pnl_delta_micro_usdc),
+    unrealized_pnl_delta_usd: microUsdcToUsdString(record.unrealized_pnl_delta_micro_usdc),
+    reference_commitment: record.reference_commitment,
+    reason: record.reason,
+    created_at: record.created_at,
+  };
+}
+
+async function appendGholaBalanceLedgerEntry(input: {
+  owner_commitment: string;
+  account_commitment: string;
+  idempotency_key: string;
+  entry_kind: PrivateGholaBalanceLedgerEntryRecordV1["entry_kind"];
+  venue_id?: PrivateGholaBalanceLedgerEntryRecordV1["venue_id"];
+  available_delta_micro_usdc?: number;
+  reserved_margin_delta_micro_usdc?: number;
+  open_notional_delta_micro_usdc?: number;
+  realized_pnl_delta_micro_usdc?: number;
+  unrealized_pnl_delta_micro_usdc?: number;
+  reference_commitment?: string | null;
+  reason?: string | null;
+  created_at?: string;
+}): Promise<PrivateGholaBalanceLedgerEntryRecordV1> {
+  const record: PrivateGholaBalanceLedgerEntryRecordV1 = {
+    version: 1,
+    ledger_entry_id: gholaCommitment("ghola_balance_ledger_entry", {
+      account_commitment: input.account_commitment,
+      idempotency_key: input.idempotency_key,
+    }),
+    owner_commitment: input.owner_commitment,
+    account_commitment: input.account_commitment,
+    idempotency_key: input.idempotency_key,
+    entry_kind: input.entry_kind,
+    venue_id: input.venue_id ?? "ghola",
+    available_delta_micro_usdc: Math.trunc(input.available_delta_micro_usdc ?? 0),
+    reserved_margin_delta_micro_usdc: Math.trunc(input.reserved_margin_delta_micro_usdc ?? 0),
+    open_notional_delta_micro_usdc: Math.trunc(input.open_notional_delta_micro_usdc ?? 0),
+    realized_pnl_delta_micro_usdc: Math.trunc(input.realized_pnl_delta_micro_usdc ?? 0),
+    unrealized_pnl_delta_micro_usdc: Math.trunc(input.unrealized_pnl_delta_micro_usdc ?? 0),
+    reference_commitment: input.reference_commitment ?? null,
+    reason: input.reason ?? null,
+    created_at: input.created_at ?? new Date().toISOString(),
+  };
+  return putGholaBalanceLedgerEntry(record);
+}
+
+async function ensureSelfAttestedVenueEligibility(input: {
+  owner: PrivateAccountRequestOwner;
+  account: PrivateAccountRecordV1;
+  venue_id: GholaVenueId;
+}): Promise<PrivateVenueEligibilityRecordV1> {
+  const existing = await getLatestVenueEligibilityByAccount({
+    account_commitment: input.account.account_commitment,
+    venue_id: input.venue_id,
+  });
+  const existingReady = Boolean(
+    existing?.owner_commitment === input.owner.owner_commitment &&
+      existing.status === "verified" &&
+      new Date(existing.expires_at).getTime() > Date.now(),
+  );
+  if (existing && existingReady) return existing;
+  const credential = createVenueEligibilityCredential({
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.account.account_commitment,
+    venue_id: input.venue_id,
+    credential_type: "self_attested_eligible_user",
+  });
+  return putVenueEligibilityCredential({
+    version: 1,
+    eligibility_commitment: credential.eligibility_commitment,
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.account.account_commitment,
+    venue_id: credential.venue_id,
+    platform_class: credential.platform_class,
+    status: credential.status,
+    credential,
+    created_at: credential.created_at,
+    expires_at: credential.expires_at,
+    updated_at: credential.updated_at,
   });
 }
 
@@ -2134,14 +2278,23 @@ export async function hyperliquidVaultStatusForOwner(owner: PrivateAccountReques
 
 export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwner) {
   const account = await createOrGetStoredPrivateAccount(owner);
-  const [vault, allocation, runtime, evidence] = await Promise.all([
+  const [vault, allocation, runtime, evidence, balanceSnapshot] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
     getPrivateAgentRuntimeStatus().catch(() => null),
     getLatestAnonymityEvidence({ account_commitment: account.account_commitment }),
+    getGholaBalanceSnapshot({
+      owner_commitment: owner.owner_commitment,
+      account_commitment: account.account_commitment,
+    }),
   ]);
   const hasConnection = vault?.status === "sealed" || allocation?.status === "allocated";
   const allocationMode = allocation?.status === "allocated" ? allocation.allocation.execution_mode : null;
+  const pooledBalanceRequiredMicroUsdc = allocationMode === "ghola_pooled"
+    ? amountBucketMicroUsdc(allocation?.allocation.session_policy.max_notional_bucket ?? "25")
+    : 0;
+  const pooledBalanceReady = allocationMode !== "ghola_pooled" ||
+    balanceSnapshot.available_micro_usdc >= pooledBalanceRequiredMicroUsdc;
   const workerConfigured = Boolean(hyperliquidWorkerConfig().url) || localHyperliquidPilotEnabled();
   const workerReady = Boolean(runtime?.selected_provider) || localHyperliquidPilotEnabled();
   const liveTinyFill =
@@ -2155,7 +2308,7 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
   );
   const canConnect = workerConfigured && workerReady;
   const canRead = canConnect && hasConnection;
-  const canTrade = canRead && (privateFundingReady || liveTinyFill);
+  const canTrade = canRead && pooledBalanceReady && (privateFundingReady || liveTinyFill);
   const hyperliquidConnectionStatus = !hasConnection
     ? "connect_account" as const
     : !canConnect
@@ -2167,11 +2320,14 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
     ? "Use Ghola Vault Mode or bring an API wallet."
     : !canConnect
       ? "Wait for the private execution worker."
+      : !pooledBalanceReady
+        ? "Add Ghola balance for the pooled Hyperliquid notional bucket."
       : "Run the no-submit connection check.";
   const reasonCodes = [
     ...(workerConfigured ? [] : ["connector_endpoint_missing"]),
     ...(workerReady ? [] : runtime?.blocking_reasons ?? ["private_worker_unavailable"]),
     ...(hasConnection ? ["venue_credentials_sealed"] : ["venue_access_required", "hyperliquid_connection_required"]),
+    ...(pooledBalanceReady ? [] : ["ghola_balance_insufficient"]),
     ...(canRead ? ["venue_ready"] : []),
     ...(canRead && liveTinyFill ? ["no_submit_verification_required"] : []),
     ...(privateFundingReady || liveTinyFill ? [] : ["private_funding_or_degraded_acceptance_required"]),
@@ -2211,8 +2367,11 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
       can_read: canRead,
       can_trade: canTrade,
       private_funding_ready: privateFundingReady,
+      ghola_balance_ready: pooledBalanceReady,
+      ghola_balance_required_micro_usdc: pooledBalanceRequiredMicroUsdc,
       reason_codes: Array.from(new Set(reasonCodes)),
     },
+    ghola_balance: publicGholaBalanceSnapshot(balanceSnapshot),
     visibility: {
       main_wallet_exposed: false,
       hyperliquid_sees: "execution account and order",
@@ -2479,30 +2638,21 @@ export async function allocateHyperliquidManagedFromBody(
     ? null
     : await getHyperliquidManagedAllocationByAccount(account.account_commitment);
   if (existing?.status === "allocated" && existing.allocation.execution_mode === requestedMode) {
+    const snapshot = await getGholaBalanceSnapshot({
+      owner_commitment: owner.owner_commitment,
+      account_commitment: account.account_commitment,
+    });
     return {
       version: 1,
       account_commitment: account.account_commitment,
       managed_allocation: publicHyperliquidManagedAllocation(existing),
+      ghola_balance: publicGholaBalanceSnapshot(snapshot),
       ready: true,
     };
   }
   if (requestedMode === "ghola_pooled") {
     const workerGate = await pooledWorkerVenueGate("hyperliquid");
     if (!workerGate.ok) return { error: workerGate.error };
-  }
-  const eligibility = requestedMode === "ghola_pooled"
-    ? await getLatestVenueEligibilityByAccount({
-        account_commitment: account.account_commitment,
-        venue_id: "hyperliquid",
-      })
-    : null;
-  const eligibilityReady = Boolean(
-    eligibility?.owner_commitment === owner.owner_commitment &&
-      eligibility.status === "verified" &&
-      new Date(eligibility.expires_at).getTime() > Date.now(),
-  );
-  if (requestedMode === "ghola_pooled" && !eligibilityReady) {
-    return { error: "venue_eligibility_required" as const };
   }
   const policy = createHyperliquidSessionPolicy({
     market_allowlist: arrayOfStrings(value.market_allowlist),
@@ -2515,18 +2665,51 @@ export async function allocateHyperliquidManagedFromBody(
     strategy_seed: requestedMode,
     prompt_seed: requestedMode,
   });
+  const eligibility = requestedMode === "ghola_pooled"
+    ? await ensureSelfAttestedVenueEligibility({
+        owner,
+        account,
+        venue_id: "hyperliquid",
+      })
+    : null;
+  const balanceSnapshot = await getGholaBalanceSnapshot({
+    owner_commitment: owner.owner_commitment,
+    account_commitment: account.account_commitment,
+  });
+  const requiredBalanceMicroUsdc = requestedMode === "ghola_pooled"
+    ? amountBucketMicroUsdc(policy.max_notional_bucket)
+    : 0;
+  if (requestedMode === "ghola_pooled" && balanceSnapshot.available_micro_usdc < requiredBalanceMicroUsdc) {
+    return {
+      error: "ghola_balance_insufficient" as const,
+      required_micro_usdc: requiredBalanceMicroUsdc,
+      available_micro_usdc: balanceSnapshot.available_micro_usdc,
+    };
+  }
   const fundingEvidence = verifySignedFundingEvidenceFromBody(value, {
     required: false,
     expectedAmountBucket: policy.max_notional_bucket,
   });
   if ("error" in fundingEvidence) return { error: fundingEvidence.error };
+  const balanceFundingEvidenceCommitment = requestedMode === "ghola_pooled"
+    ? gholaCommitment("ghola_balance_funding_evidence", {
+        account_commitment: account.account_commitment,
+        venue_id: "hyperliquid",
+        max_notional_bucket: policy.max_notional_bucket,
+        available_micro_usdc: balanceSnapshot.available_micro_usdc,
+        required_micro_usdc: requiredBalanceMicroUsdc,
+        balance_updated_at: balanceSnapshot.updated_at,
+      })
+    : null;
+  const fundingEvidenceCommitment = balanceFundingEvidenceCommitment ||
+    fundingEvidence.funding_evidence_commitment;
   const localAllocation = createHyperliquidManagedAllocation({
     account_commitment: account.account_commitment,
     policy,
     execution_mode: requestedMode,
     network: requestedNetwork,
-    eligibility_commitment: eligibilityReady ? eligibility?.eligibility_commitment ?? null : null,
-    funding_evidence_commitment: fundingEvidence.funding_evidence_commitment,
+    eligibility_commitment: eligibility?.eligibility_commitment ?? null,
+    funding_evidence_commitment: fundingEvidenceCommitment,
     allocation_seed: owner.owner_commitment,
   });
   const workerAllocation = await requestHyperliquidManagedAllocation({
@@ -2534,8 +2717,8 @@ export async function allocateHyperliquidManagedFromBody(
     policy,
     execution_mode: requestedMode,
     network: requestedNetwork,
-    eligibility_commitment: eligibilityReady ? eligibility?.eligibility_commitment ?? null : null,
-    funding_evidence_commitment: fundingEvidence.funding_evidence_commitment,
+    eligibility_commitment: eligibility?.eligibility_commitment ?? null,
+    funding_evidence_commitment: fundingEvidenceCommitment,
     fallback: localAllocation,
   });
   if ("error" in workerAllocation) return workerAllocation;
@@ -2556,6 +2739,7 @@ export async function allocateHyperliquidManagedFromBody(
     version: 1,
     account_commitment: account.account_commitment,
     managed_allocation: publicHyperliquidManagedAllocation(stored),
+    ghola_balance: publicGholaBalanceSnapshot(balanceSnapshot),
     ready: stored.status === "allocated",
   };
 }
@@ -3762,6 +3946,79 @@ export async function fundingImportFromBody(
     version: 1,
     import: publicFundingImport(importRecord),
     vault_ready: true,
+  };
+}
+
+export async function gholaBalanceForOwner(owner: PrivateAccountRequestOwner) {
+  const account = await createOrGetStoredPrivateAccount(owner);
+  const [snapshot, entries] = await Promise.all([
+    getGholaBalanceSnapshot({
+      owner_commitment: owner.owner_commitment,
+      account_commitment: account.account_commitment,
+    }),
+    listGholaBalanceLedgerEntries(account.account_commitment, 50),
+  ]);
+  return {
+    version: 1,
+    account_commitment: account.account_commitment,
+    balance: publicGholaBalanceSnapshot(snapshot),
+    recent_ledger_entries: entries
+      .slice()
+      .reverse()
+      .map(publicGholaBalanceLedgerEntry),
+  };
+}
+
+export async function gholaBalanceFundingIntentFromBody(
+  body: unknown,
+  owner: PrivateAccountRequestOwner,
+) {
+  const instruction = await fundingInstructionFromBody(body, owner);
+  if ("error" in instruction) return instruction;
+  const snapshot = await getGholaBalanceSnapshot({
+    owner_commitment: owner.owner_commitment,
+    account_commitment: instruction.instruction.account_commitment,
+  });
+  return {
+    ...instruction,
+    balance: publicGholaBalanceSnapshot(snapshot),
+    credit_after_import: true,
+  };
+}
+
+export async function gholaBalanceImportCreditFromBody(
+  body: unknown,
+  owner: PrivateAccountRequestOwner,
+) {
+  const imported = await fundingImportFromBody(body, owner);
+  if ("error" in imported) return imported;
+  const importRecord = imported.import;
+  if (importRecord.asset_bucket !== "stablecoin") {
+    return { error: "stablecoin_balance_required" as const };
+  }
+  const amountMicroUsdc = amountBucketMicroUsdc(importRecord.amount_bucket);
+  if (amountMicroUsdc <= 0) {
+    return { error: "valid amount_bucket is required" as const };
+  }
+  const ledgerEntry = await appendGholaBalanceLedgerEntry({
+    owner_commitment: owner.owner_commitment,
+    account_commitment: importRecord.account_commitment,
+    idempotency_key: `funding_import:${importRecord.import_commitment}`,
+    entry_kind: "deposit_credit",
+    venue_id: "ghola",
+    available_delta_micro_usdc: amountMicroUsdc,
+    reference_commitment: importRecord.import_commitment,
+    reason: "shielded_funding_import_verified",
+    created_at: importRecord.imported_at,
+  });
+  const snapshot = await getGholaBalanceSnapshot({
+    owner_commitment: owner.owner_commitment,
+    account_commitment: importRecord.account_commitment,
+  });
+  return {
+    ...imported,
+    balance_ledger_entry: publicGholaBalanceLedgerEntry(ledgerEntry),
+    balance: publicGholaBalanceSnapshot(snapshot),
   };
 }
 
@@ -7200,6 +7457,106 @@ async function connectorContextForIntent(input: {
   };
 }
 
+async function reserveGholaBalanceForPooledHyperliquidSubmit(input: {
+  owner: PrivateAccountRequestOwner;
+  account_commitment: string;
+  work_order_commitment: string;
+  amount_bucket: string;
+  policy_max_notional_bucket: string;
+}): Promise<
+  | { ok: true; reservation: PrivateGholaBalanceLedgerEntryRecordV1 }
+  | { ok: false; error: "connector_submit_blocked" | "connector_submit_in_progress" | "ghola_balance_insufficient" }
+> {
+  const requestedMicroUsdc = amountBucketMicroUsdc(input.amount_bucket || "25");
+  const policyMaxMicroUsdc = amountBucketMicroUsdc(input.policy_max_notional_bucket || "25");
+  if (requestedMicroUsdc <= 0 || policyMaxMicroUsdc <= 0 || requestedMicroUsdc > policyMaxMicroUsdc) {
+    return { ok: false, error: "connector_submit_blocked" };
+  }
+  const idempotencyKey = `connector_submit_reserve:${input.work_order_commitment}`;
+  const existingEntries = await listGholaBalanceLedgerEntries(input.account_commitment, 250);
+  const existingReservation = existingEntries.find((entry) => entry.idempotency_key === idempotencyKey);
+  if (existingReservation) return { ok: true, reservation: existingReservation };
+
+  const lockRunCommitment = gholaCommitment("ghola_balance_reserve_lock_run", {
+    account_commitment: input.account_commitment,
+    work_order_commitment: input.work_order_commitment,
+  });
+  const lock = await acquirePrivateCoordinatorLock({
+    lock_id: `ghola_balance:${input.account_commitment}`,
+    run_window_commitment: lockRunCommitment,
+    now: new Date(),
+    ttl_ms: positiveIntegerEnv("GHOLA_PRIVATE_ACCOUNT_BALANCE_LOCK_TTL_MS", 30_000),
+  });
+  if (!lock.acquired) return { ok: false, error: "connector_submit_in_progress" };
+  try {
+    const snapshot = await getGholaBalanceSnapshot({
+      owner_commitment: input.owner.owner_commitment,
+      account_commitment: input.account_commitment,
+    });
+    if (snapshot.available_micro_usdc < requestedMicroUsdc) {
+      return { ok: false, error: "ghola_balance_insufficient" };
+    }
+    const reservation = await appendGholaBalanceLedgerEntry({
+      owner_commitment: input.owner.owner_commitment,
+      account_commitment: input.account_commitment,
+      idempotency_key: idempotencyKey,
+      entry_kind: "margin_reserved",
+      venue_id: "hyperliquid",
+      available_delta_micro_usdc: -requestedMicroUsdc,
+      reserved_margin_delta_micro_usdc: requestedMicroUsdc,
+      reference_commitment: input.work_order_commitment,
+      reason: "pooled_hyperliquid_submit_reserved",
+    });
+    return { ok: true, reservation };
+  } finally {
+    await releasePrivateCoordinatorLock(
+      `ghola_balance:${input.account_commitment}`,
+      lockRunCommitment,
+    );
+  }
+}
+
+async function releaseGholaBalanceReservationAfterFailedSubmit(input: {
+  owner: PrivateAccountRequestOwner;
+  account_commitment: string;
+  work_order_commitment: string;
+  reservation: PrivateGholaBalanceLedgerEntryRecordV1;
+  reason: string;
+}) {
+  const reservedMicroUsdc = Math.max(0, input.reservation.reserved_margin_delta_micro_usdc);
+  if (reservedMicroUsdc <= 0) return null;
+  return appendGholaBalanceLedgerEntry({
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.account_commitment,
+    idempotency_key: `connector_submit_release:${input.work_order_commitment}`,
+    entry_kind: "margin_released",
+    venue_id: "hyperliquid",
+    available_delta_micro_usdc: reservedMicroUsdc,
+    reserved_margin_delta_micro_usdc: -reservedMicroUsdc,
+    reference_commitment: input.reservation.ledger_entry_id,
+    reason: input.reason,
+  });
+}
+
+async function markGholaBalanceOrderSubmitted(input: {
+  owner: PrivateAccountRequestOwner;
+  account_commitment: string;
+  work_order_commitment: string;
+  reservation: PrivateGholaBalanceLedgerEntryRecordV1;
+}) {
+  const reservedMicroUsdc = Math.max(0, input.reservation.reserved_margin_delta_micro_usdc);
+  return appendGholaBalanceLedgerEntry({
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.account_commitment,
+    idempotency_key: `connector_submit_submitted:${input.work_order_commitment}`,
+    entry_kind: "order_submitted",
+    venue_id: "hyperliquid",
+    open_notional_delta_micro_usdc: reservedMicroUsdc,
+    reference_commitment: input.reservation.ledger_entry_id,
+    reason: "pooled_hyperliquid_order_submitted",
+  });
+}
+
 async function connectorForExecution(input: {
   owner: PrivateAccountRequestOwner;
   intent: PrivateAccountIntentRecordV1;
@@ -7217,6 +7574,7 @@ async function connectorForExecution(input: {
         | "connector_submit_blocked"
         | "connector_submit_in_progress"
         | "venue_access_required"
+        | "ghola_balance_insufficient"
         | "needs_funds"
         | "venue_rejected";
     }
@@ -7391,6 +7749,22 @@ async function connectorForExecution(input: {
         result: repeatedResult.result,
       };
     }
+    let balanceReservation: PrivateGholaBalanceLedgerEntryRecordV1 | null = null;
+    const shouldReserveGholaBalance =
+      manifestRecord.platform_class === "hyperliquid_style_market" &&
+      hyperliquidAllocation?.status === "allocated" &&
+      hyperliquidAllocation.allocation.execution_mode === "ghola_pooled";
+    if (shouldReserveGholaBalance) {
+      const reserved = await reserveGholaBalanceForPooledHyperliquidSubmit({
+        owner: input.owner,
+        account_commitment: input.intent.account_commitment,
+        work_order_commitment: workOrderRecord.work_order_commitment,
+        amount_bucket: compiledRecord.compiled_intent.amount_bucket,
+        policy_max_notional_bucket: hyperliquidAllocation.allocation.session_policy.max_notional_bucket,
+      });
+      if (!reserved.ok) return { error: reserved.error };
+      balanceReservation = reserved.reservation;
+    }
     const submitted = await submitConnectorWorkOrder({
       work_order: workOrderRecord.work_order,
       manifest: manifestRecord.manifest,
@@ -7407,7 +7781,26 @@ async function connectorForExecution(input: {
       encrypted_execution_instruction_bundle: input.encrypted_execution_instruction_bundle,
       env: connectorEnv,
     });
-    if (!submitted.ok) return { error: submitted.error };
+    if (!submitted.ok) {
+      if (balanceReservation) {
+        await releaseGholaBalanceReservationAfterFailedSubmit({
+          owner: input.owner,
+          account_commitment: input.intent.account_commitment,
+          work_order_commitment: workOrderRecord.work_order_commitment,
+          reservation: balanceReservation,
+          reason: submitted.error,
+        });
+      }
+      return { error: submitted.error };
+    }
+    if (balanceReservation) {
+      await markGholaBalanceOrderSubmitted({
+        owner: input.owner,
+        account_commitment: input.intent.account_commitment,
+        work_order_commitment: workOrderRecord.work_order_commitment,
+        reservation: balanceReservation,
+      });
+    }
     const now = new Date().toISOString();
     await putConnectorWorkOrder({
       ...workOrderRecord,
