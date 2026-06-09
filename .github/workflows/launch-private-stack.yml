@@ -165,7 +165,7 @@ jobs:
             setenv GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED "true"
             setenv GHOLA_PRIVATE_AGENT_SPEND_ARMED "false"
           fi
-          setenv GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME "ghola-private-agent-worker"
+          setenv GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME "ghola-private-agent-worker-656194e"
           setenv GHOLA_PRIVATE_AGENT_WORKER_IMAGE "$WORKER_IMAGE"
           setenv GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST "$WORKER_IMAGE_DIGEST"
           setenv GHOLA_V6_HYPERLIQUID_PILOT_ENABLED "true"
