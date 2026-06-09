@@ -37,7 +37,7 @@ const READY_RUNTIME: PrivateAgentRuntimeStatus = {
 };
 
 describe("private account launch status", () => {
-  it("reports the live Hyperliquid path ready only when deployment and runtime gates pass", async () => {
+  it("reports the live Hyperliquid path ready when tiny-fill deployment and runtime gates pass", async () => {
     const status = await privateAccountLaunchStatus({
       NEXT_PUBLIC_THUMPER_API_URL: "https://thumper.test",
       GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
@@ -48,6 +48,22 @@ describe("private account launch status", () => {
     expect(status.ready_to_accept_users).toBe(true);
     expect(status.checks.every((check) => check.status === "ready")).toBe(true);
     expect(status.enterprise_gate.status).toBe("blocked");
+  });
+
+  it("accepts full-ticket Hyperliquid mode for the current production launch gate", async () => {
+    const status = await privateAccountLaunchStatus({
+      NEXT_PUBLIC_THUMPER_API_URL: "https://thumper.test",
+      GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
+      GHOLA_HYPERLIQUID_LIVE_MODE: "full_ticket",
+      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN: "token",
+    }, READY_RUNTIME);
+
+    expect(status.ready_to_accept_users).toBe(true);
+    expect(status.live_flow).toBe("hyperliquid_live");
+    expect(status.checks.find((check) => check.check === "hyperliquid_live_mode_enabled")).toMatchObject({
+      status: "ready",
+      reason: null,
+    });
   });
 
   it("surfaces exact missing live deployment gates without leaking secrets", async () => {

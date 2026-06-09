@@ -11,7 +11,7 @@ export interface GholaLaunchCheck {
 export interface GholaPrivateAccountLaunchStatus {
   version: 1;
   ready_to_accept_users: boolean;
-  live_flow: "hyperliquid_tiny_fill";
+  live_flow: "hyperliquid_live";
   checks: GholaLaunchCheck[];
   runtime: {
     remote_execution_ready: boolean;
@@ -25,7 +25,7 @@ export interface GholaPrivateAccountLaunchStatus {
 
 const REQUIRED_LIVE_ENV = [
   "GHOLA_V6_HYPERLIQUID_PILOT_ENABLED=true",
-  "GHOLA_HYPERLIQUID_LIVE_MODE=tiny_fill",
+  "GHOLA_HYPERLIQUID_LIVE_MODE=tiny_fill or full_ticket",
   "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN=<worker-token>",
   "attested provider publishes execution_url and sealed recipient evidence, or GHOLA_PRIVATE_RUNTIME_URL / GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL are set manually",
 ] as const;
@@ -52,6 +52,9 @@ export async function privateAccountLaunchStatus(
     trimmed(env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN) ||
     trimmed(env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN) ||
     trimmed(env.PRIVATE_AGENT_EXECUTION_TOKEN);
+  const hyperliquidLiveMode = trimmed(env.GHOLA_HYPERLIQUID_LIVE_MODE);
+  const hyperliquidLiveModeReady =
+    hyperliquidLiveMode === "tiny_fill" || hyperliquidLiveMode === "full_ticket";
   const checks: GholaLaunchCheck[] = [
     check(
       "auth_api_configured",
@@ -69,9 +72,9 @@ export async function privateAccountLaunchStatus(
       "hyperliquid_pilot_disabled",
     ),
     check(
-      "hyperliquid_live_tiny_fill_enabled",
-      env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill",
-      "hyperliquid_live_mode_not_tiny_fill",
+      "hyperliquid_live_mode_enabled",
+      hyperliquidLiveModeReady,
+      "hyperliquid_live_mode_not_enabled",
     ),
     check(
       "hyperliquid_connector_url_configured",
@@ -103,7 +106,7 @@ export async function privateAccountLaunchStatus(
   return {
     version: 1,
     ready_to_accept_users: checks.every((item) => item.status === "ready"),
-    live_flow: "hyperliquid_tiny_fill",
+    live_flow: "hyperliquid_live",
     checks,
     runtime: {
       remote_execution_ready: currentRuntime.remote_execution_ready,
