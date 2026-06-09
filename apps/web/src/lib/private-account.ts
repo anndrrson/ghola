@@ -201,6 +201,7 @@ export interface GholaConnectorPreviewContext {
     | "user_provided_credentials"
     | "ghola_managed_testnet"
     | "ghola_pooled_venue_account"
+    | "hyperliquid_native_vault"
     | "partner_omnibus";
   ghola_access_role: "private_execution_router" | "private_state_operator" | "connector_only";
   venue_gate: "not_applicable" | "venue_accepts_or_rejects_credentials" | "partner_accepts_or_rejects_order";
@@ -316,7 +317,8 @@ export type GholaVenueExecutionMode =
   | "user_stealth"
   | "ghola_pooled"
   | "partner_omnibus"
-  | "managed_testnet";
+  | "managed_testnet"
+  | "hyperliquid_native_vault";
 
 export type GholaVenueOperationClass =
   | "read"
@@ -492,7 +494,7 @@ export interface GholaHyperliquidManagedAllocation {
   version: 1;
   venue_id: "hyperliquid";
   platform_class: "hyperliquid_style_market";
-  execution_mode: "managed_testnet" | "ghola_pooled";
+  execution_mode: "managed_testnet" | "ghola_pooled" | "hyperliquid_native_vault";
   network: "testnet" | "mainnet";
   account_commitment: string;
   allocation_commitment: string;
@@ -500,6 +502,12 @@ export interface GholaHyperliquidManagedAllocation {
   pool_commitment: string;
   pool_share_commitment?: string;
   subledger_account_commitment: string;
+  vault_address?: string | null;
+  vault_controller_address?: string | null;
+  agent_wallet_commitment?: string | null;
+  deposit_evidence_commitment?: string | null;
+  deposit_status?: "unfunded" | "pending" | "confirmed" | "withdraw_locked" | "withdrawable";
+  funding_routes?: ("hyperliquid_direct" | "ghola_balance_bridge")[];
   eligibility_commitment?: string | null;
   funding_evidence_commitment?: string | null;
   status: "allocated" | "pending_funding" | "paused" | "revoked";
@@ -509,8 +517,11 @@ export interface GholaHyperliquidManagedAllocation {
   visibility_summary: {
     main_wallet_exposed: boolean;
     ghola_operator_sees: "commitment_and_ciphertext_only";
-    hyperliquid_sees: "execution_account_and_order_activity";
-    public_chain_sees: "no_public_wallet_settlement" | "private_funding_evidence_required";
+    hyperliquid_sees: "execution_account_and_order_activity" | "vault_address_and_order_activity";
+    public_chain_sees:
+      | "no_public_wallet_settlement"
+      | "private_funding_evidence_required"
+      | "hyperliquid_vault_deposit_and_order_activity";
   };
   created_at: string;
   updated_at: string;
@@ -1478,8 +1489,14 @@ export function createHyperliquidSessionPolicy(input: {
 export function createHyperliquidManagedAllocation(input: {
   account_commitment: string;
   policy?: GholaHyperliquidSessionPolicy;
-  execution_mode?: "managed_testnet" | "ghola_pooled";
+  execution_mode?: GholaHyperliquidManagedAllocation["execution_mode"];
   network?: "testnet" | "mainnet";
+  vault_address?: string | null;
+  vault_controller_address?: string | null;
+  agent_wallet_commitment?: string | null;
+  deposit_evidence_commitment?: string | null;
+  deposit_status?: GholaHyperliquidManagedAllocation["deposit_status"];
+  funding_routes?: GholaHyperliquidManagedAllocation["funding_routes"];
   eligibility_commitment?: string | null;
   funding_evidence_commitment?: string | null;
   pool_seed?: unknown;
@@ -1489,16 +1506,23 @@ export function createHyperliquidManagedAllocation(input: {
   const now = input.now ?? new Date();
   const policy = input.policy ?? createHyperliquidSessionPolicy({ now });
   const executionMode = input.execution_mode ?? "managed_testnet";
-  const network = executionMode === "ghola_pooled" ? input.network ?? "mainnet" : "testnet";
+  const network = executionMode === "managed_testnet" ? "testnet" : input.network ?? "mainnet";
   const poolCommitment = gholaCommitment("hyperliquid_managed_pool", {
-    seed: input.pool_seed ?? (executionMode === "ghola_pooled" ? "ghola-pooled-mainnet-v1" : "ghola-managed-testnet-v1"),
+    seed: input.pool_seed ??
+      (executionMode === "hyperliquid_native_vault"
+        ? "ghola-native-vault-mainnet-v1"
+        : executionMode === "ghola_pooled"
+          ? "ghola-pooled-mainnet-v1"
+          : "ghola-managed-testnet-v1"),
     execution_mode: executionMode,
     network,
+    vault_address: input.vault_address ?? null,
   });
   const poolShareCommitment = gholaCommitment("hyperliquid_pool_share", {
     account_commitment: input.account_commitment,
     pool_commitment: poolCommitment,
     eligibility_commitment: input.eligibility_commitment ?? null,
+    vault_address: input.vault_address ?? null,
   });
   const subledgerAccountCommitment = gholaCommitment("hyperliquid_managed_subledger", {
     account_commitment: input.account_commitment,
@@ -1513,6 +1537,11 @@ export function createHyperliquidManagedAllocation(input: {
     pool_share_commitment: poolShareCommitment,
     subledger_account_commitment: subledgerAccountCommitment,
     policy_commitment: policy.policy_commitment,
+    vault_address: input.vault_address ?? null,
+    vault_controller_address: input.vault_controller_address ?? null,
+    agent_wallet_commitment: input.agent_wallet_commitment ?? null,
+    deposit_evidence_commitment: input.deposit_evidence_commitment ?? null,
+    deposit_status: input.deposit_status ?? "unfunded",
     eligibility_commitment: input.eligibility_commitment ?? null,
     funding_evidence_commitment: input.funding_evidence_commitment ?? null,
     allocation_seed: input.allocation_seed ?? "worker-bound-allocation",
@@ -1529,19 +1558,37 @@ export function createHyperliquidManagedAllocation(input: {
     pool_commitment: poolCommitment,
     pool_share_commitment: poolShareCommitment,
     subledger_account_commitment: subledgerAccountCommitment,
+    vault_address: input.vault_address ?? null,
+    vault_controller_address: input.vault_controller_address ?? null,
+    agent_wallet_commitment: input.agent_wallet_commitment ?? null,
+    deposit_evidence_commitment: input.deposit_evidence_commitment ?? null,
+    deposit_status: input.deposit_status ?? (executionMode === "hyperliquid_native_vault" ? "unfunded" : undefined),
+    funding_routes: input.funding_routes ?? (
+      executionMode === "hyperliquid_native_vault"
+        ? ["hyperliquid_direct", "ghola_balance_bridge"]
+        : undefined
+    ),
     eligibility_commitment: input.eligibility_commitment ?? null,
     funding_evidence_commitment: input.funding_evidence_commitment ?? null,
-    status: executionMode === "ghola_pooled" && !input.eligibility_commitment ? "pending_funding" : "allocated",
+    status: executionMode === "hyperliquid_native_vault"
+      ? input.deposit_status === "confirmed" || input.deposit_status === "withdraw_locked" || input.deposit_status === "withdrawable"
+        ? "allocated"
+        : "pending_funding"
+      : executionMode === "ghola_pooled" && !input.eligibility_commitment ? "pending_funding" : "allocated",
     session_policy: policy,
     allowed_operations: ["read", "limit_order", "cancel", "reconcile"],
     blocked_operations: ["withdraw", "vault_transfer", "leverage_escalation"],
     visibility_summary: {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
-      hyperliquid_sees: "execution_account_and_order_activity",
-      public_chain_sees: executionMode === "ghola_pooled"
-        ? "private_funding_evidence_required"
-        : "no_public_wallet_settlement",
+      hyperliquid_sees: executionMode === "hyperliquid_native_vault"
+        ? "vault_address_and_order_activity"
+        : "execution_account_and_order_activity",
+      public_chain_sees: executionMode === "hyperliquid_native_vault"
+        ? "hyperliquid_vault_deposit_and_order_activity"
+        : executionMode === "ghola_pooled"
+          ? "private_funding_evidence_required"
+          : "no_public_wallet_settlement",
     },
     created_at: now.toISOString(),
     updated_at: now.toISOString(),
@@ -2421,7 +2468,13 @@ export function blockedVenueOperations(
 
 export function accountModeForExecutionMode(executionMode: GholaVenueExecutionMode): GholaVenueAccountMode {
   if (executionMode === "partner_omnibus" || executionMode === "ghola_pooled") return "ghola_pooled";
-  if (executionMode === "managed_testnet" || executionMode === "user_stealth") return "user_stealth";
+  if (
+    executionMode === "managed_testnet" ||
+    executionMode === "hyperliquid_native_vault" ||
+    executionMode === "user_stealth"
+  ) {
+    return "user_stealth";
+  }
   return "byo_account";
 }
 

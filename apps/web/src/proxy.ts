@@ -25,10 +25,9 @@ const INLINE_HASHES_PATH = join(
 
 // Load the sha256 inline-script allowlist written by
 // `scripts/build-inline-csp.mjs` after `next build`. Returns null when
-// the file is absent (dev / pre-build) or malformed, in which case the
-// production CSP falls back to a policy without `'unsafe-inline'` and
-// without hashes (strictest available; first-party inline scripts must
-// be hashed via the build step to load).
+// the file is absent or malformed. Missing hashes must not brick the
+// public site, so production falls back to `'unsafe-inline'` only in
+// that emergency state.
 function loadInlineScriptHashes(): string[] | null {
   try {
     const raw = readFileSync(INLINE_HASHES_PATH, "utf8");
@@ -93,19 +92,17 @@ export function buildContentSecurityPolicy(
   isDev: boolean,
   inlineHashes?: string[] | null,
 ): string {
-  // In production we MUST NOT emit `'unsafe-inline'` for scripts — that
-  // would defeat the hash-based CSP that `next.config.ts` builds from
-  // `public/.well-known/csp-inline-hashes.json`. Instead we splice the
-  // same per-build sha256 hashes into `script-src`. In development the
-  // Next dev server injects unhashable inline + eval'd scripts (HMR,
-  // React refresh), so `'unsafe-inline' 'unsafe-eval'` are required.
+  // Prefer hash-pinned inline scripts in production. If the build-time
+  // hash manifest is missing, fail open for script bootstrap instead of
+  // shipping a page that can only render a skeleton.
   const hashSources =
     !isDev && inlineHashes && inlineHashes.length > 0
       ? " " + inlineHashes.map((h) => `'${h}'`).join(" ")
       : "";
+  const inlineFallback = !isDev && !hashSources ? " 'unsafe-inline'" : "";
   const scriptSrc = isDev
     ? "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' 'unsafe-eval' https://accounts.google.com https://apis.google.com"
-    : `script-src 'self' 'wasm-unsafe-eval'${hashSources} https://accounts.google.com https://apis.google.com`;
+    : `script-src 'self'${inlineFallback} 'wasm-unsafe-eval'${hashSources} https://accounts.google.com https://apis.google.com`;
   return (
     [
       "default-src 'self'",

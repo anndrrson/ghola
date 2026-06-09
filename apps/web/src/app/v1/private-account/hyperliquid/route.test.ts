@@ -7,6 +7,10 @@ import { POST as armAgent } from "./agent/session/route";
 import { POST as accountSnapshot } from "./account-snapshot/route";
 import { GET as accountStream } from "./account-stream/route";
 import { POST as allocateManaged } from "./managed-allocation/route";
+import { POST as allocateNativeVault } from "./native-vault/allocate/route";
+import { POST as confirmNativeVaultDeposit } from "./native-vault/confirm-deposit/route";
+import { POST as prepareNativeVault } from "./native-vault/prepare/route";
+import { GET as nativeVaultStatus } from "./native-vault/status/route";
 import { GET as hyperliquidRoot } from "./route";
 import { GET as hyperliquidStatus } from "./status/route";
 import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
@@ -82,6 +86,10 @@ describe("Hyperliquid private-account routes", () => {
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
     delete process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED;
     delete process.env.GHOLA_HYPERLIQUID_LIVE_MODE;
+    delete process.env.GHOLA_HYPERLIQUID_NATIVE_VAULT_AGENT_READY;
+    delete process.env.GHOLA_HYPERLIQUID_NATIVE_VAULT_RECEIPT_VERIFIER_ENABLED;
+    delete process.env.GHOLA_HYPERLIQUID_NATIVE_VAULT_RECEIPT_VERIFIER_SECRET;
+    delete process.env.PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_ADDRESS;
     await resetPrivateAccountStoreForTests();
   });
 
@@ -256,6 +264,78 @@ describe("Hyperliquid private-account routes", () => {
     expect(armRes.status).toBe(201);
     expect(armed.execution_mode).toBe("managed_testnet");
     expect(armed.allocation_commitment).toBe(allocated.managed_allocation.allocation_commitment);
+  });
+
+  it("keeps Hyperliquid native vault mode pending until deposit proof and agent readiness exist", async () => {
+    const vaultAddress = "0x2222222222222222222222222222222222222222";
+    const prepareRes = await prepareNativeVault(
+      request("/v1/private-account/hyperliquid/native-vault/prepare", {
+        vault_address: vaultAddress,
+        max_notional_bucket: "25",
+      }),
+    );
+    const prepared = await prepareRes.json();
+
+    expect(prepareRes.status).toBe(201);
+    expect(prepared.ready).toBe(false);
+    expect(prepared.native_vault_allocation.execution_mode).toBe("hyperliquid_native_vault");
+    expect(prepared.native_vault_allocation.deposit_status).toBe("pending");
+    expect(prepared.native_vault_allocation.status).toBe("pending_funding");
+    expect(prepared.funding_instructions.routes.map((route: { id: string }) => route.id)).toEqual([
+      "hyperliquid_direct",
+      "ghola_balance_bridge",
+    ]);
+    expect(JSON.stringify(prepared)).not.toContain("api_wallet_private_key");
+
+    const blockedConfirmRes = await confirmNativeVaultDeposit(
+      request("/v1/private-account/hyperliquid/native-vault/confirm-deposit", {
+        vault_address: vaultAddress,
+        deposit_receipt_commitment: "hl_deposit_receipt_commitment_1",
+      }),
+    );
+    const blockedConfirm = await blockedConfirmRes.json();
+    expect(blockedConfirmRes.status).toBe(503);
+    expect(blockedConfirm.error).toBe("hyperliquid_native_vault_deposit_verifier_unavailable");
+
+    process.env.GHOLA_HYPERLIQUID_NATIVE_VAULT_RECEIPT_VERIFIER_ENABLED = "true";
+    process.env.GHOLA_HYPERLIQUID_NATIVE_VAULT_AGENT_READY = "true";
+    process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = "true";
+    process.env.GHOLA_HYPERLIQUID_LIVE_MODE = "tiny_fill";
+    const confirmedRes = await confirmNativeVaultDeposit(
+      request("/v1/private-account/hyperliquid/native-vault/confirm-deposit", {
+        vault_address: vaultAddress,
+        deposit_receipt_commitment: "hl_deposit_receipt_commitment_1",
+      }),
+    );
+    const confirmed = await confirmedRes.json();
+
+    expect(confirmedRes.status).toBe(201);
+    expect(confirmed.deposit_ready).toBe(true);
+    expect(confirmed.ready).toBe(true);
+    expect(confirmed.native_vault_allocation.deposit_status).toBe("confirmed");
+    expect(confirmed.native_vault_allocation.status).toBe("allocated");
+
+    const allocateRes = await allocateNativeVault(
+      request("/v1/private-account/hyperliquid/native-vault/allocate", {}),
+    );
+    const allocated = await allocateRes.json();
+    expect(allocateRes.status).toBe(201);
+    expect(allocated.ready).toBe(true);
+
+    const statusRes = await nativeVaultStatus(
+      request("/v1/private-account/hyperliquid/native-vault/status"),
+    );
+    const status = await statusRes.json();
+    expect(status.status).toBe("ready");
+    expect(status.deposit_ready).toBe(true);
+    expect(status.agent_ready).toBe(true);
+
+    const snapshotRes = await accountSnapshot(
+      request("/v1/private-account/hyperliquid/account-snapshot", {}),
+    );
+    const snapshot = await snapshotRes.json();
+    expect(snapshot.status).toBe("ready_to_trade");
+    expect(snapshot.account_source).toBe("hyperliquid_native_vault");
   });
 
   it("reports account snapshot readiness without raw venue fields", async () => {

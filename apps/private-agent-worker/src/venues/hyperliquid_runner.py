@@ -35,9 +35,20 @@ def main():
     try:
         wallet = Account.from_key(credential["api_wallet_private_key"])
         account_address = credential["account_address"].lower()
+        vault_address = (credential.get("vault_address") or credential.get("vaultAddress") or "").lower() or None
+        execution_address = vault_address or account_address
     except Exception:
         fail("hyperliquid credentials are invalid", "venue_access_required")
-    exchange = Exchange(wallet, base_url=base_url, account_address=account_address)
+    try:
+        exchange = (
+            Exchange(wallet, base_url=base_url, account_address=account_address, vault_address=vault_address)
+            if vault_address
+            else Exchange(wallet, base_url=base_url, account_address=account_address)
+        )
+    except TypeError:
+        exchange = Exchange(wallet, base_url=base_url, account_address=account_address)
+        if vault_address:
+            setattr(exchange, "vault_address", vault_address)
     op = instruction.get("operation_class")
 
     try:
@@ -46,7 +57,7 @@ def main():
                 fail("unsupported hyperliquid no-submit operation", "venue_rejected")
             order = instruction["order"]
             info = Info(base_url, skip_ws=True)
-            resolved = resolve_limit_order(info, order, account_address)
+            resolved = resolve_limit_order(info, order, execution_address)
             Cloid.from_str(cloid)
             print(json.dumps({
                 "status": "verified_no_funds",
@@ -61,7 +72,7 @@ def main():
         if op == "limit_order":
             order = instruction["order"]
             info = Info(base_url, skip_ws=True)
-            resolved = resolve_limit_order(info, order, account_address)
+            resolved = resolve_limit_order(info, order, execution_address)
             result = exchange.order(
                 order["market"],
                 order["side"] == "buy",
@@ -83,7 +94,7 @@ def main():
             return
         if op in ("read", "reconcile"):
             info = Info(base_url, skip_ws=True)
-            fills = info.user_fills_by_time(account_address, int((time.time() - 86400) * 1000))
+            fills = info.user_fills_by_time(execution_address, int((time.time() - 86400) * 1000))
             print(json.dumps({
                 "status": "reconciled",
                 "fills": [redact_fill(fill) for fill in fills[:25]],

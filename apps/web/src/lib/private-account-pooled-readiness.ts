@@ -6,6 +6,7 @@ import {
   workerAuthorizationHeader,
   workerCapabilityExpectedFromBody,
 } from "./private-agent-capability";
+import { discoverPhalaPrivateAgentExecutionUrl } from "./private-agent-phala";
 
 const POOLED_VENUES = ["hyperliquid", "phoenix", "jupiter", "coinbase"] as const;
 
@@ -31,7 +32,7 @@ export async function getPooledWorkerReadiness(
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
 ): Promise<PooledWorkerReadiness> {
-  const cfg = pooledWorkerConfig(env);
+  const cfg = await pooledWorkerConfig(env);
   if (!cfg.url) return unavailableReadiness(["pooled_worker_endpoint_missing"], false);
 
   const workerPath = "/venues/pools/readiness";
@@ -89,8 +90,9 @@ export function pooledWorkerVenueId(venueId: GholaVenueId | "coinbase"): PooledW
     : null;
 }
 
-function pooledWorkerConfig(env: Record<string, string | undefined>) {
-  const url = firstEnv(env, [
+async function pooledWorkerConfig(env: Record<string, string | undefined>) {
+  const discoveredUrl = await discoverCurrentPhalaWorkerUrl(env);
+  const url = discoveredUrl || firstEnv(env, [
     "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
     "GHOLA_PRIVATE_AGENT_WORKER_URL",
     "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL",
@@ -107,6 +109,16 @@ function pooledWorkerConfig(env: Record<string, string | undefined>) {
     "GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_TOKEN",
   ]);
   return { url, token };
+}
+
+async function discoverCurrentPhalaWorkerUrl(env: Record<string, string | undefined>) {
+  if (env.NODE_ENV === "test") return "";
+  const provider = env.GHOLA_PRIVATE_AGENT_PROVIDER?.trim();
+  const phalaConfigured = Boolean(
+    firstEnv(env, ["PHALA_CLOUD_API_KEY", "PHALA_API_KEY"]),
+  );
+  if (provider !== "phala" && !phalaConfigured) return "";
+  return (await discoverPhalaPrivateAgentExecutionUrl().catch(() => null)) ?? "";
 }
 
 function firstEnv(env: Record<string, string | undefined>, names: string[]) {

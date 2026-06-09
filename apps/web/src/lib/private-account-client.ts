@@ -239,7 +239,7 @@ export interface HyperliquidAccountSnapshot {
     | "venue_access_required"
     | "worker_unavailable"
     | "private_mode_waiting";
-  account_source: "sealed_byo" | "ghola_managed" | "ghola_pooled" | "none";
+  account_source: "sealed_byo" | "ghola_managed" | "ghola_pooled" | "hyperliquid_native_vault" | "none";
   trading_enabled: boolean;
   equity_bucket: "none" | "low" | "ready" | "unknown";
   position_count: number;
@@ -611,6 +611,56 @@ export async function allocateHyperliquidManagedTestnet(input: {
   });
 }
 
+export async function getHyperliquidNativeVaultStatus() {
+  return privateAccountFetch("/v1/private-account/hyperliquid/native-vault/status", {
+    method: "GET",
+  });
+}
+
+export async function prepareHyperliquidNativeVault(input: {
+  vault_address?: string | null;
+  vault_controller_address?: string | null;
+  agent_wallet_address?: string | null;
+  market_allowlist?: string[];
+  max_notional_bucket?: PrivateAccountSafeInput["amount_bucket"];
+  max_order_count?: number;
+  kill_switch?: boolean;
+  force_new?: boolean;
+} = {}) {
+  return privateAccountFetch("/v1/private-account/hyperliquid/native-vault/prepare", {
+    method: "POST",
+    body: JSON.stringify({
+      vault_address: input.vault_address ?? null,
+      vault_controller_address: input.vault_controller_address ?? null,
+      agent_wallet_address: input.agent_wallet_address ?? null,
+      market_allowlist: input.market_allowlist || ["BTC", "ETH", "SOL"],
+      max_notional_bucket: input.max_notional_bucket || "25",
+      max_order_count: input.max_order_count ?? 10,
+      kill_switch: input.kill_switch === true,
+      force_new: input.force_new === true,
+    }),
+  });
+}
+
+export async function confirmHyperliquidNativeVaultDeposit(input: {
+  vault_address: string;
+  vault_controller_address?: string | null;
+  agent_wallet_address?: string | null;
+  deposit_receipt_commitment: string;
+}) {
+  return privateAccountFetch("/v1/private-account/hyperliquid/native-vault/confirm-deposit", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function allocateHyperliquidNativeVault() {
+  return privateAccountFetch("/v1/private-account/hyperliquid/native-vault/allocate", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function sealHyperliquidExecutionVault(input: {
   encrypted_execution_vault: HyperliquidEncryptedExecutionVaultBundle;
 }) {
@@ -623,7 +673,7 @@ export async function sealHyperliquidExecutionVault(input: {
 }
 
 export async function armHyperliquidExecutionAgent(input: {
-  execution_mode?: "byo_api_key" | "managed_testnet" | "ghola_pooled";
+  execution_mode?: "byo_api_key" | "managed_testnet" | "ghola_pooled" | "hyperliquid_native_vault";
   market_allowlist?: string[];
   max_notional_bucket?: PrivateAccountSafeInput["amount_bucket"];
   max_order_count?: number;

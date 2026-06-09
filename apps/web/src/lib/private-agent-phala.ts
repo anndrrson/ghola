@@ -123,6 +123,12 @@ function phalaWorkerImageDigest(): string {
   );
 }
 
+function phalaWorkerImageReference(image: string, imageDigest: string): string {
+  if (image.includes("@sha256:")) return image;
+  if (imageDigest.startsWith("sha256:")) return `${image}@${imageDigest}`;
+  return image;
+}
+
 function liveHyperliquidEnabled(): boolean {
   return (
     env("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") === "tiny_fill" ||
@@ -200,8 +206,18 @@ export async function markPhalaPrivateAgentActivity(input: {
 export function privateAgentRemoteExecutionDisabled(): boolean {
   return (
     boolEnv("GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED") ||
-    boolEnv("GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN")
+    boolEnv("GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN") ||
+    !privateAgentSpendArmed()
   );
+}
+
+export function privateAgentSpendArmed(): boolean {
+  const explicit = env("GHOLA_PRIVATE_AGENT_SPEND_ARMED");
+  if (explicit !== null) return explicit.toLowerCase() === "true";
+  if (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production") {
+    return false;
+  }
+  return true;
 }
 
 export function phalaJitProvisioningConfigIssue(): string | null {
@@ -251,10 +267,11 @@ export function buildPhalaWorkerCompose(input: {
 } = {}): string {
   const image = input.image ?? phalaWorkerImage();
   const imageDigest = input.imageDigest ?? phalaWorkerImageDigest();
+  const imageReference = phalaWorkerImageReference(image, imageDigest);
   return [
     "services:",
     "  private-agent-worker:",
-    `    image: ${image}`,
+    `    image: ${imageReference}`,
     "    restart: unless-stopped",
     "    ports:",
     '      - "8787:8787"',

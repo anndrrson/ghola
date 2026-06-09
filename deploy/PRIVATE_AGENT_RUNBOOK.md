@@ -97,6 +97,8 @@ Set these on the web deployment to arm paid-on-demand provisioning:
 
 ```bash
 GHOLA_PRIVATE_AGENT_PROVIDER=phala
+GHOLA_PRIVATE_AGENT_SPEND_ARMED=true
+GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN=false
 GHOLA_PRIVATE_AGENT_JIT_PROVISIONING=true
 GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME=ghola-private-agent-worker
 GHOLA_PRIVATE_AGENT_WORKER_IMAGE=ghcr.io/anndrrson/ghola:private-agent-worker-<git-sha>
@@ -107,6 +109,16 @@ GHOLA_V6_HYPERLIQUID_PILOT_ENABLED=true
 GHOLA_HYPERLIQUID_LIVE_MODE=tiny_fill
 GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS=ready
 PHALA_CLOUD_API_KEY=<phala-cloud-api-key>
+```
+
+Production defaults fail closed unless `GHOLA_PRIVATE_AGENT_SPEND_ARMED=true`
+is present. To stop spend immediately, set `GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN=true`,
+redeploy the web app, then stop the CVM:
+
+```bash
+printf 'true' | npx vercel env add GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN production --force
+npx vercel deploy --prod
+node scripts/stop-phala-private-agent.mjs --env .dev/vercel-web-prod.env
 ```
 
 Optional sizing knobs:
@@ -150,8 +162,8 @@ Set `GHOLA_IDLE_CRON_SECRET` to the same value as
 `GHOLA_PRIVATE_AGENT_IDLE_CRON_SECRET`. The Worker runs every 15 minutes and
 calls `GET https://ghola.xyz/api/private-agent/idle`. The web endpoint checks
 the lease before calling Phala `stopCvm`, so scheduled checks are safe during
-active usage. Vercel's daily cron can remain as a backstop, but Cloudflare is
-the cost-control path.
+active usage. Vercel Hobby only supports daily cron, so the Vercel cron remains
+a daily backstop unless the project is upgraded to Pro.
 
 ### Pooled venue credentials
 
@@ -218,6 +230,97 @@ If this fails with `401` or `worker_capability_*`, align the Vercel
 `PRIVATE_AGENT_WORKER_CAPABILITY_SECRET`. If it fails with a network, non-JSON,
 or 404 response, update the web-side worker URL to the live Phala CVM endpoint
 or redeploy the CVM before proceeding.
+
+### Hyperliquid native vault mode
+
+Native vault mode is the production path for "create a Ghola account and trade
+Hyperliquid through the Ghola wallet" without requiring every user to bring a
+scoped Hyperliquid API key. It is separate from the old `ghola_pooled` account
+pool:
+
+- The user gets or provides a Hyperliquid vault address.
+- Ghola records a pending `hyperliquid_native_vault` allocation.
+- The allocation becomes executable only after a deposit receipt verifier marks
+  `deposit_status=confirmed` and the sealed Phala worker has the configured
+  agent wallet.
+- The worker submits with the configured agent wallet and passes
+  `vault_address` to the Hyperliquid SDK, so reads and orders target the vault,
+  not a public user wallet or the generic managed testnet account.
+
+Web routes:
+
+```text
+GET  /v1/private-account/hyperliquid/native-vault/status
+POST /v1/private-account/hyperliquid/native-vault/prepare
+POST /v1/private-account/hyperliquid/native-vault/confirm-deposit
+POST /v1/private-account/hyperliquid/native-vault/allocate
+```
+
+Required production env:
+
+```bash
+GHOLA_HYPERLIQUID_NATIVE_VAULT_RECEIPT_VERIFIER_ENABLED=true
+GHOLA_HYPERLIQUID_NATIVE_VAULT_RECEIPT_VERIFIER_SECRET=<random-verifier-hmac-secret>
+GHOLA_HYPERLIQUID_NATIVE_VAULT_AGENT_READY=true
+PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_READY=true
+PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true
+PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=tiny_fill
+PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON='{"accounts":[{"network":"mainnet","execution_mode":"hyperliquid_native_vault","account_address":"0x...master","api_wallet_private_key":"0x...agent_private_key","agent_wallet_address":"0x...agent","agent_name":"ghola-native-vault"}]}'
+```
+
+Generate a new local agent wallet into the ignored pooled credential file:
+
+```bash
+node scripts/bootstrap-phala-pooled-credentials.mjs \
+  --env /path/to/current/private-agent-pooled-credentials.env \
+  --generate-hyperliquid-native-vault-agent \
+  --hyperliquid-native-vault-master-account 0xMASTER_ACCOUNT_ADDRESS
+```
+
+This creates an agent signer only. It is not live until the vault owner approves
+that agent on Hyperliquid and the operator adds:
+
+```bash
+PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_SOURCE='local_agent_wallet_created_0x...'
+PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_APPROVAL_EVIDENCE='<approveAgent/native-vault-authorization evidence>'
+```
+
+Validate native vault material without touching Phala:
+
+```bash
+node scripts/install-phala-pooled-credentials.mjs \
+  --env deploy/private-agent-pooled-credentials.env \
+  --worker-env .dev/phala-worker.env \
+  --venues hyperliquid_native \
+  --dry-run
+```
+
+Install only after validation is green:
+
+```bash
+node scripts/install-phala-pooled-credentials.mjs \
+  --env deploy/private-agent-pooled-credentials.env \
+  --worker-env .dev/phala-worker.env \
+  --venues hyperliquid_native
+```
+
+Keep the receipt verifier disabled until it verifies a real venue deposit event
+or equivalent venue-issued receipt. With the verifier disabled, the confirm
+route returns `hyperliquid_native_vault_deposit_verifier_unavailable`; this is
+expected fail-closed behavior.
+
+In production, the confirm route requires a verifier proof:
+
+```text
+HMAC_SHA256(
+  GHOLA_HYPERLIQUID_NATIVE_VAULT_RECEIPT_VERIFIER_SECRET,
+  "ghola-hyperliquid-native-vault-deposit-v1\n<owner_commitment>\n<vault_address>\n<receipt_commitment>"
+)
+```
+
+Send that value as `deposit_receipt_proof`. The proof signer should be the
+service that checked the actual Hyperliquid vault deposit event or equivalent
+venue-issued receipt.
 
 Install into the Phala CVM:
 

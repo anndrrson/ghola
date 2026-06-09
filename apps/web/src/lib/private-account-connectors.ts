@@ -673,6 +673,12 @@ export async function submitConnectorWorkOrder(input: {
     pool_commitment: string;
     pool_share_commitment?: string | null;
     subledger_account_commitment: string;
+    vault_address?: string | null;
+    vault_controller_address?: string | null;
+    agent_wallet_commitment?: string | null;
+    deposit_evidence_commitment?: string | null;
+    deposit_status?: string | null;
+    funding_routes?: string[];
     eligibility_commitment?: string | null;
     funding_evidence_commitment?: string | null;
     status?: string;
@@ -1166,6 +1172,8 @@ function connectorAccessContext(
     return {
       venue_access_source: executionMode === "ghola_pooled"
         ? "ghola_pooled_venue_account"
+        : executionMode === "hyperliquid_native_vault"
+          ? "hyperliquid_native_vault"
         : executionMode === "managed_testnet"
           ? "ghola_managed_testnet"
           : "user_provided_credentials",
@@ -1284,6 +1292,12 @@ function redactedConnectorPayload(input: {
     pool_commitment: string;
     pool_share_commitment?: string | null;
     subledger_account_commitment: string;
+    vault_address?: string | null;
+    vault_controller_address?: string | null;
+    agent_wallet_commitment?: string | null;
+    deposit_evidence_commitment?: string | null;
+    deposit_status?: string | null;
+    funding_routes?: string[];
     eligibility_commitment?: string | null;
     funding_evidence_commitment?: string | null;
     status?: string;
@@ -1344,12 +1358,27 @@ function redactedConnectorPayload(input: {
       : {}),
     ...(input.manifest.platform_class === "hyperliquid_style_market" && input.hyperliquid_managed_allocation
       ? {
-          execution_mode: input.hyperliquid_managed_allocation.execution_mode === "ghola_pooled"
-            ? "ghola_pooled"
-            : "managed_testnet",
+          execution_mode: hyperliquidManagedExecutionMode(input.hyperliquid_managed_allocation.execution_mode),
           managed_allocation_commitment: input.hyperliquid_managed_allocation.allocation_commitment,
           allocation_commitment: input.hyperliquid_managed_allocation.allocation_commitment,
           policy_commitment: input.hyperliquid_managed_allocation.policy_commitment,
+          managed_allocation: {
+            allocation_commitment: input.hyperliquid_managed_allocation.allocation_commitment,
+            execution_mode: hyperliquidManagedExecutionMode(input.hyperliquid_managed_allocation.execution_mode),
+            policy_commitment: input.hyperliquid_managed_allocation.policy_commitment,
+            pool_commitment: input.hyperliquid_managed_allocation.pool_commitment,
+            pool_share_commitment: input.hyperliquid_managed_allocation.pool_share_commitment ?? null,
+            subledger_account_commitment: input.hyperliquid_managed_allocation.subledger_account_commitment,
+            vault_address: input.hyperliquid_managed_allocation.vault_address ?? null,
+            vault_controller_address: input.hyperliquid_managed_allocation.vault_controller_address ?? null,
+            agent_wallet_commitment: input.hyperliquid_managed_allocation.agent_wallet_commitment ?? null,
+            deposit_evidence_commitment: input.hyperliquid_managed_allocation.deposit_evidence_commitment ?? null,
+            deposit_status: input.hyperliquid_managed_allocation.deposit_status ?? null,
+            funding_routes: input.hyperliquid_managed_allocation.funding_routes ?? [],
+            eligibility_commitment: input.hyperliquid_managed_allocation.eligibility_commitment ?? null,
+            funding_evidence_commitment: input.hyperliquid_managed_allocation.funding_evidence_commitment ?? null,
+            status: input.hyperliquid_managed_allocation.status ?? "allocated",
+          },
           pooled_allocation: input.hyperliquid_managed_allocation.execution_mode === "ghola_pooled"
             ? {
                 allocation_commitment: input.hyperliquid_managed_allocation.allocation_commitment,
@@ -1535,6 +1564,10 @@ function venueReadinessGate(input: {
     if (!input.pooled_allocation_ready) {
       reasonCodes.push("venue_access_required", "hyperliquid_pooled_allocation_not_ready");
     }
+  } else if (venueId === "hyperliquid" && input.execution_mode === "hyperliquid_native_vault") {
+    if (!input.execution_vault_ready) {
+      reasonCodes.push("venue_access_required", "hyperliquid_native_vault_not_ready");
+    }
   } else if (venueId === "hyperliquid" && !input.execution_vault_ready) {
     reasonCodes.push("venue_access_required", "hyperliquid_execution_vault_not_ready");
   }
@@ -1575,6 +1608,12 @@ function venueReadinessGate(input: {
     input.execution_mode === "ghola_pooled" &&
     (input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
       input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket");
+  const hyperliquidNativeVaultLive =
+    venueId === "hyperliquid" &&
+    input.execution_mode === "hyperliquid_native_vault" &&
+    input.execution_vault_ready &&
+    (input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
+      input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket");
   const solanaPerpsPooledTinyFill =
     venueId === "phoenix" &&
     input.execution_mode === "ghola_pooled" &&
@@ -1593,6 +1632,7 @@ function venueReadinessGate(input: {
     fundingRequired &&
     !hyperliquidByoTinyFill &&
     !hyperliquidPooledTinyFill &&
+    !hyperliquidNativeVaultLive &&
     !solanaPerpsStealthTinyFill &&
     !solanaPerpsPooledTinyFill &&
     !jupiterFullPilot
@@ -1617,6 +1657,12 @@ function venueReadinessGate(input: {
 function requiresSealedRuntime(executionMode?: GholaVenueExecutionMode): boolean {
   if (executionMode === "byo_api_key" || executionMode === "user_stealth") return false;
   return true;
+}
+
+function hyperliquidManagedExecutionMode(value: unknown): "managed_testnet" | "ghola_pooled" | "hyperliquid_native_vault" {
+  if (value === "ghola_pooled") return "ghola_pooled";
+  if (value === "hyperliquid_native_vault") return "hyperliquid_native_vault";
+  return "managed_testnet";
 }
 
 function hyperliquidOperationForAction(action: GholaPrivateAccountActionClass): string {

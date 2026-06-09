@@ -7,6 +7,8 @@ import {
   phalaIdleShutdownEnabled,
   phalaJitProvisioningConfigIssue,
   phalaJitProvisioningConfigured,
+  privateAgentRemoteExecutionDisabled,
+  privateAgentSpendArmed,
   phalaWorkerImageConfiguredForRequestedMode,
   stopIdlePhalaPrivateAgent,
 } from "./private-agent-phala";
@@ -23,6 +25,7 @@ const TEST_ENV_KEYS = [
   "GHOLA_PRIVATE_AGENT_LEASE_STORE",
   "GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED",
   "GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN",
+  "GHOLA_PRIVATE_AGENT_SPEND_ARMED",
   "GHOLA_PRIVATE_AGENT_WORKER_IMAGE",
   "GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST",
   "GHOLA_HYPERLIQUID_LIVE_MODE",
@@ -35,6 +38,7 @@ const TEST_ENV_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS",
+  "VERCEL_ENV",
 ];
 
 afterEach(() => {
@@ -83,6 +87,18 @@ describe("private-agent Phala provisioning", () => {
     );
     expect(compose).not.toMatch(/PHALA_CLOUD_API_KEY|PHALA_API_KEY/);
     expect(compose).not.toMatch(/prompt|strategy_text|messages|policy:/i);
+  });
+
+  it("pins a tag-only worker image to the configured digest", () => {
+    const compose = buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker:private-agent-worker-c8d4eca",
+      imageDigest: "sha256:def",
+    });
+
+    expect(compose).toContain(
+      "image: ghcr.io/example/worker:private-agent-worker-c8d4eca@sha256:def",
+    );
+    expect(compose).toContain('PHALA_CVM_IMAGE_DIGEST: "sha256:def"');
   });
 
   it("passes live tiny-fill controls into the worker compose", () => {
@@ -159,6 +175,21 @@ describe("private-agent Phala provisioning", () => {
 
     process.env.GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN = "false";
     expect(phalaIdleShutdownEnabled()).toBe(false);
+  });
+
+  it("requires an explicit spend arm before production can wake remote execution", () => {
+    setTestEnv({
+      GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "true",
+      VERCEL_ENV: "production",
+    });
+
+    expect(privateAgentSpendArmed()).toBe(false);
+    expect(privateAgentRemoteExecutionDisabled()).toBe(true);
+    expect(phalaIdleShutdownEnabled()).toBe(true);
+
+    process.env.GHOLA_PRIVATE_AGENT_SPEND_ARMED = "true";
+    expect(privateAgentSpendArmed()).toBe(true);
+    expect(privateAgentRemoteExecutionDisabled()).toBe(false);
   });
 
   it("does not stop Phala while a private-agent lease is active", async () => {
