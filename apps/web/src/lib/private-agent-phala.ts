@@ -107,6 +107,13 @@ export function phalaWorkerExecutionToken(): string | null {
   );
 }
 
+function phalaWorkerCapabilitySecret(): string | null {
+  return (
+    env("PRIVATE_AGENT_WORKER_CAPABILITY_SECRET") ??
+    env("GHOLA_WORKER_CAPABILITY_SECRET")
+  );
+}
+
 export function phalaCvmName(): string {
   return env("GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME") ?? DEFAULT_CVM_NAME;
 }
@@ -280,6 +287,7 @@ export function buildPhalaWorkerCompose(input: {
     '      PRIVATE_AGENT_PROVIDER_ID: "phala"',
     '      PRIVATE_AGENT_TEE_KIND: "phala"',
     '      PRIVATE_AGENT_EXECUTION_TOKEN: "${PRIVATE_AGENT_EXECUTION_TOKEN}"',
+    '      PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "${PRIVATE_AGENT_WORKER_CAPABILITY_SECRET}"',
     '      PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE: "true"',
     `      PHALA_CVM_IMAGE_DIGEST: "${imageDigest}"`,
     composeEnvLine("PRIVATE_AGENT_VENUE_DRY_RUN", workerEnv("PRIVATE_AGENT_VENUE_DRY_RUN", "false")),
@@ -575,6 +583,13 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
   if (!info) {
     try {
       const { encryptEnvVars } = await import("@phala/cloud");
+      const encryptedWorkerEnv = [
+        { key: "PRIVATE_AGENT_EXECUTION_TOKEN", value: token },
+        ...(phalaWorkerCapabilitySecret()
+          ? [{ key: "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET", value: phalaWorkerCapabilitySecret() as string }]
+          : []),
+      ];
+      const encryptedWorkerEnvKeys = encryptedWorkerEnv.map((item) => item.key);
       const provision = await client.provisionCvm({
         name,
         instance_type: env("GHOLA_PHALA_PRIVATE_AGENT_INSTANCE_TYPE") ?? "tdx.small",
@@ -583,17 +598,17 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
           : {}),
         compose_file: {
           docker_compose_file: buildPhalaWorkerCompose(),
-          allowed_envs: ["PRIVATE_AGENT_EXECUTION_TOKEN"],
+          allowed_envs: encryptedWorkerEnvKeys,
           gateway_enabled: true,
           kms_enabled: true,
           public_logs: false,
           public_sysinfo: false,
         },
-        env_keys: ["PRIVATE_AGENT_EXECUTION_TOKEN"],
+        env_keys: encryptedWorkerEnvKeys,
         listed: false,
       });
       const encryptedEnv = await encryptEnvVars(
-        [{ key: "PRIVATE_AGENT_EXECUTION_TOKEN", value: token }],
+        encryptedWorkerEnv,
         provision.app_env_encrypt_pubkey,
       );
       info = await client.commitCvmProvision(
@@ -601,7 +616,7 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
           app_id: provision.app_id,
           compose_hash: provision.compose_hash,
           encrypted_env: encryptedEnv,
-          env_keys: ["PRIVATE_AGENT_EXECUTION_TOKEN"],
+          env_keys: encryptedWorkerEnvKeys,
         },
         { schema: false },
       );
