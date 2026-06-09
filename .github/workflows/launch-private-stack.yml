@@ -217,7 +217,7 @@ jobs:
           check() {
             local name="$1" path="$2"
             local body
-            body=$(curl -sS -m 30 "$base$path" || echo '{"error":"request_failed"}')
+            body=$(curl -fsS -m 30 "$base$path" || echo '{"error":"request_failed"}')
             echo "### $name (\`$path\`)" >> "$GITHUB_STEP_SUMMARY"
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
             echo "$body" | head -c 1200 >> "$GITHUB_STEP_SUMMARY"
@@ -227,8 +227,8 @@ jobs:
           }
           echo "## Verification" >> "$GITHUB_STEP_SUMMARY"
           runtime=$(check "Private agent runtime" "/api/private-agent/status")
-          hl=$(check "Hyperliquid pilot" "/v1/private-account/hyperliquid/status")
-          audit=$(check "Pool audit" "/v1/private-account/venues/hyperliquid/pool/audit")
+          launch=$(check "Private trading launch" "/v1/private-account/launch/status")
+          platforms=$(check "Platform readiness" "/v1/private-account/platforms/readiness")
           if [ -n "$AUTH_SMOKE_EMAIL" ]; then
             (cd apps/web && npm install --no-audit --no-fund >/dev/null 2>&1 && node scripts/smoke-auth.mjs) \
               && echo "- auth smoke: PASS" >> "$GITHUB_STEP_SUMMARY" \
@@ -237,13 +237,19 @@ jobs:
             echo "- auth smoke: skipped (no smoke secrets)" >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ "${{ inputs.arm_phala }}" = "true" ]; then
-            echo "$hl" | grep -q '"pilot_stage"[: ]*"live_pilot"' \
-              && echo "- hyperliquid pilot: live_pilot" >> "$GITHUB_STEP_SUMMARY" \
-              || { echo "- hyperliquid pilot: NOT live (see status above for reason_codes)" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
+            echo "$launch" | grep -q '"ready_to_accept_users"[: ]*true' \
+              && echo "- private trading launch: ready_to_accept_users" >> "$GITHUB_STEP_SUMMARY" \
+              || { echo "- private trading launch: NOT ready (see launch status above)" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
           else
-            echo "$hl" | grep -q '"platform_class"' \
-              && echo "- hyperliquid routes: deployed (dark mode; worker not armed)" >> "$GITHUB_STEP_SUMMARY" \
-              || { echo "- hyperliquid routes: MISSING from deployment" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
+            echo "$runtime" | grep -q '"operator_spend_lock"' \
+              && echo "- private agent runtime: spend lock active" >> "$GITHUB_STEP_SUMMARY" \
+              || { echo "- private agent runtime: spend lock NOT confirmed" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
+            echo "$launch" | grep -q '"operator_spend_lock"' \
+              && echo "- private trading launch: dark mode confirmed" >> "$GITHUB_STEP_SUMMARY" \
+              || { echo "- private trading launch: dark mode NOT confirmed" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
+            echo "$platforms" | grep -q '"platform_class"' \
+              && echo "- platform readiness: deployed" >> "$GITHUB_STEP_SUMMARY" \
+              || { echo "- platform readiness: MISSING from deployment" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
             echo "- phala spend: locked down (arm with arm_phala=true when ready)" >> "$GITHUB_STEP_SUMMARY"
           fi
           exit $fail
