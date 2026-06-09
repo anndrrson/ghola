@@ -60,8 +60,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  WORKER_IMAGE: ghcr.io/anndrrson/ghola:private-agent-worker-c8d4eca
-  WORKER_IMAGE_DIGEST: sha256:ee55beb45540fbabca8a468a1b229a450ea6e64d780f8ce2bfa6b328da9aa1bb
+  WORKER_IMAGE: ghcr.io/anndrrson/ghola:private-agent-worker-656194e
+  WORKER_IMAGE_DIGEST: sha256:8a650297bffd97fdf34ea29e7413977354682c0140faff7ed42ca85be960991c
 
 jobs:
   launch:
