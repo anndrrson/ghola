@@ -1,0 +1,209 @@
+name: Launch private trading stack
+
+# One-button path from repo to live service:
+#   1. Pushes env config + production deploy of apps/web to Vercel
+#   2. Provisions the Phala worker CVM through the app's own JIT
+#      provisioner (/api/private-agent/provision)
+#   3. Verifies the live endpoints and writes a go/no-go summary
+#
+# Required repository secrets (Settings -> Secrets -> Actions):
+#   VERCEL_TOKEN                        Vercel account token
+#   GHOLA_PRIVATE_ACCOUNT_DATABASE_URL  Neon/Postgres URL for durable state
+#   PHALA_CLOUD_API_KEY                 Phala Cloud API key for the worker CVM
+# Optional secrets (generated per-run when absent; note that regeneration
+# re-provisions the CVM):
+#   GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN
+#   GHOLA_PRIVATE_AGENT_PROVISION_TOKEN
+# Uses existing GHOLA_AUTH_SMOKE_EMAIL / GHOLA_AUTH_SMOKE_PASSWORD for the
+# live auth check when present.
+
+on:
+  workflow_dispatch:
+    inputs:
+      vercel_project:
+        description: "Vercel project name serving ghola.xyz"
+        required: true
+        default: "ghola"
+      base_url:
+        description: "Public base URL to verify"
+        required: true
+        default: "https://ghola.xyz"
+      pooled_network:
+        description: "Pooled Hyperliquid network (testnet = zero-capital)"
+        required: true
+        default: "testnet"
+        type: choice
+        options: [testnet, mainnet]
+      live_mode:
+        description: "Hyperliquid live mode"
+        required: true
+        default: "tiny_fill"
+        type: choice
+        options: [read_only, tiny_fill, full_ticket]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: launch-private-stack
+  cancel-in-progress: false
+
+env:
+  WORKER_IMAGE: ghcr.io/anndrrson/ghola:private-agent-worker-c8d4eca
+  WORKER_IMAGE_DIGEST: sha256:ee55beb45540fbabca8a468a1b229a450ea6e64d780f8ce2bfa6b328da9aa1bb
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Preflight secrets
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DB_URL: ${{ secrets.GHOLA_PRIVATE_ACCOUNT_DATABASE_URL }}
+          PHALA_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${VERCEL_TOKEN}" ] || missing+=("VERCEL_TOKEN")
+          [ -n "${DB_URL}" ] || missing+=("GHOLA_PRIVATE_ACCOUNT_DATABASE_URL")
+          [ -n "${PHALA_KEY}" ] || missing+=("PHALA_CLOUD_API_KEY")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            {
+              echo "## Launch blocked: missing repository secrets"
+              echo ""
+              for s in "${missing[@]}"; do echo "- \`$s\`"; done
+              echo ""
+              echo "Add them under Settings -> Secrets and variables -> Actions, then re-run."
+              echo "- VERCEL_TOKEN: vercel.com -> Account Settings -> Tokens"
+              echo "- GHOLA_PRIVATE_ACCOUNT_DATABASE_URL: neon.tech free tier -> connection string"
+              echo "- PHALA_CLOUD_API_KEY: cloud.phala.network -> API keys"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Resolve worker tokens
+        id: tokens
+        env:
+          EXEC_TOKEN: ${{ secrets.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN }}
+          PROV_TOKEN: ${{ secrets.GHOLA_PRIVATE_AGENT_PROVISION_TOKEN }}
+        run: |
+          set -euo pipefail
+          exec_token="${EXEC_TOKEN:-$(openssl rand -hex 32)}"
+          prov_token="${PROV_TOKEN:-$(openssl rand -hex 32)}"
+          echo "::add-mask::${exec_token}"
+          echo "::add-mask::${prov_token}"
+          echo "exec_token=${exec_token}" >> "$GITHUB_OUTPUT"
+          echo "prov_token=${prov_token}" >> "$GITHUB_OUTPUT"
+          if [ -z "${EXEC_TOKEN}" ]; then
+            echo "- NOTE: GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN secret not set; generated per-run (re-runs rotate it and re-provision the CVM). Add it as a secret to make it stable." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Link Vercel project
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx vercel@latest link --yes --project "${{ inputs.vercel_project }}" --token "$VERCEL_TOKEN"
+
+      - name: Push production env vars to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DB_URL: ${{ secrets.GHOLA_PRIVATE_ACCOUNT_DATABASE_URL }}
+          PHALA_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          EXEC_TOKEN: ${{ steps.tokens.outputs.exec_token }}
+          PROV_TOKEN: ${{ steps.tokens.outputs.prov_token }}
+        run: |
+          set -euo pipefail
+          setenv() {
+            local name="$1" value="$2"
+            npx vercel@latest env rm "$name" production --yes --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
+            printf '%s' "$value" | npx vercel@latest env add "$name" production --token "$VERCEL_TOKEN" >/dev/null
+            echo "set $name"
+          }
+          setenv GHOLA_PRIVATE_ACCOUNT_DATABASE_URL "$DB_URL"
+          setenv PHALA_CLOUD_API_KEY "$PHALA_KEY"
+          setenv GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN "$EXEC_TOKEN"
+          setenv GHOLA_PRIVATE_AGENT_PROVISION_TOKEN "$PROV_TOKEN"
+          setenv GHOLA_PRIVATE_AGENT_PROVIDER "phala"
+          setenv GHOLA_PRIVATE_AGENT_JIT_PROVISIONING "true"
+          setenv GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME "ghola-private-agent-worker"
+          setenv GHOLA_PRIVATE_AGENT_WORKER_IMAGE "$WORKER_IMAGE"
+          setenv GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST "$WORKER_IMAGE_DIGEST"
+          setenv GHOLA_V6_HYPERLIQUID_PILOT_ENABLED "true"
+          setenv GHOLA_HYPERLIQUID_LIVE_MODE "${{ inputs.live_mode }}"
+          setenv GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS "ready"
+          setenv GHOLA_HYPERLIQUID_ALLOW_MAINNET "true"
+          setenv PRIVATE_AGENT_HYPERLIQUID_POOLED_NETWORK "${{ inputs.pooled_network }}"
+          setenv PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD "100"
+          setenv PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD "500"
+          setenv PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS "100"
+
+      - name: Deploy production to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          url=$(npx vercel@latest deploy --prod --yes --archive=tgz --token "$VERCEL_TOKEN")
+          echo "deployment_url=$url" >> "$GITHUB_ENV"
+          echo "## Web deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- $url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Provision worker CVM via app
+        env:
+          PROV_TOKEN: ${{ steps.tokens.outputs.prov_token }}
+        run: |
+          set -euo pipefail
+          base="${{ inputs.base_url }}"
+          echo "Provisioning worker through $base/api/private-agent/provision"
+          out=$(curl -sS -m 290 -X POST "$base/api/private-agent/provision" \
+            -H "authorization: Bearer $PROV_TOKEN" \
+            -H "content-type: application/json" -d '{}')
+          echo "$out" | head -c 2000
+          echo "## Worker provisioning" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          echo "$out" | head -c 1500 >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify live endpoints
+        env:
+          AUTH_SMOKE_BASE_URL: ${{ inputs.base_url }}
+          AUTH_SMOKE_EMAIL: ${{ secrets.GHOLA_AUTH_SMOKE_EMAIL }}
+          AUTH_SMOKE_PASSWORD: ${{ secrets.GHOLA_AUTH_SMOKE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          base="${{ inputs.base_url }}"
+          fail=0
+          check() {
+            local name="$1" path="$2"
+            local body
+            body=$(curl -sS -m 30 "$base$path" || echo '{"error":"request_failed"}')
+            echo "### $name (\`$path\`)" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            echo "$body" | head -c 1200 >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "$body"
+          }
+          echo "## Verification" >> "$GITHUB_STEP_SUMMARY"
+          runtime=$(check "Private agent runtime" "/api/private-agent/status")
+          hl=$(check "Hyperliquid pilot" "/v1/private-account/hyperliquid/status")
+          audit=$(check "Pool audit" "/v1/private-account/venues/hyperliquid/pool/audit")
+          if [ -n "$AUTH_SMOKE_EMAIL" ]; then
+            (cd apps/web && npm install --no-audit --no-fund >/dev/null 2>&1 && node scripts/smoke-auth.mjs) \
+              && echo "- auth smoke: PASS" >> "$GITHUB_STEP_SUMMARY" \
+              || { echo "- auth smoke: FAIL" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
+          else
+            echo "- auth smoke: skipped (no smoke secrets)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "$hl" | grep -q '"pilot_stage"[: ]*"live_pilot"' \
+            && echo "- hyperliquid pilot: live_pilot" >> "$GITHUB_STEP_SUMMARY" \
+            || { echo "- hyperliquid pilot: NOT live (see status above for reason_codes)" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
+          exit $fail
