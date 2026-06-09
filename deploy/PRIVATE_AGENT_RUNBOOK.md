@@ -599,6 +599,54 @@ The canary script signs worker requests with
 `PRIVATE_AGENT_WORKER_CAPABILITY_SECRET` or `GHOLA_WORKER_CAPABILITY_SECRET`
 when available. Otherwise it falls back to the legacy worker bearer token.
 
+## Pooled vault accounting and reconciliation
+
+Pooled allocations are backed by a unitized double-entry ledger. Funding a
+pooled allocation from the Ghola balance posts two legs that share one
+idempotency key: a `pool_allocation_debit` on the user's Ghola balance ledger
+and an `allocation_credit` that mints micro-shares on the pool equity ledger
+(`private_account_pool_equity_ledger`). Redemptions post the inverse pair.
+Shares are priced at the pool's current NAV with floor rounding, so rounding
+dust accrues to the pool and redemptions can never exceed pool equity. A
+wiped-out pool with outstanding shares refuses new capital
+(`pool_nav_unpriceable`).
+
+User-facing lifecycle routes (all gated by the standard live guard):
+
+- `POST /v1/private-account/venues/<venue>/pool/allocate` with
+  `fund_from_ghola_balance: true` debits the balance and mints shares.
+- `POST /v1/private-account/venues/<venue>/pool/withdraw` with
+  `redemption_percent_bucket` (`25` | `50` | `100`) and an optional
+  `client_redemption_id` for replay-safe retries. Full redemption revokes the
+  allocation. Withdrawals intentionally do not require pooled-worker
+  readiness: users can always exit to their Ghola balance.
+- `GET /v1/private-account/venues/<venue>/pool/audit` recomputes the books:
+  pool equity and share sums, per-subledger share totals, and a
+  double-entry join of pool legs to user-balance legs by idempotency key.
+  `balanced_internal` means the books are consistent but the venue-side
+  balance could not be verified (the worker does not yet expose a sealed
+  pool-balance probe); `discrepancy` is a page-the-operator state.
+
+Run the audit before enabling pooled trading for a venue and after any
+incident. The live-path cycle canary signs in to production, audits, then
+allocates and fully withdraws a small ticket and asserts the Ghola balance
+round-trips:
+
+```bash
+GHOLA_VERIFY_BASE_URL=https://ghola.xyz \
+GHOLA_VERIFY_EMAIL=<canary-account-email> \
+GHOLA_VERIFY_PASSWORD=<canary-account-password> \
+GHOLA_VERIFY_POOLED_VENUE=phoenix \
+node scripts/canary/pooled-withdraw-cycle.mjs
+```
+
+Without `GHOLA_VERIFY_POOLED_CYCLE_CONFIRM=I_UNDERSTAND_THIS_MOVES_BALANCE`
+the canary is read-only (auth + balance read + audit). With it, the canary
+runs the full allocate/withdraw cycle using the canary account's Ghola
+balance and fails if the post-cycle audit is not balanced or the balance does
+not round-trip within 1 micro-USDC. The canary refuses to run the mutating
+cycle when the pre-cycle audit already reports a discrepancy.
+
 ## Rollback
 
 Unset the provider readiness flag first:

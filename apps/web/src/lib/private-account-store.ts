@@ -739,6 +739,8 @@ export type PrivateGholaBalanceEntryKind =
   | "pnl_settled"
   | "margin_released"
   | "withdrawal_debit"
+  | "pool_allocation_debit"
+  | "pool_redemption_credit"
   | "admin_adjustment";
 
 export interface PrivateGholaBalanceLedgerEntryRecordV1 {
@@ -770,6 +772,54 @@ export interface PrivateGholaBalanceSnapshotV1 {
   unrealized_pnl_micro_usdc: number;
   equity_micro_usdc: number;
   withdrawable_micro_usdc: number;
+  ledger_entry_count: number;
+  updated_at: string | null;
+}
+
+export type PrivatePoolEquityEntryKind =
+  | "allocation_credit"
+  | "redemption_debit"
+  | "pnl_settled"
+  | "admin_adjustment";
+
+// Pool-side leg of the pooled-venue double entry. Every allocation_credit /
+// redemption_debit row shares its idempotency_key with the matching user-side
+// ghola-balance ledger entry, so the books can be audited by joining the two
+// ledgers on that key.
+export interface PrivatePoolEquityLedgerEntryRecordV1 {
+  version: 1;
+  ledger_entry_id: string;
+  pool_commitment: string;
+  venue_id: string;
+  platform_class: string;
+  subledger_account_commitment: string;
+  account_commitment: string;
+  owner_commitment: string;
+  idempotency_key: string;
+  entry_kind: PrivatePoolEquityEntryKind;
+  equity_delta_micro_usdc: number;
+  share_delta_micro: number;
+  reference_commitment: string | null;
+  reason: string | null;
+  created_at: string;
+}
+
+export interface PrivatePoolEquitySnapshotV1 {
+  version: 1;
+  pool_commitment: string;
+  equity_micro_usdc: number;
+  shares_micro: number;
+  ledger_entry_count: number;
+  updated_at: string | null;
+}
+
+export interface PrivatePoolSubledgerSnapshotV1 {
+  version: 1;
+  pool_commitment: string;
+  subledger_account_commitment: string;
+  shares_micro: number;
+  contributed_micro_usdc: number;
+  redeemed_micro_usdc: number;
   ledger_entry_count: number;
   updated_at: string | null;
 }
@@ -1038,6 +1088,21 @@ type GholaBalanceAggregateRow = {
   unrealized_pnl_micro_usdc: number | string | null;
   updated_at: string | Date | null;
 };
+type PoolEquityLedgerEntryRow = Omit<PrivatePoolEquityLedgerEntryRecordV1, "version"> & {
+  version?: number;
+};
+type PoolEquityAggregateRow = {
+  entry_count: number | string | null;
+  equity_micro_usdc: number | string | null;
+  shares_micro: number | string | null;
+  contributed_micro_usdc?: number | string | null;
+  redeemed_micro_usdc?: number | string | null;
+  updated_at: string | Date | null;
+};
+type PoolSubledgerShareRow = {
+  subledger_account_commitment: string;
+  shares_micro: number | string | null;
+};
 type AuctionEpochRow = Omit<PrivateAuctionEpochRecordV1, "version"> & {
   version?: number;
 };
@@ -1084,6 +1149,7 @@ const fundingImports = new Map<string, PrivateFundingImportRecordV1>();
 const fundingBatches = new Map<string, PrivateFundingBatchRecordV1>();
 const fundingBatchRuns = new Map<string, PrivateFundingBatchRunRecordV1>();
 const gholaBalanceLedgerEntries = new Map<string, PrivateGholaBalanceLedgerEntryRecordV1>();
+const poolEquityLedgerEntries = new Map<string, PrivatePoolEquityLedgerEntryRecordV1>();
 const auctionEpochs = new Map<string, PrivateAuctionEpochRecordV1>();
 const auctionOrders = new Map<string, PrivateAuctionOrderRecordV1>();
 const auctionClearings = new Map<string, PrivateAuctionClearingRecordV1>();
@@ -2937,6 +3003,248 @@ export async function getGholaBalanceSnapshot(input: {
     ledger_entry_count: entries.length,
     updated_at: updatedAt,
   };
+}
+
+export async function putPoolEquityLedgerEntry(
+  record: PrivatePoolEquityLedgerEntryRecordV1,
+): Promise<PrivatePoolEquityLedgerEntryRecordV1> {
+  const sql = await getSql();
+  if (!sql) {
+    const existing = poolEquityLedgerEntries.get(record.ledger_entry_id);
+    if (existing) return existing;
+    const existingIdempotent = Array.from(poolEquityLedgerEntries.values()).find((entry) =>
+      entry.pool_commitment === record.pool_commitment &&
+      entry.idempotency_key === record.idempotency_key
+    );
+    if (existingIdempotent) return existingIdempotent;
+    poolEquityLedgerEntries.set(record.ledger_entry_id, record);
+    return record;
+  }
+  await ensureSchema(sql);
+  await sql`
+    INSERT INTO private_account_pool_equity_ledger (
+      ledger_entry_id,
+      pool_commitment,
+      venue_id,
+      platform_class,
+      subledger_account_commitment,
+      account_commitment,
+      owner_commitment,
+      idempotency_key,
+      entry_kind,
+      equity_delta_micro_usdc,
+      share_delta_micro,
+      reference_commitment,
+      reason,
+      created_at
+    ) VALUES (
+      ${record.ledger_entry_id},
+      ${record.pool_commitment},
+      ${record.venue_id},
+      ${record.platform_class},
+      ${record.subledger_account_commitment},
+      ${record.account_commitment},
+      ${record.owner_commitment},
+      ${record.idempotency_key},
+      ${record.entry_kind},
+      ${record.equity_delta_micro_usdc},
+      ${record.share_delta_micro},
+      ${record.reference_commitment},
+      ${record.reason},
+      ${record.created_at}
+    )
+    ON CONFLICT DO NOTHING
+  `;
+  const rows = (await sql`
+    SELECT * FROM private_account_pool_equity_ledger
+    WHERE ledger_entry_id = ${record.ledger_entry_id}
+      OR (
+        pool_commitment = ${record.pool_commitment}
+        AND idempotency_key = ${record.idempotency_key}
+      )
+    ORDER BY CASE WHEN ledger_entry_id = ${record.ledger_entry_id} THEN 0 ELSE 1 END
+    LIMIT 1
+  `) as PoolEquityLedgerEntryRow[];
+  return rows[0] ? poolEquityLedgerEntryRow(rows[0]) : record;
+}
+
+export async function listPoolEquityLedgerEntries(
+  poolCommitment: string,
+  limit = 500,
+): Promise<PrivatePoolEquityLedgerEntryRecordV1[]> {
+  const safeLimit = Math.max(1, Math.min(1_000, Math.floor(limit)));
+  const sql = await getSql();
+  if (!sql) {
+    return Array.from(poolEquityLedgerEntries.values())
+      .filter((record) => record.pool_commitment === poolCommitment)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .slice(-safeLimit);
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM (
+      SELECT * FROM private_account_pool_equity_ledger
+      WHERE pool_commitment = ${poolCommitment}
+      ORDER BY created_at DESC
+      LIMIT ${safeLimit}
+    ) recent_entries
+    ORDER BY created_at ASC
+  `) as PoolEquityLedgerEntryRow[];
+  return rows.map(poolEquityLedgerEntryRow);
+}
+
+export async function getPoolEquitySnapshot(
+  poolCommitment: string,
+): Promise<PrivatePoolEquitySnapshotV1> {
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const rows = (await sql`
+      SELECT
+        COUNT(*) AS entry_count,
+        COALESCE(SUM(equity_delta_micro_usdc), 0) AS equity_micro_usdc,
+        COALESCE(SUM(share_delta_micro), 0) AS shares_micro,
+        MAX(created_at) AS updated_at
+      FROM private_account_pool_equity_ledger
+      WHERE pool_commitment = ${poolCommitment}
+    `) as PoolEquityAggregateRow[];
+    const row = rows[0];
+    return {
+      version: 1,
+      pool_commitment: poolCommitment,
+      equity_micro_usdc: Math.floor(Number(row?.equity_micro_usdc ?? 0)),
+      shares_micro: Math.floor(Number(row?.shares_micro ?? 0)),
+      ledger_entry_count: Number(row?.entry_count ?? 0),
+      updated_at: row?.updated_at ? dateString(row.updated_at) : null,
+    };
+  }
+  let equity = 0;
+  let shares = 0;
+  let count = 0;
+  let updatedAt: string | null = null;
+  for (const entry of poolEquityLedgerEntries.values()) {
+    if (entry.pool_commitment !== poolCommitment) continue;
+    equity += entry.equity_delta_micro_usdc;
+    shares += entry.share_delta_micro;
+    count += 1;
+    if (!updatedAt || entry.created_at > updatedAt) updatedAt = entry.created_at;
+  }
+  return {
+    version: 1,
+    pool_commitment: poolCommitment,
+    equity_micro_usdc: Math.floor(equity),
+    shares_micro: Math.floor(shares),
+    ledger_entry_count: count,
+    updated_at: updatedAt,
+  };
+}
+
+export async function getPoolSubledgerSnapshot(input: {
+  pool_commitment: string;
+  subledger_account_commitment: string;
+}): Promise<PrivatePoolSubledgerSnapshotV1> {
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const rows = (await sql`
+      SELECT
+        COUNT(*) AS entry_count,
+        COALESCE(SUM(equity_delta_micro_usdc), 0) AS equity_micro_usdc,
+        COALESCE(SUM(share_delta_micro), 0) AS shares_micro,
+        COALESCE(SUM(CASE WHEN entry_kind = 'allocation_credit' THEN equity_delta_micro_usdc ELSE 0 END), 0) AS contributed_micro_usdc,
+        COALESCE(SUM(CASE WHEN entry_kind = 'redemption_debit' THEN -equity_delta_micro_usdc ELSE 0 END), 0) AS redeemed_micro_usdc,
+        MAX(created_at) AS updated_at
+      FROM private_account_pool_equity_ledger
+      WHERE pool_commitment = ${input.pool_commitment}
+        AND subledger_account_commitment = ${input.subledger_account_commitment}
+    `) as PoolEquityAggregateRow[];
+    const row = rows[0];
+    return {
+      version: 1,
+      pool_commitment: input.pool_commitment,
+      subledger_account_commitment: input.subledger_account_commitment,
+      shares_micro: Math.floor(Number(row?.shares_micro ?? 0)),
+      contributed_micro_usdc: Math.floor(Number(row?.contributed_micro_usdc ?? 0)),
+      redeemed_micro_usdc: Math.floor(Number(row?.redeemed_micro_usdc ?? 0)),
+      ledger_entry_count: Number(row?.entry_count ?? 0),
+      updated_at: row?.updated_at ? dateString(row.updated_at) : null,
+    };
+  }
+  let shares = 0;
+  let contributed = 0;
+  let redeemed = 0;
+  let count = 0;
+  let updatedAt: string | null = null;
+  for (const entry of poolEquityLedgerEntries.values()) {
+    if (entry.pool_commitment !== input.pool_commitment) continue;
+    if (entry.subledger_account_commitment !== input.subledger_account_commitment) continue;
+    shares += entry.share_delta_micro;
+    if (entry.entry_kind === "allocation_credit") contributed += entry.equity_delta_micro_usdc;
+    if (entry.entry_kind === "redemption_debit") redeemed += -entry.equity_delta_micro_usdc;
+    count += 1;
+    if (!updatedAt || entry.created_at > updatedAt) updatedAt = entry.created_at;
+  }
+  return {
+    version: 1,
+    pool_commitment: input.pool_commitment,
+    subledger_account_commitment: input.subledger_account_commitment,
+    shares_micro: Math.floor(shares),
+    contributed_micro_usdc: Math.floor(contributed),
+    redeemed_micro_usdc: Math.floor(redeemed),
+    ledger_entry_count: count,
+    updated_at: updatedAt,
+  };
+}
+
+export async function listPoolSubledgerShareTotals(
+  poolCommitment: string,
+): Promise<Array<{ subledger_account_commitment: string; shares_micro: number }>> {
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const rows = (await sql`
+      SELECT
+        subledger_account_commitment,
+        COALESCE(SUM(share_delta_micro), 0) AS shares_micro
+      FROM private_account_pool_equity_ledger
+      WHERE pool_commitment = ${poolCommitment}
+      GROUP BY subledger_account_commitment
+    `) as PoolSubledgerShareRow[];
+    return rows.map((row) => ({
+      subledger_account_commitment: row.subledger_account_commitment,
+      shares_micro: Math.floor(Number(row.shares_micro ?? 0)),
+    }));
+  }
+  const totals = new Map<string, number>();
+  for (const entry of poolEquityLedgerEntries.values()) {
+    if (entry.pool_commitment !== poolCommitment) continue;
+    totals.set(
+      entry.subledger_account_commitment,
+      (totals.get(entry.subledger_account_commitment) ?? 0) + entry.share_delta_micro,
+    );
+  }
+  return Array.from(totals.entries()).map(([subledger, shares]) => ({
+    subledger_account_commitment: subledger,
+    shares_micro: Math.floor(shares),
+  }));
+}
+
+export async function listGholaBalanceLedgerEntriesByIdempotencyKeys(
+  keys: string[],
+): Promise<PrivateGholaBalanceLedgerEntryRecordV1[]> {
+  const uniqueKeys = Array.from(new Set(keys)).slice(0, 1_000);
+  if (uniqueKeys.length === 0) return [];
+  const sql = await getSql();
+  if (!sql) {
+    return Array.from(gholaBalanceLedgerEntries.values())
+      .filter((record) => uniqueKeys.includes(record.idempotency_key));
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM private_account_ghola_balance_ledger
+    WHERE idempotency_key = ANY(${uniqueKeys})
+  `) as GholaBalanceLedgerEntryRow[];
+  return rows.map(gholaBalanceLedgerEntryRow);
 }
 
 export async function putPrivateAuctionEpoch(
@@ -5305,6 +5613,7 @@ export async function resetPrivateAccountStoreForTests() {
   fundingBatches.clear();
   fundingBatchRuns.clear();
   gholaBalanceLedgerEntries.clear();
+  poolEquityLedgerEntries.clear();
   auctionEpochs.clear();
   auctionOrders.clear();
   auctionClearings.clear();
@@ -6189,6 +6498,24 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
     )
   `;
   await sql`
+    CREATE TABLE IF NOT EXISTS private_account_pool_equity_ledger (
+      ledger_entry_id TEXT PRIMARY KEY,
+      pool_commitment TEXT NOT NULL,
+      venue_id TEXT NOT NULL,
+      platform_class TEXT NOT NULL,
+      subledger_account_commitment TEXT NOT NULL,
+      account_commitment TEXT NOT NULL,
+      owner_commitment TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      entry_kind TEXT NOT NULL,
+      equity_delta_micro_usdc BIGINT NOT NULL,
+      share_delta_micro BIGINT NOT NULL,
+      reference_commitment TEXT,
+      reason TEXT,
+      created_at TIMESTAMPTZ NOT NULL
+    )
+  `;
+  await sql`
     CREATE TABLE IF NOT EXISTS private_account_auction_epochs (
       auction_epoch_commitment TEXT PRIMARY KEY,
       owner_commitment TEXT NOT NULL,
@@ -6352,6 +6679,9 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_funding_batch_runs_updated ON private_account_funding_batch_runs (updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_ghola_balance_ledger_account_created ON private_account_ghola_balance_ledger (account_commitment, created_at ASC)`;
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_private_account_ghola_balance_ledger_account_idempotency ON private_account_ghola_balance_ledger (account_commitment, idempotency_key)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_account_pool_equity_ledger_pool_created ON private_account_pool_equity_ledger (pool_commitment, created_at ASC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_account_pool_equity_ledger_subledger ON private_account_pool_equity_ledger (pool_commitment, subledger_account_commitment)`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_private_account_pool_equity_ledger_pool_idempotency ON private_account_pool_equity_ledger (pool_commitment, idempotency_key)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_auction_epochs_owner_updated ON private_account_auction_epochs (owner_commitment, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_auction_epochs_open ON private_account_auction_epochs (owner_commitment, platform_class, asset_bucket, amount_bucket, status, closes_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_auction_orders_owner_updated ON private_account_auction_orders (owner_commitment, updated_at DESC)`;
@@ -7011,6 +7341,26 @@ function gholaBalanceLedgerEntryRow(row: GholaBalanceLedgerEntryRow): PrivateGho
     open_notional_delta_micro_usdc: Number(row.open_notional_delta_micro_usdc),
     realized_pnl_delta_micro_usdc: Number(row.realized_pnl_delta_micro_usdc),
     unrealized_pnl_delta_micro_usdc: Number(row.unrealized_pnl_delta_micro_usdc),
+    reference_commitment: row.reference_commitment ?? null,
+    reason: row.reason ?? null,
+    created_at: dateString(row.created_at),
+  };
+}
+
+function poolEquityLedgerEntryRow(row: PoolEquityLedgerEntryRow): PrivatePoolEquityLedgerEntryRecordV1 {
+  return {
+    version: 1,
+    ledger_entry_id: row.ledger_entry_id,
+    pool_commitment: row.pool_commitment,
+    venue_id: row.venue_id,
+    platform_class: row.platform_class,
+    subledger_account_commitment: row.subledger_account_commitment,
+    account_commitment: row.account_commitment,
+    owner_commitment: row.owner_commitment,
+    idempotency_key: row.idempotency_key,
+    entry_kind: row.entry_kind as PrivatePoolEquityEntryKind,
+    equity_delta_micro_usdc: Number(row.equity_delta_micro_usdc),
+    share_delta_micro: Number(row.share_delta_micro),
     reference_commitment: row.reference_commitment ?? null,
     reason: row.reason ?? null,
     created_at: dateString(row.created_at),

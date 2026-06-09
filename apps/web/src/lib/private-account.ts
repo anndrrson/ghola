@@ -2567,6 +2567,17 @@ export function createStealthVenueAccount(input: {
   };
 }
 
+export function pooledVenuePoolCommitment(
+  venueId: GholaVenueId,
+  poolSeed?: unknown,
+): string {
+  return gholaCommitment("venue_pool", {
+    venue_id: venueId,
+    platform_class: venuePlatformClass(venueId),
+    seed: poolSeed ?? "ghola-pooled-venue-v1",
+  });
+}
+
 export function createPooledVenueAllocation(input: {
   account_commitment: string;
   venue_id: GholaVenueId;
@@ -2579,11 +2590,7 @@ export function createPooledVenueAllocation(input: {
 }): GholaPooledVenueAllocation {
   const now = input.now ?? new Date();
   const platformClass = venuePlatformClass(input.venue_id);
-  const poolCommitment = gholaCommitment("venue_pool", {
-    venue_id: input.venue_id,
-    platform_class: platformClass,
-    seed: input.pool_seed ?? "ghola-pooled-venue-v1",
-  });
+  const poolCommitment = pooledVenuePoolCommitment(input.venue_id, input.pool_seed);
   const seed = {
     account_commitment: input.account_commitment,
     venue_id: input.venue_id,

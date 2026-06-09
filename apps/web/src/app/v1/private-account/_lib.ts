@@ -31,6 +31,7 @@ import {
   createVenueEligibilityCredential,
   createVenueExecutionVault,
   createVenueSessionPolicy,
+  pooledVenuePoolCommitment,
   getPlatformPrivacyProfile,
   getVenueManifest,
   gholaCommitment,
@@ -113,6 +114,14 @@ import {
   pooledWorkerVenueId,
 } from "@/lib/private-account-pooled-readiness";
 import {
+  equityForShares,
+  isPoolRedemptionPercentBucket,
+  poolNavSnapshot,
+  sharesForContribution,
+  sharesForRedemptionBucket,
+  type PoolRedemptionPercentBucket,
+} from "@/lib/private-account-pool-ledger";
+import {
   buildPrivateExecutionPlan,
   refreshShieldedSettlementEvidence,
   settlePrivateExecutionPlan,
@@ -181,6 +190,12 @@ import {
   getPrivacyBudget,
   getQueuedAction,
   getGholaBalanceSnapshot,
+  getPoolEquitySnapshot,
+  getPoolSubledgerSnapshot,
+  listPoolEquityLedgerEntries,
+  listPoolSubledgerShareTotals,
+  listGholaBalanceLedgerEntriesByIdempotencyKeys,
+  putPoolEquityLedgerEntry,
   getPrivateFundingImportByNullifier,
   getPrivateFundingInstruction,
   listAllPrivateFundingImports,
@@ -245,6 +260,7 @@ import {
   updateQueuedActionStatus,
   type PrivateAccountIntentRecordV1,
   type PrivateAccountRecordV1,
+  type PrivatePoolEquityLedgerEntryRecordV1,
   type PrivateAnonymityEvidenceRecordV1,
   type PrivateFundingBatchRecordV1,
   type PrivateFundingImportRecordV1,
@@ -3476,10 +3492,335 @@ export async function allocatePooledVenueFromBody(
     created_at: allocation.created_at,
     updated_at: allocation.updated_at,
   });
+  let poolPosition = null;
+  if (value.fund_from_ghola_balance === true && utilizationBucket !== "0") {
+    const funded = await fundPooledAllocationFromGholaBalance({
+      owner,
+      account,
+      allocation: stored,
+      amount_micro_usdc: amountBucketMicroUsdc(utilizationBucket),
+    });
+    if ("error" in funded) return { error: funded.error };
+    poolPosition = funded.pool_position;
+  }
   return {
     version: 1,
     pooled_allocation: publicPooledVenueAllocation(stored),
+    pool_position: poolPosition,
     readiness: await venueReadinessForOwner(owner, venueId, account),
+  };
+}
+
+// Posts the double entry that backs a pooled allocation with the user's
+// Ghola balance: a pool_allocation_debit against the user's balance ledger
+// and an allocation_credit minting shares on the pool equity ledger. Both
+// legs share one idempotency key so a replayed request cannot double-fund.
+async function fundPooledAllocationFromGholaBalance(input: {
+  owner: PrivateAccountRequestOwner;
+  account: PrivateAccountRecordV1;
+  allocation: PrivatePooledVenueAllocationRecordV1;
+  amount_micro_usdc: number;
+}) {
+  const amount = Math.trunc(input.amount_micro_usdc);
+  if (amount <= 0) return { error: "valid_amount_bucket_required" as const };
+  const balance = await getGholaBalanceSnapshot({
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.account.account_commitment,
+  });
+  if (balance.available_micro_usdc < amount) {
+    return { error: "insufficient_ghola_balance" as const };
+  }
+  const pool = await getPoolEquitySnapshot(input.allocation.pool_commitment);
+  const shares = sharesForContribution(amount, pool.equity_micro_usdc, pool.shares_micro);
+  if (shares === null) return { error: "pool_nav_unpriceable" as const };
+  const idempotencyKey = gholaCommitment("pooled_allocation_funding", {
+    pooled_allocation_commitment: input.allocation.pooled_allocation_commitment,
+    amount_micro_usdc: amount,
+    pool_shares_before: pool.shares_micro,
+    pool_equity_before: pool.equity_micro_usdc,
+  });
+  const createdAt = new Date().toISOString();
+  await appendGholaBalanceLedgerEntry({
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.account.account_commitment,
+    idempotency_key: idempotencyKey,
+    entry_kind: "pool_allocation_debit",
+    venue_id: "ghola",
+    available_delta_micro_usdc: -amount,
+    reference_commitment: input.allocation.pooled_allocation_commitment,
+    reason: "pooled_venue_allocation_funded",
+    created_at: createdAt,
+  });
+  await putPoolEquityLedgerEntry({
+    version: 1,
+    ledger_entry_id: gholaCommitment("pool_equity_ledger_entry", {
+      pool_commitment: input.allocation.pool_commitment,
+      idempotency_key: idempotencyKey,
+    }),
+    pool_commitment: input.allocation.pool_commitment,
+    venue_id: input.allocation.venue_id,
+    platform_class: input.allocation.platform_class,
+    subledger_account_commitment: input.allocation.subledger_account_commitment,
+    account_commitment: input.account.account_commitment,
+    owner_commitment: input.owner.owner_commitment,
+    idempotency_key: idempotencyKey,
+    entry_kind: "allocation_credit",
+    equity_delta_micro_usdc: amount,
+    share_delta_micro: shares,
+    reference_commitment: input.allocation.pooled_allocation_commitment,
+    reason: "pooled_venue_allocation_funded",
+    created_at: createdAt,
+  });
+  return { pool_position: await publicPoolPosition(input.allocation) };
+}
+
+export async function redeemPooledVenueFromBody(
+  body: unknown,
+  owner: PrivateAccountRequestOwner,
+  venueId: GholaVenueId,
+) {
+  const value = objectBody(body);
+  const account = await createOrGetStoredPrivateAccount(owner);
+  if (!getVenueManifest(venueId).supported_account_modes.includes("ghola_pooled")) {
+    return { error: "pooled_mode_not_supported" as const };
+  }
+  const allocation = await getLatestPooledVenueAllocationByAccount({
+    account_commitment: account.account_commitment,
+    venue_id: venueId,
+  });
+  if (!allocation || allocation.owner_commitment !== owner.owner_commitment) {
+    return { error: "pooled_allocation_not_found" as const };
+  }
+  if (allocation.status !== "allocated") {
+    return { error: "pooled_allocation_not_active" as const };
+  }
+  const requestedBucket = stringValue(value.redemption_percent_bucket) || "100";
+  if (!isPoolRedemptionPercentBucket(requestedBucket)) {
+    return { error: "valid_redemption_percent_bucket_required" as const };
+  }
+  const bucket: PoolRedemptionPercentBucket = requestedBucket;
+  const [pool, subledger] = await Promise.all([
+    getPoolEquitySnapshot(allocation.pool_commitment),
+    getPoolSubledgerSnapshot({
+      pool_commitment: allocation.pool_commitment,
+      subledger_account_commitment: allocation.subledger_account_commitment,
+    }),
+  ]);
+  if (subledger.shares_micro <= 0) {
+    return { error: "pooled_position_empty" as const };
+  }
+  const redeemShares = sharesForRedemptionBucket(subledger.shares_micro, bucket);
+  if (redeemShares <= 0) return { error: "pooled_position_empty" as const };
+  const redeemEquity = equityForShares(
+    redeemShares,
+    pool.equity_micro_usdc,
+    pool.shares_micro,
+  );
+  // With a client_redemption_id the key is stable across retries, so a
+  // replayed request settles exactly once even if pool state moved in
+  // between. Without one the key binds to the observed pool state, so a
+  // repeated identical request against unchanged books is also deduplicated.
+  const clientRedemptionId = stringValue(value.client_redemption_id);
+  const idempotencyKey = clientRedemptionId
+    ? gholaCommitment("pooled_redemption", {
+      pooled_allocation_commitment: allocation.pooled_allocation_commitment,
+      client_redemption_id: clientRedemptionId,
+    })
+    : gholaCommitment("pooled_redemption", {
+      pooled_allocation_commitment: allocation.pooled_allocation_commitment,
+      redemption_percent_bucket: bucket,
+      pool_shares_before: pool.shares_micro,
+      pool_equity_before: pool.equity_micro_usdc,
+      holder_shares_before: subledger.shares_micro,
+    });
+  const createdAt = new Date().toISOString();
+  const poolEntry = await putPoolEquityLedgerEntry({
+    version: 1,
+    ledger_entry_id: gholaCommitment("pool_equity_ledger_entry", {
+      pool_commitment: allocation.pool_commitment,
+      idempotency_key: idempotencyKey,
+    }),
+    pool_commitment: allocation.pool_commitment,
+    venue_id: allocation.venue_id,
+    platform_class: allocation.platform_class,
+    subledger_account_commitment: allocation.subledger_account_commitment,
+    account_commitment: account.account_commitment,
+    owner_commitment: owner.owner_commitment,
+    idempotency_key: idempotencyKey,
+    entry_kind: "redemption_debit",
+    equity_delta_micro_usdc: -redeemEquity,
+    share_delta_micro: -redeemShares,
+    reference_commitment: allocation.pooled_allocation_commitment,
+    reason: "pooled_venue_redemption",
+    created_at: createdAt,
+  });
+  // On an idempotency replay the store returns the original entry; settle
+  // and report from that record, not the freshly recomputed amounts.
+  const settledShares = -poolEntry.share_delta_micro;
+  const settledEquity = -poolEntry.equity_delta_micro_usdc;
+  await appendGholaBalanceLedgerEntry({
+    owner_commitment: owner.owner_commitment,
+    account_commitment: account.account_commitment,
+    idempotency_key: idempotencyKey,
+    entry_kind: "pool_redemption_credit",
+    venue_id: "ghola",
+    available_delta_micro_usdc: settledEquity,
+    reference_commitment: allocation.pooled_allocation_commitment,
+    reason: "pooled_venue_redemption",
+    created_at: poolEntry.created_at,
+  });
+  const fullRedemption = settledShares >= subledger.shares_micro;
+  if (fullRedemption) {
+    await putPooledVenueAllocation({
+      ...allocation,
+      status: "revoked",
+      allocation: { ...allocation.allocation, status: "revoked", updated_at: createdAt },
+      updated_at: createdAt,
+    });
+  }
+  const balance = await getGholaBalanceSnapshot({
+    owner_commitment: owner.owner_commitment,
+    account_commitment: account.account_commitment,
+  });
+  return {
+    version: 1,
+    pooled_redemption: {
+      version: 1,
+      redemption_commitment: gholaCommitment("pooled_redemption_receipt", {
+        pool_commitment: allocation.pool_commitment,
+        idempotency_key: idempotencyKey,
+      }),
+      pooled_allocation_commitment: allocation.pooled_allocation_commitment,
+      venue_id: allocation.venue_id,
+      platform_class: allocation.platform_class,
+      pool_commitment: allocation.pool_commitment,
+      redemption_percent_bucket: bucket,
+      redeemed_shares_micro: settledShares,
+      redeemed_micro_usdc: settledEquity,
+      full_redemption: fullRedemption,
+      settlement_status: "internal_ledger_settled" as const,
+      created_at: poolEntry.created_at,
+    },
+    pool_position: await publicPoolPosition(allocation),
+    balance: publicGholaBalanceSnapshot(balance),
+  };
+}
+
+async function publicPoolPosition(allocation: PrivatePooledVenueAllocationRecordV1) {
+  const [pool, subledger] = await Promise.all([
+    getPoolEquitySnapshot(allocation.pool_commitment),
+    getPoolSubledgerSnapshot({
+      pool_commitment: allocation.pool_commitment,
+      subledger_account_commitment: allocation.subledger_account_commitment,
+    }),
+  ]);
+  const nav = poolNavSnapshot(pool.equity_micro_usdc, pool.shares_micro);
+  return {
+    version: 1,
+    pool_commitment: allocation.pool_commitment,
+    subledger_account_commitment: allocation.subledger_account_commitment,
+    shares_micro: subledger.shares_micro,
+    contributed_micro_usdc: subledger.contributed_micro_usdc,
+    redeemed_micro_usdc: subledger.redeemed_micro_usdc,
+    position_equity_micro_usdc: equityForShares(
+      subledger.shares_micro,
+      pool.equity_micro_usdc,
+      pool.shares_micro,
+    ),
+    pool_equity_micro_usdc: nav.equity_micro_usdc,
+    pool_shares_micro: nav.shares_micro,
+    nav_per_share_micro_usdc: nav.nav_per_share_micro_usdc,
+    updated_at: subledger.updated_at,
+  };
+}
+
+export async function poolAuditForVenue(venueId: GholaVenueId) {
+  if (!getVenueManifest(venueId).supported_account_modes.includes("ghola_pooled")) {
+    return { error: "pooled_mode_not_supported" as const };
+  }
+  const poolCommitment = pooledVenuePoolCommitment(venueId);
+  const [pool, subledgerTotals, entries] = await Promise.all([
+    getPoolEquitySnapshot(poolCommitment),
+    listPoolSubledgerShareTotals(poolCommitment),
+    listPoolEquityLedgerEntries(poolCommitment, 500),
+  ]);
+  const subledgerShareSum = subledgerTotals.reduce(
+    (sum, row) => sum + row.shares_micro,
+    0,
+  );
+  const doubleEntryKeys = entries
+    .filter((entry) =>
+      entry.entry_kind === "allocation_credit" || entry.entry_kind === "redemption_debit"
+    )
+    .map((entry) => entry.idempotency_key);
+  const userLegs = await listGholaBalanceLedgerEntriesByIdempotencyKeys(doubleEntryKeys);
+  const userLegsByKey = new Map(userLegs.map((entry) => [entry.idempotency_key, entry]));
+  const unbalancedKeys: string[] = [];
+  for (const entry of entries) {
+    if (entry.entry_kind !== "allocation_credit" && entry.entry_kind !== "redemption_debit") continue;
+    const userLeg = userLegsByKey.get(entry.idempotency_key);
+    if (!userLeg || userLeg.available_delta_micro_usdc !== -entry.equity_delta_micro_usdc) {
+      unbalancedKeys.push(entry.idempotency_key);
+    }
+  }
+  const checks = {
+    non_negative_equity: pool.equity_micro_usdc >= 0,
+    non_negative_shares: pool.shares_micro >= 0,
+    shares_match_subledgers: pool.shares_micro === subledgerShareSum,
+    empty_pool_has_no_shares: pool.equity_micro_usdc > 0 || pool.shares_micro === 0 ||
+      pool.equity_micro_usdc === 0,
+    double_entry_balanced: unbalancedKeys.length === 0,
+  };
+  const internalConsistent = Object.values(checks).every(Boolean);
+  const nav = poolNavSnapshot(pool.equity_micro_usdc, pool.shares_micro);
+  const venueCheck = await poolAuditVenueCheck(venueId);
+  return {
+    version: 1,
+    audit_commitment: gholaCommitment("pool_audit", {
+      pool_commitment: poolCommitment,
+      equity_micro_usdc: pool.equity_micro_usdc,
+      shares_micro: pool.shares_micro,
+      entry_count: pool.ledger_entry_count,
+      checks,
+      audited_at: new Date().toISOString(),
+    }),
+    venue_id: venueId,
+    pool_commitment: poolCommitment,
+    status: !internalConsistent
+      ? ("discrepancy" as const)
+      : venueCheck.status === "verified"
+        ? ("balanced" as const)
+        : ("balanced_internal" as const),
+    checks,
+    unbalanced_entry_count: unbalancedKeys.length,
+    pool_equity_micro_usdc: nav.equity_micro_usdc,
+    pool_shares_micro: nav.shares_micro,
+    nav_per_share_micro_usdc: nav.nav_per_share_micro_usdc,
+    subledger_count: subledgerTotals.length,
+    ledger_entry_count: pool.ledger_entry_count,
+    venue_check: venueCheck,
+    audited_at: new Date().toISOString(),
+  };
+}
+
+// The pooled worker does not yet expose a pool balance read, so the venue
+// leg of the audit can only attest worker liveness for the venue. Until a
+// sealed pool-balance probe ships, a healthy worker yields
+// "worker_ready_balance_unverified" rather than a verified venue balance.
+async function poolAuditVenueCheck(venueId: GholaVenueId): Promise<{
+  status: "verified" | "worker_ready_balance_unverified" | "unavailable";
+  reason_codes: string[];
+}> {
+  const gate = await pooledWorkerVenueGate(venueId);
+  if (!gate.ok) {
+    return {
+      status: "unavailable" as const,
+      reason_codes: gate.reason_codes,
+    };
+  }
+  return {
+    status: "worker_ready_balance_unverified" as const,
+    reason_codes: [] as string[],
   };
 }
 
