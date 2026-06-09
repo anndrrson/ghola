@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build && node scripts/check-auth-client-bundle.mjs && node scripts/build-sri-manifest.mjs",
+    "build": "next build && node scripts/build-inline-csp.mjs && node scripts/check-auth-client-bundle.mjs && node scripts/build-sri-manifest.mjs",
     "build:no-sri": "next build && node scripts/check-auth-client-bundle.mjs",
     "start": "next start",
     "lint": "eslint",
