@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { generateKeyPairSync, sign as nodeSign } from "node:crypto";
 import {
   verifyWorkerFundingAttestation,
@@ -60,6 +60,7 @@ describe("verifyWorkerFundingAttestation", () => {
     delete process.env.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64;
   });
   afterEach(() => {
+    vi.unstubAllEnvs();
     process.env = { ...OLD };
   });
 
@@ -83,6 +84,16 @@ describe("verifyWorkerFundingAttestation", () => {
   it("rejects when the signer key is not in the pinned set", () => {
     const { signed } = makeSigned();
     process.env.GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 = "someOtherPinnedKeyB64";
+    const res = verifyWorkerFundingAttestation(signed, "dest-1", 3, defaultEd25519Verify);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("signer_not_pinned");
+  });
+
+  it("rejects unpinned signer keys outside local/test mode", () => {
+    const { signed } = makeSigned();
+    vi.stubEnv("NODE_ENV", "production");
+    delete process.env.GHOLA_CONNECTOR_MODE;
+    delete process.env.GHOLA_SHIELDED_POOL_MODE;
     const res = verifyWorkerFundingAttestation(signed, "dest-1", 3, defaultEd25519Verify);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("signer_not_pinned");
@@ -206,6 +217,13 @@ describe("workerFundingClientConfig", () => {
         PRIVATE_AGENT_EXECUTION_TOKEN: "tok",
       }),
     ).toEqual({ url: "https://w.example", token: "tok" });
+
+    expect(
+      workerFundingClientConfig({
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://exec.example",
+        PRIVATE_AGENT_EXECUTION_TOKEN: "tok-exec",
+      }),
+    ).toEqual({ url: "https://exec.example", token: "tok-exec" });
 
     expect(
       workerFundingClientConfig({

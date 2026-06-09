@@ -85,6 +85,9 @@ export function buildPrivateExecutionPlan(input: {
     scheduleDecision,
     rotation,
     simulation,
+    frontRunMode: input.preview.front_run_mode,
+    frontRunProtection: input.preview.front_run_protection,
+    frontRunCertificateCommitment: input.preview.front_run_certificate_commitment,
     claimLevels: input.preview.claim_levels_achieved,
   };
   return {
@@ -115,6 +118,9 @@ export function buildPrivateExecutionPlan(input: {
     schedule_commitment: scheduleDecision?.schedule_commitment ?? null,
     rotation_commitment: rotation?.rotation_commitment ?? null,
     simulator_commitment: simulation?.simulator_commitment ?? null,
+    front_run_mode: input.preview.front_run_mode,
+    front_run_protection: input.preview.front_run_protection,
+    front_run_certificate_commitment: input.preview.front_run_certificate_commitment,
     claim_levels_achieved: input.preview.claim_levels_achieved,
     claim_levels_missing: input.preview.claim_levels_missing,
     wait_reasons: Array.from(new Set(waitReasons)),

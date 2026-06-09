@@ -23,6 +23,10 @@ import {
   isFundingAmountBucket,
   type GholaFundingAmountBucket,
 } from "./private-account";
+import {
+  workerAuthorizationHeader,
+  workerCapabilityExpectedFromBody,
+} from "./private-agent-capability";
 import { shieldedPoolConfig, type ShieldedPoolConfig } from "./private-account-shielded-pool";
 
 /**
@@ -323,6 +327,12 @@ function pinnedSignerKeys(): Set<string> {
   );
 }
 
+function workerSignerPinsRequired(): boolean {
+  if (process.env.NODE_ENV === "test") return false;
+  return process.env.GHOLA_CONNECTOR_MODE !== "local_test" &&
+    process.env.GHOLA_SHIELDED_POOL_MODE !== "local_test";
+}
+
 /**
  * Verify a worker-signed funding attestation and bind it to the expected fresh
  * credential. Fail-closed; on success returns the verified
@@ -365,8 +375,11 @@ export function verifyWorkerFundingAttestation(
     };
   }
   const pinned = pinnedSignerKeys();
-  // When no keys are pinned (dev), accept the self-described key; in production
-  // the env MUST pin keys so a rogue signer is rejected.
+  if (pinned.size === 0 && workerSignerPinsRequired()) {
+    return { ok: false, reason: "signer_not_pinned", explanation: "Worker signer keys are not pinned." };
+  }
+  // When no keys are pinned in local/test mode, accept the self-described key so
+  // local flows work. Production/non-local paths fail above.
   if (pinned.size > 0 && !pinned.has(signed.signer_public_key_b64)) {
     return { ok: false, reason: "signer_not_pinned", explanation: "Worker signer key is not pinned." };
   }
@@ -415,8 +428,11 @@ export function defaultEd25519Verify(
 
 /** Worker base URL — the private-agent worker that exposes the attest route. */
 const WORKER_URL_ENV = "GHOLA_PRIVATE_AGENT_WORKER_URL";
+/** Preferred deployed worker URL used by the private-agent runtime. */
+const WORKER_EXECUTION_URL_ENV = "GHOLA_PRIVATE_AGENT_EXECUTION_URL";
 /** Fallback URL: the worker is the same host the venue connectors target. */
 const WORKER_URL_FALLBACK_ENV = "GHOLA_CONNECTOR_SOLANA_PERPS_MARKET_URL";
+const WORKER_URL_SECONDARY_FALLBACK_ENV = "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL";
 
 export interface WorkerFundingClientConfig {
   url: string;
@@ -428,7 +444,13 @@ export function workerFundingClientConfig(
   env: Record<string, string | undefined> = process.env,
 ): WorkerFundingClientConfig {
   return {
-    url: (env[WORKER_URL_ENV] || env[WORKER_URL_FALLBACK_ENV] || "").trim(),
+    url: (
+      env[WORKER_URL_ENV] ||
+      env[WORKER_EXECUTION_URL_ENV] ||
+      env[WORKER_URL_FALLBACK_ENV] ||
+      env[WORKER_URL_SECONDARY_FALLBACK_ENV] ||
+      ""
+    ).trim(),
     token: (
       env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN ||
       env.PRIVATE_AGENT_EXECUTION_TOKEN ||
@@ -471,7 +493,7 @@ export async function requestWorkerFundingAttestation(
   fetchImpl: typeof fetch = fetch,
   verifyEd25519: (sig: Uint8Array, msg: Uint8Array, spkiDer: Uint8Array) => boolean = defaultEd25519Verify,
 ): Promise<RequestWorkerFundingResult> {
-  if (!config.url || !config.token) {
+  if (!config.url) {
     return {
       ok: false,
       reason: "worker_unconfigured",
@@ -481,22 +503,42 @@ export async function requestWorkerFundingAttestation(
 
   let res: Response;
   try {
-    res = await fetchImpl(new URL("/venues/shielded-funding/attest", config.url).toString(), {
+    const workerPath = "/venues/shielded-funding/attest";
+    const payload = {
+      withdraw_bundle: input.withdraw_bundle,
+      destination_commitment: input.destination_commitment,
+      amount_bucket: input.amount_bucket,
+      ...(input.min_confirmations !== undefined
+        ? { min_confirmations: input.min_confirmations }
+        : {}),
+    };
+    const authorization = workerAuthorizationHeader({
+      fallbackToken: config.token,
+      method: "POST",
+      path: workerPath,
+      scope: "order:verify",
+      body: payload,
+      expected: workerCapabilityExpectedFromBody(payload, {
+        venue_id: "shielded_funding",
+        operation_class: "funding_attestation",
+      }),
+    });
+    if (!authorization) {
+      return {
+        ok: false,
+        reason: "worker_unconfigured",
+        explanation: "Private-agent worker URL or execution token is not configured.",
+      };
+    }
+    res = await fetchImpl(new URL(workerPath, config.url).toString(), {
       method: "POST",
       cache: "no-store",
       headers: {
         "content-type": "application/json",
         "x-ghola-sealed-execution-required": "true",
-        authorization: `Bearer ${config.token}`,
+        authorization,
       },
-      body: JSON.stringify({
-        withdraw_bundle: input.withdraw_bundle,
-        destination_commitment: input.destination_commitment,
-        amount_bucket: input.amount_bucket,
-        ...(input.min_confirmations !== undefined
-          ? { min_confirmations: input.min_confirmations }
-          : {}),
-      }),
+      body: JSON.stringify(payload),
     });
   } catch {
     return { ok: false, reason: "worker_unavailable", explanation: "Worker is unreachable." };

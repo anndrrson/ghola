@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as createIntent } from "../actions/intent/route";
 import { POST as createPreview } from "../actions/privacy-preview/route";
 import { POST as queueAction } from "../actions/queue/route";
+import { POST as refreshQueue } from "../actions/queue/refresh/route";
 import { GET as operationsStatus } from "../operations/status/route";
 import { GET as listAuctions } from "./route";
 import { POST as commitAuction } from "./commit/route";
@@ -11,6 +12,9 @@ import { POST as confirmInternalAuction } from "./confirm-internal/route";
 import { POST as prepareMarket } from "./market/route";
 import { POST as openAuctionEpoch } from "./open/route";
 import { POST as settleAuction } from "./settle/route";
+import { POST as createFundingInstruction } from "../funding/instruction/route";
+import { POST as importFunding } from "../funding/import/route";
+import { POST as runBatchCoordinator } from "../funding/batch/run/route";
 import { gholaCommitment } from "@/lib/private-account";
 import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
 
@@ -97,6 +101,24 @@ async function queueAuctionIntent() {
   return queued.queued_action.queue_id as string;
 }
 
+async function importCompatibleFunding(userId: string) {
+  const instructionRes = await createFundingInstruction(
+    post("/v1/private-account/funding/instruction", {
+      action_class: "trade_on_platform",
+      amount_bucket: "25",
+      asset_bucket: "stablecoin",
+    }, auth(userId)),
+  );
+  const instruction = await instructionRes.json();
+  const importRes = await importFunding(
+    post("/v1/private-account/funding/import", {
+      funding_intent_id: instruction.instruction.funding_intent_id,
+      receipt_id: `custom_receipt_auction_${userId}`,
+    }, auth(userId)),
+  );
+  expect(importRes.status).toBe(201);
+}
+
 describe("private account shielded batch auction routes", () => {
   beforeEach(() => {
     process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN = INTERNAL_TOKEN;
@@ -104,6 +126,8 @@ describe("private account shielded batch auction routes", () => {
     process.env.GHOLA_CUSTOM_SHIELDED_VERIFIER_MODE = "local_test";
     process.env.GHOLA_SHIELDED_POOL_MODE = "local_test";
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
+    process.env.GHOLA_PRIVATE_ACCOUNT_BATCH_MIN_DELAY_SECONDS = "0";
+    process.env.GHOLA_PRIVATE_ACCOUNT_BATCH_REQUIRED_SET = "2";
   });
 
   afterEach(async () => {
@@ -114,6 +138,8 @@ describe("private account shielded batch auction routes", () => {
     delete process.env.GHOLA_CUSTOM_SHIELDED_VERIFIER_MODE;
     delete process.env.GHOLA_SHIELDED_POOL_MODE;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_BATCH_MIN_DELAY_SECONDS;
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_BATCH_REQUIRED_SET;
   });
 
   it("commits queued trade intents, closes a uniform clearing, and settles idempotently", async () => {
@@ -189,6 +215,83 @@ describe("private account shielded batch auction routes", () => {
     const ops = await opsRes.json();
     expect(ops.auction_epochs[0].auction_epoch_commitment).toBe(buyCommit.epoch.auction_epoch_commitment);
     expect(ops.auction_orders).toHaveLength(2);
+  });
+
+  it("certifies zero-front-run after the queued auction order is settled", async () => {
+    await importCompatibleFunding("auction_user_1");
+    await importCompatibleFunding("auction_user_2");
+    const buyQueueId = await queueAuctionIntent();
+    const sellQueueId = await queueAuctionIntent();
+    await runBatchCoordinator(
+      internalPost("/v1/private-account/funding/batch/run", {
+        queue_id: buyQueueId,
+      }),
+    );
+
+    const buyCommitRes = await commitAuction(
+      post("/v1/private-account/auctions/commit", {
+        queue_id: buyQueueId,
+        side: "buy",
+        amount_bucket: "25",
+        asset_bucket: "ETH",
+      }),
+    );
+    const buyCommit = await buyCommitRes.json();
+    expect(buyCommitRes.status).toBe(201);
+
+    const sellCommitRes = await commitAuction(
+      post("/v1/private-account/auctions/commit", {
+        queue_id: sellQueueId,
+        side: "sell",
+        amount_bucket: "25",
+        asset_bucket: "ETH",
+      }),
+    );
+    expect(sellCommitRes.status).toBe(201);
+
+    const closeRes = await closeAuction(
+      internalPost("/v1/private-account/auctions/close", {
+        auction_epoch_commitment: buyCommit.epoch.auction_epoch_commitment,
+      }),
+    );
+    const closed = await closeRes.json();
+    expect(closeRes.status).toBe(201);
+
+    const settleRes = await settleAuction(
+      post("/v1/private-account/auctions/settle", {
+        clearing_commitment: closed.clearing.clearing_commitment,
+      }),
+    );
+    expect(settleRes.status).toBe(200);
+
+    const refreshRes = await refreshQueue(
+      post("/v1/private-account/actions/queue/refresh", {
+        queue_id: buyQueueId,
+        front_run_mode: "zero_front_run",
+        safe_input: {
+          product_bucket: "perps",
+          amount_bucket: "25",
+          asset_bucket: "ETH",
+          destination_class: "platform_subaccount",
+          urgency: "maximum_privacy",
+          solver_count_bucket: "5+",
+        },
+      }),
+    );
+    const refreshed = await refreshRes.json();
+
+    expect(refreshRes.status).toBe(200);
+    expect(refreshed.preview.front_run_mode).toBe("zero_front_run");
+    expect(refreshed.preview.front_run_certificate_commitment).toMatch(/^front_run_certificate_[0-9a-f]{48}$/);
+    expect(refreshed.preview.front_run_protection).toMatchObject({
+      kind: "zero_certified",
+      zeroFrontRun: true,
+      canLiveSubmitInZeroMode: true,
+      certificateCommitment: refreshed.preview.front_run_certificate_commitment,
+    });
+    expect(refreshed.preview.evidence_chain.front_run_certificate_commitment).toBe(
+      refreshed.preview.front_run_certificate_commitment,
+    );
   });
 
   it("keeps technical auction requests scoped while marking enterprise gates blocking in production", async () => {

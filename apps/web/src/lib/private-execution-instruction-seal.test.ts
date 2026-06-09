@@ -5,11 +5,42 @@ import { open } from "./envelope";
 import {
   buildPrivateExecutionInstructionBundle,
   privateExecutionInstructionAssociatedData,
+  validatePrivateExecutionOrderDraft,
 } from "./private-execution-instruction-seal";
 import type { PrivateAgentRuntimeStatus } from "./private-agent-runtime";
 
 function base64ToBytes(value: string) {
   return new Uint8Array(Buffer.from(value, "base64"));
+}
+
+function runtimeWithRecipient(recipientId: string, recipientPub: Uint8Array): PrivateAgentRuntimeStatus {
+  return {
+    version: 1,
+    checked_at: new Date("2026-05-28T00:00:00Z").toISOString(),
+    sealed_execution_required: true,
+    entitlement_required: "paid_private_agent_plan",
+    preferred_provider: "phala",
+    selected_provider: "phala",
+    remote_execution_ready: true,
+    shielded_rail_ready: true,
+    blocking_reasons: [],
+    disclosure: "test",
+    providers: [{
+      id: "phala",
+      label: "Phala",
+      configured: true,
+      available: true,
+      attested: true,
+      supports_sealed_secrets: true,
+      supports_background_agents: true,
+      supports_trading_execution: true,
+      reason: null,
+      sealed_recipient: {
+        recipient_id: recipientId,
+        x25519_pub_hex: Buffer.from(recipientPub).toString("hex"),
+      },
+    }],
+  };
 }
 
 describe("private execution instruction sealing", () => {
@@ -230,5 +261,110 @@ describe("private execution instruction sealing", () => {
       live_order_mode: "tiny_fill",
       tif: "Ioc",
     });
+  });
+
+  it("seals agent mandate fields without exposing raw strategy details in the bundle", async () => {
+    const recipientSecret = x25519.utils.randomPrivateKey();
+    const recipientPub = x25519.getPublicKey(recipientSecret);
+    const senderSecret = ed25519.utils.randomPrivateKey();
+    const senderPub = ed25519.getPublicKey(senderSecret);
+    const ownerWalletAddress = bs58.encode(senderPub);
+    const recipientId = "phala:cvm:agent-mandate";
+
+    const built = await buildPrivateExecutionInstructionBundle({
+      ownerWalletAddress,
+      previewCommitment: "preview_commitment_agent_mandate",
+      runtimeStatus: runtimeWithRecipient(recipientId, recipientPub),
+      signBytes: async (bytes) => ed25519.sign(bytes, senderSecret),
+      order: {
+        venue_id: "hyperliquid",
+        operation_class: "limit_order",
+        market: "BTC",
+        side: "buy",
+        base_size: "",
+        limit_price: "",
+        quote_size: "5",
+        max_slippage_bps: "50",
+        live_order_mode: "tiny_fill",
+        tif: "Ioc",
+        agent_strategy_profile: "breakout",
+        agent_entry_trigger: "break_level",
+        agent_trigger_level: "67250",
+        agent_exit_rule: "exit_on_invalidation",
+        agent_invalidation_level: "66900",
+        agent_time_horizon: "session_trade",
+        agent_route_priority: "most_private",
+        agent_strategy_note: "Wait for breakout and reject if BTC loses the prior low.",
+      },
+      now: new Date("2026-05-28T00:00:00Z"),
+    });
+
+    const encryptedJson = JSON.stringify(built.encrypted_execution_instruction_bundle);
+    expect(encryptedJson).not.toContain("breakout");
+    expect(encryptedJson).not.toContain("67250");
+    expect(encryptedJson).not.toContain("prior low");
+
+    const opened = await open(
+      base64ToBytes(built.encrypted_execution_instruction_bundle.ciphertext),
+      recipientSecret,
+    );
+    const plaintext = JSON.parse(new TextDecoder().decode(opened.plaintext));
+    expect(plaintext.mandate).toEqual({
+      version: 1,
+      strategy_profile: "breakout",
+      entry_trigger: "break_level",
+      exit_rule: "exit_on_invalidation",
+      time_horizon: "session_trade",
+      enforcement: "fail_closed_without_condition_proof",
+      trigger_level: "67250",
+      invalidation_level: "66900",
+      route_priority: "most_private",
+      strategy_note: "Wait for breakout and reject if BTC loses the prior low.",
+    });
+  });
+
+  it("requires structured fields for conditional agent mandates", () => {
+    const base = {
+      venue_id: "hyperliquid" as const,
+      operation_class: "limit_order" as const,
+      market: "BTC",
+      side: "buy" as const,
+      base_size: "",
+      limit_price: "",
+      quote_size: "5",
+      max_slippage_bps: "50",
+      live_order_mode: "tiny_fill" as const,
+      tif: "Ioc" as const,
+    };
+
+    expect(validatePrivateExecutionOrderDraft({
+      ...base,
+      agent_entry_trigger: "break_level",
+    })).toContain("Enter the agent trigger level.");
+    expect(validatePrivateExecutionOrderDraft({
+      ...base,
+      agent_strategy_profile: "funding_basis",
+    })).toContain("Set the agent edge threshold between 1 and 500 bps.");
+    expect(validatePrivateExecutionOrderDraft({
+      ...base,
+      agent_strategy_profile: "range_trade",
+      agent_range_low: "100",
+    })).toContain("Enter the range high.");
+    expect(validatePrivateExecutionOrderDraft({
+      ...base,
+      agent_strategy_profile: "custom",
+    })).toContain("Describe the custom agent rule.");
+    expect(validatePrivateExecutionOrderDraft({
+      ...base,
+      agent_route_priority: "slowest" as never,
+    })).toContain("Select a supported route priority.");
+    expect(validatePrivateExecutionOrderDraft({
+      ...base,
+      agent_strategy_profile: "venue_route_edge",
+    })).toContain("Set the agent edge threshold between 1 and 500 bps.");
+    expect(validatePrivateExecutionOrderDraft({
+      ...base,
+      agent_exit_rule: "time_stop",
+    })).toContain("Enter a short agent time window.");
   });
 });

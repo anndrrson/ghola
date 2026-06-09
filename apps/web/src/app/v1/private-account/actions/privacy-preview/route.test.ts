@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { POST } from "./route";
 import { POST as createIntent } from "../intent/route";
 import { POST as queueAction } from "../queue/route";
@@ -68,8 +68,13 @@ async function importCompatibleFunding(userId: string) {
 }
 
 describe("private account privacy preview route", () => {
+  beforeEach(() => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
+  });
+
   afterEach(async () => {
     await resetPrivateAccountStoreForTests();
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN;
     delete process.env.GHOLA_CUSTOM_SHIELDED_VERIFIER_MODE;
     delete process.env.GHOLA_SHIELDED_POOL_MODE;

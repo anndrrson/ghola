@@ -110,6 +110,11 @@ describe("Hyperliquid private-account routes", () => {
     expect(rootRes.status).toBe(200);
     expect(root.platform_class).toBe("hyperliquid_style_market");
     expect(statusRes.status).toBe(200);
+    expect(status.hyperliquid_connection_status).toBe("connect_account");
+    expect(status.no_submit_verification_status).toBe("not_run");
+    expect(status.ready_to_attempt_broadcast).toBe(false);
+    expect(status.final_venue_execution_proven).toBe(false);
+    expect(status.final_fill_proven).toBe(false);
     expect(status.connection.ready).toBe(false);
     expect(status.gates.reason_codes).toContain("venue_access_required");
     expect(status.gates.reason_codes).not.toContain("restricted_jurisdiction");
@@ -227,6 +232,11 @@ describe("Hyperliquid private-account routes", () => {
     const status = await statusRes.json();
 
     expect(statusRes.status).toBe(200);
+    expect(status.hyperliquid_connection_status).toBe("connected");
+    expect(status.no_submit_verification_status).toBe("not_run");
+    expect(status.ready_to_attempt_broadcast).toBe(false);
+    expect(status.final_venue_execution_proven).toBe(false);
+    expect(status.final_fill_proven).toBe(false);
     expect(status.connection.ready).toBe(true);
     expect(status.connection.mode).toBe("managed_testnet");
     expect(status.gates.can_connect).toBe(true);

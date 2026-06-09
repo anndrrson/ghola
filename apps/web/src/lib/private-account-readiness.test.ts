@@ -24,7 +24,7 @@ describe("private account readiness", () => {
     expect(partner?.reason_codes).toContain("partner_compliance_required");
   });
 
-  it("blocks Hyperliquid until pilot, sealed vault, shielded funding, runtime, and connector readiness are present", () => {
+  it("blocks Hyperliquid until pilot, venue access, shielded funding, and connector readiness are present", () => {
     const blocked = privateAccountReadiness({
       paymentHealth: null,
       env: {},
@@ -44,7 +44,6 @@ describe("private account readiness", () => {
         GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
         GHOLA_HYPERLIQUID_EXECUTION_VAULT_READY: "true",
         GHOLA_HYPERLIQUID_SHIELDED_FUNDING_READY: "true",
-        GHOLA_PRIVATE_RUNTIME_URL: "https://runtime.ghola.test",
         GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS: "ready",
       },
     }).profiles.find((profile) => profile.platform_class === "hyperliquid_style_market");

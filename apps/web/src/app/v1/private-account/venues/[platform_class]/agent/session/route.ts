@@ -1,10 +1,7 @@
 import {
   armVenueAgentSessionFromBody,
   json,
-  privateAccountOwnerFromRequest,
-  readJson,
-  rejectForbiddenFields,
-  unauthorized,
+  privateAccountLiveGuard,
 } from "../../../../_lib";
 import type { GholaPlatformClass } from "@/lib/private-account";
 
@@ -26,12 +23,9 @@ export async function POST(
 ) {
   const platform = platformClass(await params);
   if (!platform) return json({ error: "venue_not_supported" }, 404);
-  const body = await readJson(req);
-  const forbidden = rejectForbiddenFields(body);
-  if (forbidden) return forbidden;
-  const owner = await privateAccountOwnerFromRequest(req);
-  if (!owner) return unauthorized();
-  const session = await armVenueAgentSessionFromBody(body, owner, platform);
+  const guarded = await privateAccountLiveGuard(req);
+  if (!guarded.ok) return guarded.response;
+  const session = await armVenueAgentSessionFromBody(guarded.body, guarded.owner, platform);
   if ("error" in session) return json({ error: session.error }, 400);
   return json(session, 201);
 }

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { isPrivateModeAvailableStatus } from "@/lib/private-account";
 import {
   getPrivateSettlement,
   putPrivateSettlement,
@@ -80,6 +81,7 @@ async function happyPathInput(input: {
   product_bucket?: string;
   platform_class?: string;
   requested_rail?: string;
+  safe_input?: Record<string, unknown>;
 } = {}) {
   await importCompatibleFunding("user_1");
   await importCompatibleFunding("user_2");
@@ -96,6 +98,7 @@ async function happyPathInput(input: {
       intent_id: intent.intent_id,
       platform_class: input.platform_class || "solana_private_balance",
       requested_rail: input.requested_rail || "shielded_pool",
+      safe_input: input.safe_input,
     }),
   );
   const preview = await previewRes.json();
@@ -115,6 +118,7 @@ async function happyPathInput(input: {
   const refreshedRes = await refreshQueue(
     request("/v1/private-account/actions/queue/refresh", {
       queue_id: queued.queued_action.queue_id,
+      safe_input: input.safe_input,
     }),
   );
   const refreshed = await refreshedRes.json();
@@ -125,8 +129,13 @@ async function happyPathInput(input: {
   );
   const plan = await planRes.json();
   expect(planRes.status).toBe(201);
-  expect(plan.plan.status).toBe(
-    refreshed.preview.claim_status === "private_mode_available" ? "ready" : "degraded",
+  expect(plan.plan.status, JSON.stringify({
+    claim_status: refreshed.preview.claim_status,
+    wait_reasons: refreshed.preview.wait_reasons,
+    degraded_reasons: refreshed.preview.degraded_reasons,
+    blocked_reasons: refreshed.preview.blocked_reasons,
+  })).toBe(
+    isPrivateModeAvailableStatus(refreshed.preview.claim_status) ? "ready" : "degraded",
   );
   const approvalRes = await approveAction(
     request("/v1/private-account/actions/approve", {
@@ -142,14 +151,17 @@ async function happyPathInput(input: {
 describe("private account stateful execution route", () => {
   afterEach(async () => {
     await resetPrivateAccountStoreForTests();
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN;
     delete process.env.GHOLA_CUSTOM_SHIELDED_VERIFIER_MODE;
     delete process.env.GHOLA_SHIELDED_POOL_MODE;
+    delete process.env.GHOLA_PRIVATE_MODE_PRODUCTION_ENABLED;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_BATCH_MIN_DELAY_SECONDS;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_BATCH_REQUIRED_SET;
   });
 
   beforeEach(() => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
     process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN = INTERNAL_TOKEN;
     process.env.GHOLA_CUSTOM_SHIELDED_VERIFIER_MODE = "local_test";
     process.env.GHOLA_SHIELDED_POOL_MODE = "local_test";
@@ -300,6 +312,69 @@ describe("private account stateful execution route", () => {
     expect(privateExport.private_export.encrypted_receipt_commitment).toMatch(/^encrypted_private_receipt_/);
     expect(privateExport.private_export.encrypted_receipt_ciphertext).toEqual(expect.any(String));
     expect(privateExport.view_key.view_key_commitment).toMatch(/^view_key_/);
+  });
+
+  it("executes RFQ shielded batch with full-anonymity receipt bindings", async () => {
+    const { intent, preview, plan, approval } = await happyPathInput({
+      action_class: "rebalance",
+      product_bucket: "trading",
+      platform_class: "rfq_solver_network",
+      requested_rail: "shielded_batch_auction",
+      safe_input: {
+        product_bucket: "trading",
+        amount_bucket: "25",
+        asset_bucket: "stablecoin",
+        destination_class: "platform_subaccount",
+        urgency: "maximum_privacy",
+        solver_count_bucket: "5+",
+      },
+    });
+
+    expect(preview.preview.claim_status).toBe("full_anonymity_available");
+    expect(plan.plan.status).toBe("ready");
+
+    const res = await executeAction(
+      request("/v1/private-account/actions/execute", {
+        intent_id: intent.intent_id,
+        preview_commitment: preview.preview.preview_commitment,
+        approval_commitment: approval.approval.approval_commitment,
+        execution_plan_commitment: plan.plan.plan_commitment,
+      }),
+    );
+    const body = await res.json();
+
+    expect(res.status).toBe(201);
+    expect(body.ok).toBe(true);
+    expect(body.receipt.claim_status).toBe("full_anonymity_available");
+    expect(body.receipt.rail_used).toBe("shielded_batch_auction");
+    expect(body.receipt.result).toBe("executed");
+    expect(body.receipt.settlement_commitment).toMatch(/^settlement_/);
+    expect(body.receipt.work_order_commitment).toMatch(/^connector_work_order_/);
+    expect(body.receipt.connector_result_commitment).toMatch(/^connector_result_/);
+
+    const verifyRes = await verifyReceiptAction(
+      request("/v1/private-account/actions/verify-receipt", {
+        receipt_commitment: body.receipt.receipt_commitment,
+      }),
+    );
+    const verified = await verifyRes.json();
+
+    expect(verifyRes.status).toBe(200);
+    expect(verified.verified).toBe(true);
+    expect(verified.claim_status).toBe("full_anonymity_available");
+    expect(verified.checks.settlement_bound).toBe("pass");
+    expect(verified.checks.manifest_bound).toBe("pass");
+    expect(verified.checks.connector_readiness_bound).toBe("pass");
+    expect(verified.checks.compiler_bound).toBe("pass");
+    expect(verified.checks.linkability_bound).toBe("pass");
+    expect(verified.checks.work_order_bound).toBe("pass");
+    expect(verified.checks.connector_result_bound).toBe("pass");
+    expect(verified.checks.runtime_envelope_bound).toBe("pass");
+    expect(verified.checks.runtime_attestation_bound).toBe("pass");
+    expect(verified.checks.schedule_bound).toBe("pass");
+    expect(verified.checks.rotation_bound).toBe("pass");
+    expect(verified.checks.simulator_bound).toBe("pass");
+    expect(verified.checks.claim_levels_bound).toBe("pass");
   });
 
   it("creates commitment-safe sealed runtime envelopes and rejects raw runtime fields", async () => {
@@ -582,5 +657,64 @@ describe("private account stateful execution route", () => {
       }),
     );
     expect(blocked.status).toBe(401);
+  });
+
+  it("verifies production canary receipts behind internal auth", async () => {
+    process.env.GHOLA_SHIELDED_POOL_MODE = "http";
+    process.env.GHOLA_PRIVATE_MODE_PRODUCTION_ENABLED = "true";
+    const res = await runCanaries(
+      internalRequest("/v1/private-account/canaries/run", {
+        canaries: [
+          {
+            canary_kind: "unfunded",
+            expected_result: "rejected",
+            expected_error: "invalid_shielded_receipt",
+            receipt_id: "invalid_unfunded_canary_receipt",
+            destination_commitment: "canary_unfunded_destination",
+            amount_bucket: "25",
+            asset_bucket: "stablecoin",
+          },
+          {
+            canary_kind: "funded_program",
+            expected_result: "verified",
+            receipt_id: "custom_receipt_canary_program",
+            destination_commitment: "canary_program_destination",
+            amount_bucket: "25",
+            asset_bucket: "stablecoin",
+          },
+          {
+            canary_kind: "funded_relayer",
+            expected_result: "verified",
+            receipt_id: "custom_receipt_canary_relayer",
+            destination_commitment: "canary_relayer_destination",
+            amount_bucket: "25",
+            asset_bucket: "stablecoin",
+          },
+        ],
+      }),
+    );
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.status).toBe("green");
+    expect(body.production_enabled).toBe(true);
+    expect(body.canaries.every((item: { status: string }) => item.status === "green")).toBe(true);
+    expect(body.canaries.every((item: { evidence_commitment: string | null }) =>
+      item.evidence_commitment?.startsWith("verified_private_mode_"))).toBe(true);
+  });
+
+  it("rejects raw production canary evidence strings", async () => {
+    process.env.GHOLA_SHIELDED_POOL_MODE = "http";
+    process.env.GHOLA_PRIVATE_MODE_PRODUCTION_ENABLED = "true";
+    const res = await runCanaries(
+      internalRequest("/v1/private-account/canaries/run", {
+        canaries: [
+          { canary_kind: "funded_program", evidence_commitment: "canary_program_commitment" },
+        ],
+      }),
+    );
+    const body = await res.json();
+    expect(res.status).toBe(400);
+    expect(body.error).toBe("invalid_canary_payload");
+    expect(body.details.join(" ")).toContain("raw evidence_commitment is not accepted");
   });
 });

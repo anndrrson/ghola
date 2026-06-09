@@ -4,23 +4,14 @@
  *
  * Why this file exists
  * --------------------
- * The CSP is emitted from TWO layers:
- *   1. `next.config.ts` — static `headers()` config (build time), and
- *   2. `src/proxy.ts`   — runtime Proxy/middleware on every matched route.
- * They previously DIVERGED: the proxy pinned a tight `connect-src`
- * allowlist while next.config shipped a wide-open `connect-src 'self'
- * https: wss:`, and only next.config set `Cross-Origin-Embedder-Policy`.
- * Whichever header the platform emitted last won, so the effective policy
- * depended on the route — a tight allowlist on some paths, an any-https
- * allowlist on others, and SharedArrayBuffer isolation present on some
- * responses but not others.
+ * CSP is emitted by `src/proxy.ts` so production can use Next's
+ * per-request nonce flow without a large build-time inline hash header.
+ * next.config.ts still emits non-CSP security headers and shares this
+ * cross-origin-isolation set.
  *
- * This module exports the canonical host list so both layers build the
- * EXACT same `connect-src` directive, and a shared
- * `CROSS_ORIGIN_ISOLATION_HEADERS` set so COOP/COEP/CORP are emitted
- * consistently. It intentionally has NO `next/server` (or any runtime)
- * import so it can be pulled into the build-time `next.config.ts` as well
- * as the Node-runtime Proxy.
+ * This module intentionally has NO `next/server` import so it can be
+ * pulled into the build-time `next.config.ts` as well as the Node-runtime
+ * Proxy.
  */
 
 // Hosts allowed for `connect-src` (fetch/XHR/WebSocket/EventSource).
@@ -48,6 +39,9 @@ export const CONNECT_SRC_HOSTS: readonly string[] = [
   // account/order submission still goes through Ghola's sealed connector.
   "wss://api.hyperliquid.xyz",
   "wss://api.hyperliquid-testnet.xyz",
+  // Public Coinbase Advanced market data stream. This is market-only data;
+  // account/order submission still goes through Ghola's sealed connector.
+  "wss://advanced-trade-ws.coinbase.com",
   // Private voice / in-browser model runtime asset hosts. Microphone
   // audio + transcripts stay client-side until the user submits text.
   "https://cdn.jsdelivr.net",

@@ -43,6 +43,7 @@ import type {
   GholaPooledVenueAllocation,
   GholaSecretHandle,
   GholaStealthVenueAccount,
+  GholaVenueEligibilityCredential,
   GholaVenueExecutionVault,
 } from "./private-account";
 
@@ -172,6 +173,53 @@ export interface PrivateModeCanaryRecordV1 {
   observed_at: string;
   expires_at: string;
   reason: string | null;
+  created_at: string;
+}
+
+export type PrivateLiveTradingVenueId = "hyperliquid" | "phoenix" | "jupiter" | "coinbase";
+
+export interface PrivateLiveTradingCanaryReportRecordV1 {
+  version: 1;
+  report_id: string;
+  venue_id: PrivateLiveTradingVenueId;
+  network: "mainnet";
+  status: "green" | "red";
+  live_mode: "full_ticket";
+  canary_kind: "full_ticket_broadcast";
+  broadcast_performed: boolean;
+  reconcile_status: "reconciled" | "submitted" | "failed";
+  order_notional_usd: number;
+  max_order_notional_usd: number;
+  daily_cap_usd: number;
+  max_slippage_bps: number;
+  receipt_commitment: string | null;
+  result_commitment: string | null;
+  evidence_commitment: string;
+  reason: string | null;
+  observed_at: string;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface PrivateAgentArbCanaryReportRecordV1 {
+  version: 1;
+  report_id: string;
+  status: "green" | "red";
+  mode: "no_submit" | "tiny_live";
+  market: string;
+  worker_url: string | null;
+  leg_notional_usd: number | null;
+  checks: Record<string, unknown>[];
+  quote: Record<string, unknown> | null;
+  pair: Record<string, unknown> | null;
+  preflight: Record<string, unknown> | null;
+  live_receipts: Record<string, unknown> | null;
+  reconciliation: Record<string, unknown> | null;
+  evidence_commitment: string;
+  reason_codes: string[];
+  reason: string | null;
+  observed_at: string;
+  expires_at: string;
   created_at: string;
 }
 
@@ -334,6 +382,65 @@ export interface PrivateAccountReceiptRecordV1 {
   created_at: string;
 }
 
+export interface PrivateAutopilotSessionRecordV1 {
+  version: 1;
+  owner_commitment: string;
+  autopilot_session_id: string;
+  status: string;
+  session: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+}
+
+export interface PrivateAutopilotEventRecordV1 {
+  version: 1;
+  owner_commitment: string;
+  autopilot_session_id: string;
+  event_id: string;
+  type: string;
+  status: string;
+  message: string;
+  data: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface PrivateMobileWalletBindingRecordV1 {
+  version: 1;
+  owner_commitment: string;
+  binding_commitment: string;
+  wallet_commitment: string;
+  status: "active" | "revoked";
+  proof_commitment: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type PrivateAgentVenueId = "hyperliquid" | "coinbase_advanced" | "jupiter";
+
+export interface PrivateAgentPassportRecordV1 {
+  version: 1;
+  owner_commitment: string;
+  account_commitment: string;
+  passport_commitment: string;
+  status: "active" | "blocked";
+  passport: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PrivateVenueCapabilityRecordV1 {
+  version: 1;
+  owner_commitment: string;
+  account_commitment: string;
+  venue_id: PrivateAgentVenueId;
+  capability_commitment: string;
+  status: "ready" | "blocked" | "revoked";
+  capability: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PrivateAccountRecordV1 {
   version: 1;
   owner_commitment: string;
@@ -454,6 +561,20 @@ export interface PrivatePooledVenueAllocationRecordV1 {
   status: GholaPooledVenueAllocation["status"];
   allocation: GholaPooledVenueAllocation;
   created_at: string;
+  updated_at: string;
+}
+
+export interface PrivateVenueEligibilityRecordV1 {
+  version: 1;
+  eligibility_commitment: string;
+  owner_commitment: string;
+  account_commitment: string;
+  venue_id: GholaVenueEligibilityCredential["venue_id"];
+  platform_class: GholaVenueEligibilityCredential["platform_class"];
+  status: GholaVenueEligibilityCredential["status"];
+  credential: GholaVenueEligibilityCredential;
+  created_at: string;
+  expires_at: string;
   updated_at: string;
 }
 
@@ -711,6 +832,22 @@ type CoordinatorLockRow = Omit<PrivateCoordinatorLockRecordV1, "version"> & {
 type ModeCanaryRow = Omit<PrivateModeCanaryRecordV1, "version"> & {
   version?: number;
 };
+type LiveTradingCanaryReportRow = Omit<PrivateLiveTradingCanaryReportRecordV1, "version"> & {
+  version?: number;
+};
+type AgentArbCanaryReportRow = Omit<
+  PrivateAgentArbCanaryReportRecordV1,
+  "version" | "checks" | "quote" | "pair" | "preflight" | "live_receipts" | "reconciliation" | "reason_codes"
+> & {
+  version?: number;
+  checks: unknown;
+  quote: unknown;
+  pair: unknown;
+  preflight: unknown;
+  live_receipts: unknown;
+  reconciliation: unknown;
+  reason_codes: unknown;
+};
 type ConnectorManifestRow = Omit<PrivateConnectorManifestRecordV1, "version" | "manifest"> & {
   version?: number;
   manifest: unknown;
@@ -759,9 +896,28 @@ type ReceiptRow = Omit<PrivateAccountReceiptRecordV1, "version" | "receipt"> & {
   version?: number;
   receipt: unknown;
 };
+type AutopilotSessionRow = Omit<PrivateAutopilotSessionRecordV1, "version" | "session"> & {
+  version?: number;
+  session: unknown;
+};
+type AutopilotEventRow = Omit<PrivateAutopilotEventRecordV1, "version" | "data"> & {
+  version?: number;
+  data: unknown;
+};
 type AccountRow = Omit<PrivateAccountRecordV1, "version" | "account"> & {
   version?: number;
   account: unknown;
+};
+type MobileWalletBindingRow = Omit<PrivateMobileWalletBindingRecordV1, "version"> & {
+  version?: number;
+};
+type AgentPassportRow = Omit<PrivateAgentPassportRecordV1, "version" | "passport"> & {
+  version?: number;
+  passport: unknown;
+};
+type VenueCapabilityRow = Omit<PrivateVenueCapabilityRecordV1, "version" | "capability"> & {
+  version?: number;
+  capability: unknown;
 };
 type VaultRow = Omit<PrivateVaultStateRecordV1, "version" | "balance_bucket_summary" | "ready_rails"> & {
   version?: number;
@@ -791,6 +947,10 @@ type StealthVenueAccountRow = Omit<PrivateStealthVenueAccountRecordV1, "version"
 type PooledVenueAllocationRow = Omit<PrivatePooledVenueAllocationRecordV1, "version" | "allocation"> & {
   version?: number;
   allocation: unknown;
+};
+type VenueEligibilityRow = Omit<PrivateVenueEligibilityRecordV1, "version" | "credential"> & {
+  version?: number;
+  credential: unknown;
 };
 type OmnibusAllocationRow = Omit<PrivateOmnibusAllocationRecordV1, "version" | "allocation"> & {
   version?: number;
@@ -844,7 +1004,12 @@ const executions = new Map<string, PrivateAccountExecutionRecordV1>();
 const executionPlans = new Map<string, PrivateExecutionPlanRecordV1>();
 const settlements = new Map<string, PrivateSettlementRecordV1>();
 const receipts = new Map<string, PrivateAccountReceiptRecordV1>();
+const autopilotSessions = new Map<string, PrivateAutopilotSessionRecordV1>();
+const autopilotEvents = new Map<string, PrivateAutopilotEventRecordV1>();
 const accounts = new Map<string, PrivateAccountRecordV1>();
+const mobileWalletBindings = new Map<string, PrivateMobileWalletBindingRecordV1>();
+const agentPassports = new Map<string, PrivateAgentPassportRecordV1>();
+const venueCapabilities = new Map<string, PrivateVenueCapabilityRecordV1>();
 const vaults = new Map<string, PrivateVaultStateRecordV1>();
 const hyperliquidVaults = new Map<string, PrivateHyperliquidVaultRecordV1>();
 const hyperliquidManagedAllocations = new Map<string, PrivateHyperliquidManagedAllocationRecordV1>();
@@ -852,6 +1017,7 @@ const venueExecutionVaults = new Map<string, PrivateVenueExecutionVaultRecordV1>
 const venueSecretHandles = new Map<string, PrivateVenueSecretHandleRecordV1>();
 const stealthVenueAccounts = new Map<string, PrivateStealthVenueAccountRecordV1>();
 const pooledVenueAllocations = new Map<string, PrivatePooledVenueAllocationRecordV1>();
+const venueEligibilityCredentials = new Map<string, PrivateVenueEligibilityRecordV1>();
 const omnibusAllocations = new Map<string, PrivateOmnibusAllocationRecordV1>();
 const budgets = new Map<string, PrivatePrivacyBudgetRecordV1>();
 const queuedActions = new Map<string, PrivateQueuedActionRecordV1>();
@@ -866,6 +1032,8 @@ const auctionClearings = new Map<string, PrivateAuctionClearingRecordV1>();
 const auctionPreparedTransactions = new Map<string, PrivateAuctionPreparedTransactionRecordV1>();
 const coordinatorLocks = new Map<string, PrivateCoordinatorLockRecordV1>();
 const modeCanaries = new Map<string, PrivateModeCanaryRecordV1>();
+const liveTradingCanaryReports = new Map<string, PrivateLiveTradingCanaryReportRecordV1>();
+const agentArbCanaryReports = new Map<string, PrivateAgentArbCanaryReportRecordV1>();
 const connectorManifests = new Map<string, PrivateConnectorManifestRecordV1>();
 const compiledIntents = new Map<string, PrivateCompiledIntentRecordV1>();
 const linkabilityScores = new Map<string, PrivateLinkabilityScoreRecordV1>();
@@ -965,6 +1133,189 @@ export async function getPrivateAccountByCommitment(
     LIMIT 1
   `) as AccountRow[];
   return rows[0] ? accountRow(rows[0]) : null;
+}
+
+export async function putPrivateMobileWalletBinding(
+  record: PrivateMobileWalletBindingRecordV1,
+): Promise<PrivateMobileWalletBindingRecordV1> {
+  const sql = await getSql();
+  if (!sql) {
+    mobileWalletBindings.set(record.binding_commitment, record);
+    return record;
+  }
+  await ensureSchema(sql);
+  await sql`
+    INSERT INTO private_account_mobile_wallet_bindings (
+      binding_commitment,
+      owner_commitment,
+      wallet_commitment,
+      status,
+      proof_commitment,
+      created_at,
+      updated_at
+    ) VALUES (
+      ${record.binding_commitment},
+      ${record.owner_commitment},
+      ${record.wallet_commitment},
+      ${record.status},
+      ${record.proof_commitment},
+      ${record.created_at},
+      ${record.updated_at}
+    )
+    ON CONFLICT (binding_commitment) DO UPDATE SET
+      status = EXCLUDED.status,
+      proof_commitment = EXCLUDED.proof_commitment,
+      updated_at = EXCLUDED.updated_at
+  `;
+  return record;
+}
+
+export async function getActivePrivateMobileWalletBinding(input: {
+  owner_commitment: string;
+  wallet_commitment: string;
+}): Promise<PrivateMobileWalletBindingRecordV1 | null> {
+  const sql = await getSql();
+  if (!sql) {
+    return Array.from(mobileWalletBindings.values()).find((record) =>
+      record.owner_commitment === input.owner_commitment &&
+      record.wallet_commitment === input.wallet_commitment &&
+      record.status === "active"
+    ) ?? null;
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM private_account_mobile_wallet_bindings
+    WHERE owner_commitment = ${input.owner_commitment}
+      AND wallet_commitment = ${input.wallet_commitment}
+      AND status = 'active'
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `) as MobileWalletBindingRow[];
+  return rows[0] ? mobileWalletBindingRow(rows[0]) : null;
+}
+
+export async function putPrivateAgentPassport(
+  record: PrivateAgentPassportRecordV1,
+): Promise<PrivateAgentPassportRecordV1> {
+  const sql = await getSql();
+  if (!sql) {
+    agentPassports.set(record.passport_commitment, record);
+    return record;
+  }
+  await ensureSchema(sql);
+  await sql`
+    INSERT INTO private_agent_passports (
+      passport_commitment,
+      owner_commitment,
+      account_commitment,
+      status,
+      passport,
+      created_at,
+      updated_at
+    ) VALUES (
+      ${record.passport_commitment},
+      ${record.owner_commitment},
+      ${record.account_commitment},
+      ${record.status},
+      ${JSON.stringify(record.passport)}::jsonb,
+      ${record.created_at},
+      ${record.updated_at}
+    )
+    ON CONFLICT (passport_commitment) DO UPDATE SET
+      status = EXCLUDED.status,
+      passport = EXCLUDED.passport,
+      updated_at = EXCLUDED.updated_at
+  `;
+  return record;
+}
+
+export async function getPrivateAgentPassportByAccount(
+  accountCommitment: string,
+): Promise<PrivateAgentPassportRecordV1 | null> {
+  const sql = await getSql();
+  if (!sql) {
+    return Array.from(agentPassports.values())
+      .filter((record) => record.account_commitment === accountCommitment)
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0] ?? null;
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM private_agent_passports
+    WHERE account_commitment = ${accountCommitment}
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `) as AgentPassportRow[];
+  return rows[0] ? agentPassportRow(rows[0]) : null;
+}
+
+export async function putPrivateVenueCapability(
+  record: PrivateVenueCapabilityRecordV1,
+): Promise<PrivateVenueCapabilityRecordV1> {
+  const sql = await getSql();
+  if (!sql) {
+    venueCapabilities.set(record.capability_commitment, record);
+    return record;
+  }
+  await ensureSchema(sql);
+  await sql`
+    INSERT INTO private_agent_venue_capabilities (
+      capability_commitment,
+      owner_commitment,
+      account_commitment,
+      venue_id,
+      status,
+      capability,
+      created_at,
+      updated_at
+    ) VALUES (
+      ${record.capability_commitment},
+      ${record.owner_commitment},
+      ${record.account_commitment},
+      ${record.venue_id},
+      ${record.status},
+      ${JSON.stringify(record.capability)}::jsonb,
+      ${record.created_at},
+      ${record.updated_at}
+    )
+    ON CONFLICT (capability_commitment) DO UPDATE SET
+      status = EXCLUDED.status,
+      capability = EXCLUDED.capability,
+      updated_at = EXCLUDED.updated_at
+  `;
+  return record;
+}
+
+export async function listPrivateVenueCapabilities(input: {
+  owner_commitment: string;
+  account_commitment: string;
+  venue_id?: PrivateAgentVenueId | null;
+}): Promise<PrivateVenueCapabilityRecordV1[]> {
+  const sql = await getSql();
+  if (!sql) {
+    return Array.from(venueCapabilities.values())
+      .filter((record) =>
+        record.owner_commitment === input.owner_commitment &&
+        record.account_commitment === input.account_commitment &&
+        (!input.venue_id || record.venue_id === input.venue_id)
+      )
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  }
+  await ensureSchema(sql);
+  const rows = input.venue_id
+    ? (await sql`
+        SELECT * FROM private_agent_venue_capabilities
+        WHERE owner_commitment = ${input.owner_commitment}
+          AND account_commitment = ${input.account_commitment}
+          AND venue_id = ${input.venue_id}
+        ORDER BY updated_at DESC
+      `) as VenueCapabilityRow[]
+    : (await sql`
+        SELECT * FROM private_agent_venue_capabilities
+        WHERE owner_commitment = ${input.owner_commitment}
+          AND account_commitment = ${input.account_commitment}
+        ORDER BY updated_at DESC
+      `) as VenueCapabilityRow[];
+  return rows.map(venueCapabilityRow);
 }
 
 export async function putPrivateVaultState(
@@ -1499,6 +1850,85 @@ export async function getLatestPooledVenueAllocationByAccount(input: {
     LIMIT 1
   `) as PooledVenueAllocationRow[];
   return rows[0] ? pooledVenueAllocationRow(rows[0]) : null;
+}
+
+export async function putVenueEligibilityCredential(
+  record: PrivateVenueEligibilityRecordV1,
+): Promise<PrivateVenueEligibilityRecordV1> {
+  const sql = await getSql();
+  if (!sql) {
+    venueEligibilityCredentials.set(record.eligibility_commitment, record);
+    return record;
+  }
+  await ensureSchema(sql);
+  await sql`
+    INSERT INTO private_account_venue_eligibility (
+      eligibility_commitment,
+      owner_commitment,
+      account_commitment,
+      venue_id,
+      platform_class,
+      status,
+      credential,
+      created_at,
+      expires_at,
+      updated_at
+    ) VALUES (
+      ${record.eligibility_commitment},
+      ${record.owner_commitment},
+      ${record.account_commitment},
+      ${record.venue_id},
+      ${record.platform_class},
+      ${record.status},
+      ${JSON.stringify(record.credential)}::jsonb,
+      ${record.created_at},
+      ${record.expires_at},
+      ${record.updated_at}
+    )
+    ON CONFLICT (eligibility_commitment) DO UPDATE SET
+      status = EXCLUDED.status,
+      credential = EXCLUDED.credential,
+      updated_at = EXCLUDED.updated_at
+  `;
+  return record;
+}
+
+export async function getLatestVenueEligibilityByAccount(input: {
+  account_commitment: string;
+  venue_id: GholaVenueEligibilityCredential["venue_id"];
+}): Promise<PrivateVenueEligibilityRecordV1 | null> {
+  const sql = await getSql();
+  if (!sql) {
+    return Array.from(venueEligibilityCredentials.values())
+      .filter((record) =>
+        record.account_commitment === input.account_commitment &&
+        record.venue_id === input.venue_id
+      )
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0] ?? null;
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM private_account_venue_eligibility
+    WHERE account_commitment = ${input.account_commitment}
+      AND venue_id = ${input.venue_id}
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `) as VenueEligibilityRow[];
+  return rows[0] ? venueEligibilityRow(rows[0]) : null;
+}
+
+export async function getVenueEligibilityCredential(
+  eligibilityCommitment: string,
+): Promise<PrivateVenueEligibilityRecordV1 | null> {
+  const sql = await getSql();
+  if (!sql) return venueEligibilityCredentials.get(eligibilityCommitment) ?? null;
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM private_account_venue_eligibility
+    WHERE eligibility_commitment = ${eligibilityCommitment}
+    LIMIT 1
+  `) as VenueEligibilityRow[];
+  return rows[0] ? venueEligibilityRow(rows[0]) : null;
 }
 
 export async function putOmnibusAllocation(
@@ -2220,6 +2650,8 @@ export async function putPrivateFundingBatchRun(
   const sql = await getSql();
   if (!sql) {
     fundingBatchRuns.set(record.run_id, record);
+    await putBlobJson(privateFundingBatchRunLatestPath(), record);
+    await putBlobJson(privateFundingBatchRunArchivePath(record), record);
     return record;
   }
   await ensureSchema(sql);
@@ -2271,6 +2703,8 @@ export async function putPrivateFundingBatchRun(
 export async function getLatestPrivateFundingBatchRun(): Promise<PrivateFundingBatchRunRecordV1 | null> {
   const sql = await getSql();
   if (!sql) {
+    const fromBlob = await readBlobJson<PrivateFundingBatchRunRecordV1>(privateFundingBatchRunLatestPath());
+    if (fromBlob) return fromBlob;
     return Array.from(fundingBatchRuns.values())
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0] ?? null;
   }
@@ -3255,6 +3689,8 @@ export async function putPrivateModeCanary(
   const sql = await getSql();
   if (!sql) {
     modeCanaries.set(record.canary_id, record);
+    await putBlobJson(privateModeCanaryLatestPath(record.canary_kind), record);
+    await putBlobJson(privateModeCanaryArchivePath(record), record);
     return record;
   }
   await ensureSchema(sql);
@@ -3293,6 +3729,8 @@ export async function getLatestPrivateModeCanary(
 ): Promise<PrivateModeCanaryRecordV1 | null> {
   const sql = await getSql();
   if (!sql) {
+    const fromBlob = await readBlobJson<PrivateModeCanaryRecordV1>(privateModeCanaryLatestPath(kind));
+    if (fromBlob) return fromBlob;
     return Array.from(modeCanaries.values())
       .filter((record) => record.canary_kind === kind)
       .sort((a, b) => b.observed_at.localeCompare(a.observed_at))[0] ?? null;
@@ -3313,6 +3751,15 @@ export async function listPrivateModeCanaries(
   const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
   const sql = await getSql();
   if (!sql) {
+    const fromBlob = await listBlobJson<PrivateModeCanaryRecordV1>(
+      `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/mode-canaries/archive/`,
+      safeLimit,
+    );
+    if (fromBlob.length > 0) {
+      return fromBlob
+        .sort((a, b) => b.observed_at.localeCompare(a.observed_at))
+        .slice(0, safeLimit);
+    }
     return Array.from(modeCanaries.values())
       .sort((a, b) => b.observed_at.localeCompare(a.observed_at))
       .slice(0, safeLimit);
@@ -3324,6 +3771,222 @@ export async function listPrivateModeCanaries(
     LIMIT ${safeLimit}
   `) as ModeCanaryRow[];
   return rows.map(modeCanaryRow);
+}
+
+export async function putLiveTradingCanaryReport(
+  record: PrivateLiveTradingCanaryReportRecordV1,
+): Promise<PrivateLiveTradingCanaryReportRecordV1> {
+  const sql = await getSql();
+  if (!sql) {
+    liveTradingCanaryReports.set(record.report_id, record);
+    await putBlobJson(liveTradingCanaryReportLatestPath(record.venue_id), record);
+    await putBlobJson(liveTradingCanaryReportArchivePath(record), record);
+    return record;
+  }
+  await ensureSchema(sql);
+  await sql`
+    INSERT INTO private_account_live_trading_canary_reports (
+      report_id,
+      venue_id,
+      network,
+      status,
+      live_mode,
+      canary_kind,
+      broadcast_performed,
+      reconcile_status,
+      order_notional_usd,
+      max_order_notional_usd,
+      daily_cap_usd,
+      max_slippage_bps,
+      receipt_commitment,
+      result_commitment,
+      evidence_commitment,
+      reason,
+      observed_at,
+      expires_at,
+      created_at
+    ) VALUES (
+      ${record.report_id},
+      ${record.venue_id},
+      ${record.network},
+      ${record.status},
+      ${record.live_mode},
+      ${record.canary_kind},
+      ${record.broadcast_performed},
+      ${record.reconcile_status},
+      ${record.order_notional_usd},
+      ${record.max_order_notional_usd},
+      ${record.daily_cap_usd},
+      ${record.max_slippage_bps},
+      ${record.receipt_commitment},
+      ${record.result_commitment},
+      ${record.evidence_commitment},
+      ${record.reason},
+      ${record.observed_at},
+      ${record.expires_at},
+      ${record.created_at}
+    )
+    ON CONFLICT (report_id) DO UPDATE SET
+      network = EXCLUDED.network,
+      status = EXCLUDED.status,
+      live_mode = EXCLUDED.live_mode,
+      canary_kind = EXCLUDED.canary_kind,
+      broadcast_performed = EXCLUDED.broadcast_performed,
+      reconcile_status = EXCLUDED.reconcile_status,
+      order_notional_usd = EXCLUDED.order_notional_usd,
+      max_order_notional_usd = EXCLUDED.max_order_notional_usd,
+      daily_cap_usd = EXCLUDED.daily_cap_usd,
+      max_slippage_bps = EXCLUDED.max_slippage_bps,
+      receipt_commitment = EXCLUDED.receipt_commitment,
+      result_commitment = EXCLUDED.result_commitment,
+      evidence_commitment = EXCLUDED.evidence_commitment,
+      reason = EXCLUDED.reason,
+      observed_at = EXCLUDED.observed_at,
+      expires_at = EXCLUDED.expires_at
+  `;
+  return record;
+}
+
+export async function getLatestLiveTradingCanaryReport(
+  venueId: PrivateLiveTradingVenueId,
+): Promise<PrivateLiveTradingCanaryReportRecordV1 | null> {
+  const sql = await getSql();
+  if (!sql) {
+    const fromBlob = await readBlobJson<PrivateLiveTradingCanaryReportRecordV1>(
+      liveTradingCanaryReportLatestPath(venueId),
+    );
+    if (fromBlob) return fromBlob;
+    return Array.from(liveTradingCanaryReports.values())
+      .filter((record) => record.venue_id === venueId)
+      .sort((a, b) => b.observed_at.localeCompare(a.observed_at))[0] ?? null;
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM private_account_live_trading_canary_reports
+    WHERE venue_id = ${venueId}
+    ORDER BY observed_at DESC
+    LIMIT 1
+  `) as LiveTradingCanaryReportRow[];
+  return rows[0] ? liveTradingCanaryReportRow(rows[0]) : null;
+}
+
+export async function listLiveTradingCanaryReports(
+  limit = 25,
+): Promise<PrivateLiveTradingCanaryReportRecordV1[]> {
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const sql = await getSql();
+  if (!sql) {
+    const fromBlob = await listBlobJson<PrivateLiveTradingCanaryReportRecordV1>(
+      `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/live-trading-canaries/archive/`,
+      safeLimit,
+    );
+    if (fromBlob.length > 0) {
+      return fromBlob
+        .sort((a, b) => b.observed_at.localeCompare(a.observed_at))
+        .slice(0, safeLimit);
+    }
+    return Array.from(liveTradingCanaryReports.values())
+      .sort((a, b) => b.observed_at.localeCompare(a.observed_at))
+      .slice(0, safeLimit);
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM private_account_live_trading_canary_reports
+    ORDER BY observed_at DESC
+    LIMIT ${safeLimit}
+  `) as LiveTradingCanaryReportRow[];
+  return rows.map(liveTradingCanaryReportRow);
+}
+
+export async function putAgentArbCanaryReport(
+  record: PrivateAgentArbCanaryReportRecordV1,
+): Promise<PrivateAgentArbCanaryReportRecordV1> {
+  const sql = await getSql();
+  if (!sql) {
+    agentArbCanaryReports.set(record.report_id, record);
+    await putBlobJson(agentArbCanaryReportLatestPath(), record);
+    await putBlobJson(agentArbCanaryReportArchivePath(record), record);
+    return record;
+  }
+  await ensureSchema(sql);
+  await sql`
+    INSERT INTO private_agent_arb_canary_reports (
+      report_id,
+      status,
+      mode,
+      market,
+      worker_url,
+      leg_notional_usd,
+      checks,
+      quote,
+      pair,
+      preflight,
+      live_receipts,
+      reconciliation,
+      evidence_commitment,
+      reason_codes,
+      reason,
+      observed_at,
+      expires_at,
+      created_at
+    ) VALUES (
+      ${record.report_id},
+      ${record.status},
+      ${record.mode},
+      ${record.market},
+      ${record.worker_url},
+      ${record.leg_notional_usd},
+      ${JSON.stringify(record.checks)}::jsonb,
+      ${JSON.stringify(record.quote)}::jsonb,
+      ${JSON.stringify(record.pair)}::jsonb,
+      ${JSON.stringify(record.preflight)}::jsonb,
+      ${JSON.stringify(record.live_receipts)}::jsonb,
+      ${JSON.stringify(record.reconciliation)}::jsonb,
+      ${record.evidence_commitment},
+      ${JSON.stringify(record.reason_codes)}::jsonb,
+      ${record.reason},
+      ${record.observed_at},
+      ${record.expires_at},
+      ${record.created_at}
+    )
+    ON CONFLICT (report_id) DO UPDATE SET
+      status = EXCLUDED.status,
+      mode = EXCLUDED.mode,
+      market = EXCLUDED.market,
+      worker_url = EXCLUDED.worker_url,
+      leg_notional_usd = EXCLUDED.leg_notional_usd,
+      checks = EXCLUDED.checks,
+      quote = EXCLUDED.quote,
+      pair = EXCLUDED.pair,
+      preflight = EXCLUDED.preflight,
+      live_receipts = EXCLUDED.live_receipts,
+      reconciliation = EXCLUDED.reconciliation,
+      evidence_commitment = EXCLUDED.evidence_commitment,
+      reason_codes = EXCLUDED.reason_codes,
+      reason = EXCLUDED.reason,
+      observed_at = EXCLUDED.observed_at,
+      expires_at = EXCLUDED.expires_at
+  `;
+  return record;
+}
+
+export async function getLatestAgentArbCanaryReport(): Promise<PrivateAgentArbCanaryReportRecordV1 | null> {
+  const sql = await getSql();
+  if (!sql) {
+    const fromBlob = await readBlobJson<PrivateAgentArbCanaryReportRecordV1>(
+      agentArbCanaryReportLatestPath(),
+    );
+    if (fromBlob) return fromBlob;
+    return Array.from(agentArbCanaryReports.values())
+      .sort((a, b) => b.observed_at.localeCompare(a.observed_at))[0] ?? null;
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM private_agent_arb_canary_reports
+    ORDER BY observed_at DESC
+    LIMIT 1
+  `) as AgentArbCanaryReportRow[];
+  return rows[0] ? agentArbCanaryReportRow(rows[0]) : null;
 }
 
 export async function putConnectorManifest(
@@ -4221,6 +4884,143 @@ export async function listPrivateAccountReceipts(
   return rows.map(receiptRow);
 }
 
+export async function putPrivateAutopilotSession(
+  record: PrivateAutopilotSessionRecordV1,
+): Promise<PrivateAutopilotSessionRecordV1> {
+  const sql = await getSql();
+  if (!sql) {
+    autopilotSessions.set(record.autopilot_session_id, record);
+    return record;
+  }
+  await ensureSchema(sql);
+  await sql`
+    INSERT INTO private_account_autopilot_sessions (
+      autopilot_session_id,
+      owner_commitment,
+      status,
+      session,
+      created_at,
+      updated_at,
+      expires_at
+    ) VALUES (
+      ${record.autopilot_session_id},
+      ${record.owner_commitment},
+      ${record.status},
+      ${JSON.stringify(record.session)}::jsonb,
+      ${record.created_at},
+      ${record.updated_at},
+      ${record.expires_at}
+    )
+    ON CONFLICT (autopilot_session_id) DO UPDATE SET
+      owner_commitment = EXCLUDED.owner_commitment,
+      status = EXCLUDED.status,
+      session = EXCLUDED.session,
+      updated_at = EXCLUDED.updated_at,
+      expires_at = EXCLUDED.expires_at
+  `;
+  return record;
+}
+
+export async function getPrivateAutopilotSession(
+  autopilotSessionId: string,
+): Promise<PrivateAutopilotSessionRecordV1 | null> {
+  const sql = await getSql();
+  if (!sql) return autopilotSessions.get(autopilotSessionId) ?? null;
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM private_account_autopilot_sessions
+    WHERE autopilot_session_id = ${autopilotSessionId}
+    LIMIT 1
+  `) as AutopilotSessionRow[];
+  return rows[0] ? autopilotSessionRow(rows[0]) : null;
+}
+
+export async function listPrivateAutopilotSessions(
+  ownerCommitment: string,
+  limit = 25,
+): Promise<PrivateAutopilotSessionRecordV1[]> {
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const sql = await getSql();
+  if (!sql) {
+    return Array.from(autopilotSessions.values())
+      .filter((record) => record.owner_commitment === ownerCommitment)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, safeLimit);
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM private_account_autopilot_sessions
+    WHERE owner_commitment = ${ownerCommitment}
+    ORDER BY created_at DESC
+    LIMIT ${safeLimit}
+  `) as AutopilotSessionRow[];
+  return rows.map(autopilotSessionRow);
+}
+
+export async function putPrivateAutopilotEvent(
+  record: PrivateAutopilotEventRecordV1,
+): Promise<PrivateAutopilotEventRecordV1> {
+  const sql = await getSql();
+  if (!sql) {
+    autopilotEvents.set(record.event_id, record);
+    return record;
+  }
+  await ensureSchema(sql);
+  await sql`
+    INSERT INTO private_account_autopilot_events (
+      event_id,
+      owner_commitment,
+      autopilot_session_id,
+      type,
+      status,
+      message,
+      data,
+      created_at
+    ) VALUES (
+      ${record.event_id},
+      ${record.owner_commitment},
+      ${record.autopilot_session_id},
+      ${record.type},
+      ${record.status},
+      ${record.message},
+      ${JSON.stringify(record.data)}::jsonb,
+      ${record.created_at}
+    )
+    ON CONFLICT (event_id) DO UPDATE SET
+      status = EXCLUDED.status,
+      message = EXCLUDED.message,
+      data = EXCLUDED.data
+  `;
+  return record;
+}
+
+export async function listPrivateAutopilotEvents(input: {
+  owner_commitment: string;
+  autopilot_session_id: string;
+  limit?: number;
+}): Promise<PrivateAutopilotEventRecordV1[]> {
+  const safeLimit = Math.max(1, Math.min(200, Math.floor(input.limit ?? 100)));
+  const sql = await getSql();
+  if (!sql) {
+    return Array.from(autopilotEvents.values())
+      .filter((record) =>
+        record.owner_commitment === input.owner_commitment &&
+        record.autopilot_session_id === input.autopilot_session_id
+      )
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .slice(-safeLimit);
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM private_account_autopilot_events
+    WHERE owner_commitment = ${input.owner_commitment}
+      AND autopilot_session_id = ${input.autopilot_session_id}
+    ORDER BY created_at DESC
+    LIMIT ${safeLimit}
+  `) as AutopilotEventRow[];
+  return rows.map(autopilotEventRow).reverse();
+}
+
 export async function listPrivateAccountIntents(
   ownerCommitment: string,
   limit = 10,
@@ -4251,6 +5051,7 @@ export async function resetPrivateAccountStoreForTests() {
   executionPlans.clear();
   settlements.clear();
   receipts.clear();
+  resetPrivateAutopilotStoreForTests();
   accounts.clear();
   vaults.clear();
   hyperliquidVaults.clear();
@@ -4259,6 +5060,7 @@ export async function resetPrivateAccountStoreForTests() {
   venueSecretHandles.clear();
   stealthVenueAccounts.clear();
   pooledVenueAllocations.clear();
+  venueEligibilityCredentials.clear();
   omnibusAllocations.clear();
   budgets.clear();
   queuedActions.clear();
@@ -4273,6 +5075,8 @@ export async function resetPrivateAccountStoreForTests() {
   auctionPreparedTransactions.clear();
   coordinatorLocks.clear();
   modeCanaries.clear();
+  liveTradingCanaryReports.clear();
+  agentArbCanaryReports.clear();
   connectorManifests.clear();
   compiledIntents.clear();
   linkabilityScores.clear();
@@ -4286,10 +5090,18 @@ export async function resetPrivateAccountStoreForTests() {
   viewKeys.clear();
   receiptExports.clear();
   receiptExportRevocations.clear();
+  mobileWalletBindings.clear();
+  agentPassports.clear();
+  venueCapabilities.clear();
   if (process.env.GHOLA_PRIVATE_ACCOUNT_STORE !== "postgres") {
     sqlClient = null;
     schemaReady = false;
   }
+}
+
+export function resetPrivateAutopilotStoreForTests() {
+  autopilotSessions.clear();
+  autopilotEvents.clear();
 }
 
 async function getSql(): Promise<NeonSql | null> {
@@ -4315,6 +5127,146 @@ function shouldUsePostgresStore(): boolean {
       process.env.DATABASE_URL ||
       process.env.POSTGRES_URL,
   );
+}
+
+const PRIVATE_ACCOUNT_BLOB_STATE_PREFIX = "private-account-state/v1";
+
+function shouldUseBlobStateStore(): boolean {
+  if (process.env.GHOLA_PRIVATE_ACCOUNT_STORE === "memory") return false;
+  if (process.env.NODE_ENV === "test") return false;
+  return Boolean(blobReadWriteToken() || process.env.BLOB_STORE_ID);
+}
+
+function blobReadWriteToken(): string {
+  return process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_READ_WRITE_TOKEN ||
+    process.env.BLOB_READ_WRITE_TOKEN ||
+    "";
+}
+
+function blobOptions() {
+  const token = blobReadWriteToken();
+  return token ? { token } : {};
+}
+
+async function putBlobJson(pathname: string, value: unknown): Promise<boolean> {
+  if (!shouldUseBlobStateStore()) return false;
+  try {
+    const { put } = await import("@vercel/blob");
+    await put(pathname, JSON.stringify(value), {
+      access: "public",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      contentType: "application/json",
+      ...blobOptions(),
+    });
+    return true;
+  } catch (error) {
+    console.error("[private-account-store] blob state write failed", pathname, error);
+    return false;
+  }
+}
+
+async function readBlobJson<T>(pathname: string): Promise<T | null> {
+  if (!shouldUseBlobStateStore()) return null;
+  try {
+    const { list } = await import("@vercel/blob");
+    const listed = await list({
+      prefix: pathname,
+      limit: 1,
+      ...blobOptions(),
+    });
+    const blob = listed.blobs.find((item) => item.pathname === pathname);
+    if (!blob) return null;
+    const response = await fetch(blob.url, {
+      cache: "no-store",
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw new Error(`blob fetch returned HTTP ${response.status}`);
+    }
+    return JSON.parse(await response.text()) as T;
+  } catch (error) {
+    if (error instanceof Error && error.name === "BlobNotFoundError") return null;
+    console.error("[private-account-store] blob state read failed", pathname, error);
+    return null;
+  }
+}
+
+async function listBlobJson<T>(prefix: string, limit: number): Promise<T[]> {
+  if (!shouldUseBlobStateStore()) return [];
+  try {
+    const { list } = await import("@vercel/blob");
+    const result = await list({
+      prefix,
+      limit: Math.max(1, Math.min(100, Math.floor(limit))),
+      ...blobOptions(),
+    });
+    const records: Array<T | null> = await Promise.all(
+      result.blobs.map(async (blob) => readBlobJson<T>(blob.pathname)),
+    );
+    return records.filter((record): record is T => Boolean(record));
+  } catch (error) {
+    console.error("[private-account-store] blob state list failed", prefix, error);
+    return [];
+  }
+}
+
+function privateModeCanaryLatestPath(kind: GholaPrivateModeCanaryKind): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/mode-canaries/by-kind/${kind}/latest.json`;
+}
+
+function privateModeCanaryArchivePath(record: PrivateModeCanaryRecordV1): string {
+  return [
+    PRIVATE_ACCOUNT_BLOB_STATE_PREFIX,
+    "mode-canaries",
+    "archive",
+    record.canary_kind,
+    `${safeBlobSegment(record.observed_at)}-${safeBlobSegment(record.canary_id)}.json`,
+  ].join("/");
+}
+
+function liveTradingCanaryReportLatestPath(venueId: PrivateLiveTradingVenueId): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/live-trading-canaries/by-venue/${venueId}/latest.json`;
+}
+
+function liveTradingCanaryReportArchivePath(record: PrivateLiveTradingCanaryReportRecordV1): string {
+  return [
+    PRIVATE_ACCOUNT_BLOB_STATE_PREFIX,
+    "live-trading-canaries",
+    "archive",
+    record.venue_id,
+    `${safeBlobSegment(record.observed_at)}-${safeBlobSegment(record.report_id)}.json`,
+  ].join("/");
+}
+
+function agentArbCanaryReportLatestPath(): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/agent-arb-canaries/latest.json`;
+}
+
+function agentArbCanaryReportArchivePath(record: PrivateAgentArbCanaryReportRecordV1): string {
+  return [
+    PRIVATE_ACCOUNT_BLOB_STATE_PREFIX,
+    "agent-arb-canaries",
+    "archive",
+    `${safeBlobSegment(record.observed_at)}-${safeBlobSegment(record.report_id)}.json`,
+  ].join("/");
+}
+
+function privateFundingBatchRunLatestPath(): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/funding-batch-runs/latest.json`;
+}
+
+function privateFundingBatchRunArchivePath(record: PrivateFundingBatchRunRecordV1): string {
+  return [
+    PRIVATE_ACCOUNT_BLOB_STATE_PREFIX,
+    "funding-batch-runs",
+    "archive",
+    `${safeBlobSegment(record.updated_at)}-${safeBlobSegment(record.run_id)}.json`,
+  ].join("/");
+}
+
+function safeBlobSegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "_");
 }
 
 async function ensureSchema(sql: NeonSql): Promise<void> {
@@ -4428,6 +5380,51 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
       observed_at TIMESTAMPTZ NOT NULL,
       expires_at TIMESTAMPTZ NOT NULL,
       reason TEXT,
+      created_at TIMESTAMPTZ NOT NULL
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS private_account_live_trading_canary_reports (
+      report_id TEXT PRIMARY KEY,
+      venue_id TEXT NOT NULL,
+      network TEXT NOT NULL DEFAULT 'mainnet',
+      status TEXT NOT NULL,
+      live_mode TEXT NOT NULL,
+      canary_kind TEXT NOT NULL,
+      broadcast_performed BOOLEAN NOT NULL,
+      reconcile_status TEXT NOT NULL,
+      order_notional_usd DOUBLE PRECISION NOT NULL,
+      max_order_notional_usd DOUBLE PRECISION NOT NULL,
+      daily_cap_usd DOUBLE PRECISION NOT NULL,
+      max_slippage_bps INTEGER NOT NULL,
+      receipt_commitment TEXT,
+      result_commitment TEXT,
+      evidence_commitment TEXT NOT NULL,
+      reason TEXT,
+      observed_at TIMESTAMPTZ NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS private_agent_arb_canary_reports (
+      report_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      market TEXT NOT NULL,
+      worker_url TEXT,
+      leg_notional_usd DOUBLE PRECISION,
+      checks JSONB NOT NULL,
+      quote JSONB,
+      pair JSONB,
+      preflight JSONB,
+      live_receipts JSONB,
+      reconciliation JSONB,
+      evidence_commitment TEXT NOT NULL,
+      reason_codes JSONB NOT NULL,
+      reason TEXT,
+      observed_at TIMESTAMPTZ NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
       created_at TIMESTAMPTZ NOT NULL
     )
   `;
@@ -4591,6 +5588,29 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
     )
   `;
   await sql`
+    CREATE TABLE IF NOT EXISTS private_account_autopilot_sessions (
+      autopilot_session_id TEXT PRIMARY KEY,
+      owner_commitment TEXT NOT NULL,
+      status TEXT NOT NULL,
+      session JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS private_account_autopilot_events (
+      event_id TEXT PRIMARY KEY,
+      owner_commitment TEXT NOT NULL,
+      autopilot_session_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      message TEXT NOT NULL,
+      data JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL
+    )
+  `;
+  await sql`
     CREATE TABLE IF NOT EXISTS private_account_coordinator_locks (
       lock_id TEXT PRIMARY KEY,
       run_window_commitment TEXT NOT NULL,
@@ -4613,6 +5633,40 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
       claim_boundary TEXT NOT NULL,
       vault_ready BOOLEAN NOT NULL,
       account JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS private_account_mobile_wallet_bindings (
+      binding_commitment TEXT PRIMARY KEY,
+      owner_commitment TEXT NOT NULL,
+      wallet_commitment TEXT NOT NULL,
+      status TEXT NOT NULL,
+      proof_commitment TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS private_agent_passports (
+      passport_commitment TEXT PRIMARY KEY,
+      owner_commitment TEXT NOT NULL,
+      account_commitment TEXT NOT NULL,
+      status TEXT NOT NULL,
+      passport JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS private_agent_venue_capabilities (
+      capability_commitment TEXT PRIMARY KEY,
+      owner_commitment TEXT NOT NULL,
+      account_commitment TEXT NOT NULL,
+      venue_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      capability JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL
     )
@@ -4718,6 +5772,20 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
       status TEXT NOT NULL,
       allocation JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS private_account_venue_eligibility (
+      eligibility_commitment TEXT PRIMARY KEY,
+      owner_commitment TEXT NOT NULL,
+      account_commitment TEXT NOT NULL,
+      venue_id TEXT NOT NULL,
+      platform_class TEXT NOT NULL,
+      status TEXT NOT NULL,
+      credential JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL
     )
   `;
@@ -4953,6 +6021,7 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
   await sql`ALTER TABLE private_account_funding_imports ADD COLUMN IF NOT EXISTS rejection_reason TEXT`;
   await sql`ALTER TABLE private_account_funding_batches ADD COLUMN IF NOT EXISTS selected_import_commitment TEXT`;
   await sql`ALTER TABLE private_account_funding_batches ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'unknown'`;
+  await sql`ALTER TABLE private_account_live_trading_canary_reports ADD COLUMN IF NOT EXISTS network TEXT NOT NULL DEFAULT 'mainnet'`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_intents_account_created ON private_account_intents (account_commitment, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_intents_owner_created ON private_account_intents (owner_commitment, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_previews_intent ON private_account_previews (intent_id)`;
@@ -4964,6 +6033,8 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_settlements_owner_created ON private_account_settlements (owner_commitment, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_settlements_lifecycle ON private_account_settlements (lifecycle_status, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_mode_canaries_kind_observed ON private_account_mode_canaries (canary_kind, observed_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_account_live_canary_reports_venue_observed ON private_account_live_trading_canary_reports (venue_id, observed_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_agent_arb_canary_reports_observed ON private_agent_arb_canary_reports (observed_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_connector_manifests_platform ON private_account_connector_manifests (platform_class, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_compiled_intents_intent ON private_account_compiled_intents (intent_id, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_linkability_owner ON private_account_linkability_scores (owner_commitment, created_at DESC)`;
@@ -4982,7 +6053,16 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_receipt_exports_receipt ON private_account_receipt_exports (receipt_commitment, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_receipts_intent ON private_account_receipts (intent_id, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_receipts_owner_created ON private_account_receipts (owner_commitment, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_account_autopilot_sessions_owner_created ON private_account_autopilot_sessions (owner_commitment, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_account_autopilot_sessions_owner_status ON private_account_autopilot_sessions (owner_commitment, status, updated_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_account_autopilot_events_session_created ON private_account_autopilot_events (autopilot_session_id, created_at ASC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_account_autopilot_events_owner_session_created ON private_account_autopilot_events (owner_commitment, autopilot_session_id, created_at ASC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_accounts_owner_created ON private_account_accounts (owner_commitment, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_account_mobile_wallet_bindings_owner_wallet ON private_account_mobile_wallet_bindings (owner_commitment, wallet_commitment, status, updated_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_agent_passports_account ON private_agent_passports (account_commitment, updated_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_agent_passports_owner ON private_agent_passports (owner_commitment, updated_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_agent_venue_capabilities_account ON private_agent_venue_capabilities (account_commitment, venue_id, updated_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_agent_venue_capabilities_owner ON private_agent_venue_capabilities (owner_commitment, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_hyperliquid_vaults_account ON private_account_hyperliquid_vaults (account_commitment, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_hyperliquid_vaults_owner ON private_account_hyperliquid_vaults (owner_commitment, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_hyperliquid_allocations_account ON private_account_hyperliquid_allocations (account_commitment, updated_at DESC)`;
@@ -4995,6 +6075,8 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_stealth_venue_accounts_owner ON private_account_stealth_venue_accounts (owner_commitment, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_pooled_venue_allocations_account ON private_account_pooled_venue_allocations (account_commitment, venue_id, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_pooled_venue_allocations_owner ON private_account_pooled_venue_allocations (owner_commitment, updated_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_account_venue_eligibility_account ON private_account_venue_eligibility (account_commitment, venue_id, updated_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_account_venue_eligibility_owner ON private_account_venue_eligibility (owner_commitment, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_omnibus_allocations_account ON private_account_omnibus_allocations (account_commitment, venue_id, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_omnibus_allocations_owner ON private_account_omnibus_allocations (owner_commitment, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_queue_owner_created ON private_account_action_queue (owner_commitment, created_at DESC)`;
@@ -5142,6 +6224,75 @@ function modeCanaryRow(row: ModeCanaryRow): PrivateModeCanaryRecordV1 {
     reason: row.reason ?? null,
     created_at: dateString(row.created_at),
   };
+}
+
+function liveTradingCanaryReportRow(row: LiveTradingCanaryReportRow): PrivateLiveTradingCanaryReportRecordV1 {
+  return {
+    version: 1,
+    report_id: row.report_id,
+    venue_id: row.venue_id as PrivateLiveTradingVenueId,
+    network: "mainnet",
+    status: row.status as PrivateLiveTradingCanaryReportRecordV1["status"],
+    live_mode: "full_ticket",
+    canary_kind: "full_ticket_broadcast",
+    broadcast_performed: Boolean(row.broadcast_performed),
+    reconcile_status: row.reconcile_status as PrivateLiveTradingCanaryReportRecordV1["reconcile_status"],
+    order_notional_usd: Number(row.order_notional_usd),
+    max_order_notional_usd: Number(row.max_order_notional_usd),
+    daily_cap_usd: Number(row.daily_cap_usd),
+    max_slippage_bps: Number(row.max_slippage_bps),
+    receipt_commitment: row.receipt_commitment ?? null,
+    result_commitment: row.result_commitment ?? null,
+    evidence_commitment: row.evidence_commitment,
+    reason: row.reason ?? null,
+    observed_at: dateString(row.observed_at),
+    expires_at: dateString(row.expires_at),
+    created_at: dateString(row.created_at),
+  };
+}
+
+function agentArbCanaryReportRow(row: AgentArbCanaryReportRow): PrivateAgentArbCanaryReportRecordV1 {
+  return {
+    version: 1,
+    report_id: row.report_id,
+    status: row.status === "green" ? "green" : "red",
+    mode: row.mode === "tiny_live" ? "tiny_live" : "no_submit",
+    market: row.market,
+    worker_url: row.worker_url ?? null,
+    leg_notional_usd: row.leg_notional_usd == null ? null : Number(row.leg_notional_usd),
+    checks: arrayOfRecords(row.checks),
+    quote: recordOrNull(row.quote),
+    pair: recordOrNull(row.pair),
+    preflight: recordOrNull(row.preflight),
+    live_receipts: recordOrNull(row.live_receipts),
+    reconciliation: recordOrNull(row.reconciliation),
+    evidence_commitment: row.evidence_commitment,
+    reason_codes: arrayOfStrings(row.reason_codes),
+    reason: row.reason ?? null,
+    observed_at: dateString(row.observed_at),
+    expires_at: dateString(row.expires_at),
+    created_at: dateString(row.created_at),
+  };
+}
+
+function arrayOfRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> =>
+        Boolean(item) && typeof item === "object" && !Array.isArray(item)
+      )
+    : [];
+}
+
+function arrayOfStrings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function connectorManifestRow(row: ConnectorManifestRow): PrivateConnectorManifestRecordV1 {
@@ -5320,6 +6471,33 @@ function receiptRow(row: ReceiptRow): PrivateAccountReceiptRecordV1 {
   };
 }
 
+function autopilotSessionRow(row: AutopilotSessionRow): PrivateAutopilotSessionRecordV1 {
+  return {
+    version: 1,
+    owner_commitment: row.owner_commitment,
+    autopilot_session_id: row.autopilot_session_id,
+    status: row.status,
+    session: recordValue(row.session),
+    created_at: dateString(row.created_at),
+    updated_at: dateString(row.updated_at),
+    expires_at: dateString(row.expires_at),
+  };
+}
+
+function autopilotEventRow(row: AutopilotEventRow): PrivateAutopilotEventRecordV1 {
+  return {
+    version: 1,
+    owner_commitment: row.owner_commitment,
+    autopilot_session_id: row.autopilot_session_id,
+    event_id: row.event_id,
+    type: row.type,
+    status: row.status,
+    message: row.message,
+    data: recordValue(row.data),
+    created_at: dateString(row.created_at),
+  };
+}
+
 function accountRow(row: AccountRow): PrivateAccountRecordV1 {
   const account = row.account as GholaPrivateExecutionAccount;
   return {
@@ -5337,6 +6515,50 @@ function accountRow(row: AccountRow): PrivateAccountRecordV1 {
     claim_boundary: "engine_gated_full_anonymity",
     vault_ready: Boolean(row.vault_ready),
     account,
+    created_at: dateString(row.created_at),
+    updated_at: dateString(row.updated_at),
+  };
+}
+
+function mobileWalletBindingRow(row: MobileWalletBindingRow): PrivateMobileWalletBindingRecordV1 {
+  return {
+    version: 1,
+    owner_commitment: row.owner_commitment,
+    binding_commitment: row.binding_commitment,
+    wallet_commitment: row.wallet_commitment,
+    status: row.status === "revoked" ? "revoked" : "active",
+    proof_commitment: row.proof_commitment,
+    created_at: dateString(row.created_at),
+    updated_at: dateString(row.updated_at),
+  };
+}
+
+function agentPassportRow(row: AgentPassportRow): PrivateAgentPassportRecordV1 {
+  return {
+    version: 1,
+    owner_commitment: row.owner_commitment,
+    account_commitment: row.account_commitment,
+    passport_commitment: row.passport_commitment,
+    status: row.status === "blocked" ? "blocked" : "active",
+    passport: recordValue(row.passport),
+    created_at: dateString(row.created_at),
+    updated_at: dateString(row.updated_at),
+  };
+}
+
+function venueCapabilityRow(row: VenueCapabilityRow): PrivateVenueCapabilityRecordV1 {
+  const status = row.status === "revoked" ? "revoked" : row.status === "blocked" ? "blocked" : "ready";
+  const venueId = row.venue_id === "coinbase_advanced" || row.venue_id === "jupiter"
+    ? row.venue_id
+    : "hyperliquid";
+  return {
+    version: 1,
+    owner_commitment: row.owner_commitment,
+    account_commitment: row.account_commitment,
+    venue_id: venueId,
+    capability_commitment: row.capability_commitment,
+    status,
+    capability: recordValue(row.capability),
     created_at: dateString(row.created_at),
     updated_at: dateString(row.updated_at),
   };
@@ -5467,6 +6689,23 @@ function pooledVenueAllocationRow(row: PooledVenueAllocationRow): PrivatePooledV
     status: row.status as GholaPooledVenueAllocation["status"],
     allocation,
     created_at: dateString(row.created_at),
+    updated_at: dateString(row.updated_at),
+  };
+}
+
+function venueEligibilityRow(row: VenueEligibilityRow): PrivateVenueEligibilityRecordV1 {
+  const credential = row.credential as GholaVenueEligibilityCredential;
+  return {
+    version: 1,
+    eligibility_commitment: row.eligibility_commitment,
+    owner_commitment: row.owner_commitment,
+    account_commitment: row.account_commitment,
+    venue_id: credential.venue_id,
+    platform_class: credential.platform_class,
+    status: row.status as GholaVenueEligibilityCredential["status"],
+    credential,
+    created_at: dateString(row.created_at),
+    expires_at: dateString(row.expires_at),
     updated_at: dateString(row.updated_at),
   };
 }

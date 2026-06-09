@@ -1,5 +1,11 @@
 import { hmac } from "@noble/hashes/hmac";
 import { sha256 } from "@noble/hashes/sha256";
+import {
+  buildFrontRunCertificate,
+  deriveFrontRunProtection,
+  type FrontRunMode,
+  type FrontRunProtection,
+} from "./private-account-front-run-protection";
 
 export const PRIVATE_ACCOUNT_VERSION = 1;
 export const PRIVATE_ACCOUNT_INTENT_TTL_MS = 30 * 60 * 1000;
@@ -155,6 +161,7 @@ export interface GholaPrivateModeEvidenceChain {
   schedule_commitment?: string | null;
   rotation_commitment?: string | null;
   simulator_commitment?: string | null;
+  front_run_certificate_commitment?: string | null;
 }
 
 export interface GholaPlatformPrivacyProfile {
@@ -189,7 +196,12 @@ export interface GholaConnectorPreviewContext {
   main_wallet_exposed: boolean;
   venue_order_visibility: "hidden" | "ticket_only" | "order_visible" | "account_visible";
   public_chain_settlement_visibility: "hidden" | "bucketed" | "visible" | "blocked";
-  venue_access_source: "none" | "user_provided_credentials" | "ghola_managed_testnet" | "partner_omnibus";
+  venue_access_source:
+    | "none"
+    | "user_provided_credentials"
+    | "ghola_managed_testnet"
+    | "ghola_pooled_venue_account"
+    | "partner_omnibus";
   ghola_access_role: "private_execution_router" | "private_state_operator" | "connector_only";
   venue_gate: "not_applicable" | "venue_accepts_or_rejects_credentials" | "partner_accepts_or_rejects_order";
   venue_visibility: "none" | "ticket_only" | "execution_account_and_order_activity" | "provider_account_and_order_activity";
@@ -412,12 +424,30 @@ export interface GholaPooledVenueAllocation {
   account_mode: "ghola_pooled";
   account_commitment: string;
   pool_commitment: string;
+  pool_share_commitment: string;
   subledger_account_commitment: string;
+  eligibility_commitment: string | null;
   funding_evidence_commitment: string | null;
+  settlement_evidence_commitment: string | null;
   utilization_bucket: "0" | "5" | "10" | "25" | "50" | "100";
   main_wallet_exposed: false;
   venue_account_visible_to_venue: false;
   status: "allocated" | "pending_funding" | "paused" | "revoked";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GholaVenueEligibilityCredential {
+  version: 1;
+  eligibility_commitment: string;
+  owner_commitment: string;
+  account_commitment: string;
+  venue_id: GholaVenueId;
+  platform_class: GholaPlatformClass;
+  credential_type: "self_attested_eligible_user" | "partner_verified_eligible_user";
+  credential_scope: "eligible_venue_access_only";
+  status: "verified" | "revoked" | "expired";
+  expires_at: string;
   created_at: string;
   updated_at: string;
 }
@@ -462,13 +492,16 @@ export interface GholaHyperliquidManagedAllocation {
   version: 1;
   venue_id: "hyperliquid";
   platform_class: "hyperliquid_style_market";
-  execution_mode: "managed_testnet";
-  network: "testnet";
+  execution_mode: "managed_testnet" | "ghola_pooled";
+  network: "testnet" | "mainnet";
   account_commitment: string;
   allocation_commitment: string;
   policy_commitment: string;
   pool_commitment: string;
+  pool_share_commitment?: string;
   subledger_account_commitment: string;
+  eligibility_commitment?: string | null;
+  funding_evidence_commitment?: string | null;
   status: "allocated" | "pending_funding" | "paused" | "revoked";
   session_policy: GholaHyperliquidSessionPolicy;
   allowed_operations: GholaHyperliquidOperationClass[];
@@ -583,6 +616,9 @@ export interface GholaPrivacyPreview {
   schedule_decision: GholaPrivacyScheduleDecision | null;
   rotation: GholaPlatformFundingRotation | null;
   linkability_simulation: GholaAdversarialLinkabilitySimulation | null;
+  front_run_mode: FrontRunMode;
+  front_run_protection: FrontRunProtection;
+  front_run_certificate_commitment: string | null;
   claim_levels_achieved: GholaPrivateModeClaimLevel[];
   claim_levels_missing: GholaPrivateModeClaimLevel[];
   claim_evidence_commitments: Partial<Record<GholaPrivateModeClaimLevel, string>>;
@@ -630,6 +666,10 @@ export interface GholaPrivateAccountReceipt {
   venue_visibility: GholaConnectorPreviewContext["venue_visibility"] | null;
   source_wallet_visibility: GholaConnectorPreviewContext["source_wallet_visibility"] | null;
   privacy_claim: GholaConnectorPreviewContext["privacy_claim"] | null;
+  front_run_mode: FrontRunMode;
+  front_run_protection: FrontRunProtection;
+  front_run_certificate_commitment: string | null;
+  zero_front_run: boolean;
   claim_levels_achieved: GholaPrivateModeClaimLevel[];
   claim_levels_missing: GholaPrivateModeClaimLevel[];
   claim_evidence_commitments: Partial<Record<GholaPrivateModeClaimLevel, string>>;
@@ -712,6 +752,9 @@ export interface GholaPrivateExecutionPlan {
   schedule_commitment: string | null;
   rotation_commitment: string | null;
   simulator_commitment: string | null;
+  front_run_mode: FrontRunMode;
+  front_run_protection: FrontRunProtection;
+  front_run_certificate_commitment: string | null;
   claim_levels_achieved: GholaPrivateModeClaimLevel[];
   claim_levels_missing: GholaPrivateModeClaimLevel[];
   wait_reasons: string[];
@@ -778,6 +821,7 @@ export interface GholaReceiptVerificationResult {
     | "schedule_bound"
     | "rotation_bound"
     | "simulator_bound"
+    | "front_run_bound"
     | "claim_levels_bound",
     "pass" | "fail" | "not_required"
   >;
@@ -935,6 +979,7 @@ export interface GholaPrivateAccountPreviewInput {
   schedule_decision?: GholaPrivacyScheduleDecision | null;
   rotation?: GholaPlatformFundingRotation | null;
   linkability_simulation?: GholaAdversarialLinkabilitySimulation | null;
+  front_run_mode?: FrontRunMode;
   require_private_mode_evidence?: boolean;
   degraded_accepted?: boolean;
   now?: Date;
@@ -992,6 +1037,65 @@ const PRIVATE_MODE_REQUIRED_CLAIM_LEVELS: GholaPrivateModeClaimLevel[] = [
   "batched_anonymity_set",
   "operator_sealed",
 ];
+
+export function requiresPrivateSettlementBinding(rail: GholaRailKind): boolean {
+  return rail === "shielded_pool" || rail === "shielded_batch_auction";
+}
+
+function canClaimFullRfqBatchAnonymity(input: {
+  platformClass: GholaPlatformClass;
+  selectedRail: GholaRailKind;
+  evidenceStatus: GholaPrivateModeEvidenceStatus;
+  evidenceChain: GholaPrivateModeEvidenceChain | null;
+  connectorContext: GholaConnectorPreviewContext | null;
+  sealedRuntimeContext: GholaSealedRuntimeContext | null;
+  scheduleDecision: GholaPrivacyScheduleDecision | null;
+  rotation: GholaPlatformFundingRotation | null;
+  linkabilitySimulation: GholaAdversarialLinkabilitySimulation | null;
+  claimLevels: {
+    achieved: GholaPrivateModeClaimLevel[];
+    missing: GholaPrivateModeClaimLevel[];
+    evidence: Partial<Record<GholaPrivateModeClaimLevel, string>>;
+  };
+}): boolean {
+  return input.platformClass === "rfq_solver_network" &&
+    input.selectedRail === "shielded_batch_auction" &&
+    input.evidenceStatus === "ready" &&
+    input.claimLevels.missing.length === 0 &&
+    Boolean(input.evidenceChain?.batch_evidence_commitment) &&
+    connectorFullPrivateReady(input.connectorContext) &&
+    sealedRuntimeFullPrivateReady(input.sealedRuntimeContext) &&
+    input.scheduleDecision?.status === "ready" &&
+    Boolean(input.scheduleDecision.schedule_commitment) &&
+    input.rotation?.status === "ready" &&
+    Boolean(input.rotation.rotation_commitment) &&
+    input.linkabilitySimulation?.decision === "proceed" &&
+    Boolean(input.linkabilitySimulation.simulator_commitment);
+}
+
+function connectorFullPrivateReady(context: GholaConnectorPreviewContext | null): boolean {
+  return Boolean(
+    context &&
+      context.connector_status === "ready" &&
+      context.linkability_decision === "proceed" &&
+      context.main_wallet_exposed === false &&
+      context.privacy_claim === "private_mode_available" &&
+      context.manifest_commitment &&
+      context.connector_readiness_commitment &&
+      context.compiler_commitment &&
+      context.linkability_score_commitment
+  );
+}
+
+function sealedRuntimeFullPrivateReady(context: GholaSealedRuntimeContext | null): boolean {
+  return Boolean(
+    context &&
+      context.runtime_status === "ready" &&
+      context.runtime_envelope_commitment &&
+      context.runtime_attestation_commitment &&
+      context.runtime_health_commitment
+  );
+}
 
 export function stablePrivateAccountJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stablePrivateAccountJson).join(",")}]`;
@@ -1374,36 +1478,60 @@ export function createHyperliquidSessionPolicy(input: {
 export function createHyperliquidManagedAllocation(input: {
   account_commitment: string;
   policy?: GholaHyperliquidSessionPolicy;
+  execution_mode?: "managed_testnet" | "ghola_pooled";
+  network?: "testnet" | "mainnet";
+  eligibility_commitment?: string | null;
+  funding_evidence_commitment?: string | null;
   pool_seed?: unknown;
   allocation_seed?: unknown;
   now?: Date;
 }): GholaHyperliquidManagedAllocation {
   const now = input.now ?? new Date();
   const policy = input.policy ?? createHyperliquidSessionPolicy({ now });
-  const poolCommitment = gholaCommitment("hyperliquid_managed_pool", input.pool_seed ?? "ghola-managed-testnet-v1");
+  const executionMode = input.execution_mode ?? "managed_testnet";
+  const network = executionMode === "ghola_pooled" ? input.network ?? "mainnet" : "testnet";
+  const poolCommitment = gholaCommitment("hyperliquid_managed_pool", {
+    seed: input.pool_seed ?? (executionMode === "ghola_pooled" ? "ghola-pooled-mainnet-v1" : "ghola-managed-testnet-v1"),
+    execution_mode: executionMode,
+    network,
+  });
+  const poolShareCommitment = gholaCommitment("hyperliquid_pool_share", {
+    account_commitment: input.account_commitment,
+    pool_commitment: poolCommitment,
+    eligibility_commitment: input.eligibility_commitment ?? null,
+  });
   const subledgerAccountCommitment = gholaCommitment("hyperliquid_managed_subledger", {
     account_commitment: input.account_commitment,
     pool_commitment: poolCommitment,
+    pool_share_commitment: poolShareCommitment,
   });
   const seed = {
     account_commitment: input.account_commitment,
+    execution_mode: executionMode,
+    network,
     pool_commitment: poolCommitment,
+    pool_share_commitment: poolShareCommitment,
     subledger_account_commitment: subledgerAccountCommitment,
     policy_commitment: policy.policy_commitment,
+    eligibility_commitment: input.eligibility_commitment ?? null,
+    funding_evidence_commitment: input.funding_evidence_commitment ?? null,
     allocation_seed: input.allocation_seed ?? "worker-bound-allocation",
   };
   return {
     version: 1,
     venue_id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
-    execution_mode: "managed_testnet",
-    network: "testnet",
+    execution_mode: executionMode,
+    network,
     account_commitment: input.account_commitment,
     allocation_commitment: gholaCommitment("hyperliquid_managed_allocation", seed),
     policy_commitment: policy.policy_commitment,
     pool_commitment: poolCommitment,
+    pool_share_commitment: poolShareCommitment,
     subledger_account_commitment: subledgerAccountCommitment,
-    status: "allocated",
+    eligibility_commitment: input.eligibility_commitment ?? null,
+    funding_evidence_commitment: input.funding_evidence_commitment ?? null,
+    status: executionMode === "ghola_pooled" && !input.eligibility_commitment ? "pending_funding" : "allocated",
     session_policy: policy,
     allowed_operations: ["read", "limit_order", "cancel", "reconcile"],
     blocked_operations: ["withdraw", "vault_transfer", "leverage_escalation"],
@@ -1411,7 +1539,9 @@ export function createHyperliquidManagedAllocation(input: {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
       hyperliquid_sees: "execution_account_and_order_activity",
-      public_chain_sees: "no_public_wallet_settlement",
+      public_chain_sees: executionMode === "ghola_pooled"
+        ? "private_funding_evidence_required"
+        : "no_public_wallet_settlement",
     },
     created_at: now.toISOString(),
     updated_at: now.toISOString(),
@@ -1575,6 +1705,35 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
   const evidenceStatus = input.evidence_status ?? "none";
   const connectorContext = input.connector_context ?? null;
   const sealedRuntimeContext = input.sealed_runtime_context ?? null;
+  const frontRunMode = input.front_run_mode ?? "pre_submit_private";
+  const frontRunCertificate = buildFrontRunCertificate({
+    accessMode: selectedRail === "shielded_batch_auction" ? "sealed_batch_auction" : connectorContext?.venue_access_source === "user_provided_credentials" ? "byo_api_key" : "unknown",
+    auctionEpochCommitment: input.evidence_chain?.auction_epoch_commitment,
+    auctionOrderCommitment: input.evidence_chain?.auction_order_commitment,
+    clearingCommitment: input.evidence_chain?.clearing_commitment,
+    proofCommitment: input.evidence_chain?.proof_commitment,
+    finalityCommitment: input.evidence_chain?.finality_commitment,
+    runtimeAttestationCommitment: sealedRuntimeContext?.runtime_attestation_commitment ??
+      input.evidence_chain?.runtime_attestation_commitment,
+  });
+  const frontRunProtection = deriveFrontRunProtection({
+    accessMode: selectedRail === "shielded_batch_auction" ? "sealed_batch_auction" : connectorContext?.venue_access_source === "user_provided_credentials" ? "byo_api_key" : "unknown",
+    frontRunCertificateCommitment: frontRunCertificate?.certificate_commitment ?? null,
+    encryptedUntilMatch: selectedRail === "shielded_batch_auction",
+    fairOrderingCertificate: Boolean(frontRunCertificate),
+    noPublicMempool: selectedRail === "shielded_batch_auction" || connectorContext?.source_wallet_visibility === "not_exposed_to_public_chain_by_ghola",
+    uniformBatchAuction: selectedRail === "shielded_batch_auction",
+    venueOrderVisible: profile.platform_sees === "order_visible" || connectorContext?.venue_order_visibility === "order_visible",
+  });
+  if (frontRunMode === "zero_front_run") {
+    if (selectedRail !== "shielded_batch_auction") {
+      blockedReasons.push("zero-front-run mode requires shielded batch auction rail");
+    } else if (!frontRunProtection.canLiveSubmitInZeroMode) {
+      waitReasons.push("zero-front-run certificate is not ready");
+    }
+  }
+  const sealedRuntimeRequired = !connectorContext ||
+    connectorContext.venue_access_source !== "user_provided_credentials";
   const scheduleDecision = input.schedule_decision ?? null;
   const rotation = input.rotation ?? null;
   const linkabilitySimulation = input.linkability_simulation ?? null;
@@ -1589,7 +1748,7 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
   if (anonymitySet.uniqueness_score_bps > 2_500) degradedReasons.push("action is too unique for a Private Mode claim");
   if ((input.privacy_budget?.repeated_withdrawal_count ?? 0) > 0) degradedReasons.push("repeated withdrawal pattern reduces anonymity");
   if ((input.privacy_budget?.platform_concentration_bps ?? 0) > 7_500) degradedReasons.push("platform concentration reduces cross-platform anonymity");
-  if (sealedRuntimeContext) {
+  if (sealedRuntimeContext && sealedRuntimeRequired) {
     if (sealedRuntimeContext.runtime_status !== "ready") {
       waitReasons.push(`sealed runtime is ${sealedRuntimeContext.runtime_status}`);
     }
@@ -1601,7 +1760,7 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
       else waitReasons.push(reason);
     }
   }
-  if (scheduleDecision) {
+  if (scheduleDecision && sealedRuntimeRequired) {
     if (scheduleDecision.status === "waiting") waitReasons.push("privacy scheduler is waiting for the private window");
     if (scheduleDecision.status === "degraded") degradedReasons.push("fast execution is degraded");
     if (scheduleDecision.status === "blocked") blockedReasons.push("privacy scheduler blocked execution");
@@ -1659,6 +1818,9 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
   }
 
   let claimStatus: GholaClaimStatus;
+  if (frontRunMode === "zero_front_run" && degradedReasons.length > 0) {
+    blockedReasons.push("zero-front-run mode does not allow degraded visibility fallback");
+  }
   if (blockedReasons.length > 0) claimStatus = "blocked_leaky_path";
   else if (waitReasons.length > 0) claimStatus = "wait_for_anonymity";
   else if (degradedReasons.length > 0) claimStatus = input.degraded_accepted ? "degraded_user_accepted_required" : "degraded_user_accepted_required";
@@ -1677,6 +1839,23 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
     PRIVATE_MODE_REQUIRED_CLAIM_LEVELS.some((level) => !claimLevels.achieved.includes(level))
   ) {
     claimStatus = "wait_for_anonymity";
+  }
+  if (
+    claimStatus === "private_mode_available" &&
+    canClaimFullRfqBatchAnonymity({
+      platformClass: input.platform_class,
+      selectedRail,
+      evidenceStatus,
+      evidenceChain: input.evidence_chain ?? null,
+      connectorContext,
+      sealedRuntimeContext,
+      scheduleDecision,
+      rotation,
+      linkabilitySimulation,
+      claimLevels,
+    })
+  ) {
+    claimStatus = "full_anonymity_available";
   }
   const anonymityLevel = anonymityLevelFor({ claimStatus, selectedRail, profile });
   const leakageMap = buildLeakageMap({
@@ -1706,6 +1885,9 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
       rotation,
       linkabilitySimulation,
       claimLevels,
+      frontRunMode,
+      frontRunProtection,
+      frontRunCertificateCommitment: frontRunCertificate?.certificate_commitment ?? null,
     }),
     account_commitment: accountCommitment,
     action_commitment: input.action.action_commitment,
@@ -1732,6 +1914,9 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
     schedule_decision: scheduleDecision,
     rotation,
     linkability_simulation: linkabilitySimulation,
+    front_run_mode: frontRunMode,
+    front_run_protection: frontRunProtection,
+    front_run_certificate_commitment: frontRunCertificate?.certificate_commitment ?? null,
     claim_levels_achieved: claimLevels.achieved,
     claim_levels_missing: claimLevels.missing,
     claim_evidence_commitments: claimLevels.evidence,
@@ -1796,6 +1981,7 @@ export function buildPrivateAccountReceipt(input: {
         simulator_commitment: input.preview.linkability_simulation?.simulator_commitment ??
           input.evidence_chain.simulator_commitment ??
           null,
+        front_run_certificate_commitment: input.evidence_chain.front_run_certificate_commitment ?? null,
       }
     : null;
   if (isPrivateModeAvailableStatus(input.preview.claim_status) && !evidenceChain?.batch_evidence_commitment) {
@@ -1808,6 +1994,7 @@ export function buildPrivateAccountReceipt(input: {
       approval: input.approval_commitment,
       execution: input.execution_commitment,
       evidence_chain: evidenceChain,
+      front_run_certificate_commitment: input.preview.front_run_certificate_commitment,
     }),
     action_commitment: input.preview.action_commitment,
     preview_commitment: input.preview.preview_commitment,
@@ -1863,6 +2050,12 @@ export function buildPrivateAccountReceipt(input: {
     venue_visibility: input.preview.connector_context?.venue_visibility ?? null,
     source_wallet_visibility: input.preview.connector_context?.source_wallet_visibility ?? null,
     privacy_claim: input.preview.connector_context?.privacy_claim ?? null,
+    front_run_mode: input.preview.front_run_mode,
+    front_run_protection: input.preview.front_run_protection,
+    front_run_certificate_commitment: evidenceChain?.front_run_certificate_commitment ??
+      input.preview.front_run_certificate_commitment ??
+      null,
+    zero_front_run: input.preview.front_run_protection.zeroFrontRun,
     claim_levels_achieved: input.preview.claim_levels_achieved,
     claim_levels_missing: input.preview.claim_levels_missing,
     claim_evidence_commitments: input.preview.claim_evidence_commitments,
@@ -1878,7 +2071,7 @@ export function buildPrivateAccountReceipt(input: {
   }
   if (
     isPrivateModeAvailableStatus(input.preview.claim_status) &&
-    input.preview.selected_rail === "shielded_pool" &&
+    requiresPrivateSettlementBinding(input.preview.selected_rail) &&
     !evidenceChain?.settlement_commitment
   ) {
     throw new Error("private_mode_settlement_evidence_required");
@@ -1901,6 +2094,31 @@ export function buildPrivateAccountReceipt(input: {
       !evidenceChain.linkability_score_commitment)
   ) {
     throw new Error("private_connector_commitment_chain_required");
+  }
+  if (
+    input.preview.claim_status === "full_anonymity_available" &&
+    input.preview.platform_class === "rfq_solver_network" &&
+    input.preview.selected_rail === "shielded_batch_auction" &&
+    (!evidenceChain?.work_order_commitment || !evidenceChain.connector_result_commitment)
+  ) {
+    throw new Error("full_anonymity_connector_result_required");
+  }
+  const zeroFrontRunEvidenceReady = Boolean(
+    evidenceChain?.auction_epoch_commitment &&
+      evidenceChain.auction_order_commitment &&
+      evidenceChain.clearing_commitment &&
+      evidenceChain.proof_commitment &&
+      evidenceChain.finality_commitment &&
+      evidenceChain.runtime_attestation_commitment &&
+      evidenceChain.front_run_certificate_commitment === input.preview.front_run_certificate_commitment
+  );
+  if (
+    input.preview.front_run_mode === "zero_front_run" &&
+    (!input.preview.front_run_protection.zeroFrontRun ||
+      !input.preview.front_run_certificate_commitment ||
+      !zeroFrontRunEvidenceReady)
+  ) {
+    throw new Error("zero_front_run_certificate_required");
   }
   if (
     isPrivateModeAvailableStatus(input.preview.claim_status) &&
@@ -1951,7 +2169,7 @@ export function assertApprovalMatchesPreview(
 export function canApprovePreview(
   preview: GholaPrivacyPreview,
   degradedAccepted: boolean,
-): { ok: true } | { ok: false; error: "blocked_leaky_path" | "degraded_acceptance_required" | "wait_for_anonymity" } {
+): { ok: true } | { ok: false; error: "blocked_leaky_path" | "degraded_acceptance_required" | "wait_for_anonymity" | "zero_front_run_certificate_required" } {
   if (preview.claim_status === "blocked_leaky_path") {
     return { ok: false, error: "blocked_leaky_path" };
   }
@@ -1960,6 +2178,9 @@ export function canApprovePreview(
   }
   if (preview.claim_status === "degraded_user_accepted_required" && !degradedAccepted) {
     return { ok: false, error: "degraded_acceptance_required" };
+  }
+  if (preview.front_run_mode === "zero_front_run" && !preview.front_run_protection.canLiveSubmitInZeroMode) {
+    return { ok: false, error: "zero_front_run_certificate_required" };
   }
   return { ok: true };
 }
@@ -1985,7 +2206,8 @@ export function canExecutePrivateAccountAction(input: {
     | "approval_mismatch"
     | "blocked_leaky_path"
     | "wait_for_anonymity"
-    | "degraded_acceptance_required";
+    | "degraded_acceptance_required"
+    | "zero_front_run_certificate_required";
 } {
   const now = input.now ?? new Date();
   if (isPrivateAccountRecordExpired(input.intent, now)) return { ok: false, error: "intent_expired" };
@@ -2348,7 +2570,9 @@ export function createStealthVenueAccount(input: {
 export function createPooledVenueAllocation(input: {
   account_commitment: string;
   venue_id: GholaVenueId;
+  eligibility_commitment?: string | null;
   funding_evidence_commitment?: string | null;
+  settlement_evidence_commitment?: string | null;
   utilization_bucket?: GholaPooledVenueAllocation["utilization_bucket"];
   pool_seed?: unknown;
   now?: Date;
@@ -2364,8 +2588,16 @@ export function createPooledVenueAllocation(input: {
     account_commitment: input.account_commitment,
     venue_id: input.venue_id,
     pool_commitment: poolCommitment,
+    eligibility_commitment: input.eligibility_commitment ?? null,
     funding_evidence_commitment: input.funding_evidence_commitment ?? null,
+    settlement_evidence_commitment: input.settlement_evidence_commitment ?? null,
   };
+  const poolShareCommitment = gholaCommitment("pooled_venue_pool_share", {
+    account_commitment: input.account_commitment,
+    venue_id: input.venue_id,
+    pool_commitment: poolCommitment,
+    eligibility_commitment: input.eligibility_commitment ?? null,
+  });
   return {
     version: 1,
     pooled_allocation_commitment: gholaCommitment("pooled_venue_allocation", seed),
@@ -2374,12 +2606,51 @@ export function createPooledVenueAllocation(input: {
     account_mode: "ghola_pooled",
     account_commitment: input.account_commitment,
     pool_commitment: poolCommitment,
+    pool_share_commitment: poolShareCommitment,
     subledger_account_commitment: gholaCommitment("pooled_venue_subledger", seed),
+    eligibility_commitment: input.eligibility_commitment ?? null,
     funding_evidence_commitment: input.funding_evidence_commitment ?? null,
+    settlement_evidence_commitment: input.settlement_evidence_commitment ?? null,
     utilization_bucket: input.utilization_bucket ?? "0",
     main_wallet_exposed: false,
     venue_account_visible_to_venue: false,
-    status: input.funding_evidence_commitment ? "allocated" : "pending_funding",
+    status: input.eligibility_commitment || input.funding_evidence_commitment ? "allocated" : "pending_funding",
+    created_at: now.toISOString(),
+    updated_at: now.toISOString(),
+  };
+}
+
+export function createVenueEligibilityCredential(input: {
+  owner_commitment: string;
+  account_commitment: string;
+  venue_id: GholaVenueId;
+  credential_type?: GholaVenueEligibilityCredential["credential_type"];
+  ttl_ms?: number;
+  now?: Date;
+}): GholaVenueEligibilityCredential {
+  const now = input.now ?? new Date();
+  const expiresAt = new Date(now.getTime() + Math.max(60_000, input.ttl_ms ?? 30 * 24 * 60 * 60 * 1_000)).toISOString();
+  const platformClass = venuePlatformClass(input.venue_id);
+  const seed = {
+    owner_commitment: input.owner_commitment,
+    account_commitment: input.account_commitment,
+    venue_id: input.venue_id,
+    platform_class: platformClass,
+    credential_type: input.credential_type ?? "self_attested_eligible_user",
+    credential_scope: "eligible_venue_access_only",
+    expires_at: expiresAt,
+  };
+  return {
+    version: 1,
+    eligibility_commitment: gholaCommitment("venue_eligibility", seed),
+    owner_commitment: input.owner_commitment,
+    account_commitment: input.account_commitment,
+    venue_id: input.venue_id,
+    platform_class: platformClass,
+    credential_type: input.credential_type ?? "self_attested_eligible_user",
+    credential_scope: "eligible_venue_access_only",
+    status: "verified",
+    expires_at: expiresAt,
     created_at: now.toISOString(),
     updated_at: now.toISOString(),
   };
@@ -2505,6 +2776,7 @@ function anonymityLevelFor(input: {
   profile: GholaPlatformPrivacyProfile;
 }): GholaAnonymityLevel {
   if (input.claimStatus === "blocked_leaky_path") return "P0_public";
+  if (input.claimStatus === "full_anonymity_available") return "P5_selectively_disclosable";
   if (input.profile.platform_sees === "order_visible" || input.profile.platform_sees === "account_visible") return "P2_bucketed";
   if (isPrivateModeAvailableStatus(input.claimStatus)) return "P3_anonymity_set";
   if (input.selectedRail === "provider_omnibus_subaccount") return "P1_source_hidden";

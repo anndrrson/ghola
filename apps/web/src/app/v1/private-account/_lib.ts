@@ -937,6 +937,7 @@ export function buildPreviewFromBody(body: unknown) {
     platform_class: platformClass,
     requested_rail: requestedRail,
     actor: value.actor === "institution" ? "institution" : "consumer",
+    front_run_mode: value.front_run_mode === "zero_front_run" ? "zero_front_run" : "pre_submit_private",
   });
 }
 
@@ -1005,9 +1006,13 @@ export async function createStoredPreviewFromBody(body: unknown, owner: PrivateA
     schedule_decision: connectorContext.schedule_decision,
     rotation: connectorContext.rotation,
     linkability_simulation: connectorContext.linkability_simulation,
+    front_run_mode: value.front_run_mode === "zero_front_run" ? "zero_front_run" : "pre_submit_private",
     require_private_mode_evidence: true,
   });
-  if (preview.evidence_chain) preview.evidence_chain.preview_commitment = preview.preview_commitment;
+  if (preview.evidence_chain) {
+    preview.evidence_chain.preview_commitment = preview.preview_commitment;
+    preview.evidence_chain.front_run_certificate_commitment = preview.front_run_certificate_commitment;
+  }
   const record = await putPrivateAccountPreview({
     version: 1,
     owner_commitment: owner.owner_commitment,
@@ -1260,6 +1265,12 @@ export async function executeStoredActionFromBody(body: unknown, owner: PrivateA
     execution_commitment: executionCommitment,
   });
   if ("error" in settlementResult) return settlementResult;
+  if (
+    previewRecord.preview.front_run_mode === "zero_front_run" &&
+    !previewRecord.preview.front_run_protection.canLiveSubmitInZeroMode
+  ) {
+    return { error: "zero_front_run_certificate_required" as const };
+  }
   const connectorSubmission = await connectorForExecution({
     owner,
     intent,
@@ -1284,6 +1295,7 @@ export async function executeStoredActionFromBody(body: unknown, owner: PrivateA
         schedule_commitment: previewRecord.preview.schedule_decision?.schedule_commitment ?? null,
         rotation_commitment: previewRecord.preview.rotation?.rotation_commitment ?? null,
         simulator_commitment: previewRecord.preview.linkability_simulation?.simulator_commitment ?? null,
+        front_run_certificate_commitment: previewRecord.preview.front_run_certificate_commitment ?? null,
         execution_plan_commitment: planResult.plan?.plan_commitment ?? null,
         execution_commitment: executionCommitment,
         settlement_commitment: settlementResult.settlement?.settlement_commitment ?? null,
@@ -1313,6 +1325,7 @@ export async function executeStoredActionFromBody(body: unknown, owner: PrivateA
           schedule_commitment: previewRecord.preview.schedule_decision?.schedule_commitment ?? null,
           rotation_commitment: previewRecord.preview.rotation?.rotation_commitment ?? null,
           simulator_commitment: previewRecord.preview.linkability_simulation?.simulator_commitment ?? null,
+          front_run_certificate_commitment: previewRecord.preview.front_run_certificate_commitment ?? null,
           execution_plan_commitment: planResult.plan?.plan_commitment ?? null,
           approval_commitment: approval.approval_commitment,
           execution_commitment: executionCommitment,
@@ -1705,6 +1718,20 @@ export async function verifyReceiptFromBody(
         ? "pass"
         : "fail"
       : "not_required",
+    front_run_bound: receipt.front_run_mode === "zero_front_run"
+      ? receipt.zero_front_run &&
+        receipt.front_run_certificate_commitment &&
+        receipt.evidence_chain?.front_run_certificate_commitment === receipt.front_run_certificate_commitment &&
+        receipt.front_run_protection.certificateCommitment === receipt.front_run_certificate_commitment &&
+        receipt.evidence_chain.auction_epoch_commitment &&
+        receipt.evidence_chain.auction_order_commitment &&
+        receipt.evidence_chain.clearing_commitment &&
+        receipt.evidence_chain.proof_commitment &&
+        receipt.evidence_chain.finality_commitment &&
+        receipt.evidence_chain.runtime_attestation_commitment
+        ? "pass"
+        : "fail"
+      : "not_required",
     claim_levels_bound: privateMode
       ? receipt.claim_levels_achieved.includes("source_wallet_hidden") &&
         receipt.claim_levels_achieved.includes("amount_bucketed") &&
@@ -1764,6 +1791,10 @@ export async function receiptListForOwner(req: Request, owner: PrivateAccountReq
       manifest_commitment: record.receipt.manifest_commitment,
       compiler_commitment: record.receipt.compiler_commitment,
       connector_result_commitment: record.receipt.connector_result_commitment,
+      front_run_mode: record.receipt.front_run_mode,
+      front_run_protection: record.receipt.front_run_protection,
+      front_run_certificate_commitment: record.receipt.front_run_certificate_commitment,
+      zero_front_run: record.receipt.zero_front_run,
       runtime_envelope_commitment: record.receipt.runtime_envelope_commitment,
       runtime_attestation_commitment: record.receipt.runtime_attestation_commitment,
       schedule_commitment: record.receipt.schedule_commitment,
@@ -3915,6 +3946,7 @@ export async function refreshQueuedActionFromBody(body: unknown, owner: PrivateA
   const evidenceContext = await evidenceContextForPreview({
     preview_commitment: "pending",
     evidence_commitment: evidence?.evidence_commitment ?? null,
+    queue_id: queued.queue_id,
   });
   const safeInput = safeConnectorInput(value.safe_input);
   const connectorContext = await connectorContextForIntent({
@@ -3950,9 +3982,13 @@ export async function refreshQueuedActionFromBody(body: unknown, owner: PrivateA
     schedule_decision: connectorContext.schedule_decision,
     rotation: connectorContext.rotation,
     linkability_simulation: connectorContext.linkability_simulation,
+    front_run_mode: value.front_run_mode === "zero_front_run" ? "zero_front_run" : "pre_submit_private",
     require_private_mode_evidence: true,
   });
-  if (preview.evidence_chain) preview.evidence_chain.preview_commitment = preview.preview_commitment;
+  if (preview.evidence_chain) {
+    preview.evidence_chain.preview_commitment = preview.preview_commitment;
+    preview.evidence_chain.front_run_certificate_commitment = preview.front_run_certificate_commitment;
+  }
   const previewRecord = await putPrivateAccountPreview({
     version: 1,
     owner_commitment: owner.owner_commitment,
@@ -6684,6 +6720,7 @@ function privateActionExecutionCommitment(input: {
 async function evidenceContextForPreview(input: {
   preview_commitment: string;
   evidence_commitment: string | null;
+  queue_id?: string | null;
 }): Promise<{
   status: GholaPrivateModeEvidenceStatus;
   chain: GholaPrivateModeEvidenceChain | null;
@@ -6705,13 +6742,77 @@ async function evidenceContextForPreview(input: {
       chain: null,
     };
   }
-  const chain = evidenceChainFromBatch({
-    batch,
-    preview_commitment: input.preview_commitment,
-  });
+  const chain = await evidenceChainWithAuctionProof(
+    evidenceChainFromBatch({
+      batch,
+      preview_commitment: input.preview_commitment,
+    }),
+    input.queue_id,
+  );
   return {
     status: chain ? "ready" : input.evidence_commitment ? "missing" : "missing",
     chain,
+  };
+}
+
+async function evidenceChainWithAuctionProof(
+  chain: GholaPrivateModeEvidenceChain | null,
+  queueId?: string | null,
+): Promise<GholaPrivateModeEvidenceChain | null> {
+  if (!chain || !queueId) return chain;
+  const order = await getPrivateAuctionOrderByQueue(queueId);
+  if (!order) return chain;
+  const clearing = await getPrivateAuctionClearingByEpoch(order.auction_epoch_commitment);
+  if (!clearing) {
+    return {
+      ...chain,
+      auction_epoch_commitment: order.auction_epoch_commitment,
+      auction_order_commitment: order.auction_order_commitment,
+    };
+  }
+  const orderSettled = clearing.status === "settled" &&
+    order.status === "settled" &&
+    Boolean(clearing.settlement_commitment) &&
+    clearing.matched_order_commitments.includes(order.auction_order_commitment);
+  return {
+    ...chain,
+    auction_epoch_commitment: order.auction_epoch_commitment,
+    auction_order_commitment: order.auction_order_commitment,
+    clearing_commitment: clearing.clearing_commitment,
+    auction_settlement_commitment: clearing.settlement_commitment,
+    proof_commitment: clearing.proof_commitment,
+    finality_commitment: orderSettled
+      ? gholaCommitment("auction_finality", {
+          auction_epoch_commitment: order.auction_epoch_commitment,
+          auction_order_commitment: order.auction_order_commitment,
+          clearing_commitment: clearing.clearing_commitment,
+          settlement_commitment: clearing.settlement_commitment,
+        })
+      : null,
+  };
+}
+
+function preservePreviewAuctionEvidence(
+  chain: GholaPrivateModeEvidenceChain | null,
+  previewChain: GholaPrivateModeEvidenceChain | null,
+): GholaPrivateModeEvidenceChain | null {
+  if (!chain || !previewChain) return chain;
+  return {
+    ...chain,
+    auction_epoch_commitment: previewChain.auction_epoch_commitment ?? chain.auction_epoch_commitment ?? null,
+    auction_order_commitment: previewChain.auction_order_commitment ?? chain.auction_order_commitment ?? null,
+    clearing_commitment: previewChain.clearing_commitment ?? chain.clearing_commitment ?? null,
+    auction_settlement_commitment: previewChain.auction_settlement_commitment ??
+      chain.auction_settlement_commitment ??
+      null,
+    proof_commitment: previewChain.proof_commitment ?? chain.proof_commitment ?? null,
+    finality_commitment: previewChain.finality_commitment ?? chain.finality_commitment ?? null,
+    runtime_attestation_commitment: previewChain.runtime_attestation_commitment ??
+      chain.runtime_attestation_commitment ??
+      null,
+    front_run_certificate_commitment: previewChain.front_run_certificate_commitment ??
+      chain.front_run_certificate_commitment ??
+      null,
   };
 }
 
@@ -6723,11 +6824,11 @@ async function evidenceChainForExecution(input: {
   const health = await privateModeHealthBody();
   if (health.status !== "green") return null;
   const batch = await getPrivateFundingBatchByEvidence(input.preview.evidence_chain.batch_evidence_commitment);
-  return evidenceChainFromBatch({
+  return preservePreviewAuctionEvidence(evidenceChainFromBatch({
     batch,
     preview_commitment: input.preview.preview_commitment,
     approval_commitment: input.approval_commitment,
-  });
+  }), input.preview.evidence_chain);
 }
 
 function safeConnectorInput(value: unknown): ConnectorSafeIntentInput {

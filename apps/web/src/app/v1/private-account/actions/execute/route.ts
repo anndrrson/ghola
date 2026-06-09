@@ -1,21 +1,15 @@
 import {
   executeStoredActionFromBody,
   json,
-  privateAccountOwnerFromRequest,
-  readJson,
-  rejectForbiddenFields,
-  unauthorized,
+  privateAccountLiveGuard,
 } from "../../_lib";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const body = await readJson(req);
-  const forbidden = rejectForbiddenFields(body);
-  if (forbidden) return forbidden;
-  const owner = await privateAccountOwnerFromRequest(req);
-  if (!owner) return unauthorized();
-  const execution = await executeStoredActionFromBody(body, owner);
+  const guarded = await privateAccountLiveGuard(req);
+  if (!guarded.ok) return guarded.response;
+  const execution = await executeStoredActionFromBody(guarded.body, guarded.owner);
   if ("error" in execution) return json({ error: execution.error }, 400);
   return json(execution, 201);
 }

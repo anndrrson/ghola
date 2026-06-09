@@ -1,19 +1,13 @@
 import {
   allocateOmnibusFromBody,
   json,
-  privateAccountOwnerFromRequest,
-  readJson,
-  rejectForbiddenFields,
-  unauthorized,
+  privateAccountLiveGuard,
 } from "../../_lib";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const body = await readJson(req);
-  const forbidden = rejectForbiddenFields(body);
-  if (forbidden) return forbidden;
-  const owner = await privateAccountOwnerFromRequest(req);
-  if (!owner) return unauthorized();
-  return json(await allocateOmnibusFromBody(body, owner), 201);
+  const guarded = await privateAccountLiveGuard(req);
+  if (!guarded.ok) return guarded.response;
+  return json(await allocateOmnibusFromBody(guarded.body, guarded.owner), 201);
 }

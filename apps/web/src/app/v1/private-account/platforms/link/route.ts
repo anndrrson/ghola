@@ -1,15 +1,15 @@
-import { gholaCommitment } from "@/lib/private-account";
-import { json, readJson, rejectForbiddenFields } from "../../_lib";
+import {
+  json,
+  privateAccountLiveGuard,
+} from "../../_lib";
+import { linkAgentPlatformFromBody } from "@/lib/private-agent-passport";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const body = await readJson(req);
-  const forbidden = rejectForbiddenFields(body);
-  if (forbidden) return forbidden;
-  return json({
-    version: 1,
-    platform_link_commitment: gholaCommitment("plink", body || "platform-link"),
-    status: "commitment_recorded",
-  }, 201);
+  const guarded = await privateAccountLiveGuard(req, { allowMobileWalletProof: true });
+  if (!guarded.ok) return guarded.response;
+  const linked = await linkAgentPlatformFromBody(guarded.body, guarded.owner);
+  if ("error" in linked) return json({ error: linked.error }, 400);
+  return json(linked, 201);
 }

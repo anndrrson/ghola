@@ -10,6 +10,7 @@ import {
 } from "@/lib/private-balance";
 import {
   discoverPhalaPrivateAgentProvider,
+  privateAgentRemoteExecutionDisabled,
   phalaJitProvisioningConfigIssue,
   phalaJitProvisioningConfigured,
   phalaJitProvisioningEnabled,
@@ -354,6 +355,38 @@ function mockAttestedProvider(): ConfidentialComputeProviderStatus | null {
 }
 
 export async function getPrivateAgentRuntimeStatus(): Promise<PrivateAgentRuntimeStatus> {
+  if (privateAgentRemoteExecutionDisabled()) {
+    const status = buildPrivateAgentRuntimeStatus({
+      providers: [
+        localProvider(),
+        {
+          id: "phala",
+          label: "Phala TEE",
+          configured: false,
+          available: false,
+          attested: false,
+          supports_sealed_secrets: false,
+          supports_background_agents: false,
+          supports_trading_execution: false,
+          reason: "Remote private-agent execution is disabled by operator spend lock.",
+          evidence: {
+            provisioning_enabled: false,
+            execution_url_configured: false,
+          },
+        },
+      ],
+      preferredProvider: preferredProvider(),
+      shieldedRailReady: true,
+    });
+    return {
+      ...status,
+      blocking_reasons: Array.from(new Set([
+        "operator_spend_lock",
+        ...status.blocking_reasons,
+      ])),
+    };
+  }
+
   const [paymentHealth, relayHealth, attestedProviders, phala] = await Promise.all([
     fetchJson<PaymentHealth>(new URL("/health/payments", thumperBase())),
     fetchJson<RelayHealth>(new URL("/health", relayBase())),

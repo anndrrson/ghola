@@ -46,10 +46,11 @@ const report = {
   connector_status: null,
   account_snapshot: null,
   account_stream: null,
+  no_submit_verification: null,
   live_execution: null,
   note: liveSubmit
     ? "Live Hyperliquid submit requested. This verifier only submits when GHOLA_VERIFY_LIVE_SUBMIT_CONFIRM=I_UNDERSTAND_THIS_BROADCASTS."
-    : "No order is sent. This verifies production routes, auth, sealed vault storage, worker account read, and account SSE.",
+    : "No order is sent. This verifies production routes, auth, sealed vault storage, worker account read, account SSE, and sealed Hyperliquid order construction.",
 };
 
 try {
@@ -149,6 +150,8 @@ try {
     });
     assertSafeArtifact("hyperliquid_account_stream", stream);
 
+    report.no_submit_verification = await runNoSubmitVerification({ recipient, market, quoteSize, maxSlippageBps });
+
     if (liveSubmit) {
       if (liveSubmitConfirm !== "I_UNDERSTAND_THIS_BROADCASTS") {
         throw new Error("GHOLA_VERIFY_LIVE_SUBMIT_CONFIRM=I_UNDERSTAND_THIS_BROADCASTS is required for live submit.");
@@ -188,6 +191,65 @@ try {
   if (report.status === "routes_ready_credentials_required" && !allowMissingCredentials) {
     process.exit(1);
   }
+}
+
+async function runNoSubmitVerification({ recipient, market, quoteSize, maxSlippageBps }) {
+  const workOrderCommitment = `connector_work_order_hyperliquid_no_submit_${Date.now().toString(36)}`;
+  const encryptedInstruction = await sealBundle(recipient, {
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: "hyperliquid",
+    operation_class: "limit_order",
+    expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+    order: {
+      market,
+      side: "buy",
+      quote_size: quoteSize,
+      max_slippage_bps: maxSlippageBps,
+      live_order_mode: "tiny_fill",
+      tif: "Ioc",
+    },
+  }, [
+    "ghola/private-execution-instruction-v1",
+    `work_order:${workOrderCommitment}`,
+    "venue:hyperliquid",
+    `recipient:${recipient.recipient_id}`,
+  ].join("|"));
+  const body = await postJson("/v1/private-account/connectors/verify-no-submit", {
+    platform_class: "hyperliquid_style_market",
+    work_order_commitment: workOrderCommitment,
+    encrypted_execution_instruction_bundle: encryptedInstruction,
+  });
+  const verification = body.verification || {};
+  const checks = verification.checks || {};
+  const ok = verification.status === "verified_no_funds" &&
+    checks.transaction_broadcast === false &&
+    checks.sealed_vault_opened === true &&
+    checks.sealed_instruction_opened === true &&
+    checks.policy_enforced === true &&
+    checks.live_gate_enforced === true &&
+    checks.hyperliquid_sdk_ready === true &&
+    checks.hyperliquid_api_reachable === true &&
+    checks.account_read_checked === true &&
+    checks.order_request_built === true;
+  record("hyperliquid_no_submit_verification", ok, {
+    status: verification.status || null,
+    verification_commitment: verification.verification_commitment || null,
+    certificate_status: verification.live_readiness_certificate?.status || null,
+    transaction_broadcast: checks.transaction_broadcast ?? null,
+  });
+  assertSafeArtifact("hyperliquid_no_submit_verification", body);
+  if (!ok) {
+    throw new Error(`Hyperliquid no-submit verification failed: ${verification.reason || verification.status || "unknown"}`);
+  }
+  return sanitizePublicArtifact({
+    status: verification.status || null,
+    verification_commitment: verification.verification_commitment || null,
+    result_commitment: verification.result_commitment || null,
+    provider_ref_commitment: verification.provider_ref_commitment || null,
+    live_readiness_certificate: verification.live_readiness_certificate || null,
+    checks,
+  });
 }
 
 async function runLiveSubmitCanary({ recipient, market, quoteSize, maxSlippageBps }) {

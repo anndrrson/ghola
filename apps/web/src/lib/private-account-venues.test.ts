@@ -163,17 +163,20 @@ describe("Coinbase Advanced private venue and omnibus model", () => {
       GHOLA_COINBASE_PARTNER_OMNIBUS_ENABLED: "true",
       GHOLA_COINBASE_PARTNER_OMNIBUS_POOL_READY: "true",
       GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_URL: "https://worker.ghola.test",
+      GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_TOKEN: "worker-token-test",
       GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_READINESS: "ready",
       GHOLA_PRIVATE_RUNTIME_URL: "https://runtime.ghola.test",
       GHOLA_PRIVATE_RUNTIME_MEASUREMENT: "measurement-test",
     };
-    const fetchMock = vi.fn(async () =>
-      Response.json({
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input;
+      void init;
+      return Response.json({
         ok: true,
         provider_ref_commitment: "coinbase_provider_ref_test",
         result_commitment: "coinbase_result_test",
-      }, { status: 202 }),
-    );
+      }, { status: 202 });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const account = createPrivateExecutionAccount({ vaultReady: true });
@@ -298,13 +301,15 @@ describe("Coinbase Advanced private venue and omnibus model", () => {
       GHOLA_PRIVATE_RUNTIME_URL: "https://runtime.ghola.test",
       GHOLA_PRIVATE_RUNTIME_MEASUREMENT: "measurement-test",
     };
-    const fetchMock = vi.fn(async () =>
-      Response.json({
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input;
+      void init;
+      return Response.json({
         ok: true,
         provider_ref_commitment: "phoenix_provider_ref_test",
         result_commitment: "phoenix_result_test",
-      }, { status: 202 }),
-    );
+      }, { status: 202 });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const account = createPrivateExecutionAccount({ vaultReady: true });

@@ -33,6 +33,8 @@ const token = env("PRIVATE_AGENT_EXECUTION_TOKEN") || env("GHOLA_PRIVATE_AGENT_E
 const capabilitySecret = env("PRIVATE_AGENT_WORKER_CAPABILITY_SECRET") || env("GHOLA_WORKER_CAPABILITY_SECRET");
 const canaryId = `arb_canary_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 const reportPath = resolve(ROOT, env("GHOLA_ARB_CANARY_REPORT_PATH", ".dev/ghola-arb-production-canary.json"));
+const reportUrl = canaryReportUrl();
+const reportToken = env("GHOLA_ARB_CANARY_REPORT_TOKEN") || env("GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN");
 const liveSubmit = boolEnv("GHOLA_ARB_CANARY_LIVE_SUBMIT");
 const liveAck = env("GHOLA_ARB_CANARY_ACK_TINY_LIVE");
 const market = normalizeMarket(env("GHOLA_ARB_CANARY_MARKET", "SOL-USD"));
@@ -156,14 +158,16 @@ try {
   record("fatal", false, { error: error instanceof Error ? error.message : String(error) });
 } finally {
   report.completed_at = new Date().toISOString();
+  const safeReport = stripSecrets(report);
   mkdirSync(dirname(reportPath), { recursive: true });
-  writeFileSync(reportPath, `${JSON.stringify(stripSecrets(report), null, 2)}\n`);
+  writeFileSync(reportPath, `${JSON.stringify(safeReport, null, 2)}\n`);
+  const postOk = await postCanaryReport(safeReport);
   console.log(`[arb-canary] ${report.status}`);
   console.log(`[arb-canary] report=${reportPath}`);
   for (const check of report.checks) {
     console.log(`[arb-canary] ${check.ok ? "ok" : "fail"} ${check.name}`);
   }
-  if (report.status === "failed") process.exit(1);
+  if (!postOk || report.status === "failed") process.exit(1);
 }
 
 async function buildCoinbaseAccess(recipient) {
@@ -491,6 +495,33 @@ async function getRecipient() {
   return body;
 }
 
+async function postCanaryReport(safeReport) {
+  if (!reportUrl) return true;
+  if (!reportToken) {
+    console.error("[arb-canary] report post failed: GHOLA_ARB_CANARY_REPORT_TOKEN or GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN is required");
+    return false;
+  }
+  const response = await fetch(reportUrl, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${reportToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(safeReport),
+  }).catch((error) => {
+    console.error("[arb-canary] report post request failed", String(error?.message || error));
+    return null;
+  });
+  if (!response) return false;
+  const text = await response.text();
+  if (response.status !== 202) {
+    console.error(`[arb-canary] report post returned HTTP ${response.status}`, text.slice(0, 500));
+    return false;
+  }
+  console.log(`[arb-canary] report posted ${reportUrl}`);
+  return true;
+}
+
 async function sealedBundle(recipient, plaintext, aad) {
   const wire = await sealForTest({
     senderDid,
@@ -755,6 +786,13 @@ function baseMarket(productId) {
 
 function trimUrl(value) {
   return String(value || "").replace(/\/$/, "");
+}
+
+function canaryReportUrl() {
+  const direct = env("GHOLA_ARB_CANARY_REPORT_URL");
+  if (direct) return direct;
+  const base = env("GHOLA_WEB_BASE_URL");
+  return base ? `${trimUrl(base)}/v1/private-account/agent-passport/arb-canary-report` : "";
 }
 
 function redactUrl(value) {

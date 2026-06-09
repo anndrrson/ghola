@@ -3,6 +3,26 @@
 !apps
 !apps/web
 !apps/web/**
+
+# Vercel's linked project root is apps/web. When the CLI applies this
+# ignore file relative to that root, the repo-root exceptions above do
+# not match. Keep the web app source included in both contexts.
+!package.json
+!package-lock.json
+!vercel.json
+!next.config.ts
+!postcss.config.mjs
+!tsconfig.json
+!next-env.d.ts
+!eslint.config.mjs
+!vitest.config.ts
+!src
+!src/**
+!public
+!public/**
+!scripts
+!scripts/**
+
 apps/web/.next
 apps/web/node_modules
 apps/web/coverage
@@ -10,3 +30,10 @@ apps/web/.turbo
 apps/web/out
 apps/web/dist
 apps/web/build
+.next
+node_modules
+coverage
+.turbo
+out
+dist
+build

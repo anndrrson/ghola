@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createHash, createHmac } from "node:crypto";
 import { GET as manifestsRoute } from "./manifests/route";
 import { POST as readinessRoute } from "./readiness/route";
 import { POST as compileIntentRoute } from "../actions/compile-intent/route";
@@ -12,13 +13,21 @@ import { POST as executeAction } from "../actions/execute/route";
 import { POST as verifyReceiptAction } from "../actions/verify-receipt/route";
 import { GET as operationsRoute } from "./operations/route";
 import { POST as verifyNoSubmitRoute } from "./verify-no-submit/route";
+import { GET as getHyperliquidVault, POST as sealHyperliquidVault } from "../hyperliquid/vault/route";
+import { POST as allocateHyperliquidManaged } from "../hyperliquid/managed-allocation/route";
 import { POST as createFundingInstruction } from "../funding/instruction/route";
 import { POST as importFunding } from "../funding/import/route";
 import { POST as runBatchCoordinator } from "../funding/batch/run/route";
 import { GET as getVenueVault, POST as sealVenueVault } from "../venues/[platform_class]/vault/route";
+import { POST as verifyVenueEligibility } from "../venues/[platform_class]/eligibility/route";
+import { POST as allocatePooledVenue } from "../venues/[platform_class]/pool/allocate/route";
+import { POST as allocateOmnibus } from "../omnibus/allocate/route";
 import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
+import { gholaCommitment } from "@/lib/private-account";
 
 const INTERNAL_TOKEN = "test_internal_private_account_token";
+const JUPITER_SOL_MINT = "So11111111111111111111111111111111111111112";
+const JUPITER_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
 function auth(userId: string) {
   return `Bearer ${[
@@ -36,6 +45,54 @@ function post(path: string, body: unknown, authorization = AUTH) {
     headers: { "content-type": "application/json", authorization },
     body: JSON.stringify(body),
   });
+}
+
+function textPost(path: string, body: string, authorization = AUTH) {
+  return new Request(`https://ghola.test${path}`, {
+    method: "POST",
+    headers: { "content-type": "text/plain", authorization },
+    body,
+  });
+}
+
+function proofPost(
+  path: string,
+  body: unknown,
+  userId: string,
+  secret: string,
+  nonce = `nonce-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+) {
+  const timestamp = String(Date.now());
+  const bodyHash = createHash("sha256").update(stableJson(body)).digest("hex");
+  const message = [
+    "POST",
+    path,
+    gholaCommitment("owner", userId),
+    timestamp,
+    nonce,
+    bodyHash,
+  ].join("\n");
+  const proof = createHmac("sha256", secret).update(message).digest("hex");
+  return new Request(`https://ghola.test${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: auth(userId),
+      "x-ghola-request-timestamp": timestamp,
+      "x-ghola-request-nonce": nonce,
+      "x-ghola-request-proof": proof,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
 }
 
 function get(path: string, authorization = AUTH) {
@@ -91,10 +148,93 @@ describe("private account connector gateway routes", () => {
     delete process.env.GHOLA_PRIVATE_ACCOUNT_BATCH_REQUIRED_SET;
     delete process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED;
     delete process.env.GHOLA_HYPERLIQUID_LIVE_MODE;
+    delete process.env.GHOLA_VENUE_JUPITER_PILOT_ENABLED;
+    delete process.env.GHOLA_JUPITER_LIVE_MODE;
+    delete process.env.GHOLA_V6_COINBASE_PILOT_ENABLED;
+    delete process.env.GHOLA_COINBASE_PARTNER_OMNIBUS_ENABLED;
+    delete process.env.GHOLA_COINBASE_PARTNER_OMNIBUS_POOL_READY;
     delete process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL;
     delete process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS;
     delete process.env.GHOLA_PRIVATE_RUNTIME_URL;
     delete process.env.GHOLA_PRIVATE_RUNTIME_MEASUREMENT;
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE;
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET;
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_RATE_LIMIT_MAX;
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_RATE_LIMIT_WINDOW_MS;
+  });
+
+  it("guards mutating live routes with JSON, auth, proof, replay, and rate limits", async () => {
+    const nonJsonRes = await verifyNoSubmitRoute(
+      textPost("/v1/private-account/connectors/verify-no-submit", "not json"),
+    );
+    expect(nonJsonRes.status).toBe(415);
+    await expect(nonJsonRes.json()).resolves.toMatchObject({
+      error: "json_content_type_required",
+    });
+
+    const missingAuthRes = await verifyNoSubmitRoute(
+      post("/v1/private-account/connectors/verify-no-submit", {}, ""),
+    );
+    expect(missingAuthRes.status).toBe(401);
+
+    process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "enforce";
+    process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET =
+      "test_private_account_request_proof_secret_32";
+    const missingProofRes = await verifyNoSubmitRoute(
+      post("/v1/private-account/connectors/verify-no-submit", {}),
+    );
+    expect(missingProofRes.status).toBe(403);
+    await expect(missingProofRes.json()).resolves.toMatchObject({
+      error: "request_proof_required",
+    });
+
+    const proofBody = {
+      platform_class: "hyperliquid_style_market",
+      work_order_commitment: "work_order_guard_test",
+      encrypted_execution_instruction_bundle: {
+        instruction_commitment: "instruction_guard_test",
+      },
+    };
+    const replayNonce = "nonce-guard-replay-1";
+    const firstProofRes = await verifyNoSubmitRoute(
+      proofPost(
+        "/v1/private-account/connectors/verify-no-submit",
+        proofBody,
+        "connector_user_1",
+        process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET,
+        replayNonce,
+      ),
+    );
+    expect(firstProofRes.status).toBe(400);
+    const replayRes = await verifyNoSubmitRoute(
+      proofPost(
+        "/v1/private-account/connectors/verify-no-submit",
+        proofBody,
+        "connector_user_1",
+        process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET,
+        replayNonce,
+      ),
+    );
+    expect(replayRes.status).toBe(403);
+    await expect(replayRes.json()).resolves.toMatchObject({
+      error: "request_proof_replayed",
+    });
+
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE;
+    process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_RATE_LIMIT_MAX = "1";
+    process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_RATE_LIMIT_WINDOW_MS = "60000";
+    const rateUser = auth("connector_rate_limit_user");
+    const firstLimited = await verifyNoSubmitRoute(
+      post("/v1/private-account/connectors/verify-no-submit", {}, rateUser),
+    );
+    expect(firstLimited.status).toBe(400);
+    const secondLimited = await verifyNoSubmitRoute(
+      post("/v1/private-account/connectors/verify-no-submit", {}, rateUser),
+    );
+    expect(secondLimited.status).toBe(429);
+    await expect(secondLimited.json()).resolves.toMatchObject({
+      error: "private_account_rate_limited",
+    });
   });
 
   it("publishes commitment-safe connector manifests and readiness", async () => {
@@ -292,6 +432,312 @@ describe("private account connector gateway routes", () => {
     expect(verified.verification.live_readiness_certificate.what_is_not_proven).toContain("the order filled");
     expect(JSON.stringify(verified)).not.toContain("sealed-phoenix-vault");
     expect(JSON.stringify(verified)).not.toContain("sealed-phoenix-instruction");
+  });
+
+  it("verifies Jupiter no-submit connection without exposing raw fields", async () => {
+    process.env.GHOLA_VENUE_JUPITER_PILOT_ENABLED = "true";
+    process.env.GHOLA_JUPITER_LIVE_MODE = "full";
+
+    const statusRes = await getVenueVault(
+      get("/v1/private-account/venues/solana_swap_aggregator/vault"),
+      { params: Promise.resolve({ platform_class: "solana_swap_aggregator" }) },
+    );
+    const status = await statusRes.json();
+    const accountCommitment = status.account_commitment;
+    expect(accountCommitment).toMatch(/^acct_/);
+
+    const vaultAad = [
+      "ghola/solana-swap-execution-vault-v1",
+      `account:${accountCommitment}`,
+      "recipient:mock_attested:dev",
+      "mode:user_stealth",
+      "network:mainnet",
+      "venue:jupiter",
+    ].join("|");
+    const sealRes = await sealVenueVault(
+      post("/v1/private-account/venues/solana_swap_aggregator/vault", {
+        execution_mode: "user_stealth",
+        encrypted_execution_vault: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-jupiter-vault",
+          recipient: "mock_attested:dev",
+          aad: vaultAad,
+        },
+      }),
+      { params: Promise.resolve({ platform_class: "solana_swap_aggregator" }) },
+    );
+    expect(sealRes.status).toBe(201);
+
+    const workOrderCommitment = "connector_work_order_jupiter_verify_test";
+    const verifyRes = await verifyNoSubmitRoute(
+      post("/v1/private-account/connectors/verify-no-submit", {
+        platform_class: "solana_swap_aggregator",
+        work_order_commitment: workOrderCommitment,
+        encrypted_execution_instruction_bundle: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-jupiter-instruction",
+          recipient: "mock_attested:dev",
+          aad: [
+            "ghola/private-execution-instruction-v1",
+            `work_order:${workOrderCommitment}`,
+            "venue:jupiter",
+            "recipient:mock_attested:dev",
+          ].join("|"),
+        },
+      }),
+    );
+    const verified = await verifyRes.json();
+
+    expect(verifyRes.status).toBe(200);
+    expect(verified.verification.status).toBe("verified_no_funds");
+    expect(verified.verification.checks.transaction_broadcast).toBe(false);
+    expect(verified.verification.checks.jupiter_api_reachable).toBe(true);
+    expect(verified.verification.verification_commitment).toMatch(/^connector_no_submit_verification_/);
+    expect(verified.verification.live_readiness_certificate.status).toBe("ready_to_attempt_broadcast");
+    expect(verified.verification.live_readiness_certificate.venue_id).toBe("jupiter");
+    expect(verified.verification.live_readiness_certificate.broadcast_performed).toBe(false);
+    expect(verified.verification.live_readiness_certificate.final_fill_proven).toBe(false);
+    expect(verified.verification.live_readiness_certificate.what_is_proven).toContain(
+      "Jupiter swap transaction was built without broadcasting",
+    );
+    expect(JSON.stringify(verified)).not.toContain("sealed-jupiter-vault");
+    expect(JSON.stringify(verified)).not.toContain("sealed-jupiter-instruction");
+    expect(JSON.stringify(verified)).not.toContain(JUPITER_SOL_MINT);
+    expect(JSON.stringify(verified)).not.toContain(JUPITER_USDC_MINT);
+  });
+
+  it("verifies Hyperliquid no-submit connection without exposing raw fields", async () => {
+    process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = "true";
+    process.env.GHOLA_HYPERLIQUID_LIVE_MODE = "tiny_fill";
+    const statusRes = await getHyperliquidVault(get("/v1/private-account/hyperliquid/vault"));
+    const status = await statusRes.json();
+    const accountCommitment = status.account_commitment;
+    expect(accountCommitment).toMatch(/^acct_/);
+
+    const vaultAad = [
+      "ghola/hyperliquid-execution-vault-v1",
+      `account:${accountCommitment}`,
+      "recipient:mock_attested:dev",
+      "network:mainnet",
+    ].join("|");
+    const sealRes = await sealHyperliquidVault(
+      post("/v1/private-account/hyperliquid/vault", {
+        encrypted_execution_vault: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-hyperliquid-vault",
+          recipient: "mock_attested:dev",
+          aad: vaultAad,
+        },
+      }),
+    );
+    expect(sealRes.status).toBe(201);
+
+    const workOrderCommitment = "connector_work_order_hyperliquid_verify_test";
+    const verifyRes = await verifyNoSubmitRoute(
+      post("/v1/private-account/connectors/verify-no-submit", {
+        platform_class: "hyperliquid_style_market",
+        work_order_commitment: workOrderCommitment,
+        encrypted_execution_instruction_bundle: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-hyperliquid-instruction",
+          recipient: "mock_attested:dev",
+          aad: [
+            "ghola/private-execution-instruction-v1",
+            `work_order:${workOrderCommitment}`,
+            "venue:hyperliquid",
+            "recipient:mock_attested:dev",
+          ].join("|"),
+        },
+      }),
+    );
+    const verified = await verifyRes.json();
+
+    expect(verifyRes.status).toBe(200);
+    expect(verified.verification.status).toBe("verified_no_funds");
+    expect(verified.verification.checks.transaction_broadcast).toBe(false);
+    expect(verified.verification.checks.order_request_built).toBe(true);
+    expect(verified.verification.verification_commitment).toMatch(/^connector_no_submit_verification_/);
+    expect(verified.verification.live_readiness_certificate.status).toBe("ready_to_attempt_broadcast");
+    expect(verified.verification.live_readiness_certificate.venue_id).toBe("hyperliquid");
+    expect(verified.verification.live_readiness_certificate.broadcast_performed).toBe(false);
+    expect(verified.verification.live_readiness_certificate.final_fill_proven).toBe(false);
+    expect(verified.verification.live_readiness_certificate.what_is_proven).toContain(
+      "Hyperliquid order request was built without broadcasting",
+    );
+    expect(JSON.stringify(verified)).not.toContain("sealed-hyperliquid-vault");
+    expect(JSON.stringify(verified)).not.toContain("sealed-hyperliquid-instruction");
+  });
+
+  it("verifies Coinbase readiness without submitting or exposing raw fields", async () => {
+    process.env.GHOLA_V6_COINBASE_PILOT_ENABLED = "true";
+    process.env.GHOLA_COINBASE_PARTNER_OMNIBUS_ENABLED = "true";
+    process.env.GHOLA_COINBASE_PARTNER_OMNIBUS_POOL_READY = "true";
+
+    const allocationRes = await allocateOmnibus(
+      post("/v1/private-account/omnibus/allocate", {
+        settlement_funding_commitment: "funding_import_commitment_test",
+        utilization_bucket: "5",
+      }),
+    );
+    expect(allocationRes.status).toBe(201);
+
+    const workOrderCommitment = "connector_work_order_coinbase_verify_test";
+    const verifyRes = await verifyNoSubmitRoute(
+      post("/v1/private-account/connectors/verify-no-submit", {
+        platform_class: "coinbase_style_provider",
+        work_order_commitment: workOrderCommitment,
+        encrypted_execution_instruction_bundle: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-coinbase-instruction",
+          recipient: "mock_attested:dev",
+          aad: [
+            "ghola/private-execution-instruction-v1",
+            `work_order:${workOrderCommitment}`,
+            "venue:coinbase_advanced",
+            "recipient:mock_attested:dev",
+          ].join("|"),
+        },
+      }),
+    );
+    const verified = await verifyRes.json();
+
+    expect(verifyRes.status).toBe(200);
+    expect(verified.verification.status).toBe("verified_no_funds");
+    expect(verified.verification.live_readiness_certificate.venue_id).toBe("coinbase_advanced");
+    expect(verified.verification.live_readiness_certificate.broadcast_performed).toBe(false);
+    expect(verified.verification.live_readiness_certificate.final_fill_proven).toBe(false);
+    expect(verified.verification.live_readiness_certificate.what_is_proven).toContain(
+      "Coinbase order request was built without submitting",
+    );
+    expect(verified.verification.checks.transaction_broadcast).toBe(false);
+    expect(verified.verification.checks.coinbase_order_request_built).toBe(true);
+    expect(JSON.stringify(verified)).not.toContain("sealed-coinbase-instruction");
+    expect(JSON.stringify(verified).toLowerCase()).not.toContain("api_key");
+    expect(JSON.stringify(verified).toLowerCase()).not.toContain("private_key");
+  });
+
+  it("rejects pooled venue allocation until venue eligibility is verified", async () => {
+    const allocationRes = await allocatePooledVenue(
+      post("/v1/private-account/venues/phoenix/pool/allocate", {
+        utilization_bucket: "5",
+      }),
+      { params: Promise.resolve({ platform_class: "phoenix" }) },
+    );
+    const allocation = await allocationRes.json();
+
+    expect(allocationRes.status).toBe(400);
+    expect(allocation.error).toBe("venue_eligibility_required");
+  });
+
+  it("allocates Phoenix Vault Mode and verifies no-submit without a user venue key", async () => {
+    const eligibilityRes = await verifyVenueEligibility(
+      post("/v1/private-account/venues/phoenix/eligibility", {
+        credential_type: "self_attested_eligible_user",
+      }),
+      { params: Promise.resolve({ platform_class: "phoenix" }) },
+    );
+    expect(eligibilityRes.status).toBe(201);
+
+    const allocationRes = await allocatePooledVenue(
+      post("/v1/private-account/venues/phoenix/pool/allocate", {
+        utilization_bucket: "5",
+      }),
+      { params: Promise.resolve({ platform_class: "phoenix" }) },
+    );
+    const allocation = await allocationRes.json();
+    expect(allocationRes.status).toBe(201);
+    expect(allocation.pooled_allocation.status).toBe("allocated");
+    expect(allocation.pooled_allocation.eligibility_commitment).toMatch(/^venue_eligibility_/);
+    expect(allocation.readiness.status).toBe("ready");
+    expect(allocation.readiness.eligibility_ready).toBe(true);
+
+    const workOrderCommitment = "connector_work_order_phoenix_pooled_verify_test";
+    const verifyRes = await verifyNoSubmitRoute(
+      post("/v1/private-account/connectors/verify-no-submit", {
+        platform_class: "solana_perps_market",
+        work_order_commitment: workOrderCommitment,
+        encrypted_execution_instruction_bundle: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-phoenix-pooled-instruction",
+          recipient: "mock_attested:dev",
+          aad: [
+            "ghola/private-execution-instruction-v1",
+            `work_order:${workOrderCommitment}`,
+            "venue:phoenix",
+            "recipient:mock_attested:dev",
+          ].join("|"),
+        },
+      }),
+    );
+    const verified = await verifyRes.json();
+
+    expect(verifyRes.status).toBe(200);
+    expect(verified.verification.status).toBe("verified_no_funds");
+    expect(verified.readiness.reason_codes).not.toContain("solana_perps_execution_vault_not_ready");
+    expect(verified.verification.live_readiness_certificate.broadcast_performed).toBe(false);
+    expect(JSON.stringify(verified)).not.toContain("sealed-phoenix-pooled-instruction");
+  });
+
+  it("allocates Hyperliquid Vault Mode and verifies no-submit without a user API wallet", async () => {
+    process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = "true";
+    process.env.GHOLA_HYPERLIQUID_LIVE_MODE = "tiny_fill";
+
+    const eligibilityRes = await verifyVenueEligibility(
+      post("/v1/private-account/venues/hyperliquid/eligibility", {
+        credential_type: "self_attested_eligible_user",
+      }),
+      { params: Promise.resolve({ platform_class: "hyperliquid" }) },
+    );
+    expect(eligibilityRes.status).toBe(201);
+
+    const allocationRes = await allocateHyperliquidManaged(
+      post("/v1/private-account/hyperliquid/managed-allocation", {
+        execution_mode: "ghola_pooled",
+        network: "mainnet",
+        market_allowlist: ["BTC", "ETH", "SOL"],
+        max_notional_bucket: "5",
+        max_order_count: 5,
+      }),
+    );
+    const allocation = await allocationRes.json();
+    expect(allocationRes.status).toBe(201);
+    expect(allocation.managed_allocation.execution_mode).toBe("ghola_pooled");
+    expect(allocation.managed_allocation.network).toBe("mainnet");
+    expect(allocation.managed_allocation.eligibility_commitment).toMatch(/^venue_eligibility_/);
+
+    const statusRes = await getHyperliquidVault(get("/v1/private-account/hyperliquid/vault"));
+    const status = await statusRes.json();
+    expect(status.hyperliquid_execution_vault).toBeNull();
+    expect(status.managed_allocation.execution_mode).toBe("ghola_pooled");
+    expect(status.venue_access.source).toBe("ghola_pooled_venue_account");
+
+    const workOrderCommitment = "connector_work_order_hyperliquid_pooled_verify_test";
+    const verifyRes = await verifyNoSubmitRoute(
+      post("/v1/private-account/connectors/verify-no-submit", {
+        platform_class: "hyperliquid_style_market",
+        work_order_commitment: workOrderCommitment,
+        encrypted_execution_instruction_bundle: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-hyperliquid-pooled-instruction",
+          recipient: "mock_attested:dev",
+          aad: [
+            "ghola/private-execution-instruction-v1",
+            `work_order:${workOrderCommitment}`,
+            "venue:hyperliquid",
+            "recipient:mock_attested:dev",
+          ].join("|"),
+        },
+      }),
+    );
+    const verified = await verifyRes.json();
+
+    expect(verifyRes.status).toBe(200);
+    expect(verified.verification.status).toBe("verified_no_funds");
+    expect(verified.readiness.reason_codes).not.toContain("hyperliquid_execution_vault_not_ready");
+    expect(verified.readiness.reason_codes).not.toContain("hyperliquid_pooled_allocation_not_ready");
+    expect(verified.verification.live_readiness_certificate.venue_id).toBe("hyperliquid");
+    expect(verified.verification.live_readiness_certificate.broadcast_performed).toBe(false);
+    expect(JSON.stringify(verified)).not.toContain("sealed-hyperliquid-pooled-instruction");
   });
 
   it("binds connector evidence into Private Mode execution receipts", async () => {

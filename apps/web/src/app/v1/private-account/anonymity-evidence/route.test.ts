@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { POST as createAccount } from "../create/route";
 import { POST } from "./route";
 import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
@@ -33,8 +33,13 @@ function internalRequest(path: string, body: unknown, token = INTERNAL_TOKEN) {
 }
 
 describe("private account anonymity evidence route", () => {
+  beforeEach(() => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
+  });
+
   afterEach(async () => {
     await resetPrivateAccountStoreForTests();
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN;
   });
 

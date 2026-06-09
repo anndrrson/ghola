@@ -1,21 +1,15 @@
 import {
   fundingImportFromBody,
   json,
-  privateAccountOwnerFromRequest,
-  readJson,
-  rejectForbiddenFields,
-  unauthorized,
+  privateAccountLiveGuard,
 } from "../../_lib";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const body = await readJson(req);
-  const forbidden = rejectForbiddenFields(body);
-  if (forbidden) return forbidden;
-  const owner = await privateAccountOwnerFromRequest(req);
-  if (!owner) return unauthorized();
-  const imported = await fundingImportFromBody(body, owner);
+  const guarded = await privateAccountLiveGuard(req);
+  if (!guarded.ok) return guarded.response;
+  const imported = await fundingImportFromBody(guarded.body, guarded.owner);
   if ("error" in imported) return json({ error: imported.error }, 400);
   return json(imported, 201);
 }

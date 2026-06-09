@@ -131,9 +131,6 @@ function hyperliquidReadiness(
   if (!liveTinyFill && env.GHOLA_HYPERLIQUID_EXECUTION_VAULT_READY !== "true") {
     reasonCodes.push("venue_access_required", "hyperliquid_execution_vault_not_ready");
   }
-  if (!env.GHOLA_PRIVATE_RUNTIME_URL && env.GHOLA_PRIVATE_RUNTIME_MODE !== "local_test") {
-    reasonCodes.push("sealed_runtime_unavailable");
-  }
   if (!connectorReady) reasonCodes.push("hyperliquid_connector_unavailable");
   if (connectorReady) reasonCodes.push("venue_visible_order_degraded");
   const status: PrivateAccountReadinessStatus = reasonCodes.some((reason) =>

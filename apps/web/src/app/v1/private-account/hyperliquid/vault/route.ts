@@ -1,9 +1,8 @@
 import {
   hyperliquidVaultStatusForOwner,
   json,
+  privateAccountLiveGuard,
   privateAccountOwnerFromRequest,
-  readJson,
-  rejectForbiddenFields,
   sealHyperliquidVaultFromBody,
   unauthorized,
 } from "../../_lib";
@@ -17,12 +16,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const body = await readJson(req);
-  const forbidden = rejectForbiddenFields(body);
-  if (forbidden) return forbidden;
-  const owner = await privateAccountOwnerFromRequest(req);
-  if (!owner) return unauthorized();
-  const sealed = await sealHyperliquidVaultFromBody(body, owner);
+  const guarded = await privateAccountLiveGuard(req);
+  if (!guarded.ok) return guarded.response;
+  const sealed = await sealHyperliquidVaultFromBody(guarded.body, guarded.owner);
   if ("error" in sealed) return json({ error: sealed.error }, 400);
   return json(sealed, 201);
 }

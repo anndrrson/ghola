@@ -110,7 +110,7 @@ describe("Hyperliquid private execution layer", () => {
     });
   });
 
-  it("blocks Hyperliquid readiness unless pilot, runtime, vault, funding, and connector gates are green", async () => {
+  it("blocks Hyperliquid readiness unless pilot, vault, funding, and connector gates are green", async () => {
     const blockedManifest = getConnectorManifest("hyperliquid_style_market", NOW);
     const blocked = await connectorReadiness({
       manifest: blockedManifest,
@@ -172,9 +172,8 @@ describe("Hyperliquid private execution layer", () => {
       GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
       GHOLA_HYPERLIQUID_LIVE_MODE: "tiny_fill",
       GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL: "https://worker.ghola.test",
+      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN: "worker-token-test",
       GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS: "ready",
-      GHOLA_PRIVATE_RUNTIME_URL: "https://runtime.ghola.test",
-      GHOLA_PRIVATE_RUNTIME_MEASUREMENT: "measurement-test",
     };
     const manifest = getConnectorManifest("hyperliquid_style_market", NOW);
     const readiness = await connectorReadiness({
@@ -191,6 +190,9 @@ describe("Hyperliquid private execution layer", () => {
     expect(readiness.status).toBe("ready");
     expect(manifest.supported_rails).toContain("direct_public_fallback");
     expect(readiness.reason_codes).not.toContain("shielded_funding_evidence_required");
+    expect(readiness.reason_codes).not.toContain("sealed_runtime_unhealthy");
+    expect(readiness.reason_codes).not.toContain("sealed_runtime_attestation_required");
+    expect(readiness.reason_codes).not.toContain("sealed_runtime_measurement_required");
     expect(JSON.stringify(readiness).toLowerCase()).not.toContain("jurisdiction");
   });
 
@@ -200,6 +202,7 @@ describe("Hyperliquid private execution layer", () => {
       NODE_ENV: "production",
       GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
       GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL: "https://worker.ghola.test",
+      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN: "worker-token-test",
       GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS: "ready",
       GHOLA_PRIVATE_RUNTIME_URL: "https://runtime.ghola.test",
       GHOLA_PRIVATE_RUNTIME_MEASUREMENT: "measurement-test",
@@ -328,6 +331,7 @@ describe("Hyperliquid private execution layer", () => {
       NODE_ENV: "production",
       GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
       GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL: "https://worker.ghola.test",
+      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN: "worker-token-test",
       GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS: "ready",
       GHOLA_PRIVATE_RUNTIME_URL: "https://runtime.ghola.test",
       GHOLA_PRIVATE_RUNTIME_MEASUREMENT: "measurement-test",
@@ -439,6 +443,7 @@ describe("Hyperliquid private execution layer", () => {
       GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
       GHOLA_HYPERLIQUID_LIVE_MODE: "tiny_fill",
       GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL: "https://worker.ghola.test",
+      GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN: "worker-token-test",
       GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS: "ready",
       GHOLA_PRIVATE_RUNTIME_URL: "https://runtime.ghola.test",
       GHOLA_PRIVATE_RUNTIME_MEASUREMENT: "measurement-test",

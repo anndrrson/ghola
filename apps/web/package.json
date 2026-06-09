@@ -4,15 +4,17 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build && node scripts/check-auth-client-bundle.mjs && node scripts/build-sri-manifest.mjs && node scripts/build-inline-csp.mjs",
-    "build:no-sri": "next build && node scripts/check-auth-client-bundle.mjs && node scripts/build-inline-csp.mjs",
+    "build": "next build && node scripts/check-auth-client-bundle.mjs && node scripts/build-sri-manifest.mjs",
+    "build:no-sri": "next build && node scripts/check-auth-client-bundle.mjs",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
+    "security:check": "npm test && npm run lint",
     "test:auth": "vitest run src/lib/thumper-api.test.ts src/app/api/auth/session/email/signin/route.test.ts src/app/api/auth/session/email/signup/route.test.ts",
     "smoke:auth": "node scripts/smoke-auth.mjs",
     "smoke:auction-local": "node scripts/ghola-auction-local-e2e.mjs",
     "smoke:auction-devnet": "GHOLA_AUCTION_SMOKE_CLUSTER=devnet node scripts/ghola-auction-local-e2e.mjs",
+    "verify:live:all": "node scripts/verify-live-all.mjs",
     "verify:prod:trading": "node scripts/verify-prod-trading.mjs",
     "verify:prod:hyperliquid": "node scripts/verify-prod-hyperliquid.mjs",
     "verify:prod:hyperliquid:live": "GHOLA_VERIFY_LIVE_SUBMIT=true node scripts/verify-prod-hyperliquid.mjs",
@@ -23,6 +25,7 @@
     "ws": "8.20.1"
   },
   "dependencies": {
+    "@ellipsis-labs/rise": "^0.4.19",
     "@huggingface/transformers": "^4.2.0",
     "@mlc-ai/web-llm": "^0.2.83",
     "@neondatabase/serverless": "^1.1.0",
@@ -36,10 +39,12 @@
     "@turnkey/sdk-server": "^5.1.0",
     "@turnkey/solana": "^1.1.25",
     "@types/three": "^0.184.1",
+    "@vercel/blob": "^2.4.0",
     "bs58": "^6.0.0",
     "dompurify": "^3.3.3",
     "hpke-js": "^1.8.0",
     "jszip": "^3.10.1",
+    "lightweight-charts": "^5.2.0",
     "lucide-react": "^0.577.0",
     "next": "^16.2.6",
     "react": "19.2.3",
@@ -47,6 +52,7 @@
     "three": "^0.184.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "^4",
     "@types/dompurify": "^3.0.5",
     "@types/node": "^20",

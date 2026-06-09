@@ -1,21 +1,15 @@
 import {
   allocateHyperliquidManagedFromBody,
   json,
-  privateAccountOwnerFromRequest,
-  readJson,
-  rejectForbiddenFields,
-  unauthorized,
+  privateAccountLiveGuard,
 } from "../../_lib";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const body = await readJson(req);
-  const forbidden = rejectForbiddenFields(body);
-  if (forbidden) return forbidden;
-  const owner = await privateAccountOwnerFromRequest(req);
-  if (!owner) return unauthorized();
-  const allocation = await allocateHyperliquidManagedFromBody(body, owner);
+  const guarded = await privateAccountLiveGuard(req);
+  if (!guarded.ok) return guarded.response;
+  const allocation = await allocateHyperliquidManagedFromBody(guarded.body, guarded.owner);
   if ("error" in allocation) return json({ error: allocation.error }, 400);
   return json(allocation, 201);
 }

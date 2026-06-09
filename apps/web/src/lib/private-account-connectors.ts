@@ -16,6 +16,14 @@ import {
   sealedRuntimeHealth,
   type GholaRuntimeHealth,
 } from "./private-account-runtime";
+import {
+  connectorSdkPlatformClasses,
+  connectorSdkSpecForPlatform,
+} from "./connector-sdk";
+import {
+  workerAuthorizationHeader,
+  workerCapabilityExpectedFromBody,
+} from "./private-agent-capability";
 
 export type GholaConnectorStatus = "ready" | "missing" | "stale" | "blocked";
 export type GholaConnectorMode = "http" | "local_test";
@@ -166,6 +174,7 @@ export interface GholaConnectorResult {
   status: "submitted" | "reconciled" | "failed" | "cancelled" | "blocked";
   provider_ref_commitment: string | null;
   result_commitment: string;
+  final_proof: GholaConnectorFinalProof | null;
   visibility_summary: {
     main_wallet_exposed: boolean;
     venue_saw_order_class: boolean;
@@ -183,6 +192,20 @@ export interface GholaConnectorResult {
   reason: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface GholaConnectorFinalProof {
+  version: 1;
+  proof_kind: string;
+  status: string;
+  venue_id: string;
+  routing_mode?: string | null;
+  broadcast_performed: boolean;
+  final_venue_execution_proven: boolean;
+  final_fill_proven: boolean;
+  signature_commitment?: string | null;
+  request_commitment?: string | null;
+  checked_at: string;
 }
 
 export interface GholaConnectorNoFundsVerification {
@@ -205,6 +228,17 @@ export interface GholaConnectorNoFundsVerification {
     rpc_reachable: boolean;
     phoenix_sdk_ready: boolean;
     order_packet_built: boolean;
+    api_wallet_loaded: boolean;
+    hyperliquid_api_reachable: boolean;
+    hyperliquid_sdk_ready: boolean;
+    account_read_checked: boolean;
+    order_request_built: boolean;
+    jupiter_api_reachable?: boolean;
+    jupiter_token_allowlist_passed?: boolean;
+    jupiter_order_built?: boolean;
+    jupiter_transaction_built?: boolean;
+    coinbase_api_reachable?: boolean;
+    coinbase_order_request_built?: boolean;
     transaction_broadcast: false;
   };
   visibility_summary: {
@@ -223,7 +257,7 @@ export interface GholaLiveReadinessCertificate {
   status: "ready_to_attempt_broadcast" | "not_ready" | "worker_unavailable";
   proof_level: "pre_broadcast_live_readiness";
   platform_class: GholaPlatformClass;
-  venue_id: "phoenix";
+  venue_id: "phoenix" | "hyperliquid" | "jupiter" | "coinbase_advanced";
   work_order_commitment: string;
   manifest_commitment: string;
   connector_readiness_commitment: string;
@@ -248,6 +282,16 @@ export interface GholaLiveReadinessCertificate {
     solana_rpc_reachable: boolean;
     phoenix_sdk_ready: boolean;
     order_packet_built: boolean;
+    hyperliquid_api_reachable: boolean;
+    hyperliquid_sdk_ready: boolean;
+    account_read_checked: boolean;
+    order_request_built: boolean;
+    jupiter_api_reachable?: boolean;
+    jupiter_token_allowlist_passed?: boolean;
+    jupiter_order_built?: boolean;
+    jupiter_transaction_built?: boolean;
+    coinbase_api_reachable?: boolean;
+    coinbase_order_request_built?: boolean;
     transaction_broadcast: false;
   };
   what_is_proven: string[];
@@ -361,6 +405,7 @@ export async function connectorReadiness(input: {
   action_class?: GholaPrivateAccountActionClass;
   operation_class?: string;
   omnibus_allocation_ready?: boolean;
+  pooled_allocation_ready?: boolean;
 }): Promise<GholaConnectorReadiness> {
   const now = input.now ?? new Date();
   const env = input.env ?? process.env;
@@ -375,6 +420,7 @@ export async function connectorReadiness(input: {
     execution_vault_ready: input.execution_vault_ready === true,
     shielded_funding_ready: input.shielded_funding_ready === true,
     omnibus_allocation_ready: input.omnibus_allocation_ready === true,
+    pooled_allocation_ready: input.pooled_allocation_ready === true,
     execution_mode: input.execution_mode,
     operation_class: input.operation_class ||
       (input.action_class ? operationForAction(input.manifest.platform_class, input.action_class) : undefined),
@@ -396,6 +442,8 @@ export async function connectorReadiness(input: {
 
   const cfg = connectorEnvConfig(input.manifest.platform_class, env);
   if (!cfg.url) reasonCodes.push("connector_endpoint_missing");
+  if (!cfg.token) reasonCodes.push("connector_token_missing");
+  if (!cfg.readiness) reasonCodes.push("connector_readiness_missing");
   if (cfg.readiness === "stale") reasonCodes.push("connector_readiness_stale");
   if (cfg.readiness === "blocked") reasonCodes.push("connector_readiness_blocked");
   const status: GholaConnectorStatus = !verification.ok || cfg.readiness === "blocked"
@@ -403,7 +451,7 @@ export async function connectorReadiness(input: {
     ? "blocked"
     : cfg.readiness === "stale"
       ? "stale"
-      : cfg.url && input.manifest.allow_live_submit
+      : cfg.url && cfg.token && cfg.readiness === "ready" && input.manifest.allow_live_submit
         ? "ready"
         : "missing";
   return readiness({
@@ -515,8 +563,9 @@ export function connectorPreviewContext(input: {
   compiled_intent: GholaCompiledPrivateIntent;
   sandbox_policy: GholaConnectorSandboxPolicy;
   linkability_score: GholaLinkabilityScore;
+  execution_mode?: GholaVenueExecutionMode;
 }): GholaConnectorPreviewContext {
-  const accessContext = connectorAccessContext(input.manifest);
+  const accessContext = connectorAccessContext(input.manifest, input.execution_mode);
   return {
     version: 1,
     manifest_commitment: input.manifest.manifest_commitment,
@@ -619,9 +668,13 @@ export async function submitConnectorWorkOrder(input: {
   } | null;
   hyperliquid_managed_allocation?: {
     allocation_commitment: string;
+    execution_mode?: GholaVenueExecutionMode | string;
     policy_commitment: string;
     pool_commitment: string;
+    pool_share_commitment?: string | null;
     subledger_account_commitment: string;
+    eligibility_commitment?: string | null;
+    funding_evidence_commitment?: string | null;
     status?: string;
   } | null;
   venue_execution_vault?: {
@@ -639,6 +692,17 @@ export async function submitConnectorWorkOrder(input: {
     partner_commitment: string;
     subledger_account_commitment: string;
     settlement_funding_commitment?: string | null;
+    utilization_bucket?: string;
+    status?: string;
+  } | null;
+  pooled_venue_allocation?: {
+    pooled_allocation_commitment: string;
+    pool_commitment: string;
+    pool_share_commitment?: string | null;
+    subledger_account_commitment: string;
+    eligibility_commitment?: string | null;
+    funding_evidence_commitment?: string | null;
+    settlement_evidence_commitment?: string | null;
     utilization_bucket?: string;
     status?: string;
   } | null;
@@ -674,15 +738,27 @@ export async function submitConnectorWorkOrder(input: {
   if (!cfg.url) return { ok: false, error: "connector_not_ready" };
   try {
     const submitPath = connectorSubmitPath(input.manifest.platform_class);
+    const payload = redactedConnectorPayload(input);
+    const authorization = workerAuthorizationHeader({
+      env: input.env ?? process.env,
+      fallbackToken: cfg.token,
+      method: "POST",
+      path: submitPath,
+      scope: "order:submit",
+      body: payload,
+      expected: workerCapabilityExpectedFromBody(payload, {
+        venue_id: payload.venue_id || venueIdForPlatformClass(input.manifest.platform_class),
+      }),
+    });
     const res = await fetch(new URL(submitPath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
         "content-type": "application/json",
         "x-ghola-sealed-execution-required": "true",
-        ...(cfg.token ? { authorization: `Bearer ${cfg.token}` } : {}),
+        ...(authorization ? { authorization } : {}),
       },
-      body: JSON.stringify(redactedConnectorPayload(input)),
+      body: JSON.stringify(payload),
     });
     const body = asRecord(await res.json().catch(() => null));
     if (!res.ok || body.ok === false) {
@@ -697,6 +773,7 @@ export async function submitConnectorWorkOrder(input: {
         provider_ref_seed: stringValue(body.provider_ref_commitment) ||
           stringValue(body.result_commitment) ||
           input.work_order.work_order_commitment,
+        final_proof: connectorFinalProof(body.final_proof),
         reason: null,
         now,
       }),
@@ -715,8 +792,8 @@ export async function verifyConnectorNoSubmit(input: {
   venue_execution_vault: {
     venue_id: string;
     execution_mode: GholaVenueExecutionMode | string;
-    vault_commitment: string;
-    encrypted_vault_commitment: string;
+    vault_commitment?: string;
+    encrypted_vault_commitment?: string;
     policy_commitment: string;
     allocation_commitment?: string | null;
     encrypted_execution_vault?: unknown;
@@ -741,7 +818,12 @@ export async function verifyConnectorNoSubmit(input: {
     connector_readiness_commitment: input.readiness.readiness_commitment,
     created_at: now.toISOString(),
   };
-  if (input.platform_class !== "solana_perps_market") {
+  if (![
+    "solana_perps_market",
+    "hyperliquid_style_market",
+    "solana_swap_aggregator",
+    "coinbase_style_provider",
+  ].includes(input.platform_class)) {
     return failedNoFundsVerification(base, "unsupported_platform", "failed", input.site_origin);
   }
   if (input.readiness.status !== "ready" || !input.readiness.live_submit_enabled) {
@@ -759,36 +841,52 @@ export async function verifyConnectorNoSubmit(input: {
   const cfg = connectorEnvConfig(input.platform_class, input.env ?? process.env);
   if (!cfg.url) return failedNoFundsVerification(base, "connector_endpoint_missing", "failed", input.site_origin);
   try {
-    const res = await fetch(new URL(connectorNoSubmitVerifyPath(input.platform_class), cfg.url), {
+    const verifyPath = connectorNoSubmitVerifyPath(input.platform_class);
+    const payload = {
+      version: 1,
+      platform_class: input.platform_class,
+      venue_id: input.venue_execution_vault.venue_id || venueIdForPlatformClass(input.platform_class) || "phoenix",
+      execution_mode: input.venue_execution_vault.execution_mode ||
+        (input.platform_class === "hyperliquid_style_market" ? "byo_api_key" : "user_stealth"),
+      work_order_commitment: input.work_order_commitment,
+      manifest_commitment: input.manifest.manifest_commitment,
+      operation_class: input.operation_class,
+      vault_commitment: input.venue_execution_vault.vault_commitment,
+      encrypted_vault_commitment: input.venue_execution_vault.encrypted_vault_commitment,
+      policy_commitment: input.venue_execution_vault.policy_commitment,
+      allocation_commitment: input.venue_execution_vault.allocation_commitment ?? null,
+      ...(input.venue_execution_vault.encrypted_execution_vault
+        ? { encrypted_execution_vault: input.venue_execution_vault.encrypted_execution_vault }
+        : {}),
+      encrypted_execution_instruction_bundle: input.encrypted_execution_instruction_bundle,
+      session_policy: {
+        market_allowlist: input.session_policy?.market_allowlist || (
+          input.platform_class === "hyperliquid_style_market" ? ["BTC", "ETH", "SOL", "HYPE"] : []
+        ),
+        max_notional_bucket: input.session_policy?.max_notional_bucket || "5",
+        max_order_count: input.session_policy?.max_order_count ?? 5,
+        kill_switch: input.session_policy?.kill_switch === true,
+      },
+    };
+    const authorization = workerAuthorizationHeader({
+      env: input.env ?? process.env,
+      fallbackToken: cfg.token,
+      method: "POST",
+      path: verifyPath,
+      scope: "order:verify",
+      body: payload,
+      expected: workerCapabilityExpectedFromBody(payload),
+    });
+    const res = await fetch(new URL(verifyPath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
         "content-type": "application/json",
         "x-ghola-sealed-execution-required": "true",
         "x-ghola-no-submit-verify": "true",
-        ...(cfg.token ? { authorization: `Bearer ${cfg.token}` } : {}),
+        ...(authorization ? { authorization } : {}),
       },
-      body: JSON.stringify({
-        version: 1,
-        platform_class: input.platform_class,
-        venue_id: input.venue_execution_vault.venue_id || "phoenix",
-        execution_mode: input.venue_execution_vault.execution_mode || "user_stealth",
-        work_order_commitment: input.work_order_commitment,
-        manifest_commitment: input.manifest.manifest_commitment,
-        operation_class: input.operation_class,
-        vault_commitment: input.venue_execution_vault.vault_commitment,
-        encrypted_vault_commitment: input.venue_execution_vault.encrypted_vault_commitment,
-        policy_commitment: input.venue_execution_vault.policy_commitment,
-        allocation_commitment: input.venue_execution_vault.allocation_commitment ?? null,
-        encrypted_execution_vault: input.venue_execution_vault.encrypted_execution_vault,
-        encrypted_execution_instruction_bundle: input.encrypted_execution_instruction_bundle,
-        session_policy: {
-          market_allowlist: input.session_policy?.market_allowlist || ["SOL"],
-          max_notional_bucket: input.session_policy?.max_notional_bucket || "5",
-          max_order_count: input.session_policy?.max_order_count ?? 5,
-          kill_switch: input.session_policy?.kill_switch === true,
-        },
-      }),
+      body: JSON.stringify(payload),
     });
     const body = asRecord(await res.json().catch(() => null));
     if (!res.ok || body.status !== "verified_no_funds") {
@@ -838,19 +936,33 @@ export async function reconcileConnectorResult(input: {
   }
   try {
     const reconcilePath = connectorReconcilePath(input.manifest.platform_class);
+    const payload = {
+      version: 1,
+      work_order_commitment: input.work_order.work_order_commitment,
+      provider_ref_commitment: input.existing_result?.provider_ref_commitment ?? null,
+    };
+    const authorization = workerAuthorizationHeader({
+      env: input.env ?? process.env,
+      fallbackToken: cfg.token,
+      method: "POST",
+      path: reconcilePath,
+      scope: "reconcile:read",
+      body: payload,
+      expected: workerCapabilityExpectedFromBody(payload, {
+        venue_id: venueIdForPlatformClass(input.manifest.platform_class),
+        platform_class: input.manifest.platform_class,
+        operation_class: "reconcile",
+      }),
+    });
     const res = await fetch(new URL(reconcilePath, cfg.url), {
       method: "POST",
       cache: "no-store",
       headers: {
         "content-type": "application/json",
         "x-ghola-sealed-execution-required": "true",
-        ...(cfg.token ? { authorization: `Bearer ${cfg.token}` } : {}),
+        ...(authorization ? { authorization } : {}),
       },
-      body: JSON.stringify({
-        version: 1,
-        work_order_commitment: input.work_order.work_order_commitment,
-        provider_ref_commitment: input.existing_result?.provider_ref_commitment ?? null,
-      }),
+      body: JSON.stringify(payload),
     });
     const body = asRecord(await res.json().catch(() => null));
     return connectorResult({
@@ -860,6 +972,7 @@ export async function reconcileConnectorResult(input: {
       provider_ref_seed: stringValue(body.provider_ref_commitment) ||
         input.existing_result?.provider_ref_commitment ||
         input.work_order.work_order_commitment,
+      final_proof: connectorFinalProof(body.final_proof),
       reason: res.ok ? null : "connector_reconcile_failed",
       now,
     });
@@ -888,6 +1001,7 @@ function connectorManifest(
   now: Date,
 ): GholaConnectorManifest {
   const profile = getPlatformPrivacyProfile(platformClass);
+  const spec = connectorSdkSpecForPlatform(platformClass);
   const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1_000).toISOString();
   const blocked = blockedActionsFor(platformClass);
   const unsigned = {
@@ -898,9 +1012,7 @@ function connectorManifest(
     supported_actions: profile.supported_products.filter((item) => !blocked.includes(item)),
     pilot_stage: pilotStage(platformClass),
     supported_operation_classes: supportedOperationClasses(platformClass),
-    sealed_runtime_required: platformClass === "solana_private_balance" ||
-      platformClass === "hyperliquid_style_market" ||
-      platformClass === "coinbase_style_provider",
+    sealed_runtime_required: spec.requires_sealed_runtime,
     blocked_action_classes: blocked,
     platform_sees: profile.platform_sees,
     public_chain_sees: profile.public_chain_sees,
@@ -911,10 +1023,7 @@ function connectorManifest(
     minimum_solver_count: platformClass === "rfq_solver_network"
       ? DEFAULT_ANONYMITY_SET_POLICY.rfq_min_solver_count
       : 0,
-    requires_omnibus_funding:
-      platformClass === "hyperliquid_style_market" ||
-      platformClass === "coinbase_style_provider" ||
-      platformClass === "partner_tokenized_assets",
+    requires_omnibus_funding: spec.requires_omnibus_funding,
     allow_live_submit: (platformClass !== "partner_tokenized_assets" || process.env.GHOLA_PARTNER_ASSETS_READY === "true") &&
       pilotEnabled(platformClass),
     degraded_conditions: profile.degraded_conditions,
@@ -942,17 +1051,7 @@ function pilotStage(platformClass: GholaPlatformClass): GholaConnectorManifest["
 }
 
 function supportedOperationClasses(platformClass: GholaPlatformClass): string[] {
-  if (platformClass === "solana_private_balance") return ["solana_private_payment"];
-  if (platformClass === "solana_perps_market") return ["read", "perp_limit_order", "cancel", "fills", "reconcile"];
-  if (platformClass === "solana_swap_aggregator") return ["read", "preview_order", "swap", "reconcile"];
-  if (platformClass === "rfq_solver_network") return ["auction_commit", "auction_clear", "auction_settle"];
-  if (platformClass === "hyperliquid_style_market") {
-    return ["read", "limit_order", "cancel", "reconcile"];
-  }
-  if (platformClass === "coinbase_style_provider") {
-    return ["read", "preview_order", "spot_limit_order", "spot_market_order", "cancel", "fills", "reconcile"];
-  }
-  return [];
+  return connectorSdkSpecForPlatform(platformClass).operation_classes;
 }
 
 function supportedRailsFor(
@@ -977,15 +1076,11 @@ function supportedRailsFor(
 }
 
 function blockedActionsFor(platformClass: GholaPlatformClass): GholaPrivateAccountActionClass[] {
-  if (platformClass === "hyperliquid_style_market") return ["withdraw", "maintain_allocation"];
-  if (platformClass === "solana_perps_market") return ["withdraw", "maintain_allocation"];
-  if (platformClass === "solana_swap_aggregator") return ["withdraw", "maintain_allocation", "fund_platform"];
-  if (platformClass === "coinbase_style_provider") return ["withdraw", "maintain_allocation"];
-  if (platformClass === "rfq_solver_network") return ["withdraw", "fund_platform", "pay"];
+  if (platformClass !== "partner_tokenized_assets") return connectorSdkSpecForPlatform(platformClass).blocked_actions;
   if (platformClass === "partner_tokenized_assets" && process.env.GHOLA_PARTNER_ASSETS_READY !== "true") {
     return ["pay", "transfer", "fund_platform", "trade_on_platform", "rebalance", "maintain_allocation", "withdraw"];
   }
-  return [];
+  return connectorSdkSpecForPlatform(platformClass).blocked_actions;
 }
 
 function readiness(input: {
@@ -1021,6 +1116,7 @@ function connectorResult(input: {
   manifest: GholaConnectorManifest;
   status: GholaConnectorResult["status"];
   provider_ref_seed: string;
+  final_proof?: GholaConnectorFinalProof | null;
   reason: string | null;
   now: Date;
 }): GholaConnectorResult {
@@ -1041,6 +1137,7 @@ function connectorResult(input: {
     status: input.status,
     provider_ref_commitment: providerRefCommitment,
     result_commitment: gholaCommitment("connector_result_body", resultSeed),
+    final_proof: input.final_proof ?? null,
     visibility_summary: {
       main_wallet_exposed: !input.manifest.source_wallet_hidden,
       venue_saw_order_class: input.manifest.order_details_visible,
@@ -1055,6 +1152,7 @@ function connectorResult(input: {
 
 function connectorAccessContext(
   manifest: GholaConnectorManifest,
+  executionMode?: GholaVenueExecutionMode,
 ): Pick<
   GholaConnectorPreviewContext,
   | "venue_access_source"
@@ -1066,7 +1164,11 @@ function connectorAccessContext(
 > {
   if (manifest.platform_class === "hyperliquid_style_market") {
     return {
-      venue_access_source: "user_provided_credentials",
+      venue_access_source: executionMode === "ghola_pooled"
+        ? "ghola_pooled_venue_account"
+        : executionMode === "managed_testnet"
+          ? "ghola_managed_testnet"
+          : "user_provided_credentials",
       ghola_access_role: "private_execution_router",
       venue_gate: "venue_accepts_or_rejects_credentials",
       venue_visibility: "execution_account_and_order_activity",
@@ -1076,7 +1178,9 @@ function connectorAccessContext(
   }
   if (manifest.platform_class === "solana_perps_market") {
     return {
-      venue_access_source: "user_provided_credentials",
+      venue_access_source: executionMode === "ghola_pooled"
+        ? "ghola_pooled_venue_account"
+        : "user_provided_credentials",
       ghola_access_role: "private_execution_router",
       venue_gate: "venue_accepts_or_rejects_credentials",
       venue_visibility: "execution_account_and_order_activity",
@@ -1086,9 +1190,15 @@ function connectorAccessContext(
   }
   if (manifest.platform_class === "solana_swap_aggregator") {
     return {
-      venue_access_source: "none",
+      venue_access_source: executionMode === "ghola_pooled"
+        ? "ghola_pooled_venue_account"
+        : executionMode === "byo_api_key" || executionMode === "user_stealth"
+          ? "user_provided_credentials"
+          : "none",
       ghola_access_role: "private_execution_router",
-      venue_gate: "not_applicable",
+      venue_gate: executionMode === "ghola_pooled" || executionMode === "byo_api_key" || executionMode === "user_stealth"
+        ? "venue_accepts_or_rejects_credentials"
+        : "not_applicable",
       venue_visibility: "ticket_only",
       source_wallet_visibility: "not_exposed_to_public_chain_by_ghola",
       privacy_claim: "private_mode_available",
@@ -1096,9 +1206,13 @@ function connectorAccessContext(
   }
   if (manifest.platform_class === "coinbase_style_provider") {
     return {
-      venue_access_source: "partner_omnibus",
+      venue_access_source: executionMode === "byo_api_key"
+        ? "user_provided_credentials"
+        : "partner_omnibus",
       ghola_access_role: "private_execution_router",
-      venue_gate: "partner_accepts_or_rejects_order",
+      venue_gate: executionMode === "byo_api_key"
+        ? "venue_accepts_or_rejects_credentials"
+        : "partner_accepts_or_rejects_order",
       venue_visibility: "provider_account_and_order_activity",
       source_wallet_visibility: "not_exposed_to_public_chain_by_ghola",
       privacy_claim: "venue_visible_order_degraded",
@@ -1165,9 +1279,13 @@ function redactedConnectorPayload(input: {
   } | null;
   hyperliquid_managed_allocation?: {
     allocation_commitment: string;
+    execution_mode?: GholaVenueExecutionMode | string;
     policy_commitment: string;
     pool_commitment: string;
+    pool_share_commitment?: string | null;
     subledger_account_commitment: string;
+    eligibility_commitment?: string | null;
+    funding_evidence_commitment?: string | null;
     status?: string;
   } | null;
   venue_execution_vault?: {
@@ -1185,6 +1303,17 @@ function redactedConnectorPayload(input: {
     partner_commitment: string;
     subledger_account_commitment: string;
     settlement_funding_commitment?: string | null;
+    utilization_bucket?: string;
+    status?: string;
+  } | null;
+  pooled_venue_allocation?: {
+    pooled_allocation_commitment: string;
+    pool_commitment: string;
+    pool_share_commitment?: string | null;
+    subledger_account_commitment: string;
+    eligibility_commitment?: string | null;
+    funding_evidence_commitment?: string | null;
+    settlement_evidence_commitment?: string | null;
     utilization_bucket?: string;
     status?: string;
   } | null;
@@ -1215,10 +1344,22 @@ function redactedConnectorPayload(input: {
       : {}),
     ...(input.manifest.platform_class === "hyperliquid_style_market" && input.hyperliquid_managed_allocation
       ? {
-          execution_mode: "managed_testnet",
+          execution_mode: input.hyperliquid_managed_allocation.execution_mode === "ghola_pooled"
+            ? "ghola_pooled"
+            : "managed_testnet",
           managed_allocation_commitment: input.hyperliquid_managed_allocation.allocation_commitment,
           allocation_commitment: input.hyperliquid_managed_allocation.allocation_commitment,
           policy_commitment: input.hyperliquid_managed_allocation.policy_commitment,
+          pooled_allocation: input.hyperliquid_managed_allocation.execution_mode === "ghola_pooled"
+            ? {
+                allocation_commitment: input.hyperliquid_managed_allocation.allocation_commitment,
+                pool_commitment: input.hyperliquid_managed_allocation.pool_commitment,
+                pool_share_commitment: input.hyperliquid_managed_allocation.pool_share_commitment ?? null,
+                subledger_account_commitment: input.hyperliquid_managed_allocation.subledger_account_commitment,
+                eligibility_commitment: input.hyperliquid_managed_allocation.eligibility_commitment ?? null,
+                funding_evidence_commitment: input.hyperliquid_managed_allocation.funding_evidence_commitment ?? null,
+              }
+            : null,
         }
       : {}),
     ...(input.manifest.platform_class === "coinbase_style_provider"
@@ -1251,14 +1392,61 @@ function redactedConnectorPayload(input: {
     ...(input.manifest.platform_class === "solana_perps_market"
       ? {
           venue_id: input.venue_execution_vault?.venue_id ?? "phoenix",
-          execution_mode: input.venue_execution_vault?.execution_mode ?? "user_stealth",
+          execution_mode: input.pooled_venue_allocation
+            ? "ghola_pooled"
+            : input.venue_execution_vault?.execution_mode ?? "user_stealth",
           vault_commitment: input.venue_execution_vault?.vault_commitment ?? null,
           encrypted_vault_commitment: input.venue_execution_vault?.encrypted_vault_commitment ?? null,
           policy_commitment: input.venue_execution_vault?.policy_commitment ?? null,
-          allocation_commitment: input.venue_execution_vault?.allocation_commitment ?? null,
+          allocation_commitment: input.venue_execution_vault?.allocation_commitment ??
+            input.pooled_venue_allocation?.pooled_allocation_commitment ??
+            null,
           ...(input.venue_execution_vault?.encrypted_execution_vault
             ? { encrypted_execution_vault: input.venue_execution_vault.encrypted_execution_vault }
             : {}),
+          pooled_allocation: input.pooled_venue_allocation
+            ? {
+                allocation_commitment: input.pooled_venue_allocation.pooled_allocation_commitment,
+                pool_commitment: input.pooled_venue_allocation.pool_commitment,
+                pool_share_commitment: input.pooled_venue_allocation.pool_share_commitment ?? null,
+                subledger_account_commitment: input.pooled_venue_allocation.subledger_account_commitment,
+                eligibility_commitment: input.pooled_venue_allocation.eligibility_commitment ?? null,
+                funding_evidence_commitment: input.pooled_venue_allocation.funding_evidence_commitment ?? null,
+                settlement_evidence_commitment: input.pooled_venue_allocation.settlement_evidence_commitment ?? null,
+                utilization_bucket: input.pooled_venue_allocation.utilization_bucket ?? "0",
+                status: input.pooled_venue_allocation.status ?? "allocated",
+              }
+            : null,
+        }
+      : {}),
+    ...(input.manifest.platform_class === "solana_swap_aggregator"
+      ? {
+          venue_id: input.venue_execution_vault?.venue_id ?? "jupiter",
+          execution_mode: input.pooled_venue_allocation
+            ? "ghola_pooled"
+            : input.venue_execution_vault?.execution_mode ?? "user_stealth",
+          vault_commitment: input.venue_execution_vault?.vault_commitment ?? null,
+          encrypted_vault_commitment: input.venue_execution_vault?.encrypted_vault_commitment ?? null,
+          policy_commitment: input.venue_execution_vault?.policy_commitment ?? null,
+          allocation_commitment: input.venue_execution_vault?.allocation_commitment ??
+            input.pooled_venue_allocation?.pooled_allocation_commitment ??
+            null,
+          ...(input.venue_execution_vault?.encrypted_execution_vault
+            ? { encrypted_execution_vault: input.venue_execution_vault.encrypted_execution_vault }
+            : {}),
+          pooled_allocation: input.pooled_venue_allocation
+            ? {
+                allocation_commitment: input.pooled_venue_allocation.pooled_allocation_commitment,
+                pool_commitment: input.pooled_venue_allocation.pool_commitment,
+                pool_share_commitment: input.pooled_venue_allocation.pool_share_commitment ?? null,
+                subledger_account_commitment: input.pooled_venue_allocation.subledger_account_commitment,
+                eligibility_commitment: input.pooled_venue_allocation.eligibility_commitment ?? null,
+                funding_evidence_commitment: input.pooled_venue_allocation.funding_evidence_commitment ?? null,
+                settlement_evidence_commitment: input.pooled_venue_allocation.settlement_evidence_commitment ?? null,
+                utilization_bucket: input.pooled_venue_allocation.utilization_bucket ?? "0",
+                status: input.pooled_venue_allocation.status ?? "allocated",
+              }
+            : null,
         }
       : {}),
   };
@@ -1270,6 +1458,7 @@ function venueReadinessGate(input: {
   execution_vault_ready: boolean;
   shielded_funding_ready: boolean;
   omnibus_allocation_ready: boolean;
+  pooled_allocation_ready: boolean;
   execution_mode?: GholaVenueExecutionMode;
   operation_class?: string;
   runtime_health: GholaRuntimeHealth | null;
@@ -1293,9 +1482,60 @@ function venueReadinessGate(input: {
       input.env.GHOLA_VENUE_DRIFT_PILOT_ENABLED === "true" ||
       input.env.GHOLA_VENUE_BACKPACK_PILOT_ENABLED === "true";
     if (!enabled && !localAllowed) reasonCodes.push("solana_perps_pilot_disabled");
-    if (!input.execution_vault_ready) reasonCodes.push("solana_perps_execution_vault_not_ready");
+    if (input.execution_mode === "ghola_pooled") {
+      if (!input.pooled_allocation_ready) reasonCodes.push("solana_perps_pooled_allocation_not_ready");
+    } else if (!input.execution_vault_ready) {
+      reasonCodes.push("solana_perps_execution_vault_not_ready");
+    }
   }
-  if (venueId === "hyperliquid" && !input.execution_vault_ready) {
+  if (input.manifest.platform_class === "solana_swap_aggregator") {
+    const localAllowed = input.env.NODE_ENV === "test" ||
+      input.env.GHOLA_CONNECTOR_MODE === "local_test" ||
+      input.env.GHOLA_SHIELDED_POOL_MODE === "local_test";
+    if (input.env.GHOLA_VENUE_JUPITER_PILOT_ENABLED !== "true" && !localAllowed) {
+      reasonCodes.push("jupiter_pilot_disabled");
+    }
+    if (input.env.GHOLA_JUPITER_LIVE_MODE !== "full" &&
+      input.env.PRIVATE_AGENT_JUPITER_LIVE_MODE !== "full" &&
+      !localAllowed) {
+      reasonCodes.push("jupiter_live_mode_disabled");
+    }
+    const inputMints = input.env.GHOLA_JUPITER_ALLOWED_INPUT_MINTS?.trim() ||
+      input.env.PRIVATE_AGENT_JUPITER_ALLOWED_INPUT_MINTS?.trim() ||
+      "";
+    const outputMints = input.env.GHOLA_JUPITER_ALLOWED_OUTPUT_MINTS?.trim() ||
+      input.env.PRIVATE_AGENT_JUPITER_ALLOWED_OUTPUT_MINTS?.trim() ||
+      "";
+    const maxSlippageBps = Number.parseInt(
+      input.env.GHOLA_JUPITER_MAX_SLIPPAGE_BPS ||
+        input.env.PRIVATE_AGENT_JUPITER_MAX_SLIPPAGE_BPS ||
+        "",
+      10,
+    );
+    const maxNotionalUsd = Number.parseFloat(
+      input.env.GHOLA_JUPITER_LIVE_MAX_NOTIONAL_USD ||
+        input.env.PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD ||
+        "",
+    );
+    if (!localAllowed && !inputMints) reasonCodes.push("jupiter_input_mint_allowlist_missing");
+    if (!localAllowed && !outputMints) reasonCodes.push("jupiter_output_mint_allowlist_missing");
+    if (!localAllowed && (!Number.isFinite(maxSlippageBps) || maxSlippageBps <= 0)) {
+      reasonCodes.push("jupiter_slippage_cap_missing");
+    }
+    if (!localAllowed && (!Number.isFinite(maxNotionalUsd) || maxNotionalUsd <= 0)) {
+      reasonCodes.push("jupiter_notional_cap_missing");
+    }
+    if (input.execution_mode === "ghola_pooled") {
+      if (!input.pooled_allocation_ready) reasonCodes.push("jupiter_pooled_allocation_not_ready");
+    } else if (!input.execution_vault_ready) {
+      reasonCodes.push("jupiter_execution_vault_not_ready");
+    }
+  }
+  if (venueId === "hyperliquid" && input.execution_mode === "ghola_pooled") {
+    if (!input.pooled_allocation_ready) {
+      reasonCodes.push("venue_access_required", "hyperliquid_pooled_allocation_not_ready");
+    }
+  } else if (venueId === "hyperliquid" && !input.execution_vault_ready) {
     reasonCodes.push("venue_access_required", "hyperliquid_execution_vault_not_ready");
   }
   if (venueId === "coinbase_advanced") {
@@ -1304,7 +1544,7 @@ function venueReadinessGate(input: {
       if (input.env.GHOLA_COINBASE_PARTNER_OMNIBUS_ENABLED !== "true") {
         reasonCodes.push("coinbase_partner_omnibus_disabled");
       }
-      if (input.env.GHOLA_COINBASE_PARTNER_OMNIBUS_POOL_READY === "false") {
+      if (input.env.GHOLA_COINBASE_PARTNER_OMNIBUS_POOL_READY !== "true") {
         reasonCodes.push("coinbase_partner_omnibus_pool_not_ready");
       }
       if (!input.omnibus_allocation_ready) {
@@ -1315,30 +1555,68 @@ function venueReadinessGate(input: {
     }
   }
   const operationClass = input.operation_class || "";
-  const fundingRequired = operationClass !== "read" && operationClass !== "reconcile";
+  const fundingRequired = operationClass !== "read" &&
+    operationClass !== "preview_order" &&
+    operationClass !== "reconcile";
   const hyperliquidByoTinyFill =
     venueId === "hyperliquid" &&
     input.execution_mode === "byo_api_key" &&
-    input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill";
+    (input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
+      input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket");
   const solanaPerpsStealthTinyFill =
     venueId === "phoenix" &&
     input.execution_mode === "user_stealth" &&
     (input.env.GHOLA_SOLANA_PERPS_LIVE_MODE === "sdk_runner" ||
+      input.env.GHOLA_SOLANA_PERPS_LIVE_MODE === "full_ticket" ||
+      input.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE === "full_ticket" ||
       input.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE === "sdk_runner");
-  if (!input.shielded_funding_ready && fundingRequired && !hyperliquidByoTinyFill && !solanaPerpsStealthTinyFill) {
+  const hyperliquidPooledTinyFill =
+    venueId === "hyperliquid" &&
+    input.execution_mode === "ghola_pooled" &&
+    (input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
+      input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket");
+  const solanaPerpsPooledTinyFill =
+    venueId === "phoenix" &&
+    input.execution_mode === "ghola_pooled" &&
+    (input.env.GHOLA_SOLANA_PERPS_LIVE_MODE === "sdk_runner" ||
+      input.env.GHOLA_SOLANA_PERPS_LIVE_MODE === "full_ticket" ||
+      input.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE === "full_ticket" ||
+      input.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE === "sdk_runner");
+  const jupiterFullPilot =
+    venueId === "jupiter" &&
+    (input.env.GHOLA_JUPITER_LIVE_MODE === "full" ||
+      input.env.PRIVATE_AGENT_JUPITER_LIVE_MODE === "full" ||
+      input.env.GHOLA_CONNECTOR_MODE === "local_test" ||
+      input.env.NODE_ENV === "test");
+  if (
+    !input.shielded_funding_ready &&
+    fundingRequired &&
+    !hyperliquidByoTinyFill &&
+    !hyperliquidPooledTinyFill &&
+    !solanaPerpsStealthTinyFill &&
+    !solanaPerpsPooledTinyFill &&
+    !jupiterFullPilot
+  ) {
     reasonCodes.push("shielded_funding_evidence_required");
   }
-  if (input.runtime_health?.status !== "green") reasonCodes.push("sealed_runtime_unhealthy");
-  if (!input.runtime_health?.runtime_attestation_commitment) {
-    reasonCodes.push("sealed_runtime_attestation_required");
-  }
-  if (!input.runtime_health?.runtime_measurement_commitment) {
-    reasonCodes.push("sealed_runtime_measurement_required");
+  if (requiresSealedRuntime(input.execution_mode)) {
+    if (input.runtime_health?.status !== "green") reasonCodes.push("sealed_runtime_unhealthy");
+    if (!input.runtime_health?.runtime_attestation_commitment) {
+      reasonCodes.push("sealed_runtime_attestation_required");
+    }
+    if (!input.runtime_health?.runtime_measurement_commitment) {
+      reasonCodes.push("sealed_runtime_measurement_required");
+    }
   }
   return {
     ok: reasonCodes.length === 0,
     reason_codes: reasonCodes,
   };
+}
+
+function requiresSealedRuntime(executionMode?: GholaVenueExecutionMode): boolean {
+  if (executionMode === "byo_api_key" || executionMode === "user_stealth") return false;
+  return true;
 }
 
 function hyperliquidOperationForAction(action: GholaPrivateAccountActionClass): string {
@@ -1359,28 +1637,20 @@ function operationForAction(platformClass: GholaPlatformClass, action: GholaPriv
   if (platformClass === "coinbase_style_provider") return coinbaseOperationForAction(action);
   if (platformClass === "solana_perps_market") return action === "trade_on_platform" || action === "rebalance" ? "perp_limit_order" : "read";
   if (platformClass === "solana_swap_aggregator") return action === "trade_on_platform" || action === "rebalance" ? "swap" : "read";
+  if (platformClass === "rfq_solver_network") return action === "trade_on_platform" || action === "rebalance" ? "preview_order" : "read";
   return hyperliquidOperationForAction(action);
 }
 
 function connectorSubmitPath(platformClass: GholaPlatformClass): string {
-  if (platformClass === "hyperliquid_style_market") return "/hyperliquid/orders";
-  if (platformClass === "coinbase_style_provider") return "/venues/coinbase/orders";
-  if (platformClass === "solana_perps_market") return "/venues/solana-perps/orders";
-  if (platformClass === "solana_swap_aggregator") return "/venues/solana-swap/orders";
-  return "/submit";
+  return connectorSdkSpecForPlatform(platformClass).http_paths.submit;
 }
 
 function connectorReconcilePath(platformClass: GholaPlatformClass): string {
-  if (platformClass === "hyperliquid_style_market") return "/hyperliquid/reconcile";
-  if (platformClass === "coinbase_style_provider") return "/venues/coinbase/reconcile";
-  if (platformClass === "solana_perps_market") return "/venues/solana-perps/reconcile";
-  if (platformClass === "solana_swap_aggregator") return "/venues/solana-swap/reconcile";
-  return "/reconcile";
+  return connectorSdkSpecForPlatform(platformClass).http_paths.reconcile;
 }
 
 function connectorNoSubmitVerifyPath(platformClass: GholaPlatformClass): string {
-  if (platformClass === "solana_perps_market") return "/venues/solana-perps/verify";
-  return "/verify";
+  return connectorSdkSpecForPlatform(platformClass).http_paths.verify_no_submit;
 }
 
 function verifiedNoFundsVerification(
@@ -1495,9 +1765,15 @@ function liveReadinessCertificate(input: {
 }): GholaLiveReadinessCertificate {
   const siteOrigin = stringValue(input.site_origin);
   const expiresAt = new Date(new Date(input.base.created_at).getTime() + 10 * 60_000).toISOString();
+  const venueId = certificateVenueId(input.base.platform_class);
   const checks = {
     production_site_reachable: Boolean(siteOrigin),
-    private_agent_worker_reachable: input.checks.sealed_vault_opened || input.checks.rpc_reachable,
+    private_agent_worker_reachable: Boolean(
+      input.checks.sealed_vault_opened ||
+      input.checks.rpc_reachable ||
+      input.checks.hyperliquid_api_reachable ||
+      input.checks.jupiter_api_reachable
+    ),
     sealed_vault_opened: input.checks.sealed_vault_opened,
     sealed_instruction_opened: input.checks.sealed_instruction_opened,
     authority_derived: input.checks.authority_derived,
@@ -1506,13 +1782,23 @@ function liveReadinessCertificate(input: {
     solana_rpc_reachable: input.checks.rpc_reachable,
     phoenix_sdk_ready: input.checks.phoenix_sdk_ready,
     order_packet_built: input.checks.order_packet_built,
+    hyperliquid_api_reachable: input.checks.hyperliquid_api_reachable,
+    hyperliquid_sdk_ready: input.checks.hyperliquid_sdk_ready,
+    account_read_checked: input.checks.account_read_checked,
+    order_request_built: input.checks.order_request_built,
+    jupiter_api_reachable: input.checks.jupiter_api_reachable,
+    jupiter_token_allowlist_passed: input.checks.jupiter_token_allowlist_passed,
+    jupiter_order_built: input.checks.jupiter_order_built,
+    jupiter_transaction_built: input.checks.jupiter_transaction_built,
+    coinbase_api_reachable: input.checks.coinbase_api_reachable,
+    coinbase_order_request_built: input.checks.coinbase_order_request_built,
     transaction_broadcast: false as const,
   };
   const seed = {
     certificate_kind: "ghola_live_readiness_certificate_v1",
     status: input.status,
     platform_class: input.base.platform_class,
-    venue_id: "phoenix",
+    venue_id: venueId,
     work_order_commitment: input.base.work_order_commitment,
     manifest_commitment: input.base.manifest_commitment,
     connector_readiness_commitment: input.base.connector_readiness_commitment,
@@ -1534,7 +1820,7 @@ function liveReadinessCertificate(input: {
     status: input.status,
     proof_level: "pre_broadcast_live_readiness",
     platform_class: input.base.platform_class,
-    venue_id: "phoenix",
+    venue_id: venueId,
     work_order_commitment: input.base.work_order_commitment,
     manifest_commitment: input.base.manifest_commitment,
     connector_readiness_commitment: input.base.connector_readiness_commitment,
@@ -1550,20 +1836,14 @@ function liveReadinessCertificate(input: {
     transaction_simulation_status: "not_performed",
     checks,
     what_is_proven: input.status === "ready_to_attempt_broadcast"
-      ? [
-          "ghola production route answered this request",
-          "private-agent worker accepted sealed vault and instruction bundles",
-          "Phoenix live gates and capped IOC policy passed",
-          "Solana RPC was reachable",
-          "Phoenix Rise SDK was reachable",
-          "Phoenix order packet was built without broadcasting",
-        ]
+      ? provenNoSubmitClaims(input.base.platform_class)
       : [
           "ghola produced a commitment-safe failed readiness artifact",
           "no transaction was broadcast",
         ],
     what_is_not_proven: [
       "the venue accepted a broadcast transaction",
+      "the venue account has approved the API wallet",
       "the order filled",
       "post-trade reconciliation succeeded",
     ],
@@ -1583,6 +1863,17 @@ function defaultNoFundsChecks(ok: boolean): GholaConnectorNoFundsVerification["c
     rpc_reachable: ok,
     phoenix_sdk_ready: ok,
     order_packet_built: ok,
+    api_wallet_loaded: ok,
+    hyperliquid_api_reachable: ok,
+    hyperliquid_sdk_ready: ok,
+    account_read_checked: ok,
+    order_request_built: ok,
+    jupiter_api_reachable: ok,
+    jupiter_token_allowlist_passed: ok,
+    jupiter_order_built: ok,
+    jupiter_transaction_built: ok,
+    coinbase_api_reachable: ok,
+    coinbase_order_request_built: ok,
     transaction_broadcast: false,
   };
 }
@@ -1598,13 +1889,72 @@ function noFundsChecks(value: unknown): GholaConnectorNoFundsVerification["check
     rpc_reachable: body.rpc_reachable === true,
     phoenix_sdk_ready: body.phoenix_sdk_ready === true,
     order_packet_built: body.order_packet_built === true,
+    api_wallet_loaded: body.api_wallet_loaded === true || body.authority_derived === true,
+    hyperliquid_api_reachable: body.hyperliquid_api_reachable === true,
+    hyperliquid_sdk_ready: body.hyperliquid_sdk_ready === true,
+    account_read_checked: body.account_read_checked === true,
+    order_request_built: body.order_request_built === true || body.order_packet_built === true,
+    jupiter_api_reachable: body.jupiter_api_reachable === true,
+    jupiter_token_allowlist_passed: body.jupiter_token_allowlist_passed === true,
+    jupiter_order_built: body.jupiter_order_built === true,
+    jupiter_transaction_built: body.jupiter_transaction_built === true,
+    coinbase_api_reachable: body.coinbase_api_reachable === true || body.provider_api_reachable === true,
+    coinbase_order_request_built: body.coinbase_order_request_built === true || body.order_request_built === true,
     transaction_broadcast: false,
   };
 }
 
+function certificateVenueId(platformClass: GholaPlatformClass): "phoenix" | "hyperliquid" | "jupiter" | "coinbase_advanced" {
+  if (platformClass === "hyperliquid_style_market") return "hyperliquid";
+  if (platformClass === "solana_swap_aggregator") return "jupiter";
+  if (platformClass === "coinbase_style_provider") return "coinbase_advanced";
+  return "phoenix";
+}
+
+function provenNoSubmitClaims(platformClass: GholaPlatformClass): string[] {
+  if (platformClass === "hyperliquid_style_market") {
+    return [
+      "ghola production route answered this request",
+      "private-agent worker accepted sealed vault and instruction bundles",
+      "Hyperliquid live gates and capped IOC policy passed",
+      "Hyperliquid API was reachable for market and account state",
+      "Hyperliquid Python SDK was reachable",
+      "Hyperliquid order request was built without broadcasting",
+    ];
+  }
+  if (platformClass === "solana_swap_aggregator") {
+    return [
+      "ghola production route answered this request",
+      "private-agent worker accepted sealed vault and instruction bundles",
+      "Jupiter live gates and mint allowlists passed",
+      "Jupiter Swap API was reachable",
+      "Jupiter swap transaction was built without broadcasting",
+    ];
+  }
+  if (platformClass === "coinbase_style_provider") {
+    return [
+      "ghola production route answered this request",
+      "private-agent worker accepted sealed venue access and instruction bundles",
+      "Coinbase provider gates and capped policy passed",
+      "Coinbase order request was built without submitting",
+    ];
+  }
+  return [
+    "ghola production route answered this request",
+    "private-agent worker accepted sealed vault and instruction bundles",
+    "Phoenix live gates and capped IOC policy passed",
+    "Solana RPC was reachable",
+    "Phoenix Rise SDK was reachable",
+    "Phoenix order packet was built without broadcasting",
+  ];
+}
+
 function noFundsReason(body: Record<string, unknown>, status: number): string {
   const code = stringValue(body.error_code) || stringValue(body.code) || stringValue(body.error);
+  const text = `${code} ${stringValue(body.error)}`.toLowerCase();
+  if (/insufficient|needs funds|not enough|collateral|account value|margin/.test(text)) return "needs_funds";
   if (code.includes("access") || code === "venue_access_required") return "invalid_authority_or_access";
+  if (code === "venue_rejected") return "venue_rejected";
   if (code.includes("rpc")) return "rpc_unreachable";
   if (code.includes("live submit is disabled")) return "live_gate_disabled";
   if (code.includes("notional cap")) return "policy_blocked";
@@ -1626,12 +1976,13 @@ function linkabilityReasons(components: GholaLinkabilityScore["components"]): st
 }
 
 function connectorEnvConfig(platformClass: GholaPlatformClass, env: Record<string, string | undefined>) {
-  const prefix = `GHOLA_CONNECTOR_${platformClass.toUpperCase()}`;
+  const prefix = connectorSdkSpecForPlatform(platformClass).env_prefix;
   const token = env[`${prefix}_TOKEN`]?.trim() ||
     ([
       "hyperliquid_style_market",
       "coinbase_style_provider",
       "solana_perps_market",
+      "solana_swap_aggregator",
     ].includes(platformClass)
       ? env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
         env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
@@ -1661,16 +2012,29 @@ function signManifest(manifestCommitment: string, signingKeyId: string): string 
 }
 
 function platformClasses(): GholaPlatformClass[] {
-  return [
-    "solana_public_wallet",
-    "solana_private_balance",
-    "solana_perps_market",
-    "solana_swap_aggregator",
-    "hyperliquid_style_market",
-    "coinbase_style_provider",
-    "rfq_solver_network",
-    "partner_tokenized_assets",
-  ];
+  return connectorSdkPlatformClasses();
+}
+
+function connectorFinalProof(value: unknown): GholaConnectorFinalProof | null {
+  const body = asRecord(value);
+  const proofKind = stringValue(body.proof_kind);
+  const status = stringValue(body.status);
+  const venueId = stringValue(body.venue_id);
+  const checkedAt = stringValue(body.checked_at);
+  if (!proofKind || !status || !venueId || !checkedAt) return null;
+  return {
+    version: 1,
+    proof_kind: proofKind,
+    status,
+    venue_id: venueId,
+    routing_mode: stringValue(body.routing_mode) || null,
+    broadcast_performed: body.broadcast_performed === true,
+    final_venue_execution_proven: body.final_venue_execution_proven === true,
+    final_fill_proven: body.final_fill_proven === true,
+    signature_commitment: stringValue(body.signature_commitment) || null,
+    request_commitment: stringValue(body.request_commitment) || null,
+    checked_at: checkedAt,
+  };
 }
 
 function bucket(value: unknown, fallback: string): string {

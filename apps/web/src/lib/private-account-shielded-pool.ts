@@ -266,7 +266,8 @@ function commitmentForService(service: string, body: Record<string, unknown>): s
 
 function joinPath(base: string, path: string): string {
   try {
-    return new URL(path, base.endsWith("/") ? base : `${base}/`).toString();
+    const suffix = path.startsWith("/") ? path.slice(1) : path;
+    return new URL(suffix, base.endsWith("/") ? base : `${base}/`).toString();
   } catch {
     return `${base}${path}`;
   }

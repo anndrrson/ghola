@@ -125,6 +125,195 @@ export function sealedRuntimeHealth(
   });
 }
 
+export async function freshSealedRuntimeHealth(
+  now: Date = new Date(),
+  env: Record<string, string | undefined> = process.env,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GholaRuntimeHealth> {
+  const mode = runtimeMode(env);
+  if (mode === "local_test") return sealedRuntimeHealth(now, env);
+
+  const runtimeUrl = env.GHOLA_PRIVATE_RUNTIME_URL?.trim();
+  if (!runtimeUrl) {
+    return runtimeHealth({
+      status: "red",
+      mode,
+      now,
+      runtime_attestation_commitment: null,
+      runtime_measurement_commitment: null,
+      runtime_policy_commitment: null,
+      reason: "sealed runtime URL is not configured",
+    });
+  }
+
+  let url: URL;
+  try {
+    url = new URL(runtimeUrl);
+  } catch {
+    return runtimeHealth({
+      status: "red",
+      mode,
+      now,
+      runtime_attestation_commitment: null,
+      runtime_measurement_commitment: null,
+      runtime_policy_commitment: null,
+      reason: "sealed runtime URL is invalid",
+    });
+  }
+  if (url.protocol !== "https:" && env.NODE_ENV === "production") {
+    return runtimeHealth({
+      status: "red",
+      mode,
+      now,
+      runtime_attestation_commitment: null,
+      runtime_measurement_commitment: null,
+      runtime_policy_commitment: null,
+      reason: "sealed runtime health must use https in production",
+    });
+  }
+  const healthUrl = new URL("/health", url);
+  const headers = new Headers({ accept: "application/json" });
+  const token = env.GHOLA_PRIVATE_RUNTIME_TOKEN?.trim();
+  if (token) headers.set("authorization", `Bearer ${token}`);
+
+  try {
+    const controller = new AbortController();
+    const timeoutMs = positiveIntegerEnv(env, "GHOLA_PRIVATE_RUNTIME_HEALTH_TIMEOUT_MS", 2_500);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response;
+    try {
+      response = await fetchImpl(healthUrl, {
+        method: "GET",
+        headers,
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!response.ok) {
+      return unhealthyFreshRuntime(now, mode, "sealed runtime health endpoint is not ready");
+    }
+    const body = await response.json() as Record<string, unknown>;
+    return healthFromRuntimeBody({
+      now,
+      env,
+      body,
+    });
+  } catch {
+    return unhealthyFreshRuntime(now, mode, "sealed runtime health endpoint is unreachable");
+  }
+}
+
+function unhealthyFreshRuntime(
+  now: Date,
+  mode: GholaSealedRuntimeMode,
+  reason: string,
+): GholaRuntimeHealth {
+  return runtimeHealth({
+    status: "red",
+    mode,
+    now,
+    runtime_attestation_commitment: null,
+    runtime_measurement_commitment: null,
+    runtime_policy_commitment: null,
+    reason,
+  });
+}
+
+function healthFromRuntimeBody(input: {
+  now: Date;
+  env: Record<string, string | undefined>;
+  body: Record<string, unknown>;
+}): GholaRuntimeHealth {
+  const mode: GholaSealedRuntimeMode = "http";
+  const body = nestedRuntimeHealthBody(input.body);
+  const statusValue = stringField(body, "status") || stringField(input.body, "status");
+  const ok = statusValue === "green" ||
+    statusValue === "ready" ||
+    statusValue === "ok" ||
+    input.body.ok === true ||
+    body.ok === true;
+  const observedAt = dateField(body, "observed_at") ||
+    dateField(body, "checked_at") ||
+    dateField(input.body, "observed_at") ||
+    dateField(input.body, "checked_at");
+  const maxStaleMs = positiveIntegerEnv(input.env, "GHOLA_PRIVATE_RUNTIME_MAX_STALE_MS", 5 * 60_000);
+  if (!observedAt || input.now.getTime() - observedAt.getTime() > maxStaleMs) {
+    return unhealthyFreshRuntime(input.now, mode, "sealed runtime health evidence is stale");
+  }
+
+  const attestationCommitment =
+    stringField(body, "runtime_attestation_commitment") ||
+    stringField(body, "attestation_commitment");
+  const measurementCommitment =
+    stringField(body, "runtime_measurement_commitment") ||
+    stringField(body, "measurement_commitment") ||
+    (stringField(body, "measurement")
+      ? gholaCommitment("runtime_measurement", stringField(body, "measurement"))
+      : null);
+  const policyCommitment =
+    stringField(body, "runtime_policy_commitment") ||
+    stringField(body, "policy_commitment");
+  if (!ok || !attestationCommitment || !measurementCommitment || !policyCommitment) {
+    return unhealthyFreshRuntime(input.now, mode, "sealed runtime health evidence is incomplete");
+  }
+  const expectedMeasurement = input.env.GHOLA_PRIVATE_RUNTIME_EXPECTED_MEASUREMENT?.trim();
+  if (expectedMeasurement && !measurementMatchesExpected(body, expectedMeasurement, measurementCommitment)) {
+    return unhealthyFreshRuntime(input.now, mode, "sealed runtime measurement does not match expected value");
+  }
+  return runtimeHealth({
+    status: "green",
+    mode,
+    now: observedAt,
+    runtime_attestation_commitment: attestationCommitment,
+    runtime_measurement_commitment: measurementCommitment,
+    runtime_policy_commitment: policyCommitment,
+    reason: null,
+  });
+}
+
+function nestedRuntimeHealthBody(body: Record<string, unknown>): Record<string, unknown> {
+  const nested = body.sealed_runtime || body.runtime_health || body.health;
+  return nested && typeof nested === "object" && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : body;
+}
+
+function measurementMatchesExpected(
+  body: Record<string, unknown>,
+  expectedMeasurement: string,
+  observedCommitment: string,
+): boolean {
+  const observedRaw = stringField(body, "runtime_measurement") ||
+    stringField(body, "measurement") ||
+    stringField(body, "measurement_hex");
+  return expectedMeasurement === observedRaw ||
+    expectedMeasurement === observedCommitment ||
+    gholaCommitment("runtime_measurement", expectedMeasurement) === observedCommitment;
+}
+
+function stringField(body: Record<string, unknown>, key: string): string {
+  const value = body[key];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function dateField(body: Record<string, unknown>, key: string): Date | null {
+  const value = stringField(body, key);
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function positiveIntegerEnv(
+  env: Record<string, string | undefined>,
+  name: string,
+  fallback: number,
+): number {
+  const parsed = Number.parseInt(env[name] ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export function createRuntimeEnvelope(input: {
   owner_commitment: string;
   intent_id: string;
@@ -442,6 +631,8 @@ export function revokePrivateReceiptExport(input: {
 
 export function v6ProductionGateStatus(input: {
   verifier_green: boolean;
+  shielded_pool_green: boolean;
+  canaries_green: boolean;
   manifests_current: boolean;
   sealed_runtime_attested: boolean;
   batch_coordinator_green: boolean;
