@@ -40,6 +40,7 @@ import {
 import {
   hyperliquidManagedAccountRefs,
   loadManagedHyperliquidCredential,
+  readHyperliquidPooledAccountEquity,
 } from "./venues/hyperliquid.js";
 import { loadPooledSolanaPerpsCredential } from "./venues/solana_perps.js";
 import { loadPooledJupiterCredential } from "./venues/jupiter.js";
@@ -801,6 +802,89 @@ function pooledVenueReadinessResult(venueId, reasonCodes, extra = {}) {
     ready: uniqueReasons.length === 0,
     reason_codes: uniqueReasons,
     ...extra,
+  };
+}
+
+function validatePooledBalanceRequest(body) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.operation_class !== "pooled_balance") {
+    errors.push("operation_class must be pooled_balance");
+  }
+  if (body.venues !== undefined) {
+    if (!Array.isArray(body.venues)) {
+      errors.push("venues must be an array");
+    } else {
+      for (const venue of body.venues) {
+        if (!POOLED_READINESS_VENUES.includes(String(venue))) {
+          errors.push(`venue ${String(venue)} is unsupported`);
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+// Pooled balance probe: opens the pooled credential inside the TEE and
+// reads the venue account's total equity so the web ledger audit can
+// reconcile books against the venue. Only aggregate operator-account
+// figures leave the enclave — never credentials or per-user data.
+async function pooledVenueBalance(venueId) {
+  const dryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true";
+  try {
+    if (venueId === "hyperliquid") {
+      const refs = dryRun
+        ? [{ network: "mainnet", credential_ref: "dry-run" }]
+        : hyperliquidManagedAccountRefs();
+      const mainnetRef = refs.find((ref) => ref.network === "mainnet");
+      if (!mainnetRef) {
+        return pooledVenueBalanceResult(venueId, "unavailable", ["hyperliquid_pooled_account_pool_missing"]);
+      }
+      const credential = loadManagedHyperliquidCredential({
+        execution_mode: "ghola_pooled",
+        network: "mainnet",
+        credential_ref: mainnetRef.credential_ref,
+      });
+      const equity = await readHyperliquidPooledAccountEquity({ credential });
+      return pooledVenueBalanceResult(venueId, "verified", [], {
+        equity_micro_usdc: equity.equity_micro_usdc,
+        network: equity.network,
+        dry_run: equity.dry_run,
+        account_commitment: commitment("hyperliquid_pooled_account", credential.account_address),
+        observed_at: equity.observed_at,
+      });
+    }
+    return pooledVenueBalanceResult(venueId, "unsupported", ["balance_probe_unsupported"]);
+  } catch (error) {
+    return pooledVenueBalanceResult(venueId, "unavailable", [
+      error?.code || pooledCredentialErrorCode(venueId, error),
+    ]);
+  }
+}
+
+function pooledVenueBalanceResult(venueId, status, reasonCodes, extra = {}) {
+  return {
+    venue_id: venueId,
+    status,
+    verified: status === "verified",
+    reason_codes: [...new Set(reasonCodes)],
+    ...extra,
+  };
+}
+
+async function pooledBalanceResponse(body) {
+  const venues = await Promise.all(
+    pooledReadinessVenueIds(body).map((venueId) => pooledVenueBalance(venueId)),
+  );
+  return {
+    version: 1,
+    operation_class: "pooled_balance",
+    venues,
+    checked_at: new Date().toISOString(),
   };
 }
 
@@ -1649,6 +1733,30 @@ export function createPrivateAgentWorkerServer(options = {}) {
           });
         }
         return json(res, 200, pooledReadinessResponse(body));
+      }
+
+      if (req.method === "POST" && url.pathname === "/venues/pools/balance") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "credential:verify",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            operation_class: "pooled_balance",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validatePooledBalanceRequest(body);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid pooled balance request",
+            details: errors,
+          });
+        }
+        return json(res, 200, await pooledBalanceResponse(body));
       }
 
       if (req.method === "POST" && url.pathname === "/autopilot/sessions") {

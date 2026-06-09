@@ -111,6 +111,7 @@ import {
 } from "@/lib/private-agent-capability";
 import {
   getPooledWorkerReadiness,
+  getPooledWorkerVenueBalance,
   pooledWorkerVenueId,
 } from "@/lib/private-account-pooled-readiness";
 import {
@@ -3773,7 +3774,7 @@ export async function poolAuditForVenue(venueId: GholaVenueId) {
   };
   const internalConsistent = Object.values(checks).every(Boolean);
   const nav = poolNavSnapshot(pool.equity_micro_usdc, pool.shares_micro);
-  const venueCheck = await poolAuditVenueCheck(venueId);
+  const venueCheck = await poolAuditVenueCheck(venueId, pool.equity_micro_usdc);
   return {
     version: 1,
     audit_commitment: gholaCommitment("pool_audit", {
@@ -3786,7 +3787,7 @@ export async function poolAuditForVenue(venueId: GholaVenueId) {
     }),
     venue_id: venueId,
     pool_commitment: poolCommitment,
-    status: !internalConsistent
+    status: !internalConsistent || venueCheck.status === "venue_insolvent"
       ? ("discrepancy" as const)
       : venueCheck.status === "verified"
         ? ("balanced" as const)
@@ -3803,25 +3804,63 @@ export async function poolAuditForVenue(venueId: GholaVenueId) {
   };
 }
 
-// The pooled worker does not yet expose a pool balance read, so the venue
-// leg of the audit can only attest worker liveness for the venue. Until a
-// sealed pool-balance probe ships, a healthy worker yields
-// "worker_ready_balance_unverified" rather than a verified venue balance.
-async function poolAuditVenueCheck(venueId: GholaVenueId): Promise<{
-  status: "verified" | "worker_ready_balance_unverified" | "unavailable";
+// Venue leg of the pool audit: ask the attested worker to open the pooled
+// credential inside the TEE and report the venue account's aggregate equity,
+// then check solvency against the pool ledger. The venue account may hold
+// more than the ledger (operator buffer, unsettled PnL); the failure mode
+// that matters is the venue holding LESS than the ledger owes users, beyond
+// the configured tolerance.
+async function poolAuditVenueCheck(
+  venueId: GholaVenueId,
+  ledgerEquityMicroUsdc: number,
+): Promise<{
+  status: "verified" | "venue_insolvent" | "balance_unsupported" | "unavailable";
   reason_codes: string[];
+  venue_equity_micro_usdc?: number;
+  ledger_equity_micro_usdc?: number;
+  shortfall_micro_usdc?: number;
+  tolerance_micro_usdc?: number;
+  dry_run?: boolean;
+  account_commitment?: string | null;
+  observed_at?: string | null;
 }> {
-  const gate = await pooledWorkerVenueGate(venueId);
-  if (!gate.ok) {
-    return {
-      status: "unavailable" as const,
-      reason_codes: gate.reason_codes,
-    };
+  const workerVenueId = pooledWorkerVenueId(venueId);
+  if (!workerVenueId) {
+    return { status: "unavailable", reason_codes: ["pooled_mode_not_supported"] };
   }
+  if (process.env.NODE_ENV === "test" || process.env.GHOLA_CONNECTOR_MODE === "local_test") {
+    return { status: "balance_unsupported", reason_codes: ["local_test_mode"] };
+  }
+  await wakePooledWorkerForUse(`pooled_${workerVenueId}_balance_audit`);
+  const balance = await getPooledWorkerVenueBalance(workerVenueId, process.env);
+  if (balance.status === "unsupported") {
+    return { status: "balance_unsupported", reason_codes: balance.reason_codes };
+  }
+  if (!balance.verified || balance.equity_micro_usdc === null) {
+    return { status: "unavailable", reason_codes: balance.reason_codes };
+  }
+  const tolerance = poolAuditToleranceMicroUsdc(ledgerEquityMicroUsdc);
+  const shortfall = Math.max(0, ledgerEquityMicroUsdc - balance.equity_micro_usdc);
+  const solvent = shortfall <= tolerance;
   return {
-    status: "worker_ready_balance_unverified" as const,
-    reason_codes: [] as string[],
+    status: solvent ? "verified" : "venue_insolvent",
+    reason_codes: solvent ? [] : ["pool_venue_balance_below_ledger"],
+    venue_equity_micro_usdc: balance.equity_micro_usdc,
+    ledger_equity_micro_usdc: ledgerEquityMicroUsdc,
+    shortfall_micro_usdc: shortfall,
+    tolerance_micro_usdc: tolerance,
+    dry_run: balance.dry_run,
+    account_commitment: balance.account_commitment,
+    observed_at: balance.observed_at,
   };
+}
+
+// Tolerance for the venue solvency check: an absolute dust allowance plus a
+// bps allowance for fees and unsettled PnL drift between settlement runs.
+function poolAuditToleranceMicroUsdc(ledgerEquityMicroUsdc: number): number {
+  const absolute = positiveIntegerEnv("GHOLA_POOL_AUDIT_TOLERANCE_MICRO_USDC", 1_000_000);
+  const bps = positiveIntegerEnv("GHOLA_POOL_AUDIT_TOLERANCE_BPS", 50);
+  return absolute + Math.floor((Math.max(0, ledgerEquityMicroUsdc) * bps) / 10_000);
 }
 
 export async function preflightVenueTradeFromBody(

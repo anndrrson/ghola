@@ -543,6 +543,80 @@ describe("private agent worker", () => {
     assert.equal(serialized.includes("credential_ref"), false);
   });
 
+  it("reports pooled venue balance for ledger reconciliation", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_POOLED_BALANCE_DRY_RUN_MICRO_USDC = "123000000";
+    enablePooledReadinessEnv();
+    const body = {
+      version: 1,
+      operation_class: "pooled_balance",
+      venues: ["hyperliquid", "phoenix"],
+    };
+    const token = capabilityToken({
+      path: "/venues/pools/balance",
+      scope: "credential:verify",
+      body,
+      expected: { operation_class: "pooled_balance" },
+    });
+    const response = await fetch(`${baseUrl}/venues/pools/balance`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal(response.status, 200);
+    const balance = await response.json();
+    assert.equal(balance.operation_class, "pooled_balance");
+    const hyperliquid = balance.venues.find((venue) => venue.venue_id === "hyperliquid");
+    assert.equal(hyperliquid.status, "verified");
+    assert.equal(hyperliquid.verified, true);
+    assert.equal(hyperliquid.equity_micro_usdc, 123000000);
+    assert.equal(hyperliquid.dry_run, true);
+    assert.match(hyperliquid.account_commitment, /^hyperliquid_pooled_account_/);
+    const phoenix = balance.venues.find((venue) => venue.venue_id === "phoenix");
+    assert.equal(phoenix.status, "unsupported");
+    assert.equal(phoenix.verified, false);
+    assert.deepEqual(phoenix.reason_codes, ["balance_probe_unsupported"]);
+    const serialized = JSON.stringify(balance).toLowerCase();
+    assert.equal(serialized.includes("api_wallet_private_key"), false);
+    assert.equal(serialized.includes("account_address"), false);
+    assert.equal(serialized.includes("credential_ref"), false);
+    delete process.env.PRIVATE_AGENT_POOLED_BALANCE_DRY_RUN_MICRO_USDC;
+  });
+
+  it("rejects pooled balance probes with a readiness-scoped capability", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    enablePooledReadinessEnv();
+    const body = {
+      version: 1,
+      operation_class: "pooled_balance",
+      venues: ["hyperliquid"],
+    };
+    const token = capabilityToken({
+      path: "/venues/pools/balance",
+      scope: "credential:verify",
+      body,
+      expected: { operation_class: "pooled_readiness" },
+    });
+    const response = await fetch(`${baseUrl}/venues/pools/balance`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal(response.status, 403);
+  });
+
   it("blocks live pooled readiness when worker state is not shared", async () => {
     process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
     process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";

@@ -623,9 +623,20 @@ User-facing lifecycle routes (all gated by the standard live guard):
 - `GET /v1/private-account/venues/<venue>/pool/audit` recomputes the books:
   pool equity and share sums, per-subledger share totals, and a
   double-entry join of pool legs to user-balance legs by idempotency key.
-  `balanced_internal` means the books are consistent but the venue-side
-  balance could not be verified (the worker does not yet expose a sealed
-  pool-balance probe); `discrepancy` is a page-the-operator state.
+  The venue leg calls the worker's sealed `POST /venues/pools/balance`
+  probe, which opens the pooled credential inside the TEE and returns the
+  venue account's aggregate equity (Hyperliquid today; other venues report
+  `balance_probe_unsupported`). Solvency requires
+  `venue_equity >= ledger_equity - tolerance`, where tolerance is
+  `GHOLA_POOL_AUDIT_TOLERANCE_MICRO_USDC` (default 1 USDC) plus
+  `GHOLA_POOL_AUDIT_TOLERANCE_BPS` (default 50) of ledger equity, covering
+  fees and unsettled PnL drift. Statuses: `balanced` (books consistent and
+  venue solvency verified), `balanced_internal` (books consistent but the
+  venue balance was unavailable or unsupported), `discrepancy`
+  (inconsistent books or a venue shortfall beyond tolerance) — a
+  page-the-operator state. In dry-run staging,
+  `PRIVATE_AGENT_POOLED_BALANCE_DRY_RUN_MICRO_USDC` sets the equity the
+  worker reports.
 
 Run the audit before enabling pooled trading for a venue and after any
 incident. The live-path cycle canary signs in to production, audits, then

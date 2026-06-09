@@ -196,6 +196,45 @@ export async function verifyHyperliquidNoSubmit({
   });
 }
 
+// Reads the pooled (Ghola-operated) account's total equity for ledger
+// reconciliation. Unlike user account snapshots this intentionally returns a
+// raw micro-USDC figure: the pooled account is operator capital, the number
+// is an aggregate across all pool participants, and the web-side audit needs
+// the exact value to compare against the pool equity ledger.
+export async function readHyperliquidPooledAccountEquity({
+  credential,
+  fetchImpl = fetch,
+}) {
+  assertHyperliquidPilotNetwork(credential, { operation_class: "read" });
+  if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+    const dryRunMicro = Number.parseInt(
+      process.env.PRIVATE_AGENT_POOLED_BALANCE_DRY_RUN_MICRO_USDC || "0",
+      10,
+    );
+    return {
+      equity_micro_usdc: Number.isFinite(dryRunMicro) ? Math.max(0, dryRunMicro) : 0,
+      network: credential.network,
+      dry_run: true,
+      observed_at: new Date().toISOString(),
+    };
+  }
+  const state = await postHyperliquidInfo(fetchImpl, credential.base_url, {
+    type: "clearinghouseState",
+    user: credential.account_address,
+  });
+  const accountValue = decimalNumber(
+    state?.marginSummary?.accountValue ??
+      state?.crossMarginSummary?.accountValue ??
+      "0",
+  );
+  return {
+    equity_micro_usdc: Math.max(0, Math.round(accountValue * 1_000_000)),
+    network: credential.network,
+    dry_run: false,
+    observed_at: new Date().toISOString(),
+  };
+}
+
 export async function readHyperliquidAccountSnapshot({
   credential,
   accountSource = "sealed_byo",

@@ -89,6 +89,123 @@ export function pooledWorkerVenueId(venueId: GholaVenueId | "coinbase"): PooledW
     : null;
 }
 
+export type PooledWorkerVenueBalance = {
+  venue_id: PooledWorkerVenueId;
+  status: "verified" | "unsupported" | "unavailable";
+  verified: boolean;
+  equity_micro_usdc: number | null;
+  dry_run: boolean;
+  account_commitment: string | null;
+  reason_codes: string[];
+  observed_at: string | null;
+};
+
+// Asks the attested worker to open the pooled credential inside the TEE and
+// report the venue account's aggregate equity for ledger reconciliation.
+export async function getPooledWorkerVenueBalance(
+  venueId: PooledWorkerVenueId,
+  env: Record<string, string | undefined> = process.env,
+  fetchImpl: typeof fetch = fetch,
+): Promise<PooledWorkerVenueBalance> {
+  const cfg = pooledWorkerConfig(env);
+  if (!cfg.url) return unavailableVenueBalance(venueId, ["pooled_worker_endpoint_missing"]);
+
+  const workerPath = "/venues/pools/balance";
+  const payload = {
+    version: 1,
+    operation_class: "pooled_balance",
+    venues: [venueId],
+  };
+  const authorization = workerAuthorizationHeader({
+    env,
+    fallbackToken: cfg.token,
+    method: "POST",
+    path: workerPath,
+    scope: "credential:verify",
+    body: payload,
+    expected: workerCapabilityExpectedFromBody(payload, {
+      operation_class: "pooled_balance",
+    }),
+  });
+  if (!authorization) return unavailableVenueBalance(venueId, ["pooled_worker_auth_missing"]);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), pooledWorkerTimeoutMs(env));
+  try {
+    const res = await fetchImpl(new URL(workerPath, cfg.url), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        authorization,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body || typeof body !== "object" || Array.isArray(body)) {
+      return unavailableVenueBalance(venueId, ["pooled_worker_probe_failed"]);
+    }
+    if (containsForbiddenPublicPrivateAccountField(body)) {
+      return unavailableVenueBalance(venueId, ["pooled_worker_forbidden_public_field"]);
+    }
+    return normalizePooledWorkerVenueBalance(venueId, body as Record<string, unknown>);
+  } catch {
+    return unavailableVenueBalance(venueId, ["pooled_worker_probe_failed"]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function normalizePooledWorkerVenueBalance(
+  venueId: PooledWorkerVenueId,
+  body: Record<string, unknown>,
+): PooledWorkerVenueBalance {
+  const rawVenues = Array.isArray(body.venues) ? body.venues : [];
+  for (const rawVenue of rawVenues) {
+    if (!rawVenue || typeof rawVenue !== "object" || Array.isArray(rawVenue)) continue;
+    const record = rawVenue as Record<string, unknown>;
+    if (String(record.venue_id || "") !== venueId) continue;
+    const status = record.status === "verified"
+      ? "verified" as const
+      : record.status === "unsupported"
+        ? "unsupported" as const
+        : "unavailable" as const;
+    const equity = Number(record.equity_micro_usdc);
+    const verified = status === "verified" && Number.isFinite(equity);
+    return {
+      venue_id: venueId,
+      status: verified ? "verified" : status === "verified" ? "unavailable" : status,
+      verified,
+      equity_micro_usdc: verified ? Math.max(0, Math.trunc(equity)) : null,
+      dry_run: record.dry_run === true,
+      account_commitment: typeof record.account_commitment === "string"
+        ? record.account_commitment
+        : null,
+      reason_codes: arrayOfStrings(record.reason_codes),
+      observed_at: typeof record.observed_at === "string" ? record.observed_at : null,
+    };
+  }
+  return unavailableVenueBalance(venueId, ["pooled_worker_balance_missing"]);
+}
+
+function unavailableVenueBalance(
+  venueId: PooledWorkerVenueId,
+  reasonCodes: string[],
+): PooledWorkerVenueBalance {
+  return {
+    venue_id: venueId,
+    status: "unavailable",
+    verified: false,
+    equity_micro_usdc: null,
+    dry_run: false,
+    account_commitment: null,
+    reason_codes: reasonCodes,
+    observed_at: null,
+  };
+}
+
 function pooledWorkerConfig(env: Record<string, string | undefined>) {
   const url = firstEnv(env, [
     "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
