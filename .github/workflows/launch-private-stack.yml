@@ -10,6 +10,7 @@ name: Launch private trading stack
 #   VERCEL_TOKEN                        Vercel account token
 #   GHOLA_PRIVATE_ACCOUNT_DATABASE_URL  Neon/Postgres URL for durable state
 #   PHALA_CLOUD_API_KEY                 Phala Cloud API key for the worker CVM
+#                                      (only when arm_phala=true)
 # Optional secrets (generated per-run when absent; note that regeneration
 # re-provisions the CVM):
 #   GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN
@@ -23,7 +24,7 @@ on:
       vercel_project:
         description: "Vercel project name serving ghola.xyz"
         required: true
-        default: "ghola"
+        default: "web"
       base_url:
         description: "Public base URL to verify"
         required: true
