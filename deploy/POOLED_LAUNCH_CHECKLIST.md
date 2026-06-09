@@ -16,6 +16,31 @@ service at ghola.xyz. Steps marked OPERATOR need dashboard access
       `ghcr.io/anndrrson/ghola:private-agent-worker-ac57d2a`
       (grab the `digest`/`pinned` value from the workflow run summary)
 
+## Zero-capital launch path
+
+The service can go fully live without operator capital:
+
+1. **BYO mode on mainnet** (already built): users import their own
+   Hyperliquid API wallet and trade their own funds. No pooled account
+   needed at all.
+2. **Pooled vaults on Hyperliquid testnet**: set
+   `PRIVATE_AGENT_HYPERLIQUID_POOLED_NETWORK=testnet` on the worker and
+   install a testnet account (`network: "testnet"` in
+   `PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON`) funded from the
+   Hyperliquid testnet faucet (free mock USDC at
+   app.hyperliquid-testnet.xyz). Testnet skips the
+   `ALLOW_MAINNET`/`LIVE_MODE` gates; notional/slippage caps still
+   apply. The full lifecycle — allocate, NAV shares, audit, withdraw —
+   runs against real venue infrastructure with zero capital at risk.
+3. **Mainnet pooled later, funded by users**: user deposits through the
+   funding rail are real USDC arriving at Ghola-controlled
+   destinations; relaying them to the pooled venue account funds the
+   pool. The operator's own requirement is only the canary float
+   (~$25: Hyperliquid's $10 min order + the $5 needs-funds threshold +
+   buffer). Flip `PRIVATE_AGENT_HYPERLIQUID_POOLED_NETWORK` back to
+   `mainnet` when ready; cap allocations to the small buckets until
+   deposits accumulate.
+
 ## 1. Deploy the web surface — OPERATOR
 
 Do NOT merge this branch into `main`: the branch tree drops 149 files

@@ -86,7 +86,9 @@ export function loadManagedHyperliquidCredential(allocation) {
     throw new HyperliquidExecutionError("hyperliquid managed pilot is testnet-only", 400);
   }
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
-    const network = allocation?.execution_mode === "ghola_pooled" ? "mainnet" : "testnet";
+    const network = allocation?.network === "testnet"
+      ? "testnet"
+      : allocation?.execution_mode === "ghola_pooled" ? "mainnet" : "testnet";
     return {
       network,
       base_url: network === "testnet" ? TESTNET_API_URL : MAINNET_API_URL,

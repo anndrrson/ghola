@@ -589,6 +589,67 @@ describe("private agent worker", () => {
     delete process.env.PRIVATE_AGENT_POOLED_BALANCE_DRY_RUN_MICRO_USDC;
   });
 
+  it("supports capital-free pooled trading on Hyperliquid testnet without mainnet gates", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_POOLED_NETWORK = "testnet";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD = "100";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD = "500";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS = "100";
+    delete process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET;
+    delete process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE;
+
+    const readinessBody = {
+      version: 1,
+      operation_class: "pooled_readiness",
+      venues: ["hyperliquid"],
+    };
+    const readinessRes = await fetch(`${baseUrl}/venues/pools/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${capabilityToken({
+          path: "/venues/pools/readiness",
+          scope: "credential:verify",
+          body: readinessBody,
+          expected: { operation_class: "pooled_readiness" },
+        })}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(readinessBody),
+    });
+    assert.equal(readinessRes.status, 200);
+    const readiness = await readinessRes.json();
+    const venue = readiness.venues.find((entry) => entry.venue_id === "hyperliquid");
+    assert.equal(venue.ready, true);
+    assert.equal(venue.network, "testnet");
+
+    const balanceBody = {
+      version: 1,
+      operation_class: "pooled_balance",
+      venues: ["hyperliquid"],
+    };
+    const balanceRes = await fetch(`${baseUrl}/venues/pools/balance`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${capabilityToken({
+          path: "/venues/pools/balance",
+          scope: "credential:verify",
+          body: balanceBody,
+          expected: { operation_class: "pooled_balance" },
+        })}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(balanceBody),
+    });
+    assert.equal(balanceRes.status, 200);
+    const balance = await balanceRes.json();
+    const venueBalance = balance.venues.find((entry) => entry.venue_id === "hyperliquid");
+    assert.equal(venueBalance.status, "verified");
+    assert.equal(venueBalance.network, "testnet");
+  });
+
   it("rejects pooled balance probes with a readiness-scoped capability", async () => {
     process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
     process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";

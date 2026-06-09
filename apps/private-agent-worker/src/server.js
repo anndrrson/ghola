@@ -645,6 +645,15 @@ function pooledReadinessVenueIds(body = {}) {
   ))];
 }
 
+// Pooled Hyperliquid trading can run against testnet (faucet USDC) for a
+// capital-free launch; mainnet remains the default and keeps its stricter
+// allow/live-mode gates.
+function hyperliquidPooledNetwork() {
+  return process.env.PRIVATE_AGENT_HYPERLIQUID_POOLED_NETWORK === "testnet"
+    ? "testnet"
+    : "mainnet";
+}
+
 function stateStoreMode() {
   return String(process.env.PRIVATE_AGENT_STATE_STORE || process.env.GHOLA_PRIVATE_AGENT_STATE_STORE || "json")
     .trim()
@@ -694,11 +703,14 @@ function pooledVenueReadiness(venueId, sharedState) {
   if (!sharedState.ready) reasonCodes.push(...sharedState.reason_codes);
   try {
     if (venueId === "hyperliquid") {
-      if (process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET !== "true") {
-        reasonCodes.push("hyperliquid_mainnet_worker_disabled");
-      }
-      if (process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE !== "full_ticket") {
-        reasonCodes.push("hyperliquid_live_mode_disabled");
+      const pooledNetwork = hyperliquidPooledNetwork();
+      if (pooledNetwork === "mainnet") {
+        if (process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET !== "true") {
+          reasonCodes.push("hyperliquid_mainnet_worker_disabled");
+        }
+        if (process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE !== "full_ticket") {
+          reasonCodes.push("hyperliquid_live_mode_disabled");
+        }
       }
       if (positiveCap("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD") <= 0) {
         reasonCodes.push("hyperliquid_max_order_cap_missing");
@@ -709,18 +721,19 @@ function pooledVenueReadiness(venueId, sharedState) {
       if (bpsCap("PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS") <= 0) {
         reasonCodes.push("hyperliquid_slippage_cap_missing");
       }
-      const refs = dryRun ? [{ network: "mainnet" }] : hyperliquidManagedAccountRefs();
-      const mainnetRefs = refs.filter((ref) => ref.network === "mainnet");
-      if (mainnetRefs.length === 0) reasonCodes.push("hyperliquid_pooled_account_pool_missing");
-      if (!dryRun && mainnetRefs[0]) {
+      const refs = dryRun ? [{ network: pooledNetwork }] : hyperliquidManagedAccountRefs();
+      const pooledRefs = refs.filter((ref) => ref.network === pooledNetwork);
+      if (pooledRefs.length === 0) reasonCodes.push("hyperliquid_pooled_account_pool_missing");
+      if (!dryRun && pooledRefs[0]) {
         loadManagedHyperliquidCredential({
           execution_mode: "ghola_pooled",
-          network: "mainnet",
-          credential_ref: mainnetRefs[0].credential_ref,
+          network: pooledNetwork,
+          credential_ref: pooledRefs[0].credential_ref,
         });
       }
       return pooledVenueReadinessResult(venueId, reasonCodes, {
-        credential_count: mainnetRefs.length,
+        credential_count: pooledRefs.length,
+        network: pooledNetwork,
       });
     }
     if (venueId === "phoenix") {
@@ -837,17 +850,18 @@ async function pooledVenueBalance(venueId) {
   const dryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true";
   try {
     if (venueId === "hyperliquid") {
+      const pooledNetwork = hyperliquidPooledNetwork();
       const refs = dryRun
-        ? [{ network: "mainnet", credential_ref: "dry-run" }]
+        ? [{ network: pooledNetwork, credential_ref: "dry-run" }]
         : hyperliquidManagedAccountRefs();
-      const mainnetRef = refs.find((ref) => ref.network === "mainnet");
-      if (!mainnetRef) {
+      const pooledRef = refs.find((ref) => ref.network === pooledNetwork);
+      if (!pooledRef) {
         return pooledVenueBalanceResult(venueId, "unavailable", ["hyperliquid_pooled_account_pool_missing"]);
       }
       const credential = loadManagedHyperliquidCredential({
         execution_mode: "ghola_pooled",
-        network: "mainnet",
-        credential_ref: mainnetRef.credential_ref,
+        network: pooledNetwork,
+        credential_ref: pooledRef.credential_ref,
       });
       const equity = await readHyperliquidPooledAccountEquity({ credential });
       return pooledVenueBalanceResult(venueId, "verified", [], {
