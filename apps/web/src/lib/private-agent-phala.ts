@@ -114,6 +114,13 @@ function phalaWorkerCapabilitySecret(): string | null {
   );
 }
 
+function phalaWorkerFundingSigningKey(): string | null {
+  return (
+    env("PRIVATE_AGENT_FUNDING_SIGNING_KEY") ??
+    env("GHOLA_PRIVATE_AGENT_FUNDING_SIGNING_KEY")
+  );
+}
+
 function phalaWorkerStatePostgresUrl(): string | null {
   return (
     env("PRIVATE_AGENT_STATE_POSTGRES_URL") ??
@@ -319,6 +326,7 @@ export function buildPhalaWorkerCompose(input: {
     '      PRIVATE_AGENT_TEE_KIND: "phala"',
     '      PRIVATE_AGENT_EXECUTION_TOKEN: "${PRIVATE_AGENT_EXECUTION_TOKEN}"',
     '      PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "${PRIVATE_AGENT_WORKER_CAPABILITY_SECRET}"',
+    '      PRIVATE_AGENT_FUNDING_SIGNING_KEY: "${PRIVATE_AGENT_FUNDING_SIGNING_KEY:-}"',
     composeEnvLine("PRIVATE_AGENT_STATE_STORE", phalaWorkerStateStore()),
     composeEnvLine("PRIVATE_AGENT_STATE_SINGLE_CVM_OK", workerEnv("PRIVATE_AGENT_STATE_SINGLE_CVM_OK", "false", ["GHOLA_PRIVATE_AGENT_STATE_SINGLE_CVM_OK"])),
     '      PRIVATE_AGENT_STATE_POSTGRES_URL: "${PRIVATE_AGENT_STATE_POSTGRES_URL:-}"',
@@ -639,6 +647,9 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
         { key: "PRIVATE_AGENT_EXECUTION_TOKEN", value: token },
         ...(phalaWorkerCapabilitySecret()
           ? [{ key: "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET", value: phalaWorkerCapabilitySecret() as string }]
+          : []),
+        ...(phalaWorkerFundingSigningKey()
+          ? [{ key: "PRIVATE_AGENT_FUNDING_SIGNING_KEY", value: phalaWorkerFundingSigningKey() as string }]
           : []),
         ...(statePostgresUrl
           ? [{ key: "PRIVATE_AGENT_STATE_POSTGRES_URL", value: statePostgresUrl }]
