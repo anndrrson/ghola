@@ -31,10 +31,13 @@ import {
 } from "@/lib/ghola-market-chart";
 import {
   createPrivateAccountIntent,
+  listPrivateAutopilotSessions,
   previewPrivateAccountAction,
   type HyperliquidMarketSnapshot,
   type PrivateAccountLiveTradingStatus,
   type PrivateAccountSafeInput,
+  type PrivateAutopilotSession,
+  type PrivateAutopilotStatus,
 } from "@/lib/private-account-client";
 import type { CoinbaseMarketSnapshot } from "@/lib/coinbase-market-data";
 import type { PhoenixMarketSnapshot } from "@/lib/phoenix-market-data";
@@ -600,11 +603,15 @@ export default function TradePage() {
 
             <aside className="border-t border-[#182234] lg:border-l lg:border-t-0">
               <div className="border-b border-[#182234] bg-gradient-to-b from-[#0a0e16] to-transparent px-4 py-3">
+                <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#dce6f4]">Agent activity</h2>
+              </div>
+              <AgentActivity authenticated={thumperAuth.authenticated} onSignIn={() => openAuth("signin")} />
+              <div className="border-y border-[#182234] bg-gradient-to-b from-[#0a0e16] to-transparent px-4 py-3">
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#dce6f4]">Order book</h2>
               </div>
               <BookTable frame={frame} />
               <div className="border-y border-[#182234] bg-gradient-to-b from-[#0a0e16] to-transparent px-4 py-3">
-                <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#dce6f4]">Recent trades</h2>
+                <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#dce6f4]">Market tape</h2>
               </div>
               <TradeTape frame={frame} />
             </aside>
@@ -1259,8 +1266,8 @@ function Label({ x, y, color, text }: { x: number; y: number; color: string; tex
 }
 
 function BookTable({ frame }: { frame: GholaMarketFrame | null }) {
-  const asks = (frame?.asks ?? []).slice(0, 7).reverse();
-  const bids = (frame?.bids ?? []).slice(0, 7);
+  const asks = (frame?.asks ?? []).slice(0, 5).reverse();
+  const bids = (frame?.bids ?? []).slice(0, 5);
   const maxSize = Math.max(
     1e-9,
     ...[...asks, ...bids].map((level) => Number(level.sz)).filter(Number.isFinite),
@@ -1312,8 +1319,8 @@ function BookRow({
 
 function TradeTape({ frame }: { frame: GholaMarketFrame | null }) {
   return (
-    <div className="max-h-48 overflow-hidden px-4 py-3 font-mono text-xs">
-      {(frame?.trades ?? []).slice(0, 10).map((trade, index) => (
+    <div className="max-h-36 overflow-hidden px-4 py-3 font-mono text-xs">
+      {(frame?.trades ?? []).slice(0, 8).map((trade, index) => (
         <div
           key={`${trade.time}-${index}`}
           className="grid grid-cols-3 py-1 tabular-nums"
@@ -1326,6 +1333,115 @@ function TradeTape({ frame }: { frame: GholaMarketFrame | null }) {
       ))}
     </div>
   );
+}
+
+function AgentActivity({
+  authenticated,
+  onSignIn,
+}: {
+  authenticated: boolean;
+  onSignIn: () => void;
+}) {
+  const [sessions, setSessions] = useState<PrivateAutopilotSession[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!authenticated) {
+      setSessions(null);
+      return;
+    }
+    let cancelled = false;
+    async function load() {
+      try {
+        const body = await listPrivateAutopilotSessions();
+        if (!cancelled) {
+          setSessions(body.autopilot_sessions ?? []);
+          setFailed(false);
+        }
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    }
+    void load();
+    const timer = window.setInterval(load, 20_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [authenticated]);
+
+  if (!authenticated) {
+    return (
+      <div className="px-4 py-4">
+        <p className="text-xs leading-5 text-[#566278]">
+          Your agent&apos;s sessions, decisions, and orders show up here.
+        </p>
+        <button type="button" onClick={onSignIn} className="trade-chip mt-2 h-8 rounded-md px-3 text-xs">
+          Sign in to view
+        </button>
+      </div>
+    );
+  }
+  if (failed) {
+    return <p className="px-4 py-4 text-xs text-[#566278]">Agent activity is unavailable right now.</p>;
+  }
+  if (sessions == null) {
+    return <p className="px-4 py-4 text-xs text-[#566278]">Checking agent sessions...</p>;
+  }
+  if (sessions.length === 0) {
+    return (
+      <p className="px-4 py-4 text-xs leading-5 text-[#566278]">
+        No agent sessions yet. Draw your levels on the chart and preview the plan to arm one.
+      </p>
+    );
+  }
+  const shown = [...sessions]
+    .sort((a, b) => +new Date(b.updated_at) - +new Date(a.updated_at))
+    .slice(0, 5);
+  return (
+    <div className="grid gap-2 px-4 py-3">
+      {shown.map((session) => (
+        <div key={session.autopilot_session_id} className="rounded-md border border-[#1e2a3a] bg-[#090d14] px-3 py-2 shadow-[inset_0_1px_0_rgba(220,238,255,0.04)]">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="flex items-center gap-1.5 font-medium capitalize text-[#eef1f8]">
+              <span aria-hidden className={`trade-live-dot h-1.5 w-1.5 rounded-full ${autopilotStatusDot(session.status)}`} />
+              {session.status.replaceAll("_", " ")}
+            </span>
+            <span className="font-mono text-[10px] tabular-nums text-[#566278]">{formatAgo(session.updated_at)}</span>
+          </div>
+          <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-[#8b95a8]">
+            <span className="shrink-0 font-mono tabular-nums">
+              {session.order_count} order{session.order_count === 1 ? "" : "s"}
+            </span>
+            <span className="truncate text-right">{session.next_step}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function autopilotStatusDot(status: PrivateAutopilotStatus) {
+  if (status === "running" || status === "watching") {
+    return "bg-emerald-300 shadow-[0_0_8px_rgba(110,231,183,0.8)]";
+  }
+  if (status === "armed") return "bg-[#5aa7ff] shadow-[0_0_8px_rgba(90,167,255,0.8)]";
+  if (status === "paused" || status === "pending_worker" || status === "pending_funding") {
+    return "bg-amber-300 shadow-[0_0_8px_rgba(252,211,77,0.8)]";
+  }
+  return "bg-[#566278]";
+}
+
+function formatAgo(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(diff) || diff < 0) return "now";
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 function ButtonGrid<T extends string>({
