@@ -7,6 +7,7 @@ import {
   Activity,
   ArrowRight,
   CheckCircle2,
+  ChevronDown,
   KeyRound,
   LockKeyhole,
   Play,
@@ -196,6 +197,7 @@ export default function TradePage() {
     | { status: "done"; commitment: string }
     | { status: "error"; message: string }
   >({ status: "idle" });
+  const [bookOpen, setBookOpen] = useState(false);
   const venue = VENUES.find((item) => item.id === venueId) ?? VENUES[0];
   const mid = frameMidNumber(frame);
   const [midFlash, setMidFlash] = useState(false);
@@ -606,10 +608,16 @@ export default function TradePage() {
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#dce6f4]">Agent activity</h2>
               </div>
               <AgentActivity authenticated={thumperAuth.authenticated} onSignIn={() => openAuth("signin")} />
-              <div className="border-y border-[#182234] bg-gradient-to-b from-[#0a0e16] to-transparent px-4 py-3">
+              <button
+                type="button"
+                aria-expanded={bookOpen}
+                onClick={() => setBookOpen((value) => !value)}
+                className="flex w-full items-center justify-between border-y border-[#182234] bg-gradient-to-b from-[#0a0e16] to-transparent px-4 py-3 transition-colors hover:bg-[#0c1220]"
+              >
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#dce6f4]">Order book</h2>
-              </div>
-              <BookTable frame={frame} />
+                <ChevronDown className={`h-3.5 w-3.5 text-[#566278] transition-transform ${bookOpen ? "rotate-180" : ""}`} />
+              </button>
+              {bookOpen ? <BookTable frame={frame} /> : <BookSummary frame={frame} />}
               <div className="border-y border-[#182234] bg-gradient-to-b from-[#0a0e16] to-transparent px-4 py-3">
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#dce6f4]">Market tape</h2>
               </div>
@@ -1262,6 +1270,34 @@ function Label({ x, y, color, text }: { x: number; y: number; color: string; tex
         {text}
       </text>
     </g>
+  );
+}
+
+function BookSummary({ frame }: { frame: GholaMarketFrame | null }) {
+  const bids = (frame?.bids ?? []).slice(0, 5);
+  const asks = (frame?.asks ?? []).slice(0, 5);
+  const bidTotal = bids.reduce((sum, level) => sum + (Number(level.sz) || 0), 0);
+  const askTotal = asks.reduce((sum, level) => sum + (Number(level.sz) || 0), 0);
+  const total = bidTotal + askTotal;
+  const bidShare = total > 0 ? (bidTotal / total) * 100 : 50;
+  return (
+    <div className="px-4 py-3">
+      <div className="flex items-baseline justify-between font-mono text-xs tabular-nums">
+        <span className="text-emerald-300">{frame?.bestBid ? formatPrice(Number(frame.bestBid)) : "-"}</span>
+        <span className="text-sm text-[#eef1f8]">{formatPrice(frameMidNumber(frame))}</span>
+        <span className="text-rose-300">{frame?.bestAsk ? formatPrice(Number(frame.bestAsk)) : "-"}</span>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-rose-400/25">
+        <div
+          className="h-full rounded-full bg-emerald-400/60 transition-[width] duration-500"
+          style={{ width: `${bidShare}%` }}
+        />
+      </div>
+      <div className="mt-1.5 flex items-center justify-between text-[10px] uppercase tracking-[0.14em] text-[#566278]">
+        <span>bids {Math.round(bidShare)}%</span>
+        <span>asks {Math.round(100 - bidShare)}%</span>
+      </div>
+    </div>
   );
 }
 
