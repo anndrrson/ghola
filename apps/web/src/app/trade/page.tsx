@@ -894,10 +894,16 @@ function MarketChart({
     [entryY, stopY].some((lineY) => lineY != null && Math.abs(hover.y - lineY) <= HIT_RADIUS);
 
   function svgPoint(event: React.PointerEvent<SVGSVGElement>) {
+    // The SVG preserves its viewBox aspect ratio (xMidYMid meet), so the
+    // drawing is letterboxed inside the element — map through the real
+    // scale and centering offsets or pointer hits land off-target.
     const rect = event.currentTarget.getBoundingClientRect();
+    const scale = Math.min(rect.width / chart.width, rect.height / chart.height) || 1;
+    const offsetX = (rect.width - chart.width * scale) / 2;
+    const offsetY = (rect.height - chart.height * scale) / 2;
     return {
-      x: ((event.clientX - rect.left) / rect.width) * chart.width,
-      y: ((event.clientY - rect.top) / rect.height) * chart.height,
+      x: (event.clientX - rect.left - offsetX) / scale,
+      y: (event.clientY - rect.top - offsetY) / scale,
     };
   }
 
