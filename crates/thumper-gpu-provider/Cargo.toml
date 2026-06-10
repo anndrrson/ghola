@@ -59,3 +59,7 @@ tokio-tungstenite = { workspace = true }
 axum = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
+
+[[test]]
+name = "integration"
+required-features = ["mock-nitro"]

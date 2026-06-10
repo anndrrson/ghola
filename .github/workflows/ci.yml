@@ -20,7 +20,9 @@ jobs:
       - name: Build
         run: cargo build --workspace
       - name: Test
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace
+          cargo test -p thumper-gpu-provider --features mock-nitro
         env:
           DATABASE_URL: "postgres://invalid"
           SQLX_OFFLINE: "true"
