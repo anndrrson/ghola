@@ -26,20 +26,37 @@ const TEST_ENV_KEYS = [
   "GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED",
   "GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN",
   "GHOLA_PRIVATE_AGENT_SPEND_ARMED",
+  "GHOLA_PRIVATE_AGENT_STATE_STORE",
+  "GHOLA_PRIVATE_AGENT_STATE_POSTGRES_URL",
   "GHOLA_PRIVATE_AGENT_WORKER_IMAGE",
   "GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST",
+  "GHOLA_PRIVATE_ACCOUNT_DATABASE_URL",
   "GHOLA_HYPERLIQUID_LIVE_MODE",
   "GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD",
   "GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS",
+  "GHOLA_JUPITER_API_KEY",
   "GHOLA_WORKER_CAPABILITY_SECRET",
+  "DATABASE_URL",
+  "JUPITER_API_KEY",
   "PHALA_API_KEY",
   "PHALA_CLOUD_API_KEY",
   "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET",
   "PRIVATE_AGENT_EXECUTION_TOKEN",
+  "PRIVATE_AGENT_STATE_STORE",
+  "PRIVATE_AGENT_STATE_POSTGRES_URL",
+  "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD",
+  "PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD",
   "PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS",
+  "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON",
+  "PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD",
+  "PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS",
+  "PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON",
+  "PRIVATE_AGENT_JUPITER_API_KEY",
+  "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON",
+  "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON",
   "VERCEL_ENV",
 ];
 
@@ -77,6 +94,10 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain(
       'PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "${PRIVATE_AGENT_WORKER_CAPABILITY_SECRET}"',
     );
+    expect(compose).toContain('PRIVATE_AGENT_STATE_STORE: "json"');
+    expect(compose).toContain(
+      'PRIVATE_AGENT_STATE_POSTGRES_URL: "${PRIVATE_AGENT_STATE_POSTGRES_URL:-}"',
+    );
     expect(compose).toContain('PRIVATE_AGENT_VENUE_DRY_RUN: "false"');
     expect(compose).toContain(
       'PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "disabled"',
@@ -90,8 +111,37 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain(
       'PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: "50"',
     );
+    expect(compose).toContain(
+      'PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON: "${PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON:-}"',
+    );
+    expect(compose).toContain(
+      'PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON: "${PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON:-}"',
+    );
+    expect(compose).toContain(
+      'PRIVATE_AGENT_JUPITER_API_KEY: "${PRIVATE_AGENT_JUPITER_API_KEY:-}"',
+    );
+    expect(compose).toContain(
+      'PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON: "${PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON:-}"',
+    );
     expect(compose).not.toMatch(/PHALA_CLOUD_API_KEY|PHALA_API_KEY/);
     expect(compose).not.toMatch(/prompt|strategy_text|messages|policy:/i);
+  });
+
+  it("uses shared Postgres state when the private-account database URL is available", () => {
+    setTestEnv({
+      GHOLA_PRIVATE_ACCOUNT_DATABASE_URL: "postgresql://user:pass@example.neon.tech/db",
+    });
+
+    const compose = buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker@sha256:abc",
+      imageDigest: "sha256:abc",
+    });
+
+    expect(compose).toContain('PRIVATE_AGENT_STATE_STORE: "postgres"');
+    expect(compose).toContain(
+      'PRIVATE_AGENT_STATE_POSTGRES_URL: "${PRIVATE_AGENT_STATE_POSTGRES_URL:-}"',
+    );
+    expect(compose).not.toContain("postgresql://user:pass@example.neon.tech/db");
   });
 
   it("pins a tag-only worker image to the configured digest", () => {
