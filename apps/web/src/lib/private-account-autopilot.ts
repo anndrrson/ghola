@@ -6,7 +6,10 @@ import {
   discoverPhalaPrivateAgentExecutionUrl,
   wakePhalaPrivateAgentForUse,
 } from "./private-agent-phala";
-import { agentPassportVenueAccessForWorker } from "./private-agent-passport";
+import {
+  agentPassportVenueAccessForWorker,
+  storedVenueAccessForWorker,
+} from "./private-agent-passport";
 import type { PrivateAccountRequestOwner } from "@/app/v1/private-account/_lib";
 import {
   getPrivateAutopilotSession,
@@ -597,10 +600,9 @@ async function armWorkerAutopilotSession(input: {
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const raw = record(input.body);
   const providedVenueAccess = optionalRecord(raw.venue_access) ?? optionalRecord(raw.venue_vaults);
-  const venueAccess = providedVenueAccess ??
-    (input.session.session_policy.strategy_id === "hedged_spread_arbitrage_v1" && isPrivateAccountRequestOwner(input.owner)
-      ? await agentPassportVenueAccessForWorker(input.owner)
-      : {});
+  const venueAccess = hasRecordEntries(providedVenueAccess)
+    ? providedVenueAccess
+    : await autopilotVenueAccessForWorker(input.owner, input.session.session_policy);
   const workerPath = "/autopilot/sessions";
   const payload = {
     version: 2,
@@ -686,6 +688,19 @@ async function wakeAndResolvePhalaWorker(input: {
   return {
     attempted: result.attempted,
     cfg: url ? { ...input.cfg, url } : input.cfg,
+  };
+}
+
+async function autopilotVenueAccessForWorker(
+  owner: AutopilotOwner,
+  policy: AutopilotSessionPolicy,
+): Promise<Record<string, unknown>> {
+  if (!isPrivateAccountRequestOwner(owner)) return {};
+  const stored = await storedVenueAccessForWorker(owner, policy.venue_allowlist);
+  if (policy.strategy_id !== "hedged_spread_arbitrage_v1") return stored;
+  return {
+    ...stored,
+    ...await agentPassportVenueAccessForWorker(owner),
   };
 }
 
@@ -1413,6 +1428,10 @@ function optionalRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function hasRecordEntries(value: Record<string, unknown> | null): value is Record<string, unknown> {
+  return Boolean(value && Object.keys(value).length > 0);
 }
 
 function stringArray(value: unknown): string[] {

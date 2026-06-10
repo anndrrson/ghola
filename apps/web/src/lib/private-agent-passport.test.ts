@@ -1,14 +1,23 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { POST as postArbCanaryReport } from "@/app/v1/private-account/agent-passport/arb-canary-report/route";
 import { POST as armArbRoute } from "@/app/v1/private-account/agent-passport/arm-arb/route";
-import { privateAccountOwnerFromRequest } from "@/app/v1/private-account/_lib";
+import {
+  privateAccountOwnerFromRequest,
+  type PrivateAccountRequestOwner,
+} from "@/app/v1/private-account/_lib";
 import {
   agentPassportReadinessForOwner,
   linkAgentPlatformFromBody,
 } from "./private-agent-passport";
 import { resetPrivateAccountStoreForTests } from "./private-account-store";
 
-const owner = { owner_commitment: "owner_passport_test" };
+const owner: PrivateAccountRequestOwner = {
+  owner_commitment: "owner_passport_test",
+  user: {
+    id: "passport_user",
+    email: "passport@example.com",
+  },
+};
 
 describe("agent passport venue linking", () => {
   afterEach(async () => {
@@ -133,6 +142,8 @@ describe("agent passport venue linking", () => {
     expect(readiness.can_arm).toBe(false);
     expect(readiness.arb_canary_required).toBe(false);
     expect(readiness.arb_canary_status).toBe("green");
+    expect(readiness.arb_canary_report).not.toBeNull();
+    if (!readiness.arb_canary_report) throw new Error("expected arb canary report");
     expect(readiness.arb_canary_report.worker_url).toBe("https://worker.example");
     expect(readiness.blockers).toContain("hyperliquid_required");
     expect(readiness.blockers).not.toContain("agent_arb_canary_missing");

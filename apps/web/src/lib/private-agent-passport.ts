@@ -11,6 +11,7 @@ import {
   type GholaVenueOperationClass,
 } from "./private-account";
 import {
+  getHyperliquidExecutionVaultByAccount,
   getPrivateAgentPassportByAccount,
   getLatestAgentArbCanaryReport,
   getVenueExecutionVaultByAccount,
@@ -29,6 +30,7 @@ import {
 import { workerAuthorizationHeader } from "./private-agent-capability";
 
 const AGENT_VENUES: PrivateAgentVenueId[] = ["hyperliquid", "coinbase_advanced", "jupiter"];
+const AUTOPILOT_VENUES = new Set(["hyperliquid", "phoenix", "jupiter", "coinbase_advanced"]);
 const ARB_MARKETS = ["BTC-USD", "ETH-USD", "SOL-USD"];
 
 export interface AgentPassportCapability {
@@ -230,6 +232,51 @@ export async function agentPassportVenueAccessForWorker(
       reason: "agent_passport_ready",
     };
   }
+  return out;
+}
+
+export async function storedVenueAccessForWorker(
+  owner: PrivateAccountRequestOwner,
+  venueAllowlist: readonly string[],
+): Promise<Record<string, unknown>> {
+  const account = await createOrGetStoredPrivateAccount(owner);
+  const venues = Array.from(new Set(
+    venueAllowlist.filter((venue) => AUTOPILOT_VENUES.has(venue)),
+  ));
+  const out: Record<string, unknown> = {};
+
+  if (venues.includes("hyperliquid")) {
+    const vault = await getHyperliquidExecutionVaultByAccount(account.account_commitment);
+    if (vault?.status === "sealed") {
+      out.hyperliquid = {
+        status: "ready",
+        execution_mode: "byo_api_key",
+        vault_commitment: vault.vault_commitment,
+        encrypted_vault_commitment: vault.encrypted_vault_commitment,
+        encrypted_execution_vault: vault.vault.encrypted_execution_vault,
+        reason: "user_sealed_vault_ready",
+      };
+    }
+  }
+
+  for (const venue of venues) {
+    if (venue === "hyperliquid" && out.hyperliquid) continue;
+    const vault = await getVenueExecutionVaultByAccount({
+      account_commitment: account.account_commitment,
+      venue_id: venue as "hyperliquid" | "phoenix" | "jupiter" | "coinbase_advanced",
+    });
+    if (!vault || vault.status !== "sealed") continue;
+    out[venue] = {
+      status: "ready",
+      execution_mode: vault.execution_mode,
+      vault_commitment: vault.vault_commitment,
+      encrypted_vault_commitment: vault.encrypted_vault_commitment,
+      encrypted_execution_vault: vault.vault.encrypted_execution_vault,
+      allocation_commitment: vault.allocation_commitment,
+      reason: "user_sealed_vault_ready",
+    };
+  }
+
   return out;
 }
 

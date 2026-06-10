@@ -6,7 +6,15 @@ import { GET as autopilotReadinessRoute } from "@/app/v1/private-account/autopil
 import { POST as createAutopilotRoute } from "@/app/v1/private-account/autopilot/sessions/route";
 import { GET as walletBindingChallengeRoute } from "@/app/v1/private-account/wallet-bindings/challenge/route";
 import { POST as walletBindingRoute } from "@/app/v1/private-account/wallet-bindings/route";
-import { resetPrivateAccountStoreForTests } from "./private-account-store";
+import {
+  createOrGetStoredPrivateAccount,
+  type PrivateAccountRequestOwner,
+} from "@/app/v1/private-account/_lib";
+import {
+  putHyperliquidExecutionVault,
+  resetPrivateAccountStoreForTests,
+} from "./private-account-store";
+import { createHyperliquidExecutionVault } from "./private-account";
 import {
   controlAutopilotSessionFromBody,
   createAutonomousAutopilotSessionFromBody,
@@ -19,6 +27,13 @@ import {
 import { privateAccountMobileProofMessage } from "./private-account-mobile-proof";
 
 const owner = { owner_commitment: "owner_a" };
+const authenticatedOwner: PrivateAccountRequestOwner = {
+  owner_commitment: "owner_autopilot_user",
+  user: {
+    id: "user_autopilot",
+    email: "user@example.com",
+  },
+};
 
 describe("private account autopilot sessions", () => {
   beforeEach(() => {
@@ -301,6 +316,94 @@ describe("private account autopilot sessions", () => {
     expect(calls).toEqual(["https://worker.example/autopilot/sessions"]);
     expect(created.session.status).toBe("running");
     expect(created.session.worker_autopilot_session_id).toBe("worker_autopilot_jit");
+    expect(created.session.venue_access.hyperliquid.status).toBe("ready");
+  });
+
+  it("attaches a user's stored Hyperliquid API vault to worker autopilot sessions", async () => {
+    const account = await createOrGetStoredPrivateAccount(authenticatedOwner);
+    const vault = createHyperliquidExecutionVault({
+      account_commitment: account.account_commitment,
+      encrypted_execution_vault: {
+        ciphertext: "sealed-hyperliquid-autopilot-vault",
+        recipient: "mock_attested:dev",
+        aad: "ghola/hyperliquid-execution-vault-v1",
+      },
+      now: new Date("2026-06-01T11:59:00.000Z"),
+    });
+    expect(vault.ok).toBe(true);
+    if (!vault.ok) return;
+    await putHyperliquidExecutionVault({
+      version: 1,
+      owner_commitment: authenticatedOwner.owner_commitment,
+      account_commitment: account.account_commitment,
+      vault_commitment: vault.vault.vault_commitment,
+      encrypted_vault_commitment: vault.vault.encrypted_vault_commitment,
+      recipient_commitment: vault.vault.recipient_commitment,
+      policy_commitment: vault.vault.policy_commitment,
+      status: vault.vault.status,
+      vault: vault.vault,
+      created_at: vault.vault.created_at,
+      updated_at: vault.vault.updated_at,
+    });
+
+    let workerPayload: Record<string, unknown> | null = null;
+    const fetchImpl = async (_input: URL | RequestInfo, init?: RequestInit) => {
+      workerPayload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        version: 1,
+        session: {
+          version: 2,
+          autopilot_session_id: "worker_autopilot_hyperliquid_byo",
+          worker_session_commitment: "worker_commitment_hyperliquid_byo",
+          status: "running",
+          strategy: {
+            version: 1,
+            strategy_id: "momentum_micro_trader",
+            decision_model: "ai_direct_order_v1",
+            executable_order_source: "ai_structured_decision_validated_by_policy",
+            ai_can_execute_directly: true,
+          },
+          session_policy: (workerPayload?.session_policy ?? {}),
+          venue_access: (workerPayload?.venue_access ?? {}),
+          order_count: 0,
+          daily_notional_used_bucket: "0",
+          updated_at: "2026-06-01T12:00:00.000Z",
+          expires_at: "2026-06-01T14:00:00.000Z",
+          next_step: "Autonomous worker is running.",
+          execution_enabled: true,
+        },
+        events: [],
+      }), { status: 201 });
+    };
+
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+          max_notional_bucket: "5",
+        },
+      },
+      authenticatedOwner,
+      new Date("2026-06-01T12:00:00.000Z"),
+      {
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      },
+      fetchImpl,
+    );
+
+    expect(workerPayload).not.toBeNull();
+    const payload = workerPayload as unknown as { venue_access?: Record<string, Record<string, unknown>> };
+    const venueAccess = payload.venue_access ?? {};
+    expect(venueAccess.hyperliquid.status).toBe("ready");
+    expect(venueAccess.hyperliquid.execution_mode).toBe("byo_api_key");
+    expect(venueAccess.hyperliquid.encrypted_execution_vault).toMatchObject({
+      ciphertext: "sealed-hyperliquid-autopilot-vault",
+      recipient: "mock_attested:dev",
+    });
+    expect(JSON.stringify(workerPayload)).not.toContain("api_wallet_private_key");
+    expect(created.session.status).toBe("running");
     expect(created.session.venue_access.hyperliquid.status).toBe("ready");
   });
 
