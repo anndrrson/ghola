@@ -1,0 +1,251 @@
+name: Configure backend model router
+
+# Backend-only operator workflow for model inference routing.
+# It does not provision Phala, does not arm private trading spend, and does not
+# install venue credentials. Use this to expose model-provider routes from
+# production env without changing app code.
+#
+# Required repository secret:
+#   VERCEL_TOKEN
+#
+# Optional repository secrets:
+#   VENICE_API_KEY                  Enables /v1/model-routes Venice routing
+#   GHOLA_VENICE_API_KEY            Alias accepted by the app
+#   GHOLA_LOCAL_OPENAI_BASE_URL     Server-side OpenAI-compatible endpoint
+#   GHOLA_LOCAL_OPENAI_API_KEY      Optional key for that endpoint
+#
+# Optional repository variables:
+#   GHOLA_LOCAL_OPENAI_BASE_URL
+#   GHOLA_MODEL_ROUTER_ALLOWED_ENDPOINT_HOSTS
+
+on:
+  workflow_dispatch:
+    inputs:
+      vercel_project:
+        description: "Vercel project name serving ghola.xyz"
+        required: true
+        default: "web"
+      base_url:
+        description: "Public base URL to verify"
+        required: true
+        default: "https://ghola.xyz"
+      deploy_ref:
+        description: "Git ref to deploy"
+        required: true
+        default: "main"
+      venice_base_url:
+        description: "Venice OpenAI-compatible base URL"
+        required: true
+        default: "https://api.venice.ai/api/v1"
+      user_endpoints_enabled:
+        description: "Allow request-supplied OpenAI-compatible endpoints. Requires an allowlist."
+        required: true
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      allowed_endpoint_hosts:
+        description: "Comma-separated allowlist for request-supplied endpoints. Leave blank to use repo variable."
+        required: false
+        default: ""
+      allow_localhost:
+        description: "Allow localhost endpoints from the production backend. Keep false for ghola.xyz."
+        required: true
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      allow_private_network:
+        description: "Allow private-network endpoints from the production backend. Keep false for ghola.xyz."
+        required: true
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      redeploy:
+        description: "Redeploy production after env changes"
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: configure-model-router
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          ref: ${{ inputs.deploy_ref }}
+
+      - uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 24
+
+      - name: Preflight
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          USER_ENDPOINTS_ENABLED: ${{ inputs.user_endpoints_enabled }}
+          ALLOWED_ENDPOINT_HOSTS_INPUT: ${{ inputs.allowed_endpoint_hosts }}
+          ALLOWED_ENDPOINT_HOSTS_VAR: ${{ vars.GHOLA_MODEL_ROUTER_ALLOWED_ENDPOINT_HOSTS }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${VERCEL_TOKEN}" ] || missing+=("VERCEL_TOKEN")
+          allowed_hosts="${ALLOWED_ENDPOINT_HOSTS_INPUT:-$ALLOWED_ENDPOINT_HOSTS_VAR}"
+          if [ "$USER_ENDPOINTS_ENABLED" = "true" ] && [ -z "$allowed_hosts" ]; then
+            missing+=("GHOLA_MODEL_ROUTER_ALLOWED_ENDPOINT_HOSTS or workflow allowed_endpoint_hosts")
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            {
+              echo "## Model-router configuration blocked"
+              echo ""
+              for s in "${missing[@]}"; do echo "- \`$s\`"; done
+              echo ""
+              echo "Add the missing secret/variable, then re-run."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Link Vercel project
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx vercel@latest link --yes --project "${{ inputs.vercel_project }}" --token "$VERCEL_TOKEN"
+
+      - name: Push model-router env vars to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VENICE_API_KEY: ${{ secrets.VENICE_API_KEY }}
+          GHOLA_VENICE_API_KEY: ${{ secrets.GHOLA_VENICE_API_KEY }}
+          VENICE_BASE_URL: ${{ inputs.venice_base_url }}
+          LOCAL_OPENAI_BASE_URL_SECRET: ${{ secrets.GHOLA_LOCAL_OPENAI_BASE_URL }}
+          LOCAL_OPENAI_BASE_URL_VAR: ${{ vars.GHOLA_LOCAL_OPENAI_BASE_URL }}
+          LOCAL_OPENAI_API_KEY: ${{ secrets.GHOLA_LOCAL_OPENAI_API_KEY }}
+          USER_ENDPOINTS_ENABLED: ${{ inputs.user_endpoints_enabled }}
+          ALLOWED_ENDPOINT_HOSTS_INPUT: ${{ inputs.allowed_endpoint_hosts }}
+          ALLOWED_ENDPOINT_HOSTS_VAR: ${{ vars.GHOLA_MODEL_ROUTER_ALLOWED_ENDPOINT_HOSTS }}
+          ALLOW_LOCALHOST: ${{ inputs.allow_localhost }}
+          ALLOW_PRIVATE_NETWORK: ${{ inputs.allow_private_network }}
+        run: |
+          set -euo pipefail
+          setenv() {
+            local name="$1" value="$2"
+            npx vercel@latest env rm "$name" production --yes --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
+            printf '%s' "$value" | npx vercel@latest env add "$name" production --token "$VERCEL_TOKEN" >/dev/null
+            echo "set $name"
+          }
+          rmenv() {
+            npx vercel@latest env rm "$1" production --yes --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
+            echo "removed $1"
+          }
+
+          if [ -n "$VENICE_API_KEY" ]; then
+            setenv VENICE_API_KEY "$VENICE_API_KEY"
+            rmenv GHOLA_VENICE_API_KEY
+          elif [ -n "$GHOLA_VENICE_API_KEY" ]; then
+            setenv GHOLA_VENICE_API_KEY "$GHOLA_VENICE_API_KEY"
+            rmenv VENICE_API_KEY
+          else
+            rmenv VENICE_API_KEY
+            rmenv GHOLA_VENICE_API_KEY
+          fi
+
+          setenv VENICE_BASE_URL "$VENICE_BASE_URL"
+          setenv GHOLA_MODEL_ROUTER_USER_ENDPOINTS_ENABLED "$USER_ENDPOINTS_ENABLED"
+          setenv GHOLA_MODEL_ROUTER_ALLOW_LOCALHOST "$ALLOW_LOCALHOST"
+          setenv GHOLA_MODEL_ROUTER_ALLOW_PRIVATE_NETWORK "$ALLOW_PRIVATE_NETWORK"
+          setenv GHOLA_MODEL_ROUTER_ALLOW_FRONTIER_PRIVATE_PROMPTS "false"
+
+          local_base_url="${LOCAL_OPENAI_BASE_URL_SECRET:-$LOCAL_OPENAI_BASE_URL_VAR}"
+          if [ -n "$local_base_url" ]; then
+            setenv GHOLA_LOCAL_OPENAI_BASE_URL "$local_base_url"
+          else
+            rmenv GHOLA_LOCAL_OPENAI_BASE_URL
+            rmenv LOCAL_OPENAI_BASE_URL
+          fi
+
+          if [ -n "$LOCAL_OPENAI_API_KEY" ]; then
+            setenv GHOLA_LOCAL_OPENAI_API_KEY "$LOCAL_OPENAI_API_KEY"
+          else
+            rmenv GHOLA_LOCAL_OPENAI_API_KEY
+            rmenv LOCAL_OPENAI_API_KEY
+          fi
+
+          allowed_hosts="${ALLOWED_ENDPOINT_HOSTS_INPUT:-$ALLOWED_ENDPOINT_HOSTS_VAR}"
+          if [ -n "$allowed_hosts" ]; then
+            setenv GHOLA_MODEL_ROUTER_ALLOWED_ENDPOINT_HOSTS "$allowed_hosts"
+          else
+            rmenv GHOLA_MODEL_ROUTER_ALLOWED_ENDPOINT_HOSTS
+          fi
+
+      - name: Deploy production to Vercel
+        if: ${{ inputs.redeploy == 'true' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          url=$(npx vercel@latest deploy --prod --yes --archive=tgz --token "$VERCEL_TOKEN")
+          echo "deployment_url=$url" >> "$GITHUB_ENV"
+          echo "## Web deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- $url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify production model routes
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          VENICE_API_KEY: ${{ secrets.VENICE_API_KEY }}
+          GHOLA_VENICE_API_KEY: ${{ secrets.GHOLA_VENICE_API_KEY }}
+        run: |
+          set -euo pipefail
+          catalog="$(curl -fsS -m 30 "$BASE_URL/v1/model-routes")"
+          models="$(curl -fsS -m 30 "$BASE_URL/v1/model-routes/models")"
+          CATALOG_JSON="$catalog" MODELS_JSON="$models" node <<'NODE'
+          const catalog = JSON.parse(process.env.CATALOG_JSON);
+          const models = JSON.parse(process.env.MODELS_JSON);
+          const route = (id) => catalog.data.find((item) => item.id === id);
+          const venice = route("venice");
+          const local = route("local_openai_compatible");
+          const expectedVenice = Boolean(process.env.VENICE_API_KEY || process.env.GHOLA_VENICE_API_KEY);
+          if (!venice) throw new Error("venice route missing");
+          if (!local) throw new Error("local_openai_compatible route missing");
+          if (venice.enabled !== expectedVenice) {
+            throw new Error(`venice enabled=${venice.enabled}, expected ${expectedVenice}`);
+          }
+          if (!models.data.some((model) => model.id === "venice/<venice-model-id>")) {
+            throw new Error("venice model alias missing");
+          }
+          if (!models.data.some((model) => model.id === "local/<model-id>")) {
+            throw new Error("local model alias missing");
+          }
+          console.log(JSON.stringify({
+            venice_enabled: venice.enabled,
+            venice_reason_codes: venice.reason_codes,
+            local_enabled: local.enabled,
+            local_reason_codes: local.reason_codes,
+          }, null, 2));
+          NODE
+
+          reject_status="$(curl -sS -o /tmp/model-router-reject.json -w "%{http_code}" -m 30 \
+            -X POST "$BASE_URL/v1/model-routes/chat/completions" \
+            -H "content-type: application/json" \
+            -d '{"route":"venice","model":"venice/test","messages":[{"role":"user","content":"hello"}],"venue_credentials":{"api_secret":"blocked"}}')"
+          if [ "$reject_status" != "422" ]; then
+            echo "Expected credential rejection status 422, got $reject_status"
+            cat /tmp/model-router-reject.json
+            exit 1
+          fi
+
+          {
+            echo "## Model-router verification"
+            echo ""
+            echo '```json'
+            echo "$catalog" | head -c 1800
+            echo ""
+            echo '```'
+            echo "- credential payload rejection: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
