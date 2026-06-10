@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
-const workerRequire = createRequire(resolve(root, "apps/private-agent-worker/package.json"));
-const { Keypair } = workerRequire("@solana/web3.js");
+const webRequire = createRequire(resolve(root, "apps/web/package.json"));
+const { Keypair } = webRequire("@solana/web3.js");
 
 const DEFAULT_OUT = "deploy/private-agent-pooled-credentials.env";
 const REQUIRED_KEYS = [
@@ -27,6 +27,8 @@ const JSON_SECRET_KEYS = new Set([
 ]);
 const CREDENTIAL_INTAKE_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_APPROVAL_EVIDENCE",
+  "PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_SOURCE",
+  "PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_APPROVAL_EVIDENCE",
   "PRIVATE_AGENT_SOLANA_PERPS_POOLED_AUTHORITY_SOURCE",
   "PRIVATE_AGENT_JUPITER_POOLED_AUTHORITY_SOURCE",
   "PRIVATE_AGENT_JUPITER_API_KEY_EVIDENCE",
@@ -36,6 +38,8 @@ const CREDENTIAL_INTAKE_KEYS = [
 ];
 const REQUIRED_INSTALL_EVIDENCE_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_APPROVAL_EVIDENCE",
+  "PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_SOURCE",
+  "PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_APPROVAL_EVIDENCE",
   "PRIVATE_AGENT_JUPITER_API_KEY_EVIDENCE",
   "PRIVATE_AGENT_JUPITER_AUTHORITY_FUNDING_EVIDENCE",
   "PRIVATE_AGENT_COINBASE_OMNIBUS_EVIDENCE",
@@ -62,6 +66,9 @@ for (const file of sources) {
   Object.assign(merged, readEnvFile(file));
 }
 Object.assign(merged, envSubset(process.env));
+if (args.hyperliquidNetwork) {
+  merged.PRIVATE_AGENT_HYPERLIQUID_NETWORK = args.hyperliquidNetwork;
+}
 
 normalizeAliases(merged);
 const generated = [];
@@ -84,6 +91,37 @@ if (!nonEmpty(merged.PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON)) {
     merged.PRIVATE_AGENT_JUPITER_POOLED_AUTHORITY_SOURCE = "generated_by_bootstrap_unfunded";
   }
   generated.push("jupiter_authority");
+}
+
+if (args.generateHyperliquidNativeVaultAgent) {
+  const masterAccountAddress = args.hyperliquidNativeVaultMasterAccount ||
+    merged.PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_MASTER_ACCOUNT_ADDRESS ||
+    merged.PRIVATE_AGENT_HYPERLIQUID_MASTER_ACCOUNT_ADDRESS ||
+    "";
+  if (!isEvmAddress(masterAccountAddress)) {
+    fail([
+      "Cannot generate Hyperliquid native vault agent entry without the master account address.",
+      "Pass --hyperliquid-native-vault-master-account 0x... or set PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_MASTER_ACCOUNT_ADDRESS.",
+      "Hyperliquid vault/subaccount signing uses the master account address with vaultAddress set separately.",
+    ].join("\n"));
+  }
+  const pool = hyperliquidPoolJson(merged.PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON);
+  if (!hasHyperliquidNativeVaultAgent(pool)) {
+    const wallet = await evmWallet();
+    pool.accounts.push({
+      network: "mainnet",
+      execution_mode: "hyperliquid_native_vault",
+      account_address: masterAccountAddress.toLowerCase(),
+      api_wallet_private_key: wallet.privateKey,
+      agent_wallet_address: wallet.address,
+      agent_name: "ghola-native-vault",
+    });
+    merged.PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON = JSON.stringify(pool);
+    if (!nonEmpty(merged.PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_SOURCE)) {
+      merged.PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_SOURCE = `local_agent_wallet_created_${wallet.address}`;
+    }
+    generated.push("hyperliquid_native_vault_agent_wallet");
+  }
 }
 
 const installEnv = {};
@@ -109,32 +147,59 @@ console.log(JSON.stringify({
 }, null, 2));
 
 if (args.install) {
-  if (status.missing.length > 0) {
+  const testnetHyperliquidInstall = args.hyperliquidNetwork === "testnet";
+  const delegatedPartialInstall = testnetHyperliquidInstall || args.allowPartial || args.venues;
+  if (!delegatedPartialInstall && status.missing.length > 0) {
     fail(`Not installing; missing required external credential(s): ${status.missing.join(", ")}`);
   }
-  if (evidence.missing.length > 0) {
+  if (!delegatedPartialInstall && evidence.missing.length > 0) {
     fail(`Not installing; missing credential intake evidence: ${evidence.missing.join(", ")}`);
   }
   if (!args.workerEnv) {
     fail("Not installing; pass --worker-env <full-phala-worker.env> so Phala receives a complete sealed env.");
   }
-  run("node", [
+  const installArgs = [
     "scripts/install-phala-pooled-credentials.mjs",
     "--env",
     relativeRoot(outPath),
     "--worker-env",
     args.workerEnv,
-  ]);
+  ];
+  if (args.venues || testnetHyperliquidInstall) {
+    installArgs.push("--venues", args.venues || "hyperliquid");
+  }
+  if (args.allowPartial || testnetHyperliquidInstall) installArgs.push("--allow-partial");
+  if (args.allowTestnet || testnetHyperliquidInstall) installArgs.push("--allow-testnet");
+  run("node", installArgs);
 }
 
 function parseArgs(argv) {
-  const parsed = { env: [], out: DEFAULT_OUT, install: false, workerEnv: "" };
+  const parsed = {
+    env: [],
+    out: DEFAULT_OUT,
+    install: false,
+    workerEnv: "",
+    generateHyperliquidNativeVaultAgent: false,
+    hyperliquidNativeVaultMasterAccount: "",
+    hyperliquidNetwork: "",
+    venues: "",
+    allowPartial: false,
+    allowTestnet: false,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--env") parsed.env.push(argv[++i] || "");
     else if (arg === "--out") parsed.out = argv[++i] || DEFAULT_OUT;
     else if (arg === "--install") parsed.install = true;
     else if (arg === "--worker-env") parsed.workerEnv = argv[++i] || "";
+    else if (arg === "--hyperliquid-network") parsed.hyperliquidNetwork = argv[++i] || "";
+    else if (arg === "--venues") parsed.venues = argv[++i] || "";
+    else if (arg === "--allow-partial") parsed.allowPartial = true;
+    else if (arg === "--allow-testnet") parsed.allowTestnet = true;
+    else if (arg === "--generate-hyperliquid-native-vault-agent") parsed.generateHyperliquidNativeVaultAgent = true;
+    else if (arg === "--hyperliquid-native-vault-master-account") {
+      parsed.hyperliquidNativeVaultMasterAccount = argv[++i] || "";
+    }
     else if (arg === "-h" || arg === "--help") usage();
     else usage(`Unknown argument: ${arg}`);
   }
@@ -146,10 +211,13 @@ function usage(error = "") {
   console.error([
     "Usage:",
     "  node scripts/bootstrap-phala-pooled-credentials.mjs [--env extra.env] [--worker-env .dev/phala-worker.env] [--install]",
+    "  node scripts/bootstrap-phala-pooled-credentials.mjs --hyperliquid-network testnet --env .dev/hyperliquid-testnet.env --worker-env .dev/phala-worker.env --install",
     "",
     "Creates or updates deploy/private-agent-pooled-credentials.env.",
     "Generates Phoenix and Jupiter Solana authority keys when absent, marked as generated/unfunded.",
-    "Does not generate external exchange credentials or approval evidence for Hyperliquid, Jupiter API, or Coinbase.",
+    "Can write a Hyperliquid managed account as network=testnet for sealed CVM pilot accounts.",
+    "Pass --generate-hyperliquid-native-vault-agent with --hyperliquid-native-vault-master-account 0x... to create an EVM agent signer for Hyperliquid native vault mode.",
+    "Does not generate venue approval evidence for Hyperliquid, Jupiter API, or Coinbase.",
   ].join("\n"));
   process.exit(error ? 1 : 0);
 }
@@ -180,9 +248,10 @@ function normalizeAliases(env) {
       env.HYPERLIQUID_API_PRIVATE_KEY ||
       "";
     if (account && key) {
+      const network = hyperliquidNetwork(env);
       env.PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON = JSON.stringify({
         accounts: [{
-          network: "mainnet",
+          network,
           account_address: account,
           api_wallet_private_key: key,
         }],
@@ -209,6 +278,62 @@ function normalizeAliases(env) {
       });
     }
   }
+}
+
+function hyperliquidNetwork(env) {
+  const raw = env.PRIVATE_AGENT_HYPERLIQUID_NETWORK ||
+    env.HYPERLIQUID_NETWORK ||
+    env.GHOLA_CANARY_HYPERLIQUID_NETWORK ||
+    "";
+  return String(raw).trim().toLowerCase() === "testnet" ? "testnet" : "mainnet";
+}
+
+function hyperliquidPoolJson(value) {
+  if (nonEmpty(value)) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return { accounts: parsed };
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.accounts)) return parsed;
+    } catch {
+      // The installer reports malformed JSON during validation.
+    }
+  }
+  return { accounts: [] };
+}
+
+function hasHyperliquidNativeVaultAgent(pool) {
+  return Array.isArray(pool.accounts) && pool.accounts.some((account) =>
+    account?.network === "mainnet" &&
+      account?.execution_mode === "hyperliquid_native_vault" &&
+      /^0x[0-9a-fA-F]{40}$/.test(String(account.account_address || "")) &&
+      /^0x[0-9a-fA-F]{64}$/.test(String(account.api_wallet_private_key || "")) &&
+      (
+        !account.agent_wallet_address ||
+        /^0x[0-9a-fA-F]{40}$/.test(String(account.agent_wallet_address || ""))
+      )
+  );
+}
+
+async function evmWallet() {
+  const { secp256k1 } = await import(webRequire.resolve("@noble/curves/secp256k1.js"));
+  const { keccak_256 } = await import(webRequire.resolve("@noble/hashes/sha3.js"));
+  const privateKeyBytes = secp256k1.utils.randomPrivateKey();
+  const publicKey = secp256k1.getPublicKey(privateKeyBytes, false);
+  const addressBytes = keccak_256(publicKey.slice(1)).slice(-20);
+  return {
+    address: `0x${hex(addressBytes)}`,
+    privateKey: `0x${hex(privateKeyBytes)}`,
+  };
+}
+
+function hex(bytes) {
+  return Array.from(bytes)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function isEvmAddress(value) {
+  return /^0x[0-9a-fA-F]{40}$/.test(String(value || "").trim());
 }
 
 function summarize(env) {

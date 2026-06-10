@@ -14,6 +14,7 @@ const REQUIRED_SECRET_KEYS = [
 ];
 const VENUE_SECRET_KEYS = {
   hyperliquid: ["PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"],
+  hyperliquid_native: ["PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"],
   phoenix: ["PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON"],
   jupiter: [
     "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON",
@@ -23,6 +24,10 @@ const VENUE_SECRET_KEYS = {
 };
 const VENUE_EVIDENCE_KEYS = {
   hyperliquid: ["PRIVATE_AGENT_HYPERLIQUID_APPROVAL_EVIDENCE"],
+  hyperliquid_native: [
+    "PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_SOURCE",
+    "PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_APPROVAL_EVIDENCE",
+  ],
   phoenix: [],
   jupiter: [
     "PRIVATE_AGENT_JUPITER_API_KEY_EVIDENCE",
@@ -43,6 +48,7 @@ const JSON_SECRET_KEYS = new Set([
   "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON",
 ]);
 const PLACEHOLDER_RE = /(?:REPLACE|PLACEHOLDER|EXAMPLE|TODO|DUMMY|FAKE|TEST_ONLY)/i;
+const GENERATED_UNAPPROVED_RE = /(?:generated_by_bootstrap|unapproved|unfunded|not_approved)/i;
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.env) {
@@ -67,6 +73,12 @@ normalizeAlias(pooledEnv, "PRIVATE_AGENT_JUPITER_API_KEY", [
   "JUPITER_API_KEY",
   "GHOLA_JUPITER_API_KEY",
 ]);
+if (nonEmpty(pooledEnv.PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_READY)) {
+  pooledEnv.PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_READY =
+    String(pooledEnv.PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_READY).trim().toLowerCase() === "true"
+      ? "true"
+      : "";
+}
 
 const missing = REQUIRED_SECRET_KEYS.filter((key) => !nonEmpty(pooledEnv[key]));
 const requestedVenues = selectedVenues(args.venues);
@@ -79,10 +91,11 @@ const selectedEvidenceKeys = [...new Set(selectedCompleteVenues.flatMap((venue) 
 const selectedMissing = [...new Set(requestedVenues
   .flatMap((venue) => VENUE_SECRET_KEYS[venue])
   .filter((key) => !nonEmpty(pooledEnv[key])))];
+const requiredMissing = args.venues ? selectedMissing : missing;
 const selectedEvidenceMissing = credentialEvidenceMissing(selectedCompleteVenues, pooledEnv);
 
-if (!args.allowPartial && missing.length) {
-  fail(`Missing required pooled credential env(s): ${missing.join(", ")}`);
+if (!args.allowPartial && requiredMissing.length) {
+  fail(`Missing required pooled credential env(s): ${requiredMissing.join(", ")}`);
 }
 if (args.allowPartial && selectedCompleteVenues.length === 0) {
   fail(`No complete pooled venue credentials found. Missing: ${selectedMissing.join(", ")}`);
@@ -103,7 +116,15 @@ const validation = {};
 if (selectedCompleteVenues.includes("hyperliquid")) {
   validation.hyperliquid_accounts = validateHyperliquidPool(
     jsonValue(pooledEnv.PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON, "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"),
+    { nativeVaultRequired: false, allowTestnet: args.allowTestnet },
   );
+}
+if (selectedCompleteVenues.includes("hyperliquid_native")) {
+  validation.hyperliquid_native_vault_agent = validateHyperliquidPool(
+    jsonValue(pooledEnv.PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON, "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"),
+    { nativeVaultRequired: true },
+  );
+  pooledEnv.PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_READY = "true";
 }
 if (selectedCompleteVenues.includes("phoenix")) {
   validation.phoenix_authority = validateSolanaVault(
@@ -133,7 +154,13 @@ const cvmName =
   process.env.GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME ||
   "ghola-private-agent-worker-no-submit-f510d61";
 
-const pooledSealedEnv = Object.fromEntries(selectedSecretKeys.map((key) => [key, pooledEnv[key]]));
+const selectedSealedKeys = [...selectedSecretKeys];
+if (selectedCompleteVenues.includes("hyperliquid_native")) {
+  selectedSealedKeys.push("PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_READY");
+}
+const pooledSealedEnv = Object.fromEntries(
+  [...new Set(selectedSealedKeys)].map((key) => [key, pooledEnv[key]]),
+);
 const workerSealedEnv = args.workerEnv ? readEnvFile(args.workerEnv) : {};
 const sealedEnv = { ...workerSealedEnv, ...pooledSealedEnv };
 
@@ -141,6 +168,8 @@ console.log(JSON.stringify({
   installing_to_cvm: cvmName,
   dry_run: args.dryRun,
   allow_partial: args.allowPartial,
+  allow_testnet: args.allowTestnet,
+  testnet_only_install: isTestnetOnlyInstall(validation),
   sealed_env_mode: args.workerEnv ? "worker_env_plus_pooled_credentials" : "pooled_credentials_only",
   requested_venues: requestedVenues,
   complete_venues: completeVenues,
@@ -198,7 +227,7 @@ try {
     pooled_reason_codes: status.pooled_reason_codes,
   };
   console.log(JSON.stringify({ public_status_after_install: summary }, null, 2));
-  if (status.pooled_live_trading_enabled !== true) {
+  if (status.pooled_live_trading_enabled !== true && !isTestnetOnlyInstall(validation)) {
     process.exitCode = 2;
   }
 } finally {
@@ -206,7 +235,7 @@ try {
 }
 
 function parseArgs(argv) {
-  const parsed = { dryRun: false, vercel: true, env: "", workerEnv: "", cvm: "", venues: "", allowPartial: false };
+  const parsed = { dryRun: false, vercel: true, env: "", workerEnv: "", cvm: "", venues: "", allowPartial: false, allowTestnet: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--env") parsed.env = argv[++i] || "";
@@ -214,6 +243,7 @@ function parseArgs(argv) {
     else if (arg === "--cvm") parsed.cvm = argv[++i] || "";
     else if (arg === "--venues") parsed.venues = argv[++i] || "";
     else if (arg === "--allow-partial") parsed.allowPartial = true;
+    else if (arg === "--allow-testnet") parsed.allowTestnet = true;
     else if (arg === "--dry-run") parsed.dryRun = true;
     else if (arg === "--no-vercel") parsed.vercel = false;
     else if (arg === "-h" || arg === "--help") usage();
@@ -228,6 +258,8 @@ function usage(error = "") {
     "Usage:",
     "  node scripts/install-phala-pooled-credentials.mjs --env deploy/private-agent-pooled-credentials.env --worker-env .dev/phala-worker.env",
     "  node scripts/install-phala-pooled-credentials.mjs --env deploy/private-agent-pooled-credentials.env --worker-env .dev/phala-worker.env --allow-partial --venues phoenix",
+    "  node scripts/install-phala-pooled-credentials.mjs --env deploy/private-agent-pooled-credentials.env --worker-env .dev/phala-worker.env --allow-partial --allow-testnet --venues hyperliquid",
+    "  node scripts/install-phala-pooled-credentials.mjs --env deploy/private-agent-pooled-credentials.env --worker-env .dev/phala-worker.env --venues hyperliquid_native",
     "",
     "The env file must contain:",
     ...REQUIRED_SECRET_KEYS.map((key) => `  ${key}=...`),
@@ -267,7 +299,7 @@ function credentialEvidenceMissing(venues, env) {
 
 function validOperatorEvidence(value) {
   if (!nonEmpty(value)) return false;
-  return !PLACEHOLDER_RE.test(String(value));
+  return !PLACEHOLDER_RE.test(String(value)) && !GENERATED_UNAPPROVED_RE.test(String(value));
 }
 
 function readEnvFile(path) {
@@ -388,28 +420,63 @@ function assertNoPlaceholderJson(value, path) {
   }
 }
 
-function validateHyperliquidPool(value) {
+function validateHyperliquidPool(value, options = {}) {
   const accounts = Array.isArray(value) ? value : value?.accounts;
   if (!Array.isArray(accounts) || accounts.length === 0) fail("Hyperliquid pool has no accounts.");
-  const mainnet = accounts.filter((account) => account?.network === "mainnet");
-  if (mainnet.length === 0) fail("Hyperliquid pool has no mainnet account.");
-  for (const account of mainnet) {
+  const mainnet = accounts.filter((account) =>
+    account?.network === "mainnet" &&
+      (
+        !options.nativeVaultRequired ||
+        account?.execution_mode === "hyperliquid_native_vault"
+      )
+  );
+  const testnet = accounts.filter((account) => account?.network === "testnet");
+  if (mainnet.length === 0) {
+    if (options.nativeVaultRequired) {
+      fail("Hyperliquid pool has no mainnet execution_mode=hyperliquid_native_vault agent wallet.");
+    }
+    if (!options.allowTestnet || testnet.length === 0) {
+      fail("Hyperliquid pool has no mainnet account.");
+    }
+  }
+  for (const account of [...mainnet, ...(options.allowTestnet ? testnet : [])]) {
     const address = String(account.account_address || "");
     const apiWalletKey = String(account.api_wallet_private_key || "");
     if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
-      fail("Hyperliquid mainnet account_address is invalid.");
+      fail(`Hyperliquid ${account.network || "mainnet"} account_address is invalid.`);
     }
     if (/^0x0{40}$/i.test(address)) {
-      fail("Hyperliquid mainnet account_address must not be the zero address.");
+      fail(`Hyperliquid ${account.network || "mainnet"} account_address must not be the zero address.`);
     }
     if (!/^0x[0-9a-fA-F]{64}$/.test(apiWalletKey)) {
-      fail("Hyperliquid mainnet api_wallet_private_key is invalid.");
+      fail(`Hyperliquid ${account.network || "mainnet"} api_wallet_private_key is invalid.`);
     }
     if (/^0x(?:0{64}|1{64})$/i.test(apiWalletKey)) {
-      fail("Hyperliquid mainnet api_wallet_private_key looks like a generated placeholder.");
+      fail(`Hyperliquid ${account.network || "mainnet"} api_wallet_private_key looks like a generated placeholder.`);
+    }
+    if (
+      account.agent_wallet_address &&
+      !/^0x[0-9a-fA-F]{40}$/.test(String(account.agent_wallet_address))
+    ) {
+      fail("Hyperliquid native vault agent_wallet_address is invalid.");
     }
   }
-  return { mainnet_account_count: mainnet.length };
+  return {
+    mainnet_account_count: mainnet.length,
+    testnet_account_count: testnet.length,
+    native_vault_agent_count: accounts.filter((account) =>
+      account?.network === "mainnet" && account?.execution_mode === "hyperliquid_native_vault"
+    ).length,
+  };
+}
+
+function isTestnetOnlyInstall(validation) {
+  const hyperliquid = validation?.hyperliquid_accounts;
+  return Boolean(
+    hyperliquid &&
+    hyperliquid.mainnet_account_count === 0 &&
+    hyperliquid.testnet_account_count > 0,
+  );
 }
 
 function validateSolanaVault(value, venue) {

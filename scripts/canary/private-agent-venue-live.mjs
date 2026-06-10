@@ -62,6 +62,8 @@ console.log(`[venue-canary] worker=${trimUrl(workerUrl)} recipient=${recipient.r
 let canaryReport = null;
 if (venue === "hyperliquid") {
   canaryReport = await runHyperliquid();
+} else if (venue === "hyperliquid_managed_testnet") {
+  canaryReport = await runHyperliquid({ executionMode: "managed_testnet" });
 } else if (venue === "hyperliquid_pooled") {
   canaryReport = await runHyperliquid({ executionMode: "ghola_pooled" });
 } else if (venue === "phoenix") {
@@ -90,11 +92,13 @@ console.log(`[venue-canary] ${venue} canary passed`);
 
 async function runHyperliquid({ executionMode = env("GHOLA_CANARY_HYPERLIQUID_EXECUTION_MODE", "byo_api_key") } = {}) {
   const pooled = executionMode === "ghola_pooled";
+  const managed = executionMode === "managed_testnet";
+  const usesManagedAllocation = pooled || managed;
   const network = env("GHOLA_CANARY_HYPERLIQUID_NETWORK", pooled ? "mainnet" : "testnet");
-  const accountAddress = !pooled && live
+  const accountAddress = !usesManagedAllocation && live
     ? required("GHOLA_CANARY_HYPERLIQUID_ACCOUNT_ADDRESS")
     : "0x0000000000000000000000000000000000000001";
-  const apiWalletPrivateKey = !pooled && live
+  const apiWalletPrivateKey = !usesManagedAllocation && live
     ? required("GHOLA_CANARY_HYPERLIQUID_API_WALLET_PRIVATE_KEY")
     : "0x1111111111111111111111111111111111111111111111111111111111111111";
   const market = env("GHOLA_CANARY_HYPERLIQUID_MARKET", "BTC").toUpperCase();
@@ -120,18 +124,23 @@ async function runHyperliquid({ executionMode = env("GHOLA_CANARY_HYPERLIQUID_EX
   };
   let encryptedVault = null;
   let allocationCommitment = "";
-  if (pooled) {
-    const allocation = await expect("hyperliquid pooled allocation", "/hyperliquid/managed/allocations", 201, {
+  if (usesManagedAllocation) {
+    const allocation = await expect(
+      managed ? "hyperliquid managed testnet allocation" : "hyperliquid pooled allocation",
+      "/hyperliquid/managed/allocations",
+      201,
+      {
       version: 1,
-      execution_mode: "ghola_pooled",
-      network: "mainnet",
+      execution_mode: managed ? "managed_testnet" : "ghola_pooled",
+      network,
       account_commitment: accountCommitment,
       policy_commitment: policyCommitment,
       eligibility_commitment: eligibilityCommitment,
       session_policy: sessionPolicy,
-    });
+      },
+    );
     allocationCommitment = allocation.allocation_commitment;
-    if (!allocationCommitment) fail("hyperliquid pooled allocation did not return allocation_commitment");
+    if (!allocationCommitment) fail("hyperliquid managed allocation did not return allocation_commitment");
   } else {
     encryptedVault = await sealedBundle({
       version: 1,
@@ -151,12 +160,12 @@ async function runHyperliquid({ executionMode = env("GHOLA_CANARY_HYPERLIQUID_EX
 
   await expect("hyperliquid session", "/hyperliquid/sessions", 201, stripUndefined({
     version: 1,
-    execution_mode: pooled ? "ghola_pooled" : "byo_api_key",
+    execution_mode: usesManagedAllocation ? executionMode : "byo_api_key",
     account_commitment: accountCommitment,
-    vault_commitment: pooled ? undefined : vaultCommitment,
-    managed_allocation_commitment: pooled ? allocationCommitment : undefined,
+    vault_commitment: usesManagedAllocation ? undefined : vaultCommitment,
+    managed_allocation_commitment: usesManagedAllocation ? allocationCommitment : undefined,
     policy_commitment: policyCommitment,
-    encrypted_execution_vault: pooled ? undefined : encryptedVault,
+    encrypted_execution_vault: usesManagedAllocation ? undefined : encryptedVault,
     session_policy: sessionPolicy,
   }));
 
@@ -187,13 +196,13 @@ async function runHyperliquid({ executionMode = env("GHOLA_CANARY_HYPERLIQUID_EX
       202,
       stripUndefined({
         version: 1,
-        execution_mode: pooled ? "ghola_pooled" : "byo_api_key",
+        execution_mode: usesManagedAllocation ? executionMode : "byo_api_key",
         work_order_commitment: orderWork,
-        vault_commitment: pooled ? undefined : vaultCommitment,
-        managed_allocation_commitment: pooled ? allocationCommitment : undefined,
+        vault_commitment: usesManagedAllocation ? undefined : vaultCommitment,
+        managed_allocation_commitment: usesManagedAllocation ? allocationCommitment : undefined,
         policy_commitment: policyCommitment,
         operation_class: "limit_order",
-        encrypted_execution_vault: pooled ? undefined : encryptedVault,
+        encrypted_execution_vault: usesManagedAllocation ? undefined : encryptedVault,
         encrypted_execution_instruction_bundle: await instructionBundle({
           workOrderCommitment: orderWork,
           venueId: "hyperliquid",
@@ -203,17 +212,43 @@ async function runHyperliquid({ executionMode = env("GHOLA_CANARY_HYPERLIQUID_EX
         session_policy: sessionPolicy,
       }),
     );
+  } else if (managed) {
+    const verifyWork = commitment("work_order", { canaryId, venue, op: "verify" });
+    await expect("hyperliquid managed testnet no-submit verification", "/hyperliquid/verify", 200, {
+      version: 1,
+      execution_mode: "managed_testnet",
+      work_order_commitment: verifyWork,
+      managed_allocation_commitment: allocationCommitment,
+      policy_commitment: policyCommitment,
+      operation_class: "limit_order",
+      encrypted_execution_instruction_bundle: await instructionBundle({
+        workOrderCommitment: verifyWork,
+        venueId: "hyperliquid",
+        operationClass: "limit_order",
+        order: {
+          market,
+          side,
+          quote_size: quoteSize,
+          max_slippage_bps: maxSlippageBps,
+          live_order_mode: "tiny_fill",
+          tif: "Ioc",
+        },
+      }),
+      session_policy: sessionPolicy,
+    }, {
+      "x-ghola-no-submit-verify": "true",
+    });
   }
 
   const reconcileWork = commitment("work_order", { canaryId, venue, op: "reconcile" });
   const reconcileResult = await expect("hyperliquid reconcile", "/hyperliquid/reconcile", 200, stripUndefined({
     version: 1,
-    execution_mode: pooled ? "ghola_pooled" : "byo_api_key",
+    execution_mode: usesManagedAllocation ? executionMode : "byo_api_key",
     work_order_commitment: reconcileWork,
-    vault_commitment: pooled ? undefined : vaultCommitment,
-    managed_allocation_commitment: pooled ? allocationCommitment : undefined,
+    vault_commitment: usesManagedAllocation ? undefined : vaultCommitment,
+    managed_allocation_commitment: usesManagedAllocation ? allocationCommitment : undefined,
     policy_commitment: policyCommitment,
-    encrypted_execution_vault: pooled ? undefined : encryptedVault,
+    encrypted_execution_vault: usesManagedAllocation ? undefined : encryptedVault,
     encrypted_execution_instruction_bundle: await instructionBundle({
       workOrderCommitment: reconcileWork,
       venueId: "hyperliquid",
