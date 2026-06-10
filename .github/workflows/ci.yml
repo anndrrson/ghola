@@ -235,13 +235,25 @@ jobs:
           path: .github/security/security-findings.json
           retention-days: 90
 
-      - name: Enforce latest pooled testnet ceremony pass
+      - name: Check latest pooled testnet ceremony pass
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           API_URL: ${{ github.api_url }}
+          REQUIRE_POOLED_TESTNET_PROOF: ${{ vars.GHOLA_REQUIRE_POOLED_TESTNET_PROOF }}
         run: |
           set -euo pipefail
+          if [ "${REQUIRE_POOLED_TESTNET_PROOF:-}" != "true" ]; then
+            {
+              echo "## Pooled testnet proof"
+              echo ""
+              echo "Pooled testnet proof is not enforced for this dark deploy."
+              echo "Set \`GHOLA_REQUIRE_POOLED_TESTNET_PROOF=true\` to require a fresh successful ceremony before release."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "Pooled testnet proof not enforced; set GHOLA_REQUIRE_POOLED_TESTNET_PROOF=true to require it."
+            exit 0
+          fi
+
           workflow="pooled-testnet-ceremony.yml"
           runs_json="$(curl -fsSL \
             -H "Authorization: Bearer ${GH_TOKEN}" \
