@@ -1,0 +1,20 @@
+# cargo-audit configuration for the Ghola workspace.
+#
+# Every ignored advisory here must describe why the vulnerable path is not
+# currently exploitable in Ghola and should be revisited during dependency
+# refreshes.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: rsa Marvin timing side-channel.
+    # Present through SQLx/MySQL-capable transitive code paths; Ghola services
+    # use Postgres/SQLite and do not exercise MySQL RSA password auth.
+    "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2026-0009: time localtime stack exhaustion.
+    # Present through rcgen/jsonwebtoken/tracing-appender transitive paths.
+    # The affected localtime parsing path is not used for externally supplied
+    # request data in the production trading stack. Keep until the transitive
+    # crates move to a patched time release.
+    "RUSTSEC-2026-0009",
+]
