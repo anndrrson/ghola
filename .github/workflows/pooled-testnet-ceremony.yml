@@ -12,13 +12,14 @@ name: Pooled testnet ceremony
 #   approve a fresh API/agent wallet on testnet (no browser wallet),
 #   rebuild the full worker env from Vercel production + guards, and
 #   run the sealed pooled-credential install against the Phala CVM.
-#   Then verify the live launch status.
+#   Then verify the managed testnet path through the live Phala worker.
 #
 # Required secrets:
-#   GHOLA_TESTNET_POOL_SEED   any long random string; deterministically
-#                             derives the TESTNET-ONLY pool master key.
-#                             Never reuse for mainnet.
-#   VERCEL_TOKEN              (install mode)
+#   GHOLA_TESTNET_POOL_SEED   one random string you add once (testnet-only;
+#                             never reuse for mainnet). CI reads it from the
+#                             secrets context and never generates or persists
+#                             key material itself.
+#   VERCEL_TOKEN
 #   PHALA_CLOUD_API_KEY       (install mode)
 
 on:
@@ -97,7 +98,7 @@ jobs:
         id: master
         run: |
           set -euo pipefail
-          pip install --quiet eth-account
+          python3 -m pip install --quiet eth-account
           # Mask line goes to stdout; key only into GITHUB_ENV; address only
           # into GITHUB_OUTPUT. v2 derivation path: the v1 key was leaked
           # into a public run log by a piping bug (logs deleted, key burned,
@@ -105,6 +106,7 @@ jobs:
           python3 - <<'EOF'
           import hashlib, os
           from eth_account import Account
+
           seed = os.environ["SEED"]
           key = "0x" + hashlib.sha256((seed + "/ghola-testnet-pool/master/v2").encode()).hexdigest()
           acct = Account.from_key(key)
@@ -134,7 +136,7 @@ jobs:
         if: ${{ inputs.mode == 'install' }}
         run: |
           set -euo pipefail
-          pip install --quiet hyperliquid-python-sdk eth-account
+          python3 -m pip install --quiet hyperliquid-python-sdk eth-account
           python3 scripts/hyperliquid-approve-agent.py --network testnet --agent-name ghola-pooled > /tmp/managed-accounts.json
           node -e "JSON.parse(require('fs').readFileSync('/tmp/managed-accounts.json','utf8')); console.log('managed accounts JSON valid')"
           echo "- agent approved on testnet" >> "$GITHUB_STEP_SUMMARY"
@@ -176,27 +178,41 @@ jobs:
             --allow-partial --allow-testnet --venues hyperliquid 2>&1 | tail -40
           echo "- sealed install executed" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Verify live pooled status
+      - name: Verify managed testnet canary
         if: ${{ inputs.mode == 'install' }}
         run: |
           set -euo pipefail
           base="${{ inputs.base_url }}"
           echo "## Post-install verification" >> "$GITHUB_STEP_SUMMARY"
-          ok=1
-          for i in $(seq 1 12); do
-            body=$(curl -fsS -m 30 "$base/v1/private-account/launch/status" || echo '{}')
-            if echo "$body" | grep -q '"pooled_live_trading_enabled"[: ]*true'; then
-              echo "- pooled_live_trading_enabled: true" >> "$GITHUB_STEP_SUMMARY"
-              ok=0; break
-            fi
-            sleep 20
-          done
-          body=$(curl -fsS -m 30 "$base/v1/private-account/launch/status" || echo '{}')
+          worker_url=$(BASE_URL="$base" node <<'EOF' || true
+          const base = process.env.BASE_URL || "https://ghola.xyz";
+          const res = await fetch(new URL("/api/private-agent/status", base), { cache: "no-store" });
+          if (!res.ok) process.exit(0);
+          const runtime = await res.json();
+          const providers = Array.isArray(runtime.providers) ? runtime.providers : [];
+          const selected = providers.find((provider) => provider.id === runtime.selected_provider) ||
+            providers.find((provider) => provider.id === "phala");
+          if (selected?.execution_url) console.log(selected.execution_url);
+          EOF
+          )
+          if [ -z "$worker_url" ]; then
+            echo "- managed testnet canary blocked: no worker execution URL published by ${base}/api/private-agent/status" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "- worker URL discovered from deployed runtime status" >> "$GITHUB_STEP_SUMMARY"
+          PRIVATE_AGENT_WORKER_URL="$worker_url" \
+            GHOLA_PRIVATE_AGENT_STAGING_ENV=.dev/phala-worker.env \
+            GHOLA_RUN_LIVE_VENUE_CANARY=1 \
+            GHOLA_CANARY_VENUE=hyperliquid_managed_testnet \
+            GHOLA_CANARY_HYPERLIQUID_NETWORK=testnet \
+            GHOLA_CANARY_HYPERLIQUID_QUOTE_SIZE=5 \
+            GHOLA_CANARY_HYPERLIQUID_MAX_SLIPPAGE_BPS=50 \
+            node scripts/canary/private-agent-venue-live.mjs
+          echo "- managed testnet canary passed: allocation, no-submit verify, and reconcile succeeded through Phala" >> "$GITHUB_STEP_SUMMARY"
+
+          body=$(curl -fsS -m 30 "$base/v1/private-account/live-trading/status" || echo '{}')
+          echo "- public mainnet pooled status is reported below; testnet canary does not make mainnet pooled trading live." >> "$GITHUB_STEP_SUMMARY"
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
           echo "$body" | head -c 1500 >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          if [ "$ok" -ne 0 ]; then
-            echo "- pooled trading still gated; see reason codes above" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          exit $ok
