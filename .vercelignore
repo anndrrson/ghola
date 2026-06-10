@@ -1,0 +1,15 @@
+.git
+.dev
+.vercel
+target
+**/target
+node_modules
+**/node_modules
+.next
+**/.next
+*.tsbuildinfo
+android/.gradle
+android/build
+android/app/build
+android/app/.cxx
+ios/build
