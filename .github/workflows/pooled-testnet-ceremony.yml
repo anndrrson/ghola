@@ -1,0 +1,190 @@
+name: Pooled testnet ceremony
+
+# Two-phase, zero-capital pooled Hyperliquid testnet enablement.
+#
+# Phase 1 (mode=address): derive the pool master address from the
+#   GHOLA_TESTNET_POOL_SEED secret and print it. Fund that address with
+#   testnet USDC (faucet from any wallet with mainnet-deposit history,
+#   then transfer; or deposit 5 USDC on mainnet once to unlock the
+#   faucet for it directly).
+#
+# Phase 2 (mode=install): re-derive the master key, programmatically
+#   approve a fresh API/agent wallet on testnet (no browser wallet),
+#   rebuild the full worker env from Vercel production + guards, and
+#   run the sealed pooled-credential install against the Phala CVM.
+#   Then verify the live launch status.
+#
+# Required secrets:
+#   GHOLA_TESTNET_POOL_SEED   any long random string; deterministically
+#                             derives the TESTNET-ONLY pool master key.
+#                             Never reuse for mainnet.
+#   VERCEL_TOKEN              (install mode)
+#   PHALA_CLOUD_API_KEY       (install mode)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Phase"
+        required: true
+        default: "address"
+        type: choice
+        options: [address, install]
+      ref:
+        description: "Git ref with the ceremony + install tooling"
+        required: true
+        default: "claude/sweet-davinci-z7m2io"
+      vercel_project:
+        description: "Vercel project serving ghola.xyz"
+        required: true
+        default: "web"
+      base_url:
+        description: "Public base URL to verify"
+        required: true
+        default: "https://ghola.xyz"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pooled-testnet-ceremony
+  cancel-in-progress: false
+
+jobs:
+  ceremony:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Preflight
+        env:
+          SEED: ${{ secrets.GHOLA_TESTNET_POOL_SEED }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          PHALA_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${SEED}" ] || missing+=("GHOLA_TESTNET_POOL_SEED (any long random string)")
+          if [ "${{ inputs.mode }}" = "install" ]; then
+            [ -n "${VERCEL_TOKEN}" ] || missing+=("VERCEL_TOKEN")
+            [ -n "${PHALA_KEY}" ] || missing+=("PHALA_CLOUD_API_KEY")
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            { echo "## Ceremony blocked: missing secrets"; for s in "${missing[@]}"; do echo "- \`$s\`"; done; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Derive pool master
+        id: master
+        env:
+          SEED: ${{ secrets.GHOLA_TESTNET_POOL_SEED }}
+        run: |
+          set -euo pipefail
+          pip install --quiet eth-account
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import hashlib, os
+          from eth_account import Account
+          seed = os.environ["SEED"]
+          key = "0x" + hashlib.sha256((seed + "/ghola-testnet-pool/master/v1").encode()).hexdigest()
+          acct = Account.from_key(key)
+          print(f"address={acct.address}")
+          print(f"::add-mask::{key}", flush=True)
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"HL_MASTER_PRIVATE_KEY={key}\n")
+          EOF
+          echo "## Pool master (testnet-only)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- address: $(grep '^address=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Funding instructions (address mode)
+        if: ${{ inputs.mode == 'address' }}
+        run: |
+          {
+            echo ""
+            echo "Fund this address with testnet USDC at app.hyperliquid-testnet.xyz:"
+            echo "1. Claim the faucet from any wallet that has deposited on Hyperliquid mainnet, then transfer to the address above (testnet transfers are free), OR"
+            echo "2. Deposit 5 USDC on mainnet from this address once to unlock the faucet for it directly."
+            echo ""
+            echo "Then re-run this workflow with mode=install."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Approve agent wallet on testnet
+        if: ${{ inputs.mode == 'install' }}
+        run: |
+          set -euo pipefail
+          pip install --quiet hyperliquid-python-sdk eth-account
+          python3 scripts/hyperliquid-approve-agent.py --network testnet --agent-name ghola-pooled > /tmp/managed-accounts.json
+          node -e "JSON.parse(require('fs').readFileSync('/tmp/managed-accounts.json','utf8')); console.log('managed accounts JSON valid')"
+          echo "- agent approved on testnet" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build pooled credentials env
+        if: ${{ inputs.mode == 'install' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p .dev
+          {
+            echo "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON_B64=$(base64 -w0 /tmp/managed-accounts.json)"
+            echo "PRIVATE_AGENT_HYPERLIQUID_APPROVAL_EVIDENCE=Agent wallet approved programmatically via ApproveAgent on Hyperliquid testnet; ceremony run ${RUN_URL}; SDK response status ok"
+          } > .dev/pooled-credentials.env
+          rm /tmp/managed-accounts.json
+
+      - name: Pull Vercel production env and build worker env
+        if: ${{ inputs.mode == 'install' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx vercel@latest link --yes --project "${{ inputs.vercel_project }}" --token "$VERCEL_TOKEN"
+          npx vercel@latest env pull .dev/vercel-production.env --environment=production --yes --token "$VERCEL_TOKEN"
+          node scripts/build-phala-worker-env.mjs --env .dev/vercel-production.env --out .dev/phala-worker.env
+
+      - name: Sealed install to Phala worker
+        if: ${{ inputs.mode == 'install' }}
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          npm install -g phala >/dev/null 2>&1
+          phala auth login "$PHALA_CLOUD_API_KEY" >/dev/null
+          node scripts/install-phala-pooled-credentials.mjs \
+            --env .dev/pooled-credentials.env \
+            --worker-env .dev/phala-worker.env \
+            --allow-partial --allow-testnet --venues hyperliquid 2>&1 | tail -40
+          echo "- sealed install executed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify live pooled status
+        if: ${{ inputs.mode == 'install' }}
+        run: |
+          set -euo pipefail
+          base="${{ inputs.base_url }}"
+          echo "## Post-install verification" >> "$GITHUB_STEP_SUMMARY"
+          ok=1
+          for i in $(seq 1 12); do
+            body=$(curl -fsS -m 30 "$base/v1/private-account/launch/status" || echo '{}')
+            if echo "$body" | grep -q '"pooled_live_trading_enabled"[: ]*true'; then
+              echo "- pooled_live_trading_enabled: true" >> "$GITHUB_STEP_SUMMARY"
+              ok=0; break
+            fi
+            sleep 20
+          done
+          body=$(curl -fsS -m 30 "$base/v1/private-account/launch/status" || echo '{}')
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          echo "$body" | head -c 1500 >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ok" -ne 0 ]; then
+            echo "- pooled trading still gated; see reason codes above" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $ok
