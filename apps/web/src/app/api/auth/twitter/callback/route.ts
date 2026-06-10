@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { logger } from "@/lib/logger";
-
-const THUMPER_API_BASE =
-  process.env.NEXT_PUBLIC_THUMPER_API_URL || "http://localhost:3000";
+import { THUMPER_API_BASE } from "../../session/_lib";
 
 // Temporary in-memory store for OAuth token exchange codes
 const pendingCodes = new Map<string, { token: string; expires: number }>();

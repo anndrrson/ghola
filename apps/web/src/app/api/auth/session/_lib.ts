@@ -42,7 +42,11 @@ export function userFromToken(token: string): SessionUser | null {
   const id = payload?.sub || payload?.user_id;
   const email = payload?.email;
   if (!id || !email) return null;
-  return { id, email, name: payload?.name };
+  return {
+    id,
+    email,
+    name: typeof payload.name === "string" && payload.name ? payload.name : undefined,
+  };
 }
 
 export function sessionCookieMaxAge(token: string): number {
@@ -63,7 +67,7 @@ export function applyNoStore(res: NextResponse): NextResponse {
 export function withSessionCookie(res: NextResponse, token: string): NextResponse {
   res.cookies.set(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: true,
+    secure: process.env.NODE_ENV === "production",
     sameSite: "strict",
     path: "/",
     maxAge: sessionCookieMaxAge(token),
@@ -74,7 +78,7 @@ export function withSessionCookie(res: NextResponse, token: string): NextRespons
 export function clearSessionCookie(res: NextResponse): NextResponse {
   res.cookies.set(SESSION_COOKIE_NAME, "", {
     httpOnly: true,
-    secure: true,
+    secure: process.env.NODE_ENV === "production",
     sameSite: "strict",
     path: "/",
     maxAge: 0,
@@ -104,7 +108,7 @@ export function userFromProfile(profile: unknown): SessionUser | null {
   const record = profile as Record<string, unknown>;
   const id = record.id;
   const email = record.email;
-  const displayName = record.display_name;
+  const displayName = record.display_name ?? record.name;
   if (typeof id !== "string" || !id) return null;
   if (typeof email !== "string" || !email) return null;
   return {
@@ -131,4 +135,39 @@ export async function fetchSessionUser(token: string) {
 
 export function invalidSessionStatus(status: number) {
   return status === 401 || status === 403 ? 502 : status;
+}
+
+export function sessionError(message: string, status: number) {
+  return applyNoStore(NextResponse.json({ error: message }, { status }));
+}
+
+export function upstreamErrorMessage(body: unknown, fallback: string) {
+  if (!body || typeof body !== "object") return fallback;
+  const record = body as Record<string, unknown>;
+  const error = record.error ?? record.message ?? record.detail;
+  return typeof error === "string" && error ? error : fallback;
+}
+
+export function userFromAuthResponse(body: unknown): SessionUser | null {
+  if (!body || typeof body !== "object") return null;
+  const record = body as Record<string, unknown>;
+  const user = userFromProfile(record.user);
+  if (user) return user;
+
+  const token = record.token;
+  if (typeof token === "string") {
+    const tokenUser = userFromToken(token);
+    if (tokenUser) return tokenUser;
+  }
+
+  const id = record.user_id ?? record.id;
+  const email = record.email;
+  const displayName = record.display_name ?? record.name;
+  if (typeof id !== "string" || !id) return null;
+  if (typeof email !== "string" || !email) return null;
+  return {
+    id,
+    email,
+    name: typeof displayName === "string" && displayName ? displayName : undefined,
+  };
 }
