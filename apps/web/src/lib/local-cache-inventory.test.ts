@@ -72,11 +72,11 @@ describe("formatBytes", () => {
 
 describe("getCacheInventory", () => {
   beforeEach(() => {
-    // @ts-expect-error
+    // @ts-expect-error test deletes optional browser global
     delete globalThis.caches;
   });
   afterEach(() => {
-    // @ts-expect-error
+    // @ts-expect-error test deletes optional browser global
     delete globalThis.caches;
     vi.restoreAllMocks();
   });
@@ -133,7 +133,7 @@ describe("getCacheInventory", () => {
 
 describe("getStorageEstimate", () => {
   afterEach(() => {
-    // @ts-expect-error
+    // @ts-expect-error test deletes optional browser global
     delete globalThis.navigator;
   });
 

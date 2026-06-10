@@ -2,28 +2,28 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-// Three modes, one per chat message. Default is Private. The picker UI
-// surfaces the choice in the chat header; routing through the right
-// transport per mode lights up alongside the /inference/sealed PR.
-export type SovereigntyMode = "private" | "local" | "open";
+// Four modes, one per chat message. Default is Auto: use this device
+// first when it can run the model, then the protected relay, and never
+// silently downgrade to Open.
+export type SovereigntyMode = "auto" | "private" | "local" | "open";
 
 const STORAGE_KEY_PREFIX = "ghola:sovereignty-mode";
-// Signed-in users default to Private (TEE-attested cloud). Anonymous
-// users also default to Private so the first-run path asks them to make
-// an account before cloud/private inference instead of trying to cold-load
-// a large local WebGPU model on a random phone. Users can still choose
-// Local explicitly when they want an account-free on-device run.
-const DEFAULT_MODE_AUTHED: SovereigntyMode = "private";
-const DEFAULT_MODE_ANON: SovereigntyMode = "private";
+export const NO_ATTESTED_PRIVATE_PROVIDERS_MESSAGE =
+  "Private mode is online, but no attested private providers are currently available. Your message was not sent.";
+// Auto is the consumer default: local hardware when available, otherwise
+// protected cloud, and an explicit ask before Open mode.
+const DEFAULT_MODE_AUTHED: SovereigntyMode = "auto";
+const DEFAULT_MODE_ANON: SovereigntyMode = "auto";
 
 export const SOVEREIGNTY_MODES: ReadonlyArray<{
   id: SovereigntyMode;
   label: string;
   blurb: string;
 }> = [
-  { id: "private", label: "Private", blurb: "TEE-encrypted. Default." },
+  { id: "auto", label: "Auto", blurb: "Uses this device first." },
+  { id: "private", label: "Private", blurb: "Protected by default." },
   { id: "local", label: "Local", blurb: "On-device only." },
-  { id: "open", label: "Open", blurb: "Plaintext. Unverified." },
+  { id: "open", label: "Open", blurb: "Not private." },
 ];
 
 function storageKey(userDid: string | null): string {
@@ -41,12 +41,58 @@ function hasGholaHomePairToken(): boolean {
   }
 }
 
+export function canUseAutoBrowserLocalAI(): boolean {
+  if (typeof navigator === "undefined") return false;
+  if (typeof window !== "undefined" && window.isSecureContext === false) {
+    return false;
+  }
+  if (!("gpu" in navigator)) return false;
+  const gpu = (navigator as Navigator & { gpu?: { requestAdapter?: unknown } })
+    .gpu;
+  if (typeof gpu?.requestAdapter !== "function") return false;
+
+  const nav = navigator as Navigator & { deviceMemory?: number };
+  const ua = nav.userAgent ?? "";
+  if (/Android|iPhone|iPod|Mobile/i.test(ua)) return false;
+  if (typeof nav.deviceMemory === "number" && nav.deviceMemory < 8)
+    return false;
+  if (
+    typeof nav.hardwareConcurrency === "number" &&
+    nav.hardwareConcurrency < 6
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function canUseWebGPUAdapter(): Promise<boolean> {
+  if (!canUseAutoBrowserLocalAI()) return false;
+  try {
+    const gpu = (
+      navigator as Navigator & {
+        gpu?: { requestAdapter?: () => Promise<unknown> };
+      }
+    ).gpu;
+    const adapter = await gpu?.requestAdapter?.();
+    return adapter !== null && adapter !== undefined;
+  } catch {
+    return false;
+  }
+}
+
 function readMode(userDid: string | null): SovereigntyMode {
   const fallback = userDid ? DEFAULT_MODE_AUTHED : DEFAULT_MODE_ANON;
   if (typeof window === "undefined") return fallback;
   try {
     const raw = window.localStorage.getItem(storageKey(userDid));
-    if (raw === "private" || raw === "local" || raw === "open") return raw;
+    if (
+      raw === "auto" ||
+      raw === "private" ||
+      raw === "local" ||
+      raw === "open"
+    ) {
+      return raw;
+    }
   } catch {
     // Private-mode browsers and quota errors are fine to swallow —
     // we just fall back to the default for this session.
@@ -141,6 +187,8 @@ export interface PrivateAvailability {
   available: boolean;
   reasonCodes: string[];
   reason: string | null;
+  attestedProviderCount?: number;
+  privateCapacityReady?: boolean;
 }
 
 // The relay hosts /providers/attested + /inference/sealed +
@@ -184,6 +232,25 @@ export async function selectRoute(
   modelId?: string,
 ): Promise<ModeRoute> {
   switch (mode) {
+    case "auto": {
+      const paired = hasGholaHomePairToken();
+      if (paired) {
+        return { mode, transport: "ghola-home" };
+      }
+      if (await canUseWebGPUAdapter()) {
+        return {
+          mode,
+          transport: "webgpu",
+          caveat: "Using this device for this message.",
+        };
+      }
+      const privateRoute = await selectRoute("private", modelId);
+      return {
+        ...privateRoute,
+        mode,
+        caveat: privateRoute.caveat,
+      };
+    }
     case "private": {
       const pool = await fetchAttestedPool(modelId);
       if (pool.length > 0) {
@@ -257,19 +324,66 @@ export async function fetchPrivateAvailability(): Promise<PrivateAvailability> {
   try {
     const url = new URL("/ready/private", relayBase());
     const res = await fetch(url.toString(), { method: "GET" });
-    const body = (await res.json().catch(() => null)) as
-      | { reason_codes?: string[]; private_ready?: boolean }
-      | null;
-    const reasonCodes = Array.isArray(body?.reason_codes)
-      ? body!.reason_codes!.filter((v) => typeof v === "string")
+    const body = (await res.json().catch(() => null)) as {
+      reason_codes?: string[];
+      capacity_reason_codes?: string[];
+      private_ready?: boolean;
+      private_capacity_ready?: boolean;
+      attested_provider_count?: number;
+    } | null;
+    const baseReasonCodes = Array.isArray(body?.reason_codes)
+      ? body.reason_codes.filter((v) => typeof v === "string")
       : [];
-    if (res.ok && body?.private_ready === true) {
-      return { available: true, reasonCodes: [], reason: null };
+    const capacityReasonCodes = Array.isArray(body?.capacity_reason_codes)
+      ? body.capacity_reason_codes.filter((v) => typeof v === "string")
+      : [];
+    const reasonCodes = Array.from(
+      new Set([...baseReasonCodes, ...capacityReasonCodes]),
+    );
+    const attestedProviderCount =
+      typeof body?.attested_provider_count === "number"
+        ? body.attested_provider_count
+        : undefined;
+    const privateCapacityReady = body?.private_capacity_ready;
+    if (
+      res.ok &&
+      body?.private_ready === true &&
+      body.private_capacity_ready !== false
+    ) {
+      return {
+        available: true,
+        reasonCodes: [],
+        reason: null,
+        attestedProviderCount,
+        privateCapacityReady,
+      };
+    }
+    if (
+      res.ok &&
+      body?.private_ready === true &&
+      (body.private_capacity_ready === false ||
+        reasonCodes.includes("no_attested_private_providers"))
+    ) {
+      return {
+        available: false,
+        reasonCodes: reasonCodes.includes("no_attested_private_providers")
+          ? reasonCodes
+          : [...reasonCodes, "no_attested_private_providers"],
+        reason: NO_ATTESTED_PRIVATE_PROVIDERS_MESSAGE,
+        attestedProviderCount,
+        privateCapacityReady: false,
+      };
     }
     const reason = reasonCodes.length
       ? `Private mode unavailable (${reasonCodes.join(", ")}).`
       : "Private mode unavailable (relay readiness check failed).";
-    return { available: false, reasonCodes, reason };
+    return {
+      available: false,
+      reasonCodes,
+      reason,
+      attestedProviderCount,
+      privateCapacityReady,
+    };
   } catch {
     return {
       available: false,

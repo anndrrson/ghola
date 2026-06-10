@@ -1,4 +1,4 @@
-import type { ThumperInlineAction } from "@/lib/thumper-types";
+import type { ThumperInlineAction, ThumperPrivacyApproval } from "@/lib/thumper-types";
 
 const THUMPER_API_BASE =
   typeof window === "undefined"
@@ -33,6 +33,12 @@ interface StreamChatOptions {
    * the LLM) but is not persisted alongside the envelope.
    */
   envelopeBlobB64?: string;
+  /**
+   * Explicit, per-message user approval for remote cloud inference.
+   * Flattened into the /api/chat body because the Rust endpoint uses
+   * serde(flatten) on PrivacyApproval.
+   */
+  approval?: ThumperPrivacyApproval;
 }
 
 function toolUseToInlineAction(
@@ -89,9 +95,13 @@ export async function streamChat(
     if (options.envelopeBlobB64) {
       body.envelope_blob_b64 = options.envelopeBlobB64;
     }
+    if (options.approval) {
+      Object.assign(body, options.approval);
+    }
     const res = await fetch(`${THUMPER_API_BASE}/api/chat`, {
       method: "POST",
       headers,
+      credentials: "same-origin",
       body: JSON.stringify(body),
     });
 

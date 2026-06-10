@@ -38,7 +38,7 @@ function installMockCaches(
 }
 
 afterEach(() => {
-  // @ts-expect-error
+  // @ts-expect-error test deletes optional browser global
   delete globalThis.caches;
 });
 

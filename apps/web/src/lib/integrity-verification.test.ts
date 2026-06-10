@@ -23,7 +23,7 @@ import {
 function installWebGPU(present: boolean): void {
   const nav = globalThis.navigator as unknown as Record<string, unknown>;
   if (present) {
-    nav.gpu = { __mock: true };
+    nav.gpu = { requestAdapter: vi.fn().mockResolvedValue({}) };
   } else {
     delete nav.gpu;
   }
@@ -70,10 +70,33 @@ function installMockCaches(
 // observes `lookupModel` returning `unreachable`, regardless of
 // what fetch returns. The mock is still installed to suppress real
 // network attempts; the `mode` parameter is documentation only.
-function installRpcFetch(_mode: "unregistered" | "unreachable"): void {
+function installRpcFetch(): void {
   vi.stubGlobal(
     "fetch",
     vi.fn().mockRejectedValue(new Error("network down")),
+  );
+}
+
+function installServerFallbackFetch(): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/model-registry?")) {
+        return new Response(
+          JSON.stringify({
+            status: "unregistered",
+            modelId: DEFAULT_WEBGPU_MODEL,
+            lookupSource: "server_rpc",
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      throw new Error("browser rpc blocked");
+    }),
   );
 }
 
@@ -91,7 +114,7 @@ describe("verifyLocalIntegrity", () => {
 
   it("returns 'unavailable' when WebGPU is missing", async () => {
     installWebGPU(false);
-    installRpcFetch("unreachable");
+    installRpcFetch();
     const result = await verifyLocalIntegrity("any-model");
     expect(result.overall).toBe("unavailable");
     expect(result.modelId).toBe("any-model");
@@ -106,7 +129,7 @@ describe("verifyLocalIntegrity", () => {
   it("returns 'failed' when registry is unreachable, even with WebGPU present", async () => {
     installWebGPU(true);
     installMockCaches({}); // caches API exists but every scope is empty
-    installRpcFetch("unreachable");
+    installRpcFetch();
     const result = await verifyLocalIntegrity(DEFAULT_WEBGPU_MODEL);
     // The registry-reachable check is a hard fail (not a skip) when
     // the RPC throws, so the rollup is `failed`, not `partial`.
@@ -120,7 +143,7 @@ describe("verifyLocalIntegrity", () => {
   it("emits every check label even when the chain is unreachable", async () => {
     installWebGPU(true);
     installMockCaches({}); // no cached model
-    installRpcFetch("unreachable");
+    installRpcFetch();
     const result = await verifyLocalIntegrity(DEFAULT_WEBGPU_MODEL);
     // Registry unreachable is a failure for the rollup, even though
     // downstream rows skip cleanly.
@@ -141,9 +164,23 @@ describe("verifyLocalIntegrity", () => {
     ).toBe(true);
   });
 
+  it("uses the read-only server RPC fallback when browser RPC is blocked", async () => {
+    installWebGPU(true);
+    installMockCaches({});
+    installServerFallbackFetch();
+    const result = await verifyLocalIntegrity(DEFAULT_WEBGPU_MODEL);
+    expect(result.registryLookupSource).toBe("server_rpc");
+    const registryCheck = result.checks.find(
+      (c) => c.label === "On-chain registry reachable",
+    );
+    expect(registryCheck?.pass).toBe(true);
+    expect(registryCheck?.detail).toContain("read-only RPC fallback");
+    expect(result.overall).toBe("partial");
+  });
+
   it("captures the modelId on the result regardless of branch", async () => {
     installWebGPU(false);
-    installRpcFetch("unreachable");
+    installRpcFetch();
     const result = await verifyLocalIntegrity("Custom-Model-Id");
     expect(result.modelId).toBe("Custom-Model-Id");
     // Four checks always emitted (WebGPU, fingerprint, registry, hash).
@@ -168,7 +205,7 @@ describe("verifyLocalIntegrity", () => {
         },
       ],
     });
-    installRpcFetch("unreachable");
+    installRpcFetch();
     const result = await verifyLocalIntegrity(DEFAULT_WEBGPU_MODEL);
     const fpCheck = result.checks.find(
       (c) => c.label === "Local weight fingerprint computed",
@@ -182,7 +219,7 @@ describe("verifyLocalIntegrity", () => {
   it("surfaces a skipped hash-match row with a non-empty detail string", async () => {
     installWebGPU(true);
     installMockCaches({}); // no cached model → fingerprint check skips
-    installRpcFetch("unreachable");
+    installRpcFetch();
     const result = await verifyLocalIntegrity(DEFAULT_WEBGPU_MODEL);
     const hashCheck = result.checks.find(
       (c) => c.label === "On-chain hash matches local",

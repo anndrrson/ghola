@@ -1,8 +1,7 @@
 /**
  * WebGPU inference transport — runs a small open-weight model entirely
  * in the browser via WebLLM (Apache 2, MLC). Used when Sovereignty mode
- * is "local" and no paired ghola-home is available, which is the
- * default for unauthenticated anonymous visitors.
+ * is "auto" or "local" and no paired ghola-home is available.
  *
  * Threat model: prompts and responses never leave the device. Model
  * weights download once from the WebLLM CDN (or, post Tier 1A.5, from
@@ -16,6 +15,7 @@ import type {
   MLCEngine,
   InitProgressReport,
   ChatCompletionMessageParam,
+  AppConfig,
 } from "@mlc-ai/web-llm";
 
 import {
@@ -25,11 +25,17 @@ import {
   markEngineProgress,
 } from "./perf-marks";
 
-// The MLC model registry id. Llama 3.2 1B at q4f16_1 is ~1GB and runs
-// at usable token rates on M-series Macs and modern Windows laptops.
-// Stays under the 2GB IndexedDB quota most browsers enforce out of the
-// box, so first-load doesn't trip a prompt.
-export const DEFAULT_WEBGPU_MODEL = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
+// Fast default for consumer Local mode. The 360M SmolLM2 build is much
+// smaller than the previous Llama 1B default, so cold-start is bounded by
+// a ~210MB model download instead of roughly a gigabyte. It is weaker,
+// but it makes random-user Local mode viable without a minute-long wait.
+export const FAST_WEBGPU_MODEL = "SmolLM2-360M-Instruct-q4f16_1-MLC";
+
+// Higher-quality local model kept as an opt-in from /models/local.
+export const LLAMA_3_2_1B_WEBGPU_MODEL =
+  "Llama-3.2-1B-Instruct-q4f16_1-MLC";
+
+export const DEFAULT_WEBGPU_MODEL = FAST_WEBGPU_MODEL;
 
 // Opt-in second Local model. Phi-3 mini 4k instruct (q4f16_1) is
 // ~2.3GB on disk and meaningfully stronger than Llama-3.2-1B at chat
@@ -50,7 +56,17 @@ export const PHI3_MINI_WEBGPU_MODEL = "Phi-3-mini-4k-instruct-q4f16_1-MLC";
 //
 // Recompute when bumping the default model:
 //   curl ... | openssl dgst -sha256 -binary | base64
-const DEFAULT_WEBGPU_MODEL_INTEGRITY = {
+const FAST_WEBGPU_MODEL_INTEGRITY = {
+  config: "sha256-tzKWmdb9v1pPaKDEKxQlD0vqssq7+hIPrmySTn3Njyw=",
+  model_lib: "sha256-ZlTFZJADlgDJ8DaIgCOV102lfdSd5E3fJN5NLqQLalY=",
+  tokenizer: {
+    "tokenizer.json":
+      "sha256-nKms3bZSWhlOyKx6h/JPu6cjKpoV/6GvDBIk/NiI5Hw=",
+  },
+  onFailure: "error" as const,
+};
+
+const LLAMA_3_2_1B_WEBGPU_MODEL_INTEGRITY = {
   config: "sha256-DsUTtUtBmtRxAGQwaGvc/6rnECtB97Akb7/N4lF6zH8=",
   model_lib: "sha256-posvg0hde0xvfRoAgAG8g81/Kw+u/osTgfwT1C+3jEo=",
   tokenizer: {
@@ -77,8 +93,14 @@ const DEFAULT_WEBGPU_MODEL_INTEGRITY = {
  * (programs/ghola-model-registry/src/lib.rs::close_model) shipped in
  * source but is awaiting a devnet redeploy.
  */
-export const DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH =
+export const FAST_WEBGPU_MODEL_WEIGHTS_HASH =
+  "a579641acca6cc7e1079cf2565c85148c567935266c8518f9bfbf877e7c0274e";
+
+export const LLAMA_3_2_1B_WEBGPU_MODEL_WEIGHTS_HASH =
   "8c3ae367d068c2b3a7d5b402a16395ab5089315e5256f609e54320d64d53c695";
+
+export const DEFAULT_WEBGPU_MODEL_WEIGHTS_HASH =
+  FAST_WEBGPU_MODEL_WEIGHTS_HASH;
 
 /**
  * SRI hashes for the Phi-3 mini 4k instruct (q4f16_1) non-weight
@@ -125,20 +147,21 @@ export const PHI3_MINI_WEBGPU_MODEL_WEIGHTS_HASH =
 // Per-model SRI integrity records. Used by `getEngine()` to inject the
 // right pinned-hash block into WebLLM's AppConfig when the requested
 // model_id is one we've vetted. Models not in this map fall through to
-// the upstream prebuilt list (no SRI check — followed up per-model as
-// they're vetted).
+// the upstream prebuilt list (no SRI check; add a record here before
+// making any model a first-class Local option).
 const WEBGPU_MODEL_INTEGRITY: Record<
   string,
-  typeof DEFAULT_WEBGPU_MODEL_INTEGRITY
+  typeof FAST_WEBGPU_MODEL_INTEGRITY
 > = {
-  [DEFAULT_WEBGPU_MODEL]: DEFAULT_WEBGPU_MODEL_INTEGRITY,
+  [FAST_WEBGPU_MODEL]: FAST_WEBGPU_MODEL_INTEGRITY,
+  [LLAMA_3_2_1B_WEBGPU_MODEL]: LLAMA_3_2_1B_WEBGPU_MODEL_INTEGRITY,
   [PHI3_MINI_WEBGPU_MODEL]: PHI3_MINI_WEBGPU_MODEL_INTEGRITY,
 };
 
 /** Exposed for tests; do not mutate. */
 export function getWebGPUModelIntegrity(
   modelId: string,
-): typeof DEFAULT_WEBGPU_MODEL_INTEGRITY | undefined {
+): typeof FAST_WEBGPU_MODEL_INTEGRITY | undefined {
   return WEBGPU_MODEL_INTEGRITY[modelId];
 }
 
@@ -167,7 +190,44 @@ export function detectWebGPU(): WebGPUSupport {
       reason: "This browser does not support WebGPU. Try the latest Chrome, Edge, or Safari 18+.",
     };
   }
+  const gpu = (
+    navigator as Navigator & { gpu?: { requestAdapter?: unknown } }
+  ).gpu;
+  if (typeof gpu?.requestAdapter !== "function") {
+    return {
+      supported: false,
+      reason:
+        "This browser exposes an incomplete WebGPU API. Try the latest Chrome, Edge, or Safari 18+.",
+    };
+  }
   return { supported: true };
+}
+
+export async function detectUsableWebGPUAdapter(): Promise<WebGPUSupport> {
+  const support = detectWebGPU();
+  if (!support.supported) return support;
+  try {
+    const gpu = (
+      navigator as Navigator & {
+        gpu?: { requestAdapter?: () => Promise<unknown> };
+      }
+    ).gpu;
+    const adapter = await gpu?.requestAdapter?.();
+    if (!adapter) {
+      return {
+        supported: false,
+        reason:
+          "This browser could not allocate a WebGPU adapter for local inference. Try the latest Chrome, Edge, or Safari 18+ on a desktop GPU.",
+      };
+    }
+    return { supported: true };
+  } catch {
+    return {
+      supported: false,
+      reason:
+        "This browser could not initialize WebGPU for local inference.",
+    };
+  }
 }
 
 interface EngineSlot {
@@ -177,6 +237,46 @@ interface EngineSlot {
 
 let engineSlot: EngineSlot | null = null;
 let inflight: Promise<MLCEngine> | null = null;
+
+type LocalWebLLMCacheBackend = "cache" | "indexeddb";
+
+function withPinnedIntegrity(
+  appConfig: AppConfig,
+  cacheBackend: LocalWebLLMCacheBackend,
+): AppConfig {
+  return {
+    ...appConfig,
+    cacheBackend,
+    model_list: appConfig.model_list.map((m) => {
+      const integrity = WEBGPU_MODEL_INTEGRITY[m.model_id];
+      return integrity ? { ...m, integrity } : m;
+    }),
+  };
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return "";
+}
+
+export function isRecoverableWebGPUCacheError(err: unknown): boolean {
+  const message = errorMessage(err);
+  return (
+    /Failed to execute 'add' on 'Cache'/i.test(message) ||
+    /Cache\.add\(\) encountered a network error/i.test(message)
+  );
+}
+
+function emitCacheBackendRetryProgress(
+  onProgress?: (report: InitProgressReport) => void,
+): void {
+  onProgress?.({
+    progress: 0,
+    timeElapsed: 0,
+    text: "Browser cache failed; retrying local model download with IndexedDB storage.",
+  });
+}
 
 /**
  * Get (or lazily create) the singleton MLCEngine for the requested
@@ -213,23 +313,24 @@ async function getEngine(
   // they're vetted). The model_list array shape matches WebLLM's
   // public type — overriding by id keeps upstream record fields
   // intact except for the integrity addition.
-  const pinnedAppConfig = {
-    ...prebuiltAppConfig,
-    model_list: prebuiltAppConfig.model_list.map((m) => {
-      const integrity = WEBGPU_MODEL_INTEGRITY[m.model_id];
-      return integrity ? { ...m, integrity } : m;
-    }),
+  const initProgressCallback = (report: InitProgressReport) => {
+    // Phase A: project WebLLM's free-text progress onto our typed
+    // marks. dedup keeps a single mark per phase across the
+    // multi-event progress stream WebLLM emits during init.
+    markEngineProgress(report, { dedup: true });
+    onProgress?.(report);
   };
 
-  inflight = CreateMLCEngine(modelId, {
-    initProgressCallback: (report) => {
-      // Phase A: project WebLLM's free-text progress onto our typed
-      // marks. dedup keeps a single mark per phase across the
-      // multi-event progress stream WebLLM emits during init.
-      markEngineProgress(report, { dedup: true });
-      onProgress?.(report);
-    },
-    appConfig: pinnedAppConfig,
+  const createWithCacheBackend = (cacheBackend: LocalWebLLMCacheBackend) =>
+    CreateMLCEngine(modelId, {
+      initProgressCallback,
+      appConfig: withPinnedIntegrity(prebuiltAppConfig, cacheBackend),
+    });
+
+  inflight = createWithCacheBackend("cache").catch((err) => {
+    if (!isRecoverableWebGPUCacheError(err)) throw err;
+    emitCacheBackendRetryProgress(onProgress);
+    return createWithCacheBackend("indexeddb");
   });
 
   try {

@@ -36,6 +36,33 @@ describe("lookupModel", () => {
     expect(result.modelId).toBe("Phi-3-mini-4k-instruct-q4f16_1-MLC");
   });
 
+  it("falls back to same-origin server RPC when browser RPC is blocked", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith("/api/model-registry?")) {
+          return new Response(
+            JSON.stringify({
+              status: "unregistered",
+              modelId: "any-model",
+              lookupSource: "server_rpc",
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        }
+        throw new Error("browser rpc blocked");
+      }),
+    );
+    const result = await lookupModel("any-model");
+    expect(result.status).toBe("unregistered");
+    expect(result.lookupSource).toBe("server_rpc");
+    expect(result.modelId).toBe("any-model");
+  });
+
   // Note: the "unregistered" happy-path (account-not-found at the
   // deterministic PDA) needs to exercise PublicKey.findProgramAddress,
   // which fails under jsdom due to a cross-realm Uint8Array prototype

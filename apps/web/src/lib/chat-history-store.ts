@@ -12,9 +12,10 @@
  * delete the localStorage key. After migration the only on-disk
  * artifact is the encrypted blob.
  *
- * The vault-locked path is opt-in: if {@link ChatVault} is `null` (no
- * Turnkey wallet, vault unlock declined, etc.) we fall back to the
- * legacy localStorage path so chat keeps working.
+ * If {@link ChatVault} is `null` (anonymous user, no Turnkey wallet, or
+ * vault unlock declined), history is intentionally off-record: callers
+ * keep it in memory for the current tab, and this module refuses to
+ * write durable plaintext back to localStorage.
  */
 
 import {
@@ -45,13 +46,13 @@ interface BlobRow {
 
 /**
  * Read the user's chat session list. Tries the encrypted store first,
- * falls back to legacy plaintext localStorage. Migrates legacy
+ * migrates legacy plaintext localStorage. Migrates legacy
  * plaintext into the encrypted store on first successful read.
  *
  * Returns `[]` if nothing is stored or the user has no vault.
  */
 export async function loadSessions(vault: ChatVault | null): Promise<ThumperSession[]> {
-  if (!vault) return readLocalStorageLegacy();
+  if (!vault) return [];
 
   // Fast path: encrypted store has data.
   const row = await getRow(vault.userDid);
@@ -83,14 +84,15 @@ export async function loadSessions(vault: ChatVault | null): Promise<ThumperSess
 
 /**
  * Persist the user's chat session list. Writes ciphertext to IndexedDB
- * when the vault is available; falls back to localStorage otherwise.
+ * when the vault is available. Without a vault, do nothing and remove
+ * any old plaintext key so anonymous Local mode stays off-record.
  */
 export async function saveSessions(
   sessions: ThumperSession[],
   vault: ChatVault | null,
 ): Promise<void> {
   if (!vault) {
-    writeLocalStorageLegacy(sessions);
+    clearLocalStorageLegacy();
     return;
   }
   await vault.ensureUnlocked();
@@ -201,7 +203,12 @@ function readLocalStorageLegacy(): ThumperSession[] {
   }
 }
 
-function writeLocalStorageLegacy(sessions: ThumperSession[]): void {
+function clearLocalStorageLegacy(): void {
   if (typeof window === "undefined") return;
-  localStorage.setItem(LEGACY_KEY, JSON.stringify(sessions));
+  try {
+    localStorage.removeItem(LEGACY_KEY);
+  } catch {
+    // ignore storage failures; the important part is that we do not
+    // write fresh plaintext.
+  }
 }

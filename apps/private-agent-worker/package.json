@@ -1,0 +1,27 @@
+{
+  "name": "ghola-private-agent-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "canary:arb:prod": "node ../../scripts/canary/private-agent-arb-production.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@ellipsis-labs/rise": "^0.4.19",
+    "@neondatabase/serverless": "^1.1.0",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
+    "@solana/web3.js": "^1.98.4",
+    "ai": "^6.0.194",
+    "bs58": "^6.0.0",
+    "zod": "^4.4.3"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  }
+}

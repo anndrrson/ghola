@@ -1,6 +1,6 @@
 "use client";
 
-import { Laptop, Lock, ShieldOff } from "lucide-react";
+import { Laptop, Lock, Route, ShieldOff } from "lucide-react";
 import type { SovereigntyMode } from "@/lib/sovereignty";
 import { SOVEREIGNTY_MODES } from "@/lib/sovereignty";
 
@@ -26,6 +26,7 @@ interface SovereigntyPickerProps {
 // same mental model in both places (lock = Private, laptop = Local,
 // shield-off = Open).
 const MODE_ICONS = {
+  auto: Route,
   private: Lock,
   local: Laptop,
   open: ShieldOff,

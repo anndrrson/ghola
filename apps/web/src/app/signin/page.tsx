@@ -56,11 +56,13 @@ function SignInContent() {
       setLoading(true);
       try {
         const res = await thumperGoogleSignIn(credential);
-        setAuth(res.token, {
+        const user = {
           id: res.user.id,
           email: res.user.email,
           name: res.user.name,
-        });
+        };
+        if (res.token) setAuth(res.token, user);
+        else setAuth(user);
         // Create Turnkey wallet if not already present
         if (!walletAddress && res.user.email) {
           try {
@@ -115,11 +117,13 @@ function SignInContent() {
     setLoading(true);
     try {
       const res = await thumperSignIn({ email, password });
-      setAuth(res.token, {
+      const user = {
         id: res.user.id,
         email: res.user.email,
         name: res.user.name,
-      });
+      };
+      if (res.token) setAuth(res.token, user);
+      else setAuth(user);
       // Create Turnkey wallet if not already present
       if (!walletAddress) {
         try {

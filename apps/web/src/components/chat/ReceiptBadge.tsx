@@ -89,6 +89,11 @@ const MODE_STYLE: Record<
     cls: "text-amber-300 border-amber-500/30 bg-amber-500/10",
     icon: ShieldOff,
   },
+  auto: {
+    label: "Auto",
+    cls: "text-sky-300 border-sky-500/30 bg-sky-500/10",
+    icon: Link2,
+  },
 };
 
 type VerifyState =

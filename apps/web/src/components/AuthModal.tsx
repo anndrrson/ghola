@@ -89,11 +89,13 @@ export function AuthModal({
       const res = isSignup
         ? await thumperSignUp({ name, email, password })
         : await thumperSignIn({ email, password });
-      setAuth(res.token, {
+      const user = {
         id: res.user.id,
         email: res.user.email,
         name: res.user.name,
-      });
+      };
+      if (res.token) setAuth(res.token, user);
+      else setAuth(user);
       if (!walletAddress) {
         try {
           await createWallet(res.user.email || email);

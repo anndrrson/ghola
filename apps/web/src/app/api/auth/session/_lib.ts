@@ -10,6 +10,8 @@ export const NO_STORE_HEADERS = {
   Pragma: "no-cache",
 } as const;
 
+const UPSTREAM_TIMEOUT_MS = 15_000;
+
 export interface SessionUser {
   id: string;
   email: string;
@@ -78,4 +80,55 @@ export function clearSessionCookie(res: NextResponse): NextResponse {
     maxAge: 0,
   });
   return res;
+}
+
+export function fetchWithTimeout(input: string | URL | Request, init?: RequestInit) {
+  return fetch(input, {
+    ...init,
+    signal: init?.signal ?? AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
+}
+
+export function sameOrigin(req: { headers: Headers; nextUrl: { origin: string } }) {
+  const origin = req.headers.get("origin");
+  if (!origin) return false;
+  try {
+    return new URL(origin).origin === req.nextUrl.origin;
+  } catch {
+    return false;
+  }
+}
+
+export function userFromProfile(profile: unknown): SessionUser | null {
+  if (!profile || typeof profile !== "object") return null;
+  const record = profile as Record<string, unknown>;
+  const id = record.id;
+  const email = record.email;
+  const displayName = record.display_name;
+  if (typeof id !== "string" || !id) return null;
+  if (typeof email !== "string" || !email) return null;
+  return {
+    id,
+    email,
+    name: typeof displayName === "string" && displayName ? displayName : undefined,
+  };
+}
+
+export async function fetchSessionUser(token: string) {
+  const upstream = await fetchWithTimeout(`${THUMPER_API_BASE}/api/user/profile`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  if (!upstream.ok) {
+    return { ok: false as const, status: upstream.status };
+  }
+  const user = userFromProfile(await upstream.json());
+  return user
+    ? { ok: true as const, user }
+    : { ok: false as const, status: 502 };
+}
+
+export function invalidSessionStatus(status: number) {
+  return status === 401 || status === 403 ? 502 : status;
 }
