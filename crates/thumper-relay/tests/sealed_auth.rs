@@ -76,6 +76,9 @@ fn test_config() -> RelayConfig {
         did_set_api_key: None,
         did_set_max_staleness_secs: 300,
         sealed_rate_limit_per_did: 1000,
+        max_body_size_bytes: 1_048_576,
+        max_sealed_body_size_bytes: 4 * 1_048_576,
+        cors_allowed_origins: vec!["https://ghola.xyz".to_string()],
     }
 }
 
