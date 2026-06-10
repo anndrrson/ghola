@@ -14,12 +14,11 @@ name: Pooled testnet ceremony
 #   run the sealed pooled-credential install against the Phala CVM.
 #   Then verify the live launch status.
 #
-# Self-seeding: if GHOLA_TESTNET_POOL_SEED is absent as a repo secret,
-# the workflow reads it from Vercel production env, generating and
-# persisting one there on first run. TESTNET-ONLY pattern; a mainnet
-# pool must use a cold-storage key ceremony.
-#
 # Required secrets:
+#   GHOLA_TESTNET_POOL_SEED   one random string you add once (testnet-only;
+#                             never reuse for mainnet). CI reads it from the
+#                             secrets context and never generates or persists
+#                             key material itself.
 #   VERCEL_TOKEN
 #   PHALA_CLOUD_API_KEY       (install mode)
 
@@ -77,6 +76,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
+          [ -n "${SEED}" ] || missing+=("GHOLA_TESTNET_POOL_SEED (one random string you add once; testnet-only, never reuse for mainnet)")
           [ -n "${VERCEL_TOKEN}" ] || missing+=("VERCEL_TOKEN")
           if [ "${{ inputs.mode }}" = "install" ]; then
             [ -n "${PHALA_KEY}" ] || missing+=("PHALA_CLOUD_API_KEY")
@@ -86,26 +86,13 @@ jobs:
             exit 1
           fi
 
-      - name: Resolve pool seed
+      - name: Stage seed
         env:
-          SEED_SECRET: ${{ secrets.GHOLA_TESTNET_POOL_SEED }}
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          SEED: ${{ secrets.GHOLA_TESTNET_POOL_SEED }}
         run: |
           set -euo pipefail
-          seed="${SEED_SECRET:-}"
-          if [ -z "$seed" ]; then
-            npx vercel@latest link --yes --project "${{ inputs.vercel_project }}" --token "$VERCEL_TOKEN" >/dev/null
-            npx vercel@latest env pull /tmp/vercel-seed.env --environment=production --yes --token "$VERCEL_TOKEN" >/dev/null
-            seed=$(grep -E '^GHOLA_TESTNET_POOL_SEED=' /tmp/vercel-seed.env | head -1 | cut -d= -f2- | tr -d '"') || true
-            rm -f /tmp/vercel-seed.env
-          fi
-          if [ -z "$seed" ]; then
-            seed=$(openssl rand -hex 32)
-            printf '%s' "$seed" | npx vercel@latest env add GHOLA_TESTNET_POOL_SEED production --token "$VERCEL_TOKEN" >/dev/null
-            echo "- generated a new pool seed and persisted it in Vercel production env (TESTNET-ONLY pattern; a mainnet pool must use a cold-storage key ceremony instead)" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          echo "::add-mask::$seed"
-          echo "SEED=$seed" >> "$GITHUB_ENV"
+          echo "::add-mask::$SEED"
+          echo "SEED=$SEED" >> "$GITHUB_ENV"
 
       - name: Derive pool master
         id: master
