@@ -38,7 +38,7 @@ export function AuthModal({
   open,
   onClose,
   onModeChange,
-  redirectTo = "/chat",
+  redirectTo = "/trade",
 }: AuthModalProps) {
   const router = useRouter();
   const { setAuth } = useThumperAuth();

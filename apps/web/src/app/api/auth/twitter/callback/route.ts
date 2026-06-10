@@ -128,7 +128,7 @@ export async function GET(req: NextRequest) {
     });
 
     const response = NextResponse.redirect(
-      new URL(`/chat?code=${exchangeCode}`, req.nextUrl.origin)
+      new URL(`/trade?code=${exchangeCode}`, req.nextUrl.origin)
     );
 
     // Clear OAuth cookies

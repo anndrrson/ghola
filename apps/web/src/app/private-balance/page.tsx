@@ -77,10 +77,10 @@ export default function PrivateBalancePage() {
             the shielded rail only when it can preserve the privacy guarantee.
           </p>
           <Link
-            href="/chat"
+            href="/trade"
             className="inline-flex items-center gap-2 text-sm font-medium text-[#a8d8ff] hover:text-[#eef1f8]"
           >
-            Use Private Mode <ArrowRight className="h-4 w-4" />
+            Open trading <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
       </section>

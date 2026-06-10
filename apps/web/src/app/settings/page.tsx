@@ -69,7 +69,7 @@ export default function SettingsPage() {
         {/* Header */}
         <div className="flex items-center gap-3 mb-8">
           <button
-            onClick={() => router.push("/chat")}
+            onClick={() => router.push("/trade")}
             className="p-1.5 rounded-lg text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#161822] transition-colors cursor-pointer"
           >
             <ArrowLeft className="h-5 w-5" />

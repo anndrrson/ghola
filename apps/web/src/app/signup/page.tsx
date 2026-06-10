@@ -103,7 +103,7 @@ function SignUpContent() {
   const { createWallet, walletAddress } = useTurnkeyWallet();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const redirectTo = searchParams.get("redirect") || "/chat";
+  const redirectTo = searchParams.get("redirect") || "/trade";
   const extraParams = searchParams.get("callback_port")
     ? `?callback_port=${searchParams.get("callback_port")}`
     : "";

@@ -12,7 +12,7 @@ import { GholaLogo } from "@/components/GholaLogo";
 import { Menu, ShieldCheck, X } from "lucide-react";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
 
-// Consumer-altitude framing: the public site is a chat product. No
+// Consumer-altitude framing: the public site opens the trading terminal. No
 // product-surface links in the top nav for logged-out visitors —
 // just Sign In / Get Started. Pages like /security, /network,
 // /developers, /agents, /models, /marketplace, /provide, /bounties,
@@ -20,7 +20,7 @@ import { AuthModal, type AuthMode } from "@/components/AuthModal";
 // link (and indexed for SEO), but they're not surfaced from the
 // public chrome. Anyone who needs them gets the link from us.
 //
-// Logged-in users get Chat + Vault + an Account dropdown that
+// Logged-in users get Trade + Vault + an Account dropdown that
 // collapses the secondary surfaces (Agents, Settings, Developers,
 // Identity Dashboard, Sign Out).
 const NAV_ITEMS: ReadonlyArray<{ href: string; label: string; match: string }> = [];
@@ -99,6 +99,7 @@ export function Navbar() {
         open={authOpen}
         onClose={() => setAuthOpen(false)}
         onModeChange={setAuthMode}
+        redirectTo="/trade"
       />
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex h-16 items-center justify-between">
@@ -144,15 +145,15 @@ export function Navbar() {
             {isAuthed && (
               <>
                 <Link
-                  href="/private-balance"
+                  href="/trade"
                   className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                    pathname.startsWith("/private-balance")
+                    pathname.startsWith("/trade")
                       ? "bg-[#3da8ff]/10 text-[#3da8ff]"
                       : "text-[#8b95a8] hover:text-[#eef1f8]"
                   }`}
                 >
                   <ShieldCheck className="h-3.5 w-3.5" />
-                  Private
+                  Trade
                 </Link>
                 <Link
                   href="/vault"
@@ -191,11 +192,11 @@ export function Navbar() {
                     {thumperAuth.authenticated && (
                       <>
                         <Link
-                          href="/chat"
+                          href="/trade"
                           onClick={() => setAccountOpen(false)}
                           className="block px-3 py-2 text-sm text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#161822]"
                         >
-                          Chat
+                          Trade
                         </Link>
                         <Link
                           href="/settings"
@@ -306,11 +307,11 @@ export function Navbar() {
               {thumperAuth.authenticated && (
                 <>
                   <Link
-                    href="/chat"
+                    href="/trade"
                     onClick={() => setMobileOpen(false)}
                     className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
                   >
-                    Chat
+                    Trade
                   </Link>
                   <Link
                     href="/settings"

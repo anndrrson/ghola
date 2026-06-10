@@ -4,7 +4,7 @@ import { usePathname } from "next/navigation";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 
-const BARE_ROUTES = ["/chat", "/signup", "/signin"];
+const BARE_ROUTES = ["/chat", "/trade", "/signup", "/signin"];
 
 export function LayoutShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
