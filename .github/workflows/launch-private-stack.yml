@@ -45,7 +45,7 @@ on:
       deploy_ref:
         description: "Git ref containing the private trading web app"
         required: true
-        default: "codex/ghola-balance-production"
+        default: "main"
       arm_phala:
         description: "Arm Phala spend (provisions the paid worker CVM). Default deploys dark: spend lockdown on, no Phala key in Vercel."
         required: true
@@ -313,29 +313,24 @@ jobs:
           cd "$work"
           npm init -y >/dev/null
           npm install --no-audit --no-fund @phala/cloud >/dev/null
-          node --input-type=module <<'NODE'
-          import { createClient } from "@phala/cloud";
-          import { appendFileSync } from "node:fs";
-
-          const apiKey = process.env.PHALA_CLOUD_API_KEY?.trim();
-          const baseURL = process.env.PHALA_CLOUD_API_PREFIX?.trim() || undefined;
-          const name = process.env.CVM_NAME || "ghola-private-agent-worker-77ce835";
-          const client = createClient({ apiKey, ...(baseURL ? { baseURL } : {}) });
-          let beforeStatus = "unknown";
-          let action = "none";
-          try {
-            const before = await client.getCvmState({ id: name }, { schema: false });
-            beforeStatus = before && typeof before === "object" ? String(before.status ?? "unknown") : "unknown";
-            if (beforeStatus !== "stopped" && beforeStatus !== "stopping") {
-              await client.stopCvm({ id: name });
-              action = "stop_called";
-            }
-          } catch (error) {
-            action = `error: ${error instanceof Error ? error.message.slice(0, 160) : "unknown"}`;
-          }
+          out=$(PHALA_CLOUD_MODULE_DIR="$work" node "$GITHUB_WORKSPACE/scripts/stop-ghola-phala-cvms.mjs" \
+            --names "$CVM_NAME" \
+            --prefixes "ghola-")
+          echo "$out"
+          OUT="$out" node <<'NODE'
+          const { appendFileSync } = require("node:fs");
+          const result = JSON.parse(process.env.OUT || "{}");
+          const rows = Array.isArray(result.rows) ? result.rows : [];
           appendFileSync(
             process.env.GITHUB_STEP_SUMMARY,
-            `\n## Post-proof Phala stop\n- cvm: \`${name}\`\n- status before: \`${beforeStatus}\`\n- action: \`${action}\`\n`,
+            [
+              "",
+              "## Post-proof Phala stop",
+              "",
+              "| CVM | Status before | Action |",
+              "| --- | --- | --- |",
+              ...rows.map((row) => `| \`${row.name || row.id || "unknown"}\` | \`${row.status || "unknown"}\` | \`${row.action || "none"}\` |`),
+              "",
+            ].join("\n"),
           );
-          console.log(JSON.stringify({ name, before_status: beforeStatus, action }, null, 2));
           NODE
