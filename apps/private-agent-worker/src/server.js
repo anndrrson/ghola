@@ -611,6 +611,10 @@ function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isEvmAddress(value) {
+  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value.trim());
+}
+
 const POOLED_READINESS_VENUES = ["hyperliquid", "phoenix", "jupiter", "coinbase"];
 
 function validatePooledReadinessRequest(body) {
@@ -930,7 +934,7 @@ function validateHyperliquidSessionRequest(body, recipient) {
   }
   if (body.version !== 1) errors.push("version must be 1");
   const executionMode = hyperliquidExecutionMode(body);
-  if (!["byo_api_key", "managed_testnet", "ghola_pooled"].includes(executionMode)) {
+  if (!["byo_api_key", "managed_testnet", "ghola_pooled", "hyperliquid_native_vault"].includes(executionMode)) {
     errors.push("execution_mode is unsupported");
   }
   if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
@@ -969,7 +973,7 @@ function validateHyperliquidOrderRequest(body, recipient) {
   if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
   if (!isNonEmptyString(body.policy_commitment)) errors.push("policy_commitment is required");
   const executionMode = hyperliquidExecutionMode(body);
-  if (!["byo_api_key", "managed_testnet", "ghola_pooled"].includes(executionMode)) {
+  if (!["byo_api_key", "managed_testnet", "ghola_pooled", "hyperliquid_native_vault"].includes(executionMode)) {
     errors.push("execution_mode is unsupported");
   }
   if (body.encrypted_execution_vault && (body.managed_allocation_commitment || body.allocation_commitment)) {
@@ -1004,7 +1008,7 @@ function validateHyperliquidAccountSnapshotRequest(body, recipient) {
   if (body.version !== 1) errors.push("version must be 1");
   if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
   const executionMode = hyperliquidExecutionMode(body);
-  if (!["byo_api_key", "managed_testnet", "ghola_pooled"].includes(executionMode)) {
+  if (!["byo_api_key", "managed_testnet", "ghola_pooled", "hyperliquid_native_vault"].includes(executionMode)) {
     errors.push("execution_mode is unsupported");
   }
   if (executionMode === "byo_api_key") {
@@ -1025,7 +1029,7 @@ function validateHyperliquidReconcileRequest(body, recipient) {
   if (body.version !== 1) errors.push("version must be 1");
   if (!isNonEmptyString(body.work_order_commitment)) errors.push("work_order_commitment is required");
   const executionMode = hyperliquidExecutionMode(body);
-  if (!["byo_api_key", "managed_testnet", "ghola_pooled"].includes(executionMode)) {
+  if (!["byo_api_key", "managed_testnet", "ghola_pooled", "hyperliquid_native_vault"].includes(executionMode)) {
     errors.push("execution_mode is unsupported");
   }
   if (body.encrypted_execution_vault && (body.managed_allocation_commitment || body.allocation_commitment)) {
@@ -1034,7 +1038,7 @@ function validateHyperliquidReconcileRequest(body, recipient) {
   if ("encrypted_execution_vault" in body) {
     errors.push(...validateEncryptedBundle(body.encrypted_execution_vault, recipient, "encrypted_execution_vault"));
   }
-  if ((executionMode === "managed_testnet" || executionMode === "ghola_pooled") &&
+  if ((executionMode === "managed_testnet" || executionMode === "ghola_pooled" || executionMode === "hyperliquid_native_vault") &&
     !isNonEmptyString(body.managed_allocation_commitment) &&
     !isNonEmptyString(body.allocation_commitment)) {
     errors.push("managed_allocation_commitment is required");
@@ -1054,9 +1058,19 @@ function validateHyperliquidManagedAllocationRequest(body) {
   if (body.version !== 1) errors.push("version must be 1");
   if (!isNonEmptyString(body.account_commitment)) errors.push("account_commitment is required");
   if (!isNonEmptyString(body.policy_commitment)) errors.push("policy_commitment is required");
-  const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "managed_testnet";
+  const executionMode = body.execution_mode === "hyperliquid_native_vault"
+    ? "hyperliquid_native_vault"
+    : body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "managed_testnet";
   if (executionMode === "managed_testnet" && body.network && body.network !== "testnet") {
     errors.push("network must be testnet for the Hyperliquid managed pilot");
+  }
+  if (executionMode === "hyperliquid_native_vault") {
+    if (body.network && body.network !== "mainnet") {
+      errors.push("network must be mainnet for Hyperliquid native vault mode");
+    }
+    if (!isEvmAddress(body.vault_address)) {
+      errors.push("vault_address is required for Hyperliquid native vault mode");
+    }
   }
   if (executionMode === "ghola_pooled") {
     if (body.network && body.network !== "mainnet") {
@@ -1153,6 +1167,8 @@ function hyperliquidOrderReceipt(body, status = "submitted") {
 }
 
 function hyperliquidExecutionMode(body) {
+  if (body?.execution_mode === "hyperliquid_native_vault" ||
+    body?.managed_allocation?.execution_mode === "hyperliquid_native_vault") return "hyperliquid_native_vault";
   if (body?.execution_mode === "ghola_pooled") return "ghola_pooled";
   if (body?.execution_mode === "managed_testnet" || body?.managed_allocation_commitment || (
     body?.allocation_commitment && body?.execution_mode !== "byo_api_key"
@@ -1165,6 +1181,7 @@ function hyperliquidExecutionMode(body) {
 
 function hyperliquidVenueAccessSource(executionMode) {
   if (executionMode === "ghola_pooled") return "ghola_pooled_venue_account";
+  if (executionMode === "hyperliquid_native_vault") return "hyperliquid_native_vault";
   if (executionMode === "managed_testnet") return "ghola_managed_testnet";
   return "user_provided_credentials";
 }

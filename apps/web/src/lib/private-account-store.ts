@@ -730,6 +730,50 @@ export interface PrivateFundingBatchRunRecordV1 {
   updated_at: string;
 }
 
+export type PrivateGholaBalanceVenueId = "ghola" | "hyperliquid";
+export type PrivateGholaBalanceEntryKind =
+  | "deposit_credit"
+  | "margin_reserved"
+  | "order_submitted"
+  | "fill_reconciled"
+  | "pnl_settled"
+  | "margin_released"
+  | "withdrawal_debit"
+  | "admin_adjustment";
+
+export interface PrivateGholaBalanceLedgerEntryRecordV1 {
+  version: 1;
+  ledger_entry_id: string;
+  owner_commitment: string;
+  account_commitment: string;
+  idempotency_key: string;
+  entry_kind: PrivateGholaBalanceEntryKind;
+  venue_id: PrivateGholaBalanceVenueId;
+  available_delta_micro_usdc: number;
+  reserved_margin_delta_micro_usdc: number;
+  open_notional_delta_micro_usdc: number;
+  realized_pnl_delta_micro_usdc: number;
+  unrealized_pnl_delta_micro_usdc: number;
+  reference_commitment: string | null;
+  reason: string | null;
+  created_at: string;
+}
+
+export interface PrivateGholaBalanceSnapshotV1 {
+  version: 1;
+  owner_commitment: string;
+  account_commitment: string;
+  available_micro_usdc: number;
+  reserved_margin_micro_usdc: number;
+  open_notional_micro_usdc: number;
+  realized_pnl_micro_usdc: number;
+  unrealized_pnl_micro_usdc: number;
+  equity_micro_usdc: number;
+  withdrawable_micro_usdc: number;
+  ledger_entry_count: number;
+  updated_at: string | null;
+}
+
 export interface PrivateAuctionEpochRecordV1 {
   version: 1;
   owner_commitment: string;
@@ -982,6 +1026,18 @@ type FundingBatchRow = Omit<PrivateFundingBatchRecordV1, "version" | "import_com
 type FundingBatchRunRow = Omit<PrivateFundingBatchRunRecordV1, "version"> & {
   version?: number;
 };
+type GholaBalanceLedgerEntryRow = Omit<PrivateGholaBalanceLedgerEntryRecordV1, "version"> & {
+  version?: number;
+};
+type GholaBalanceAggregateRow = {
+  entry_count: number | string | null;
+  available_micro_usdc: number | string | null;
+  reserved_margin_micro_usdc: number | string | null;
+  open_notional_micro_usdc: number | string | null;
+  realized_pnl_micro_usdc: number | string | null;
+  unrealized_pnl_micro_usdc: number | string | null;
+  updated_at: string | Date | null;
+};
 type AuctionEpochRow = Omit<PrivateAuctionEpochRecordV1, "version"> & {
   version?: number;
 };
@@ -1027,6 +1083,7 @@ const fundingInstructions = new Map<string, PrivateFundingInstructionRecordV1>()
 const fundingImports = new Map<string, PrivateFundingImportRecordV1>();
 const fundingBatches = new Map<string, PrivateFundingBatchRecordV1>();
 const fundingBatchRuns = new Map<string, PrivateFundingBatchRunRecordV1>();
+const gholaBalanceLedgerEntries = new Map<string, PrivateGholaBalanceLedgerEntryRecordV1>();
 const auctionEpochs = new Map<string, PrivateAuctionEpochRecordV1>();
 const auctionOrders = new Map<string, PrivateAuctionOrderRecordV1>();
 const auctionClearings = new Map<string, PrivateAuctionClearingRecordV1>();
@@ -2716,6 +2773,170 @@ export async function getLatestPrivateFundingBatchRun(): Promise<PrivateFundingB
     LIMIT 1
   `) as FundingBatchRunRow[];
   return rows[0] ? fundingBatchRunRow(rows[0]) : null;
+}
+
+export async function putGholaBalanceLedgerEntry(
+  record: PrivateGholaBalanceLedgerEntryRecordV1,
+): Promise<PrivateGholaBalanceLedgerEntryRecordV1> {
+  const sql = await getSql();
+  if (!sql) {
+    const existing = gholaBalanceLedgerEntries.get(record.ledger_entry_id);
+    if (existing) return existing;
+    const existingIdempotent = Array.from(gholaBalanceLedgerEntries.values()).find((entry) =>
+      entry.account_commitment === record.account_commitment &&
+      entry.idempotency_key === record.idempotency_key
+    );
+    if (existingIdempotent) return existingIdempotent;
+    gholaBalanceLedgerEntries.set(record.ledger_entry_id, record);
+    return record;
+  }
+  await ensureSchema(sql);
+  await sql`
+    INSERT INTO private_account_ghola_balance_ledger (
+      ledger_entry_id,
+      owner_commitment,
+      account_commitment,
+      idempotency_key,
+      entry_kind,
+      venue_id,
+      available_delta_micro_usdc,
+      reserved_margin_delta_micro_usdc,
+      open_notional_delta_micro_usdc,
+      realized_pnl_delta_micro_usdc,
+      unrealized_pnl_delta_micro_usdc,
+      reference_commitment,
+      reason,
+      created_at
+    ) VALUES (
+      ${record.ledger_entry_id},
+      ${record.owner_commitment},
+      ${record.account_commitment},
+      ${record.idempotency_key},
+      ${record.entry_kind},
+      ${record.venue_id},
+      ${record.available_delta_micro_usdc},
+      ${record.reserved_margin_delta_micro_usdc},
+      ${record.open_notional_delta_micro_usdc},
+      ${record.realized_pnl_delta_micro_usdc},
+      ${record.unrealized_pnl_delta_micro_usdc},
+      ${record.reference_commitment},
+      ${record.reason},
+      ${record.created_at}
+    )
+    ON CONFLICT DO NOTHING
+  `;
+  const rows = (await sql`
+    SELECT * FROM private_account_ghola_balance_ledger
+    WHERE ledger_entry_id = ${record.ledger_entry_id}
+      OR (
+        account_commitment = ${record.account_commitment}
+        AND idempotency_key = ${record.idempotency_key}
+      )
+    ORDER BY CASE WHEN ledger_entry_id = ${record.ledger_entry_id} THEN 0 ELSE 1 END
+    LIMIT 1
+  `) as GholaBalanceLedgerEntryRow[];
+  return rows[0] ? gholaBalanceLedgerEntryRow(rows[0]) : record;
+}
+
+export async function listGholaBalanceLedgerEntries(
+  accountCommitment: string,
+  limit = 500,
+): Promise<PrivateGholaBalanceLedgerEntryRecordV1[]> {
+  const safeLimit = Math.max(1, Math.min(1_000, Math.floor(limit)));
+  const sql = await getSql();
+  if (!sql) {
+    return Array.from(gholaBalanceLedgerEntries.values())
+      .filter((record) => record.account_commitment === accountCommitment)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .slice(-safeLimit);
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT * FROM (
+      SELECT * FROM private_account_ghola_balance_ledger
+      WHERE account_commitment = ${accountCommitment}
+      ORDER BY created_at DESC
+      LIMIT ${safeLimit}
+    ) recent_entries
+    ORDER BY created_at ASC
+  `) as GholaBalanceLedgerEntryRow[];
+  return rows.map(gholaBalanceLedgerEntryRow);
+}
+
+export async function getGholaBalanceSnapshot(input: {
+  owner_commitment: string;
+  account_commitment: string;
+}): Promise<PrivateGholaBalanceSnapshotV1> {
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const rows = (await sql`
+      SELECT
+        COUNT(*) AS entry_count,
+        COALESCE(SUM(available_delta_micro_usdc), 0) AS available_micro_usdc,
+        COALESCE(SUM(reserved_margin_delta_micro_usdc), 0) AS reserved_margin_micro_usdc,
+        COALESCE(SUM(open_notional_delta_micro_usdc), 0) AS open_notional_micro_usdc,
+        COALESCE(SUM(realized_pnl_delta_micro_usdc), 0) AS realized_pnl_micro_usdc,
+        COALESCE(SUM(unrealized_pnl_delta_micro_usdc), 0) AS unrealized_pnl_micro_usdc,
+        MAX(created_at) AS updated_at
+      FROM private_account_ghola_balance_ledger
+      WHERE account_commitment = ${input.account_commitment}
+    `) as GholaBalanceAggregateRow[];
+    const row = rows[0];
+    const normalizedAvailable = Math.max(0, Math.floor(Number(row?.available_micro_usdc ?? 0)));
+    const normalizedReserved = Math.max(0, Math.floor(Number(row?.reserved_margin_micro_usdc ?? 0)));
+    const normalizedOpenNotional = Math.max(0, Math.floor(Number(row?.open_notional_micro_usdc ?? 0)));
+    const normalizedRealizedPnl = Math.floor(Number(row?.realized_pnl_micro_usdc ?? 0));
+    const normalizedUnrealizedPnl = Math.floor(Number(row?.unrealized_pnl_micro_usdc ?? 0));
+    return {
+      version: 1,
+      owner_commitment: input.owner_commitment,
+      account_commitment: input.account_commitment,
+      available_micro_usdc: normalizedAvailable,
+      reserved_margin_micro_usdc: normalizedReserved,
+      open_notional_micro_usdc: normalizedOpenNotional,
+      realized_pnl_micro_usdc: normalizedRealizedPnl,
+      unrealized_pnl_micro_usdc: normalizedUnrealizedPnl,
+      equity_micro_usdc: Math.max(0, normalizedAvailable + normalizedReserved + normalizedUnrealizedPnl),
+      withdrawable_micro_usdc: normalizedAvailable,
+      ledger_entry_count: Number(row?.entry_count ?? 0),
+      updated_at: row?.updated_at ? dateString(row.updated_at) : null,
+    };
+  }
+  const entries = await listGholaBalanceLedgerEntries(input.account_commitment, 1_000);
+  let available = 0;
+  let reserved = 0;
+  let openNotional = 0;
+  let realizedPnl = 0;
+  let unrealizedPnl = 0;
+  let updatedAt: string | null = null;
+  for (const entry of entries) {
+    available += entry.available_delta_micro_usdc;
+    reserved += entry.reserved_margin_delta_micro_usdc;
+    openNotional += entry.open_notional_delta_micro_usdc;
+    realizedPnl += entry.realized_pnl_delta_micro_usdc;
+    unrealizedPnl += entry.unrealized_pnl_delta_micro_usdc;
+    if (!updatedAt || entry.created_at > updatedAt) updatedAt = entry.created_at;
+  }
+  const normalizedAvailable = Math.max(0, Math.floor(available));
+  const normalizedReserved = Math.max(0, Math.floor(reserved));
+  const normalizedOpenNotional = Math.max(0, Math.floor(openNotional));
+  const normalizedRealizedPnl = Math.floor(realizedPnl);
+  const normalizedUnrealizedPnl = Math.floor(unrealizedPnl);
+  return {
+    version: 1,
+    owner_commitment: input.owner_commitment,
+    account_commitment: input.account_commitment,
+    available_micro_usdc: normalizedAvailable,
+    reserved_margin_micro_usdc: normalizedReserved,
+    open_notional_micro_usdc: normalizedOpenNotional,
+    realized_pnl_micro_usdc: normalizedRealizedPnl,
+    unrealized_pnl_micro_usdc: normalizedUnrealizedPnl,
+    equity_micro_usdc: Math.max(0, normalizedAvailable + normalizedReserved + normalizedUnrealizedPnl),
+    withdrawable_micro_usdc: normalizedAvailable,
+    ledger_entry_count: entries.length,
+    updated_at: updatedAt,
+  };
 }
 
 export async function putPrivateAuctionEpoch(
@@ -5083,6 +5304,7 @@ export async function resetPrivateAccountStoreForTests() {
   fundingImports.clear();
   fundingBatches.clear();
   fundingBatchRuns.clear();
+  gholaBalanceLedgerEntries.clear();
   auctionEpochs.clear();
   auctionOrders.clear();
   auctionClearings.clear();
@@ -5949,6 +6171,24 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
     )
   `;
   await sql`
+    CREATE TABLE IF NOT EXISTS private_account_ghola_balance_ledger (
+      ledger_entry_id TEXT PRIMARY KEY,
+      owner_commitment TEXT NOT NULL,
+      account_commitment TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      entry_kind TEXT NOT NULL,
+      venue_id TEXT NOT NULL,
+      available_delta_micro_usdc BIGINT NOT NULL,
+      reserved_margin_delta_micro_usdc BIGINT NOT NULL,
+      open_notional_delta_micro_usdc BIGINT NOT NULL,
+      realized_pnl_delta_micro_usdc BIGINT NOT NULL,
+      unrealized_pnl_delta_micro_usdc BIGINT NOT NULL,
+      reference_commitment TEXT,
+      reason TEXT,
+      created_at TIMESTAMPTZ NOT NULL
+    )
+  `;
+  await sql`
     CREATE TABLE IF NOT EXISTS private_account_auction_epochs (
       auction_epoch_commitment TEXT PRIMARY KEY,
       owner_commitment TEXT NOT NULL,
@@ -6110,6 +6350,8 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_funding_batches_owner_updated ON private_account_funding_batches (owner_commitment, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_funding_batches_evidence ON private_account_funding_batches (evidence_commitment, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_funding_batch_runs_updated ON private_account_funding_batch_runs (updated_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_private_account_ghola_balance_ledger_account_created ON private_account_ghola_balance_ledger (account_commitment, created_at ASC)`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_private_account_ghola_balance_ledger_account_idempotency ON private_account_ghola_balance_ledger (account_commitment, idempotency_key)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_auction_epochs_owner_updated ON private_account_auction_epochs (owner_commitment, updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_auction_epochs_open ON private_account_auction_epochs (owner_commitment, platform_class, asset_bucket, amount_bucket, status, closes_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_private_account_auction_orders_owner_updated ON private_account_auction_orders (owner_commitment, updated_at DESC)`;
@@ -6752,6 +6994,26 @@ function omnibusAllocationRow(row: OmnibusAllocationRow): PrivateOmnibusAllocati
     allocation,
     created_at: dateString(row.created_at),
     updated_at: dateString(row.updated_at),
+  };
+}
+
+function gholaBalanceLedgerEntryRow(row: GholaBalanceLedgerEntryRow): PrivateGholaBalanceLedgerEntryRecordV1 {
+  return {
+    version: 1,
+    ledger_entry_id: row.ledger_entry_id,
+    owner_commitment: row.owner_commitment,
+    account_commitment: row.account_commitment,
+    idempotency_key: row.idempotency_key,
+    entry_kind: row.entry_kind as PrivateGholaBalanceEntryKind,
+    venue_id: row.venue_id === "hyperliquid" ? "hyperliquid" : "ghola",
+    available_delta_micro_usdc: Number(row.available_delta_micro_usdc),
+    reserved_margin_delta_micro_usdc: Number(row.reserved_margin_delta_micro_usdc),
+    open_notional_delta_micro_usdc: Number(row.open_notional_delta_micro_usdc),
+    realized_pnl_delta_micro_usdc: Number(row.realized_pnl_delta_micro_usdc),
+    unrealized_pnl_delta_micro_usdc: Number(row.unrealized_pnl_delta_micro_usdc),
+    reference_commitment: row.reference_commitment ?? null,
+    reason: row.reason ?? null,
+    created_at: dateString(row.created_at),
   };
 }
 

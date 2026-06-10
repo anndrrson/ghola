@@ -16,8 +16,10 @@ order payloads are sealed to the attested private-agent worker.
   attestation commitments, shielded funding evidence, and encrypted selective
   disclosure exports.
 
-This is a private execution layer, not anonymity from Hyperliquid. A pooled or
-omnibus partner model would be a later phase.
+This is a private execution layer, not anonymity from Hyperliquid. Native vault
+mode improves user onboarding by letting Ghola route through a Hyperliquid vault
+and sealed agent wallet, but Hyperliquid can still see vault address and order
+activity.
 
 ## Required Gates
 
@@ -26,6 +28,8 @@ omnibus partner model would be a later phase.
 - Encrypted Hyperliquid execution vault readiness
 - Shielded funding import and batch evidence
 - Connector readiness for `hyperliquid_style_market`
+- For native vault mode: confirmed vault deposit receipt and sealed agent
+  readiness
 
 Supported v1 operations are read, limit order, cancel, and reconcile.
 Withdrawals, raw vault transfers, and leverage escalation are blocked by
@@ -75,3 +79,26 @@ the connector work order; lower-level connector flows should bind to
 Mainnet/testnet selection comes from the sealed vault. `PRIVATE_AGENT_VENUE_DRY_RUN=true`
 keeps local tests off venue networks; production should run with the dry-run flag
 disabled and `PRIVATE_AGENT_GLOBAL_KILL_SWITCH=false`.
+
+## Native Vault Flow
+
+Native vault mode uses these web endpoints:
+
+```text
+GET  /v1/private-account/hyperliquid/native-vault/status
+POST /v1/private-account/hyperliquid/native-vault/prepare
+POST /v1/private-account/hyperliquid/native-vault/confirm-deposit
+POST /v1/private-account/hyperliquid/native-vault/allocate
+```
+
+`prepare` stores a pending `hyperliquid_native_vault` allocation and returns both
+funding routes: direct Hyperliquid deposit and Ghola Balance bridge. `confirm`
+is fail-closed unless `GHOLA_HYPERLIQUID_NATIVE_VAULT_RECEIPT_VERIFIER_ENABLED`
+is true. In production, `confirm` also requires `deposit_receipt_proof`, an HMAC
+from the verifier service that checked the venue deposit event. `allocate` is
+fail-closed unless the deposit is confirmed and the sealed agent is ready.
+
+Worker credentials for this mode are configured as mainnet Hyperliquid managed
+accounts with `execution_mode="hyperliquid_native_vault"`. The worker passes the
+user vault address into the Hyperliquid SDK as `vault_address`, while using the
+sealed agent wallet as the signer.

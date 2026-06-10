@@ -82,10 +82,12 @@ export async function storeHyperliquidSession({ body, recipient, state, provider
       aadPrefix: "ghola/hyperliquid-execution-vault-v1",
       expectedKind: "ghola_hyperliquid_execution_vault",
     });
-  } else if (body.managed_allocation?.credential_ref) {
+  } else if (body.managed_allocation?.allocation_commitment) {
     await state.putHyperliquidManagedAllocation(body.managed_allocation);
   } else {
-    const allocationCommitment = body.managed_allocation_commitment || body.allocation_commitment;
+    const allocationCommitment = body.managed_allocation?.allocation_commitment ||
+      body.managed_allocation_commitment ||
+      body.allocation_commitment;
     if (!await state.getHyperliquidManagedAllocation(allocationCommitment)) {
       throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
     }
@@ -128,13 +130,30 @@ export async function storeHyperliquidSession({ body, recipient, state, provider
 }
 
 export async function createHyperliquidManagedAllocation({ body, state }) {
-  const executionMode = body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "managed_testnet";
-  const network = executionMode === "ghola_pooled" ? "mainnet" : "testnet";
+  const executionMode = body.execution_mode === "hyperliquid_native_vault"
+    ? "hyperliquid_native_vault"
+    : body.execution_mode === "ghola_pooled" ? "ghola_pooled" : "managed_testnet";
+  const network = executionMode === "managed_testnet" ? "testnet" : "mainnet";
   const refs = hyperliquidManagedAccountRefs()
-    .filter((ref) => ref.network === network);
+    .filter((ref) =>
+      ref.network === network &&
+      (
+        executionMode !== "hyperliquid_native_vault" ||
+        ref.execution_mode === "hyperliquid_native_vault" ||
+        ref.execution_mode === "ghola_pooled"
+      )
+    );
+  if (executionMode === "hyperliquid_native_vault" && !isEvmAddress(body.vault_address)) {
+    throw new PrivateExecutionError("hyperliquid native vault address is required", 400);
+  }
+  const nativeDepositReady = body.deposit_status === "confirmed" ||
+    body.deposit_status === "withdraw_locked" ||
+    body.deposit_status === "withdrawable";
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true" && refs.length === 0) {
     throw new PrivateExecutionError(
-      executionMode === "ghola_pooled"
+      executionMode === "hyperliquid_native_vault"
+        ? "hyperliquid native vault agent pool is unavailable"
+        : executionMode === "ghola_pooled"
         ? "hyperliquid pooled mainnet account pool is unavailable"
         : "hyperliquid managed testnet pool is unavailable",
       503,
@@ -165,6 +184,7 @@ export async function createHyperliquidManagedAllocation({ body, state }) {
     account_commitment: body.account_commitment,
     pool_commitment: poolCommitment,
     eligibility_commitment: body.eligibility_commitment || null,
+    vault_address: body.vault_address || null,
   });
   const allocation = {
     version: 1,
@@ -172,7 +192,9 @@ export async function createHyperliquidManagedAllocation({ body, state }) {
     platform_class: "hyperliquid_style_market",
     execution_mode: executionMode,
     network,
-    status: "allocated",
+    status: executionMode === "hyperliquid_native_vault" && !nativeDepositReady
+      ? "pending_funding"
+      : "allocated",
     account_commitment: body.account_commitment,
     allocation_commitment: commitment("hyperliquid_managed_allocation", {
       account_commitment: body.account_commitment,
@@ -190,6 +212,16 @@ export async function createHyperliquidManagedAllocation({ body, state }) {
       network,
       pool_share_commitment: poolShareCommitment,
     }),
+    vault_address: body.vault_address || selected.vault_address || null,
+    vault_controller_address: body.vault_controller_address || selected.vault_controller_address || null,
+    agent_wallet_commitment: body.agent_wallet_commitment || selected.agent_wallet_commitment || null,
+    deposit_evidence_commitment: body.deposit_evidence_commitment || null,
+    deposit_status: executionMode === "hyperliquid_native_vault"
+      ? nativeDepositReady ? body.deposit_status : "pending"
+      : undefined,
+    funding_routes: executionMode === "hyperliquid_native_vault"
+      ? Array.isArray(body.funding_routes) ? body.funding_routes : ["hyperliquid_direct", "ghola_balance_bridge"]
+      : undefined,
     eligibility_commitment: body.eligibility_commitment || null,
     funding_evidence_commitment: body.funding_evidence_commitment || null,
     credential_ref: selected.credential_ref,
@@ -199,8 +231,12 @@ export async function createHyperliquidManagedAllocation({ body, state }) {
     visibility_summary: {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
-      hyperliquid_sees: "execution_account_and_order_activity",
-      public_chain_sees: executionMode === "ghola_pooled"
+      hyperliquid_sees: executionMode === "hyperliquid_native_vault"
+        ? "vault_address_and_order_activity"
+        : "execution_account_and_order_activity",
+      public_chain_sees: executionMode === "hyperliquid_native_vault"
+        ? "hyperliquid_vault_deposit_and_order_activity"
+        : executionMode === "ghola_pooled"
         ? "private_funding_evidence_required"
         : "no_public_wallet_settlement",
     },
@@ -257,7 +293,12 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
   let credential;
   let allocation = null;
   if (isHyperliquidAllocationMode(executionMode)) {
-    const allocationCommitment = body.managed_allocation_commitment || body.allocation_commitment;
+    const allocationCommitment = body.managed_allocation?.allocation_commitment ||
+      body.managed_allocation_commitment ||
+      body.allocation_commitment;
+    if (body.managed_allocation?.allocation_commitment) {
+      await state.putHyperliquidManagedAllocation(body.managed_allocation);
+    }
     const record = await state.getHyperliquidManagedAllocation(allocationCommitment);
     if (!record?.allocation || record.allocation.status !== "allocated") {
       throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
@@ -321,11 +362,15 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     visibility_summary: {
       main_wallet_exposed: false,
       ghola_operator_sees: "commitment_and_ciphertext_only",
-      hyperliquid_sees: "execution_account_and_order_activity",
+      hyperliquid_sees: executionMode === "hyperliquid_native_vault"
+        ? "vault_address_and_order_activity"
+        : "execution_account_and_order_activity",
       venue_access_source: hyperliquidVenueAccessSource(executionMode),
       ghola_access_role: "private_execution_router",
       venue_gate: "venue_accepts_or_rejects_credentials",
-      public_chain_sees: executionMode === "ghola_pooled"
+      public_chain_sees: executionMode === "hyperliquid_native_vault"
+        ? "hyperliquid_vault_deposit_and_order_activity"
+        : executionMode === "ghola_pooled"
         ? "private_funding_evidence_required"
         : allocation
         ? "no_public_wallet_settlement"
@@ -341,9 +386,7 @@ export async function readHyperliquidSnapshot({ body, recipient, state }) {
   const { executionMode, credential } = await hyperliquidCredentialForBody({ body, recipient, state });
   return readHyperliquidAccountSnapshot({
     credential,
-    accountSource: executionMode === "ghola_pooled"
-      ? "ghola_pooled"
-      : executionMode === "managed_testnet" ? "ghola_managed" : "sealed_byo",
+    accountSource: hyperliquidAccountSource(executionMode),
   });
 }
 
@@ -351,9 +394,7 @@ export async function streamHyperliquidAccountState({ body, recipient, state, on
   const { executionMode, credential } = await hyperliquidCredentialForBody({ body, recipient, state });
   return createHyperliquidAccountStateStream({
     credential,
-    accountSource: executionMode === "ghola_pooled"
-      ? "ghola_pooled"
-      : executionMode === "managed_testnet" ? "ghola_managed" : "sealed_byo",
+    accountSource: hyperliquidAccountSource(executionMode),
     coin: typeof body.coin === "string" ? body.coin.toUpperCase() : "BTC",
     onEvent,
   });
@@ -427,7 +468,12 @@ async function hyperliquidCredentialForBody({ body, recipient, state }) {
   const executionMode = hyperliquidExecutionMode(body);
   let credential;
   if (isHyperliquidAllocationMode(executionMode)) {
-    const allocationCommitment = body.managed_allocation_commitment || body.allocation_commitment;
+    const allocationCommitment = body.managed_allocation?.allocation_commitment ||
+      body.managed_allocation_commitment ||
+      body.allocation_commitment;
+    if (body.managed_allocation?.allocation_commitment) {
+      await state.putHyperliquidManagedAllocation(body.managed_allocation);
+    }
     const record = await state.getHyperliquidManagedAllocation(allocationCommitment);
     if (!record?.allocation || record.allocation.status !== "allocated") {
       throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
@@ -1039,7 +1085,9 @@ export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state })
   let credential;
   let allocation = null;
   if (isHyperliquidAllocationMode(executionMode)) {
-    const allocationCommitment = body.managed_allocation_commitment || body.allocation_commitment;
+    const allocationCommitment = body.managed_allocation?.allocation_commitment ||
+      body.managed_allocation_commitment ||
+      body.allocation_commitment;
     const record = await state.getHyperliquidManagedAllocation(allocationCommitment);
     if (!record?.allocation || record.allocation.status !== "allocated") {
       throw new PrivateExecutionError("hyperliquid managed allocation is unavailable", 404);
@@ -1224,6 +1272,7 @@ async function resolvePrivateCancelTarget(instruction, { state, venue_id }) {
 }
 
 function hyperliquidExecutionMode(body) {
+  if (body.execution_mode === "hyperliquid_native_vault") return "hyperliquid_native_vault";
   if (body.execution_mode === "ghola_pooled") return "ghola_pooled";
   return body.execution_mode === "managed_testnet" ||
       body.managed_allocation_commitment ||
@@ -1233,13 +1282,21 @@ function hyperliquidExecutionMode(body) {
 }
 
 function isHyperliquidAllocationMode(mode) {
-  return mode === "managed_testnet" || mode === "ghola_pooled";
+  return mode === "managed_testnet" || mode === "ghola_pooled" || mode === "hyperliquid_native_vault";
 }
 
 function hyperliquidVenueAccessSource(mode) {
   if (mode === "ghola_pooled") return "ghola_pooled_venue_account";
+  if (mode === "hyperliquid_native_vault") return "hyperliquid_native_vault";
   if (mode === "managed_testnet") return "ghola_managed_testnet";
   return "user_provided_credentials";
+}
+
+function hyperliquidAccountSource(mode) {
+  if (mode === "ghola_pooled") return "ghola_pooled";
+  if (mode === "hyperliquid_native_vault") return "hyperliquid_native_vault";
+  if (mode === "managed_testnet") return "ghola_managed";
+  return "sealed_byo";
 }
 
 function managedCredentialIndex(seed, length) {
@@ -1370,6 +1427,10 @@ function dryRunHyperliquidCredential() {
     api_wallet_private_key: "0x1111111111111111111111111111111111111111111111111111111111111111",
     agent_name: "dry-run-byo",
   };
+}
+
+function isEvmAddress(value) {
+  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value.trim());
 }
 
 function sha256Hex(value) {

@@ -107,6 +107,38 @@ export function phalaWorkerExecutionToken(): string | null {
   );
 }
 
+function phalaWorkerCapabilitySecret(): string | null {
+  return (
+    env("PRIVATE_AGENT_WORKER_CAPABILITY_SECRET") ??
+    env("GHOLA_WORKER_CAPABILITY_SECRET")
+  );
+}
+
+function phalaWorkerFundingSigningKey(): string | null {
+  return (
+    env("PRIVATE_AGENT_FUNDING_SIGNING_KEY") ??
+    env("GHOLA_PRIVATE_AGENT_FUNDING_SIGNING_KEY")
+  );
+}
+
+function phalaWorkerStatePostgresUrl(): string | null {
+  return (
+    env("PRIVATE_AGENT_STATE_POSTGRES_URL") ??
+    env("GHOLA_PRIVATE_AGENT_STATE_POSTGRES_URL") ??
+    env("GHOLA_PRIVATE_ACCOUNT_DATABASE_URL") ??
+    env("PRIVATE_AGENT_DATABASE_URL") ??
+    env("DATABASE_URL")
+  );
+}
+
+function phalaWorkerStateStore(): string {
+  return (
+    env("PRIVATE_AGENT_STATE_STORE") ??
+    env("GHOLA_PRIVATE_AGENT_STATE_STORE") ??
+    (phalaWorkerStatePostgresUrl() ? "postgres" : "json")
+  );
+}
+
 export function phalaCvmName(): string {
   return env("GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME") ?? DEFAULT_CVM_NAME;
 }
@@ -121,6 +153,12 @@ function phalaWorkerImageDigest(): string {
     env("GHOLA_PRIVATE_AGENT_IMAGE_DIGEST") ??
     DEFAULT_WORKER_IMAGE_DIGEST
   );
+}
+
+function phalaWorkerImageReference(image: string, imageDigest: string): string {
+  if (image.includes("@sha256:")) return image;
+  if (imageDigest.startsWith("sha256:")) return `${image}@${imageDigest}`;
+  return image;
 }
 
 function liveHyperliquidEnabled(): boolean {
@@ -164,8 +202,21 @@ function workerLiveEnv(name: string, fallback: string, aliases: string[] = []): 
   ]);
 }
 
+function secretWorkerEnv(name: string, aliases: string[] = []): string | null {
+  return workerEnv(name, "", aliases) || null;
+}
+
+function encryptedWorkerSecret(name: string, aliases: string[] = []): Array<{ key: string; value: string }> {
+  const value = secretWorkerEnv(name, aliases);
+  return value ? [{ key: name, value }] : [];
+}
+
 function composeEnvLine(name: string, value: string): string {
   return `      ${name}: ${JSON.stringify(value)}`;
+}
+
+function composeEncryptedEnvLine(name: string): string {
+  return `      ${name}: "\${${name}:-}"`;
 }
 
 export function phalaJitProvisioningEnabled(): boolean {
@@ -200,8 +251,18 @@ export async function markPhalaPrivateAgentActivity(input: {
 export function privateAgentRemoteExecutionDisabled(): boolean {
   return (
     boolEnv("GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED") ||
-    boolEnv("GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN")
+    boolEnv("GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN") ||
+    !privateAgentSpendArmed()
   );
+}
+
+export function privateAgentSpendArmed(): boolean {
+  const explicit = env("GHOLA_PRIVATE_AGENT_SPEND_ARMED");
+  if (explicit !== null) return explicit.toLowerCase() === "true";
+  if (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production") {
+    return false;
+  }
+  return true;
 }
 
 export function phalaJitProvisioningConfigIssue(): string | null {
@@ -251,10 +312,11 @@ export function buildPhalaWorkerCompose(input: {
 } = {}): string {
   const image = input.image ?? phalaWorkerImage();
   const imageDigest = input.imageDigest ?? phalaWorkerImageDigest();
+  const imageReference = phalaWorkerImageReference(image, imageDigest);
   return [
     "services:",
     "  private-agent-worker:",
-    `    image: ${image}`,
+    `    image: ${imageReference}`,
     "    restart: unless-stopped",
     "    ports:",
     '      - "8787:8787"',
@@ -263,6 +325,11 @@ export function buildPhalaWorkerCompose(input: {
     '      PRIVATE_AGENT_PROVIDER_ID: "phala"',
     '      PRIVATE_AGENT_TEE_KIND: "phala"',
     '      PRIVATE_AGENT_EXECUTION_TOKEN: "${PRIVATE_AGENT_EXECUTION_TOKEN}"',
+    '      PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "${PRIVATE_AGENT_WORKER_CAPABILITY_SECRET}"',
+    '      PRIVATE_AGENT_FUNDING_SIGNING_KEY: "${PRIVATE_AGENT_FUNDING_SIGNING_KEY:-}"',
+    composeEnvLine("PRIVATE_AGENT_STATE_STORE", phalaWorkerStateStore()),
+    composeEnvLine("PRIVATE_AGENT_STATE_SINGLE_CVM_OK", workerEnv("PRIVATE_AGENT_STATE_SINGLE_CVM_OK", "false", ["GHOLA_PRIVATE_AGENT_STATE_SINGLE_CVM_OK"])),
+    '      PRIVATE_AGENT_STATE_POSTGRES_URL: "${PRIVATE_AGENT_STATE_POSTGRES_URL:-}"',
     '      PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE: "true"',
     `      PHALA_CVM_IMAGE_DIGEST: "${imageDigest}"`,
     composeEnvLine("PRIVATE_AGENT_VENUE_DRY_RUN", workerEnv("PRIVATE_AGENT_VENUE_DRY_RUN", "false")),
@@ -273,12 +340,29 @@ export function buildPhalaWorkerCompose(input: {
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", "disabled")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", "5")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", "25", ["GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD"])),
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD", "", ["GHOLA_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD"])),
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD", "", ["GHOLA_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS", "50", ["GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS"])),
+    composeEncryptedEnvLine("PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE", "disabled", ["GHOLA_SOLANA_PERPS_LIVE_MODE"])),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET", "false", ["GHOLA_SOLANA_PERPS_ALLOW_MAINNET"])),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD", "5", ["GHOLA_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD"])),
+    composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD", "", ["GHOLA_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD"])),
+    composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS", workerEnv("PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS", "", ["GHOLA_SOLANA_PERPS_MAX_SLIPPAGE_BPS"])),
+    composeEncryptedEnvLine("PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON"),
     composeEnvLine("PRIVATE_AGENT_SOLANA_RPC_URL", workerEnv("PRIVATE_AGENT_SOLANA_RPC_URL", "", ["GHOLA_SOLANA_RPC_URL", "SOLANA_RPC_URL"])),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_PRIORITY_FEE_MICRO_LAMPORTS", workerEnv("PRIVATE_AGENT_SOLANA_PERPS_PRIORITY_FEE_MICRO_LAMPORTS", "0", ["GHOLA_SOLANA_PERPS_PRIORITY_FEE_MICRO_LAMPORTS"])),
+    composeEnvLine("PRIVATE_AGENT_JUPITER_LIVE_MODE", workerEnv("PRIVATE_AGENT_JUPITER_LIVE_MODE", "disabled", ["GHOLA_JUPITER_LIVE_MODE"])),
+    composeEncryptedEnvLine("PRIVATE_AGENT_JUPITER_API_KEY"),
+    composeEnvLine("PRIVATE_AGENT_JUPITER_ALLOWED_INPUT_MINTS", workerEnv("PRIVATE_AGENT_JUPITER_ALLOWED_INPUT_MINTS", "", ["GHOLA_JUPITER_ALLOWED_INPUT_MINTS"])),
+    composeEnvLine("PRIVATE_AGENT_JUPITER_ALLOWED_OUTPUT_MINTS", workerEnv("PRIVATE_AGENT_JUPITER_ALLOWED_OUTPUT_MINTS", "", ["GHOLA_JUPITER_ALLOWED_OUTPUT_MINTS"])),
+    composeEnvLine("PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD", "", ["GHOLA_JUPITER_LIVE_MAX_NOTIONAL_USD"])),
+    composeEnvLine("PRIVATE_AGENT_JUPITER_MAX_SLIPPAGE_BPS", workerEnv("PRIVATE_AGENT_JUPITER_MAX_SLIPPAGE_BPS", "", ["GHOLA_JUPITER_MAX_SLIPPAGE_BPS"])),
+    composeEncryptedEnvLine("PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON"),
+    composeEnvLine("PRIVATE_AGENT_COINBASE_LIVE_MODE", workerEnv("PRIVATE_AGENT_COINBASE_LIVE_MODE", "disabled", ["GHOLA_COINBASE_LIVE_MODE"])),
+    composeEnvLine("PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS", workerEnv("PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS", "", ["GHOLA_COINBASE_ALLOWED_PRODUCTS"])),
+    composeEnvLine("PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD", "", ["GHOLA_COINBASE_LIVE_MAX_NOTIONAL_USD"])),
+    composeEncryptedEnvLine("PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON"),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", "12000")),
     "    volumes:",
     "      - /var/run/dstack.sock:/var/run/dstack.sock",
@@ -558,6 +642,25 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
   if (!info) {
     try {
       const { encryptEnvVars } = await import("@phala/cloud");
+      const statePostgresUrl = phalaWorkerStatePostgresUrl();
+      const encryptedWorkerEnv = [
+        { key: "PRIVATE_AGENT_EXECUTION_TOKEN", value: token },
+        ...(phalaWorkerCapabilitySecret()
+          ? [{ key: "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET", value: phalaWorkerCapabilitySecret() as string }]
+          : []),
+        ...(phalaWorkerFundingSigningKey()
+          ? [{ key: "PRIVATE_AGENT_FUNDING_SIGNING_KEY", value: phalaWorkerFundingSigningKey() as string }]
+          : []),
+        ...(statePostgresUrl
+          ? [{ key: "PRIVATE_AGENT_STATE_POSTGRES_URL", value: statePostgresUrl }]
+          : []),
+        ...encryptedWorkerSecret("PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"),
+        ...encryptedWorkerSecret("PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON"),
+        ...encryptedWorkerSecret("PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON"),
+        ...encryptedWorkerSecret("PRIVATE_AGENT_JUPITER_API_KEY", ["JUPITER_API_KEY", "GHOLA_JUPITER_API_KEY"]),
+        ...encryptedWorkerSecret("PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON"),
+      ];
+      const encryptedWorkerEnvKeys = encryptedWorkerEnv.map((item) => item.key);
       const provision = await client.provisionCvm({
         name,
         instance_type: env("GHOLA_PHALA_PRIVATE_AGENT_INSTANCE_TYPE") ?? "tdx.small",
@@ -566,17 +669,17 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
           : {}),
         compose_file: {
           docker_compose_file: buildPhalaWorkerCompose(),
-          allowed_envs: ["PRIVATE_AGENT_EXECUTION_TOKEN"],
+          allowed_envs: encryptedWorkerEnvKeys,
           gateway_enabled: true,
           kms_enabled: true,
           public_logs: false,
           public_sysinfo: false,
         },
-        env_keys: ["PRIVATE_AGENT_EXECUTION_TOKEN"],
+        env_keys: encryptedWorkerEnvKeys,
         listed: false,
       });
       const encryptedEnv = await encryptEnvVars(
-        [{ key: "PRIVATE_AGENT_EXECUTION_TOKEN", value: token }],
+        encryptedWorkerEnv,
         provision.app_env_encrypt_pubkey,
       );
       info = await client.commitCvmProvision(
@@ -584,7 +687,7 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
           app_id: provision.app_id,
           compose_hash: provision.compose_hash,
           encrypted_env: encryptedEnv,
-          env_keys: ["PRIVATE_AGENT_EXECUTION_TOKEN"],
+          env_keys: encryptedWorkerEnvKeys,
         },
         { schema: false },
       );

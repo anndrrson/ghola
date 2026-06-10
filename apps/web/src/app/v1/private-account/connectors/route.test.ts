@@ -18,6 +18,9 @@ import { POST as allocateHyperliquidManaged } from "../hyperliquid/managed-alloc
 import { POST as createFundingInstruction } from "../funding/instruction/route";
 import { POST as importFunding } from "../funding/import/route";
 import { POST as runBatchCoordinator } from "../funding/batch/run/route";
+import { GET as getGholaBalance } from "../balance/route";
+import { POST as createBalanceFundingIntent } from "../balance/funding-intent/route";
+import { POST as importBalanceCredit } from "../balance/import-credit/route";
 import { GET as getVenueVault, POST as sealVenueVault } from "../venues/[platform_class]/vault/route";
 import { POST as verifyVenueEligibility } from "../venues/[platform_class]/eligibility/route";
 import { POST as allocatePooledVenue } from "../venues/[platform_class]/pool/allocate/route";
@@ -120,6 +123,25 @@ async function importCompatibleFunding(userId: string) {
     }, auth(userId)),
   );
   expect(importRes.status).toBe(201);
+}
+
+async function creditGholaBalance(userId: string, amountBucket = "25") {
+  const instructionRes = await createBalanceFundingIntent(
+    post("/v1/private-account/balance/funding-intent", {
+      amount_bucket: amountBucket,
+      asset_bucket: "stablecoin",
+    }, auth(userId)),
+  );
+  expect(instructionRes.status).toBe(201);
+  const instruction = await instructionRes.json();
+  const importRes = await importBalanceCredit(
+    post("/v1/private-account/balance/import-credit", {
+      funding_intent_id: instruction.instruction.funding_intent_id,
+      receipt_id: `custom_receipt_balance_${userId}_${amountBucket}_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    }, auth(userId)),
+  );
+  expect(importRes.status).toBe(201);
+  return importRes.json();
 }
 
 describe("private account connector gateway routes", () => {
@@ -682,13 +704,22 @@ describe("private account connector gateway routes", () => {
     process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = "true";
     process.env.GHOLA_HYPERLIQUID_LIVE_MODE = "tiny_fill";
 
-    const eligibilityRes = await verifyVenueEligibility(
-      post("/v1/private-account/venues/hyperliquid/eligibility", {
-        credential_type: "self_attested_eligible_user",
+    const blockedAllocationRes = await allocateHyperliquidManaged(
+      post("/v1/private-account/hyperliquid/managed-allocation", {
+        execution_mode: "ghola_pooled",
+        network: "mainnet",
+        market_allowlist: ["BTC", "ETH", "SOL"],
+        max_notional_bucket: "5",
+        max_order_count: 5,
       }),
-      { params: Promise.resolve({ platform_class: "hyperliquid" }) },
     );
-    expect(eligibilityRes.status).toBe(201);
+    const blockedAllocation = await blockedAllocationRes.json();
+    expect(blockedAllocationRes.status).toBe(400);
+    expect(blockedAllocation.error).toBe("ghola_balance_insufficient");
+
+    const credited = await creditGholaBalance("connector_user_1", "5");
+    expect(credited.balance.available_micro_usdc).toBe(5_000_000);
+    expect(credited.balance_ledger_entry.entry_kind).toBe("deposit_credit");
 
     const allocationRes = await allocateHyperliquidManaged(
       post("/v1/private-account/hyperliquid/managed-allocation", {
@@ -704,6 +735,13 @@ describe("private account connector gateway routes", () => {
     expect(allocation.managed_allocation.execution_mode).toBe("ghola_pooled");
     expect(allocation.managed_allocation.network).toBe("mainnet");
     expect(allocation.managed_allocation.eligibility_commitment).toMatch(/^venue_eligibility_/);
+    expect(allocation.ghola_balance.available_micro_usdc).toBe(5_000_000);
+
+    const balanceRes = await getGholaBalance(get("/v1/private-account/balance"));
+    const balance = await balanceRes.json();
+    expect(balanceRes.status).toBe(200);
+    expect(balance.balance.available_usd).toBe("5.00");
+    expect(balance.recent_ledger_entries[0].entry_kind).toBe("deposit_credit");
 
     const statusRes = await getHyperliquidVault(get("/v1/private-account/hyperliquid/vault"));
     const status = await statusRes.json();

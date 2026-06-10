@@ -35,6 +35,7 @@ export function hyperliquidCredentialFromVault(vault) {
     network: vault.network === "testnet" ? "testnet" : "mainnet",
     base_url: vault.network === "testnet" ? TESTNET_API_URL : MAINNET_API_URL,
     account_address: String(vault.hyperliquid_account_address).toLowerCase(),
+    vault_address: isNonEmptyString(vault.vault_address) ? String(vault.vault_address).toLowerCase() : null,
     api_wallet_private_key: String(vault.api_wallet_private_key).toLowerCase(),
     agent_name: vault.agent_name || null,
   };
@@ -75,6 +76,15 @@ export function hyperliquidManagedAccountRefs() {
   return managedHyperliquidAccounts().map((account, index) => ({
     credential_ref: managedCredentialRef(account, index),
     network: account.network === "mainnet" ? "mainnet" : "testnet",
+    execution_mode: account.execution_mode || null,
+    vault_address: isNonEmptyString(account.vault_address) ? String(account.vault_address).toLowerCase() : null,
+    vault_controller_address: isNonEmptyString(account.vault_controller_address)
+      ? String(account.vault_controller_address).toLowerCase()
+      : null,
+    agent_wallet_address: isNonEmptyString(account.account_address)
+      ? String(account.account_address).toLowerCase()
+      : null,
+    agent_wallet_commitment: account.agent_wallet_commitment || null,
     market_allowlist: Array.isArray(account.market_allowlist)
       ? account.market_allowlist.map((market) => String(market).toUpperCase())
       : [],
@@ -82,35 +92,72 @@ export function hyperliquidManagedAccountRefs() {
 }
 
 export function loadManagedHyperliquidCredential(allocation) {
-  if (allocation?.network !== "testnet" && allocation?.execution_mode !== "ghola_pooled") {
+  const executionMode = allocation?.execution_mode === "hyperliquid_native_vault"
+    ? "hyperliquid_native_vault"
+    : allocation?.execution_mode === "ghola_pooled" ? "ghola_pooled" : "managed_testnet";
+  const expectedNetwork = executionMode === "managed_testnet" ? "testnet" : "mainnet";
+  if (
+    allocation?.network !== "testnet" &&
+    executionMode !== "ghola_pooled" &&
+    executionMode !== "hyperliquid_native_vault"
+  ) {
     throw new HyperliquidExecutionError("hyperliquid managed pilot is testnet-only", 400);
   }
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
-    const network = allocation?.execution_mode === "ghola_pooled" ? "mainnet" : "testnet";
+    const network = executionMode === "managed_testnet" ? "testnet" : "mainnet";
     return {
       network,
       base_url: network === "testnet" ? TESTNET_API_URL : MAINNET_API_URL,
       account_address: "0x0000000000000000000000000000000000000001",
+      vault_address: executionMode === "hyperliquid_native_vault"
+        ? allocation?.vault_address || "0x0000000000000000000000000000000000000002"
+        : null,
       api_wallet_private_key: "0x1111111111111111111111111111111111111111111111111111111111111111",
-      agent_name: allocation?.execution_mode === "ghola_pooled" ? "dry-run-ghola-pooled" : "dry-run-managed",
+      agent_name: executionMode === "hyperliquid_native_vault"
+        ? "dry-run-native-vault"
+        : executionMode === "ghola_pooled" ? "dry-run-ghola-pooled" : "dry-run-managed",
     };
   }
   const accounts = managedHyperliquidAccounts();
   const selected = accounts.find((account, index) =>
-    managedCredentialRef(account, index) === allocation.credential_ref
+    allocation.credential_ref
+      ? managedCredentialRef(account, index) === allocation.credential_ref
+      : account.network === expectedNetwork &&
+        (
+          executionMode === "hyperliquid_native_vault"
+            ? account.execution_mode === "hyperliquid_native_vault" || account.execution_mode === "ghola_pooled"
+            : executionMode === "ghola_pooled"
+              ? account.execution_mode === "ghola_pooled" || !account.execution_mode
+              : account.execution_mode === "managed_testnet" || !account.execution_mode
+        )
   );
   if (!selected) {
-    throw new HyperliquidExecutionError("hyperliquid managed allocation credential is unavailable", 503);
+    throw new HyperliquidExecutionError(
+      executionMode === "hyperliquid_native_vault"
+        ? "hyperliquid native vault agent credential is unavailable"
+        : "hyperliquid managed allocation credential is unavailable",
+      503,
+    );
   }
   const credential = {
     network: selected.network === "testnet" ? "testnet" : "mainnet",
     base_url: selected.network === "testnet" ? TESTNET_API_URL : MAINNET_API_URL,
     account_address: String(selected.account_address || "").toLowerCase(),
+    vault_address: executionMode === "hyperliquid_native_vault"
+      ? String(allocation?.vault_address || selected.vault_address || "").toLowerCase()
+      : isNonEmptyString(selected.vault_address) ? String(selected.vault_address).toLowerCase() : null,
     api_wallet_private_key: String(selected.api_wallet_private_key || "").toLowerCase(),
-    agent_name: selected.agent_name || (allocation?.execution_mode === "ghola_pooled" ? "ghola-pooled" : "managed-testnet"),
+    agent_name: selected.agent_name || (
+      executionMode === "hyperliquid_native_vault"
+        ? "native-vault-agent"
+        : executionMode === "ghola_pooled" ? "ghola-pooled" : "managed-testnet"
+    ),
   };
   if (!/^0x[0-9a-f]{40}$/i.test(credential.account_address)) {
     throw new HyperliquidExecutionError("hyperliquid managed account address is invalid", 503);
+  }
+  if (executionMode === "hyperliquid_native_vault" && !/^0x[0-9a-f]{40}$/i.test(credential.vault_address || "")) {
+    throw new HyperliquidExecutionError("hyperliquid native vault address is invalid", 503);
   }
   if (!/^0x[0-9a-f]{64}$/i.test(credential.api_wallet_private_key)) {
     throw new HyperliquidExecutionError("hyperliquid managed API wallet key is invalid", 503);
@@ -223,15 +270,15 @@ export async function readHyperliquidAccountSnapshot({
   const [state, openOrders, userFills] = await Promise.all([
     postHyperliquidInfo(fetchImpl, credential.base_url, {
       type: "clearinghouseState",
-      user: credential.account_address,
+      user: hyperliquidExecutionAddress(credential),
     }),
     postHyperliquidInfo(fetchImpl, credential.base_url, {
       type: "openOrders",
-      user: credential.account_address,
+      user: hyperliquidExecutionAddress(credential),
     }),
     postHyperliquidInfo(fetchImpl, credential.base_url, {
       type: "userFills",
-      user: credential.account_address,
+      user: hyperliquidExecutionAddress(credential),
       aggregateByTime: true,
     }).catch(() => []),
   ]);
@@ -299,15 +346,15 @@ export async function createHyperliquidAccountStateStream({
     const [state, openOrders, userFills] = await Promise.all([
       postHyperliquidInfo(fetchImpl, credential.base_url, {
         type: "clearinghouseState",
-        user: credential.account_address,
+        user: hyperliquidExecutionAddress(credential),
       }),
       postHyperliquidInfo(fetchImpl, credential.base_url, {
         type: "openOrders",
-        user: credential.account_address,
+        user: hyperliquidExecutionAddress(credential),
       }),
       postHyperliquidInfo(fetchImpl, credential.base_url, {
         type: "userFills",
-        user: credential.account_address,
+        user: hyperliquidExecutionAddress(credential),
         aggregateByTime: true,
       }).catch(() => []),
     ]);
@@ -332,13 +379,13 @@ export async function createHyperliquidAccountStateStream({
 
   function subscribe() {
     const subscriptions = [
-      { type: "clearinghouseState", user: credential.account_address },
-      { type: "openOrders", user: credential.account_address },
-      { type: "orderUpdates", user: credential.account_address },
-      { type: "userEvents", user: credential.account_address },
-      { type: "userFills", user: credential.account_address, aggregateByTime: true },
-      { type: "userFundings", user: credential.account_address },
-      { type: "activeAssetData", user: credential.account_address, coin },
+      { type: "clearinghouseState", user: hyperliquidExecutionAddress(credential) },
+      { type: "openOrders", user: hyperliquidExecutionAddress(credential) },
+      { type: "orderUpdates", user: hyperliquidExecutionAddress(credential) },
+      { type: "userEvents", user: hyperliquidExecutionAddress(credential) },
+      { type: "userFills", user: hyperliquidExecutionAddress(credential), aggregateByTime: true },
+      { type: "userFundings", user: hyperliquidExecutionAddress(credential) },
+      { type: "activeAssetData", user: hyperliquidExecutionAddress(credential), coin },
     ];
     for (const subscription of subscriptions) {
       socket?.send(JSON.stringify({ method: "subscribe", subscription }));
@@ -627,12 +674,22 @@ function hyperliquidAccountVisibility(accountSource) {
   return {
     main_wallet_exposed: false,
     ghola_operator_sees: "commitment_and_ciphertext_only",
-    hyperliquid_sees: "execution_account_and_order_activity",
+    hyperliquid_sees: accountSource === "hyperliquid_native_vault"
+      ? "vault_address_and_order_activity"
+      : "execution_account_and_order_activity",
     venue_access_source: accountSource === "ghola_pooled"
       ? "ghola_pooled_venue_account"
-      : accountSource === "ghola_managed" ? "ghola_managed_testnet" : "user_provided_credentials",
-    public_chain_sees: "no_direct_main_wallet_trade_settlement",
+      : accountSource === "hyperliquid_native_vault"
+        ? "hyperliquid_native_vault"
+        : accountSource === "ghola_managed" ? "ghola_managed_testnet" : "user_provided_credentials",
+    public_chain_sees: accountSource === "hyperliquid_native_vault"
+      ? "hyperliquid_vault_deposit_and_order_activity"
+      : "no_direct_main_wallet_trade_settlement",
   };
+}
+
+function hyperliquidExecutionAddress(credential) {
+  return String(credential?.vault_address || credential?.account_address || "").toLowerCase();
 }
 
 function hyperliquidNoSubmitResult({ instruction, cloid, executionMode, runnerResult }) {
@@ -747,6 +804,10 @@ function normalizeSide(value) {
 
 function stringValue(value) {
   return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function commitment(prefix, value) {
