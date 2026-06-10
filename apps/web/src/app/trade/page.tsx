@@ -1355,8 +1355,8 @@ function BookRow({
 
 function TradeTape({ frame }: { frame: GholaMarketFrame | null }) {
   return (
-    <div className="max-h-36 overflow-hidden px-4 py-3 font-mono text-xs">
-      {(frame?.trades ?? []).slice(0, 8).map((trade, index) => (
+    <div className="px-4 py-3 font-mono text-xs">
+      {(frame?.trades ?? []).slice(0, 6).map((trade, index) => (
         <div
           key={`${trade.time}-${index}`}
           className="grid grid-cols-3 py-1 tabular-nums"
