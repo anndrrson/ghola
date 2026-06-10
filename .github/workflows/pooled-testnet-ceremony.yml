@@ -132,6 +132,37 @@ jobs:
             echo "Then re-run this workflow with mode=install."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Verify pool funded (install mode)
+        if: ${{ inputs.mode == 'install' }}
+        env:
+          POOL_MASTER_ADDRESS: ${{ steps.master.outputs.address }}
+        run: |
+          set -euo pipefail
+          body=$(curl -fsS -X POST https://api.hyperliquid-testnet.xyz/info \
+            -H 'Content-Type: application/json' \
+            --data "{\"type\":\"clearinghouseState\",\"user\":\"${POOL_MASTER_ADDRESS}\"}")
+          account_value=$(BODY="$body" node <<'EOF'
+          const body = JSON.parse(process.env.BODY || "{}");
+          const value = Number.parseFloat(body?.marginSummary?.accountValue || "0");
+          console.log(Number.isFinite(value) ? value : 0);
+          EOF
+          )
+          if ! ACCOUNT_VALUE="$account_value" node -e 'process.exit(Number(process.env.ACCOUNT_VALUE || "0") > 0 ? 0 : 1)'; then
+            drip=$(curl -sS -X POST https://api.hyperliquid-testnet.xyz/info \
+              -H 'Content-Type: application/json' \
+              --data "{\"type\":\"claimDrip\",\"user\":\"${POOL_MASTER_ADDRESS}\"}" || true)
+            {
+              echo "## Install blocked: Hyperliquid testnet pool is unfunded"
+              echo "- pool master: \`${POOL_MASTER_ADDRESS}\`"
+              echo "- account value: \`${account_value}\`"
+              echo "- faucet response: \`${drip}\`"
+              echo ""
+              echo "Fund the pool with testnet USDC before re-running install. Hyperliquid requires the recipient address to exist on mainnet before the faucet can drip directly."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "- pool funded on Hyperliquid testnet: account value ${account_value}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Approve agent wallet on testnet
         if: ${{ inputs.mode == 'install' }}
         run: |
