@@ -94,6 +94,112 @@ describe("autonomous autopilot engine", () => {
     ]);
   });
 
+  it("keeps agents active with no-submit verification when live submit is not armed", async () => {
+    process.env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT = "false";
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-autopilot-worker" };
+    const now = new Date(Date.now() + 60_000);
+    const session = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_autopilot_shadow",
+        session_policy: {
+          ai_direct_enabled: false,
+          venue_allowlist: ["jupiter"],
+          market_allowlist: ["SOL-USD"],
+          max_notional_bucket: "50",
+          max_daily_notional_bucket: "250",
+          max_order_count: 10,
+          ttl_ms: 2 * 60 * 60_000,
+          max_slippage_bps: 50,
+        },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+
+    const tick = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+    });
+
+    assert.equal(tick.ok, true);
+    assert.equal(tick.mode, "no_submit");
+    assert.equal(tick.receipt.status, "verified_no_funds");
+    assert.equal(tick.receipt.checks.transaction_broadcast, false);
+
+    const updated = await state.getAutopilotSession(session.autopilot_session_id);
+    assert.equal(updated.order_count, 0);
+    assert.equal(updated.daily_notional_used_bucket, "0");
+    assert.match(updated.last_verified_at, /^\d{4}-/);
+
+    const eventTypes = (await state
+      .listAutopilotEvents(session.autopilot_session_id))
+      .map((event) => event.type);
+    assert.deepEqual(eventTypes.slice(-7), [
+      "agent_tick",
+      "position_update",
+      "proposal",
+      "ai_score",
+      "guardrail",
+      "execution",
+      "receipt",
+    ]);
+    assert.equal(eventTypes.includes("live_order_submitted"), false);
+  });
+
+  it("verifies Phoenix no-submit orders through autopilot", async () => {
+    process.env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT = "false";
+    process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE = "full_ticket";
+    process.env.PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET = "true";
+    process.env.PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD = "1000";
+    process.env.PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD = "1000";
+    process.env.PRIVATE_AGENT_SOLANA_PERPS_NO_SUBMIT_LOCAL_CHECKS = "true";
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-autopilot-worker" };
+    const now = new Date(Date.now() + 60_000);
+    const session = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_autopilot_phoenix_shadow",
+        session_policy: {
+          ai_direct_enabled: false,
+          venue_allowlist: ["phoenix"],
+          market_allowlist: ["SOL-USD"],
+          max_notional_bucket: "50",
+          max_daily_notional_bucket: "250",
+          max_order_count: 10,
+          ttl_ms: 2 * 60 * 60_000,
+          max_slippage_bps: 50,
+        },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+
+    const tick = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+    });
+
+    assert.equal(tick.ok, true);
+    assert.equal(tick.mode, "no_submit");
+    assert.equal(tick.proposal.venue_id, "phoenix");
+    assert.equal(tick.proposal.operation_class, "perp_limit_order");
+    assert.equal(tick.receipt.status, "verified_no_funds");
+    assert.equal(tick.receipt.checks.transaction_broadcast, false);
+  });
+
   it("lets AI-direct mode originate a bounded dry-run order after deterministic validation", async () => {
     process.env.PRIVATE_AGENT_AI_DIRECT_ENABLED = "true";
     process.env.PRIVATE_AGENT_AI_DIRECT_MODE = "mock";

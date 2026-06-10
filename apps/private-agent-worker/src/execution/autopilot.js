@@ -299,18 +299,23 @@ export async function runAutopilotTick({
       return { ok: false, error: "ai_score_below_threshold" };
     }
   }
-  if (env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT !== "true" && env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
-    await appendEvent(state, session, "guardrail", "Live submit gate is disabled.", {
-      required_env: "PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT=true",
-    }, now);
-    return { ok: false, error: "live_submit_disabled" };
-  }
-
   const workOrderCommitment = `autopilot_work_order_${digest({
     session: session.autopilot_session_id,
     proposal: proposal.proposal_commitment,
     tick: now.toISOString(),
   })}`;
+  if (env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT !== "true") {
+    return verifyAutopilotProposalNoSubmit({
+      session,
+      sessionId,
+      state,
+      recipient,
+      proposal,
+      workOrderCommitment,
+      now,
+    });
+  }
+
   const receipt = await executeAutopilotOrder({
     venue_id: proposal.venue_id,
     operation_class: proposal.operation_class,
@@ -373,6 +378,85 @@ export async function runAutopilotTick({
     position: publicPosition(position),
   }, now);
   return { ok: true, receipt, proposal };
+}
+
+async function verifyAutopilotProposalNoSubmit({
+  session,
+  sessionId,
+  state,
+  recipient,
+  proposal,
+  workOrderCommitment,
+  now,
+}) {
+  await appendEvent(state, session, "guardrail", "Live submit gate is disabled; agent is proving the order without broadcasting.", {
+    required_env: "PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT=true",
+    execution_mode: "no_submit",
+    broadcast_performed: false,
+  }, now);
+  let receipt;
+  try {
+    receipt = await verifyAutopilotOrder({
+      venue_id: proposal.venue_id,
+      operation_class: proposal.operation_class,
+      work_order_commitment: workOrderCommitment,
+      policy_commitment: session.session_policy.policy_commitment,
+      session_policy: workerSessionPolicy(session),
+      instruction: proposal.instruction,
+      execution: executionForVenue(session, proposal.venue_id),
+      recipient,
+      state,
+    });
+  } catch (error) {
+    await appendEvent(state, session, "risk_reject", "No-submit venue verification failed; live execution would be blocked.", {
+      venue_id: proposal.venue_id,
+      operation_class: proposal.operation_class,
+      market: proposal.market,
+      side: proposal.side,
+      notional_bucket: String(proposal.notional_usd),
+      work_order_commitment: workOrderCommitment,
+      error: String(error?.code || error?.message || "no_submit_verification_failed"),
+    }, now);
+    return {
+      ok: false,
+      error: "no_submit_verification_failed",
+      proposal,
+    };
+  }
+
+  const updated = await state.getAutopilotSession(sessionId) || session;
+  updated.last_verified_at = now.toISOString();
+  updated.updated_at = now.toISOString();
+  updated.next_step = "Agent is actively verifying executable orders without broadcasting. Arm live submit to place bounded venue orders.";
+  await state.putAutopilotSession(updated);
+  await appendEvent(state, updated, "execution", "Agent verified an executable no-submit order.", {
+    venue_id: proposal.venue_id,
+    operation_class: proposal.operation_class,
+    market: proposal.market,
+    side: proposal.side,
+    notional_bucket: String(proposal.notional_usd),
+    decision_id: proposal.decision_id || null,
+    work_order_commitment: workOrderCommitment,
+    execution_mode: "no_submit",
+    broadcast_performed: false,
+  }, now);
+  await appendEvent(state, updated, "receipt", "No-submit venue proof recorded.", {
+    venue_id: proposal.venue_id,
+    status: receipt.status,
+    work_order_commitment: receipt.work_order_commitment,
+    provider_ref_commitment: receipt.provider_ref_commitment,
+    result_commitment: receipt.result_commitment,
+    checks: receipt.checks || null,
+    final_proof: receipt.final_proof || null,
+    execution_mode: "no_submit",
+    broadcast_performed: false,
+  }, now);
+  return {
+    ok: true,
+    mode: "no_submit",
+    receipt,
+    proposal,
+  };
 }
 
 function normalizeAutopilotPolicy(raw, now) {

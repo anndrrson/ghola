@@ -860,6 +860,18 @@ export async function verifyAutopilotOrder({
       state,
     });
   }
+  if (venue_id === "phoenix") {
+    return verifySolanaPerpsOrderNoSubmit({
+      body: {
+        ...body,
+        venue_id: "phoenix",
+        platform_class: "solana_perps_market",
+        execution_mode: execution.execution_mode || "user_stealth",
+      },
+      recipient,
+      state,
+    });
+  }
   if (venue_id === "coinbase_advanced") {
     return verifyCoinbaseOrderNoSubmit({
       body: {
