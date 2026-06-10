@@ -112,21 +112,25 @@ jobs:
         run: |
           set -euo pipefail
           pip install --quiet eth-account
-          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          # Mask line goes to stdout; key only into GITHUB_ENV; address only
+          # into GITHUB_OUTPUT. v2 derivation path: the v1 key was leaked
+          # into a public run log by a piping bug (logs deleted, key burned,
+          # nothing was ever funded on it).
+          python3 - <<'EOF'
           import hashlib, os
           from eth_account import Account
           seed = os.environ["SEED"]
-          key = "0x" + hashlib.sha256((seed + "/ghola-testnet-pool/master/v1").encode()).hexdigest()
+          key = "0x" + hashlib.sha256((seed + "/ghola-testnet-pool/master/v2").encode()).hexdigest()
           acct = Account.from_key(key)
-          print(f"address={acct.address}")
-          print(f"::add-mask::{key}", flush=True)
+          print(f"::add-mask::{key}")
           with open(os.environ["GITHUB_ENV"], "a") as f:
               f.write(f"HL_MASTER_PRIVATE_KEY={key}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"address={acct.address}\n")
+          print(f"POOL_MASTER_ADDRESS={acct.address}")
           EOF
-          addr=$(grep '^address=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
-          echo "POOL_MASTER_ADDRESS=$addr"
           echo "## Pool master (testnet-only)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- address: $addr" >> "$GITHUB_STEP_SUMMARY"
+          echo "- address: see POOL_MASTER_ADDRESS in this step's log" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Funding instructions (address mode)
         if: ${{ inputs.mode == 'address' }}
