@@ -43,6 +43,12 @@ on:
         description: "Public base URL to verify"
         required: true
         default: "https://ghola.xyz"
+      keep_phala_running:
+        description: "Keep Phala running after install/canary. Default false stops it to cap spend."
+        required: true
+        default: "false"
+        type: choice
+        options: ["false", "true"]
 
 permissions:
   contents: read
@@ -247,3 +253,47 @@ jobs:
           echo "$body" | head -c 1500 >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop Phala after testnet ceremony
+        if: ${{ always() && inputs.mode == 'install' && inputs.keep_phala_running != 'true' }}
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          PHALA_CLOUD_API_PREFIX: ${{ vars.PHALA_CLOUD_API_PREFIX }}
+          CVM_NAME: ghola-private-agent-worker-no-submit-f510d61
+        run: |
+          set -euo pipefail
+          if [ -z "${PHALA_CLOUD_API_KEY}" ]; then
+            echo "- testnet ceremony Phala stop skipped: PHALA_CLOUD_API_KEY missing" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          work="$RUNNER_TEMP/phala-testnet-stop"
+          mkdir -p "$work"
+          cd "$work"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund @phala/cloud >/dev/null
+          node --input-type=module <<'NODE'
+          import { createClient } from "@phala/cloud";
+          import { appendFileSync } from "node:fs";
+
+          const apiKey = process.env.PHALA_CLOUD_API_KEY?.trim();
+          const baseURL = process.env.PHALA_CLOUD_API_PREFIX?.trim() || undefined;
+          const name = process.env.CVM_NAME || "ghola-private-agent-worker-no-submit-f510d61";
+          const client = createClient({ apiKey, ...(baseURL ? { baseURL } : {}) });
+          let beforeStatus = "unknown";
+          let action = "none";
+          try {
+            const before = await client.getCvmState({ id: name }, { schema: false });
+            beforeStatus = before && typeof before === "object" ? String(before.status ?? "unknown") : "unknown";
+            if (beforeStatus !== "stopped" && beforeStatus !== "stopping") {
+              await client.stopCvm({ id: name });
+              action = "stop_called";
+            }
+          } catch (error) {
+            action = `error: ${error instanceof Error ? error.message.slice(0, 160) : "unknown"}`;
+          }
+          appendFileSync(
+            process.env.GITHUB_STEP_SUMMARY,
+            `\n## Testnet ceremony Phala stop\n- cvm: \`${name}\`\n- status before: \`${beforeStatus}\`\n- action: \`${action}\`\n`,
+          );
+          console.log(JSON.stringify({ name, before_status: beforeStatus, action }, null, 2));
+          NODE
