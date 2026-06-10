@@ -66,6 +66,9 @@ for (const file of sources) {
   Object.assign(merged, readEnvFile(file));
 }
 Object.assign(merged, envSubset(process.env));
+if (args.hyperliquidNetwork) {
+  merged.PRIVATE_AGENT_HYPERLIQUID_NETWORK = args.hyperliquidNetwork;
+}
 
 normalizeAliases(merged);
 const generated = [];
@@ -144,22 +147,30 @@ console.log(JSON.stringify({
 }, null, 2));
 
 if (args.install) {
-  if (status.missing.length > 0) {
+  const testnetHyperliquidInstall = args.hyperliquidNetwork === "testnet";
+  const delegatedPartialInstall = testnetHyperliquidInstall || args.allowPartial || args.venues;
+  if (!delegatedPartialInstall && status.missing.length > 0) {
     fail(`Not installing; missing required external credential(s): ${status.missing.join(", ")}`);
   }
-  if (evidence.missing.length > 0) {
+  if (!delegatedPartialInstall && evidence.missing.length > 0) {
     fail(`Not installing; missing credential intake evidence: ${evidence.missing.join(", ")}`);
   }
   if (!args.workerEnv) {
     fail("Not installing; pass --worker-env <full-phala-worker.env> so Phala receives a complete sealed env.");
   }
-  run("node", [
+  const installArgs = [
     "scripts/install-phala-pooled-credentials.mjs",
     "--env",
     relativeRoot(outPath),
     "--worker-env",
     args.workerEnv,
-  ]);
+  ];
+  if (args.venues || testnetHyperliquidInstall) {
+    installArgs.push("--venues", args.venues || "hyperliquid");
+  }
+  if (args.allowPartial || testnetHyperliquidInstall) installArgs.push("--allow-partial");
+  if (args.allowTestnet || testnetHyperliquidInstall) installArgs.push("--allow-testnet");
+  run("node", installArgs);
 }
 
 function parseArgs(argv) {
@@ -170,6 +181,10 @@ function parseArgs(argv) {
     workerEnv: "",
     generateHyperliquidNativeVaultAgent: false,
     hyperliquidNativeVaultMasterAccount: "",
+    hyperliquidNetwork: "",
+    venues: "",
+    allowPartial: false,
+    allowTestnet: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -177,6 +192,10 @@ function parseArgs(argv) {
     else if (arg === "--out") parsed.out = argv[++i] || DEFAULT_OUT;
     else if (arg === "--install") parsed.install = true;
     else if (arg === "--worker-env") parsed.workerEnv = argv[++i] || "";
+    else if (arg === "--hyperliquid-network") parsed.hyperliquidNetwork = argv[++i] || "";
+    else if (arg === "--venues") parsed.venues = argv[++i] || "";
+    else if (arg === "--allow-partial") parsed.allowPartial = true;
+    else if (arg === "--allow-testnet") parsed.allowTestnet = true;
     else if (arg === "--generate-hyperliquid-native-vault-agent") parsed.generateHyperliquidNativeVaultAgent = true;
     else if (arg === "--hyperliquid-native-vault-master-account") {
       parsed.hyperliquidNativeVaultMasterAccount = argv[++i] || "";
@@ -192,9 +211,11 @@ function usage(error = "") {
   console.error([
     "Usage:",
     "  node scripts/bootstrap-phala-pooled-credentials.mjs [--env extra.env] [--worker-env .dev/phala-worker.env] [--install]",
+    "  node scripts/bootstrap-phala-pooled-credentials.mjs --hyperliquid-network testnet --env .dev/hyperliquid-testnet.env --worker-env .dev/phala-worker.env --install",
     "",
     "Creates or updates deploy/private-agent-pooled-credentials.env.",
     "Generates Phoenix and Jupiter Solana authority keys when absent, marked as generated/unfunded.",
+    "Can write a Hyperliquid managed account as network=testnet for sealed CVM pilot accounts.",
     "Pass --generate-hyperliquid-native-vault-agent with --hyperliquid-native-vault-master-account 0x... to create an EVM agent signer for Hyperliquid native vault mode.",
     "Does not generate venue approval evidence for Hyperliquid, Jupiter API, or Coinbase.",
   ].join("\n"));
@@ -227,9 +248,10 @@ function normalizeAliases(env) {
       env.HYPERLIQUID_API_PRIVATE_KEY ||
       "";
     if (account && key) {
+      const network = hyperliquidNetwork(env);
       env.PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON = JSON.stringify({
         accounts: [{
-          network: "mainnet",
+          network,
           account_address: account,
           api_wallet_private_key: key,
         }],
@@ -256,6 +278,14 @@ function normalizeAliases(env) {
       });
     }
   }
+}
+
+function hyperliquidNetwork(env) {
+  const raw = env.PRIVATE_AGENT_HYPERLIQUID_NETWORK ||
+    env.HYPERLIQUID_NETWORK ||
+    env.GHOLA_CANARY_HYPERLIQUID_NETWORK ||
+    "";
+  return String(raw).trim().toLowerCase() === "testnet" ? "testnet" : "mainnet";
 }
 
 function hyperliquidPoolJson(value) {
