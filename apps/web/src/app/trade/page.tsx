@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Activity,
@@ -9,7 +9,6 @@ import {
   CheckCircle2,
   KeyRound,
   LockKeyhole,
-  Pause,
   Play,
   RefreshCcw,
   ShieldCheck,
@@ -30,9 +29,12 @@ import {
   type GholaChartVenue,
   type GholaMarketFrame,
 } from "@/lib/ghola-market-chart";
-import type {
-  HyperliquidMarketSnapshot,
-  PrivateAccountLiveTradingStatus,
+import {
+  createPrivateAccountIntent,
+  previewPrivateAccountAction,
+  type HyperliquidMarketSnapshot,
+  type PrivateAccountLiveTradingStatus,
+  type PrivateAccountSafeInput,
 } from "@/lib/private-account-client";
 import type { CoinbaseMarketSnapshot } from "@/lib/coinbase-market-data";
 import type { PhoenixMarketSnapshot } from "@/lib/phoenix-market-data";
@@ -42,6 +44,9 @@ import { handleTwitterSession } from "@/lib/thumper-api";
 
 type VenueId = "hyperliquid" | "phoenix" | "coinbase";
 type Side = "buy" | "sell";
+type ChartInterval = "1m" | "5m" | "15m" | "1h";
+
+const CHART_INTERVALS: ChartInterval[] = ["1m", "5m", "15m", "1h"];
 type EntryTrigger =
   | "preview_now"
   | "break_level"
@@ -77,21 +82,21 @@ const VENUES: Array<{
     id: "hyperliquid",
     label: "Hyperliquid",
     product: "BTC-PERP",
-    api: "/v1/private-account/hyperliquid/market-snapshot?coin=BTC&interval=5m",
+    api: "/v1/private-account/hyperliquid/market-snapshot?coin=BTC",
     chartVenue: "hyperliquid",
   },
   {
     id: "phoenix",
     label: "Phoenix",
     product: "SOL-PERP",
-    api: "/v1/private-account/phoenix/market-snapshot?symbol=SOL&interval=5m",
+    api: "/v1/private-account/phoenix/market-snapshot?symbol=SOL",
     chartVenue: "phoenix",
   },
   {
     id: "coinbase",
     label: "Coinbase",
     product: "BTC-USD",
-    api: "/v1/private-account/coinbase/market-snapshot?product_id=BTC-USD&interval=5m",
+    api: "/v1/private-account/coinbase/market-snapshot?product_id=BTC-USD",
     chartVenue: "coinbase",
   },
 ];
@@ -131,6 +136,29 @@ const STOP_RULES: Array<{ id: StopRule; label: string }> = [
   { id: "exit_on_invalidation", label: "Invalidation exit" },
 ];
 
+// Triggers that are coherent with each trade idea. The first entry is the
+// playbook default applied when an idea is chosen manually.
+const TRIGGERS_FOR: Record<StrategyProfile, EntryTrigger[]> = {
+  trend_following: ["preview_now", "break_level", "retest_level", "book_imbalance", "custom"],
+  breakout: ["break_level", "retest_level", "book_imbalance", "custom"],
+  reversal: ["sweep_reclaim", "retest_level", "custom"],
+  mean_reversion: ["retest_level", "sweep_reclaim", "preview_now", "custom"],
+  range_trade: ["retest_level", "sweep_reclaim", "custom"],
+  funding_basis: ["funding_mark_divergence", "route_edge_threshold", "custom"],
+  custom: [
+    "preview_now",
+    "break_level",
+    "retest_level",
+    "sweep_reclaim",
+    "book_imbalance",
+    "funding_mark_divergence",
+    "route_edge_threshold",
+    "custom",
+  ],
+};
+
+const STOP_DEFAULT_PCT = 0.0075;
+
 export default function TradePage() {
   const thumperAuth = useThumperAuth();
   const { setAuth } = thumperAuth;
@@ -138,6 +166,7 @@ export default function TradePage() {
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [venueId, setVenueId] = useState<VenueId>("hyperliquid");
+  const [chartInterval, setChartInterval] = useState<ChartInterval>("5m");
   const [frame, setFrame] = useState<GholaMarketFrame | null>(null);
   const [loadingMarket, setLoadingMarket] = useState(true);
   const [marketError, setMarketError] = useState<string | null>(null);
@@ -153,9 +182,32 @@ export default function TradePage() {
   const [slippageBps, setSlippageBps] = useState(50);
   const [entryPrice, setEntryPrice] = useState<number | null>(null);
   const [entryPinned, setEntryPinned] = useState(false);
-  const [agentRunning, setAgentRunning] = useState(false);
+  const [stopPrice, setStopPrice] = useState<number | null>(null);
+  const [stopPinned, setStopPinned] = useState(false);
+  const [ideaManual, setIdeaManual] = useState(false);
+  const [triggerManual, setTriggerManual] = useState(false);
+  const [stopRuleManual, setStopRuleManual] = useState(false);
+  const [preview, setPreview] = useState<
+    | { status: "idle" }
+    | { status: "working" }
+    | { status: "done"; commitment: string }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
   const venue = VENUES.find((item) => item.id === venueId) ?? VENUES[0];
   const mid = frameMidNumber(frame);
+  const [midFlash, setMidFlash] = useState(false);
+  const prevMidRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (prevMidRef.current != null && mid != null && prevMidRef.current !== mid) {
+      setMidFlash(true);
+      const timer = window.setTimeout(() => setMidFlash(false), 480);
+      prevMidRef.current = mid;
+      return () => window.clearTimeout(timer);
+    }
+    prevMidRef.current = mid;
+    return undefined;
+  }, [mid]);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,7 +215,7 @@ export default function TradePage() {
       setLoadingMarket(true);
       setMarketError(null);
       try {
-        const res = await fetch(venue.api, { cache: "no-store" });
+        const res = await fetch(`${venue.api}&interval=${chartInterval}`, { cache: "no-store" });
         if (!res.ok) throw new Error(`market_${res.status}`);
         const body = await res.json();
         const next =
@@ -188,7 +240,7 @@ export default function TradePage() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [venue]);
+  }, [venue, chartInterval]);
 
   useEffect(() => {
     let cancelled = false;
@@ -229,16 +281,68 @@ export default function TradePage() {
     if (!entryPinned && mid) setEntryPrice(mid);
   }, [entryPinned, mid]);
 
+  useEffect(() => {
+    setPreview((current) => (current.status === "idle" ? current : { status: "idle" }));
+  }, [venueId, side, notional, slippageBps, strategy, entryTrigger, horizon, stopRule, entryPinned, stopPinned]);
+
+  const entryLevel = entryPrice ?? mid;
+  const stopLevel = stopPinned && stopPrice != null
+    ? stopPrice
+    : entryLevel != null
+      ? side === "buy"
+        ? entryLevel * (1 - STOP_DEFAULT_PCT)
+        : entryLevel * (1 + STOP_DEFAULT_PCT)
+      : null;
+
+  // The agent reads levels off the chart: once the entry is placed, infer the
+  // trade idea and trigger from geometry unless the user has overridden them.
+  useEffect(() => {
+    if (!entryPinned || entryPrice == null || !mid) return;
+    const interp = interpretGeometry({ entry: entryPrice, mid, side, candles: frame?.candles ?? [] });
+    if (!interp) return;
+    if (!ideaManual && strategy !== interp.strategy) setStrategy(interp.strategy);
+    if (!triggerManual && entryTrigger !== interp.trigger) setEntryTrigger(interp.trigger);
+  }, [entryPinned, entryPrice, mid, side, frame, ideaManual, triggerManual, strategy, entryTrigger]);
+
+  function handleEntryDrag(price: number) {
+    setEntryPinned(true);
+    setEntryPrice(price);
+  }
+
+  function handleStopChange(price: number) {
+    setStopPinned(true);
+    setStopPrice(price);
+    const entry = entryPrice ?? mid;
+    if (entry != null) {
+      if (price > entry && side === "buy") setSide("sell");
+      if (price < entry && side === "sell") setSide("buy");
+    }
+    if (!stopRuleManual && stopRule !== "exit_on_invalidation") setStopRule("exit_on_invalidation");
+  }
+
+  function selectIdea(id: StrategyProfile) {
+    setStrategy(id);
+    setIdeaManual(true);
+    const allowed = TRIGGERS_FOR[id];
+    if (!allowed.includes(entryTrigger)) setEntryTrigger(allowed[0]);
+  }
+
+  function selectTrigger(id: EntryTrigger) {
+    setEntryTrigger(id);
+    setTriggerManual(true);
+  }
+
   const conditionLevel = useMemo(() => {
     const base = entryPrice ?? mid;
     if (!base) return null;
     if (entryTrigger === "preview_now") return null;
-    if (entryTrigger === "retest_level") return base * (side === "buy" ? 0.9975 : 1.0025);
-    if (entryTrigger === "sweep_reclaim") return base * (side === "buy" ? 0.995 : 1.005);
+    // Level-based triggers watch the level the user actually drew.
+    if (entryTrigger === "break_level" || entryTrigger === "retest_level" || entryTrigger === "sweep_reclaim" || entryTrigger === "custom") {
+      return base;
+    }
     if (entryTrigger === "book_imbalance") return base * (side === "buy" ? 1.0015 : 0.9985);
     if (entryTrigger === "funding_mark_divergence") return base * (side === "buy" ? 0.996 : 1.004);
-    if (entryTrigger === "route_edge_threshold") return base * (side === "buy" ? 1.0025 : 0.9975);
-    return base * (side === "buy" ? 1.005 : 0.995);
+    return base * (side === "buy" ? 1.0025 : 0.9975);
   }, [entryPrice, entryTrigger, mid, side]);
 
   const orderDraft = useMemo<PrivateExecutionOrderDraft>(() => {
@@ -259,18 +363,78 @@ export default function TradePage() {
       agent_exit_rule: stopRule,
       agent_time_horizon: horizon,
       agent_trigger_level: conditionLevel ? conditionLevel.toFixed(conditionLevel >= 1_000 ? 1 : 2) : undefined,
+      agent_invalidation_level: stopLevel ? stopLevel.toFixed(stopLevel >= 1_000 ? 1 : 2) : undefined,
       agent_edge_threshold_bps: strategy === "funding_basis" ? "25" : undefined,
       agent_strategy_note: selectedStrategy(STRATEGIES, strategy).condition,
       agent_route_priority: "most_private",
     };
-  }, [conditionLevel, entryPrice, entryTrigger, horizon, mid, notional, side, slippageBps, stopRule, strategy, venue]);
+  }, [conditionLevel, entryPrice, entryTrigger, horizon, mid, notional, side, slippageBps, stopLevel, stopRule, strategy, venue]);
 
-  const overlays = useMemo(() => buildGholaAgentChartOverlays({
-    order: orderDraft,
-    mid: mid ? String(mid) : null,
-    accountReady: thumperAuth.authenticated,
-    venueLabel: venue.label,
-  }), [mid, orderDraft, thumperAuth.authenticated, venue.label]);
+  const overlays = useMemo(() => {
+    const generated = buildGholaAgentChartOverlays({
+      order: orderDraft,
+      mid: mid ? String(mid) : null,
+      previewCommitment: preview.status === "done" ? preview.commitment : null,
+      accountReady: thumperAuth.authenticated,
+      venueLabel: venue.label,
+    });
+    const entry = entryPrice ?? mid;
+    return generated.filter((overlay) => {
+      // Entry and stop are rendered as draggable lines by the chart itself.
+      if (overlay.id === "agent-entry") return false;
+      // Drop the condition line when it sits exactly on the drawn entry.
+      if (
+        overlay.id === "agent-condition-level" &&
+        entry != null &&
+        overlay.price != null &&
+        Math.abs(Number(overlay.price) - entry) <= entry * 0.0001
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [entryPrice, mid, orderDraft, preview, thumperAuth.authenticated, venue.label]);
+
+  const safeInput = useMemo<PrivateAccountSafeInput>(() => ({
+    action_class: "trade_on_platform",
+    platform_class:
+      venue.id === "coinbase"
+        ? "coinbase_style_provider"
+        : venue.id === "phoenix"
+          ? "solana_perps_market"
+          : "hyperliquid_style_market",
+    product_bucket: venue.id === "coinbase" ? "provider" : "perps",
+    amount_bucket: (notional === 5 || notional === 10 || notional === 25 ? String(notional) : "10") as PrivateAccountSafeInput["amount_bucket"],
+    urgency: "maximum_privacy",
+    destination_class: "platform_subaccount",
+    asset_bucket: venue.id === "phoenix" ? "SOL" : "BTC",
+    solver_count_bucket: "1",
+  }), [notional, venue.id]);
+
+  async function handlePreview() {
+    if (preview.status === "working") return;
+    setPreview({ status: "working" });
+    try {
+      const intentBody = (await createPrivateAccountIntent(safeInput)) as {
+        intent_id?: string;
+        intent?: { intent_id?: string };
+      };
+      const intentId = intentBody.intent_id ?? intentBody.intent?.intent_id;
+      if (!intentId) throw new Error("Intent was not created");
+      const previewBody = (await previewPrivateAccountAction({
+        intent_id: intentId,
+        safe_input: safeInput,
+      })) as { preview_commitment?: string; preview?: { preview_commitment?: string } };
+      const commitment = previewBody.preview_commitment ?? previewBody.preview?.preview_commitment;
+      if (!commitment) throw new Error("Preview returned no commitment");
+      setPreview({ status: "done", commitment });
+    } catch (error) {
+      setPreview({
+        status: "error",
+        message: error instanceof Error ? error.message : "Preview failed",
+      });
+    }
+  }
 
   const slippageBand = useMemo(() => {
     const price = entryPrice ?? mid;
@@ -321,7 +485,11 @@ export default function TradePage() {
         onModeChange={setAuthMode}
         redirectTo="/trade"
       />
-      <header className="flex h-14 items-center justify-between border-b border-[#182234] bg-[#070a10] px-4 sm:px-6">
+      <header className="relative flex h-14 items-center justify-between border-b border-[#182234] bg-gradient-to-b from-[#0a0e16] to-[#070a10] px-4 sm:px-6">
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#5aa7ff]/50 to-transparent"
+        />
         <Link href="/" className="flex items-center gap-2">
           <GholaLogo size={26} className="text-[#eef1f8]" />
           <span className="text-lg font-semibold">ghola</span>
@@ -335,7 +503,7 @@ export default function TradePage() {
         <div className="flex items-center gap-2">
           <Link
             href="/private-balance"
-            className="hidden rounded-md border border-[#1e2a3a] px-3 py-1.5 text-sm text-[#aab5c8] transition hover:border-[#34506f] hover:text-[#eef1f8] sm:inline-flex"
+            className="trade-chip hidden rounded-md px-3 py-1.5 text-sm sm:inline-flex"
           >
             Balance
           </Link>
@@ -355,7 +523,7 @@ export default function TradePage() {
               <button
                 type="button"
                 onClick={() => openAuth("signup")}
-                className="rounded-md bg-[#5aa7ff] px-3 py-1.5 text-sm font-medium text-[#07101c] transition hover:bg-[#7bb9ff]"
+                className="trade-action rounded-md px-3 py-1.5 text-sm font-semibold"
               >
                 Get started
               </button>
@@ -375,11 +543,10 @@ export default function TradePage() {
                   onClick={() => {
                     setVenueId(item.id);
                     setEntryPinned(false);
+                    setStopPinned(false);
                   }}
-                  className={`h-9 rounded-md border px-3 text-sm font-medium transition ${
-                    venueId === item.id
-                      ? "border-[#5aa7ff]/60 bg-[#132338] text-[#eef1f8]"
-                      : "border-[#1e2a3a] bg-[#09111c] text-[#8b95a8] hover:border-[#34506f] hover:text-[#eef1f8]"
+                  className={`h-9 rounded-md px-3 text-sm font-medium ${
+                    venueId === item.id ? "trade-chip-on" : "trade-chip"
                   }`}
                 >
                   {item.label}
@@ -387,14 +554,14 @@ export default function TradePage() {
               ))}
             </div>
             <div className="flex items-center gap-2">
-              {(["1m", "5m", "15m", "1h"] as const).map((item) => (
+              {CHART_INTERVALS.map((item) => (
                 <button
                   key={item}
                   type="button"
-                  className={`h-8 w-12 rounded-md border text-sm ${
-                    item === "5m"
-                      ? "border-[#5aa7ff]/50 bg-[#132338] text-[#eef1f8]"
-                      : "border-[#1e2a3a] text-[#8b95a8]"
+                  aria-pressed={item === chartInterval}
+                  onClick={() => setChartInterval(item)}
+                  className={`h-8 w-12 rounded-md text-sm tabular-nums ${
+                    item === chartInterval ? "trade-chip-on" : "trade-chip"
                   }`}
                 >
                   {item}
@@ -407,28 +574,37 @@ export default function TradePage() {
             <div className="min-w-0">
               <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-4 sm:px-6">
                 <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-[#6f7d9a]">{venue.label}</p>
-                  <h1 className="mt-1 text-3xl font-semibold text-[#f6f8ff]">{venue.product}</h1>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-[#5aa7ff]/80">{venue.label}</p>
+                  <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight text-[#f6f8ff]">{venue.product}</h1>
                 </div>
                 <div className="grid grid-cols-2 gap-3 text-right sm:grid-cols-4">
-                  <Metric label="Mid" value={formatPrice(mid)} />
+                  <Metric label="Mid" value={formatPrice(mid)} flash={midFlash} />
                   <Metric label="Spread" value={frame?.spreadBps != null ? `${frame.spreadBps.toFixed(2)} bps` : "-"} />
                   <Metric label="Funding" value={formatRate(frame?.fundingRate)} />
                   <Metric label="24h volume" value={formatCompact(frame?.dayVolume)} />
                 </div>
               </div>
               <div className="px-3 pb-3 sm:px-6">
-                <MarketChart frame={frame} overlays={overlays} side={side} />
+                <MarketChart
+                  frame={frame}
+                  overlays={overlays}
+                  side={side}
+                  entryPrice={entryLevel}
+                  stopPrice={stopLevel}
+                  stopSuggested={!stopPinned}
+                  onEntryDrag={handleEntryDrag}
+                  onStopDrag={handleStopChange}
+                />
               </div>
             </div>
 
             <aside className="border-t border-[#182234] lg:border-l lg:border-t-0">
-              <div className="border-b border-[#182234] px-4 py-3">
-                <h2 className="text-sm font-medium text-[#eef1f8]">Order book</h2>
+              <div className="border-b border-[#182234] bg-gradient-to-b from-[#0a0e16] to-transparent px-4 py-3">
+                <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#dce6f4]">Order book</h2>
               </div>
               <BookTable frame={frame} />
-              <div className="border-y border-[#182234] px-4 py-3">
-                <h2 className="text-sm font-medium text-[#eef1f8]">Recent trades</h2>
+              <div className="border-y border-[#182234] bg-gradient-to-b from-[#0a0e16] to-transparent px-4 py-3">
+                <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#dce6f4]">Recent trades</h2>
               </div>
               <TradeTape frame={frame} />
             </aside>
@@ -448,29 +624,39 @@ export default function TradePage() {
               <ReadinessBadge label={readyToPreview ? "Preview ready" : thumperAuth.authenticated ? "Connect venue" : "Sign in needed"} ready={readyToPreview} />
             </div>
 
-            <div className="mt-5 grid gap-3 rounded-md border border-[#1e2a3a] bg-[#090d14] p-4">
+            <div className="trade-panel mt-5 grid gap-3 rounded-md p-4">
               <SummaryRow label="Venue" value={venue.label} />
               <SummaryRow label="Idea" value={selectedStrategy(STRATEGIES, strategy).label} />
               <SummaryRow label="Only trade if" value={selectedStrategy(STRATEGIES, strategy).condition} accent />
               <SummaryRow label="Entry" value={entryTriggerLabel(entryTrigger)} />
+              <SummaryRow label="Stop" value={stopLevel ? `${formatPrice(stopLevel)}${stopPinned ? "" : " auto"}` : "-"} />
               <SummaryRow label="Slippage band" value={slippageBand} warn />
             </div>
           </div>
 
           <div className="h-[calc(100vh-12rem)] overflow-y-auto p-5">
-            <ControlSection title="Trade idea">
+            <ControlSection
+              title="Trade idea"
+              mode={ideaManual ? "manual" : "auto"}
+              onModeReset={() => setIdeaManual(false)}
+            >
               <ButtonGrid
                 items={STRATEGIES}
                 selected={strategy}
-                onSelect={(id) => setStrategy(id)}
+                onSelect={selectIdea}
               />
             </ControlSection>
 
-            <ControlSection title="Entry trigger" sideValue={entryTriggerLabel(entryTrigger)}>
+            <ControlSection
+              title="Entry trigger"
+              sideValue={entryTriggerLabel(entryTrigger)}
+              mode={triggerManual ? "manual" : "auto"}
+              onModeReset={() => setTriggerManual(false)}
+            >
               <ButtonGrid
-                items={ENTRY_TRIGGERS}
+                items={ENTRY_TRIGGERS.filter((item) => TRIGGERS_FOR[strategy].includes(item.id))}
                 selected={entryTrigger}
-                onSelect={(id) => setEntryTrigger(id)}
+                onSelect={selectTrigger}
               />
             </ControlSection>
 
@@ -484,7 +670,7 @@ export default function TradePage() {
                     setEntryPinned(true);
                     setEntryPrice(Number.isFinite(next) && next > 0 ? next : null);
                   }}
-                  className="h-11 min-w-0 rounded-md border border-[#1e2a3a] bg-[#090d14] px-3 font-mono text-sm text-[#eef1f8] outline-none focus:border-[#5aa7ff]"
+                  className="trade-field h-11 min-w-0 rounded-md px-3 font-mono text-sm tabular-nums text-[#eef1f8] outline-none"
                 />
                 <button
                   type="button"
@@ -492,9 +678,38 @@ export default function TradePage() {
                     setEntryPinned(false);
                     if (mid) setEntryPrice(mid);
                   }}
-                  className="h-11 rounded-md border border-[#1e2a3a] px-3 text-sm text-[#aab5c8] transition hover:border-[#34506f] hover:text-[#eef1f8]"
+                  className="trade-chip h-11 rounded-md px-3 text-sm"
                 >
                   Current
+                </button>
+              </div>
+              <p className="mt-2 text-[11px] leading-4 text-[#566278]">
+                Or drag the entry and stop lines on the chart — the agent reads your levels.
+              </p>
+            </ControlSection>
+
+            <ControlSection
+              title="Stop level"
+              sideValue={stopLevel ? formatPrice(stopLevel) : "-"}
+              mode={stopPinned ? "manual" : "auto"}
+              onModeReset={() => setStopPinned(false)}
+            >
+              <div className="grid grid-cols-[1fr_auto] gap-2">
+                <input
+                  inputMode="decimal"
+                  value={stopLevel ? String(roundForInput(stopLevel)) : ""}
+                  onChange={(event) => {
+                    const next = Number(event.target.value.replaceAll(",", ""));
+                    if (Number.isFinite(next) && next > 0) handleStopChange(next);
+                  }}
+                  className="trade-field h-11 min-w-0 rounded-md px-3 font-mono text-sm tabular-nums text-[#eef1f8] outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setStopPinned(false)}
+                  className="trade-chip h-11 rounded-md px-3 text-sm"
+                >
+                  Auto
                 </button>
               </div>
             </ControlSection>
@@ -505,13 +720,16 @@ export default function TradePage() {
                   <button
                     key={item}
                     type="button"
-                    onClick={() => setSide(item)}
-                    className={`h-11 rounded-md border text-sm font-medium capitalize ${
+                    onClick={() => {
+                      setSide(item);
+                      setStopPinned(false);
+                    }}
+                    className={`h-11 rounded-md text-sm font-medium capitalize transition-shadow duration-150 ${
                       side === item
                         ? item === "buy"
-                          ? "border-emerald-400/60 bg-emerald-400/12 text-emerald-200"
-                          : "border-rose-400/60 bg-rose-400/12 text-rose-200"
-                        : "border-[#1e2a3a] bg-[#090d14] text-[#8b95a8]"
+                          ? "border border-emerald-400/60 bg-gradient-to-b from-emerald-400/20 to-emerald-400/8 text-emerald-200 shadow-[inset_0_1px_0_rgba(110,231,183,0.2),0_0_16px_-6px_rgba(52,211,153,0.5)]"
+                          : "border border-rose-400/60 bg-gradient-to-b from-rose-400/20 to-rose-400/8 text-rose-200 shadow-[inset_0_1px_0_rgba(251,113,133,0.2),0_0_16px_-6px_rgba(251,113,133,0.5)]"
+                        : "trade-chip"
                     }`}
                   >
                     {item}
@@ -524,10 +742,8 @@ export default function TradePage() {
                     key={item}
                     type="button"
                     onClick={() => setNotional(item)}
-                    className={`h-10 rounded-md border text-sm ${
-                      notional === item
-                        ? "border-[#5aa7ff]/60 bg-[#132338] text-[#eef1f8]"
-                        : "border-[#1e2a3a] bg-[#090d14] text-[#8b95a8]"
+                    className={`h-10 rounded-md text-sm tabular-nums ${
+                      notional === item ? "trade-chip-on" : "trade-chip"
                     }`}
                   >
                     ${item}
@@ -543,10 +759,10 @@ export default function TradePage() {
                     key={item}
                     type="button"
                     onClick={() => setSlippageBps(item)}
-                    className={`h-11 rounded-md border text-sm ${
+                    className={`h-11 rounded-md text-sm tabular-nums transition-shadow duration-150 ${
                       slippageBps === item
-                        ? "border-[#f8e56b]/70 bg-[#2a2610] text-[#fff27a]"
-                        : "border-[#1e2a3a] bg-[#090d14] text-[#8b95a8]"
+                        ? "border border-[#f8e56b]/70 bg-gradient-to-b from-[#332d12] to-[#231f0c] text-[#fff27a] shadow-[inset_0_1px_0_rgba(248,229,107,0.18),0_0_16px_-6px_rgba(248,229,107,0.45)]"
+                        : "trade-chip"
                     }`}
                   >
                     {item} bps
@@ -560,7 +776,14 @@ export default function TradePage() {
             </ControlSection>
 
             <ControlSection title="Stop rule">
-              <ButtonGrid items={STOP_RULES} selected={stopRule} onSelect={(id) => setStopRule(id)} />
+              <ButtonGrid
+                items={STOP_RULES}
+                selected={stopRule}
+                onSelect={(id) => {
+                  setStopRule(id);
+                  setStopRuleManual(true);
+                }}
+              />
             </ControlSection>
           </div>
 
@@ -570,29 +793,45 @@ export default function TradePage() {
                 <button
                   type="button"
                   onClick={() => openAuth("signup")}
-                  className="flex h-12 items-center justify-center gap-2 rounded-md bg-[#eef1f8] text-sm font-medium text-[#07101c] transition hover:bg-white"
+                  className="trade-action flex h-12 items-center justify-center gap-2 rounded-md text-sm font-semibold"
                 >
                   <KeyRound className="h-4 w-4" />
                   Sign in to connect venue
                 </button>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => setAgentRunning((value) => !value)}
-                  className={`flex h-12 items-center justify-center gap-2 rounded-md text-sm font-medium transition ${
-                    agentRunning
-                      ? "bg-amber-300 text-[#171103] hover:bg-amber-200"
-                      : "bg-[#5aa7ff] text-[#07101c] hover:bg-[#7bb9ff]"
-                  }`}
-                >
-                  {agentRunning ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-                  {agentRunning ? "Pause watched plan" : "Preview watched plan"}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={handlePreview}
+                    disabled={preview.status === "working"}
+                    className="trade-action flex h-12 items-center justify-center gap-2 rounded-md text-sm font-semibold disabled:cursor-wait disabled:opacity-70"
+                  >
+                    {preview.status === "working" ? (
+                      <RefreshCcw className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Play className="h-4 w-4" />
+                    )}
+                    {preview.status === "working"
+                      ? "Sealing preview"
+                      : preview.status === "done"
+                        ? "Preview again"
+                        : "Preview watched plan"}
+                  </button>
+                  {preview.status === "done" && (
+                    <p className="flex items-center gap-1.5 font-mono text-xs text-emerald-200">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      Sealed preview {preview.commitment.slice(0, 14)}…
+                    </p>
+                  )}
+                  {preview.status === "error" && (
+                    <p className="text-xs leading-5 text-rose-300">{preview.message}</p>
+                  )}
+                </>
               )}
               <button
                 type="button"
                 onClick={() => window.location.reload()}
-                className="flex h-10 items-center justify-center gap-2 rounded-md border border-[#1e2a3a] text-sm text-[#aab5c8] transition hover:border-[#34506f] hover:text-[#eef1f8]"
+                className="trade-chip flex h-10 items-center justify-center gap-2 rounded-md text-sm"
               >
                 <RefreshCcw className="h-4 w-4" />
                 Refresh market
@@ -605,20 +844,129 @@ export default function TradePage() {
   );
 }
 
+const CHART_FONT = "ui-monospace, SFMono-Regular, Menlo, monospace";
+
 function MarketChart({
   frame,
   overlays,
   side,
+  entryPrice,
+  stopPrice,
+  stopSuggested,
+  onEntryDrag,
+  onStopDrag,
 }: {
   frame: GholaMarketFrame | null;
   overlays: GholaChartOverlay[];
   side: Side;
+  entryPrice: number | null;
+  stopPrice: number | null;
+  stopSuggested: boolean;
+  onEntryDrag: (price: number) => void;
+  onStopDrag: (price: number) => void;
 }) {
   const candles = useMemo(() => decimateCandles(frame?.candles ?? [], 96), [frame]);
-  const chart = chartLayout(candles, overlays);
+  const layoutOverlays = useMemo(() => {
+    const extra: GholaChartOverlay[] = [];
+    if (entryPrice != null && entryPrice > 0) {
+      extra.push({ id: "drag-entry", kind: "price_line", label: "entry", tone: "accent", price: entryPrice });
+    }
+    if (stopPrice != null && stopPrice > 0) {
+      extra.push({ id: "drag-stop", kind: "price_line", label: "stop", tone: "bad", price: stopPrice });
+    }
+    return overlays.concat(extra);
+  }, [overlays, entryPrice, stopPrice]);
+  const chart = chartLayout(candles, layoutOverlays);
+  const [hover, setHover] = useState<{ index: number; y: number } | null>(null);
+  const [drag, setDrag] = useState<"entry" | "stop" | null>(null);
+  const hovered = hover ? candles[hover.index] : null;
+  const last = candles.at(-1);
+  const lastClose = last ? Number(last.c) : null;
+  const lastUp = last ? Number(last.c) >= Number(last.o) : true;
+  const lastColor = lastUp ? "#34d399" : "#fb7185";
+  const labels = overlayLabelSlots(overlays, chart, side);
+  const entryColor = side === "buy" ? "#34d399" : "#fb7185";
+  const entryY = entryPrice != null && entryPrice > 0 ? chart.y(entryPrice) : null;
+  const stopY = stopPrice != null && stopPrice > 0 ? chart.y(stopPrice) : null;
+  const HIT_RADIUS = 12;
+  const hoverNearLine =
+    hover != null &&
+    [entryY, stopY].some((lineY) => lineY != null && Math.abs(hover.y - lineY) <= HIT_RADIUS);
+
+  function svgPoint(event: React.PointerEvent<SVGSVGElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * chart.width,
+      y: ((event.clientY - rect.top) / rect.height) * chart.height,
+    };
+  }
+
+  function clampPlotY(y: number) {
+    return Math.min(chart.height - chart.padding.bottom, Math.max(chart.padding.top, y));
+  }
+
+  function handlePointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    if (candles.length === 0) return;
+    const { x, y } = svgPoint(event);
+    if (drag) {
+      const price = chart.priceAt(clampPlotY(y));
+      if (Number.isFinite(price) && price > 0) {
+        if (drag === "entry") onEntryDrag(roundForInput(price));
+        else onStopDrag(roundForInput(price));
+      }
+      return;
+    }
+    const ratio = (x - chart.padding.left) / Math.max(1, chart.plotWidth);
+    const index = Math.min(candles.length - 1, Math.max(0, Math.round(ratio * (candles.length - 1))));
+    setHover({ index, y: clampPlotY(y) });
+  }
+
+  function handlePointerDown(event: React.PointerEvent<SVGSVGElement>) {
+    if (candles.length === 0) return;
+    const { y } = svgPoint(event);
+    const nearEntry = entryY != null && Math.abs(y - entryY) <= HIT_RADIUS;
+    const nearStop = stopY != null && Math.abs(y - stopY) <= HIT_RADIUS;
+    let target: "entry" | "stop" | null = null;
+    if (nearEntry && nearStop) {
+      target = Math.abs(y - (entryY as number)) <= Math.abs(y - (stopY as number)) ? "entry" : "stop";
+    } else if (nearEntry) {
+      target = "entry";
+    } else if (nearStop) {
+      target = "stop";
+    }
+    if (target) {
+      setDrag(target);
+      setHover(null);
+      event.currentTarget.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    }
+  }
+
+  function handlePointerUp(event: React.PointerEvent<SVGSVGElement>) {
+    if (drag) {
+      setDrag(null);
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+  }
+
   return (
     <div className="relative h-[31rem] overflow-hidden rounded-md border border-[#182234] bg-[#05070b]">
-      <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="h-full w-full" role="img" aria-label="Trading chart">
+      <svg
+        viewBox={`0 0 ${chart.width} ${chart.height}`}
+        className={`h-full w-full touch-none ${drag ? "cursor-grabbing" : hoverNearLine ? "cursor-ns-resize" : "cursor-crosshair"}`}
+        role="img"
+        aria-label="Trading chart. Drag the entry and stop lines to set levels."
+        onPointerMove={handlePointerMove}
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onPointerLeave={(event) => {
+          setHover(null);
+          handlePointerUp(event);
+        }}
+      >
         <defs>
           <linearGradient id="tradeBand" x1="0" x2="0" y1="0" y2="1">
             <stop offset="0%" stopColor="#f8e56b" stopOpacity="0.18" />
@@ -626,14 +974,40 @@ function MarketChart({
           </linearGradient>
         </defs>
         <rect width={chart.width} height={chart.height} fill="#05070b" />
+        {chart.timeTicks.map((tick) => (
+          <g key={`t-${tick.x}`}>
+            <line x1={tick.x} x2={tick.x} y1={chart.padding.top} y2={chart.height - chart.padding.bottom} stroke="#0e1626" strokeWidth="1" />
+            <text x={tick.x} y={chart.height - 12} textAnchor="middle" fill="#566278" fontSize="10" fontFamily={CHART_FONT}>
+              {tick.label}
+            </text>
+          </g>
+        ))}
         {chart.grid.map((line) => (
           <g key={line.y}>
             <line x1="0" x2={chart.width} y1={line.y} y2={line.y} stroke="#162033" strokeWidth="1" />
-            <text x={chart.width - 10} y={line.y - 5} textAnchor="end" fill="#566278" fontSize="11">
+            <text x={chart.width - 10} y={line.y - 5} textAnchor="end" fill="#566278" fontSize="11" fontFamily={CHART_FONT}>
               {formatPrice(line.price)}
             </text>
           </g>
         ))}
+        {chart.maxVolume > 0 && candles.map((candle, index) => {
+          const volume = Number(candle.v);
+          if (!Number.isFinite(volume) || volume <= 0) return null;
+          const x = chart.x(index);
+          const barHeight = Math.max(1, (volume / chart.maxVolume) * 52);
+          const up = Number(candle.c) >= Number(candle.o);
+          return (
+            <rect
+              key={`v-${candle.t}-${index}`}
+              x={x - chart.candleWidth / 2}
+              y={chart.height - chart.padding.bottom - barHeight}
+              width={chart.candleWidth}
+              height={barHeight}
+              fill={up ? "#34d399" : "#fb7185"}
+              opacity={hover?.index === index ? 0.42 : 0.16}
+            />
+          );
+        })}
         {candles.map((candle, index) => {
           const x = chart.x(index);
           const open = chart.y(Number(candle.o));
@@ -641,8 +1015,9 @@ function MarketChart({
           const high = chart.y(Number(candle.h));
           const low = chart.y(Number(candle.l));
           const up = Number(candle.c) >= Number(candle.o);
+          const dimmed = hover != null && hover.index !== index;
           return (
-            <g key={`${candle.t}-${index}`}>
+            <g key={`${candle.t}-${index}`} opacity={dimmed ? 0.62 : 1}>
               <line x1={x} x2={x} y1={high} y2={low} stroke={up ? "#62d6a3" : "#f59aa0"} strokeWidth="1.4" />
               <rect
                 x={x - chart.candleWidth / 2}
@@ -655,15 +1030,145 @@ function MarketChart({
             </g>
           );
         })}
-        {overlays.map((overlay, index) => (
-          <OverlaySvg key={overlay.id} overlay={overlay} chart={chart} side={side} index={index} />
+        {overlays.map((overlay) => (
+          <OverlaySvg key={overlay.id} overlay={overlay} chart={chart} side={side} />
         ))}
+        {labels.map((label) => (
+          <Label key={label.id} x={28} y={label.y} color={label.color} text={label.text} />
+        ))}
+        {stopY != null && (
+          <g opacity={stopSuggested ? 0.6 : 1}>
+            <line x1="0" x2={chart.width - chart.padding.right + 4} y1={stopY} y2={stopY} stroke="#fb7185" strokeWidth="1.4" strokeDasharray="5 5" />
+            <DragGrip y={stopY} chart={chart} color="#fb7185" />
+            <Label x={28} y={stopY + 16} color="#fb7185" text={stopSuggested ? "stop · auto · drag" : "stop · drag"} />
+            {stopPrice != null && <PriceTag y={stopY} chart={chart} color="#fb7185" text={formatPrice(stopPrice)} />}
+          </g>
+        )}
+        {entryY != null && (
+          <g>
+            <line x1="0" x2={chart.width - chart.padding.right + 4} y1={entryY} y2={entryY} stroke={entryColor} strokeWidth="1.6" />
+            <DragGrip y={entryY} chart={chart} color={entryColor} />
+            <Label x={28} y={entryY - 10} color={entryColor} text={`${side} entry · drag`} />
+            {entryPrice != null && <PriceTag y={entryY} chart={chart} color={entryColor} text={formatPrice(entryPrice)} />}
+          </g>
+        )}
+        {lastClose != null && (
+          <g>
+            <line
+              x1="0"
+              x2={chart.width - chart.padding.right + 4}
+              y1={chart.y(lastClose)}
+              y2={chart.y(lastClose)}
+              stroke={lastColor}
+              strokeWidth="1"
+              strokeDasharray="2 4"
+              opacity="0.85"
+            />
+            <PriceTag y={chart.y(lastClose)} chart={chart} color={lastColor} text={formatPrice(lastClose)} solid />
+          </g>
+        )}
+        {hover && hovered && (
+          <g>
+            <line
+              x1={chart.x(hover.index)}
+              x2={chart.x(hover.index)}
+              y1={chart.padding.top}
+              y2={chart.height - chart.padding.bottom}
+              stroke="#3a4a64"
+              strokeWidth="1"
+              strokeDasharray="4 4"
+            />
+            <line x1="0" x2={chart.width - chart.padding.right + 4} y1={hover.y} y2={hover.y} stroke="#3a4a64" strokeWidth="1" strokeDasharray="4 4" />
+            <PriceTag y={hover.y} chart={chart} color="#8fa3c4" text={formatPrice(chart.priceAt(hover.y))} />
+            <TimeTag x={chart.x(hover.index)} chart={chart} text={formatChartTime(hovered.t)} />
+          </g>
+        )}
       </svg>
-      <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-2 rounded-md border border-[#1e2a3a] bg-[#070a10]/82 px-3 py-2 text-xs text-[#aab5c8]">
+      <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-2 rounded-md border border-[#1e2a3a] bg-[#070a10]/82 px-3 py-2 font-mono text-xs text-[#aab5c8] shadow-[inset_0_1px_0_rgba(220,238,255,0.06)] backdrop-blur-sm">
         <Activity className="h-4 w-4 text-[#5aa7ff]" />
         {frame?.product ?? "Loading"} {frame?.interval ? `/ ${frame.interval}` : ""}
       </div>
+      {hovered && (
+        <div className="pointer-events-none absolute right-3 top-3 flex items-center gap-3 rounded-md border border-[#1e2a3a] bg-[#070a10]/88 px-3 py-2 font-mono text-[11px] tabular-nums text-[#aab5c8] shadow-[inset_0_1px_0_rgba(220,238,255,0.06)] backdrop-blur-sm">
+          <OhlcStat label="O" value={formatPrice(Number(hovered.o))} />
+          <OhlcStat label="H" value={formatPrice(Number(hovered.h))} />
+          <OhlcStat label="L" value={formatPrice(Number(hovered.l))} />
+          <OhlcStat
+            label="C"
+            value={formatPrice(Number(hovered.c))}
+            color={Number(hovered.c) >= Number(hovered.o) ? "#62d6a3" : "#f59aa0"}
+          />
+          {Number(hovered.v) > 0 && <OhlcStat label="V" value={formatCompact(hovered.v)} />}
+        </div>
+      )}
+      <span aria-hidden className="trade-corners pointer-events-none absolute inset-0" />
     </div>
+  );
+}
+
+function DragGrip({ y, chart, color }: { y: number; chart: ReturnType<typeof chartLayout>; color: string }) {
+  const x = chart.width - chart.padding.right - 34;
+  return (
+    <g>
+      <rect x={x} y={y - 7} width="26" height="14" fill="#070a10" stroke={color} strokeOpacity="0.7" rx="3" />
+      <line x1={x + 6} x2={x + 20} y1={y - 2.5} y2={y - 2.5} stroke={color} strokeWidth="1.2" />
+      <line x1={x + 6} x2={x + 20} y1={y + 2.5} y2={y + 2.5} stroke={color} strokeWidth="1.2" />
+    </g>
+  );
+}
+
+function OhlcStat({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <span className="flex items-center gap-1">
+      <span className="text-[#566278]">{label}</span>
+      <span style={color ? { color } : undefined} className={color ? undefined : "text-[#eef1f8]"}>{value}</span>
+    </span>
+  );
+}
+
+function PriceTag({
+  y,
+  chart,
+  color,
+  text,
+  solid,
+}: {
+  y: number;
+  chart: ReturnType<typeof chartLayout>;
+  color: string;
+  text: string;
+  solid?: boolean;
+}) {
+  const x = chart.width - chart.padding.right + 4;
+  const tagWidth = chart.padding.right - 6;
+  return (
+    <g>
+      <rect x={x} y={y - 10} width={tagWidth} height="20" fill={solid ? color : "#0b1322"} stroke={color} strokeWidth="1" rx="2" />
+      <text
+        x={x + tagWidth / 2}
+        y={y + 4}
+        textAnchor="middle"
+        fill={solid ? "#05070b" : color}
+        fontSize="11"
+        fontWeight={solid ? 700 : 400}
+        fontFamily={CHART_FONT}
+      >
+        {text}
+      </text>
+    </g>
+  );
+}
+
+function TimeTag({ x, chart, text }: { x: number; chart: ReturnType<typeof chartLayout>; text: string }) {
+  const width = 52;
+  const left = Math.min(chart.width - chart.padding.right - width, Math.max(2, x - width / 2));
+  return (
+    <g>
+      <rect x={left} y={chart.height - chart.padding.bottom + 4} width={width} height="18" fill="#0b1322" stroke="#3a4a64" strokeWidth="1" rx="2" />
+      <text x={left + width / 2} y={chart.height - chart.padding.bottom + 17} textAnchor="middle" fill="#8fa3c4" fontSize="10" fontFamily={CHART_FONT}>
+        {text}
+      </text>
+    </g>
   );
 }
 
@@ -671,14 +1176,12 @@ function OverlaySvg({
   overlay,
   chart,
   side,
-  index,
 }: {
   overlay: GholaChartOverlay;
   chart: ReturnType<typeof chartLayout>;
   side: Side;
-  index: number;
 }) {
-  const color = overlay.tone === "warn" ? "#f8e56b" : overlay.tone === "good" ? "#62d6a3" : "#9ccfff";
+  const color = overlayColor(overlay, side);
   if (overlay.kind === "price_band" && overlay.price && overlay.priceEnd) {
     const y1 = chart.y(overlay.price);
     const y2 = chart.y(overlay.priceEnd);
@@ -687,38 +1190,62 @@ function OverlaySvg({
         <rect x="0" y={Math.min(y1, y2)} width={chart.width} height={Math.abs(y2 - y1)} fill="url(#tradeBand)" />
         <line x1="0" x2={chart.width} y1={y1} y2={y1} stroke={color} strokeDasharray="8 8" strokeWidth="1" />
         <line x1="0" x2={chart.width} y1={y2} y2={y2} stroke={color} strokeDasharray="8 8" strokeWidth="1" />
-        <Label x={28} y={Math.min(y1, y2) + 20} color={color} text={overlay.label} />
       </g>
     );
   }
   if (!overlay.price) return null;
   const y = chart.y(overlay.price);
   return (
-    <g>
-      <line
-        x1="0"
-        x2={chart.width}
-        y1={y}
-        y2={y}
-        stroke={color}
-        strokeWidth="1.2"
-        strokeDasharray={overlay.id === "agent-entry" ? undefined : "7 7"}
-      />
-      <Label
-        x={28}
-        y={Math.max(18, y - 8 - index * 2)}
-        color={color}
-        text={overlay.id === "agent-entry" ? `${side} entry` : overlay.label}
-      />
-    </g>
+    <line
+      x1="0"
+      x2={chart.width}
+      y1={y}
+      y2={y}
+      stroke={color}
+      strokeWidth="1.2"
+      strokeDasharray={overlay.id === "agent-entry" ? undefined : "7 7"}
+    />
   );
+}
+
+function overlayColor(overlay: GholaChartOverlay, side: Side) {
+  if (overlay.id === "agent-entry") return side === "buy" ? "#34d399" : "#fb7185";
+  return overlay.tone === "warn" ? "#f8e56b" : overlay.tone === "good" ? "#62d6a3" : "#9ccfff";
+}
+
+function overlayLabelSlots(
+  overlays: GholaChartOverlay[],
+  chart: ReturnType<typeof chartLayout>,
+  side: Side,
+) {
+  const entries = overlays
+    .filter((overlay) => overlay.price != null)
+    .map((overlay) => {
+      const anchorPrice =
+        overlay.kind === "price_band" && overlay.priceEnd
+          ? Math.max(Number(overlay.price), Number(overlay.priceEnd))
+          : Number(overlay.price);
+      return {
+        id: overlay.id,
+        text: overlay.id === "agent-entry" ? `${side} entry` : overlay.label,
+        color: overlayColor(overlay, side),
+        y: chart.y(anchorPrice) + (overlay.kind === "price_band" ? 16 : -8),
+      };
+    })
+    .sort((a, b) => a.y - b.y);
+  let previous = chart.padding.top - 10;
+  for (const entry of entries) {
+    entry.y = Math.max(entry.y, previous + 24);
+    previous = entry.y;
+  }
+  return entries;
 }
 
 function Label({ x, y, color, text }: { x: number; y: number; color: string; text: string }) {
   return (
     <g>
-      <rect x={x - 8} y={y - 16} width={Math.max(96, text.length * 8 + 16)} height="24" fill="#070a10" stroke={color} rx="2" />
-      <text x={x} y={y} fill={color} fontSize="13" fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace">
+      <rect x={x - 8} y={y - 14} width={Math.max(80, text.length * 6.8 + 16)} height="20" fill="#070a10" fillOpacity="0.92" stroke={color} rx="2" />
+      <text x={x} y={y} fill={color} fontSize="11" fontFamily={CHART_FONT}>
         {text}
       </text>
     </g>
@@ -728,28 +1255,51 @@ function Label({ x, y, color, text }: { x: number; y: number; color: string; tex
 function BookTable({ frame }: { frame: GholaMarketFrame | null }) {
   const asks = (frame?.asks ?? []).slice(0, 7).reverse();
   const bids = (frame?.bids ?? []).slice(0, 7);
+  const maxSize = Math.max(
+    1e-9,
+    ...[...asks, ...bids].map((level) => Number(level.sz)).filter(Number.isFinite),
+  );
   return (
     <div className="px-4 py-3 font-mono text-xs">
-      <div className="grid grid-cols-2 pb-2 text-[#566278]">
+      <div className="grid grid-cols-2 pb-2 text-[10px] uppercase tracking-[0.16em] text-[#566278]">
         <span>Price</span>
         <span className="text-right">Size</span>
       </div>
       {asks.map((level, index) => (
-        <BookRow key={`ask-${index}`} price={level.px} size={level.sz} tone="ask" />
+        <BookRow key={`ask-${index}`} price={level.px} size={level.sz} tone="ask" maxSize={maxSize} />
       ))}
-      <div className="my-2 rounded bg-[#111a28] px-2 py-1 text-center text-[#eef1f8]">{formatPrice(frameMidNumber(frame))}</div>
+      <div className="my-2 rounded border border-[#1e2a3a] bg-[#111a28] px-2 py-1 text-center text-sm tabular-nums text-[#eef1f8] shadow-[inset_0_1px_0_rgba(220,238,255,0.06)]">
+        {formatPrice(frameMidNumber(frame))}
+      </div>
       {bids.map((level, index) => (
-        <BookRow key={`bid-${index}`} price={level.px} size={level.sz} tone="bid" />
+        <BookRow key={`bid-${index}`} price={level.px} size={level.sz} tone="bid" maxSize={maxSize} />
       ))}
     </div>
   );
 }
 
-function BookRow({ price, size, tone }: { price: string; size: string; tone: "bid" | "ask" }) {
+function BookRow({
+  price,
+  size,
+  tone,
+  maxSize,
+}: {
+  price: string;
+  size: string;
+  tone: "bid" | "ask";
+  maxSize: number;
+}) {
+  const width = Math.min(100, Math.max(4, (Number(size) / maxSize) * 100));
+  const color = tone === "bid" ? "#34d399" : "#fb7185";
   return (
-    <div className="grid grid-cols-2 py-1">
-      <span className={tone === "bid" ? "text-emerald-300" : "text-rose-300"}>{formatPrice(Number(price))}</span>
-      <span className="text-right text-[#8b95a8]">{Number(size).toFixed(4)}</span>
+    <div className="relative grid grid-cols-2 overflow-hidden rounded-sm px-1 py-1 transition-colors duration-100 hover:bg-[#0f1a2c]">
+      <span
+        aria-hidden
+        className="absolute inset-y-0 right-0 opacity-15"
+        style={{ width: `${width}%`, background: `linear-gradient(270deg, ${color}, transparent)` }}
+      />
+      <span className={`relative tabular-nums ${tone === "bid" ? "text-emerald-300" : "text-rose-300"}`}>{formatPrice(Number(price))}</span>
+      <span className="relative text-right tabular-nums text-[#8b95a8]">{Number(size).toFixed(4)}</span>
     </div>
   );
 }
@@ -758,7 +1308,11 @@ function TradeTape({ frame }: { frame: GholaMarketFrame | null }) {
   return (
     <div className="max-h-48 overflow-hidden px-4 py-3 font-mono text-xs">
       {(frame?.trades ?? []).slice(0, 10).map((trade, index) => (
-        <div key={`${trade.time}-${index}`} className="grid grid-cols-3 py-1">
+        <div
+          key={`${trade.time}-${index}`}
+          className="grid grid-cols-3 py-1 tabular-nums"
+          style={{ opacity: Math.max(0.4, 1 - index * 0.06) }}
+        >
           <span className={trade.side === "buy" ? "text-emerald-300" : "text-rose-300"}>{trade.side}</span>
           <span className="text-right text-[#eef1f8]">{formatPrice(Number(trade.px))}</span>
           <span className="text-right text-[#8b95a8]">{Number(trade.sz).toFixed(4)}</span>
@@ -784,10 +1338,8 @@ function ButtonGrid<T extends string>({
           key={item.id}
           type="button"
           onClick={() => onSelect(item.id)}
-          className={`min-h-11 rounded-md border px-3 py-2 text-sm font-medium transition ${
-            selected === item.id
-              ? "border-[#5aa7ff]/60 bg-[#132338] text-[#eef1f8]"
-              : "border-[#1e2a3a] bg-[#090d14] text-[#8b95a8] hover:border-[#34506f] hover:text-[#eef1f8]"
+          className={`min-h-11 rounded-md px-3 py-2 text-sm font-medium ${
+            selected === item.id ? "trade-chip-on" : "trade-chip"
           }`}
         >
           {item.label}
@@ -800,28 +1352,48 @@ function ButtonGrid<T extends string>({
 function ControlSection({
   title,
   sideValue,
+  mode,
+  onModeReset,
   children,
 }: {
   title: string;
   sideValue?: string;
+  mode?: "auto" | "manual";
+  onModeReset?: () => void;
   children: React.ReactNode;
 }) {
   return (
     <section className="mb-6">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <h3 className="text-sm font-medium text-[#8b95a8]">{title}</h3>
-        {sideValue ? <span className="text-sm text-[#a8ffd8]">{sideValue}</span> : null}
+        <h3 className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#6b7997]">{title}</h3>
+        <span className="flex items-center gap-2">
+          {mode === "auto" && (
+            <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-emerald-200">
+              agent read
+            </span>
+          )}
+          {mode === "manual" && (
+            <button
+              type="button"
+              onClick={onModeReset}
+              className="rounded-full border border-[#2a3a52] px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-[#8b95a8] transition hover:border-[#34506f] hover:text-[#eef1f8]"
+            >
+              manual · reset
+            </button>
+          )}
+          {sideValue ? <span className="font-mono text-sm tabular-nums text-[#a8ffd8]">{sideValue}</span> : null}
+        </span>
       </div>
       {children}
     </section>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({ label, value, flash }: { label: string; value: string; flash?: boolean }) {
   return (
     <div>
-      <p className="text-xs text-[#566278]">{label}</p>
-      <p className="mt-1 font-mono text-sm text-[#eef1f8]">{value}</p>
+      <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-[#566278]">{label}</p>
+      <p className={`mt-1 font-mono text-sm tabular-nums text-[#eef1f8] ${flash ? "trade-price-flash" : ""}`}>{value}</p>
     </div>
   );
 }
@@ -839,8 +1411,8 @@ function SummaryRow({
 }) {
   return (
     <div className="flex items-center justify-between gap-3 text-sm">
-      <span className="text-[#8b95a8]">{label}</span>
-      <span className={`text-right font-medium ${warn ? "text-[#fff27a]" : accent ? "text-[#a8ffd8]" : "text-[#eef1f8]"}`}>
+      <span className="text-[#7b88a1]">{label}</span>
+      <span className={`text-right font-medium ${warn ? "font-mono tabular-nums text-[#fff27a]" : accent ? "text-[#a8ffd8]" : "text-[#eef1f8]"}`}>
         {value}
       </span>
     </div>
@@ -862,8 +1434,15 @@ function StatusPill({
       : tone === "bad"
         ? "border-rose-400/30 bg-rose-400/10 text-rose-200"
         : "border-amber-400/30 bg-amber-400/10 text-amber-100";
+  const dot =
+    tone === "good"
+      ? "bg-emerald-300 shadow-[0_0_8px_rgba(110,231,183,0.8)]"
+      : tone === "bad"
+        ? "bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.8)]"
+        : "bg-amber-300 shadow-[0_0_8px_rgba(252,211,77,0.8)]";
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 ${color}`}>
+    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ${color}`}>
+      <span aria-hidden className={`trade-live-dot h-1.5 w-1.5 rounded-full ${dot}`} />
       <span className="text-[#8b95a8]">{label}</span>
       {value}
     </span>
@@ -902,15 +1481,65 @@ function chartLayout(candles: GholaChartCandle[], overlays: GholaChartOverlay[])
   const candleWidth = Math.max(3, Math.min(9, plotWidth / Math.max(1, candles.length) * 0.58));
   const y = (price: number) => padding.top + ((max - price) / Math.max(1e-9, max - min)) * plotHeight;
   const x = (index: number) => padding.left + (index / Math.max(1, candles.length - 1)) * plotWidth;
+  const priceAt = (yPos: number) => max - ((yPos - padding.top) / Math.max(1e-9, plotHeight)) * (max - min);
   const grid = Array.from({ length: 6 }, (_, index) => {
     const price = min + ((max - min) * index) / 5;
     return { price, y: y(price) };
   });
-  return { width, height, padding, y, x, candleWidth, grid };
+  const tickCount = Math.min(6, Math.max(2, candles.length));
+  const timeTicks = candles.length > 1
+    ? Array.from(new Set(Array.from({ length: tickCount }, (_, index) =>
+        Math.round((index * (candles.length - 1)) / (tickCount - 1))))).map((index) => ({
+        x: x(index),
+        label: formatChartTime(candles[index].t),
+      }))
+    : [];
+  const maxVolume = Math.max(0, ...candles.map((candle) => Number(candle.v)).filter(Number.isFinite));
+  return { width, height, padding, plotWidth, plotHeight, y, x, priceAt, candleWidth, grid, timeTicks, maxVolume };
+}
+
+function formatChartTime(timestamp: number) {
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(timestamp));
 }
 
 function selectedStrategy<T extends { id: string }>(items: T[], id: string): T {
   return items.find((item) => item.id === id) ?? items[0];
+}
+
+// Reads trade intent off the chart geometry: where the entry sits relative
+// to the live price and the recent range decides what kind of trade this is.
+function interpretGeometry(input: {
+  entry: number;
+  mid: number;
+  side: Side;
+  candles: GholaChartCandle[];
+}): { strategy: StrategyProfile; trigger: EntryTrigger } | null {
+  const { entry, mid, side, candles } = input;
+  if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(mid) || mid <= 0) return null;
+  const recent = candles.slice(-60);
+  const highs = recent.map((candle) => Number(candle.h)).filter(Number.isFinite);
+  const lows = recent.map((candle) => Number(candle.l)).filter(Number.isFinite);
+  const rangeHigh = highs.length > 0 ? Math.max(...highs) : mid;
+  const rangeLow = lows.length > 0 ? Math.min(...lows) : mid;
+  const span = Math.max(rangeHigh - rangeLow, mid * 0.001);
+  const tolerance = mid * 0.0012;
+  if (Math.abs(entry - mid) <= tolerance) {
+    return { strategy: "trend_following", trigger: "preview_now" };
+  }
+  if (side === "buy") {
+    if (entry > mid) return { strategy: "breakout", trigger: "break_level" };
+    if (entry <= rangeLow + span * 0.05) return { strategy: "reversal", trigger: "sweep_reclaim" };
+    if (entry <= rangeLow + span * 0.4) return { strategy: "range_trade", trigger: "retest_level" };
+    return { strategy: "mean_reversion", trigger: "retest_level" };
+  }
+  if (entry < mid) return { strategy: "breakout", trigger: "break_level" };
+  if (entry >= rangeHigh - span * 0.05) return { strategy: "reversal", trigger: "sweep_reclaim" };
+  if (entry >= rangeHigh - span * 0.4) return { strategy: "range_trade", trigger: "retest_level" };
+  return { strategy: "mean_reversion", trigger: "retest_level" };
 }
 
 function entryTriggerLabel(trigger: EntryTrigger) {

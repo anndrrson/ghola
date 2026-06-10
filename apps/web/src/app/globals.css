@@ -87,3 +87,115 @@ body {
     transform: translateY(0);
   }
 }
+
+/* ---------- Trade terminal surfaces ----------
+   Machined-panel language for /trade: shallow vertical gradients with an
+   inset top hairline so chips and wells read as physical controls. */
+.trade-chip {
+  background-image: linear-gradient(180deg, #0c1119 0%, #070b12 100%);
+  border: 1px solid #1e2a3a;
+  color: #8b95a8;
+  box-shadow: inset 0 1px 0 rgba(220, 238, 255, 0.045);
+  transition: border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+.trade-chip:hover:not(:disabled) {
+  border-color: #34506f;
+  color: #eef1f8;
+  box-shadow:
+    inset 0 1px 0 rgba(220, 238, 255, 0.07),
+    0 0 14px -5px rgba(90, 167, 255, 0.4);
+}
+.trade-chip-on {
+  background-image: linear-gradient(180deg, #1a3050 0%, #132338 100%);
+  border: 1px solid rgba(90, 167, 255, 0.6);
+  color: #eef1f8;
+  box-shadow:
+    inset 0 1px 0 rgba(168, 216, 255, 0.18),
+    inset 0 -1px 0 rgba(5, 10, 20, 0.5),
+    0 0 0 1px rgba(90, 167, 255, 0.12),
+    0 4px 16px -6px rgba(90, 167, 255, 0.45);
+}
+
+.trade-field {
+  background-image: linear-gradient(180deg, #070b12 0%, #0a0f18 100%);
+  border: 1px solid #1e2a3a;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.4),
+    inset 0 -1px 0 rgba(220, 238, 255, 0.03);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.trade-field:hover { border-color: #2c3d56; }
+.trade-field:focus,
+.trade-field:focus-within {
+  border-color: #5aa7ff;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(90, 167, 255, 0.22),
+    0 0 18px -6px rgba(90, 167, 255, 0.5);
+}
+
+.trade-action {
+  background-image: linear-gradient(180deg, #8cc4ff 0%, #5aa7ff 55%, #3d8ef0 100%);
+  color: #07101c;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(8, 25, 50, 0.4),
+    0 8px 22px -8px rgba(90, 167, 255, 0.6),
+    0 2px 4px rgba(0, 0, 0, 0.5);
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+}
+.trade-action:hover:not(:disabled) {
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -1px 0 rgba(8, 25, 50, 0.4),
+    0 12px 28px -8px rgba(90, 167, 255, 0.7),
+    0 2px 6px rgba(0, 0, 0, 0.55);
+}
+.trade-action:active:not(:disabled) {
+  filter: none;
+  transform: translateY(0);
+  box-shadow:
+    inset 0 2px 4px rgba(8, 25, 50, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.trade-panel {
+  background-image:
+    linear-gradient(180deg, rgba(168, 216, 255, 0.04) 0%, rgba(168, 216, 255, 0) 20%),
+    linear-gradient(180deg, #0a0e16 0%, #070a10 100%);
+  border: 1px solid #1e2a3a;
+  box-shadow:
+    inset 0 1px 0 rgba(220, 238, 255, 0.05),
+    0 14px 32px -22px rgba(0, 0, 0, 0.9);
+}
+
+/* HUD corner ticks for the chart frame. */
+.trade-corners {
+  --tick-color: rgba(90, 167, 255, 0.55);
+  background-image:
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color));
+  background-position: 0 0, 0 0, 100% 0, 100% 0, 0 100%, 0 100%, 100% 100%, 100% 100%;
+  background-size: 14px 1px, 1px 14px, 14px 1px, 1px 14px, 14px 1px, 1px 14px, 14px 1px, 1px 14px;
+  background-repeat: no-repeat;
+}
+
+@keyframes trade-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.trade-live-dot { animation: trade-dot-pulse 2.4s ease-in-out infinite; }
+
+@keyframes trade-price-flash {
+  0% { color: #ffffff; text-shadow: 0 0 20px rgba(140, 196, 255, 0.9); }
+  100% { text-shadow: 0 0 0 rgba(140, 196, 255, 0); }
+}
+.trade-price-flash { animation: trade-price-flash 480ms ease-out; }
