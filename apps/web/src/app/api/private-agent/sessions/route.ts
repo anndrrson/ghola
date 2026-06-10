@@ -31,6 +31,8 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
+type PrivateAgentRuntimeSnapshot = Awaited<ReturnType<typeof getPrivateAgentRuntimeStatus>>;
+
 interface BillingStatus {
   tier?: string | null;
   private_agent_compute?: {
@@ -97,7 +99,15 @@ async function billingTier(req: NextRequest): Promise<{
   };
 }
 
-function executionUrlForProvider(provider: ConfidentialComputeProviderId): string | null {
+function executionUrlForProvider(
+  provider: ConfidentialComputeProviderId,
+  runtimeSnapshot?: PrivateAgentRuntimeSnapshot,
+): string | null {
+  const discoveredUrl = runtimeSnapshot?.providers
+    .find((candidate) => candidate.id === provider)
+    ?.execution_url?.trim();
+  if (discoveredUrl) return discoveredUrl;
+
   if (provider === "phala") {
     return process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL || process.env.PHALA_AGENT_ENDPOINT || null;
   }
@@ -300,7 +310,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const executionUrl = executionUrlForProvider(runtime.selected_provider);
+  const executionUrl = executionUrlForProvider(runtime.selected_provider, runtime);
   if (!executionUrl) {
     return json(
       {

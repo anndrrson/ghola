@@ -27,3 +27,4 @@ local.properties
 .dev/
 ios/Ghola.xcodeproj/
 ios/build/
+.env*.local
