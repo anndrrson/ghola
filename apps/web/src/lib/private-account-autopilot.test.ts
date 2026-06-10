@@ -212,6 +212,98 @@ describe("private account autopilot sessions", () => {
     expect(created.events.some((event) => event.event_id === "worker_event_ready")).toBe(true);
   });
 
+  it("wakes Phala on demand before arming a worker autopilot session", async () => {
+    const calls: string[] = [];
+    const wakeReasons: string[] = [];
+    const fetchImpl = async (input: URL | RequestInfo) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({
+        version: 1,
+        session: {
+          version: 2,
+          autopilot_session_id: "worker_autopilot_jit",
+          worker_session_commitment: "worker_commitment_jit",
+          status: "running",
+          strategy: {
+            version: 1,
+            strategy_id: "momentum_micro_trader",
+            decision_model: "ai_direct_order_v1",
+            executable_order_source: "ai_structured_decision_validated_by_policy",
+            ai_can_execute_directly: true,
+          },
+          session_policy: {
+            decision_model: "ai_direct_order_v1",
+            ai_direct_enabled: true,
+            venue_allowlist: ["hyperliquid"],
+            market_allowlist: ["BTC-USD"],
+            max_notional_bucket: "5",
+            max_position_notional_bucket: "100",
+            max_daily_notional_bucket: "250",
+            max_order_count: 10,
+            ttl_ms: 2 * 60 * 60_000,
+            max_slippage_bps: 50,
+            cooldown_ms: 5 * 60_000,
+            data_max_age_ms: 30_000,
+            min_ai_score_bps: 6_500,
+            ai_min_confidence_bps: 6_500,
+            min_signal_bps: 25,
+            max_spread_bps: 150,
+            kill_switch: false,
+            reduce_only_on_reconcile_failure: true,
+            locale_hint: "en",
+            timezone: "Asia/Singapore",
+            policy_commitment: "autopilot_policy_worker_jit",
+          },
+          venue_access: {
+            hyperliquid: { status: "ready", execution_mode: "byo_api_wallet", reason: "scoped_api_wallet_ready" },
+          },
+          order_count: 0,
+          daily_notional_used_bucket: "0",
+          updated_at: "2026-06-01T12:00:00.000Z",
+          expires_at: "2026-06-01T14:00:00.000Z",
+          next_step: "Autonomous worker is running.",
+          execution_enabled: true,
+        },
+        events: [],
+      }), { status: 201 });
+    };
+
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+          max_notional_bucket: "5",
+        },
+      },
+      owner,
+      new Date("2026-06-01T12:00:00.000Z"),
+      {
+        GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "true",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      },
+      fetchImpl,
+      {
+        wakePhalaForUse: async (input) => {
+          wakeReasons.push(input.reason);
+          return {
+            attempted: true,
+            ready: true,
+            status: "ready",
+            execution_url: "https://worker.example",
+          };
+        },
+        discoverPhalaExecutionUrl: async () => "https://worker.example",
+      },
+    );
+
+    expect(wakeReasons).toEqual(["autopilot_session_create"]);
+    expect(calls).toEqual(["https://worker.example/autopilot/sessions"]);
+    expect(created.session.status).toBe("running");
+    expect(created.session.worker_autopilot_session_id).toBe("worker_autopilot_jit");
+    expect(created.session.venue_access.hyperliquid.status).toBe("ready");
+  });
+
   it("expires sessions without exposing them to other owners", async () => {
     const created = await createAutopilotSessionFromBody({
       session_policy: { ttl_ms: 5 * 60_000 },

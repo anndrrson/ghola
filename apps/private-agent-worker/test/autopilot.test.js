@@ -6,8 +6,10 @@ import { join } from "node:path";
 import {
   createAutopilotSession,
   runAutopilotTick,
+  stopAutopilotLoop,
 } from "../src/execution/autopilot.js";
 import { createWorkerState } from "../src/state/private-state.js";
+import { resumeAutopilotLoops } from "../src/server.js";
 
 const OLD_ENV = { ...process.env };
 
@@ -92,6 +94,43 @@ describe("autonomous autopilot engine", () => {
       "receipt",
       "venue_reconcile",
     ]);
+  });
+
+  it("resumes persisted running autopilot sessions after worker restart", async () => {
+    process.env.PRIVATE_AGENT_AUTOPILOT_INITIAL_DELAY_MS = "60000";
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-autopilot-worker" };
+    const now = new Date(Date.now() + 60_000);
+    const session = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_autopilot_resume",
+        session_policy: {
+          ai_direct_enabled: false,
+          venue_allowlist: ["jupiter"],
+          market_allowlist: ["SOL-USD"],
+          max_notional_bucket: "50",
+          max_daily_notional_bucket: "250",
+          max_order_count: 10,
+          ttl_ms: 2 * 60 * 60_000,
+          max_slippage_bps: 50,
+        },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+
+    const resumed = await resumeAutopilotLoops({ state, recipient, now });
+    stopAutopilotLoop(session.autopilot_session_id);
+
+    assert.equal(resumed.resumed, 1);
+    const events = await state.listAutopilotEvents(session.autopilot_session_id);
+    assert.equal(
+      events.some((event) => event.message === "Autopilot worker loop resumed after restart."),
+      true,
+    );
   });
 
   it("keeps agents active with no-submit verification when live submit is not armed", async () => {

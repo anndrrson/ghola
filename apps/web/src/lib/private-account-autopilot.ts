@@ -2,6 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   workerAuthorizationHeader,
 } from "./private-agent-capability";
+import {
+  discoverPhalaPrivateAgentExecutionUrl,
+  wakePhalaPrivateAgentForUse,
+} from "./private-agent-phala";
 import { agentPassportVenueAccessForWorker } from "./private-agent-passport";
 import type { PrivateAccountRequestOwner } from "@/app/v1/private-account/_lib";
 import {
@@ -157,6 +161,11 @@ export interface AutopilotReadiness {
   venue_readiness: AutopilotVenueReadiness[];
 }
 
+interface AutopilotWorkerRuntime {
+  wakePhalaForUse?: typeof wakePhalaPrivateAgentForUse;
+  discoverPhalaExecutionUrl?: typeof discoverPhalaPrivateAgentExecutionUrl;
+}
+
 const DEFAULT_VENUES: AutopilotVenueId[] = ["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"];
 const SUPPORTED_VENUES = new Set<AutopilotVenueId>([
   "jupiter",
@@ -281,6 +290,7 @@ export async function createAutonomousAutopilotSessionFromBody(
   now: Date = new Date(),
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
+  runtime: AutopilotWorkerRuntime = {},
 ): Promise<AutopilotCreateResult> {
   const created = await createAutopilotSessionFromBody(body, owner, now);
   const worker = await armWorkerAutopilotSession({
@@ -289,6 +299,7 @@ export async function createAutonomousAutopilotSessionFromBody(
     session: created.session,
     env,
     fetchImpl,
+    runtime,
   });
   if (worker.ok) {
     const merged = await mergeWorkerSession(created.session.autopilot_session_id, worker.session, now);
@@ -567,11 +578,22 @@ async function armWorkerAutopilotSession(input: {
   session: AutopilotSession;
   env: Record<string, string | undefined>;
   fetchImpl: typeof fetch;
+  runtime?: AutopilotWorkerRuntime;
 }): Promise<
   | { ok: true; session: Record<string, unknown>; events: Record<string, unknown>[] }
   | { ok: false; error: string }
 > {
-  const cfg = workerConfig(input.env);
+  let cfg = workerConfig(input.env);
+  let wakeAttempted = false;
+  if (phalaAutopilotWakeEnabled(input.env)) {
+    const resolved = await wakeAndResolvePhalaWorker({
+      cfg,
+      env: input.env,
+      runtime: input.runtime,
+    });
+    cfg = resolved.cfg;
+    wakeAttempted = resolved.attempted;
+  }
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const raw = record(input.body);
   const providedVenueAccess = optionalRecord(raw.venue_access) ?? optionalRecord(raw.venue_vaults);
@@ -599,7 +621,7 @@ async function armWorkerAutopilotSession(input: {
     },
   });
   if (!authorization) return { ok: false, error: "worker_not_configured" };
-  const response = await input.fetchImpl(new URL(workerPath, cfg.url), {
+  let response = await input.fetchImpl(new URL(workerPath, cfg.url), {
     method: "POST",
     cache: "no-store",
     headers: {
@@ -609,6 +631,27 @@ async function armWorkerAutopilotSession(input: {
     },
     body: JSON.stringify(payload),
   }).catch(() => null);
+  if (!response && phalaAutopilotWakeEnabled(input.env) && !wakeAttempted) {
+    const resolved = await wakeAndResolvePhalaWorker({
+      cfg,
+      env: input.env,
+      runtime: input.runtime,
+    });
+    cfg = resolved.cfg;
+    wakeAttempted = resolved.attempted;
+    if (cfg.url) {
+      response = await input.fetchImpl(new URL(workerPath, cfg.url), {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          authorization,
+          "content-type": "application/json",
+          "x-ghola-sealed-execution-required": "true",
+        },
+        body: JSON.stringify(payload),
+      }).catch(() => null);
+    }
+  }
   if (!response) return { ok: false, error: "worker_unavailable" };
   const body = record(await response.json().catch(() => null));
   if (!response.ok) return { ok: false, error: stringValue(body.error) ?? `worker_${response.status}` };
@@ -618,6 +661,31 @@ async function armWorkerAutopilotSession(input: {
     ok: true,
     session,
     events: Array.isArray(body.events) ? body.events.map(optionalRecord).filter(Boolean) as Record<string, unknown>[] : [],
+  };
+}
+
+async function wakeAndResolvePhalaWorker(input: {
+  cfg: ReturnType<typeof workerConfig>;
+  env: Record<string, string | undefined>;
+  runtime?: AutopilotWorkerRuntime;
+}): Promise<{ cfg: ReturnType<typeof workerConfig>; attempted: boolean }> {
+  const wake = input.runtime?.wakePhalaForUse ?? wakePhalaPrivateAgentForUse;
+  const discover = input.runtime?.discoverPhalaExecutionUrl ?? discoverPhalaPrivateAgentExecutionUrl;
+  const result = await wake({
+    reason: "autopilot_session_create",
+    waitForReadyMs: boundedIntEnv(
+      input.env,
+      "GHOLA_PRIVATE_AGENT_AUTOPILOT_WAKE_WAIT_MS",
+      55_000,
+      0,
+      120_000,
+    ),
+  });
+  const rawUrl = result.execution_url || await discover();
+  const url = parseWorkerUrl(rawUrl);
+  return {
+    attempted: result.attempted,
+    cfg: url ? { ...input.cfg, url } : input.cfg,
   };
 }
 
@@ -1003,6 +1071,32 @@ function workerConfig(env: Record<string, string | undefined>) {
     url: parsedUrl,
     token,
   };
+}
+
+function parseWorkerUrl(value: string | null | undefined): URL | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function phalaAutopilotWakeEnabled(env: Record<string, string | undefined>): boolean {
+  return env.GHOLA_PRIVATE_AGENT_JIT_PROVISIONING?.trim().toLowerCase() === "true";
+}
+
+function boundedIntEnv(
+  env: Record<string, string | undefined>,
+  key: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = Number.parseInt(env[key]?.trim() ?? "", 10);
+  if (!Number.isInteger(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
 }
 
 function workerAuthConfigured(env: Record<string, string | undefined>, fallbackToken: string): boolean {

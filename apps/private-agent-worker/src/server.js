@@ -1620,6 +1620,13 @@ function validateAutopilotSessionRequest(body, recipient) {
 export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
   const state = options.state || createConfiguredWorkerState(dataDir());
+  if (options.resumeAutopilotLoops !== false) {
+    queueMicrotask(() => {
+      resumeAutopilotLoops({ state, recipient }).catch((error) => {
+        console.error("autopilot resume failed", error?.message || error);
+      });
+    });
+  }
 
   return createServer(async (req, res) => {
     try {
@@ -2674,6 +2681,36 @@ export function createPrivateAgentWorkerServer(options = {}) {
       });
     }
   });
+}
+
+export async function resumeAutopilotLoops({ state, recipient, now = new Date() }) {
+  const sessions = typeof state.listAutopilotSessions === "function"
+    ? await state.listAutopilotSessions()
+    : [];
+  let resumed = 0;
+  for (const session of sessions) {
+    if (session?.status !== "running" || session.execution_enabled !== true) continue;
+    startAutopilotLoop({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+    });
+    resumed += 1;
+    await state.appendAutopilotEvent?.(session.autopilot_session_id, {
+      version: 1,
+      autopilot_session_id: session.autopilot_session_id,
+      event_id: `autoevt_${createHash("sha256")
+        .update(`${session.autopilot_session_id}:${now.toISOString()}:${randomUUID()}`)
+        .digest("hex")
+        .slice(0, 24)}`,
+      type: "session_state",
+      status: session.status,
+      message: "Autopilot worker loop resumed after restart.",
+      data: { reason: "worker_startup_resume" },
+      created_at: now.toISOString(),
+    });
+  }
+  return { resumed };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
