@@ -8,9 +8,9 @@ import {
 } from "./private-agent-runtime-lease";
 
 const DEFAULT_WORKER_IMAGE =
-  "ghcr.io/anndrrson/ghola:private-agent-worker-6a4f843@sha256:9b36fd7356dc8be88a685419b8af9b17bb5c46248daf942d753e928b6edc7933";
+  "ghcr.io/anndrrson/ghola:private-agent-worker-d36f9cc@sha256:f87611da536b4b9ac712829a045d7153e80dc71708739cab95c5b4fefd183eb4";
 const DEFAULT_WORKER_IMAGE_DIGEST =
-  "sha256:9b36fd7356dc8be88a685419b8af9b17bb5c46248daf942d753e928b6edc7933";
+  "sha256:f87611da536b4b9ac712829a045d7153e80dc71708739cab95c5b4fefd183eb4";
 const DEFAULT_CVM_NAME = "ghola-private-agent-worker";
 const RECIPIENT_REPORT_DOMAIN = "ghola-private-agent-recipient-v1";
 

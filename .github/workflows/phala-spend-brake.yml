@@ -6,7 +6,7 @@ on:
       cvm_names:
         description: "Comma-separated Phala CVM names to stop"
         required: true
-        default: "ghola-private-agent-worker-4cbdf74,ghola-private-agent-worker-77ce835,ghola-private-agent-worker-no-submit-f510d61,ghola-private-agent-worker"
+        default: "ghola-private-agent-worker-d36f9cc,ghola-private-agent-worker-4cbdf74,ghola-private-agent-worker-77ce835,ghola-private-agent-worker-no-submit-f510d61,ghola-private-agent-worker"
       cvm_prefixes:
         description: "Comma-separated Phala CVM name/id prefixes to discover and stop"
         required: true
@@ -35,7 +35,7 @@ jobs:
     env:
       PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
       PHALA_CLOUD_API_PREFIX: ${{ vars.PHALA_CLOUD_API_PREFIX }}
-      CVM_NAMES: ${{ inputs.cvm_names || 'ghola-private-agent-worker-4cbdf74,ghola-private-agent-worker-77ce835,ghola-private-agent-worker-no-submit-f510d61,ghola-private-agent-worker' }}
+      CVM_NAMES: ${{ inputs.cvm_names || 'ghola-private-agent-worker-d36f9cc,ghola-private-agent-worker-4cbdf74,ghola-private-agent-worker-77ce835,ghola-private-agent-worker-no-submit-f510d61,ghola-private-agent-worker' }}
       CVM_PREFIXES: ${{ inputs.cvm_prefixes || 'ghola-' }}
       DRY_RUN: ${{ inputs.dry_run || 'false' }}
     steps:
