@@ -126,6 +126,19 @@ const ENTRY_TRIGGERS: Array<{ id: EntryTrigger; label: string }> = [
   { id: "custom", label: "Custom rule" },
 ];
 
+// How each trigger reads inside the mandate sentence, ending just before
+// the entry price.
+const TRIGGER_PHRASES: Record<EntryTrigger, string> = {
+  preview_now: "enter now at",
+  break_level: "enter on a break of",
+  retest_level: "enter on a retest of",
+  sweep_reclaim: "enter on a reclaim of",
+  book_imbalance: "enter on a book shift near",
+  funding_mark_divergence: "enter on a funding edge near",
+  route_edge_threshold: "enter when the route improves near",
+  custom: "enter on a custom rule at",
+};
+
 const HORIZONS: Array<{ id: Horizon; label: string }> = [
   { id: "scalp", label: "Scalp" },
   { id: "session_trade", label: "Session" },
@@ -453,19 +466,6 @@ export default function TradePage() {
   const venueLiveStatus = venueStatus(liveStatus, venue.id);
   const readyToPreview = thumperAuth.authenticated && venueLiveStatus === "green";
 
-  // The agent reading its orders back: one plain-language sentence built
-  // from the live mandate.
-  const planNarrative = useMemo(() => {
-    const action = side === "buy" ? "Buy" : "Sell";
-    const entryText =
-      entryTrigger === "preview_now"
-        ? `enter now at ${formatPrice(entryPrice ?? mid)}`
-        : `enter when price ${entryTriggerLabel(entryTrigger).toLowerCase()} ${formatPrice(entryPrice ?? mid)}`;
-    const stopText = stopLevel ? `stop at ${formatPrice(stopLevel)}` : "no stop set";
-    const horizonText = HORIZONS.find((item) => item.id === horizon)?.label.toLowerCase() ?? horizon;
-    const exitText = STOP_RULES.find((item) => item.id === stopRule)?.label.toLowerCase() ?? stopRule;
-    return `${action} $${notional} of ${venue.product} when ${selectedStrategy(STRATEGIES, strategy).condition} — ${entryText}, ${stopText}, slippage capped at ${slippageBps} bps. ${capitalize(horizonText)} horizon, ${exitText} exit.`;
-  }, [entryPrice, entryTrigger, horizon, mid, notional, side, slippageBps, stopLevel, stopRule, strategy, venue.product]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -654,202 +654,253 @@ export default function TradePage() {
               <ReadinessBadge label={readyToPreview ? "Preview ready" : thumperAuth.authenticated ? "Connect venue" : "Sign in needed"} ready={readyToPreview} />
             </div>
 
-            <p className="mt-4 text-sm leading-6 text-[#d8e6f8]">{planNarrative}</p>
-            <p className="mt-2 text-[11px] leading-4 text-[#566278]">
-              Drag the entry and stop lines on the chart — the agent reads your levels.
-              <span className="text-emerald-300/80"> Green dots</span> mark what it inferred; tap any row to override.
-            </p>
           </div>
 
-          <div className="h-[calc(100vh-12rem)] overflow-y-auto px-5 py-1">
-            <PlanRow
-              label="Trade idea"
-              value={selectedStrategy(STRATEGIES, strategy).label}
-              auto={!ideaManual}
-              expanded={openRow === "idea"}
-              onToggle={() => setOpenRow(openRow === "idea" ? null : "idea")}
-              onAutoReset={ideaManual ? () => setIdeaManual(false) : undefined}
-            >
-              <ButtonGrid items={STRATEGIES} selected={strategy} onSelect={selectIdea} />
-            </PlanRow>
+          <div className="h-[calc(100vh-12rem)] overflow-y-auto p-5">
+            <p className="text-[15px] leading-8 text-[#8b95a8]">
+              <Token
+                active={openRow === "size"}
+                tone={side === "buy" ? "good" : "bad"}
+                onClick={() => setOpenRow(openRow === "size" ? null : "size")}
+              >
+                {side === "buy" ? "Buy" : "Sell"} ${notional}
+              </Token>
+              {" of "}
+              <span className="font-medium text-[#eef1f8]">{venue.product}</span>
+              {" when "}
+              <Token
+                active={openRow === "idea"}
+                auto={!ideaManual}
+                onClick={() => setOpenRow(openRow === "idea" ? null : "idea")}
+              >
+                {selectedStrategy(STRATEGIES, strategy).condition}
+              </Token>
+              {" — "}
+              <Token
+                active={openRow === "trigger"}
+                auto={!triggerManual}
+                onClick={() => setOpenRow(openRow === "trigger" ? null : "trigger")}
+              >
+                {TRIGGER_PHRASES[entryTrigger]}
+              </Token>{" "}
+              <Token
+                active={openRow === "entry"}
+                auto={!entryPinned}
+                mono
+                onClick={() => setOpenRow(openRow === "entry" ? null : "entry")}
+              >
+                {formatPrice(entryPrice ?? mid)}
+              </Token>
+              {", stop at "}
+              <Token
+                active={openRow === "stop"}
+                auto={!stopPinned}
+                tone="bad"
+                mono
+                onClick={() => setOpenRow(openRow === "stop" ? null : "stop")}
+              >
+                {stopLevel ? formatPrice(stopLevel) : "not set"}
+              </Token>
+              {", slippage ≤ "}
+              <Token
+                active={openRow === "slippage"}
+                tone="warn"
+                mono
+                onClick={() => setOpenRow(openRow === "slippage" ? null : "slippage")}
+              >
+                {slippageBps} bps
+              </Token>
+              {". "}
+              <Token
+                active={openRow === "horizon"}
+                onClick={() => setOpenRow(openRow === "horizon" ? null : "horizon")}
+              >
+                {HORIZONS.find((item) => item.id === horizon)?.label ?? horizon}
+              </Token>
+              {" horizon, "}
+              <Token
+                active={openRow === "stoprule"}
+                auto={!stopRuleManual}
+                onClick={() => setOpenRow(openRow === "stoprule" ? null : "stoprule")}
+              >
+                {(STOP_RULES.find((item) => item.id === stopRule)?.label ?? stopRule).toLowerCase()}
+              </Token>
+              {" exit."}
+            </p>
+            <p className="mt-3 text-[11px] leading-5 text-[#566278]">
+              This is your agent&apos;s read of the plan. Tap any underlined term to change it, or drag
+              the lines on the chart.
+              <span className="text-emerald-300/80"> Green dots</span> mark what the agent inferred.
+            </p>
+            {openRow && (
+              <div className="trade-panel mt-4 rounded-md p-3">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <span className="text-[10px] font-medium uppercase tracking-[0.16em] text-[#6b7997]">
+                    {TOKEN_TITLES[openRow] ?? openRow}
+                  </span>
+                  <span className="flex items-center gap-3">
+                    {openRow === "idea" && ideaManual && (
+                      <EditorResetButton onClick={() => setIdeaManual(false)} />
+                    )}
+                    {openRow === "trigger" && triggerManual && (
+                      <EditorResetButton onClick={() => setTriggerManual(false)} />
+                    )}
+                    {openRow === "entry" && entryPinned && (
+                      <EditorResetButton
+                        onClick={() => {
+                          setEntryPinned(false);
+                          if (mid) setEntryPrice(mid);
+                        }}
+                      />
+                    )}
+                    {openRow === "stop" && stopPinned && (
+                      <EditorResetButton onClick={() => setStopPinned(false)} />
+                    )}
+                    {openRow === "stoprule" && stopRuleManual && (
+                      <EditorResetButton onClick={() => setStopRuleManual(false)} />
+                    )}
+                    <button
+                      type="button"
+                      aria-label="Close editor"
+                      onClick={() => setOpenRow(null)}
+                      className="text-sm leading-none text-[#566278] transition hover:text-[#eef1f8]"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                </div>
 
-            <PlanRow
-              label="Entry trigger"
-              value={entryTriggerLabel(entryTrigger)}
-              auto={!triggerManual}
-              expanded={openRow === "trigger"}
-              onToggle={() => setOpenRow(openRow === "trigger" ? null : "trigger")}
-              onAutoReset={triggerManual ? () => setTriggerManual(false) : undefined}
-            >
-              <ButtonGrid
-                items={ENTRY_TRIGGERS.filter((item) => TRIGGERS_FOR[strategy].includes(item.id))}
-                selected={entryTrigger}
-                onSelect={selectTrigger}
-              />
-            </PlanRow>
-
-            <PlanRow
-              label="Entry price"
-              value={formatPrice(entryPrice ?? mid)}
-              auto={!entryPinned}
-              expanded={openRow === "entry"}
-              onToggle={() => setOpenRow(openRow === "entry" ? null : "entry")}
-              onAutoReset={entryPinned ? () => {
-                setEntryPinned(false);
-                if (mid) setEntryPrice(mid);
-              } : undefined}
-            >
-              <div className="grid grid-cols-[1fr_auto] gap-2">
-                <input
-                  inputMode="decimal"
-                  aria-label="Entry price"
-                  value={entryPrice ? String(roundForInput(entryPrice)) : ""}
-                  onChange={(event) => {
-                    const next = Number(event.target.value.replaceAll(",", ""));
-                    setEntryPinned(true);
-                    setEntryPrice(Number.isFinite(next) && next > 0 ? next : null);
-                  }}
-                  className="trade-field h-10 min-w-0 rounded-md px-3 font-mono text-sm tabular-nums text-[#eef1f8] outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEntryPinned(false);
-                    if (mid) setEntryPrice(mid);
-                  }}
-                  className="trade-chip h-10 rounded-md px-3 text-sm"
-                >
-                  Current
-                </button>
-              </div>
-            </PlanRow>
-
-            <PlanRow
-              label="Stop level"
-              value={stopLevel ? formatPrice(stopLevel) : "-"}
-              valueTone="text-rose-200"
-              auto={!stopPinned}
-              expanded={openRow === "stop"}
-              onToggle={() => setOpenRow(openRow === "stop" ? null : "stop")}
-              onAutoReset={stopPinned ? () => setStopPinned(false) : undefined}
-            >
-              <div className="grid grid-cols-[1fr_auto] gap-2">
-                <input
-                  inputMode="decimal"
-                  aria-label="Stop level"
-                  value={stopLevel ? String(roundForInput(stopLevel)) : ""}
-                  onChange={(event) => {
-                    const next = Number(event.target.value.replaceAll(",", ""));
-                    if (Number.isFinite(next) && next > 0) handleStopChange(next);
-                  }}
-                  className="trade-field h-10 min-w-0 rounded-md px-3 font-mono text-sm tabular-nums text-[#eef1f8] outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => setStopPinned(false)}
-                  className="trade-chip h-10 rounded-md px-3 text-sm"
-                >
-                  Auto
-                </button>
-              </div>
-            </PlanRow>
-
-            <PlanRow
-              label="Side & size"
-              value={`${side === "buy" ? "Buy" : "Sell"} $${notional}`}
-              valueTone={side === "buy" ? "text-emerald-200" : "text-rose-200"}
-              expanded={openRow === "size"}
-              onToggle={() => setOpenRow(openRow === "size" ? null : "size")}
-            >
-              <div className="grid grid-cols-2 gap-2">
-                {(["buy", "sell"] as const).map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => {
-                      setSide(item);
-                      setStopPinned(false);
+                {openRow === "idea" && (
+                  <ButtonGrid items={STRATEGIES} selected={strategy} onSelect={selectIdea} />
+                )}
+                {openRow === "trigger" && (
+                  <ButtonGrid
+                    items={ENTRY_TRIGGERS.filter((item) => TRIGGERS_FOR[strategy].includes(item.id))}
+                    selected={entryTrigger}
+                    onSelect={selectTrigger}
+                  />
+                )}
+                {openRow === "entry" && (
+                  <div className="grid grid-cols-[1fr_auto] gap-2">
+                    <input
+                      inputMode="decimal"
+                      aria-label="Entry price"
+                      value={entryPrice ? String(roundForInput(entryPrice)) : ""}
+                      onChange={(event) => {
+                        const next = Number(event.target.value.replaceAll(",", ""));
+                        setEntryPinned(true);
+                        setEntryPrice(Number.isFinite(next) && next > 0 ? next : null);
+                      }}
+                      className="trade-field h-10 min-w-0 rounded-md px-3 font-mono text-sm tabular-nums text-[#eef1f8] outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEntryPinned(false);
+                        if (mid) setEntryPrice(mid);
+                      }}
+                      className="trade-chip h-10 rounded-md px-3 text-sm"
+                    >
+                      Current
+                    </button>
+                  </div>
+                )}
+                {openRow === "stop" && (
+                  <div className="grid grid-cols-[1fr_auto] gap-2">
+                    <input
+                      inputMode="decimal"
+                      aria-label="Stop level"
+                      value={stopLevel ? String(roundForInput(stopLevel)) : ""}
+                      onChange={(event) => {
+                        const next = Number(event.target.value.replaceAll(",", ""));
+                        if (Number.isFinite(next) && next > 0) handleStopChange(next);
+                      }}
+                      className="trade-field h-10 min-w-0 rounded-md px-3 font-mono text-sm tabular-nums text-[#eef1f8] outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setStopPinned(false)}
+                      className="trade-chip h-10 rounded-md px-3 text-sm"
+                    >
+                      Auto
+                    </button>
+                  </div>
+                )}
+                {openRow === "size" && (
+                  <>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(["buy", "sell"] as const).map((item) => (
+                        <button
+                          key={item}
+                          type="button"
+                          onClick={() => {
+                            setSide(item);
+                            setStopPinned(false);
+                          }}
+                          className={`h-10 rounded-md text-sm font-medium capitalize transition-shadow duration-150 ${
+                            side === item
+                              ? item === "buy"
+                                ? "border border-emerald-400/60 bg-gradient-to-b from-emerald-400/20 to-emerald-400/8 text-emerald-200 shadow-[inset_0_1px_0_rgba(110,231,183,0.2),0_0_16px_-6px_rgba(52,211,153,0.5)]"
+                                : "border border-rose-400/60 bg-gradient-to-b from-rose-400/20 to-rose-400/8 text-rose-200 shadow-[inset_0_1px_0_rgba(251,113,133,0.2),0_0_16px_-6px_rgba(251,113,133,0.5)]"
+                              : "trade-chip"
+                          }`}
+                        >
+                          {item}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mt-2 grid grid-cols-3 gap-2">
+                      {[5, 10, 25].map((item) => (
+                        <button
+                          key={item}
+                          type="button"
+                          onClick={() => setNotional(item)}
+                          className={`h-9 rounded-md text-sm tabular-nums ${
+                            notional === item ? "trade-chip-on" : "trade-chip"
+                          }`}
+                        >
+                          ${item}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+                {openRow === "slippage" && (
+                  <>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[25, 50, 100].map((item) => (
+                        <button
+                          key={item}
+                          type="button"
+                          onClick={() => setSlippageBps(item)}
+                          className={`h-10 rounded-md text-sm tabular-nums transition-shadow duration-150 ${
+                            slippageBps === item
+                              ? "border border-[#f8e56b]/70 bg-gradient-to-b from-[#332d12] to-[#231f0c] text-[#fff27a] shadow-[inset_0_1px_0_rgba(248,229,107,0.18),0_0_16px_-6px_rgba(248,229,107,0.45)]"
+                              : "trade-chip"
+                          }`}
+                        >
+                          {item} bps
+                        </button>
+                      ))}
+                    </div>
+                    <p className="mt-2 font-mono text-[11px] tabular-nums text-[#8b95a8]">Band: {slippageBand}</p>
+                  </>
+                )}
+                {openRow === "horizon" && (
+                  <ButtonGrid items={HORIZONS} selected={horizon} onSelect={(id) => setHorizon(id)} />
+                )}
+                {openRow === "stoprule" && (
+                  <ButtonGrid
+                    items={STOP_RULES}
+                    selected={stopRule}
+                    onSelect={(id) => {
+                      setStopRule(id);
+                      setStopRuleManual(true);
                     }}
-                    className={`h-10 rounded-md text-sm font-medium capitalize transition-shadow duration-150 ${
-                      side === item
-                        ? item === "buy"
-                          ? "border border-emerald-400/60 bg-gradient-to-b from-emerald-400/20 to-emerald-400/8 text-emerald-200 shadow-[inset_0_1px_0_rgba(110,231,183,0.2),0_0_16px_-6px_rgba(52,211,153,0.5)]"
-                          : "border border-rose-400/60 bg-gradient-to-b from-rose-400/20 to-rose-400/8 text-rose-200 shadow-[inset_0_1px_0_rgba(251,113,133,0.2),0_0_16px_-6px_rgba(251,113,133,0.5)]"
-                        : "trade-chip"
-                    }`}
-                  >
-                    {item}
-                  </button>
-                ))}
+                  />
+                )}
               </div>
-              <div className="mt-2 grid grid-cols-3 gap-2">
-                {[5, 10, 25].map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => setNotional(item)}
-                    className={`h-9 rounded-md text-sm tabular-nums ${
-                      notional === item ? "trade-chip-on" : "trade-chip"
-                    }`}
-                  >
-                    ${item}
-                  </button>
-                ))}
-              </div>
-            </PlanRow>
-
-            <PlanRow
-              label="Slippage cap"
-              value={`${slippageBps} bps`}
-              valueTone="text-[#fff27a]"
-              expanded={openRow === "slippage"}
-              onToggle={() => setOpenRow(openRow === "slippage" ? null : "slippage")}
-            >
-              <div className="grid grid-cols-3 gap-2">
-                {[25, 50, 100].map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => setSlippageBps(item)}
-                    className={`h-10 rounded-md text-sm tabular-nums transition-shadow duration-150 ${
-                      slippageBps === item
-                        ? "border border-[#f8e56b]/70 bg-gradient-to-b from-[#332d12] to-[#231f0c] text-[#fff27a] shadow-[inset_0_1px_0_rgba(248,229,107,0.18),0_0_16px_-6px_rgba(248,229,107,0.45)]"
-                        : "trade-chip"
-                    }`}
-                  >
-                    {item} bps
-                  </button>
-                ))}
-              </div>
-              <p className="mt-2 font-mono text-[11px] tabular-nums text-[#8b95a8]">Band: {slippageBand}</p>
-            </PlanRow>
-
-            <PlanRow
-              label="Horizon"
-              value={HORIZONS.find((item) => item.id === horizon)?.label ?? horizon}
-              expanded={openRow === "horizon"}
-              onToggle={() => setOpenRow(openRow === "horizon" ? null : "horizon")}
-            >
-              <ButtonGrid items={HORIZONS} selected={horizon} onSelect={(id) => setHorizon(id)} />
-            </PlanRow>
-
-            <PlanRow
-              label="Stop rule"
-              value={STOP_RULES.find((item) => item.id === stopRule)?.label ?? stopRule}
-              auto={!stopRuleManual}
-              expanded={openRow === "stoprule"}
-              onToggle={() => setOpenRow(openRow === "stoprule" ? null : "stoprule")}
-              onAutoReset={stopRuleManual ? () => setStopRuleManual(false) : undefined}
-            >
-              <ButtonGrid
-                items={STOP_RULES}
-                selected={stopRule}
-                onSelect={(id) => {
-                  setStopRule(id);
-                  setStopRuleManual(true);
-                }}
-              />
-            </PlanRow>
+            )}
           </div>
 
           <div className="border-t border-[#182234] p-5">
@@ -1557,70 +1608,73 @@ function ButtonGrid<T extends string>({
   );
 }
 
-function PlanRow({
-  label,
-  value,
-  valueTone,
+const TOKEN_TITLES: Record<string, string> = {
+  size: "Side & size",
+  idea: "Trade idea",
+  trigger: "Entry trigger",
+  entry: "Entry price",
+  stop: "Stop level",
+  slippage: "Slippage cap",
+  horizon: "Horizon",
+  stoprule: "Stop rule",
+};
+
+// An editable term inside the mandate sentence. Dashed underline marks it
+// as tappable; the dot marks values the agent inferred from the chart.
+function Token({
+  active,
   auto,
-  expanded,
-  onToggle,
-  onAutoReset,
+  tone,
+  mono,
+  onClick,
   children,
 }: {
-  label: string;
-  value: string;
-  valueTone?: string;
+  active: boolean;
   auto?: boolean;
-  expanded: boolean;
-  onToggle: () => void;
-  onAutoReset?: () => void;
+  tone?: "good" | "bad" | "warn";
+  mono?: boolean;
+  onClick: () => void;
   children: React.ReactNode;
 }) {
+  const color =
+    tone === "good"
+      ? "border-emerald-300/50 text-emerald-200"
+      : tone === "bad"
+        ? "border-rose-300/50 text-rose-200"
+        : tone === "warn"
+          ? "border-[#f8e56b]/50 text-[#fff27a]"
+          : "border-[#5aa7ff]/50 text-[#cfe2ff]";
   return (
-    <div className="border-b border-[#141d2e]">
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={onToggle}
-        className="flex h-12 w-full items-center justify-between gap-3 text-left transition-colors hover:bg-[#0b101b]"
-      >
-        <span className="text-[10px] font-medium uppercase tracking-[0.16em] text-[#6b7997]">{label}</span>
-        <span className="flex min-w-0 items-center gap-2">
-          {auto && (
-            <span
-              aria-hidden
-              title="Read by the agent from your chart"
-              className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.7)]"
-            />
-          )}
-          <span className={`truncate font-mono text-sm tabular-nums ${valueTone ?? "text-[#eef1f8]"}`}>
-            {value}
-          </span>
-          <ChevronDown
-            className={`h-3.5 w-3.5 shrink-0 text-[#566278] transition-transform ${expanded ? "rotate-180" : ""}`}
-          />
-        </span>
-      </button>
-      {expanded && (
-        <div className="pb-4">
-          {children}
-          {onAutoReset && (
-            <button
-              type="button"
-              onClick={onAutoReset}
-              className="mt-2 font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-300/80 transition hover:text-emerald-200"
-            >
-              ↺ reset to agent read
-            </button>
-          )}
-        </div>
+    <button
+      type="button"
+      aria-expanded={active}
+      onClick={onClick}
+      className={`inline cursor-pointer items-baseline whitespace-nowrap rounded-sm border-b border-dashed px-0.5 transition-colors duration-100 ${color} ${
+        mono ? "font-mono tabular-nums" : ""
+      } ${active ? "border-solid bg-[#13203a]" : "hover:bg-[#0e1626]"}`}
+    >
+      {auto && (
+        <span
+          aria-hidden
+          title="Read by the agent from your chart"
+          className="mr-1 inline-block h-1.5 w-1.5 -translate-y-px rounded-full bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.7)]"
+        />
       )}
-    </div>
+      {children}
+    </button>
   );
 }
 
-function capitalize(value: string) {
-  return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+function EditorResetButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-300/80 transition hover:text-emerald-200"
+    >
+      ↺ agent read
+    </button>
+  );
 }
 
 function Metric({ label, value, flash }: { label: string; value: string; flash?: boolean }) {
