@@ -116,8 +116,8 @@ export default function Home() {
               </button>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-2 font-mono text-xs text-[#566278]">
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 text-emerald-200">
-                <span aria-hidden className="trade-live-dot h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_8px_rgba(110,231,183,0.8)]" />
+              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/30 bg-gradient-to-b from-emerald-400/15 to-emerald-400/5 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.18em] text-emerald-200 shadow-[inset_0_1px_0_rgba(110,231,183,0.18),0_0_14px_-4px_rgba(52,211,153,0.5)]">
+                <span aria-hidden className="trade-live-dot h-1 w-1 rounded-full bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.9)]" />
                 live
               </span>
               <span className="tabular-nums">
