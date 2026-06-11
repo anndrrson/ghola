@@ -8,7 +8,7 @@ const BARE_ROUTES = ["/chat", "/trade", "/signup", "/signin"];
 
 export function LayoutShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isBareRoute = BARE_ROUTES.some((r) => pathname.startsWith(r));
+  const isBareRoute = pathname === "/" || BARE_ROUTES.some((r) => pathname.startsWith(r));
 
   if (isBareRoute) {
     return <>{children}</>;

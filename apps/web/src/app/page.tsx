@@ -102,7 +102,7 @@ export default function Home() {
             <div className="flex flex-wrap items-center justify-center gap-3">
               <Link
                 href="/trade"
-                className="trade-action inline-flex h-12 items-center gap-2 rounded-md px-6 text-sm font-semibold"
+                className="trade-action inline-flex h-12 items-center gap-2 rounded-md pl-6 pr-4.5 text-sm font-semibold"
               >
                 Launch terminal
                 <ArrowRight className="h-4 w-4" />
@@ -154,7 +154,7 @@ export default function Home() {
             </h2>
             <Link
               href="/trade"
-              className="trade-action inline-flex h-12 items-center gap-2 rounded-md px-6 text-sm font-semibold"
+              className="trade-action inline-flex h-12 items-center gap-2 rounded-md pl-6 pr-4.5 text-sm font-semibold"
             >
               Launch terminal
               <ArrowRight className="h-4 w-4" />
