@@ -5,6 +5,13 @@ const THUMPER_API_BASE =
   process.env.NEXT_PUBLIC_THUMPER_API_URL ||
   "https://thumper-cloud.onrender.com";
 
+const GHOLA_EXECUTION_API_BASE =
+  process.env.GHOLA_EXECUTION_API_URL ||
+  process.env.GHOLA_TRADING_API_URL ||
+  process.env.NEXT_PUBLIC_GHOLA_GATEWAY_URL ||
+  process.env.NEXT_PUBLIC_GHOLA_API_URL ||
+  "https://ghola-gateway.onrender.com";
+
 const SESSION_COOKIE_NAME = "ghola_thumper_session";
 
 const NO_STORE_HEADERS = {
@@ -38,6 +45,20 @@ const FORWARDED_REQUEST_HEADERS = [
   "x-payment-rail",
 ];
 
+const GHOLA_EXECUTION_REQUEST_HEADERS = [
+  ...FORWARDED_REQUEST_HEADERS,
+  "idempotency-key",
+  "x-idempotency-key",
+  "x-ghola-account-id",
+  "x-ghola-api-key",
+  "x-ghola-client-order-id",
+  "x-ghola-idempotency-key",
+  "x-ghola-order-id",
+  "x-ghola-venue",
+];
+
+const GHOLA_EXECUTION_PATH_PREFIXES = new Set(["trading", "private-account"]);
+
 async function handle(req: NextRequest, pathParts: string[]) {
   const safePath = encodeSafePath(pathParts);
   if (!safePath) {
@@ -46,16 +67,16 @@ async function handle(req: NextRequest, pathParts: string[]) {
       { status: 400, headers: NO_STORE_HEADERS },
     );
   }
-  const upstreamUrl = `${THUMPER_API_BASE}/v1/${safePath}${req.nextUrl.search}`;
+  const upstreamTarget = resolveUpstream(pathParts, safePath, req.nextUrl.search);
   const sessionToken = req.cookies.get(SESSION_COOKIE_NAME)?.value;
   const method = req.method.toUpperCase();
 
   const headers = new Headers();
-  for (const name of FORWARDED_REQUEST_HEADERS) {
+  for (const name of upstreamTarget.forwardedHeaders) {
     const value = req.headers.get(name);
     if (value) headers.set(name, value);
   }
-  if (!headers.has("authorization") && sessionToken) {
+  if (upstreamTarget.sessionCookieAuth && !headers.has("authorization") && sessionToken) {
     if (!["GET", "HEAD", "OPTIONS"].includes(method) && !sameOrigin(req)) {
       return NextResponse.json(
         { error: "cross-site cookie-authenticated request rejected" },
@@ -69,7 +90,7 @@ async function handle(req: NextRequest, pathParts: string[]) {
   const body = bodyAllowed ? await req.arrayBuffer() : undefined;
   let upstream: Response;
   try {
-    upstream = await fetch(upstreamUrl, {
+    upstream = await fetch(upstreamTarget.url, {
       method,
       headers,
       body,
@@ -97,6 +118,32 @@ async function handle(req: NextRequest, pathParts: string[]) {
     statusText: upstream.statusText,
     headers: outHeaders,
   });
+}
+
+function resolveUpstream(
+  pathParts: string[],
+  safePath: string,
+  search: string,
+): { url: string; forwardedHeaders: string[]; sessionCookieAuth: boolean } {
+  const firstPart = pathParts[0]?.toLowerCase();
+  if (firstPart && GHOLA_EXECUTION_PATH_PREFIXES.has(firstPart)) {
+    return {
+      url: buildV1Url(GHOLA_EXECUTION_API_BASE, safePath, search),
+      forwardedHeaders: GHOLA_EXECUTION_REQUEST_HEADERS,
+      sessionCookieAuth: false,
+    };
+  }
+  return {
+    url: buildV1Url(THUMPER_API_BASE, safePath, search),
+    forwardedHeaders: FORWARDED_REQUEST_HEADERS,
+    sessionCookieAuth: true,
+  };
+}
+
+function buildV1Url(baseUrl: string, safePath: string, search: string): string {
+  const cleanBase = baseUrl.trim().replace(/\/+$/, "");
+  const v1Base = cleanBase.endsWith("/v1") ? cleanBase : `${cleanBase}/v1`;
+  return `${v1Base}/${safePath}${search}`;
 }
 
 function encodeSafePath(pathParts: string[]): string | null {
