@@ -1,17 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Gauge, LockKeyhole, ReceiptText } from "lucide-react";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import { GholaLogo } from "@/components/GholaLogo";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import {
-  decimateCandles,
   frameMidNumber,
   gholaFrameFromHyperliquid,
-  type GholaChartCandle,
   type GholaMarketFrame,
 } from "@/lib/ghola-market-chart";
 import type { HyperliquidMarketSnapshot } from "@/lib/private-account-client";
@@ -130,64 +128,6 @@ export default function Home() {
         </section>
 
         <section className="border-t border-[#141d2e]">
-          <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
-            <Link
-              href="/trade"
-              aria-label="Open the live trading terminal"
-              className="group mx-auto block max-w-xl transition-transform duration-200 hover:-translate-y-1"
-            >
-              <div className="trade-panel relative rounded-md p-4 shadow-[0_30px_80px_-30px_rgba(0,0,0,0.9)]">
-                <span aria-hidden className="trade-corners pointer-events-none absolute inset-0" />
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <span className="flex items-center gap-2 font-mono text-xs text-[#aab5c8]">
-                    <span aria-hidden className="trade-live-dot h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_8px_rgba(110,231,183,0.8)]" />
-                    BTC-PERP · 5m
-                  </span>
-                  <span className="font-mono text-sm tabular-nums text-[#f6f8ff]">
-                    {mid ? formatLandingPrice(mid) : ""}
-                  </span>
-                </div>
-                <LandingChart frame={frame} />
-                <div className="mt-4 rounded-md border border-[#1e2a3a] bg-[#070b12] p-3 shadow-[inset_0_1px_0_rgba(220,238,255,0.04)]">
-                  <div className="mb-2.5 flex items-center justify-between">
-                    <span className="text-[9px] font-semibold uppercase tracking-[0.24em] text-[#5aa7ff]/70">
-                      Mandate
-                    </span>
-                    <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-[#566278]">draft</span>
-                  </div>
-                  <div className="grid gap-1.5 text-sm text-[#7b88a1]">
-                    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
-                      <MiniChip tone="good">Buy $25</MiniChip>
-                      <span>of</span>
-                      <MiniChip>BTC-PERP</MiniChip>
-                      <span>when</span>
-                      <MiniChip>higher high + pullback</MiniChip>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
-                      <MiniChip>enter now</MiniChip>
-                      <span>at</span>
-                      <MiniChip mono>{mid ? formatLandingPrice(mid) : "61,500.0"}</MiniChip>
-                      <span className="text-[#3c4961]">·</span>
-                      <span>stop</span>
-                      <MiniChip tone="bad" mono>
-                        {mid ? formatLandingPrice(mid * 0.9925) : "61,038.0"}
-                      </MiniChip>
-                      <span className="text-[#3c4961]">·</span>
-                      <span>≤</span>
-                      <MiniChip tone="warn" mono>50 bps</MiniChip>
-                    </div>
-                  </div>
-                </div>
-                <div className="mt-3 flex items-center justify-end gap-1.5 text-xs text-[#5aa7ff] opacity-0 transition-opacity duration-200 group-hover:opacity-100">
-                  Open the live terminal
-                  <ArrowRight className="h-3.5 w-3.5" />
-                </div>
-              </div>
-            </Link>
-          </div>
-        </section>
-
-        <section className="border-t border-[#141d2e]">
           <div className="mx-auto grid max-w-6xl gap-4 px-4 py-14 sm:px-6 md:grid-cols-3">
             <PillarCard
               icon={LockKeyhole}
@@ -224,21 +164,6 @@ export default function Home() {
         </section>
       </main>
 
-      <footer className="border-t border-[#141d2e]">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-6 sm:px-6">
-          <div className="flex items-center gap-2 text-sm text-[#566278]">
-            <GholaLogo size={18} className="text-[#566278]" />
-            <span>ghola</span>
-          </div>
-          <div className="flex flex-wrap items-center gap-5 text-xs text-[#566278]">
-            <Link href="/trade" className="transition hover:text-[#eef1f8]">Terminal</Link>
-            <Link href="/private-balance" className="transition hover:text-[#eef1f8]">Balance</Link>
-            <Link href="/security/status" className="transition hover:text-[#eef1f8]">Security</Link>
-            <Link href="/privacy" className="transition hover:text-[#eef1f8]">Privacy</Link>
-            <Link href="/terms" className="transition hover:text-[#eef1f8]">Terms</Link>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 }
@@ -394,116 +319,7 @@ function AsciiMarketField() {
   return <canvas ref={canvasRef} aria-hidden className="absolute inset-0 h-full w-full" />;
 }
 
-function MiniChip({
-  tone,
-  mono,
-  children,
-}: {
-  tone?: "good" | "bad" | "warn";
-  mono?: boolean;
-  children: React.ReactNode;
-}) {
-  const color =
-    tone === "good"
-      ? "border-emerald-300/30 bg-emerald-300/8 text-emerald-200"
-      : tone === "bad"
-        ? "border-rose-300/30 bg-rose-300/8 text-rose-200"
-        : tone === "warn"
-          ? "border-[#f8e56b]/30 bg-[#f8e56b]/8 text-[#fff27a]"
-          : "border-[#5aa7ff]/30 bg-[#5aa7ff]/8 text-[#cfe2ff]";
-  return (
-    <span
-      className={`inline-flex items-center whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[13px] ${color} ${
-        mono ? "font-mono tabular-nums" : ""
-      }`}
-    >
-      {children}
-    </span>
-  );
-}
 
-function LandingChart({ frame }: { frame: GholaMarketFrame | null }) {
-  const candles = useMemo(() => decimateCandles(frame?.candles ?? [], 64), [frame]);
-  const width = 480;
-  const height = 200;
-  const layout = useMemo(() => {
-    const pad = { top: 10, right: 10, bottom: 10, left: 10 };
-    const prices = candles
-      .flatMap((candle) => [Number(candle.h), Number(candle.l)])
-      .filter((price) => Number.isFinite(price) && price > 0);
-    if (prices.length === 0) return null;
-    const min = Math.min(...prices);
-    const max = Math.max(...prices);
-    const span = Math.max(max - min, max * 0.001);
-    const plotW = width - pad.left - pad.right;
-    const plotH = height - pad.top - pad.bottom;
-    const x = (index: number) => pad.left + (index / Math.max(1, candles.length - 1)) * plotW;
-    const y = (price: number) => pad.top + ((max - price) / span) * plotH;
-    const candleW = Math.max(2.5, Math.min(7, (plotW / Math.max(1, candles.length)) * 0.6));
-    return { x, y, candleW };
-  }, [candles]);
-
-  if (!layout) {
-    return (
-      <div className="grid h-[200px] place-items-center rounded-md border border-[#152238] bg-[#05070b]">
-        <span className="font-mono text-xs text-[#566278]">connecting to market…</span>
-      </div>
-    );
-  }
-  const last = candles.at(-1);
-  const lastClose = last ? Number(last.c) : null;
-  const lastUp = last ? Number(last.c) >= Number(last.o) : true;
-  return (
-    <div className="overflow-hidden rounded-md border border-[#152238] bg-[#05070b]">
-      <svg viewBox={`0 0 ${width} ${height}`} className="block h-[200px] w-full" role="img" aria-label="Live BTC chart preview">
-        {[0.25, 0.5, 0.75].map((fraction) => (
-          <line
-            key={fraction}
-            x1="0"
-            x2={width}
-            y1={height * fraction}
-            y2={height * fraction}
-            stroke="#10182a"
-            strokeWidth="1"
-          />
-        ))}
-        {candles.map((candle: GholaChartCandle, index: number) => {
-          const x = layout.x(index);
-          const open = layout.y(Number(candle.o));
-          const close = layout.y(Number(candle.c));
-          const high = layout.y(Number(candle.h));
-          const low = layout.y(Number(candle.l));
-          const up = Number(candle.c) >= Number(candle.o);
-          return (
-            <g key={`${candle.t}-${index}`}>
-              <line x1={x} x2={x} y1={high} y2={low} stroke={up ? "#62d6a3" : "#f59aa0"} strokeWidth="1.1" />
-              <rect
-                x={x - layout.candleW / 2}
-                y={Math.min(open, close)}
-                width={layout.candleW}
-                height={Math.max(1.5, Math.abs(close - open))}
-                fill={up ? "#58d99a" : "#f08a93"}
-                rx="0.5"
-              />
-            </g>
-          );
-        })}
-        {lastClose != null && (
-          <line
-            x1="0"
-            x2={width}
-            y1={layout.y(lastClose)}
-            y2={layout.y(lastClose)}
-            stroke={lastUp ? "#34d399" : "#fb7185"}
-            strokeWidth="1"
-            strokeDasharray="2 4"
-            opacity="0.8"
-          />
-        )}
-      </svg>
-    </div>
-  );
-}
 
 function PillarCard({
   icon: Icon,
