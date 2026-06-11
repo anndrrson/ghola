@@ -183,13 +183,25 @@ function AsciiMarketField() {
 
     const CELL_W = 9;
     const CELL_H = 15;
-    const TICK_MS = 130;
+    // The tape prints deliberately; only a sparse shimmer animates between
+    // prints so the field breathes instead of boiling.
+    const MARCH_MS = 700;
+    const SHIMMER_MS = 140;
     const NOISE_GLYPHS = ["·", ".", ":", "<", ">", "+", "|", "/"];
     let raf = 0;
-    let lastTick = 0;
+    let lastMarch = 0;
+    let lastShimmer = 0;
+    let shimmerEpoch = 0;
     let cols = 0;
     let rows = 0;
-    type AsciiCandle = { o: number; c: number; h: number; l: number };
+    let noiseCells: Array<{ x: number; y: number; glyph: string; alpha: number }> = [];
+    type AsciiCandle = { o: number; c: number; h: number; l: number; seed: number };
+
+    // Deterministic per-cell hash so glyphs hold still between prints.
+    function cellHash(a: number, b: number, c: number): number {
+      const x = Math.sin(a * 127.1 + b * 311.7 + c * 74.7) * 43758.5453;
+      return x - Math.floor(x);
+    }
     type Walker = {
       price: number;
       center: number;
@@ -219,7 +231,18 @@ function AsciiMarketField() {
         c: close,
         h: Math.max(open, close) + Math.random() * walker.vol * 0.8,
         l: Math.min(open, close) - Math.random() * walker.vol * 0.8,
+        seed: Math.random() * 1000,
       };
+    }
+
+    function reseedNoise() {
+      const count = Math.floor(cols * rows * 0.012);
+      noiseCells = Array.from({ length: count }, () => ({
+        x: Math.floor(Math.random() * cols) * CELL_W,
+        y: Math.floor(Math.random() * rows) * CELL_H,
+        glyph: NOISE_GLYPHS[Math.floor(Math.random() * NOISE_GLYPHS.length)],
+        alpha: 0.04 + Math.random() * 0.08,
+      }));
     }
 
     function resize() {
@@ -234,6 +257,7 @@ function AsciiMarketField() {
         while (walker.series.length < cols) walker.series.push(step(walker));
         walker.series = walker.series.slice(-cols);
       }
+      reseedNoise();
       render();
     }
 
@@ -243,13 +267,10 @@ function AsciiMarketField() {
       ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
       ctx.textBaseline = "top";
 
-      // Sparse drifting noise so the whole field reads as alive code.
-      const noiseCount = Math.floor(cols * rows * 0.012);
-      for (let n = 0; n < noiseCount; n++) {
-        const x = Math.floor(Math.random() * cols) * CELL_W;
-        const y = Math.floor(Math.random() * rows) * CELL_H;
-        ctx.fillStyle = `rgba(120, 150, 195, ${0.04 + Math.random() * 0.08})`;
-        ctx.fillText(NOISE_GLYPHS[Math.floor(Math.random() * NOISE_GLYPHS.length)], x, y);
+      // Sparse static noise, reseeded only when the tape prints.
+      for (const cell of noiseCells) {
+        ctx.fillStyle = `rgba(120, 150, 195, ${cell.alpha})`;
+        ctx.fillText(cell.glyph, cell.x, cell.y);
       }
 
       for (const walker of walkers) {
@@ -264,10 +285,13 @@ function AsciiMarketField() {
           const bodyBottom = Math.floor((1 - Math.min(candle.o, candle.c)) * rows);
           for (let y = wickTop; y <= wickBottom; y++) {
             const inBody = y >= bodyTop && y <= bodyBottom;
-            const roll = Math.random();
+            // Stable per-cell glyph; a separate epoch-keyed roll lets ~2% of
+            // cells shimmer at any moment without the field boiling.
+            const roll = cellHash(candle.seed, y, 0);
+            const shimmer = cellHash(candle.seed, y, shimmerEpoch) > 0.98;
             let glyph = inBody ? (up ? "+" : "=") : "|";
             if (roll > 0.965) glyph = roll > 0.985 ? (up ? ">" : "<") : "·";
-            if (roll < 0.02) {
+            if (shimmer) {
               ctx.fillStyle = `rgba(190, 220, 255, ${0.5 * walker.alpha})`;
             } else if (inBody) {
               ctx.fillStyle = walker.colored
@@ -296,13 +320,22 @@ function AsciiMarketField() {
 
     function tick(now: number) {
       raf = requestAnimationFrame(tick);
-      if (now - lastTick < TICK_MS) return;
-      lastTick = now;
-      for (const walker of walkers) {
-        walker.series.push(step(walker));
-        if (walker.series.length > cols) walker.series.shift();
+      let dirty = false;
+      if (now - lastMarch >= MARCH_MS) {
+        lastMarch = now;
+        for (const walker of walkers) {
+          walker.series.push(step(walker));
+          if (walker.series.length > cols) walker.series.shift();
+        }
+        reseedNoise();
+        dirty = true;
       }
-      render();
+      if (now - lastShimmer >= SHIMMER_MS) {
+        lastShimmer = now;
+        shimmerEpoch += 1;
+        dirty = true;
+      }
+      if (dirty) render();
     }
 
     resize();
