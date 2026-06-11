@@ -152,7 +152,6 @@ export default function Home() {
             <h2 className="font-display text-2xl font-semibold tracking-tight text-[#f6f8ff] sm:text-3xl">
               The terminal is live.
             </h2>
-            <p className="max-w-md text-sm leading-6 text-[#8b95a8]">No signup needed to look around.</p>
             <Link
               href="/trade"
               className="trade-action inline-flex h-12 items-center gap-2 rounded-md px-6 text-sm font-semibold"
