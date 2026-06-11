@@ -78,32 +78,56 @@ type StopRule =
 const VENUES: Array<{
   id: VenueId;
   label: string;
-  product: string;
-  api: string;
+  markets: string[];
+  defaultMarket: string;
   chartVenue: GholaChartVenue;
 }> = [
   {
     id: "hyperliquid",
     label: "Hyperliquid",
-    product: "BTC-PERP",
-    api: "/v1/private-account/hyperliquid/market-snapshot?coin=BTC",
+    markets: ["BTC", "ETH", "SOL", "HYPE"],
+    defaultMarket: "BTC",
     chartVenue: "hyperliquid",
   },
   {
     id: "phoenix",
     label: "Phoenix",
-    product: "SOL-PERP",
-    api: "/v1/private-account/phoenix/market-snapshot?symbol=SOL",
+    markets: ["SOL"],
+    defaultMarket: "SOL",
     chartVenue: "phoenix",
   },
   {
     id: "coinbase",
     label: "Coinbase",
-    product: "BTC-USD",
-    api: "/v1/private-account/coinbase/market-snapshot?product_id=BTC-USD",
+    markets: ["BTC", "ETH", "SOL"],
+    defaultMarket: "BTC",
     chartVenue: "coinbase",
   },
 ];
+
+function venueProductLabel(venueId: VenueId, market: string) {
+  return venueId === "coinbase" ? `${market}-USD` : `${market}-PERP`;
+}
+
+function venueSnapshotUrl(venueId: VenueId, market: string, interval: ChartInterval) {
+  if (venueId === "hyperliquid") {
+    return `/v1/private-account/hyperliquid/market-snapshot?coin=${market}&interval=${interval}`;
+  }
+  if (venueId === "phoenix") {
+    return `/v1/private-account/phoenix/market-snapshot?symbol=${market}&interval=${interval}`;
+  }
+  return `/v1/private-account/coinbase/market-snapshot?product_id=${market}-USD&interval=${interval}`;
+}
+
+const FALLBACK_BASE_PRICE: Record<string, number> = { BTC: 63_500, ETH: 3_000, SOL: 158, HYPE: 40 };
+
+function amountBucket(notional: number): PrivateAccountSafeInput["amount_bucket"] {
+  if (notional <= 5) return "5";
+  if (notional <= 10) return "10";
+  if (notional <= 25) return "25";
+  if (notional <= 50) return "50";
+  return "100";
+}
 
 const STRATEGIES: Array<{ id: StrategyProfile; label: string; condition: string }> = [
   { id: "trend_following", label: "Trend follow", condition: "higher high + pullback" },
@@ -183,6 +207,7 @@ export default function TradePage() {
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [venueId, setVenueId] = useState<VenueId>("hyperliquid");
+  const [marketSel, setMarketSel] = useState("BTC");
   const [chartInterval, setChartInterval] = useState<ChartInterval>("5m");
   const [frame, setFrame] = useState<GholaMarketFrame | null>(null);
   const [loadingMarket, setLoadingMarket] = useState(true);
@@ -213,6 +238,7 @@ export default function TradePage() {
   const [bookOpen, setBookOpen] = useState(false);
   const [openRow, setOpenRow] = useState<string | null>(null);
   const venue = VENUES.find((item) => item.id === venueId) ?? VENUES[0];
+  const productLabel = venueProductLabel(venue.id, marketSel);
   const mid = frameMidNumber(frame);
   const [midFlash, setMidFlash] = useState(false);
   const prevMidRef = useRef<number | null>(null);
@@ -234,7 +260,7 @@ export default function TradePage() {
       setLoadingMarket(true);
       setMarketError(null);
       try {
-        const res = await fetch(`${venue.api}&interval=${chartInterval}`, { cache: "no-store" });
+        const res = await fetch(venueSnapshotUrl(venue.id, marketSel, chartInterval), { cache: "no-store" });
         if (!res.ok) throw new Error(`market_${res.status}`);
         const body = await res.json();
         const next =
@@ -246,7 +272,7 @@ export default function TradePage() {
         if (!cancelled) setFrame(next);
       } catch {
         if (!cancelled) {
-          setFrame(fallbackFrame(venue));
+          setFrame(fallbackFrame(venue, marketSel));
           setMarketError("fallback");
         }
       } finally {
@@ -259,7 +285,7 @@ export default function TradePage() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [venue, chartInterval]);
+  }, [venue, marketSel, chartInterval]);
 
   useEffect(() => {
     let cancelled = false;
@@ -302,7 +328,7 @@ export default function TradePage() {
 
   useEffect(() => {
     setPreview((current) => (current.status === "idle" ? current : { status: "idle" }));
-  }, [venueId, side, notional, slippageBps, strategy, entryTrigger, horizon, stopRule, entryPinned, stopPinned]);
+  }, [venueId, marketSel, side, notional, slippageBps, strategy, entryTrigger, horizon, stopRule, entryPinned, stopPinned]);
 
   const entryLevel = entryPrice ?? mid;
   const stopLevel = stopPinned && stopPrice != null
@@ -369,7 +395,7 @@ export default function TradePage() {
     return {
       venue_id: venue.id === "coinbase" ? "coinbase_advanced" : venue.id,
       operation_class: venue.id === "coinbase" ? "spot_limit_order" : "limit_order",
-      market: venue.product,
+      market: productLabel,
       side,
       base_size: venue.id === "hyperliquid" ? "0.001" : "0.01",
       quote_size: String(notional),
@@ -423,12 +449,13 @@ export default function TradePage() {
           ? "solana_perps_market"
           : "hyperliquid_style_market",
     product_bucket: venue.id === "coinbase" ? "provider" : "perps",
-    amount_bucket: (notional === 5 || notional === 10 || notional === 25 ? String(notional) : "10") as PrivateAccountSafeInput["amount_bucket"],
+    amount_bucket: amountBucket(notional),
     urgency: "maximum_privacy",
     destination_class: "platform_subaccount",
-    asset_bucket: venue.id === "phoenix" ? "SOL" : "BTC",
+    asset_bucket:
+      marketSel === "BTC" ? "BTC" : marketSel === "ETH" ? "ETH" : marketSel === "SOL" ? "SOL" : "major",
     solver_count_bucket: "1",
-  }), [notional, venue.id]);
+  }), [marketSel, notional, venue.id]);
 
   async function handlePreview() {
     if (preview.status === "working") return;
@@ -570,6 +597,7 @@ export default function TradePage() {
                   type="button"
                   onClick={() => {
                     setVenueId(item.id);
+                    setMarketSel(item.defaultMarket);
                     setEntryPinned(false);
                     setStopPinned(false);
                   }}
@@ -603,7 +631,7 @@ export default function TradePage() {
               <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-4 sm:px-6">
                 <div>
                   <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-[#5aa7ff]/80">{venue.label}</p>
-                  <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight text-[#f6f8ff]">{venue.product}</h1>
+                  <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight text-[#f6f8ff]">{productLabel}</h1>
                 </div>
                 <div className="grid grid-cols-2 gap-3 text-right sm:grid-cols-4">
                   <Metric label="Mid" value={formatPrice(mid)} flash={midFlash} />
@@ -657,7 +685,7 @@ export default function TradePage() {
                   <SlidersHorizontal className="h-4 w-4" />
                   Trade plan
                 </div>
-                <p className="mt-1 text-xs text-[#6f7d9a]">{venue.product} agent stack</p>
+                <p className="mt-1 text-xs text-[#6f7d9a]">{productLabel} agent stack</p>
               </div>
               <ReadinessBadge label={readyToPreview ? "Preview ready" : thumperAuth.authenticated ? "Connect venue" : "Sign in needed"} ready={readyToPreview} />
             </div>
@@ -687,7 +715,12 @@ export default function TradePage() {
                   {side === "buy" ? "Buy" : "Sell"} ${notional}
                 </Token>
                 <span>of</span>
-                <span className="font-medium text-[#eef1f8]">{venue.product}</span>
+                <Token
+                  active={openRow === "market"}
+                  onClick={() => setOpenRow(openRow === "market" ? null : "market")}
+                >
+                  {productLabel}
+                </Token>
               </div>
               <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
                 <span>when</span>
@@ -810,6 +843,20 @@ export default function TradePage() {
                   </span>
                 </div>
 
+                {openRow === "market" && (
+                  <ButtonGrid
+                    items={venue.markets.map((market) => ({
+                      id: market,
+                      label: venueProductLabel(venue.id, market),
+                    }))}
+                    selected={marketSel}
+                    onSelect={(market) => {
+                      setMarketSel(market);
+                      setEntryPinned(false);
+                      setStopPinned(false);
+                    }}
+                  />
+                )}
                 {openRow === "idea" && (
                   <ButtonGrid items={STRATEGIES} selected={strategy} onSelect={selectIdea} />
                 )}
@@ -889,8 +936,8 @@ export default function TradePage() {
                         </button>
                       ))}
                     </div>
-                    <div className="mt-2 grid grid-cols-3 gap-2">
-                      {[5, 10, 25].map((item) => (
+                    <div className="mt-2 grid grid-cols-4 gap-2">
+                      {[10, 25, 50, 100].map((item) => (
                         <button
                           key={item}
                           type="button"
@@ -902,6 +949,21 @@ export default function TradePage() {
                           ${item}
                         </button>
                       ))}
+                    </div>
+                    <div className="relative mt-2">
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 font-mono text-sm text-[#566278]">
+                        $
+                      </span>
+                      <input
+                        inputMode="numeric"
+                        aria-label="Amount in USD"
+                        value={String(notional)}
+                        onChange={(event) => {
+                          const next = Math.floor(Number(event.target.value.replaceAll(/[^0-9]/g, "")));
+                          if (Number.isFinite(next) && next > 0) setNotional(Math.min(next, 100_000));
+                        }}
+                        className="trade-field h-10 w-full rounded-md pl-7 pr-3 font-mono text-sm tabular-nums text-[#eef1f8] outline-none"
+                      />
                     </div>
                   </>
                 )}
@@ -1686,6 +1748,7 @@ function ButtonGrid<T extends string>({
 
 const TOKEN_TITLES: Record<string, string> = {
   size: "Side & size",
+  market: "Market",
   idea: "Trade idea",
   trigger: "Entry trigger",
   entry: "Entry price",
@@ -1959,9 +2022,9 @@ function formatCompact(value: string | null | undefined) {
   }).format(number);
 }
 
-function fallbackFrame(venue: typeof VENUES[number]): GholaMarketFrame {
+function fallbackFrame(venue: typeof VENUES[number], market: string): GholaMarketFrame {
   const now = Date.now();
-  const base = venue.id === "phoenix" ? 158 : 63_500;
+  const base = FALLBACK_BASE_PRICE[market] ?? 100;
   const candles = Array.from({ length: 90 }, (_, index) => {
     const t = now - (90 - index) * 300_000;
     const wave = Math.sin(index / 6) * base * 0.006 + Math.cos(index / 13) * base * 0.004;
@@ -1984,7 +2047,7 @@ function fallbackFrame(venue: typeof VENUES[number]): GholaMarketFrame {
   return {
     version: 1,
     venue: venue.chartVenue,
-    product: venue.product,
+    product: venueProductLabel(venue.id, market),
     interval: "5m",
     fetchedAt: new Date(now).toISOString(),
     stale: true,
