@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   Activity,
   ArrowRight,
+  Check,
   CheckCircle2,
   ChevronDown,
   KeyRound,
@@ -1735,10 +1736,11 @@ function ButtonGrid<T extends string>({
           key={item.id}
           type="button"
           onClick={() => onSelect(item.id)}
-          className={`min-h-10 rounded-md px-3 py-1.5 text-sm font-medium ${
+          className={`inline-flex min-h-10 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium ${
             selected === item.id ? "trade-chip-on" : "trade-chip"
           }`}
         >
+          {selected === item.id && <Check aria-hidden className="h-3.5 w-3.5 shrink-0 text-[#9ccfff]" />}
           {item.label}
         </button>
       ))}
