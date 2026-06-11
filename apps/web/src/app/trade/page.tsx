@@ -466,6 +466,14 @@ export default function TradePage() {
   const venueLiveStatus = venueStatus(liveStatus, venue.id);
   const readyToPreview = thumperAuth.authenticated && venueLiveStatus === "green";
 
+  const stopDistancePct = entryLevel && stopLevel ? Math.abs(entryLevel - stopLevel) / entryLevel : null;
+  const maxLossUsd = stopDistancePct != null ? notional * (stopDistancePct + slippageBps / 10_000) : null;
+  const worstFill = entryLevel
+    ? side === "buy"
+      ? entryLevel * (1 + slippageBps / 10_000)
+      : entryLevel * (1 - slippageBps / 10_000)
+    : null;
+
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -657,7 +665,19 @@ export default function TradePage() {
           </div>
 
           <div className="h-[calc(100vh-12rem)] overflow-y-auto p-5">
-            <div className="grid gap-2 text-[15px] text-[#7b88a1]">
+            <div className="trade-panel relative rounded-md p-4">
+              <span aria-hidden className="trade-corners pointer-events-none absolute inset-0" />
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <span className="text-[9px] font-semibold uppercase tracking-[0.24em] text-[#5aa7ff]/70">Mandate</span>
+                <span
+                  className={`font-mono text-[9px] uppercase tracking-[0.18em] ${
+                    preview.status === "done" ? "text-emerald-300" : "text-[#566278]"
+                  }`}
+                >
+                  {preview.status === "done" ? `sealed · ${preview.commitment.slice(0, 8)}` : "draft"}
+                </span>
+              </div>
+              <div className="grid gap-2 text-[15px] text-[#7b88a1]">
               <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
                 <Token
                   active={openRow === "size"}
@@ -698,50 +718,59 @@ export default function TradePage() {
                 </Token>
               </div>
               <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
-                <span>stop at</span>
-                <Token
-                  active={openRow === "stop"}
-                  auto={!stopPinned}
-                  tone="bad"
-                  mono
-                  onClick={() => setOpenRow(openRow === "stop" ? null : "stop")}
-                >
-                  {stopLevel ? formatPrice(stopLevel) : "not set"}
-                </Token>
+                <span className="inline-flex items-center gap-1.5">
+                  <span>stop at</span>
+                  <Token
+                    active={openRow === "stop"}
+                    auto={!stopPinned}
+                    tone="bad"
+                    mono
+                    onClick={() => setOpenRow(openRow === "stop" ? null : "stop")}
+                  >
+                    {stopLevel ? formatPrice(stopLevel) : "not set"}
+                  </Token>
+                </span>
                 <span className="text-[#3c4961]">·</span>
-                <span>slippage ≤</span>
-                <Token
-                  active={openRow === "slippage"}
-                  tone="warn"
-                  mono
-                  onClick={() => setOpenRow(openRow === "slippage" ? null : "slippage")}
-                >
-                  {slippageBps} bps
-                </Token>
+                <span className="inline-flex items-center gap-1.5">
+                  <span>slippage ≤</span>
+                  <Token
+                    active={openRow === "slippage"}
+                    tone="warn"
+                    mono
+                    onClick={() => setOpenRow(openRow === "slippage" ? null : "slippage")}
+                  >
+                    {slippageBps} bps
+                  </Token>
+                </span>
               </div>
               <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
-                <Token
-                  active={openRow === "horizon"}
-                  onClick={() => setOpenRow(openRow === "horizon" ? null : "horizon")}
-                >
-                  {HORIZONS.find((item) => item.id === horizon)?.label ?? horizon}
-                </Token>
-                <span>horizon</span>
+                <span className="inline-flex items-center gap-1.5">
+                  <Token
+                    active={openRow === "horizon"}
+                    onClick={() => setOpenRow(openRow === "horizon" ? null : "horizon")}
+                  >
+                    {HORIZONS.find((item) => item.id === horizon)?.label ?? horizon}
+                  </Token>
+                  <span>horizon</span>
+                </span>
                 <span className="text-[#3c4961]">·</span>
-                <Token
-                  active={openRow === "stoprule"}
-                  auto={!stopRuleManual}
-                  onClick={() => setOpenRow(openRow === "stoprule" ? null : "stoprule")}
-                >
-                  {(STOP_RULES.find((item) => item.id === stopRule)?.label ?? stopRule).toLowerCase()}
-                </Token>
-                <span>exit</span>
+                <span className="inline-flex items-center gap-1.5">
+                  <Token
+                    active={openRow === "stoprule"}
+                    auto={!stopRuleManual}
+                    onClick={() => setOpenRow(openRow === "stoprule" ? null : "stoprule")}
+                  >
+                    {(STOP_RULES.find((item) => item.id === stopRule)?.label ?? stopRule).toLowerCase()}
+                  </Token>
+                  <span>exit</span>
+                </span>
+              </div>
               </div>
             </div>
-            <p className="mt-3 text-[11px] leading-5 text-[#566278]">
-              This is your agent&apos;s read of the plan. Tap any highlighted term to change it, or
-              drag the lines on the chart.
-              <span className="text-emerald-300/80"> Green dots</span> mark what the agent inferred.
+            <p className="mt-2.5 text-[11px] leading-5 text-[#566278]">
+              Your agent&apos;s read of the plan — tap any highlighted term to change it, or drag the
+              lines on the chart.
+              <span className="text-emerald-300/80"> Green dots</span> mark what it inferred.
             </p>
             {openRow && (
               <div className="trade-panel mt-4 rounded-md p-3">
@@ -912,6 +941,42 @@ export default function TradePage() {
                 )}
               </div>
             )}
+
+            <div className="mt-6 border-t border-[#141d2e] pt-4">
+              <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#6b7997]">Risk</p>
+              <div className="mt-2.5 grid grid-cols-3 gap-2">
+                <div className="trade-field rounded-md px-2.5 py-2">
+                  <p className="text-[9px] uppercase tracking-[0.14em] text-[#566278]">Stop dist</p>
+                  <p className="mt-1 font-mono text-sm tabular-nums text-[#eef1f8]">
+                    {stopDistancePct != null ? `${(stopDistancePct * 100).toFixed(2)}%` : "-"}
+                  </p>
+                </div>
+                <div className="trade-field rounded-md px-2.5 py-2">
+                  <p className="text-[9px] uppercase tracking-[0.14em] text-[#566278]">Max loss</p>
+                  <p className="mt-1 font-mono text-sm tabular-nums text-rose-200">
+                    {maxLossUsd != null ? `$${maxLossUsd.toFixed(2)}` : "-"}
+                  </p>
+                </div>
+                <div className="trade-field rounded-md px-2.5 py-2">
+                  <p className="text-[9px] uppercase tracking-[0.14em] text-[#566278]">Worst fill</p>
+                  <p className="mt-1 font-mono text-sm tabular-nums text-[#fff27a]">
+                    {worstFill != null ? formatPrice(worstFill) : "-"}
+                  </p>
+                </div>
+              </div>
+              <p className="mt-2 text-[10px] leading-4 text-[#566278]">
+                Max loss assumes the stop fills with the full slippage cap. The agent cannot exceed it.
+              </p>
+            </div>
+
+            <div className="mt-5 border-t border-[#141d2e] pt-4">
+              <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#6b7997]">Visibility</p>
+              <div className="mt-2.5 grid gap-2">
+                <VisibilityRow label="Main wallet" value="never exposed" tone="good" />
+                <VisibilityRow label="Execution" value="sealed runtime" tone="good" />
+                <VisibilityRow label={`${venue.label} sees`} value="venue account + order" tone="warn" />
+              </div>
+            </div>
           </div>
 
           <div className="border-t border-[#182234] p-5">
@@ -1678,6 +1743,37 @@ function Token({
         className={`h-3 w-3 shrink-0 opacity-50 transition-transform ${active ? "rotate-180" : ""}`}
       />
     </button>
+  );
+}
+
+function VisibilityRow({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "good" | "warn";
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 text-xs">
+      <span className="text-[#7b88a1]">{label}</span>
+      <span
+        className={`flex items-center gap-1.5 font-mono ${
+          tone === "good" ? "text-emerald-200" : "text-amber-200"
+        }`}
+      >
+        <span
+          aria-hidden
+          className={`h-1.5 w-1.5 rounded-full ${
+            tone === "good"
+              ? "bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.7)]"
+              : "bg-amber-300 shadow-[0_0_6px_rgba(252,211,77,0.7)]"
+          }`}
+        />
+        {value}
+      </span>
+    </div>
   );
 }
 
