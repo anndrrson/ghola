@@ -126,17 +126,17 @@ const ENTRY_TRIGGERS: Array<{ id: EntryTrigger; label: string }> = [
   { id: "custom", label: "Custom rule" },
 ];
 
-// How each trigger reads inside the mandate sentence, ending just before
-// the entry price.
-const TRIGGER_PHRASES: Record<EntryTrigger, string> = {
-  preview_now: "enter now at",
-  break_level: "enter on a break of",
-  retest_level: "enter on a retest of",
-  sweep_reclaim: "enter on a reclaim of",
-  book_imbalance: "enter on a book shift near",
-  funding_mark_divergence: "enter on a funding edge near",
-  route_edge_threshold: "enter when the route improves near",
-  custom: "enter on a custom rule at",
+// How each trigger reads inside the mandate: the chip term, then the
+// connective that links it to the entry price.
+const TRIGGER_PHRASES: Record<EntryTrigger, { term: string; connective: string }> = {
+  preview_now: { term: "enter now", connective: "at" },
+  break_level: { term: "enter on a break", connective: "of" },
+  retest_level: { term: "enter on a retest", connective: "of" },
+  sweep_reclaim: { term: "enter on a reclaim", connective: "of" },
+  book_imbalance: { term: "enter on a book shift", connective: "near" },
+  funding_mark_divergence: { term: "enter on a funding edge", connective: "near" },
+  route_edge_threshold: { term: "enter when the route improves", connective: "near" },
+  custom: { term: "enter on a custom rule", connective: "at" },
 };
 
 const HORIZONS: Array<{ id: Horizon; label: string }> = [
@@ -657,76 +657,87 @@ export default function TradePage() {
           </div>
 
           <div className="h-[calc(100vh-12rem)] overflow-y-auto p-5">
-            <p className="text-[15px] leading-9 text-[#8b95a8]">
-              <Token
-                active={openRow === "size"}
-                tone={side === "buy" ? "good" : "bad"}
-                onClick={() => setOpenRow(openRow === "size" ? null : "size")}
-              >
-                {side === "buy" ? "Buy" : "Sell"} ${notional}
-              </Token>
-              {" of "}
-              <span className="font-medium text-[#eef1f8]">{venue.product}</span>
-              {" when "}
-              <Token
-                active={openRow === "idea"}
-                auto={!ideaManual}
-                onClick={() => setOpenRow(openRow === "idea" ? null : "idea")}
-              >
-                {selectedStrategy(STRATEGIES, strategy).condition}
-              </Token>
-              {" — "}
-              <Token
-                active={openRow === "trigger"}
-                auto={!triggerManual}
-                onClick={() => setOpenRow(openRow === "trigger" ? null : "trigger")}
-              >
-                {TRIGGER_PHRASES[entryTrigger]}
-              </Token>{" "}
-              <Token
-                active={openRow === "entry"}
-                auto={!entryPinned}
-                mono
-                onClick={() => setOpenRow(openRow === "entry" ? null : "entry")}
-              >
-                {formatPrice(entryPrice ?? mid)}
-              </Token>
-              {", stop at "}
-              <Token
-                active={openRow === "stop"}
-                auto={!stopPinned}
-                tone="bad"
-                mono
-                onClick={() => setOpenRow(openRow === "stop" ? null : "stop")}
-              >
-                {stopLevel ? formatPrice(stopLevel) : "not set"}
-              </Token>
-              {", slippage ≤ "}
-              <Token
-                active={openRow === "slippage"}
-                tone="warn"
-                mono
-                onClick={() => setOpenRow(openRow === "slippage" ? null : "slippage")}
-              >
-                {slippageBps} bps
-              </Token>
-              {". "}
-              <Token
-                active={openRow === "horizon"}
-                onClick={() => setOpenRow(openRow === "horizon" ? null : "horizon")}
-              >
-                {HORIZONS.find((item) => item.id === horizon)?.label ?? horizon}
-              </Token>
-              {" horizon, "}
-              <Token
-                active={openRow === "stoprule"}
-                auto={!stopRuleManual}
-                onClick={() => setOpenRow(openRow === "stoprule" ? null : "stoprule")}
-              >
-                {(STOP_RULES.find((item) => item.id === stopRule)?.label ?? stopRule).toLowerCase()}
-              </Token>
-              {" exit."}
-            </p>
+            <div className="grid gap-2 text-[15px] text-[#7b88a1]">
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
+                <Token
+                  active={openRow === "size"}
+                  tone={side === "buy" ? "good" : "bad"}
+                  onClick={() => setOpenRow(openRow === "size" ? null : "size")}
+                >
+                  {side === "buy" ? "Buy" : "Sell"} ${notional}
+                </Token>
+                <span>of</span>
+                <span className="font-medium text-[#eef1f8]">{venue.product}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
+                <span>when</span>
+                <Token
+                  active={openRow === "idea"}
+                  auto={!ideaManual}
+                  onClick={() => setOpenRow(openRow === "idea" ? null : "idea")}
+                >
+                  {selectedStrategy(STRATEGIES, strategy).condition}
+                </Token>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
+                <Token
+                  active={openRow === "trigger"}
+                  auto={!triggerManual}
+                  onClick={() => setOpenRow(openRow === "trigger" ? null : "trigger")}
+                >
+                  {TRIGGER_PHRASES[entryTrigger].term}
+                </Token>
+                <span>{TRIGGER_PHRASES[entryTrigger].connective}</span>
+                <Token
+                  active={openRow === "entry"}
+                  auto={!entryPinned}
+                  mono
+                  onClick={() => setOpenRow(openRow === "entry" ? null : "entry")}
+                >
+                  {formatPrice(entryPrice ?? mid)}
+                </Token>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
+                <span>stop at</span>
+                <Token
+                  active={openRow === "stop"}
+                  auto={!stopPinned}
+                  tone="bad"
+                  mono
+                  onClick={() => setOpenRow(openRow === "stop" ? null : "stop")}
+                >
+                  {stopLevel ? formatPrice(stopLevel) : "not set"}
+                </Token>
+                <span className="text-[#3c4961]">·</span>
+                <span>slippage ≤</span>
+                <Token
+                  active={openRow === "slippage"}
+                  tone="warn"
+                  mono
+                  onClick={() => setOpenRow(openRow === "slippage" ? null : "slippage")}
+                >
+                  {slippageBps} bps
+                </Token>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5">
+                <Token
+                  active={openRow === "horizon"}
+                  onClick={() => setOpenRow(openRow === "horizon" ? null : "horizon")}
+                >
+                  {HORIZONS.find((item) => item.id === horizon)?.label ?? horizon}
+                </Token>
+                <span>horizon</span>
+                <span className="text-[#3c4961]">·</span>
+                <Token
+                  active={openRow === "stoprule"}
+                  auto={!stopRuleManual}
+                  onClick={() => setOpenRow(openRow === "stoprule" ? null : "stoprule")}
+                >
+                  {(STOP_RULES.find((item) => item.id === stopRule)?.label ?? stopRule).toLowerCase()}
+                </Token>
+                <span>exit</span>
+              </div>
+            </div>
             <p className="mt-3 text-[11px] leading-5 text-[#566278]">
               This is your agent&apos;s read of the plan. Tap any highlighted term to change it, or
               drag the lines on the chart.
@@ -1650,7 +1661,7 @@ function Token({
       type="button"
       aria-expanded={active}
       onClick={onClick}
-      className={`inline cursor-pointer items-baseline whitespace-nowrap rounded-md border px-1.5 py-0.5 align-baseline transition-colors duration-100 ${color} ${
+      className={`inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 transition-colors duration-100 ${color} ${
         mono ? "font-mono tabular-nums" : ""
       } ${active ? "shadow-[0_0_0_1px_rgba(90,167,255,0.35),0_0_14px_-4px_rgba(90,167,255,0.5)]" : ""}`}
     >
@@ -1658,13 +1669,13 @@ function Token({
         <span
           aria-hidden
           title="Read by the agent from your chart"
-          className="mr-1 inline-block h-1.5 w-1.5 -translate-y-px rounded-full bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.7)]"
+          className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.7)]"
         />
       )}
       {children}
       <ChevronDown
         aria-hidden
-        className={`ml-1 inline h-3 w-3 -translate-y-px opacity-50 transition-transform ${active ? "rotate-180" : ""}`}
+        className={`h-3 w-3 shrink-0 opacity-50 transition-transform ${active ? "rotate-180" : ""}`}
       />
     </button>
   );
