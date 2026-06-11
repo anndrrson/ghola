@@ -657,7 +657,7 @@ export default function TradePage() {
           </div>
 
           <div className="h-[calc(100vh-12rem)] overflow-y-auto p-5">
-            <p className="text-[15px] leading-8 text-[#8b95a8]">
+            <p className="text-[15px] leading-9 text-[#8b95a8]">
               <Token
                 active={openRow === "size"}
                 tone={side === "buy" ? "good" : "bad"}
@@ -728,8 +728,8 @@ export default function TradePage() {
               {" exit."}
             </p>
             <p className="mt-3 text-[11px] leading-5 text-[#566278]">
-              This is your agent&apos;s read of the plan. Tap any underlined term to change it, or drag
-              the lines on the chart.
+              This is your agent&apos;s read of the plan. Tap any highlighted term to change it, or
+              drag the lines on the chart.
               <span className="text-emerald-300/80"> Green dots</span> mark what the agent inferred.
             </p>
             {openRow && (
@@ -1619,8 +1619,9 @@ const TOKEN_TITLES: Record<string, string> = {
   stoprule: "Stop rule",
 };
 
-// An editable term inside the mandate sentence. Dashed underline marks it
-// as tappable; the dot marks values the agent inferred from the chart.
+// An editable term inside the mandate sentence, styled as an inline chip:
+// soft fill, border, and a caret so it unmistakably reads as a control.
+// The dot marks values the agent inferred from the chart.
 function Token({
   active,
   auto,
@@ -1638,20 +1639,20 @@ function Token({
 }) {
   const color =
     tone === "good"
-      ? "border-emerald-300/50 text-emerald-200"
+      ? "border-emerald-300/30 bg-emerald-300/8 text-emerald-200 hover:border-emerald-300/60 hover:bg-emerald-300/15"
       : tone === "bad"
-        ? "border-rose-300/50 text-rose-200"
+        ? "border-rose-300/30 bg-rose-300/8 text-rose-200 hover:border-rose-300/60 hover:bg-rose-300/15"
         : tone === "warn"
-          ? "border-[#f8e56b]/50 text-[#fff27a]"
-          : "border-[#5aa7ff]/50 text-[#cfe2ff]";
+          ? "border-[#f8e56b]/30 bg-[#f8e56b]/8 text-[#fff27a] hover:border-[#f8e56b]/60 hover:bg-[#f8e56b]/15"
+          : "border-[#5aa7ff]/30 bg-[#5aa7ff]/8 text-[#cfe2ff] hover:border-[#5aa7ff]/60 hover:bg-[#5aa7ff]/15";
   return (
     <button
       type="button"
       aria-expanded={active}
       onClick={onClick}
-      className={`inline cursor-pointer items-baseline whitespace-nowrap rounded-sm border-b border-dashed px-0.5 transition-colors duration-100 ${color} ${
+      className={`inline cursor-pointer items-baseline whitespace-nowrap rounded-md border px-1.5 py-0.5 align-baseline transition-colors duration-100 ${color} ${
         mono ? "font-mono tabular-nums" : ""
-      } ${active ? "border-solid bg-[#13203a]" : "hover:bg-[#0e1626]"}`}
+      } ${active ? "shadow-[0_0_0_1px_rgba(90,167,255,0.35),0_0_14px_-4px_rgba(90,167,255,0.5)]" : ""}`}
     >
       {auto && (
         <span
@@ -1661,6 +1662,10 @@ function Token({
         />
       )}
       {children}
+      <ChevronDown
+        aria-hidden
+        className={`ml-1 inline h-3 w-3 -translate-y-px opacity-50 transition-transform ${active ? "rotate-180" : ""}`}
+      />
     </button>
   );
 }
