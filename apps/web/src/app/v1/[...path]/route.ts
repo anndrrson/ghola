@@ -13,6 +13,10 @@ const GHOLA_EXECUTION_API_BASE =
   "https://ghola-gateway.onrender.com";
 
 const SESSION_COOKIE_NAME = "ghola_thumper_session";
+const GHOLA_EXECUTION_SESSION_COOKIE_NAME =
+  process.env.GHOLA_EXECUTION_SESSION_COOKIE_NAME || "ghola_exec_session";
+const GHOLA_BACKEND_APP_SESSION_COOKIE_NAME =
+  process.env.GHOLA_BACKEND_APP_SESSION_COOKIE_NAME || "ghola_session";
 
 const NO_STORE_HEADERS = {
   "Cache-Control": "no-store, max-age=0",
@@ -57,7 +61,7 @@ const GHOLA_EXECUTION_REQUEST_HEADERS = [
   "x-ghola-venue",
 ];
 
-const GHOLA_EXECUTION_PATH_PREFIXES = new Set(["trading", "private-account"]);
+const GHOLA_EXECUTION_PATH_PREFIXES = new Set(["trading", "private-account", "onboarding"]);
 
 async function handle(req: NextRequest, pathParts: string[]) {
   const safePath = encodeSafePath(pathParts);
@@ -84,6 +88,21 @@ async function handle(req: NextRequest, pathParts: string[]) {
       );
     }
     headers.set("authorization", `Bearer ${sessionToken}`);
+  }
+  if (upstreamTarget.appSessionCookieAuth) {
+    const executionSessionToken = req.cookies.get(GHOLA_EXECUTION_SESSION_COOKIE_NAME)?.value;
+    if (executionSessionToken) {
+      if (!["GET", "HEAD", "OPTIONS"].includes(method) && !sameOrigin(req)) {
+        return NextResponse.json(
+          { error: "cross-site app-session request rejected" },
+          { status: 403, headers: NO_STORE_HEADERS },
+        );
+      }
+      headers.set(
+        "cookie",
+        `${GHOLA_BACKEND_APP_SESSION_COOKIE_NAME}=${encodeURIComponent(executionSessionToken)}`,
+      );
+    }
   }
 
   const bodyAllowed = !["GET", "HEAD"].includes(method);
@@ -124,19 +143,24 @@ function resolveUpstream(
   pathParts: string[],
   safePath: string,
   search: string,
-): { url: string; forwardedHeaders: string[]; sessionCookieAuth: boolean } {
+): { url: string; forwardedHeaders: string[]; sessionCookieAuth: boolean; appSessionCookieAuth: boolean } {
   const firstPart = pathParts[0]?.toLowerCase();
   if (firstPart && GHOLA_EXECUTION_PATH_PREFIXES.has(firstPart)) {
+    const appSessionCookieAuth =
+      pathParts[0]?.toLowerCase() === "trading" &&
+      pathParts[1]?.toLowerCase() === "app";
     return {
       url: buildV1Url(GHOLA_EXECUTION_API_BASE, safePath, search),
       forwardedHeaders: GHOLA_EXECUTION_REQUEST_HEADERS,
       sessionCookieAuth: false,
+      appSessionCookieAuth,
     };
   }
   return {
     url: buildV1Url(THUMPER_API_BASE, safePath, search),
     forwardedHeaders: FORWARDED_REQUEST_HEADERS,
     sessionCookieAuth: true,
+    appSessionCookieAuth: false,
   };
 }
 

@@ -179,4 +179,83 @@ describe("v1 execution proxy routing", () => {
       JSON.stringify({ symbol: "SOL-PERP", side: "buy" }),
     );
   });
+
+  it("routes onboarding through the Ghola execution gateway", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ products: [] }), { status: 200 }));
+
+    const res = await GET(
+      request("https://ghola.test/v1/onboarding/products", {
+        method: "GET",
+        headers: { accept: "application/json" },
+      }),
+      {
+        params: Promise.resolve({
+          path: ["onboarding", "products"],
+        }),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(forwardedUrl(fetchSpy)).toBe(
+      "https://ghola-gateway.onrender.com/v1/onboarding/products",
+    );
+    expect(forwardedHeaders(fetchSpy).get("accept")).toBe("application/json");
+  });
+
+  it("forwards the private app session cookie only for trading app routes", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 201 }));
+
+    const res = await POST(
+      request("https://ghola.test/v1/trading/app/execute", {
+        method: "POST",
+        headers: {
+          origin: "https://ghola.test",
+          "content-type": "application/json",
+          cookie: "ghola_exec_session=exec-session-token; ghola_thumper_session=web-session",
+        },
+        body: JSON.stringify({ csrfToken: "csrf", orderIntent: { symbol: "BTC-USD" } }),
+      }),
+      {
+        params: Promise.resolve({
+          path: ["trading", "app", "execute"],
+        }),
+      },
+    );
+
+    expect(res.status).toBe(201);
+    expect(forwardedUrl(fetchSpy)).toBe(
+      "https://ghola-gateway.onrender.com/v1/trading/app/execute",
+    );
+    const headers = forwardedHeaders(fetchSpy);
+    expect(headers.get("cookie")).toBe("ghola_session=exec-session-token");
+    expect(headers.get("authorization")).toBeNull();
+  });
+
+  it("rejects cross-site app-session trading posts before proxying", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const res = await POST(
+      request("https://ghola.test/v1/trading/app/execute", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: "ghola_exec_session=exec-session-token",
+        },
+        body: "{}",
+      }),
+      {
+        params: Promise.resolve({
+          path: ["trading", "app", "execute"],
+        }),
+      },
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: "cross-site app-session request rejected" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });

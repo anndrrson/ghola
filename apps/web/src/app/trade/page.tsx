@@ -50,6 +50,11 @@ import { handleTwitterSession } from "@/lib/thumper-api";
 type VenueId = "hyperliquid" | "phoenix" | "coinbase";
 type Side = "buy" | "sell";
 type ChartInterval = "1m" | "5m" | "15m" | "1h";
+type LiveExecutionState =
+  | { status: "idle" }
+  | { status: "working"; stage: "session" | "linking" | "submitting" }
+  | { status: "done"; runStatus: string; commitment: string; orderId?: string | null }
+  | { status: "error"; message: string };
 
 const CHART_INTERVALS: ChartInterval[] = ["1m", "5m", "15m", "1h"];
 type EntryTrigger =
@@ -236,6 +241,8 @@ export default function TradePage() {
     | { status: "done"; commitment: string }
     | { status: "error"; message: string }
   >({ status: "idle" });
+  const [liveExecution, setLiveExecution] = useState<LiveExecutionState>({ status: "idle" });
+  const [signedPayloadText, setSignedPayloadText] = useState("");
   const [bookOpen, setBookOpen] = useState(false);
   const [openRow, setOpenRow] = useState<string | null>(null);
   const venue = VENUES.find((item) => item.id === venueId) ?? VENUES[0];
@@ -329,6 +336,7 @@ export default function TradePage() {
 
   useEffect(() => {
     setPreview((current) => (current.status === "idle" ? current : { status: "idle" }));
+    setLiveExecution((current) => (current.status === "idle" ? current : { status: "idle" }));
   }, [venueId, marketSel, side, notional, slippageBps, strategy, entryTrigger, horizon, stopRule, entryPinned, stopPinned]);
 
   const entryLevel = entryPrice ?? mid;
@@ -483,6 +491,83 @@ export default function TradePage() {
     }
   }
 
+  async function handleExecuteLive() {
+    if (liveExecution.status === "working") return;
+    if (!thumperAuth.authenticated) {
+      openAuth("signin");
+      return;
+    }
+    setLiveExecution({ status: "working", stage: "session" });
+    try {
+      const signedMaterial = parseSignedExecutionPayload(venue.id, signedPayloadText);
+      if (venue.id !== "coinbase" && Object.keys(signedMaterial).length === 0) {
+        throw new Error(`${venue.label} requires a signed payload before live submit.`);
+      }
+      const sessionRes = await fetch("/api/trading/session", {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      const sessionBody = await sessionRes.json().catch(() => ({})) as {
+        appSession?: { csrfToken?: string };
+        error?: string;
+      };
+      if (!sessionRes.ok || !sessionBody.appSession?.csrfToken) {
+        throw new Error(sessionBody.error || "Trading session unavailable");
+      }
+
+      setLiveExecution({ status: "working", stage: "linking" });
+      const venueIds = liveExecutionVenueIds(venue.id, signedMaterial);
+      const executionBody = await buildLiveExecutionBody({
+        csrfToken: sessionBody.appSession.csrfToken,
+        venueIds,
+        venueId: venue.id,
+        webUserId: thumperAuth.user?.id || "web-user",
+        market: marketSel,
+        productLabel,
+        side,
+        notional,
+        entryPrice: entryLevel,
+        slippageBps,
+        signedMaterial,
+      });
+
+      setLiveExecution({ status: "working", stage: "submitting" });
+      const executeRes = await fetch("/v1/trading/app/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify(executionBody),
+      });
+      const executeBody = await executeRes.json().catch(() => ({})) as {
+        appLiveTradingExecutionRun?: {
+          status?: string;
+          gholaAppLiveTradingExecutionRunCommitment?: string;
+          liveTradingOrder?: { orderId?: string };
+        };
+        error?: string;
+        failure?: { error?: string };
+      };
+      if (!executeRes.ok || !executeBody.appLiveTradingExecutionRun) {
+        const detail = executeBody.failure?.error || executeBody.error || `Execution failed ${executeRes.status}`;
+        throw new Error(detail);
+      }
+      const run = executeBody.appLiveTradingExecutionRun;
+      setLiveExecution({
+        status: "done",
+        runStatus: run.status || "submitted",
+        commitment: run.gholaAppLiveTradingExecutionRunCommitment || "",
+        orderId: run.liveTradingOrder?.orderId || null,
+      });
+    } catch (error) {
+      setLiveExecution({
+        status: "error",
+        message: error instanceof Error ? error.message : "Live execution failed",
+      });
+    }
+  }
+
   const slippageBand = useMemo(() => {
     const price = entryPrice ?? mid;
     if (!price) return "Waiting";
@@ -493,6 +578,9 @@ export default function TradePage() {
 
   const venueLiveStatus = venueStatus(liveStatus, venue.id);
   const readyToPreview = thumperAuth.authenticated && venueLiveStatus === "green";
+  const userSignedPayloadRequired = venue.id !== "coinbase";
+  const liveWorking = liveExecution.status === "working";
+  const readyToExecute = thumperAuth.authenticated && (!userSignedPayloadRequired || signedPayloadText.trim().length > 0);
 
   const stopDistancePct = entryLevel && stopLevel ? Math.abs(entryLevel - stopLevel) / entryLevel : null;
   const maxLossUsd = stopDistancePct != null ? notional * (stopDistancePct + slippageBps / 10_000) : null;
@@ -1040,6 +1128,21 @@ export default function TradePage() {
                 <VisibilityRow label={`${venue.label} sees`} value="venue account + order" tone="warn" />
               </div>
             </div>
+            {userSignedPayloadRequired && (
+              <div className="mt-5 border-t border-[#141d2e] pt-4">
+                <label className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#6b7997]" htmlFor="signed-live-payload">
+                  Signed payload
+                </label>
+                <textarea
+                  id="signed-live-payload"
+                  value={signedPayloadText}
+                  onChange={(event) => setSignedPayloadText(event.target.value)}
+                  spellCheck={false}
+                  className="trade-field mt-2 h-24 w-full resize-none rounded-md px-3 py-2 font-mono text-xs leading-5 text-[#eef1f8] outline-none"
+                  placeholder={venue.id === "phoenix" ? "signedTransactionBase64" : "signedAction JSON"}
+                />
+              </div>
+            )}
           </div>
 
           <div className="border-t border-[#182234] p-5">
@@ -1081,6 +1184,35 @@ export default function TradePage() {
                   {preview.status === "error" && (
                     <p className="text-xs leading-5 text-rose-300">{preview.message}</p>
                   )}
+                  <button
+                    type="button"
+                    onClick={handleExecuteLive}
+                    disabled={liveWorking || !readyToExecute}
+                    className="trade-action flex h-12 items-center justify-center gap-2 rounded-md text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {liveWorking ? (
+                      <RefreshCcw className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <ShieldCheck className="h-4 w-4" />
+                    )}
+                    {liveWorking
+                      ? liveExecution.stage === "session"
+                        ? "Opening trading session"
+                        : liveExecution.stage === "linking"
+                          ? "Linking venue"
+                          : "Submitting live order"
+                      : "Execute live"}
+                  </button>
+                  {liveExecution.status === "done" && (
+                    <p className="flex items-center gap-1.5 font-mono text-xs text-emerald-200">
+                      <Check className="h-3.5 w-3.5" />
+                      {liveExecution.runStatus}
+                      {liveExecution.commitment ? ` · ${liveExecution.commitment.slice(0, 14)}…` : ""}
+                    </p>
+                  )}
+                  {liveExecution.status === "error" && (
+                    <p className="text-xs leading-5 text-rose-300">{liveExecution.message}</p>
+                  )}
                 </>
               )}
               <button
@@ -1097,6 +1229,136 @@ export default function TradePage() {
       </main>
     </div>
   );
+}
+
+interface BuildLiveExecutionBodyInput {
+  csrfToken: string;
+  venueIds: VenueId[];
+  venueId: VenueId;
+  webUserId: string;
+  market: string;
+  productLabel: string;
+  side: Side;
+  notional: number;
+  entryPrice: number | null;
+  slippageBps: number;
+  signedMaterial: Record<string, unknown>;
+}
+
+function parseSignedExecutionPayload(venueId: VenueId, value: string): Record<string, unknown> {
+  const trimmed = value.trim();
+  if (!trimmed) return {};
+  if (venueId === "phoenix" && !trimmed.startsWith("{")) {
+    return { signedTransactionBase64: trimmed };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    if (venueId === "phoenix") return { signedTransactionBase64: trimmed };
+    throw new Error("Signed payload must be valid JSON.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (venueId === "phoenix" && typeof parsed === "string") return { signedTransactionBase64: parsed };
+    throw new Error("Signed payload must be an object.");
+  }
+  const record = parsed as Record<string, unknown>;
+  if (venueId === "hyperliquid" && record.action && record.signature) {
+    return { signedAction: record };
+  }
+  return record;
+}
+
+function liveExecutionVenueIds(selectedVenueId: VenueId, signedMaterial: Record<string, unknown>): VenueId[] {
+  const raw = Array.isArray(signedMaterial.venueIds)
+    ? signedMaterial.venueIds
+    : Array.isArray(signedMaterial.venues)
+      ? signedMaterial.venues
+      : [];
+  const venues = raw
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter((value): value is VenueId => value === "hyperliquid" || value === "phoenix" || value === "coinbase");
+  return Array.from(new Set(venues.length ? venues : [selectedVenueId]));
+}
+
+async function buildLiveExecutionBody(input: BuildLiveExecutionBodyInput): Promise<Record<string, unknown>> {
+  const price = input.entryPrice && input.entryPrice > 0 ? input.entryPrice : 0;
+  const baseSize = price > 0 ? decimalForOrderSize(input.notional / price) : "0.001";
+  const limitPrice = price > 0 ? price.toFixed(price >= 1_000 ? 1 : 2) : "";
+  const idempotencyKey = `trade-${Date.now()}-${crypto.randomUUID()}`;
+  const executionCredentialHandleCommitmentsByVenue: Partial<Record<VenueId, string>> = {};
+  for (const venueId of input.venueIds) {
+    executionCredentialHandleCommitmentsByVenue[venueId] = await objectHashHex({
+      type: "ghola_trade_page_execution_credential_handle_v1",
+      webUserId: input.webUserId,
+      venueId,
+    });
+  }
+
+  const body: Record<string, unknown> = {
+    ...input.signedMaterial,
+    csrfToken: input.csrfToken,
+    venueIds: input.venueIds,
+    ensureWallet: input.venueIds.includes("phoenix"),
+    executionCredentialHandleCommitmentsByVenue,
+    idempotencyKey,
+    submit: true,
+    refreshAfterSubmit: true,
+    fetchFills: true,
+    cancelIfOpen: false,
+    orderIntent: {
+      idempotencyKey,
+      venueIds: input.venueIds,
+      symbol: input.venueId === "hyperliquid" ? input.market : input.productLabel,
+      productId: input.venueIds.includes("coinbase") ? `${input.market}-USD` : input.productLabel,
+      side: input.side,
+      orderType: "limit",
+      baseSize,
+      quoteSize: decimalForOrderSize(input.notional),
+      limitPrice,
+      slippageBps: String(input.slippageBps),
+    },
+  };
+
+  if (input.venueIds.includes("hyperliquid")) {
+    body.hyperliquidAccountCommitment = await objectHashHex({
+      type: "ghola_trade_page_hyperliquid_account_commitment_v1",
+      webUserId: input.webUserId,
+    });
+  }
+  if (input.venueIds.includes("coinbase")) {
+    body.coinbaseAccountCommitment = await objectHashHex({
+      type: "ghola_trade_page_coinbase_account_commitment_v1",
+      webUserId: input.webUserId,
+    });
+  }
+
+  return body;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`;
+}
+
+async function objectHashHex(value: unknown): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(stableStringify(value)),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function decimalForOrderSize(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0.001";
+  return value.toFixed(8).replace(/\.?0+$/g, "");
 }
 
 const CHART_FONT = "ui-monospace, SFMono-Regular, Menlo, monospace";
