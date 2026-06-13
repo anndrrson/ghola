@@ -67,8 +67,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  WORKER_IMAGE: ghcr.io/anndrrson/ghola:private-agent-worker-61bad2a
-  WORKER_IMAGE_DIGEST: sha256:45ad83b0ba21655f4a106f54ee0e967c63fced20404f30e0b32018e6f9c442ae
+  WORKER_IMAGE: ghcr.io/anndrrson/ghola:private-agent-worker-b437850
+  WORKER_IMAGE_DIGEST: sha256:02a680c6a274801f4f37b16205253ba1259596237efae5f469737621d51211b0
 
 jobs:
   launch:
@@ -207,7 +207,7 @@ jobs:
             setenv GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED "true"
             setenv GHOLA_PRIVATE_AGENT_SPEND_ARMED "false"
           fi
-          setenv GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME "ghola-private-agent-worker-61bad2a"
+          setenv GHOLA_PHALA_PRIVATE_AGENT_CVM_NAME "ghola-private-agent-worker-b437850"
           setenv GHOLA_PRIVATE_AGENT_WORKER_IMAGE "$WORKER_IMAGE"
           setenv GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST "$WORKER_IMAGE_DIGEST"
           setenv GHOLA_V6_HYPERLIQUID_PILOT_ENABLED "true"
@@ -301,7 +301,7 @@ jobs:
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           PHALA_CLOUD_API_PREFIX: ${{ vars.PHALA_CLOUD_API_PREFIX }}
-          CVM_NAME: ghola-private-agent-worker-61bad2a
+          CVM_NAME: ghola-private-agent-worker-b437850
         run: |
           set -euo pipefail
           if [ -z "${PHALA_CLOUD_API_KEY}" ]; then
