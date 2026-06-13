@@ -96,6 +96,158 @@ describe("autonomous autopilot engine", () => {
     ]);
   });
 
+  it("routes app trading grant sessions through backend worker proposals without leaking the grant token", async () => {
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-autopilot-worker" };
+    const now = new Date(Date.now() + 60_000);
+    const session = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_app_trading_worker",
+        session_policy: {
+          ai_direct_enabled: false,
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+          max_notional_bucket: "25",
+          max_daily_notional_bucket: "100",
+          max_order_count: 10,
+          ttl_ms: 2 * 60 * 60_000,
+          max_slippage_bps: 50,
+        },
+        app_trading_grant: {
+          backend_url: "https://ghola-api.example",
+          worker_grant_token: "raw-app-worker-grant-token",
+          worker_grant_id: "glwg_app_worker",
+          worker_grant_commitment: "worker_grant_commitment",
+          plan_id: "gltp_app_plan",
+          plan_policy_commitment: "plan_policy_commitment",
+          venue_ids: ["hyperliquid"],
+          expires_at: new Date(now.getTime() + 60 * 60_000).toISOString(),
+        },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+
+    assert.equal(session.status, "running");
+    assert.equal(session.venue_access.hyperliquid.status, "ready");
+    assert.equal(session.app_trading.status, "grant_armed");
+    assert.equal(JSON.stringify(session).includes("raw-app-worker-grant-token"), false);
+
+    let backendRequest = null;
+    const tick = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+      fetchImpl: async (input, init) => {
+        backendRequest = { input, init };
+        return new Response(JSON.stringify({
+          appLiveTradingWorkerProposal: {
+            status: "executed",
+            proposalCommitment: "backend_worker_proposal_commitment",
+            executionReportCommitment: "backend_execution_report_commitment",
+          },
+          appLiveTradingExecutionRun: {
+            status: "submitted_execution_reported",
+            gholaAppLiveTradingExecutionRunCommitment: "backend_execution_report_commitment",
+          },
+          status: "executed",
+        }), { status: 201 });
+      },
+    });
+
+    assert.equal(tick.ok, true);
+    assert.equal(tick.mode, "app_trading_worker_proposal");
+    assert.equal(String(backendRequest.input), "https://ghola-api.example/v1/trading/app/worker/proposals");
+    assert.equal(backendRequest.init.headers.authorization, "Bearer raw-app-worker-grant-token");
+    const body = JSON.parse(backendRequest.init.body);
+    assert.deepEqual(body.orderIntent.venueIds, ["hyperliquid"]);
+    assert.equal(body.orderIntent.symbol, "BTC-USD");
+    assert.equal(body.orderIntent.side, "buy");
+    assert.equal(body.refreshAfterSubmit, true);
+    assert.equal(body.fetchFills, true);
+
+    const updated = await state.getAutopilotSession(session.autopilot_session_id);
+    assert.equal(updated.app_trading.status, "proposal_executed");
+    assert.equal(updated.app_trading.execution_report_commitment, "backend_execution_report_commitment");
+    assert.equal(updated.order_count, 1);
+    assert.equal(JSON.stringify(await state.listAutopilotEvents(session.autopilot_session_id)).includes("raw-app-worker-grant-token"), false);
+    assert.equal(JSON.stringify(tick).includes("raw-app-worker-grant-token"), false);
+  });
+
+  it("turns app trading worker proposal blockers into manual approval state", async () => {
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-autopilot-worker" };
+    const now = new Date(Date.now() + 60_000);
+    const session = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_app_trading_worker_approval",
+        session_policy: {
+          ai_direct_enabled: false,
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+          max_notional_bucket: "25",
+          max_daily_notional_bucket: "100",
+          max_order_count: 10,
+          ttl_ms: 2 * 60 * 60_000,
+          max_slippage_bps: 50,
+        },
+        app_trading_grant: {
+          backend_url: "https://ghola-api.example",
+          worker_grant_token: "raw-app-worker-grant-token",
+          worker_grant_id: "glwg_app_worker_approval",
+          worker_grant_commitment: "worker_grant_commitment",
+          plan_id: "gltp_app_plan",
+          plan_policy_commitment: "plan_policy_commitment",
+          venue_ids: ["hyperliquid"],
+        },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+
+    const tick = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+      fetchImpl: async () => new Response(JSON.stringify({
+        status: "manual_approval_required",
+        blockers: ["plan_policy_approval_required"],
+        appLiveTradingWorkerProposal: {
+          status: "manual_approval_required",
+          proposalCommitment: "backend_worker_proposal_commitment",
+        },
+        appLiveTradingApproval: {
+          approvalId: "approval_1",
+          gholaAppLiveTradingApprovalCommitment: "approval_commitment",
+        },
+      }), { status: 202 }),
+    });
+
+    assert.equal(tick.ok, false);
+    assert.equal(tick.error, "manual_approval_required");
+    const updated = await state.getAutopilotSession(session.autopilot_session_id);
+    assert.equal(updated.status, "running");
+    assert.equal(updated.app_trading.status, "proposal_pending");
+    assert.equal(updated.app_trading.proposal_status, "manual_approval_required");
+    assert.equal(updated.order_count, 0);
+    assert.equal((await state.listAutopilotPositions(session.autopilot_session_id)).length, 0);
+    const events = await state.listAutopilotEvents(session.autopilot_session_id);
+    assert.equal(events.some((event) => event.message === "Worker proposal queued for manual approval."), true);
+    assert.equal(JSON.stringify(events).includes("raw-app-worker-grant-token"), false);
+  });
+
   it("resumes persisted running autopilot sessions after worker restart", async () => {
     process.env.PRIVATE_AGENT_AUTOPILOT_INITIAL_DELAY_MS = "60000";
     const state = createWorkerState(dir);

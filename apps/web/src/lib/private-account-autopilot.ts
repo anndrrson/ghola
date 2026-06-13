@@ -93,6 +93,18 @@ export interface AutopilotSessionPolicy {
   policy_commitment: string;
 }
 
+export interface AppTradingAutopilotGrantState {
+  status: "grant_pending_worker" | "grant_armed" | "proposal_pending" | "proposal_executed" | "blocked";
+  app_plan_id: string | null;
+  worker_grant_id: string | null;
+  worker_grant_commitment: string | null;
+  plan_policy_commitment: string | null;
+  venue_ids: string[];
+  expires_at: string | null;
+  proposal_status: string | null;
+  execution_report_commitment: string | null;
+}
+
 export interface AutopilotSession {
   version: 2;
   autopilot_session_id: string;
@@ -115,6 +127,7 @@ export interface AutopilotSession {
   }>;
   order_count: number;
   daily_notional_used_bucket: string;
+  app_trading: AppTradingAutopilotGrantState | null;
   created_at: string;
   updated_at: string;
   expires_at: string;
@@ -231,6 +244,7 @@ export async function createAutopilotSessionFromBody(
 ): Promise<AutopilotCreateResult> {
   const value = record(body);
   const policy = normalizePolicy(value);
+  const appTrading = appTradingGrantStateFromBody(value);
   const createdAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + policy.ttl_ms).toISOString();
   const id = `autopilot_${digest({
@@ -250,6 +264,7 @@ export async function createAutopilotSessionFromBody(
     venue_access: defaultVenueAccess(policy),
     order_count: 0,
     daily_notional_used_bucket: "0",
+    app_trading: appTrading,
     created_at: createdAt,
     updated_at: createdAt,
     expires_at: expiresAt,
@@ -603,6 +618,7 @@ async function armWorkerAutopilotSession(input: {
   const venueAccess = hasRecordEntries(providedVenueAccess)
     ? providedVenueAccess
     : await autopilotVenueAccessForWorker(input.owner, input.session.session_policy);
+  const appTradingGrant = appTradingGrantPayload(raw.app_trading_grant);
   const workerPath = "/autopilot/sessions";
   const payload = {
     version: 2,
@@ -610,6 +626,7 @@ async function armWorkerAutopilotSession(input: {
     local_autopilot_session_id: input.session.autopilot_session_id,
     session_policy: input.session.session_policy,
     venue_access: venueAccess,
+    ...(appTradingGrant ? { app_trading_grant: appTradingGrant } : {}),
   };
   const authorization = workerAuthorizationHeader({
     env: input.env,
@@ -865,6 +882,9 @@ async function mergeWorkerSession(
     venue_access: venueAccessValue(workerSession.venue_access) ?? local.venue_access,
     order_count: numberValue(workerSession.order_count) ?? local.order_count,
     daily_notional_used_bucket: stringValue(workerSession.daily_notional_used_bucket) ?? local.daily_notional_used_bucket,
+    app_trading: appTradingGrantStateValue(workerSession.app_trading)
+      ?? appTradingGrantStateValue(workerSession.app_trading_grant)
+      ?? local.app_trading,
     updated_at: stringValue(workerSession.updated_at) ?? now.toISOString(),
     expires_at: stringValue(workerSession.expires_at) ?? local.expires_at,
     next_step: stringValue(workerSession.next_step) ?? local.next_step,
@@ -1279,6 +1299,81 @@ function publicSession(session: AutopilotSession): AutopilotSession {
   return JSON.parse(JSON.stringify(session)) as AutopilotSession;
 }
 
+function appTradingGrantPayload(value: unknown): Record<string, unknown> | null {
+  const grant = optionalRecord(value);
+  if (!grant) return null;
+  const workerGrantToken =
+    stringValue(grant.worker_grant_token)
+    ?? stringValue(grant.workerGrantToken)
+    ?? stringValue(grant.grant_token);
+  if (!workerGrantToken) return null;
+  const planId = stringValue(grant.plan_id) ?? stringValue(grant.planId);
+  const workerGrantId = stringValue(grant.worker_grant_id) ?? stringValue(grant.workerGrantId);
+  const workerGrantCommitment =
+    stringValue(grant.worker_grant_commitment)
+    ?? stringValue(grant.workerGrantCommitment);
+  return {
+    backend_url: stringValue(grant.backend_url) ?? stringValue(grant.backendUrl),
+    worker_grant_token: workerGrantToken,
+    worker_grant_id: workerGrantId,
+    worker_grant_commitment: workerGrantCommitment,
+    plan_id: planId,
+    plan_policy_commitment:
+      stringValue(grant.plan_policy_commitment)
+      ?? stringValue(grant.planPolicyCommitment),
+    venue_ids: stringArray(grant.venue_ids ?? grant.venueIds),
+    expires_at: stringValue(grant.expires_at) ?? stringValue(grant.expiresAt),
+    redacted_plan_summary: optionalRecord(grant.redacted_plan_summary)
+      ?? optionalRecord(grant.redactedPlanSummary)
+      ?? null,
+  };
+}
+
+function appTradingGrantStateFromBody(value: Record<string, unknown>): AppTradingAutopilotGrantState | null {
+  return appTradingGrantStateValue(value.app_trading_grant);
+}
+
+function appTradingGrantStateValue(value: unknown): AppTradingAutopilotGrantState | null {
+  const grant = optionalRecord(value);
+  if (!grant) return null;
+  const appPlanId = stringValue(grant.app_plan_id)
+    ?? stringValue(grant.plan_id)
+    ?? stringValue(grant.planId);
+  const workerGrantId = stringValue(grant.worker_grant_id) ?? stringValue(grant.workerGrantId);
+  const workerGrantCommitment =
+    stringValue(grant.worker_grant_commitment)
+    ?? stringValue(grant.workerGrantCommitment);
+  const planPolicyCommitment =
+    stringValue(grant.plan_policy_commitment)
+    ?? stringValue(grant.planPolicyCommitment);
+  if (!appPlanId && !workerGrantId && !workerGrantCommitment) return null;
+  const rawStatus = stringValue(grant.status);
+  const status: AppTradingAutopilotGrantState["status"] =
+    rawStatus === "grant_armed"
+      || rawStatus === "proposal_pending"
+      || rawStatus === "proposal_executed"
+      || rawStatus === "blocked"
+      ? rawStatus
+      : "grant_pending_worker";
+  return {
+    status,
+    app_plan_id: appPlanId,
+    worker_grant_id: workerGrantId,
+    worker_grant_commitment: workerGrantCommitment,
+    plan_policy_commitment: planPolicyCommitment,
+    venue_ids: stringArray(grant.venue_ids ?? grant.venueIds),
+    expires_at: stringValue(grant.expires_at) ?? stringValue(grant.expiresAt),
+    proposal_status:
+      stringValue(grant.proposal_status)
+      ?? stringValue(grant.proposalStatus)
+      ?? null,
+    execution_report_commitment:
+      stringValue(grant.execution_report_commitment)
+      ?? stringValue(grant.executionReportCommitment)
+      ?? null,
+  };
+}
+
 function makeEvent(
   session: AutopilotSession,
   type: AutopilotEventType,
@@ -1367,6 +1462,7 @@ function sessionFromRecord(stored: PrivateAutopilotSessionRecordV1): AutopilotSe
     venue_access: venueAccessValue(raw.venue_access) ?? defaultVenueAccess(policy),
     order_count: numberValue(raw.order_count) ?? 0,
     daily_notional_used_bucket: stringValue(raw.daily_notional_used_bucket) ?? "0",
+    app_trading: appTradingGrantStateValue(raw.app_trading),
     created_at: stringValue(raw.created_at) ?? stored.created_at,
     updated_at: stringValue(raw.updated_at) ?? stored.updated_at,
     expires_at: stringValue(raw.expires_at) ?? stored.expires_at,

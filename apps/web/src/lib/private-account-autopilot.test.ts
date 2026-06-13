@@ -319,6 +319,83 @@ describe("private account autopilot sessions", () => {
     expect(created.session.venue_access.hyperliquid.status).toBe("ready");
   });
 
+  it("passes app trading grants to the worker without storing the grant token publicly", async () => {
+    let workerPayload: Record<string, unknown> | null = null;
+    const fetchImpl = async (_input: URL | RequestInfo, init?: RequestInit) => {
+      workerPayload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        version: 1,
+        session: {
+          version: 2,
+          autopilot_session_id: "worker_autopilot_app_trading",
+          worker_session_commitment: "worker_commitment_app_trading",
+          status: "running",
+          strategy: {
+            version: 1,
+            strategy_id: "momentum_micro_trader",
+            decision_model: "ai_direct_order_v1",
+            executable_order_source: "ai_structured_decision_validated_by_policy",
+            ai_can_execute_directly: true,
+          },
+          session_policy: (workerPayload?.session_policy ?? {}),
+          venue_access: (workerPayload?.venue_access ?? {}),
+          app_trading: {
+            status: "grant_armed",
+            app_plan_id: "gltp_app_plan",
+            worker_grant_id: "glwg_app_grant",
+            worker_grant_commitment: "grant_commitment",
+            plan_policy_commitment: "plan_policy_commitment",
+            venue_ids: ["hyperliquid"],
+            expires_at: "2026-06-01T14:00:00.000Z",
+          },
+          order_count: 0,
+          daily_notional_used_bucket: "0",
+          updated_at: "2026-06-01T12:00:00.000Z",
+          expires_at: "2026-06-01T14:00:00.000Z",
+          next_step: "App trading grant armed.",
+          execution_enabled: true,
+        },
+        events: [],
+      }), { status: 201 });
+    };
+
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+        },
+        app_trading_grant: {
+          backend_url: "https://ghola-api.example",
+          worker_grant_token: "raw-worker-grant-token",
+          worker_grant_id: "glwg_app_grant",
+          worker_grant_commitment: "grant_commitment",
+          plan_id: "gltp_app_plan",
+          plan_policy_commitment: "plan_policy_commitment",
+          venue_ids: ["hyperliquid"],
+          expires_at: "2026-06-01T14:00:00.000Z",
+        },
+      },
+      owner,
+      new Date("2026-06-01T12:00:00.000Z"),
+      {
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      },
+      fetchImpl,
+    );
+
+    expect(workerPayload).not.toBeNull();
+    expect((workerPayload?.app_trading_grant as Record<string, unknown>).worker_grant_token).toBe("raw-worker-grant-token");
+    expect(created.session.app_trading).toMatchObject({
+      status: "grant_armed",
+      app_plan_id: "gltp_app_plan",
+      worker_grant_id: "glwg_app_grant",
+      worker_grant_commitment: "grant_commitment",
+    });
+    expect(JSON.stringify(created)).not.toContain("raw-worker-grant-token");
+  });
+
   it("attaches a user's stored Hyperliquid API vault to worker autopilot sessions", async () => {
     const account = await createOrGetStoredPrivateAccount(authenticatedOwner);
     const vault = createHyperliquidExecutionVault({

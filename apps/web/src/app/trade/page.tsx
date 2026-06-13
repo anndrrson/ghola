@@ -1,11 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Activity,
-  ArrowRight,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -15,7 +14,6 @@ import {
   RefreshCcw,
   ShieldCheck,
   SlidersHorizontal,
-  Wallet,
 } from "lucide-react";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import { GholaLogo } from "@/components/GholaLogo";
@@ -46,15 +44,61 @@ import type { PhoenixMarketSnapshot } from "@/lib/phoenix-market-data";
 import type { PrivateExecutionOrderDraft } from "@/lib/private-execution-instruction-seal";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { handleTwitterSession } from "@/lib/thumper-api";
+import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 
 type VenueId = "hyperliquid" | "phoenix" | "coinbase";
 type Side = "buy" | "sell";
 type ChartInterval = "1m" | "5m" | "15m" | "1h";
 type LiveExecutionState =
   | { status: "idle" }
-  | { status: "working"; stage: "session" | "linking" | "submitting" }
+  | { status: "working"; stage: "session" | "planning" | "arming" | "preparing" | "signing" | "submitting" }
   | { status: "done"; runStatus: string; commitment: string; orderId?: string | null }
   | { status: "error"; message: string };
+
+type AppTradingSession = {
+  csrfToken: string;
+  sessionId?: string | null;
+  expiresAt?: string | null;
+};
+
+type AppTradingProfile = {
+  status?: string;
+  linkedVenueIds?: string[];
+  executableVenueIds?: string[];
+  nextActionsByVenue?: Record<string, string[]>;
+};
+
+type AppTradingApproval = {
+  approvalId?: string;
+  status?: string;
+  venueIds?: string[];
+  blockers?: string[];
+};
+
+type AppTradingPositionSnapshot = {
+  snapshotId?: string;
+  status?: string;
+  venueId?: string;
+  positionCount?: number;
+};
+
+type AppTradingFill = {
+  venueId?: string;
+  productId?: string;
+  price?: string;
+  size?: string;
+};
+
+type AppSigningRequest = {
+  venueId?: string;
+  requiredField?: string;
+  instructions?: string;
+  unsignedPayload?: unknown;
+  aggregateAction?: unknown;
+  unsignedTransactionBase64?: string;
+  payloadCommitment?: string;
+  signingPayloadCommitment?: string;
+};
 
 const CHART_INTERVALS: ChartInterval[] = ["1m", "5m", "15m", "1h"];
 type EntryTrigger =
@@ -208,6 +252,7 @@ const STOP_DEFAULT_PCT = 0.0075;
 
 export default function TradePage() {
   const thumperAuth = useThumperAuth();
+  const wallet = useTurnkeyWallet();
   const { setAuth } = thumperAuth;
   const router = useRouter();
   const [authOpen, setAuthOpen] = useState(false);
@@ -242,7 +287,11 @@ export default function TradePage() {
     | { status: "error"; message: string }
   >({ status: "idle" });
   const [liveExecution, setLiveExecution] = useState<LiveExecutionState>({ status: "idle" });
-  const [signedPayloadText, setSignedPayloadText] = useState("");
+  const [appTradingSession, setAppTradingSession] = useState<AppTradingSession | null>(null);
+  const [appTradingProfile, setAppTradingProfile] = useState<AppTradingProfile | null>(null);
+  const [appTradingApprovals, setAppTradingApprovals] = useState<AppTradingApproval[]>([]);
+  const [appTradingPositions, setAppTradingPositions] = useState<AppTradingPositionSnapshot[]>([]);
+  const [appTradingFills, setAppTradingFills] = useState<AppTradingFill[]>([]);
   const [bookOpen, setBookOpen] = useState(false);
   const [openRow, setOpenRow] = useState<string | null>(null);
   const venue = VENUES.find((item) => item.id === venueId) ?? VENUES[0];
@@ -329,6 +378,105 @@ export default function TradePage() {
       window.clearInterval(interval);
     };
   }, []);
+
+  const openTradingSession = useCallback(async (): Promise<AppTradingSession> => {
+    if (appTradingSession?.csrfToken) return appTradingSession;
+    const sessionRes = await fetch("/api/trading/session", {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    const sessionBody = await sessionRes.json().catch(() => ({})) as {
+      appSession?: AppTradingSession;
+      error?: string;
+    };
+    if (!sessionRes.ok || !sessionBody.appSession?.csrfToken) {
+      throw new Error(sessionBody.error || "Trading session unavailable");
+    }
+    setAppTradingSession(sessionBody.appSession);
+    return sessionBody.appSession;
+  }, [appTradingSession]);
+
+  const refreshAppTradingWorkspace = useCallback(async (session?: AppTradingSession | null) => {
+    if (!session?.csrfToken) return;
+    const [profileRes, approvalsRes, positionsRes, fillsRes] = await Promise.all([
+      fetch("/v1/trading/app/profile", { credentials: "same-origin", cache: "no-store" }),
+      fetch("/v1/trading/app/approvals", { credentials: "same-origin", cache: "no-store" }),
+      fetch("/v1/trading/app/positions", { credentials: "same-origin", cache: "no-store" }),
+      fetch("/v1/trading/app/fills", { credentials: "same-origin", cache: "no-store" }),
+    ]);
+    if (profileRes.ok) {
+      const body = await profileRes.json().catch(() => ({})) as {
+        appLiveTradingProfile?: AppTradingProfile;
+        appLiveTradingApprovals?: AppTradingApproval[];
+        appLiveTradingPositionSnapshots?: AppTradingPositionSnapshot[];
+      };
+      setAppTradingProfile(body.appLiveTradingProfile ?? null);
+      if (Array.isArray(body.appLiveTradingApprovals)) setAppTradingApprovals(body.appLiveTradingApprovals);
+      if (Array.isArray(body.appLiveTradingPositionSnapshots)) setAppTradingPositions(body.appLiveTradingPositionSnapshots);
+    }
+    if (approvalsRes.ok) {
+      const body = await approvalsRes.json().catch(() => ({})) as { appLiveTradingApprovals?: AppTradingApproval[] };
+      setAppTradingApprovals(body.appLiveTradingApprovals ?? []);
+    }
+    if (positionsRes.ok) {
+      const body = await positionsRes.json().catch(() => ({})) as {
+        appLiveTradingPositions?: { snapshots?: AppTradingPositionSnapshot[] };
+      };
+      setAppTradingPositions(body.appLiveTradingPositions?.snapshots ?? []);
+    }
+    if (fillsRes.ok) {
+      const body = await fillsRes.json().catch(() => ({})) as {
+        appLiveTradingFills?: { fills?: AppTradingFill[] };
+      };
+      setAppTradingFills(body.appLiveTradingFills?.fills ?? []);
+    }
+  }, []);
+
+  const decideAppTradingApproval = useCallback(async (
+    approval: AppTradingApproval,
+    decision: "approve" | "reject",
+  ) => {
+    if (!approval.approvalId) return;
+    const session = await openTradingSession();
+    const res = await fetch(
+      `/v1/trading/app/approvals/${encodeURIComponent(approval.approvalId)}/${decision}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify({ csrfToken: session.csrfToken }),
+      },
+    );
+    const body = await res.json().catch(() => ({})) as { error?: string };
+    if (!res.ok) {
+      setLiveExecution({ status: "error", message: body.error || `Approval ${decision} failed` });
+      return;
+    }
+    await refreshAppTradingWorkspace(session);
+  }, [openTradingSession, refreshAppTradingWorkspace]);
+
+  useEffect(() => {
+    if (!thumperAuth.authenticated) {
+      setAppTradingSession(null);
+      setAppTradingProfile(null);
+      setAppTradingApprovals([]);
+      setAppTradingPositions([]);
+      setAppTradingFills([]);
+      return;
+    }
+    let cancelled = false;
+    openTradingSession()
+      .then((session) => {
+        if (!cancelled) return refreshAppTradingWorkspace(session);
+        return undefined;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [thumperAuth.authenticated, openTradingSession, refreshAppTradingWorkspace]);
 
   useEffect(() => {
     if (!entryPinned && mid) setEntryPrice(mid);
@@ -422,7 +570,7 @@ export default function TradePage() {
       agent_strategy_note: selectedStrategy(STRATEGIES, strategy).condition,
       agent_route_priority: "most_private",
     };
-  }, [conditionLevel, entryPrice, entryTrigger, horizon, mid, notional, side, slippageBps, stopLevel, stopRule, strategy, venue]);
+  }, [conditionLevel, entryPrice, entryTrigger, horizon, mid, notional, productLabel, side, slippageBps, stopLevel, stopRule, strategy, venue]);
 
   const overlays = useMemo(() => {
     const generated = buildGholaAgentChartOverlays({
@@ -499,38 +647,152 @@ export default function TradePage() {
     }
     setLiveExecution({ status: "working", stage: "session" });
     try {
-      const signedMaterial = parseSignedExecutionPayload(venue.id, signedPayloadText);
-      if (venue.id !== "coinbase" && Object.keys(signedMaterial).length === 0) {
-        throw new Error(`${venue.label} requires a signed payload before live submit.`);
-      }
-      const sessionRes = await fetch("/api/trading/session", {
-        method: "POST",
-        credentials: "same-origin",
-        cache: "no-store",
-      });
-      const sessionBody = await sessionRes.json().catch(() => ({})) as {
-        appSession?: { csrfToken?: string };
-        error?: string;
-      };
-      if (!sessionRes.ok || !sessionBody.appSession?.csrfToken) {
-        throw new Error(sessionBody.error || "Trading session unavailable");
-      }
+      const session = await openTradingSession();
 
-      setLiveExecution({ status: "working", stage: "linking" });
-      const venueIds = liveExecutionVenueIds(venue.id, signedMaterial);
-      const executionBody = await buildLiveExecutionBody({
-        csrfToken: sessionBody.appSession.csrfToken,
-        venueIds,
+      setLiveExecution({ status: "working", stage: "planning" });
+      const planBody = buildLivePlanBody({
+        csrfToken: session.csrfToken,
         venueId: venue.id,
-        webUserId: thumperAuth.user?.id || "web-user",
         market: marketSel,
         productLabel,
         side,
         notional,
         entryPrice: entryLevel,
+        stopPrice: stopLevel,
         slippageBps,
-        signedMaterial,
       });
+      const planRes = await fetch("/v1/trading/app/plans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify(planBody),
+      });
+      const planJson = await planRes.json().catch(() => ({})) as {
+        appLiveTradingPlan?: {
+          planId?: string;
+          planPolicyCommitment?: string | null;
+          venueIds?: string[];
+          expiresAt?: string | null;
+        };
+        error?: string;
+        blockers?: string[];
+      };
+      if (!planRes.ok || !planJson.appLiveTradingPlan?.planId) {
+        throw new Error(planJson.error || planJson.blockers?.join(", ") || "Trading plan rejected");
+      }
+
+      setLiveExecution({ status: "working", stage: "arming" });
+      const armedWorker = await armAppTradingWorker({
+        csrfToken: session.csrfToken,
+        plan: planJson.appLiveTradingPlan,
+        venueId: venue.id,
+        market: marketSel,
+        productLabel,
+        side,
+        entryPrice: entryLevel,
+        stopPrice: stopLevel,
+        signMessage: wallet.signMessage,
+        walletAddress: wallet.walletAddress,
+        planBody,
+      });
+      if (armedWorker.status) {
+        setLiveExecution({
+          status: "done",
+          runStatus: armedWorker.status,
+          commitment: armedWorker.workerGrantCommitment || "",
+          orderId: armedWorker.session?.autopilot_session_id || null,
+        });
+        await refreshAppTradingWorkspace(session);
+        return;
+      }
+
+      setLiveExecution({ status: "working", stage: "preparing" });
+      const orderIntentBody = buildLiveOrderIntent({
+        venueId: venue.id,
+        market: marketSel,
+        productLabel,
+        side,
+        notional,
+        entryPrice: entryLevel,
+        stopPrice: stopLevel,
+        slippageBps,
+      });
+      const prepareRes = await fetch("/v1/trading/app/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify({
+          csrfToken: session.csrfToken,
+          planId: planJson.appLiveTradingPlan.planId,
+          venueIds: [venue.id],
+          orderIntent: orderIntentBody,
+          createOrder: false,
+          ensureWallet: venue.id === "phoenix",
+        }),
+      });
+      const prepareJson = await prepareRes.json().catch(() => ({})) as {
+        appLiveTradingPrepare?: {
+          status?: string;
+          draftId?: string | null;
+          signingRequests?: AppSigningRequest[];
+          blockers?: string[];
+          appLiveTradingApproval?: { approvalId?: string };
+        };
+        error?: string;
+      };
+      const prepared = prepareJson.appLiveTradingPrepare;
+      if (prepareRes.status === 202 || prepared?.status === "manual_approval_required") {
+        await refreshAppTradingWorkspace(session);
+        throw new Error("Manual approval required for this plan exception.");
+      }
+      if (!prepareRes.ok || !prepared?.draftId) {
+        throw new Error(prepareJson.error || prepared?.blockers?.join(", ") || "Order prepare failed");
+      }
+      if (prepared.status === "blocked_preflight") {
+        throw new Error(prepared.blockers?.join(", ") || "Order blocked by preflight");
+      }
+
+      setLiveExecution({ status: "working", stage: "signing" });
+      const signingRes = await fetch(`/v1/trading/app/drafts/${encodeURIComponent(prepared.draftId)}/signing-session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify({
+          csrfToken: session.csrfToken,
+          walletAddress: wallet.walletAddress,
+        }),
+      });
+      const signingJson = await signingRes.json().catch(() => ({})) as {
+        appLiveTradingSigningSession?: { signingSessionId?: string };
+        signingRequests?: AppSigningRequest[];
+        error?: string;
+      };
+      if (!signingRes.ok || !signingJson.appLiveTradingSigningSession?.signingSessionId) {
+        throw new Error(signingJson.error || "Wallet signing session failed");
+      }
+      const signedMaterial = await signPreparedDraft(
+        signingJson.signingRequests ?? prepared.signingRequests ?? [],
+        wallet.signMessage,
+      );
+      const signatureRes = await fetch(`/v1/trading/app/drafts/${encodeURIComponent(prepared.draftId)}/signature`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify({
+          csrfToken: session.csrfToken,
+          signingSessionId: signingJson.appLiveTradingSigningSession.signingSessionId,
+          walletAddress: wallet.walletAddress,
+          ...signedMaterial,
+        }),
+      });
+      const signatureJson = await signatureRes.json().catch(() => ({})) as { error?: string };
+      if (!signatureRes.ok) {
+        throw new Error(signatureJson.error || "Wallet signature rejected");
+      }
 
       setLiveExecution({ status: "working", stage: "submitting" });
       const executeRes = await fetch("/v1/trading/app/execute", {
@@ -538,7 +800,15 @@ export default function TradePage() {
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
         cache: "no-store",
-        body: JSON.stringify(executionBody),
+        body: JSON.stringify({
+          csrfToken: session.csrfToken,
+          draftId: prepared.draftId,
+          submit: true,
+          refreshAfterSubmit: false,
+          fetchFills: false,
+          cancelIfOpen: false,
+          ...signedMaterial,
+        }),
       });
       const executeBody = await executeRes.json().catch(() => ({})) as {
         appLiveTradingExecutionRun?: {
@@ -560,6 +830,7 @@ export default function TradePage() {
         commitment: run.gholaAppLiveTradingExecutionRunCommitment || "",
         orderId: run.liveTradingOrder?.orderId || null,
       });
+      await refreshAppTradingWorkspace(session);
     } catch (error) {
       setLiveExecution({
         status: "error",
@@ -578,9 +849,9 @@ export default function TradePage() {
 
   const venueLiveStatus = venueStatus(liveStatus, venue.id);
   const readyToPreview = thumperAuth.authenticated && venueLiveStatus === "green";
-  const userSignedPayloadRequired = venue.id !== "coinbase";
   const liveWorking = liveExecution.status === "working";
-  const readyToExecute = thumperAuth.authenticated && (!userSignedPayloadRequired || signedPayloadText.trim().length > 0);
+  const walletReadyForSigning = Boolean(wallet.walletAddress);
+  const readyToExecute = thumperAuth.authenticated && walletReadyForSigning;
 
   const stopDistancePct = entryLevel && stopLevel ? Math.abs(entryLevel - stopLevel) / entryLevel : null;
   const maxLossUsd = stopDistancePct != null ? notional * (stopDistancePct + slippageBps / 10_000) : null;
@@ -1128,21 +1399,60 @@ export default function TradePage() {
                 <VisibilityRow label={`${venue.label} sees`} value="venue account + order" tone="warn" />
               </div>
             </div>
-            {userSignedPayloadRequired && (
-              <div className="mt-5 border-t border-[#141d2e] pt-4">
-                <label className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#6b7997]" htmlFor="signed-live-payload">
-                  Signed payload
-                </label>
-                <textarea
-                  id="signed-live-payload"
-                  value={signedPayloadText}
-                  onChange={(event) => setSignedPayloadText(event.target.value)}
-                  spellCheck={false}
-                  className="trade-field mt-2 h-24 w-full resize-none rounded-md px-3 py-2 font-mono text-xs leading-5 text-[#eef1f8] outline-none"
-                  placeholder={venue.id === "phoenix" ? "signedTransactionBase64" : "signedAction JSON"}
+            <div className="mt-5 border-t border-[#141d2e] pt-4">
+              <p className="text-[10px] font-medium text-[#6b7997]">Workspace</p>
+              <div className="mt-2.5 grid gap-2">
+                <VisibilityRow
+                  label="Profile"
+                  value={appTradingProfile?.status ?? (thumperAuth.authenticated ? "loading" : "sign in")}
+                  tone={appTradingProfile?.executableVenueIds?.includes(venue.id) ? "good" : "warn"}
                 />
+                <VisibilityRow
+                  label="Approvals"
+                  value={appTradingApprovals.filter((approval) => approval.status === "pending_approval").length ? "pending" : "clear"}
+                  tone={appTradingApprovals.some((approval) => approval.status === "pending_approval") ? "warn" : "good"}
+                />
+                {appTradingApprovals
+                  .filter((approval) => approval.status === "pending_approval")
+                  .slice(0, 3)
+                  .map((approval) => (
+                    <div key={approval.approvalId} className="trade-field rounded-md px-2.5 py-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-[9px] text-[#566278]">
+                            {approval.venueIds?.join(", ") || "approval"}
+                          </p>
+                          <p className="mt-1 truncate font-mono text-[11px] text-[#8b95a8]">
+                            {(approval.blockers ?? []).join(", ") || "policy exception"}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 gap-1">
+                          <button
+                            type="button"
+                            onClick={() => void decideAppTradingApproval(approval, "approve")}
+                            className="trade-chip-on h-7 rounded-md px-2 text-[11px]"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void decideAppTradingApproval(approval, "reject")}
+                            className="trade-chip h-7 rounded-md px-2 text-[11px]"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                <VisibilityRow
+                  label="Positions"
+                  value={`${appTradingPositions.reduce((sum, snapshot) => sum + (snapshot.positionCount ?? 0), 0)}`}
+                  tone="good"
+                />
+                <VisibilityRow label="Fills" value={`${appTradingFills.length}`} tone="good" />
               </div>
-            )}
+            </div>
           </div>
 
           <div className="border-t border-[#182234] p-5">
@@ -1198,9 +1508,15 @@ export default function TradePage() {
                     {liveWorking
                       ? liveExecution.stage === "session"
                         ? "Opening trading session"
-                        : liveExecution.stage === "linking"
-                          ? "Linking venue"
-                          : "Submitting live order"
+                        : liveExecution.stage === "planning"
+                          ? "Saving plan"
+                          : liveExecution.stage === "arming"
+                            ? "Arming agent"
+                          : liveExecution.stage === "preparing"
+                            ? "Preparing draft"
+                            : liveExecution.stage === "signing"
+                              ? "Signing with wallet"
+                              : "Submitting live order"
                       : "Execute live"}
                   </button>
                   {liveExecution.status === "done" && (
@@ -1231,109 +1547,159 @@ export default function TradePage() {
   );
 }
 
-interface BuildLiveExecutionBodyInput {
+interface BuildLivePlanBodyInput {
   csrfToken: string;
-  venueIds: VenueId[];
   venueId: VenueId;
-  webUserId: string;
   market: string;
   productLabel: string;
   side: Side;
   notional: number;
   entryPrice: number | null;
+  stopPrice: number | null;
   slippageBps: number;
-  signedMaterial: Record<string, unknown>;
 }
 
-function parseSignedExecutionPayload(venueId: VenueId, value: string): Record<string, unknown> {
-  const trimmed = value.trim();
-  if (!trimmed) return {};
-  if (venueId === "phoenix" && !trimmed.startsWith("{")) {
-    return { signedTransactionBase64: trimmed };
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    if (venueId === "phoenix") return { signedTransactionBase64: trimmed };
-    throw new Error("Signed payload must be valid JSON.");
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    if (venueId === "phoenix" && typeof parsed === "string") return { signedTransactionBase64: parsed };
-    throw new Error("Signed payload must be an object.");
-  }
-  const record = parsed as Record<string, unknown>;
-  if (venueId === "hyperliquid" && record.action && record.signature) {
-    return { signedAction: record };
-  }
-  return record;
+interface BuildLiveOrderIntentInput {
+  venueId: VenueId;
+  market: string;
+  productLabel: string;
+  side: Side;
+  notional: number;
+  entryPrice: number | null;
+  stopPrice: number | null;
+  slippageBps: number;
 }
 
-function liveExecutionVenueIds(selectedVenueId: VenueId, signedMaterial: Record<string, unknown>): VenueId[] {
-  const raw = Array.isArray(signedMaterial.venueIds)
-    ? signedMaterial.venueIds
-    : Array.isArray(signedMaterial.venues)
-      ? signedMaterial.venues
-      : [];
-  const venues = raw
-    .map((value) => String(value || "").trim().toLowerCase())
-    .filter((value): value is VenueId => value === "hyperliquid" || value === "phoenix" || value === "coinbase");
-  return Array.from(new Set(venues.length ? venues : [selectedVenueId]));
+type AppTradingWorkerArmResult = {
+  status?: string;
+  workerGrantCommitment?: string | null;
+  session?: { autopilot_session_id?: string | null } | null;
+};
+
+function buildLivePlanBody(input: BuildLivePlanBodyInput): Record<string, unknown> {
+  const entry = input.entryPrice && input.entryPrice > 0 ? input.entryPrice : 0;
+  const stop = input.stopPrice && input.stopPrice > 0 ? input.stopPrice : 0;
+  const decimals = entry >= 1_000 ? 1 : 2;
+  return {
+    csrfToken: input.csrfToken,
+    venueIds: [input.venueId],
+    symbol: input.venueId === "hyperliquid" ? input.market : input.productLabel,
+    productId: input.venueId === "coinbase" ? `${input.market}-USD` : input.productLabel,
+    side: input.side,
+    orderType: "limit",
+    entryPrice: entry > 0 ? entry.toFixed(decimals) : "",
+    stopPrice: stop > 0 ? stop.toFixed(stop >= 1_000 ? 1 : 2) : "",
+    targetPrice: entry > 0 && stop > 0
+      ? targetPriceForPlan(entry, stop, input.side).toFixed(decimals)
+      : "",
+    maxNotional: decimalForOrderSize(input.notional),
+    notional: decimalForOrderSize(input.notional),
+    maxSlippageBps: input.slippageBps,
+    horizon: "session_trade",
+    entryTrigger: "drawn_entry_stop",
+    idempotencyKey: `plan-${input.venueId}-${input.market}-${Date.now()}`,
+  };
 }
 
-async function buildLiveExecutionBody(input: BuildLiveExecutionBodyInput): Promise<Record<string, unknown>> {
+async function armAppTradingWorker(input: {
+  csrfToken: string;
+  plan: {
+    planId?: string;
+    planPolicyCommitment?: string | null;
+    venueIds?: string[];
+    expiresAt?: string | null;
+  };
+  venueId: VenueId;
+  market: string;
+  productLabel: string;
+  side: Side;
+  entryPrice: number | null;
+  stopPrice: number | null;
+  walletAddress: string | null;
+  signMessage: (message: string) => Promise<string>;
+  planBody: Record<string, unknown>;
+}): Promise<AppTradingWorkerArmResult> {
+  if (!input.plan.planId) throw new Error("Trading plan missing plan id");
+  if (!input.walletAddress) throw new Error("Wallet delegation signature required to arm the agent.");
+  const venueIds = input.plan.venueIds?.length ? input.plan.venueIds : [input.venueId];
+  const delegationMessage = stableStringify({
+    type: "ghola_app_live_trading_worker_delegation_v1",
+    planId: input.plan.planId,
+    planPolicyCommitment: input.plan.planPolicyCommitment ?? null,
+    venueIds,
+    market: input.market,
+    productLabel: input.productLabel,
+    side: input.side,
+    entryPrice: input.entryPrice,
+    stopPrice: input.stopPrice,
+    walletAddress: input.walletAddress,
+    expiresAt: input.plan.expiresAt ?? null,
+  });
+  const signature = await input.signMessage(delegationMessage);
+  const res = await fetch("/api/trading/worker/arm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    cache: "no-store",
+    body: JSON.stringify({
+      csrfToken: input.csrfToken,
+      planId: input.plan.planId,
+      planPolicyCommitment: input.plan.planPolicyCommitment ?? null,
+      venueIds,
+      market: input.market,
+      productId: input.productLabel,
+      side: input.side,
+      entryPrice: input.planBody.entryPrice,
+      stopPrice: input.planBody.stopPrice,
+      delegationProof: {
+        walletAddress: input.walletAddress,
+        message: delegationMessage,
+        messageCommitment: await sha256Hex(delegationMessage),
+        signature,
+      },
+      planSummary: {
+        symbol: input.market,
+        side: input.side,
+        entryPrice: input.planBody.entryPrice,
+        stopPrice: input.planBody.stopPrice,
+      },
+    }),
+  });
+  const body = await res.json().catch(() => ({})) as {
+    appTradingWorker?: AppTradingWorkerArmResult;
+    error?: string;
+  };
+  if (!res.ok || !body.appTradingWorker) {
+    throw new Error(body.error || `Agent arm failed ${res.status}`);
+  }
+  return body.appTradingWorker;
+}
+
+function buildLiveOrderIntent(input: BuildLiveOrderIntentInput): Record<string, unknown> {
   const price = input.entryPrice && input.entryPrice > 0 ? input.entryPrice : 0;
   const baseSize = price > 0 ? decimalForOrderSize(input.notional / price) : "0.001";
   const limitPrice = price > 0 ? price.toFixed(price >= 1_000 ? 1 : 2) : "";
   const idempotencyKey = `trade-${Date.now()}-${crypto.randomUUID()}`;
-  const executionCredentialHandleCommitmentsByVenue: Partial<Record<VenueId, string>> = {};
-  for (const venueId of input.venueIds) {
-    executionCredentialHandleCommitmentsByVenue[venueId] = await objectHashHex({
-      type: "ghola_trade_page_execution_credential_handle_v1",
-      webUserId: input.webUserId,
-      venueId,
-    });
-  }
-
-  const body: Record<string, unknown> = {
-    ...input.signedMaterial,
-    csrfToken: input.csrfToken,
-    venueIds: input.venueIds,
-    ensureWallet: input.venueIds.includes("phoenix"),
-    executionCredentialHandleCommitmentsByVenue,
+  return {
     idempotencyKey,
-    submit: true,
-    refreshAfterSubmit: true,
-    fetchFills: true,
-    cancelIfOpen: false,
-    orderIntent: {
-      idempotencyKey,
-      venueIds: input.venueIds,
-      symbol: input.venueId === "hyperliquid" ? input.market : input.productLabel,
-      productId: input.venueIds.includes("coinbase") ? `${input.market}-USD` : input.productLabel,
-      side: input.side,
-      orderType: "limit",
-      baseSize,
-      quoteSize: decimalForOrderSize(input.notional),
-      limitPrice,
-      slippageBps: String(input.slippageBps),
-    },
+    venueIds: [input.venueId],
+    symbol: input.venueId === "hyperliquid" ? input.market : input.productLabel,
+    productId: input.venueId === "coinbase" ? `${input.market}-USD` : input.productLabel,
+    side: input.side,
+    orderType: "limit",
+    baseSize,
+    quoteSize: decimalForOrderSize(input.notional),
+    limitPrice,
+    stopPrice: input.stopPrice && input.stopPrice > 0
+      ? input.stopPrice.toFixed(input.stopPrice >= 1_000 ? 1 : 2)
+      : undefined,
+    slippageBps: String(input.slippageBps),
   };
+}
 
-  if (input.venueIds.includes("hyperliquid")) {
-    body.hyperliquidAccountCommitment = await objectHashHex({
-      type: "ghola_trade_page_hyperliquid_account_commitment_v1",
-      webUserId: input.webUserId,
-    });
-  }
-  if (input.venueIds.includes("coinbase")) {
-    body.coinbaseAccountCommitment = await objectHashHex({
-      type: "ghola_trade_page_coinbase_account_commitment_v1",
-      webUserId: input.webUserId,
-    });
-  }
-
-  return body;
+function targetPriceForPlan(entry: number, stop: number, side: Side) {
+  const risk = Math.abs(entry - stop);
+  return side === "buy" ? entry + risk * 2 : entry - risk * 2;
 }
 
 function stableStringify(value: unknown): string {
@@ -1346,14 +1712,57 @@ function stableStringify(value: unknown): string {
     .join(",")}}`;
 }
 
-async function objectHashHex(value: unknown): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(stableStringify(value)),
-  );
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+async function signPreparedDraft(
+  signingRequests: AppSigningRequest[],
+  signMessage: (message: string) => Promise<string>,
+): Promise<Record<string, unknown>> {
+  const request = signingRequests[0];
+  if (!request) return {};
+  if (request.venueId === "coinbase" || request.requiredField === "server_side_coinbase_submit") {
+    return {};
+  }
+  if (request.venueId === "phoenix") {
+    throw new Error("Phoenix transaction wallet signing is not available in this browser session.");
+  }
+  const message = stableStringify({
+    type: "ghola_app_live_trading_wallet_signature_v1",
+    venueId: request.venueId,
+    payloadCommitment: request.payloadCommitment ?? request.signingPayloadCommitment ?? null,
+    unsignedPayload: request.unsignedPayload ?? request.aggregateAction ?? null,
+  });
+  const walletSignatureBase64 = await signMessage(message);
+  if (
+    request.venueId === "hyperliquid"
+    && request.unsignedPayload
+    && typeof request.unsignedPayload === "object"
+  ) {
+    return {
+      signedAction: {
+        ...(request.unsignedPayload as Record<string, unknown>),
+        signature: {
+          type: "ghola_wallet_message_signature_v1",
+          walletSignatureBase64,
+        },
+      },
+    };
+  }
+  if (request.venueId === "aggregate") {
+    return {
+      signedAggregateAction: {
+        aggregateAction: request.aggregateAction,
+        aggregateActionCommitment: request.payloadCommitment ?? request.signingPayloadCommitment,
+        walletSignatureBase64,
+      },
+    };
+  }
+  throw new Error(`${request.venueId ?? "Venue"} wallet signing is not available.`);
 }
 
 function decimalForOrderSize(value: number): string {
@@ -1885,7 +2294,6 @@ function AgentActivity({
 
   useEffect(() => {
     if (!authenticated) {
-      setSessions(null);
       return;
     }
     let cancelled = false;
@@ -1953,6 +2361,12 @@ function AgentActivity({
             </span>
             <span className="truncate text-right">{session.next_step}</span>
           </div>
+          {session.app_trading && (
+            <div className="mt-1 flex items-center justify-between gap-2 border-t border-[#162032] pt-1 text-[10px] text-[#6f7b91]">
+              <span>App trading</span>
+              <span className="truncate font-mono">{session.app_trading.status.replaceAll("_", " ")}</span>
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -2246,10 +2660,6 @@ function interpretGeometry(input: {
   if (entry >= rangeHigh - span * 0.05) return { strategy: "reversal", trigger: "sweep_reclaim" };
   if (entry >= rangeHigh - span * 0.4) return { strategy: "range_trade", trigger: "retest_level" };
   return { strategy: "mean_reversion", trigger: "retest_level" };
-}
-
-function entryTriggerLabel(trigger: EntryTrigger) {
-  return ENTRY_TRIGGERS.find((item) => item.id === trigger)?.label ?? "Enter now";
 }
 
 function venueStatus(status: PrivateAccountLiveTradingStatus | null, venue: VenueId) {

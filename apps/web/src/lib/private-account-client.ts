@@ -147,6 +147,17 @@ export interface PrivateAutopilotSession {
     execution_mode: string | null;
     reason: string | null;
   }>;
+  app_trading?: {
+    status: "grant_pending_worker" | "grant_armed" | "proposal_pending" | "proposal_executed" | "blocked";
+    app_plan_id: string | null;
+    worker_grant_id: string | null;
+    worker_grant_commitment: string | null;
+    plan_policy_commitment: string | null;
+    venue_ids: string[];
+    expires_at: string | null;
+    proposal_status: string | null;
+    execution_report_commitment: string | null;
+  } | null;
   order_count: number;
   daily_notional_used_bucket: string;
   created_at: string;

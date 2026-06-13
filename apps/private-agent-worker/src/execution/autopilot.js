@@ -17,7 +17,8 @@ const LOOP_TIMERS = new Map();
 
 export async function createAutopilotSession({ body, recipient, state, provider, startLoop = true, now = new Date() }) {
   const policy = normalizeAutopilotPolicy(body?.session_policy || body || {}, now);
-  const venueAccess = normalizeVenueAccess(body?.venue_access || body?.venue_vaults || {}, policy);
+  const appTradingGrant = normalizeAppTradingGrant(body?.app_trading_grant);
+  const venueAccess = normalizeVenueAccess(body?.venue_access || body?.venue_vaults || {}, policy, appTradingGrant);
   const readyVenues = policy.venue_allowlist.filter((venue) => venueAccess[venue]?.status === "ready");
   const status = policy.kill_switch
     ? "killed"
@@ -40,16 +41,20 @@ export async function createAutopilotSession({ body, recipient, state, provider,
     venue_access: venueAccess,
     order_count: 0,
     daily_notional_used_bucket: "0",
+    app_trading: appTradingGrant ? publicAppTradingGrantState(appTradingGrant, "grant_armed") : null,
+    app_trading_private: appTradingGrant ? privateAppTradingGrantState(appTradingGrant) : null,
     last_tick_at: null,
     last_execution_at: null,
     created_at: now.toISOString(),
     updated_at: now.toISOString(),
     expires_at: policy.expires_at,
-    next_step: status === "running"
-      ? "Autonomous worker is running. Trades require fresh market data, AI score, and policy guardrails."
-      : status === "pending_funding"
-        ? "Fund an isolated venue vault or connect a trade-only venue vault before live execution."
-        : "Kill switch is active.",
+    next_step: appTradingGrant && status === "running"
+      ? "App trading grant armed. Worker proposals route through the Ghola execution backend."
+      : status === "running"
+        ? "Autonomous worker is running. Trades require fresh market data, AI score, and policy guardrails."
+        : status === "pending_funding"
+          ? "Fund an isolated venue vault or connect a trade-only venue vault before live execution."
+          : "Kill switch is active.",
     execution_enabled: status === "running",
     control_plane: "worker",
     visibility_summary: {
@@ -86,6 +91,12 @@ export async function createAutopilotSession({ body, recipient, state, provider,
     await appendEvent(state, session, "funding_required", "Isolated venue funding is required before autonomous live trading.", {
       funding_model: "isolated_user_vault",
       ready_venues: readyVenues,
+    }, now);
+  }
+  if (appTradingGrant) {
+    await appendEvent(state, session, "session_state", "App trading grant armed for plan-bound worker execution.", {
+      app_trading: publicAppTradingGrantState(appTradingGrant, "grant_armed"),
+      worker_grant_token_status: "not_returned",
     }, now);
   }
   if (startLoop && status === "running") startAutopilotLoop({ sessionId: id, state, recipient });
@@ -304,6 +315,17 @@ export async function runAutopilotTick({
     proposal: proposal.proposal_commitment,
     tick: now.toISOString(),
   })}`;
+  if (hasAppTradingGrant(session)) {
+    return runAppTradingWorkerProposal({
+      session,
+      sessionId,
+      state,
+      proposal,
+      workOrderCommitment,
+      now,
+      fetchImpl,
+    });
+  }
   if (env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT !== "true") {
     return verifyAutopilotProposalNoSubmit({
       session,
@@ -378,6 +400,179 @@ export async function runAutopilotTick({
     position: publicPosition(position),
   }, now);
   return { ok: true, receipt, proposal };
+}
+
+async function runAppTradingWorkerProposal({
+  session,
+  sessionId,
+  state,
+  proposal,
+  workOrderCommitment,
+  now,
+  fetchImpl,
+}) {
+  const grant = session.app_trading_private;
+  const endpoint = appTradingWorkerProposalUrl(grant);
+  if (!endpoint || !grant?.worker_grant_token) {
+    await appendEvent(state, session, "risk_reject", "App trading worker grant is missing backend routing material.", {
+      app_trading_status: "blocked",
+    }, now);
+    return { ok: false, error: "app_trading_worker_grant_missing" };
+  }
+
+  const orderIntent = appTradingOrderIntentFromProposal(proposal, workOrderCommitment, session);
+  const body = {
+    idempotencyKey: workOrderCommitment,
+    executionIdempotencyKey: `${workOrderCommitment}:execute`,
+    orderIntent,
+    proposal: {
+      proposalCommitment: proposal.proposal_commitment,
+      decisionId: proposal.decision_id || null,
+      decisionSource: proposal.decision_source || "deterministic_guarded_strategy",
+      signalBps: proposal.signal_bps,
+      confidenceBps: proposal.confidence_bps || null,
+    },
+    refreshAfterSubmit: true,
+    fetchFills: true,
+    cancelIfOpen: false,
+  };
+  const response = await fetchImpl(endpoint, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      authorization: `Bearer ${grant.worker_grant_token}`,
+      "content-type": "application/json",
+      "cache-control": "no-cache",
+    },
+    body: JSON.stringify(body),
+  }).catch(() => null);
+  if (!response) {
+    await markAppTradingSessionBlocked({
+      session,
+      sessionId,
+      state,
+      now,
+      status: "blocked",
+      proposalStatus: "worker_backend_unavailable",
+      message: "Ghola execution backend was unavailable for app trading worker proposal.",
+      data: { worker_grant_commitment: session.app_trading?.worker_grant_commitment || null },
+    });
+    return { ok: false, error: "app_trading_backend_unavailable" };
+  }
+
+  const result = await response.json().catch(() => ({}));
+  const workerProposal = result?.appLiveTradingWorkerProposal || result?.workerProposal || null;
+  const executionRun = result?.appLiveTradingExecutionRun || null;
+  if (response.status === 202 || result?.status === "manual_approval_required") {
+    const updated = await updateAppTradingState({
+      session,
+      sessionId,
+      state,
+      now,
+      status: "proposal_pending",
+      proposalStatus: "manual_approval_required",
+      executionReportCommitment: null,
+      nextStep: "Manual approval is required before this worker proposal can execute.",
+    });
+    await appendEvent(state, updated, "guardrail", "Worker proposal queued for manual approval.", {
+      proposal_commitment: workerProposal?.proposalCommitment || workerProposal?.gholaAppLiveTradingWorkerProposalCommitment || null,
+      approval_commitment: result?.appLiveTradingApproval?.gholaAppLiveTradingApprovalCommitment || null,
+      blockers: Array.isArray(result?.blockers) ? result.blockers : [],
+      worker_grant_token_status: "not_returned",
+    }, now);
+    return {
+      ok: false,
+      error: "manual_approval_required",
+      proposal,
+      app_trading_worker_proposal: workerProposal,
+      approval: result?.appLiveTradingApproval || null,
+    };
+  }
+  if (!response.ok || !workerProposal) {
+    const error = stringValue(result?.error) || `app_trading_worker_proposal_${response.status}`;
+    await markAppTradingSessionBlocked({
+      session,
+      sessionId,
+      state,
+      now,
+      status: "blocked",
+      proposalStatus: error,
+      message: "Ghola execution backend rejected the worker proposal.",
+      data: {
+        error,
+        blockers: Array.isArray(result?.blockers) ? result.blockers : [],
+      },
+    });
+    return { ok: false, error, proposal };
+  }
+
+  const executionCommitment =
+    executionRun?.gholaAppLiveTradingExecutionRunCommitment
+    || workerProposal?.executionReportCommitment
+    || null;
+  const updated = await updateAppTradingState({
+    session,
+    sessionId,
+    state,
+    now,
+    status: workerProposal.status === "executed" ? "proposal_executed" : "proposal_pending",
+    proposalStatus: workerProposal.status || result?.status || "submitted",
+    executionReportCommitment: executionCommitment,
+    nextStep: workerProposal.status === "executed"
+      ? "Execution report recorded. Monitor backend positions and fills."
+      : "Worker proposal is waiting for the next backend action.",
+  });
+  updated.order_count = Number(updated.order_count || 0) + (workerProposal.status === "executed" ? 1 : 0);
+  updated.last_execution_at = workerProposal.status === "executed" ? now.toISOString() : updated.last_execution_at;
+  updated.daily_notional_used_bucket = String(
+    Math.min(bucketToUsd(updated.session_policy.max_daily_notional_bucket), (
+      Number(updated.daily_notional_used_bucket || 0) + (workerProposal.status === "executed" ? proposal.notional_usd : 0)
+    )),
+  );
+  updated.updated_at = now.toISOString();
+  await state.putAutopilotSession(updated);
+  await appendEvent(state, updated, "execution", "Worker proposal submitted through Ghola app trading backend.", {
+    venue_id: proposal.venue_id,
+    market: proposal.market,
+    side: proposal.side,
+    notional_bucket: String(proposal.notional_usd),
+    work_order_commitment: workOrderCommitment,
+    worker_proposal_commitment: workerProposal.proposalCommitment || workerProposal.gholaAppLiveTradingWorkerProposalCommitment || null,
+  }, now);
+  if (workerProposal.status === "executed") {
+    await appendEvent(state, updated, "live_order_submitted", "Ghola execution backend returned a unified execution report.", {
+      venue_id: proposal.venue_id,
+      work_order_commitment: workOrderCommitment,
+      execution_report_commitment: executionCommitment,
+    }, now);
+    await appendEvent(state, updated, "receipt", "Unified execution report recorded.", {
+      status: executionRun?.status || workerProposal.status,
+      execution_report_commitment: executionCommitment,
+      worker_grant_commitment: updated.app_trading?.worker_grant_commitment || null,
+      worker_grant_token_status: "not_returned",
+    }, now);
+    const position = await state.putAutopilotPosition(sessionId, {
+      venue_id: proposal.venue_id,
+      market: proposal.market,
+      side: proposal.side,
+      estimated_exposure_notional_usd: proposal.notional_usd,
+      last_order_notional_usd: proposal.notional_usd,
+      last_work_order_commitment: workOrderCommitment,
+      source: "ghola_app_trading_execution_report",
+    });
+    await appendEvent(state, updated, "venue_reconcile", "Backend positions/fills should be reconciled from Ghola app trading APIs.", {
+      venue_id: proposal.venue_id,
+      position: publicPosition(position),
+      execution_report_commitment: executionCommitment,
+    }, now);
+  }
+  return {
+    ok: true,
+    mode: "app_trading_worker_proposal",
+    proposal,
+    app_trading_worker_proposal: workerProposal,
+    execution_run: executionRun,
+  };
 }
 
 async function verifyAutopilotProposalNoSubmit({
@@ -534,9 +729,10 @@ function strategyForPolicy(policy) {
   };
 }
 
-function normalizeVenueAccess(raw, policy) {
+function normalizeVenueAccess(raw, policy, appTradingGrant = null) {
   const dryRunReady = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" ||
     process.env.PRIVATE_AGENT_AUTOPILOT_ASSUME_FUNDED === "true";
+  const grantVenues = new Set((appTradingGrant?.venue_ids || []).map(workerVenueId));
   const out = {};
   for (const venue of policy.venue_allowlist) {
     const value = raw?.[venue] || raw?.[venue.replace("_advanced", "")] || null;
@@ -553,6 +749,14 @@ function normalizeVenueAccess(raw, policy) {
         managed_allocation_commitment: value.managed_allocation_commitment || null,
         omnibus_allocation: value.omnibus_allocation || null,
         reason: value.reason || null,
+      };
+    } else if (grantVenues.has(venue)) {
+      out[venue] = {
+        status: "ready",
+        execution_mode: "ghola_app_trading_worker_grant",
+        worker_grant_commitment: appTradingGrant.worker_grant_commitment || null,
+        plan_policy_commitment: appTradingGrant.plan_policy_commitment || null,
+        reason: "app_trading_worker_grant_active",
       };
     } else {
       out[venue] = {
@@ -1058,7 +1262,14 @@ function primaryProduct(session) {
 }
 
 function publicSession(session) {
-  return JSON.parse(JSON.stringify(session));
+  const out = JSON.parse(JSON.stringify(session));
+  delete out.app_trading_private;
+  if (out.app_trading) {
+    delete out.app_trading.worker_grant_token;
+    delete out.app_trading.grant_token;
+    out.app_trading.worker_grant_token_status = "not_returned";
+  }
+  return out;
 }
 
 function publicProposal(proposal) {
@@ -1087,6 +1298,169 @@ function publicPosition(position) {
     source: position.source || "native_autopilot_state",
     updated_at: position.updated_at || null,
   };
+}
+
+function normalizeAppTradingGrant(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const grant = value;
+  const workerGrantToken =
+    stringValue(grant.worker_grant_token)
+    || stringValue(grant.workerGrantToken)
+    || stringValue(grant.grant_token);
+  const workerGrantId = stringValue(grant.worker_grant_id) || stringValue(grant.workerGrantId);
+  const workerGrantCommitment =
+    stringValue(grant.worker_grant_commitment)
+    || stringValue(grant.workerGrantCommitment);
+  const planId = stringValue(grant.plan_id) || stringValue(grant.planId);
+  const backendUrl = stringValue(grant.backend_url) || stringValue(grant.backendUrl);
+  if (!workerGrantToken || !workerGrantId || !workerGrantCommitment || !planId || !backendUrl) {
+    return null;
+  }
+  return {
+    backend_url: backendUrl,
+    worker_grant_token: workerGrantToken,
+    worker_grant_id: workerGrantId,
+    worker_grant_commitment: workerGrantCommitment,
+    plan_id: planId,
+    plan_policy_commitment:
+      stringValue(grant.plan_policy_commitment)
+      || stringValue(grant.planPolicyCommitment)
+      || null,
+    venue_ids: array(grant.venue_ids || grant.venueIds)
+      .map((venue) => stringValue(venue).toLowerCase())
+      .filter((venue) => venue === "hyperliquid" || venue === "phoenix" || venue === "coinbase"),
+    expires_at: stringValue(grant.expires_at) || stringValue(grant.expiresAt) || null,
+    redacted_plan_summary: grant.redacted_plan_summary && typeof grant.redacted_plan_summary === "object"
+      ? JSON.parse(JSON.stringify(grant.redacted_plan_summary))
+      : null,
+  };
+}
+
+function publicAppTradingGrantState(grant, status = "grant_armed", patch = {}) {
+  return {
+    status,
+    app_plan_id: grant.plan_id || null,
+    worker_grant_id: grant.worker_grant_id || null,
+    worker_grant_commitment: grant.worker_grant_commitment || null,
+    plan_policy_commitment: grant.plan_policy_commitment || null,
+    venue_ids: Array.isArray(grant.venue_ids) ? grant.venue_ids.slice() : [],
+    expires_at: grant.expires_at || null,
+    proposal_status: patch.proposal_status || null,
+    execution_report_commitment: patch.execution_report_commitment || null,
+    worker_grant_token_status: "not_returned",
+  };
+}
+
+function privateAppTradingGrantState(grant) {
+  return {
+    backend_url: grant.backend_url,
+    worker_grant_token: grant.worker_grant_token,
+    worker_grant_id: grant.worker_grant_id,
+    worker_grant_commitment: grant.worker_grant_commitment,
+    plan_id: grant.plan_id,
+    plan_policy_commitment: grant.plan_policy_commitment || null,
+    venue_ids: Array.isArray(grant.venue_ids) ? grant.venue_ids.slice() : [],
+    expires_at: grant.expires_at || null,
+  };
+}
+
+function hasAppTradingGrant(session) {
+  return Boolean(session?.app_trading_private?.backend_url && session.app_trading_private.worker_grant_token);
+}
+
+function appTradingWorkerProposalUrl(grant) {
+  const base = stringValue(grant?.backend_url).replace(/\/+$/, "");
+  if (!base) return null;
+  const v1Base = base.endsWith("/v1") ? base : `${base}/v1`;
+  return `${v1Base}/trading/app/worker/proposals`;
+}
+
+function workerVenueId(venue) {
+  const value = stringValue(venue).toLowerCase();
+  if (value === "coinbase") return "coinbase_advanced";
+  return value;
+}
+
+function backendVenueId(venue) {
+  const value = stringValue(venue).toLowerCase();
+  if (value === "coinbase_advanced") return "coinbase";
+  return value;
+}
+
+function appTradingOrderIntentFromProposal(proposal, workOrderCommitment, session) {
+  const venueId = backendVenueId(proposal.venue_id);
+  const price = Number(proposal.instruction?.order?.limit_price || proposal.instruction?.order?.price || 0);
+  const notional = Number(proposal.notional_usd || 0);
+  const baseSize = price > 0 && Number.isFinite(price) && Number.isFinite(notional) && notional > 0
+    ? trim(notional / price)
+    : "0.001";
+  const symbol = proposal.market || primaryProduct(session);
+  const order = proposal.instruction?.order || {};
+  return {
+    idempotencyKey: workOrderCommitment,
+    venueIds: [venueId],
+    symbol,
+    productId: venueId === "coinbase" ? normalizeMarket(symbol) : symbol,
+    side: proposal.side,
+    orderType: "limit",
+    baseSize: order.base_size || order.size || order.sz || baseSize,
+    quoteSize: String(proposal.notional_usd || order.quote_size || ""),
+    limitPrice: String(order.limit_price || order.price || price || ""),
+    maxSlippageBps: String(session.session_policy?.max_slippage_bps ?? order.max_slippage_bps ?? ""),
+  };
+}
+
+async function updateAppTradingState({
+  session,
+  sessionId,
+  state,
+  now,
+  status,
+  proposalStatus,
+  executionReportCommitment,
+  nextStep,
+}) {
+  const latest = await state.getAutopilotSession(sessionId) || session;
+  latest.app_trading = {
+    ...(latest.app_trading || {}),
+    status,
+    proposal_status: proposalStatus,
+    execution_report_commitment: executionReportCommitment,
+    worker_grant_token_status: "not_returned",
+  };
+  latest.status = status === "blocked" ? "blocked" : latest.status;
+  latest.execution_enabled = status !== "blocked" && latest.status !== "killed" && latest.status !== "expired";
+  latest.next_step = nextStep || latest.next_step;
+  latest.updated_at = now.toISOString();
+  await state.putAutopilotSession(latest);
+  return latest;
+}
+
+async function markAppTradingSessionBlocked({
+  session,
+  sessionId,
+  state,
+  now,
+  status,
+  proposalStatus,
+  message,
+  data = {},
+}) {
+  const updated = await updateAppTradingState({
+    session,
+    sessionId,
+    state,
+    now,
+    status,
+    proposalStatus,
+    executionReportCommitment: null,
+    nextStep: message,
+  });
+  await appendEvent(state, updated, "risk_reject", message, {
+    ...data,
+    worker_grant_token_status: "not_returned",
+  }, now);
+  return updated;
 }
 
 function normalizeMarket(value) {
