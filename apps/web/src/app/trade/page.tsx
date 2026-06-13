@@ -137,6 +137,12 @@ type StopRule =
   | "trail_after_profit"
   | "exit_on_invalidation";
 
+const API_JSON_ACCEPT_HEADERS = { Accept: "application/json" } as const;
+const API_JSON_POST_HEADERS = {
+  Accept: "application/json",
+  "Content-Type": "application/json",
+} as const;
+
 const VENUES: Array<{
   id: VenueId;
   label: string;
@@ -396,6 +402,7 @@ export default function TradePage() {
     if (appTradingSession?.csrfToken) return appTradingSession;
     const sessionRes = await fetch("/api/trading/session", {
       method: "POST",
+      headers: API_JSON_ACCEPT_HEADERS,
       credentials: "same-origin",
       cache: "no-store",
     });
@@ -413,11 +420,11 @@ export default function TradePage() {
   const refreshAppTradingWorkspace = useCallback(async (session?: AppTradingSession | null) => {
     if (!session?.csrfToken) return;
     const [activationRes, profileRes, approvalsRes, positionsRes, fillsRes] = await Promise.all([
-      fetch("/v1/trading/app/activation", { credentials: "same-origin", cache: "no-store" }),
-      fetch("/v1/trading/app/profile", { credentials: "same-origin", cache: "no-store" }),
-      fetch("/v1/trading/app/approvals", { credentials: "same-origin", cache: "no-store" }),
-      fetch("/v1/trading/app/positions", { credentials: "same-origin", cache: "no-store" }),
-      fetch("/v1/trading/app/fills", { credentials: "same-origin", cache: "no-store" }),
+      fetch("/v1/trading/app/activation", { headers: API_JSON_ACCEPT_HEADERS, credentials: "same-origin", cache: "no-store" }),
+      fetch("/v1/trading/app/profile", { headers: API_JSON_ACCEPT_HEADERS, credentials: "same-origin", cache: "no-store" }),
+      fetch("/v1/trading/app/approvals", { headers: API_JSON_ACCEPT_HEADERS, credentials: "same-origin", cache: "no-store" }),
+      fetch("/v1/trading/app/positions", { headers: API_JSON_ACCEPT_HEADERS, credentials: "same-origin", cache: "no-store" }),
+      fetch("/v1/trading/app/fills", { headers: API_JSON_ACCEPT_HEADERS, credentials: "same-origin", cache: "no-store" }),
     ]);
     if (activationRes.ok) {
       const body = await activationRes.json().catch(() => ({})) as {
@@ -460,7 +467,7 @@ export default function TradePage() {
     if (!session.csrfToken) return null;
     const res = await fetch("/v1/trading/app/activation/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: API_JSON_POST_HEADERS,
       credentials: "same-origin",
       cache: "no-store",
       body: JSON.stringify({
@@ -490,7 +497,7 @@ export default function TradePage() {
       `/v1/trading/app/approvals/${encodeURIComponent(approval.approvalId)}/${decision}`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: API_JSON_POST_HEADERS,
         credentials: "same-origin",
         cache: "no-store",
         body: JSON.stringify({ csrfToken: session.csrfToken }),
@@ -723,7 +730,7 @@ export default function TradePage() {
       });
       const planRes = await fetch("/v1/trading/app/plans", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: API_JSON_POST_HEADERS,
         credentials: "same-origin",
         cache: "no-store",
         body: JSON.stringify(planBody),
@@ -791,7 +798,7 @@ export default function TradePage() {
       });
       const prepareRes = await fetch("/v1/trading/app/prepare", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: API_JSON_POST_HEADERS,
         credentials: "same-origin",
         cache: "no-store",
         body: JSON.stringify({
@@ -828,7 +835,7 @@ export default function TradePage() {
       setLiveExecution({ status: "working", stage: "signing" });
       const signingRes = await fetch(`/v1/trading/app/drafts/${encodeURIComponent(prepared.draftId)}/signing-session`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: API_JSON_POST_HEADERS,
         credentials: "same-origin",
         cache: "no-store",
         body: JSON.stringify({
@@ -850,7 +857,7 @@ export default function TradePage() {
       );
       const signatureRes = await fetch(`/v1/trading/app/drafts/${encodeURIComponent(prepared.draftId)}/signature`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: API_JSON_POST_HEADERS,
         credentials: "same-origin",
         cache: "no-store",
         body: JSON.stringify({
@@ -868,7 +875,7 @@ export default function TradePage() {
       setLiveExecution({ status: "working", stage: "submitting" });
       const executeRes = await fetch("/v1/trading/app/execute", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: API_JSON_POST_HEADERS,
         credentials: "same-origin",
         cache: "no-store",
         body: JSON.stringify({
@@ -1725,7 +1732,7 @@ async function armAppTradingWorker(input: {
   const signature = await input.signMessage(delegationMessage);
   const res = await fetch("/api/trading/worker/arm", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: API_JSON_POST_HEADERS,
     credentials: "same-origin",
     cache: "no-store",
     body: JSON.stringify({
