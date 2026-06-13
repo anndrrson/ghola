@@ -421,12 +421,26 @@ async function runAppTradingWorkerProposal({
   }
 
   const orderIntent = appTradingOrderIntentFromProposal(proposal, workOrderCommitment, session);
+  const proposalIntentCommitment = proposal.proposal_commitment || digest({
+    type: "ghola_app_trading_worker_proposal_intent_v1",
+    planId: grant.plan_id,
+    workOrderCommitment,
+    venueIds: orderIntent.venueIds,
+    symbol: orderIntent.symbol,
+    side: orderIntent.side,
+  });
   const body = {
     idempotencyKey: workOrderCommitment,
     executionIdempotencyKey: `${workOrderCommitment}:execute`,
+    activationId: grant.activation_id || null,
+    planId: grant.plan_id,
+    planPolicyCommitment: grant.plan_policy_commitment || null,
+    workerGrantCommitment: grant.worker_grant_commitment || null,
+    proposalIntentCommitment,
     orderIntent,
     proposal: {
-      proposalCommitment: proposal.proposal_commitment,
+      proposalCommitment: proposalIntentCommitment,
+      proposalIntentCommitment,
       decisionId: proposal.decision_id || null,
       decisionSource: proposal.decision_source || "deterministic_guarded_strategy",
       signalBps: proposal.signal_bps,
@@ -1312,6 +1326,11 @@ function normalizeAppTradingGrant(value) {
     stringValue(grant.worker_grant_commitment)
     || stringValue(grant.workerGrantCommitment);
   const planId = stringValue(grant.plan_id) || stringValue(grant.planId);
+  const activationId =
+    stringValue(grant.activation_id)
+    || stringValue(grant.activationId)
+    || stringValue(grant.app_trading_activation_id)
+    || null;
   const backendUrl = stringValue(grant.backend_url) || stringValue(grant.backendUrl);
   if (!workerGrantToken || !workerGrantId || !workerGrantCommitment || !planId || !backendUrl) {
     return null;
@@ -1321,6 +1340,7 @@ function normalizeAppTradingGrant(value) {
     worker_grant_token: workerGrantToken,
     worker_grant_id: workerGrantId,
     worker_grant_commitment: workerGrantCommitment,
+    activation_id: activationId,
     plan_id: planId,
     plan_policy_commitment:
       stringValue(grant.plan_policy_commitment)
@@ -1340,6 +1360,7 @@ function publicAppTradingGrantState(grant, status = "grant_armed", patch = {}) {
   return {
     status,
     app_plan_id: grant.plan_id || null,
+    activation_id: grant.activation_id || null,
     worker_grant_id: grant.worker_grant_id || null,
     worker_grant_commitment: grant.worker_grant_commitment || null,
     plan_policy_commitment: grant.plan_policy_commitment || null,
@@ -1357,6 +1378,7 @@ function privateAppTradingGrantState(grant) {
     worker_grant_token: grant.worker_grant_token,
     worker_grant_id: grant.worker_grant_id,
     worker_grant_commitment: grant.worker_grant_commitment,
+    activation_id: grant.activation_id || null,
     plan_id: grant.plan_id,
     plan_policy_commitment: grant.plan_policy_commitment || null,
     venue_ids: Array.isArray(grant.venue_ids) ? grant.venue_ids.slice() : [],

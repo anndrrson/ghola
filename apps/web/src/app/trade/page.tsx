@@ -68,6 +68,18 @@ type AppTradingProfile = {
   nextActionsByVenue?: Record<string, string[]>;
 };
 
+type AppTradingActivation = {
+  activationId?: string;
+  status?: string;
+  phase?: string;
+  planId?: string | null;
+  workerGrantCommitment?: string | null;
+  venueIds?: string[];
+  blockers?: string[];
+  nextActions?: string[];
+  nextActionsByVenue?: Record<string, string[]>;
+};
+
 type AppTradingApproval = {
   approvalId?: string;
   status?: string;
@@ -289,6 +301,7 @@ export default function TradePage() {
   const [liveExecution, setLiveExecution] = useState<LiveExecutionState>({ status: "idle" });
   const [appTradingSession, setAppTradingSession] = useState<AppTradingSession | null>(null);
   const [appTradingProfile, setAppTradingProfile] = useState<AppTradingProfile | null>(null);
+  const [appTradingActivation, setAppTradingActivation] = useState<AppTradingActivation | null>(null);
   const [appTradingApprovals, setAppTradingApprovals] = useState<AppTradingApproval[]>([]);
   const [appTradingPositions, setAppTradingPositions] = useState<AppTradingPositionSnapshot[]>([]);
   const [appTradingFills, setAppTradingFills] = useState<AppTradingFill[]>([]);
@@ -399,12 +412,19 @@ export default function TradePage() {
 
   const refreshAppTradingWorkspace = useCallback(async (session?: AppTradingSession | null) => {
     if (!session?.csrfToken) return;
-    const [profileRes, approvalsRes, positionsRes, fillsRes] = await Promise.all([
+    const [activationRes, profileRes, approvalsRes, positionsRes, fillsRes] = await Promise.all([
+      fetch("/v1/trading/app/activation", { credentials: "same-origin", cache: "no-store" }),
       fetch("/v1/trading/app/profile", { credentials: "same-origin", cache: "no-store" }),
       fetch("/v1/trading/app/approvals", { credentials: "same-origin", cache: "no-store" }),
       fetch("/v1/trading/app/positions", { credentials: "same-origin", cache: "no-store" }),
       fetch("/v1/trading/app/fills", { credentials: "same-origin", cache: "no-store" }),
     ]);
+    if (activationRes.ok) {
+      const body = await activationRes.json().catch(() => ({})) as {
+        appLiveTradingActivation?: AppTradingActivation;
+      };
+      setAppTradingActivation(body.appLiveTradingActivation ?? null);
+    }
     if (profileRes.ok) {
       const body = await profileRes.json().catch(() => ({})) as {
         appLiveTradingProfile?: AppTradingProfile;
@@ -433,6 +453,33 @@ export default function TradePage() {
     }
   }, []);
 
+  const runAppTradingActivation = useCallback(async (
+    session: AppTradingSession,
+    patch: Record<string, unknown> = {},
+  ): Promise<AppTradingActivation | null> => {
+    if (!session.csrfToken) return null;
+    const res = await fetch("/v1/trading/app/activation/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      cache: "no-store",
+      body: JSON.stringify({
+        csrfToken: session.csrfToken,
+        ...patch,
+      }),
+    });
+    const body = await res.json().catch(() => ({})) as {
+      appLiveTradingActivation?: AppTradingActivation;
+      appLiveTradingProfile?: AppTradingProfile;
+    };
+    if (body.appLiveTradingProfile) setAppTradingProfile(body.appLiveTradingProfile);
+    if (body.appLiveTradingActivation) {
+      setAppTradingActivation(body.appLiveTradingActivation);
+      return body.appLiveTradingActivation;
+    }
+    return null;
+  }, []);
+
   const decideAppTradingApproval = useCallback(async (
     approval: AppTradingApproval,
     decision: "approve" | "reject",
@@ -454,13 +501,15 @@ export default function TradePage() {
       setLiveExecution({ status: "error", message: body.error || `Approval ${decision} failed` });
       return;
     }
+    await runAppTradingActivation(session);
     await refreshAppTradingWorkspace(session);
-  }, [openTradingSession, refreshAppTradingWorkspace]);
+  }, [openTradingSession, refreshAppTradingWorkspace, runAppTradingActivation]);
 
   useEffect(() => {
     if (!thumperAuth.authenticated) {
       setAppTradingSession(null);
       setAppTradingProfile(null);
+      setAppTradingActivation(null);
       setAppTradingApprovals([]);
       setAppTradingPositions([]);
       setAppTradingFills([]);
@@ -468,7 +517,9 @@ export default function TradePage() {
     }
     let cancelled = false;
     openTradingSession()
-      .then((session) => {
+      .then(async (session) => {
+        if (cancelled) return undefined;
+        await runAppTradingActivation(session);
         if (!cancelled) return refreshAppTradingWorkspace(session);
         return undefined;
       })
@@ -476,7 +527,15 @@ export default function TradePage() {
     return () => {
       cancelled = true;
     };
-  }, [thumperAuth.authenticated, openTradingSession, refreshAppTradingWorkspace]);
+  }, [thumperAuth.authenticated, openTradingSession, refreshAppTradingWorkspace, runAppTradingActivation]);
+
+  useEffect(() => {
+    if (!thumperAuth.authenticated || !appTradingSession?.csrfToken) return;
+    const interval = window.setInterval(() => {
+      void refreshAppTradingWorkspace(appTradingSession);
+    }, 15_000);
+    return () => window.clearInterval(interval);
+  }, [thumperAuth.authenticated, appTradingSession, refreshAppTradingWorkspace]);
 
   useEffect(() => {
     if (!entryPinned && mid) setEntryPrice(mid);
@@ -648,6 +707,7 @@ export default function TradePage() {
     setLiveExecution({ status: "working", stage: "session" });
     try {
       const session = await openTradingSession();
+      const initialActivation = await runAppTradingActivation(session, { venueIds: [venue.id] });
 
       setLiveExecution({ status: "working", stage: "planning" });
       const planBody = buildLivePlanBody({
@@ -681,10 +741,16 @@ export default function TradePage() {
       if (!planRes.ok || !planJson.appLiveTradingPlan?.planId) {
         throw new Error(planJson.error || planJson.blockers?.join(", ") || "Trading plan rejected");
       }
+      const planActivation = await runAppTradingActivation(session, {
+        planId: planJson.appLiveTradingPlan.planId,
+        venueIds: [venue.id],
+        syncAccounts: true,
+      }) ?? initialActivation;
 
       setLiveExecution({ status: "working", stage: "arming" });
       const armedWorker = await armAppTradingWorker({
         csrfToken: session.csrfToken,
+        activationId: planActivation?.activationId ?? appTradingActivation?.activationId ?? null,
         plan: planJson.appLiveTradingPlan,
         venueId: venue.id,
         market: marketSel,
@@ -697,6 +763,11 @@ export default function TradePage() {
         planBody,
       });
       if (armedWorker.status) {
+        await runAppTradingActivation(session, {
+          planId: planJson.appLiveTradingPlan.planId,
+          activationId: planActivation?.activationId ?? appTradingActivation?.activationId ?? null,
+          venueIds: [venue.id],
+        });
         setLiveExecution({
           status: "done",
           runStatus: armedWorker.status,
@@ -1403,10 +1474,24 @@ export default function TradePage() {
               <p className="text-[10px] font-medium text-[#6b7997]">Workspace</p>
               <div className="mt-2.5 grid gap-2">
                 <VisibilityRow
+                  label="Activation"
+                  value={appTradingActivation?.status ?? (thumperAuth.authenticated ? "loading" : "sign in")}
+                  tone={
+                    ["executed", "running", "worker_armed"].includes(appTradingActivation?.status ?? "")
+                      ? "good"
+                      : "warn"
+                  }
+                />
+                <VisibilityRow
                   label="Profile"
                   value={appTradingProfile?.status ?? (thumperAuth.authenticated ? "loading" : "sign in")}
                   tone={appTradingProfile?.executableVenueIds?.includes(venue.id) ? "good" : "warn"}
                 />
+                {appTradingActivation?.blockers?.length ? (
+                  <div className="trade-field rounded-md px-2.5 py-2 font-mono text-[11px] text-[#8b95a8]">
+                    {appTradingActivation.blockers.slice(0, 3).join(", ")}
+                  </div>
+                ) : null}
                 <VisibilityRow
                   label="Approvals"
                   value={appTradingApprovals.filter((approval) => approval.status === "pending_approval").length ? "pending" : "clear"}
@@ -1572,6 +1657,7 @@ interface BuildLiveOrderIntentInput {
 
 type AppTradingWorkerArmResult = {
   status?: string;
+  activationId?: string | null;
   workerGrantCommitment?: string | null;
   session?: { autopilot_session_id?: string | null } | null;
 };
@@ -1603,6 +1689,7 @@ function buildLivePlanBody(input: BuildLivePlanBodyInput): Record<string, unknow
 
 async function armAppTradingWorker(input: {
   csrfToken: string;
+  activationId?: string | null;
   plan: {
     planId?: string;
     planPolicyCommitment?: string | null;
@@ -1643,6 +1730,7 @@ async function armAppTradingWorker(input: {
     cache: "no-store",
     body: JSON.stringify({
       csrfToken: input.csrfToken,
+      activationId: input.activationId ?? null,
       planId: input.plan.planId,
       planPolicyCommitment: input.plan.planPolicyCommitment ?? null,
       venueIds,

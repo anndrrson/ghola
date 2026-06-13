@@ -96,6 +96,7 @@ export interface AutopilotSessionPolicy {
 export interface AppTradingAutopilotGrantState {
   status: "grant_pending_worker" | "grant_armed" | "proposal_pending" | "proposal_executed" | "blocked";
   app_plan_id: string | null;
+  activation_id: string | null;
   worker_grant_id: string | null;
   worker_grant_commitment: string | null;
   plan_policy_commitment: string | null;
@@ -1317,6 +1318,10 @@ function appTradingGrantPayload(value: unknown): Record<string, unknown> | null 
     worker_grant_token: workerGrantToken,
     worker_grant_id: workerGrantId,
     worker_grant_commitment: workerGrantCommitment,
+    activation_id:
+      stringValue(grant.activation_id)
+      ?? stringValue(grant.activationId)
+      ?? stringValue(grant.appTradingActivationId),
     plan_id: planId,
     plan_policy_commitment:
       stringValue(grant.plan_policy_commitment)
@@ -1358,6 +1363,10 @@ function appTradingGrantStateValue(value: unknown): AppTradingAutopilotGrantStat
   return {
     status,
     app_plan_id: appPlanId,
+    activation_id:
+      stringValue(grant.activation_id)
+      ?? stringValue(grant.activationId)
+      ?? null,
     worker_grant_id: workerGrantId,
     worker_grant_commitment: workerGrantCommitment,
     plan_policy_commitment: planPolicyCommitment,

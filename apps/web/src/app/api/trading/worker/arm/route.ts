@@ -149,6 +149,7 @@ export async function POST(req: NextRequest) {
   const body = record(await req.json().catch(() => null));
   const csrfToken = stringValue(body.csrfToken) ?? stringValue(body.csrf);
   const planId = stringValue(body.planId) ?? stringValue(body.appLiveTradingPlanId);
+  const activationId = stringValue(body.activationId) ?? stringValue(body.appLiveTradingActivationId);
   if (!csrfToken || !planId) {
     return applyNoStore(NextResponse.json({ error: "plan_id_and_csrf_required" }, { status: 400 }));
   }
@@ -168,6 +169,7 @@ export async function POST(req: NextRequest) {
     sessionToken: executionSessionToken,
     csrfToken,
     planId,
+    activationId,
     venueIds,
     planPolicyCommitment: stringValue(body.planPolicyCommitment),
     delegationProof,
@@ -199,6 +201,7 @@ export async function POST(req: NextRequest) {
       workerGrantToken?: string;
       workerGrantId?: string;
       workerGrantCommitment?: string;
+      activationId?: string | null;
       planPolicyCommitment?: string | null;
       venueIds?: string[];
       expiresAt?: string | null;
@@ -218,6 +221,7 @@ export async function POST(req: NextRequest) {
     worker_grant_token: grant.workerGrantToken,
     worker_grant_id: grant.workerGrantId,
     worker_grant_commitment: grant.workerGrantCommitment,
+    activation_id: grant.activationId ?? activationId ?? null,
     plan_id: planId,
     plan_policy_commitment: planPolicyCommitment,
     venue_ids: grant.venueIds?.length ? grant.venueIds : venueIds,
@@ -253,6 +257,7 @@ export async function POST(req: NextRequest) {
       status: autopilot.session.status,
       workerGrantId: grant.workerGrantId,
       workerGrantCommitment: grant.workerGrantCommitment,
+      activationId: grant.activationId ?? activationId ?? null,
       planId,
       planPolicyCommitment,
       venueIds: appTradingGrant.venue_ids,

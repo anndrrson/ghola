@@ -16,6 +16,7 @@ function request(headers: Record<string, string>, body?: Record<string, unknown>
     body: JSON.stringify(body ?? {
       csrfToken: "csrf-token",
       planId: "gltp_plan",
+      activationId: "glact_plan",
       planPolicyCommitment: "plan_policy_commitment",
       venueIds: ["hyperliquid"],
       market: "BTC-USD",
@@ -70,6 +71,7 @@ describe("app trading worker arm route", () => {
           workerGrantToken: "raw-worker-grant-token",
           workerGrantId: "glwg_plan",
           workerGrantCommitment: "worker_grant_commitment",
+          activationId: "glact_plan",
           planPolicyCommitment: "plan_policy_commitment",
           venueIds: ["hyperliquid"],
           expiresAt: "2026-06-01T14:00:00.000Z",
@@ -124,6 +126,7 @@ describe("app trading worker arm route", () => {
       status: "running",
       workerGrantId: "glwg_plan",
       workerGrantCommitment: "worker_grant_commitment",
+      activationId: "glact_plan",
       planId: "gltp_plan",
     });
     expect(JSON.stringify(body)).not.toContain("raw-worker-grant-token");
@@ -137,11 +140,13 @@ describe("app trading worker arm route", () => {
       sessionToken: "backend-exec-token",
       csrfToken: "csrf-token",
       planId: "gltp_plan",
+      activationId: "glact_plan",
       venueIds: ["hyperliquid"],
     });
 
     expect(workerPayload).not.toBeNull();
     expect((workerPayload?.app_trading_grant as Record<string, unknown>).worker_grant_token).toBe("raw-worker-grant-token");
     expect((workerPayload?.app_trading_grant as Record<string, unknown>).worker_grant_id).toBe("glwg_plan");
+    expect((workerPayload?.app_trading_grant as Record<string, unknown>).activation_id).toBe("glact_plan");
   });
 });

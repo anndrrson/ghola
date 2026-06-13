@@ -119,6 +119,7 @@ describe("autonomous autopilot engine", () => {
           worker_grant_token: "raw-app-worker-grant-token",
           worker_grant_id: "glwg_app_worker",
           worker_grant_commitment: "worker_grant_commitment",
+          activation_id: "glact_app_activation",
           plan_id: "gltp_app_plan",
           plan_policy_commitment: "plan_policy_commitment",
           venue_ids: ["hyperliquid"],
@@ -169,6 +170,11 @@ describe("autonomous autopilot engine", () => {
     assert.deepEqual(body.orderIntent.venueIds, ["hyperliquid"]);
     assert.equal(body.orderIntent.symbol, "BTC-USD");
     assert.equal(body.orderIntent.side, "buy");
+    assert.equal(body.activationId, "glact_app_activation");
+    assert.equal(body.planId, "gltp_app_plan");
+    assert.equal(body.planPolicyCommitment, "plan_policy_commitment");
+    assert.equal(body.workerGrantCommitment, "worker_grant_commitment");
+    assert.match(body.proposalIntentCommitment, /^autopilot_proposal_/);
     assert.equal(body.refreshAfterSubmit, true);
     assert.equal(body.fetchFills, true);
 
