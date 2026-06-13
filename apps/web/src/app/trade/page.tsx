@@ -51,7 +51,7 @@ type Side = "buy" | "sell";
 type ChartInterval = "1m" | "5m" | "15m" | "1h";
 type LiveExecutionState =
   | { status: "idle" }
-  | { status: "working"; stage: "session" | "planning" | "arming" | "preparing" | "signing" | "submitting" }
+  | { status: "working"; stage: "session" | "linking" | "planning" | "arming" | "preparing" | "signing" | "submitting" }
   | { status: "done"; runStatus: string; commitment: string; orderId?: string | null }
   | { status: "error"; message: string };
 
@@ -65,6 +65,8 @@ type AppTradingProfile = {
   status?: string;
   linkedVenueIds?: string[];
   executableVenueIds?: string[];
+  activeCredentialHandleVenueIds?: string[];
+  accountVenueIds?: string[];
   nextActionsByVenue?: Record<string, string[]>;
 };
 
@@ -714,6 +716,16 @@ export default function TradePage() {
     setLiveExecution({ status: "working", stage: "session" });
     try {
       const session = await openTradingSession();
+      if (venue.id === "hyperliquid") {
+        setLiveExecution({ status: "working", stage: "linking" });
+        const linkedProfile = await ensureHyperliquidWalletDelegatedProfile({
+          csrfToken: session.csrfToken,
+          walletAddress: wallet.walletAddress,
+          signMessage: wallet.signMessage,
+          currentProfile: appTradingProfile,
+        });
+        if (linkedProfile) setAppTradingProfile(linkedProfile);
+      }
       const initialActivation = await runAppTradingActivation(session, { venueIds: [venue.id] });
 
       setLiveExecution({ status: "working", stage: "planning" });
@@ -1600,6 +1612,8 @@ export default function TradePage() {
                     {liveWorking
                       ? liveExecution.stage === "session"
                         ? "Opening trading session"
+                        : liveExecution.stage === "linking"
+                          ? "Connecting Hyperliquid"
                         : liveExecution.stage === "planning"
                           ? "Saving plan"
                           : liveExecution.stage === "arming"
@@ -1692,6 +1706,119 @@ function buildLivePlanBody(input: BuildLivePlanBodyInput): Record<string, unknow
     entryTrigger: "drawn_entry_stop",
     idempotencyKey: `plan-${input.venueId}-${input.market}-${Date.now()}`,
   };
+}
+
+async function ensureHyperliquidWalletDelegatedProfile(input: {
+  csrfToken: string;
+  walletAddress: string | null;
+  signMessage: (message: string) => Promise<string>;
+  currentProfile: AppTradingProfile | null;
+}): Promise<AppTradingProfile | null> {
+  if (
+    input.currentProfile?.linkedVenueIds?.includes("hyperliquid") &&
+    input.currentProfile.activeCredentialHandleVenueIds?.includes("hyperliquid") &&
+    input.currentProfile.accountVenueIds?.includes("hyperliquid")
+  ) {
+    return null;
+  }
+  if (!input.walletAddress) {
+    throw new Error("Wallet signature required to connect Hyperliquid.");
+  }
+
+  const challengeNonceCommitment = await sha256Hex(stableStringify({
+    type: "ghola_hyperliquid_provider_link_nonce_v1",
+    walletAddress: input.walletAddress,
+    issuedAtBucket: Math.floor(Date.now() / 60_000),
+  }));
+  const challengeRes = await fetch("/v1/trading/app/provider-links/challenge", {
+    method: "POST",
+    headers: API_JSON_POST_HEADERS,
+    credentials: "same-origin",
+    cache: "no-store",
+    body: JSON.stringify({
+      csrfToken: input.csrfToken,
+      profileId: "hyperliquid_crypto_market_link",
+      challengeNonceCommitment,
+    }),
+  });
+  const challengeJson = await challengeRes.json().catch(() => ({})) as {
+    providerAccountLinkChallenge?: {
+      gholaProviderAccountLinkChallengeCommitment?: string;
+      challengeBindingCommitment?: string;
+    };
+    error?: string;
+  };
+  const challenge = challengeJson.providerAccountLinkChallenge;
+  if (!challengeRes.ok || !challenge?.gholaProviderAccountLinkChallengeCommitment) {
+    throw new Error(challengeJson.error || "Hyperliquid provider challenge failed");
+  }
+
+  const accountAuthorityCommitment = await sha256Hex(stableStringify({
+    type: "ghola_hyperliquid_wallet_account_authority_v1",
+    walletAddress: input.walletAddress,
+  }));
+  const providerLinkMessage = stableStringify({
+    type: "ghola_hyperliquid_provider_link_wallet_delegation_v1",
+    venueId: "hyperliquid",
+    accountAuthorityCommitment,
+    challengeCommitment: challenge.gholaProviderAccountLinkChallengeCommitment,
+    challengeBindingCommitment: challenge.challengeBindingCommitment ?? null,
+  });
+  const providerLinkSignature = await input.signMessage(providerLinkMessage);
+  const delegationMessageCommitment = await sha256Hex(providerLinkMessage);
+  const walletDelegationProofCommitment = await sha256Hex(stableStringify({
+    type: "ghola_hyperliquid_provider_link_wallet_signature_commitment_v1",
+    delegationMessageCommitment,
+    signature: providerLinkSignature,
+  }));
+  const executionCredentialHandleCommitment = await sha256Hex(stableStringify({
+    type: "ghola_hyperliquid_wallet_delegated_signer_handle_v1",
+    accountAuthorityCommitment,
+    walletDelegationProofCommitment,
+  }));
+
+  const linkRes = await fetch("/v1/trading/app/provider-links/hyperliquid", {
+    method: "POST",
+    headers: API_JSON_POST_HEADERS,
+    credentials: "same-origin",
+    cache: "no-store",
+    body: JSON.stringify({
+      csrfToken: input.csrfToken,
+      challenge,
+      hyperliquidAccountCommitment: accountAuthorityCommitment,
+      hyperliquidExecutionCredentialHandleCommitment: executionCredentialHandleCommitment,
+      executionCredentialHandleSource: "wallet_delegated_signer",
+      walletDelegationProofCommitment,
+      delegationMessageCommitment,
+    }),
+  });
+  const linkJson = await linkRes.json().catch(() => ({})) as {
+    appLiveTradingProfile?: AppTradingProfile;
+    error?: string;
+  };
+  if (!linkRes.ok || !linkJson.appLiveTradingProfile) {
+    throw new Error(linkJson.error || "Hyperliquid provider link failed");
+  }
+
+  const syncRes = await fetch("/v1/trading/app/accounts/sync", {
+    method: "POST",
+    headers: API_JSON_POST_HEADERS,
+    credentials: "same-origin",
+    cache: "no-store",
+    body: JSON.stringify({
+      csrfToken: input.csrfToken,
+      venueIds: ["hyperliquid"],
+    }),
+  });
+  const syncJson = await syncRes.json().catch(() => ({})) as {
+    appLiveTradingProfile?: AppTradingProfile;
+    blockers?: string[];
+    error?: string;
+  };
+  if (!syncRes.ok) {
+    throw new Error(syncJson.blockers?.join(", ") || syncJson.error || "Hyperliquid account sync failed");
+  }
+  return syncJson.appLiveTradingProfile ?? linkJson.appLiveTradingProfile;
 }
 
 async function armAppTradingWorker(input: {
