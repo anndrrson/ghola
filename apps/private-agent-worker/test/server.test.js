@@ -315,6 +315,15 @@ function enablePooledReadinessEnv() {
   process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE = "full_ticket";
   process.env.PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD = "1000";
   process.env.PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS = "100";
+  process.env.PRIVATE_AGENT_BACKPACK_POOLED_ENABLED = "true";
+  process.env.PRIVATE_AGENT_BACKPACK_LIVE_MODE = "tiny_live";
+  process.env.PRIVATE_AGENT_BACKPACK_API_KEY = "test-backpack-api-key";
+  process.env.PRIVATE_AGENT_BACKPACK_API_SECRET = Buffer.from(new Uint8Array(32).fill(7)).toString("base64");
+  process.env.PRIVATE_AGENT_BACKPACK_ALLOWED_SYMBOLS = "SOL_USDC_PERP";
+  process.env.PRIVATE_AGENT_BACKPACK_MAX_ORDER_NOTIONAL_USD = "5";
+  process.env.PRIVATE_AGENT_BACKPACK_DAILY_NOTIONAL_CAP_USD = "25";
+  process.env.PRIVATE_AGENT_BACKPACK_POST_ONLY_MM = "true";
+  process.env.PRIVATE_AGENT_BACKPACK_NO_SUBMIT_LOCAL_CHECKS = "true";
   process.env.PRIVATE_AGENT_JUPITER_LIVE_MODE = "full";
   process.env.PRIVATE_AGENT_JUPITER_API_KEY = "test-jupiter-api-key";
   process.env.PRIVATE_AGENT_JUPITER_ALLOWED_INPUT_MINTS = JUPITER_SOL_MINT;
@@ -504,7 +513,7 @@ describe("private agent worker", () => {
     const body = {
       version: 1,
       operation_class: "pooled_readiness",
-      venues: ["hyperliquid", "phoenix", "jupiter", "coinbase"],
+      venues: ["hyperliquid", "phoenix", "backpack", "jupiter", "coinbase"],
     };
     const token = capabilityToken({
       path: "/venues/pools/readiness",
@@ -532,6 +541,7 @@ describe("private agent worker", () => {
       [
         ["hyperliquid", "ready"],
         ["phoenix", "ready"],
+        ["backpack", "ready"],
         ["jupiter", "ready"],
         ["coinbase", "ready"],
       ],
@@ -540,7 +550,95 @@ describe("private agent worker", () => {
     assert.equal(serialized.includes("api_wallet_private_key"), false);
     assert.equal(serialized.includes("wallet_private_key"), false);
     assert.equal(serialized.includes("api_private_key_pem"), false);
+    assert.equal(serialized.includes("test-backpack-api-key"), false);
     assert.equal(serialized.includes("credential_ref"), false);
+  });
+
+  it("reports Backpack pooled readiness blockers without rejecting the venue", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    const body = {
+      version: 1,
+      operation_class: "pooled_readiness",
+      venues: ["backpack"],
+    };
+    const token = capabilityToken({
+      path: "/venues/pools/readiness",
+      scope: "credential:verify",
+      body,
+      expected: { operation_class: "pooled_readiness" },
+    });
+    const response = await fetch(`${baseUrl}/venues/pools/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal(response.status, 200);
+    const readiness = await response.json();
+    assert.equal(readiness.ready, false);
+    assert.equal(readiness.venues[0].venue_id, "backpack");
+    assert.ok(readiness.venues[0].reason_codes.includes("backpack_api_key_missing"));
+    assert.ok(readiness.venues[0].reason_codes.includes("backpack_symbol_allowlist_missing"));
+  });
+
+  it("accepts a tri-venue arb run command through scoped worker capability", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_SOLANA_PERPS_NO_SUBMIT_LOCAL_CHECKS = "true";
+    process.env.PRIVATE_AGENT_ARB_SIGNAL_MODE = "force";
+    process.env.PRIVATE_AGENT_ARB_FORCE_BUY_PRICE = "100";
+    process.env.PRIVATE_AGENT_ARB_FORCE_SELL_PRICE = "104";
+    process.env.PRIVATE_AGENT_ARB_MAX_LEG_NOTIONAL_USD = "5";
+    process.env.PRIVATE_AGENT_ARB_DAILY_NOTIONAL_CAP_USD = "25";
+    process.env.PRIVATE_AGENT_ARB_MIN_NET_EDGE_BPS = "25";
+    process.env.PRIVATE_AGENT_ARB_MAX_EXECUTION_SKEW_MS = "2000";
+    process.env.PRIVATE_AGENT_ARB_MAX_MARKET_DATA_SKEW_MS = "2000";
+    process.env.PRIVATE_AGENT_ARB_LIVE_SUBMIT = "true";
+    enablePooledReadinessEnv();
+    const body = {
+      version: 1,
+      owner_commitment: "owner_tri_venue_123",
+      market: "SOL-USD",
+      venue_allowlist: ["phoenix", "hyperliquid", "backpack"],
+      caps: {
+        max_leg_notional_usd: "5",
+        daily_notional_cap_usd: "25",
+        max_slippage_bps: 25,
+        max_execution_skew_ms: 2000,
+        max_market_data_skew_ms: 2000,
+      },
+    };
+    const token = capabilityToken({
+      path: "/autopilot/tri-venue/run",
+      scope: "order:submit",
+      body,
+      expected: {
+        operation_class: "tri_venue_live",
+        owner_commitment: body.owner_commitment,
+      },
+    });
+    const response = await fetch(`${baseUrl}/autopilot/tri-venue/run`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.action, "run");
+    assert.match(result.session.autopilot_session_id, /^autopilot_/);
+    assert.equal(result.tick.ok, true);
+    assert.equal(result.tick.receipts.length, 2);
+    assert.equal(JSON.stringify(result).includes("test-backpack-api-key"), false);
   });
 
   it("blocks live pooled readiness when worker state is not shared", async () => {

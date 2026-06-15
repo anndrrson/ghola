@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 
 const SUPPORTED_MARKETS = new Set(["BTC-USD", "ETH-USD", "SOL-USD"]);
 const SPOT_VENUES = new Set(["coinbase_advanced", "jupiter"]);
-const PERP_VENUES = new Set(["hyperliquid"]);
+const PERP_VENUES = new Set(["hyperliquid", "phoenix", "backpack"]);
 const DEFAULT_FEE_BPS = {
   coinbase_advanced: 60,
   hyperliquid: 5,
+  phoenix: 5,
+  backpack: 5,
   jupiter: 10,
 };
 
@@ -301,10 +303,13 @@ async function marketSnapshots({ session, env, fetchImpl, now }) {
     const market = normalizeMarket(session.session_policy.market_allowlist[0] || "SOL-USD");
     const base = capUsd(env.PRIVATE_AGENT_ARB_FORCE_BUY_PRICE || env.PRIVATE_AGENT_AUTOPILOT_FORCE_PRICE, 100);
     const sell = capUsd(env.PRIVATE_AGENT_ARB_FORCE_SELL_PRICE, base * 1.03);
-    const spotVenue = session.session_policy.venue_allowlist.includes("coinbase_advanced") ? "coinbase_advanced" : "jupiter";
+    const ready = readyVenues(session);
+    const hedgeVenue = ready.includes("hyperliquid") ? "hyperliquid" : ready.find((venue) => PERP_VENUES.has(venue)) || "hyperliquid";
+    const buyVenue = ready.find((venue) => venue !== hedgeVenue) ||
+      (session.session_policy.venue_allowlist.includes("coinbase_advanced") ? "coinbase_advanced" : "jupiter");
     return [
-      snapshot({ venue_id: spotVenue, market, price: base, now, source: "forced", latency_ms: 0 }),
-      snapshot({ venue_id: "hyperliquid", market, price: sell, now, source: "forced", latency_ms: 0 }),
+      snapshot({ venue_id: buyVenue, market, price: base, now, source: "forced", latency_ms: 0 }),
+      snapshot({ venue_id: hedgeVenue, market, price: sell, now, source: "forced", latency_ms: 0 }),
     ];
   }
   const timeoutMs = marketFetchTimeoutMs(env);
@@ -397,6 +402,25 @@ async function fetchVenuePrice({ venue, market, fetchImpl }) {
     const mids = await response.json();
     return numberValue(mids[baseMarket(market)]);
   }
+  if (venue === "backpack") {
+    const symbol = `${baseMarket(market)}_USDC_PERP`;
+    const response = await fetchImpl(`https://api.backpack.exchange/api/v1/ticker?symbol=${encodeURIComponent(symbol)}`, {
+      cache: "no-store",
+      headers: { "cache-control": "no-cache" },
+    });
+    if (!response.ok) return null;
+    const body = await response.json();
+    return numberValue(body.lastPrice || body.markPrice || body.indexPrice);
+  }
+  if (venue === "phoenix") {
+    const response = await fetchImpl("https://perp-api.phoenix.trade/markets", {
+      cache: "no-store",
+      headers: { "cache-control": "no-cache" },
+    }).catch(() => null);
+    if (!response?.ok) return null;
+    const body = await response.json().catch(() => null);
+    return numberValue(body?.["SOL-PERP"]?.markPrice || body?.markets?.["SOL-PERP"]?.markPrice || body?.[0]?.markPrice);
+  }
   return null;
 }
 
@@ -444,11 +468,11 @@ function instructionForLeg({ venue, market, side, price, notional, policy, now }
   return {
     version: 1,
     kind: "ghola_private_execution_instruction",
-    venue_id: "hyperliquid",
-    operation_class: "limit_order",
+    venue_id: venue,
+    operation_class: operationForVenue(venue),
     expires_at: expiresAt,
     order: {
-      market: baseMarket(market),
+      market: venueMarketSymbol(venue, market),
       side,
       quote_size: String(notional),
       limit_price: trim(limit),
@@ -496,12 +520,14 @@ function workerSessionPolicy(session) {
 
 function validPair(left, right) {
   return (SPOT_VENUES.has(left) && PERP_VENUES.has(right)) ||
-    (SPOT_VENUES.has(right) && PERP_VENUES.has(left));
+    (SPOT_VENUES.has(right) && PERP_VENUES.has(left)) ||
+    (PERP_VENUES.has(left) && PERP_VENUES.has(right));
 }
 
 function operationForVenue(venue) {
   if (venue === "jupiter") return "swap";
   if (venue === "coinbase_advanced") return "spot_market_order";
+  if (venue === "phoenix" || venue === "backpack") return "perp_limit_order";
   return "limit_order";
 }
 
@@ -610,6 +636,13 @@ function normalizeMarket(value) {
 
 function baseMarket(productId) {
   return String(productId || "SOL-USD").split("-")[0].split("/")[0].toUpperCase();
+}
+
+function venueMarketSymbol(venue, productId) {
+  const base = baseMarket(productId);
+  if (venue === "phoenix") return `${base}-PERP`;
+  if (venue === "backpack") return `${base}_USDC_PERP`;
+  return base;
 }
 
 function numberValue(value) {

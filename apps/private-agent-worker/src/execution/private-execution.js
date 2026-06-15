@@ -731,11 +731,11 @@ export async function executeAutopilotOrder({
       state,
     });
   }
-  if (venue_id === "phoenix") {
+  if (venue_id === "phoenix" || venue_id === "backpack") {
     return executeSolanaPerpsOrder({
       body: {
         ...body,
-        venue_id: "phoenix",
+        venue_id,
         platform_class: "solana_perps_market",
         execution_mode: execution.execution_mode || "ghola_pooled",
       },
@@ -809,6 +809,18 @@ export async function verifyAutopilotOrder({
         venue_id: "hyperliquid",
         platform_class: "hyperliquid_style_market",
         execution_mode: execution.execution_mode || "byo_api_key",
+      },
+      recipient,
+      state,
+    });
+  }
+  if (venue_id === "phoenix" || venue_id === "backpack") {
+    return verifySolanaPerpsOrderNoSubmit({
+      body: {
+        ...body,
+        venue_id,
+        platform_class: "solana_perps_market",
+        execution_mode: execution.execution_mode || "ghola_pooled",
       },
       recipient,
       state,

@@ -11,6 +11,7 @@ import {
   controlAutopilotSession,
   createAutopilotSession,
   listAutopilotEvents,
+  runAutopilotTick,
   startAutopilotLoop,
 } from "./execution/autopilot.js";
 import {
@@ -611,7 +612,8 @@ function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-const POOLED_READINESS_VENUES = ["hyperliquid", "phoenix", "jupiter", "coinbase"];
+const POOLED_READINESS_VENUES = ["hyperliquid", "phoenix", "backpack", "jupiter", "coinbase"];
+const BACKPACK_SOL_PERP_SYMBOL = "SOL_USDC_PERP";
 
 function validatePooledReadinessRequest(body) {
   const errors = [];
@@ -740,6 +742,38 @@ function pooledVenueReadiness(venueId, sharedState) {
         authority_commitment: commitment("phoenix_pooled_authority", credential.authority || "configured"),
       });
     }
+    if (venueId === "backpack") {
+      const liveMode = process.env.PRIVATE_AGENT_BACKPACK_LIVE_MODE || process.env.GHOLA_BACKPACK_LIVE_MODE || "disabled";
+      const allowedSymbols = commaListEnv("PRIVATE_AGENT_BACKPACK_ALLOWED_SYMBOLS", "GHOLA_BACKPACK_ALLOWED_SYMBOLS")
+        .map((symbol) => symbol.toUpperCase());
+      const maxOrderNotional = positiveCap("PRIVATE_AGENT_BACKPACK_MAX_ORDER_NOTIONAL_USD", "GHOLA_BACKPACK_MAX_ORDER_NOTIONAL_USD");
+      const dailyNotionalCap = positiveCap("PRIVATE_AGENT_BACKPACK_DAILY_NOTIONAL_CAP_USD", "GHOLA_BACKPACK_DAILY_NOTIONAL_CAP_USD");
+      if (process.env.PRIVATE_AGENT_BACKPACK_POOLED_ENABLED !== "true" && process.env.GHOLA_BACKPACK_POOLED_ENABLED !== "true") {
+        reasonCodes.push("backpack_pooled_disabled");
+      }
+      if (liveMode !== "tiny_live" && liveMode !== "full_ticket") reasonCodes.push("backpack_live_mode_disabled");
+      if (!env("PRIVATE_AGENT_BACKPACK_API_KEY", env("GHOLA_BACKPACK_API_KEY"))) {
+        reasonCodes.push("backpack_api_key_missing");
+      }
+      if (!env("PRIVATE_AGENT_BACKPACK_API_SECRET", env("PRIVATE_AGENT_BACKPACK_API_PRIVATE_KEY_B64", env("GHOLA_BACKPACK_API_SECRET", env("GHOLA_BACKPACK_API_PRIVATE_KEY_B64"))))) {
+        reasonCodes.push("backpack_private_key_missing");
+      }
+      if (!allowedSymbols.includes(BACKPACK_SOL_PERP_SYMBOL)) reasonCodes.push("backpack_symbol_allowlist_missing");
+      if (maxOrderNotional <= 0 || maxOrderNotional > 5) reasonCodes.push("backpack_max_order_cap_missing");
+      if (dailyNotionalCap <= 0 || dailyNotionalCap > 25) reasonCodes.push("backpack_daily_cap_missing");
+      if (process.env.PRIVATE_AGENT_BACKPACK_POST_ONLY_MM !== "true" && process.env.GHOLA_BACKPACK_POST_ONLY_MM !== "true") {
+        reasonCodes.push("backpack_post_only_mm_required");
+      }
+      if (!dryRun && reasonCodes.length === 0) loadPooledSolanaPerpsCredential("backpack");
+      return pooledVenueReadinessResult(venueId, reasonCodes, {
+        credential_commitment: reasonCodes.includes("backpack_api_key_missing")
+          ? null
+          : commitment("backpack_pooled_api_key", "configured"),
+        allowed_symbols: allowedSymbols,
+        max_order_notional_usd: maxOrderNotional || null,
+        daily_notional_cap_usd: dailyNotionalCap || null,
+      });
+    }
     if (venueId === "jupiter") {
       if (process.env.PRIVATE_AGENT_JUPITER_LIVE_MODE !== "full") {
         reasonCodes.push("jupiter_live_mode_disabled");
@@ -788,6 +822,7 @@ function pooledVenueReadiness(venueId, sharedState) {
 function pooledCredentialErrorCode(venueId, error) {
   if (venueId === "hyperliquid") return "hyperliquid_pooled_account_pool_missing";
   if (venueId === "phoenix") return "phoenix_pooled_authority_missing";
+  if (venueId === "backpack") return "backpack_pooled_credentials_missing";
   if (venueId === "jupiter") return "jupiter_pooled_authority_missing";
   if (venueId === "coinbase") return "coinbase_omnibus_pool_not_ready";
   return error?.code || "pooled_credential_unavailable";
@@ -1600,6 +1635,74 @@ function validateAutopilotSessionRequest(body, recipient) {
   return errors;
 }
 
+function validateTriVenueCommandRequest(body) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy text, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (!isNonEmptyString(body.owner_commitment)) errors.push("owner_commitment is required");
+  if (body.market !== undefined && String(body.market).toUpperCase() !== "SOL-USD") {
+    errors.push("market must be SOL-USD");
+  }
+  if (body.caps !== undefined && !isObject(body.caps)) errors.push("caps must be an object");
+  return errors;
+}
+
+function triVenueSessionBody(body, strategy = "arb", hyperliquidAllocation = null) {
+  const caps = isObject(body.caps) ? body.caps : {};
+  const policy = {
+    version: 2,
+    strategy_id: strategy === "maker" ? "tri_venue_market_maker_v1" : "hedged_spread_arbitrage_v1",
+    decision_model: "rules_plus_ai_score",
+    ai_direct_enabled: false,
+    venue_allowlist: ["phoenix", "hyperliquid", "backpack"],
+    market_allowlist: ["SOL-USD"],
+    max_notional_bucket: "5",
+    max_position_notional_bucket: "50",
+    max_daily_notional_bucket: "25",
+    max_order_count: strategy === "maker" ? 2 : 4,
+    ttl_ms: strategy === "maker" ? 10 * 60_000 : 60 * 60_000,
+    max_slippage_bps: Math.min(25, Number.parseInt(String(caps.max_slippage_bps || "25"), 10) || 25),
+    cooldown_ms: 60_000,
+    data_max_age_ms: Math.min(2_000, Number.parseInt(String(caps.max_market_data_skew_ms || "2000"), 10) || 2_000),
+    min_net_edge_bps: 25,
+    max_execution_skew_ms: Math.min(2_000, Number.parseInt(String(caps.max_execution_skew_ms || "2000"), 10) || 2_000),
+    min_ai_score_bps: 6_500,
+    ai_min_confidence_bps: 6_500,
+    min_signal_bps: 25,
+    max_spread_bps: 150,
+    allowed_order_types: ["perp_limit_order", "limit_order", "cancel"],
+    kill_switch: false,
+    reduce_only_on_reconcile_failure: true,
+  };
+  return {
+    version: 1,
+    owner_commitment: body.owner_commitment,
+    session_policy: policy,
+    venue_access: {
+      phoenix: {
+        status: "ready",
+        execution_mode: "ghola_pooled",
+        reason: "tri_venue_pooled_worker_owns_credentials",
+      },
+      hyperliquid: {
+        status: "ready",
+        execution_mode: "ghola_pooled",
+        allocation_commitment: hyperliquidAllocation?.allocation_commitment || null,
+        managed_allocation_commitment: hyperliquidAllocation?.allocation_commitment || null,
+        reason: "tri_venue_pooled_worker_owns_credentials",
+      },
+      backpack: {
+        status: "ready",
+        execution_mode: "ghola_pooled",
+        reason: "tri_venue_pooled_worker_owns_credentials",
+      },
+    },
+  };
+}
+
 export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
   const state = options.state || createConfiguredWorkerState(dataDir());
@@ -1685,6 +1788,100 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, 201, {
           version: 1,
           session,
+          events: await state.listAutopilotEvents(session.autopilot_session_id),
+        });
+      }
+
+      const triVenueCommand = url.pathname.match(/^\/autopilot\/tri-venue\/(run|market-maker\/start|kill)$/);
+      if (req.method === "POST" && triVenueCommand) {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const action = triVenueCommand[1];
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: action === "kill" ? "autopilot:control" : "order:submit",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            operation_class: "tri_venue_live",
+            owner_commitment: body?.owner_commitment,
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateTriVenueCommandRequest(body);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid tri-venue command request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        if (action === "kill") {
+          const sessionId = isNonEmptyString(body.autopilot_session_id) ? body.autopilot_session_id : null;
+          if (sessionId) {
+            const result = await controlAutopilotSession({
+              sessionId,
+              action: "kill",
+              state,
+              recipient,
+            });
+            if (!result) return json(res, 404, { error: "autopilot_session_not_found" });
+            return json(res, 200, { version: 1, action, ...result });
+          }
+          return json(res, 200, {
+            version: 1,
+            action,
+            status: "accepted",
+            result_commitment: commitment("tri_venue_kill_all", {
+              owner_commitment: body.owner_commitment,
+              requested_at: new Date().toISOString(),
+            }),
+            next_step: "Kill command accepted; no worker session id was provided.",
+          });
+        }
+
+        const sessionBody = triVenueSessionBody(body, action === "market-maker/start" ? "maker" : "arb");
+        sessionBody.session_policy.policy_commitment = commitment("tri_venue_worker_policy", sessionBody.session_policy);
+        const hyperliquidAllocation = await createHyperliquidManagedAllocation({
+          body: {
+            version: 1,
+            execution_mode: "ghola_pooled",
+            account_commitment: body.owner_commitment,
+            policy_commitment: sessionBody.session_policy.policy_commitment,
+            eligibility_commitment: body.eligibility_commitment || null,
+            session_policy: sessionBody.session_policy,
+          },
+          state,
+        });
+        const session = await createAutopilotSession({
+          body: triVenueSessionBody(
+            body,
+            action === "market-maker/start" ? "maker" : "arb",
+            hyperliquidAllocation,
+          ),
+          recipient,
+          state,
+          provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
+          startLoop: false,
+        });
+        const tick = action === "market-maker/start"
+          ? { ok: true, status: "maker_session_armed", mode: "post_only_quotes_deferred_to_policy_loop" }
+          : await runAutopilotTick({
+              sessionId: session.autopilot_session_id,
+              state,
+              recipient,
+            });
+        return json(res, tick.ok === false ? 202 : 200, {
+          version: 1,
+          action,
+          session,
+          tick,
           events: await state.listAutopilotEvents(session.autopilot_session_id),
         });
       }
