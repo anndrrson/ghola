@@ -21,7 +21,7 @@ const token = env("PRIVATE_AGENT_EXECUTION_TOKEN") ||
   env("GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN");
 const capabilitySecret = env("PRIVATE_AGENT_WORKER_CAPABILITY_SECRET") ||
   env("GHOLA_WORKER_CAPABILITY_SECRET");
-const venues = env("GHOLA_POOLED_READINESS_VENUES", "hyperliquid,phoenix,jupiter,coinbase")
+const venues = env("GHOLA_POOLED_READINESS_VENUES", "hyperliquid,phoenix,backpack,jupiter,coinbase")
   .split(",")
   .map((venue) => venue.trim())
   .filter(Boolean);

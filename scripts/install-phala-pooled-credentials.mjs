@@ -8,6 +8,8 @@ import { join } from "node:path";
 const REQUIRED_SECRET_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON",
   "PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON",
+  "PRIVATE_AGENT_BACKPACK_API_KEY",
+  "PRIVATE_AGENT_BACKPACK_API_SECRET",
   "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON",
   "PRIVATE_AGENT_JUPITER_API_KEY",
   "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON",
@@ -16,6 +18,10 @@ const VENUE_SECRET_KEYS = {
   hyperliquid: ["PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"],
   hyperliquid_native: ["PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"],
   phoenix: ["PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON"],
+  backpack: [
+    "PRIVATE_AGENT_BACKPACK_API_KEY",
+    "PRIVATE_AGENT_BACKPACK_API_SECRET",
+  ],
   jupiter: [
     "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON",
     "PRIVATE_AGENT_JUPITER_API_KEY",
@@ -29,6 +35,10 @@ const VENUE_EVIDENCE_KEYS = {
     "PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_APPROVAL_EVIDENCE",
   ],
   phoenix: [],
+  backpack: [
+    "PRIVATE_AGENT_BACKPACK_API_KEY_EVIDENCE",
+    "PRIVATE_AGENT_BACKPACK_TRANSFERS_DISABLED_CONFIRMED",
+  ],
   jupiter: [
     "PRIVATE_AGENT_JUPITER_API_KEY_EVIDENCE",
     "PRIVATE_AGENT_JUPITER_AUTHORITY_FUNDING_EVIDENCE",
@@ -40,6 +50,7 @@ const VENUE_EVIDENCE_KEYS = {
 };
 const BOOLEAN_EVIDENCE_KEYS = new Set([
   "PRIVATE_AGENT_COINBASE_TRANSFERS_DISABLED_CONFIRMED",
+  "PRIVATE_AGENT_BACKPACK_TRANSFERS_DISABLED_CONFIRMED",
 ]);
 const JSON_SECRET_KEYS = new Set([
   "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON",
@@ -79,6 +90,16 @@ if (nonEmpty(pooledEnv.PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_READY)) {
       ? "true"
       : "";
 }
+normalizeAlias(pooledEnv, "PRIVATE_AGENT_BACKPACK_API_KEY", [
+  "BACKPACK_API_KEY",
+  "GHOLA_BACKPACK_API_KEY",
+]);
+normalizeAlias(pooledEnv, "PRIVATE_AGENT_BACKPACK_API_SECRET", [
+  "BACKPACK_API_SECRET",
+  "BACKPACK_API_PRIVATE_KEY_B64",
+  "GHOLA_BACKPACK_API_SECRET",
+  "GHOLA_BACKPACK_API_PRIVATE_KEY_B64",
+]);
 
 const missing = REQUIRED_SECRET_KEYS.filter((key) => !nonEmpty(pooledEnv[key]));
 const requestedVenues = selectedVenues(args.venues);
@@ -130,6 +151,12 @@ if (selectedCompleteVenues.includes("phoenix")) {
   validation.phoenix_authority = validateSolanaVault(
     jsonValue(pooledEnv.PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON, "PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON"),
     "phoenix",
+  );
+}
+if (selectedCompleteVenues.includes("backpack")) {
+  validation.backpack_api_key = validateBackpackApiKey(
+    pooledEnv.PRIVATE_AGENT_BACKPACK_API_KEY,
+    pooledEnv.PRIVATE_AGENT_BACKPACK_API_SECRET,
   );
 }
 if (selectedCompleteVenues.includes("jupiter")) {
@@ -264,7 +291,7 @@ function usage(error = "") {
     "The env file must contain:",
     ...REQUIRED_SECRET_KEYS.map((key) => `  ${key}=...`),
     "",
-    "Hyperliquid, Jupiter, and Coinbase also require non-secret intake evidence fields from the example file.",
+    "Hyperliquid, Backpack, Jupiter, and Coinbase also require non-secret intake evidence fields from the example file.",
     "",
     "JSON values may also be provided as *_B64.",
   ].join("\n"));
@@ -494,6 +521,24 @@ function validateSolanaVault(value, venue) {
   return {
     network: value?.network || "mainnet",
     has_authority: nonEmpty(value?.authority),
+  };
+}
+
+function validateBackpackApiKey(apiKey, apiSecret) {
+  if (!nonEmpty(apiKey) || apiKey.length < 12) fail("PRIVATE_AGENT_BACKPACK_API_KEY looks too short.");
+  let seedLength = 0;
+  try {
+    seedLength = Buffer.from(apiSecret, "base64").length;
+  } catch {
+    seedLength = 0;
+  }
+  const cleanHex = String(apiSecret || "").startsWith("0x") ? String(apiSecret).slice(2) : String(apiSecret || "");
+  if (![32, 64].includes(seedLength) && !/^[0-9a-fA-F]{64}$/.test(cleanHex) && !/^[0-9a-fA-F]{128}$/.test(cleanHex)) {
+    fail("PRIVATE_AGENT_BACKPACK_API_SECRET must be a 32-byte or 64-byte base64/hex Ed25519 secret.");
+  }
+  return {
+    key_present: true,
+    secret_format: seedLength ? `base64_${seedLength}_bytes` : "hex",
   };
 }
 
