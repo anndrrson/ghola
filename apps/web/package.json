@@ -21,8 +21,11 @@
     "guard:auth-bundle": "node scripts/check-auth-client-bundle.mjs"
   },
   "overrides": {
+    "esbuild": "0.28.1",
     "postcss": "8.5.15",
-    "ws": "8.20.1"
+    "protobufjs": "8.6.3",
+    "vite": "8.0.16",
+    "ws": "8.21.0"
   },
   "dependencies": {
     "@ellipsis-labs/rise": "^0.4.19",
@@ -64,6 +67,6 @@
     "jsdom": "^26.1.0",
     "tailwindcss": "^4",
     "typescript": "5.9.3",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.9"
   }
 }
