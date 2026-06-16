@@ -156,4 +156,41 @@ describe("pooled worker per-venue readiness gate", () => {
       reason_codes: ["pooled_worker_venue_unsupported"],
     });
   });
+
+  it("prefers an explicit worker URL over Phala discovery env", async () => {
+    const urls: string[] = [];
+    const fetchImpl = (async (url: RequestInfo | URL) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify({
+        version: 1,
+        status: "blocked",
+        ready: false,
+        venues: [
+          { venue_id: "hyperliquid", status: "blocked", ready: false, reason_codes: ["hyperliquid_pooled_account_pool_missing"] },
+          { venue_id: "phoenix", status: "ready", ready: true, reason_codes: [] },
+          { venue_id: "backpack", status: "blocked", ready: false, reason_codes: ["backpack_pooled_disabled"] },
+          { venue_id: "jupiter", status: "blocked", ready: false, reason_codes: ["jupiter_api_key_missing"] },
+          { venue_id: "coinbase", status: "blocked", ready: false, reason_codes: ["coinbase_omnibus_pool_not_ready"] },
+        ],
+        reason_codes: [],
+        checked_at: "2026-06-16T14:15:00.000Z",
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const readiness = await getPooledWorkerReadiness({
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://explicit-worker.example",
+      GHOLA_PRIVATE_AGENT_PROVIDER: "phala",
+      PHALA_CLOUD_API_KEY: "phala_api_key_present",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
+    }, fetchImpl);
+
+    expect(urls).toEqual(["https://explicit-worker.example/venues/pools/readiness"]);
+    expect(pooledWorkerVenueGateFromReadiness("phoenix", readiness)).toEqual({
+      ok: true,
+      reason_codes: [],
+    });
+  });
 });
