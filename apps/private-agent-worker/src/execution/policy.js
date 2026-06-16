@@ -327,7 +327,7 @@ export async function enforceInstructionPolicy({ body, instruction, session, sta
   }
 }
 
-function normalizeAgentMandate(value) {
+export function normalizeAgentMandate(value) {
   if (!value) return null;
   if (typeof value !== "object" || Array.isArray(value)) {
     throw new ExecutionPolicyError("agent mandate is invalid");

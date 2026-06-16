@@ -53,6 +53,35 @@ describe("private account autopilot sessions", () => {
     await resetPrivateAccountStoreForTests();
   });
 
+  it("carries a drawn directional plan onto a level_trigger session policy", async () => {
+    const created = await createAutopilotSessionFromBody({
+      session_policy: {
+        strategy_id: "level_trigger_v1",
+        agent_side: "buy",
+        agent_mandate: {
+          strategy_profile: "breakout_retest",
+          entry_trigger: "break_level",
+          exit_rule: "exit_on_invalidation",
+          time_horizon: "until_invalidated",
+          trigger_level: "65000",
+          invalidation_level: "64000",
+        },
+        venue_allowlist: ["hyperliquid"],
+        market_allowlist: ["BTC-USD"],
+        max_notional_bucket: "5",
+        max_slippage_bps: 50,
+      },
+    }, owner, new Date("2026-06-01T12:00:00.000Z"));
+
+    expect(created.session.session_policy.strategy_id).toBe("level_trigger_v1");
+    expect(created.session.session_policy.agent_side).toBe("buy");
+    expect(created.session.session_policy.agent_mandate?.entry_trigger).toBe("break_level");
+    expect(created.session.session_policy.agent_mandate?.trigger_level).toBe("65000");
+    expect(created.session.session_policy.agent_mandate?.invalidation_level).toBe("64000");
+    expect(created.session.strategy.strategy_id).toBe("level_trigger_v1");
+    expect(created.session.strategy.executable_order_source).toBe("deterministic_level_trigger");
+  });
+
   it("creates conservative APAC retail defaults", async () => {
     const created = await createAutopilotSessionFromBody({}, owner, new Date("2026-06-01T12:00:00.000Z"));
 
