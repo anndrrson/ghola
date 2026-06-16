@@ -1,15 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import Link from "next/link";
 import {
   Activity,
   AlertTriangle,
+  ArrowRight,
   CheckCircle2,
   Crosshair,
   KeyRound,
+  LockKeyhole,
   Power,
   Radar,
   Send,
+  ShieldCheck,
   Square,
   Wallet,
 } from "lucide-react";
@@ -124,6 +128,31 @@ export function TriVenueArbConsole() {
   const bestOpportunity = opportunities.find((item) => item.status === "preflight_pass") ?? opportunities[0] ?? null;
   const ready = status?.can_live_submit === true;
   const workerStandby = status?.worker_readiness.endpoint_configured === true && status?.worker_readiness.status !== "ready";
+  const workerReady = status?.worker_readiness.status === "ready";
+  const workerOnline = workerReady || workerStandby;
+  const liveQuoteCount = quotes.filter((quote) => quote.status === "live").length;
+  const marketLive = status?.public_market_data_enabled === true || liveQuoteCount > 0;
+  const phoenixGate = status?.gates.find((gate) => gate.id === "phoenix");
+  const hyperliquidGate = status?.gates.find((gate) => gate.id === "hyperliquid");
+  const backpackGate = status?.gates.find((gate) => gate.id === "backpack");
+  const phoenixConfigured = phoenixGate
+    ? phoenixGate.status === "green" || phoenixGate.reason_codes.every((reason) => reason === "worker_probe_not_requested")
+    : workerOnline;
+  const venueCredentialGateCount = [hyperliquidGate, backpackGate].filter((gate) => gate?.status === "red").length;
+  const launchTone = ready ? "good" : marketLive && (workerOnline || phoenixConfigured) ? "accent" : "warn";
+  const launchTitle = ready
+    ? "Tri-venue tiny-live enabled"
+    : phoenixConfigured
+      ? "Live scanner plus Phoenix path online"
+      : "Live scanner online; execution fail-closed";
+  const launchBadge = ready
+    ? "end-to-end enabled"
+    : phoenixConfigured
+      ? "public live path"
+      : "credential gated";
+  const launchCopy = ready
+    ? "The agent can sign, arm, submit one bounded arb, start maker quotes, and kill resting orders under the public $5 cap."
+    : "Ghola is reading live Phoenix, Hyperliquid, and Backpack books, building arb and market-maker plans, and keeping multi-venue submit fail-closed until real venue credentials are sealed into the worker.";
   const acknowledgementsReady = acceptedTerms && acceptedRisk && notProhibited;
   const canSign = Boolean(wallet && acknowledgementsReady);
   const gateReasons = status?.gates.flatMap((gate) => gate.reason_codes.map((reason) => `${gate.id}:${reason}`)) ?? [];
@@ -199,69 +228,88 @@ export function TriVenueArbConsole() {
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm text-[#91a2bc]">
               <Radar className="h-4 w-4 text-[#8bd3ff]" />
-              <span>SOL cross-venue live agent</span>
+              <span>Cross-venue live agent</span>
             </div>
             <h1 className="mt-2 text-3xl font-semibold text-white sm:text-4xl">
-              Ghola Arb + Market Maker
+              Ghola Live Agent
             </h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-[#aebbd0]">
-              Phoenix, Hyperliquid, and Backpack books feed a capped Ghola worker that can scan, hedge, quote, and kill live orders.
+              Live SOL markets feed an attested worker that turns captured intent into bounded arb plans, market-maker quotes, and a capped Phoenix execution path.
             </p>
           </div>
-          <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[560px]">
-            <StatusPill label="Market" value="SOL live" tone={bundle ? "good" : "warn"} />
-            <StatusPill label="Worker" value={ready ? "ready" : workerStandby ? "standby" : "gated"} tone={ready ? "good" : workerStandby ? "accent" : "warn"} />
+          <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[680px] lg:grid-cols-4">
+            <StatusPill label="Market" value={marketLive ? `${liveQuoteCount || 3} live feeds` : "loading"} tone={marketLive ? "good" : "warn"} />
+            <StatusPill label="Worker" value={workerReady ? "ready" : workerStandby ? "on demand" : "not started"} tone={workerReady ? "good" : workerStandby ? "accent" : "muted"} />
+            <StatusPill label="Phoenix" value={phoenixConfigured ? "live path" : "checking"} tone={phoenixConfigured ? "good" : "warn"} />
             <StatusPill label="Wallet" value={wallet ? short(wallet) : "not connected"} tone={wallet ? "good" : "muted"} />
           </div>
         </header>
 
-        <section className={ready ? railClass("good") : workerStandby ? railClass("accent") : railClass("warn")}>
+        <section className={railClass(launchTone)}>
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
             <div className="flex min-w-0 items-start gap-3">
-              <span className={ready ? iconClass("good") : workerStandby ? iconClass("accent") : iconClass("warn")}>
-                {ready ? <CheckCircle2 className="h-4 w-4" /> : workerStandby ? <Power className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+              <span className={iconClass(launchTone)}>
+                {ready ? <CheckCircle2 className="h-4 w-4" /> : phoenixConfigured ? <ShieldCheck className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
               </span>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 className="text-base font-semibold text-white">
-                    {ready ? "Tri-venue tiny-live enabled" : workerStandby ? "Secure worker on standby" : "Tri-venue live gate fail-closed"}
+                    {launchTitle}
                   </h2>
-                  <span className={badgeClass(ready ? "good" : workerStandby ? "accent" : "warn")}>
-                    {ready ? "end-to-end" : workerStandby ? "on-demand" : "blocked"}
+                  <span className={badgeClass(launchTone)}>
+                    {launchBadge}
                   </span>
                 </div>
                 <p className="mt-1 max-w-4xl text-sm leading-6 text-[#aebbd0]">
-                  Captured intent: find SOL edge across Phoenix, Hyperliquid, and Backpack; submit paired delta-neutral fills or bounded post-only maker quotes under the $5 public cap.
+                  {launchCopy}
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => void wakeWorker()}
-              disabled={working !== null}
-              className="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-sky-300/30 bg-sky-300/10 px-4 text-sm font-medium text-sky-50 transition hover:bg-sky-300/15 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Power className="h-4 w-4" />
-              {working === "wake" ? "Starting worker" : "Start secure worker"}
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <Link
+                href="/trade"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-emerald-300/30 bg-emerald-300/10 px-4 text-sm font-medium text-emerald-50 transition hover:bg-emerald-300/15"
+              >
+                <ArrowRight className="h-4 w-4" />
+                Open live trade
+              </Link>
+              <button
+                type="button"
+                onClick={() => void wakeWorker()}
+                disabled={working !== null}
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-sky-300/30 bg-sky-300/10 px-4 text-sm font-medium text-sky-50 transition hover:bg-sky-300/15 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Power className="h-4 w-4" />
+                {working === "wake" ? "Starting worker" : "Start worker"}
+              </button>
+            </div>
           </div>
 
           <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-            <GateMetric label="Max leg" value="$5" tone="good" />
-            <GateMetric label="Daily cap" value="$25" tone="good" />
-            <GateMetric label="Min edge" value={`${status?.caps.min_net_edge_bps ?? 25} bps`} tone="good" />
-            <GateMetric label="Data skew" value={`${status?.caps.max_market_data_skew_ms ?? 2000} ms`} tone="good" />
-            <GateMetric label="Maker TTL" value="10 s" tone="good" />
+            <GateMetric label="Market data" value={marketLive ? "live" : "loading"} tone={marketLive ? "good" : "warn"} />
+            <GateMetric label="Phoenix path" value={phoenixConfigured ? "available" : "checking"} tone={phoenixConfigured ? "good" : "warn"} />
+            <GateMetric label="Worker" value={workerReady ? "attested" : workerStandby ? "standby" : "sleeping"} tone={workerReady ? "good" : workerStandby ? "accent" : "warn"} />
+            <GateMetric label="Multi-venue" value={ready ? "submit live" : `${venueCredentialGateCount || 2} gates`} tone={ready ? "good" : "warn"} />
+            <GateMetric label="Public cap" value="$5 / leg" tone="good" />
           </div>
 
           {!ready && gateReasons.length > 0 && (
-            <div className="mt-4 flex flex-wrap gap-1.5 border-t border-amber-300/20 pt-3">
-              {gateReasons.slice(0, 12).map((reason) => (
-                <span key={reason} className="rounded border border-amber-300/20 bg-amber-300/10 px-2 py-1 text-xs text-amber-100">
-                  {formatReason(reason)}
+            <details className="mt-4 border-t border-amber-300/20 pt-3">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm text-amber-100">
+                <span className="inline-flex items-center gap-2">
+                  <LockKeyhole className="h-4 w-4" />
+                  Operator credential gates
                 </span>
-              ))}
-            </div>
+                <span className="font-mono text-xs text-amber-100/80">{gateReasons.length} open</span>
+              </summary>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {gateReasons.slice(0, 12).map((reason) => (
+                  <span key={reason} className="rounded border border-amber-300/20 bg-amber-300/10 px-2 py-1 text-xs text-amber-100">
+                    {formatReason(reason)}
+                  </span>
+                ))}
+              </div>
+            </details>
           )}
 
           {status?.gate_commitment && (
@@ -322,7 +370,7 @@ export function TriVenueArbConsole() {
                     <Crosshair className="h-4 w-4 text-[#8bd3ff]" />
                     Agent plan
                   </div>
-                  <p className="mt-1 text-sm text-[#9fb1ca]">Delta-neutral arb first; maker quotes only under strict post-only caps.</p>
+                  <p className="mt-1 text-sm text-[#9fb1ca]">Delta-neutral arb first; maker quotes stay post-only and capped.</p>
                 </div>
                 <span className="rounded border border-emerald-300/20 bg-emerald-300/10 px-2 py-1 text-xs font-medium text-emerald-100">
                   $5 cap
@@ -332,6 +380,7 @@ export function TriVenueArbConsole() {
               <div className="mt-4 grid gap-2">
                 <PlanRow label="Market" value="SOL-USD" />
                 <PlanRow label="Venues" value="Phoenix + Hype + Backpack" />
+                <PlanRow label="Live submit" value={ready ? "tri-venue enabled" : "Phoenix path; multi-venue gated"} />
                 <PlanRow label="Edge filter" value="25 bps net" />
                 <PlanRow label="Hedge state" value="zero net SOL target" />
                 <PlanRow label="Maker loop" value="2 orders, 10s TTL" />
@@ -438,6 +487,11 @@ function OpportunityRail({ opportunities }: { opportunities: TriVenueOpportunity
         <span className="font-mono text-xs text-[#8ea1bf]">{opportunities.length} plans</span>
       </div>
       <div className="grid gap-3">
+        {opportunities.length === 0 && (
+          <div className="rounded-md border border-[#1a2639] bg-[#070a10] p-4 text-sm text-[#9fb1ca]">
+            Waiting for live venue data.
+          </div>
+        )}
         {opportunities.slice(0, 5).map((item) => (
           <article key={item.commitment} className="rounded-md border border-[#1a2639] bg-[#070a10] p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
