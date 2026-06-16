@@ -13,7 +13,7 @@ import { ImageResponse } from "next/og";
 // enough to read inside an unfurl card, and the palette identical to
 // the site.
 
-export const alt = "ghola — the most private AI";
+export const alt = "ghola — trade like a ghost";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -54,16 +54,16 @@ export default async function Image() {
           style={{
             display: "flex",
             flexDirection: "column",
-            marginTop: 90,
-            fontSize: 124,
-            lineHeight: 1.0,
+            marginTop: 78,
+            fontSize: 112,
+            lineHeight: 0.98,
             fontWeight: 500,
             letterSpacing: "-3px",
           }}
         >
-          <span style={{ display: "flex" }}>The most private</span>
+          <span style={{ display: "flex" }}>Trade like</span>
           <span style={{ display: "flex", color: "#3da8ff" }}>
-            AI.
+            a ghost.
           </span>
         </div>
 
@@ -72,15 +72,15 @@ export default async function Image() {
         <div
           style={{
             display: "flex",
-            marginTop: 60,
-            fontSize: 34,
-            lineHeight: 1.35,
+            marginTop: 46,
+            fontSize: 28,
+            lineHeight: 1.25,
             color: "#8b95a8",
-            maxWidth: 980,
+            maxWidth: 1010,
             letterSpacing: "-0.3px",
           }}
         >
-          Runs on your device. Or end-to-end encrypted in the cloud.
+          Private agents for live markets. Sealed intent. Verifiable receipts.
         </div>
 
         {/* Bottom rail — thin credential strip in the same mono
@@ -90,19 +90,19 @@ export default async function Image() {
             display: "flex",
             marginTop: "auto",
             alignItems: "center",
-            fontSize: 18,
-            letterSpacing: "3px",
+            fontSize: 16,
+            letterSpacing: "2.6px",
             textTransform: "uppercase",
             color: "#6f798c",
           }}
         >
-          <span>End-to-end encrypted</span>
+          <span>Live markets</span>
           <span style={{ margin: "0 18px", color: "#2a3a50" }}>·</span>
-          <span>On-device option</span>
+          <span>Sealed agents</span>
           <span style={{ margin: "0 18px", color: "#2a3a50" }}>·</span>
-          <span>Verifiable receipts</span>
+          <span>Private intent</span>
           <span style={{ margin: "0 18px", color: "#2a3a50" }}>·</span>
-          <span>Open weights</span>
+          <span>Execution receipts</span>
         </div>
       </div>
     ),
