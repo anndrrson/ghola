@@ -302,7 +302,7 @@ export function GholaMarketChart({
 
     const draw = () => {
       drawPendingRef.current = false;
-      if (!visibleRef.current) return;
+      if (document.hidden) return;
       const rendererState = rendererRef.current;
       const overlayCtx = overlay.getContext("2d");
       if (!rendererState || !overlayCtx) return;
