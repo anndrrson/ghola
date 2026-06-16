@@ -22,9 +22,11 @@ operator** (users fund their own accounts; the worker runs on a free host).
   worker self-generates its recipient key on boot (`server.js:177`) and publishes it
   (`GET /.well-known/private-agent-recipient`); `providerReadyForPrivateAgents` accepts a self-hosted
   recipient (`private-agent-runtime.ts:102`).
-- ❌ **No "Connect your account" UI** — the front door is missing. (Main remaining web build.)
+- ❌ **No "Connect your account" UI** — the front door is missing. (Main remaining web build; contract fully traced below.)
 - ❌ **Worker not deployed** — gates everything (connect seals to the live worker's key).
-- ❌ **Real-money safety rails** not yet in the arm flow.
+- 🟡 **Real-money safety rails** — done in the arm flow (explicit "places real orders on your account"
+  confirmation + caps/side/stop summary + kill control in `ArmAgentButton`). Per-order cap default +
+  order-mode reconcile still pending.
 
 ---
 
@@ -42,13 +44,25 @@ additive next to `ArmAgentButton`. Reuses the existing lib end-to-end:
    `private-account-client.ts`).
 5. On success → venue shows connected; the trade page `venueLiveStatus` reflects the BYO vault.
 
-**Integration points to wire (identify exact sources during build):**
-- `accountCommitment` + `ownerWalletAddress`: from the SIWS/Turnkey private-account context the trade
-  page already uses (`useThumperAuth` + the private-account create/get path). Trace `createOrGetStoredPrivateAccount`/account-commitment client access.
-- `signBytes`: the Turnkey/wallet sign function for the authenticated user. Trace how existing sealed
-  flows sign (the same `seal({ signBody })` contract).
-- Key handling: never log the key; clear state after seal; the plaintext never leaves the browser
-  except as ciphertext.
+**Confirmed contract (traced from `TriVenueArbConsole.tsx` — the existing arm-with-signing flow):**
+- **Wallet**: `window.solana` (`solanaProvider()`), `connect()` → `publicKey` → wallet address;
+  `signBytes = (bytes) => provider.signMessage(bytes, "utf8")` (returns sig bytes). Helpers to lift
+  from `TriVenueArbConsole.tsx:711-792` (`signFreshChallenge`, `walletSignBytes`, `solanaProvider`,
+  `postJson`) — **extract them to a shared `lib/wallet-request-proof.ts`** instead of duplicating.
+- **`accountCommitment`**: `GET /v1/private-account/hyperliquid/vault` returns
+  `{ account_commitment, hyperliquid_execution_vault }` (`_lib.ts:hyperliquidVaultStatusForOwner`,
+  vault is null until connected — also use this to render "connected" state).
+- **`ownerWalletAddress`**: the connected wallet address.
+- **Request-proof**: `POST /v1/private-account/hyperliquid/vault` runs `privateAccountLiveGuard` →
+  needs `{ wallet_pubkey, message, signature_b64 }` from a server-issued HMAC challenge. Confirm which
+  challenge route the guard accepts (candidates: `wallet-bindings/challenge`, or add a vault challenge);
+  this is the one remaining contract detail to pin during the build.
+- **Seal + post**: `buildHyperliquidExecutionVaultBundle({ accountCommitment, ownerWalletAddress, credential, signBytes, fetchRuntimeStatus })`
+  → `POST .../hyperliquid/vault` with `{ ...proof, ...bundle.encrypted_execution_vault }`.
+- Key handling: never log the key; clear form state after seal; plaintext never leaves the browser
+  except as ciphertext sealed to the worker recipient.
+- **Untestable until the worker is live** (needs a real recipient from `/api/private-agent/status`) —
+  build it, then end-to-end test interactively against the deployed worker before trusting real keys.
 
 ## B. Build — Real-money safety rails (in the arm flow)
 - `ArmAgentButton`: a two-step confirm — *"This will place REAL orders on your connected Hyperliquid
