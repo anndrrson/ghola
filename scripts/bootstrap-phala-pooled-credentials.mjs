@@ -15,6 +15,8 @@ const DEFAULT_OUT = "deploy/private-agent-pooled-credentials.env";
 const REQUIRED_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON",
   "PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON",
+  "PRIVATE_AGENT_BACKPACK_API_KEY",
+  "PRIVATE_AGENT_BACKPACK_API_SECRET",
   "PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON",
   "PRIVATE_AGENT_JUPITER_API_KEY",
   "PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON",
@@ -30,6 +32,8 @@ const CREDENTIAL_INTAKE_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_SOURCE",
   "PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_APPROVAL_EVIDENCE",
   "PRIVATE_AGENT_SOLANA_PERPS_POOLED_AUTHORITY_SOURCE",
+  "PRIVATE_AGENT_BACKPACK_API_KEY_EVIDENCE",
+  "PRIVATE_AGENT_BACKPACK_TRANSFERS_DISABLED_CONFIRMED",
   "PRIVATE_AGENT_JUPITER_POOLED_AUTHORITY_SOURCE",
   "PRIVATE_AGENT_JUPITER_API_KEY_EVIDENCE",
   "PRIVATE_AGENT_JUPITER_AUTHORITY_FUNDING_EVIDENCE",
@@ -40,6 +44,8 @@ const REQUIRED_INSTALL_EVIDENCE_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_APPROVAL_EVIDENCE",
   "PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_AGENT_SOURCE",
   "PRIVATE_AGENT_HYPERLIQUID_NATIVE_VAULT_APPROVAL_EVIDENCE",
+  "PRIVATE_AGENT_BACKPACK_API_KEY_EVIDENCE",
+  "PRIVATE_AGENT_BACKPACK_TRANSFERS_DISABLED_CONFIRMED",
   "PRIVATE_AGENT_JUPITER_API_KEY_EVIDENCE",
   "PRIVATE_AGENT_JUPITER_AUTHORITY_FUNDING_EVIDENCE",
   "PRIVATE_AGENT_COINBASE_OMNIBUS_EVIDENCE",
@@ -47,6 +53,7 @@ const REQUIRED_INSTALL_EVIDENCE_KEYS = [
 ];
 const BOOLEAN_EVIDENCE_KEYS = new Set([
   "PRIVATE_AGENT_COINBASE_TRANSFERS_DISABLED_CONFIRMED",
+  "PRIVATE_AGENT_BACKPACK_TRANSFERS_DISABLED_CONFIRMED",
 ]);
 const PLACEHOLDER_RE = /(?:REPLACE|PLACEHOLDER|EXAMPLE|TODO|DUMMY|FAKE|TEST_ONLY)/i;
 
@@ -217,7 +224,7 @@ function usage(error = "") {
     "Generates Phoenix and Jupiter Solana authority keys when absent, marked as generated/unfunded.",
     "Can write a Hyperliquid managed account as network=testnet for sealed CVM pilot accounts.",
     "Pass --generate-hyperliquid-native-vault-agent with --hyperliquid-native-vault-master-account 0x... to create an EVM agent signer for Hyperliquid native vault mode.",
-    "Does not generate venue approval evidence for Hyperliquid, Jupiter API, or Coinbase.",
+    "Does not generate external exchange credentials or approval evidence for Hyperliquid, Backpack, Jupiter API, or Coinbase.",
   ].join("\n"));
   process.exit(error ? 1 : 0);
 }
@@ -237,6 +244,20 @@ function normalizeAliases(env) {
     env.PRIVATE_AGENT_JUPITER_API_KEY =
       env.JUPITER_API_KEY ||
       env.GHOLA_JUPITER_API_KEY ||
+      "";
+  }
+  if (!nonEmpty(env.PRIVATE_AGENT_BACKPACK_API_KEY)) {
+    env.PRIVATE_AGENT_BACKPACK_API_KEY =
+      env.BACKPACK_API_KEY ||
+      env.GHOLA_BACKPACK_API_KEY ||
+      "";
+  }
+  if (!nonEmpty(env.PRIVATE_AGENT_BACKPACK_API_SECRET)) {
+    env.PRIVATE_AGENT_BACKPACK_API_SECRET =
+      env.BACKPACK_API_SECRET ||
+      env.BACKPACK_API_PRIVATE_KEY_B64 ||
+      env.GHOLA_BACKPACK_API_SECRET ||
+      env.GHOLA_BACKPACK_API_PRIVATE_KEY_B64 ||
       "";
   }
   if (!nonEmpty(env.PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON)) {
@@ -370,6 +391,7 @@ function envSubset(env) {
       key.startsWith("GHOLA_") ||
       key.startsWith("HYPERLIQUID_") ||
       key.startsWith("JUPITER_") ||
+      key.startsWith("BACKPACK_") ||
       key.startsWith("COINBASE_")
     ) {
       subset[key] = value;

@@ -9,7 +9,7 @@ import { executeAutopilotOrder, verifyAutopilotOrder } from "./private-execution
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
-const SUPPORTED_VENUES = new Set(["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"]);
+const SUPPORTED_VENUES = new Set(["jupiter", "phoenix", "backpack", "hyperliquid", "coinbase_advanced"]);
 const SUPPORTED_MARKETS = new Set(["SOL-USD", "BTC-USD", "ETH-USD", "SOL/USDC", "SOL", "BTC", "ETH", "HYPE"]);
 const DEFAULT_VENUES = ["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"];
 const DEFAULT_MARKETS = ["SOL-USD", "BTC-USD", "ETH-USD"];
@@ -863,7 +863,7 @@ function instructionForVenue({ venue, market, side, price, notional, policy, now
     operation_class: venue === "hyperliquid" ? "limit_order" : "perp_limit_order",
     expires_at: expiresAt,
     order: {
-      market: baseMarket(market.product_id),
+      market: venueMarketSymbol(venue, market.product_id),
       side,
       quote_size: String(notional),
       limit_price: trim(limit),
@@ -913,6 +913,7 @@ function selectVenue(session, market) {
   if (product === "SOL-USD" && ready.includes("jupiter")) return "jupiter";
   if (ready.includes("coinbase_advanced")) return "coinbase_advanced";
   if (ready.includes("phoenix") && product === "SOL-USD") return "phoenix";
+  if (ready.includes("backpack") && product === "SOL-USD") return "backpack";
   if (ready.includes("hyperliquid")) return "hyperliquid";
   return ready[0] || null;
 }
@@ -922,7 +923,7 @@ function operationAllowedForVenue(venue, operationClass) {
   if (venue === "coinbase_advanced") {
     return operationClass === "spot_market_order" || operationClass === "spot_limit_order";
   }
-  if (venue === "phoenix") return operationClass === "perp_limit_order";
+  if (venue === "phoenix" || venue === "backpack") return operationClass === "perp_limit_order";
   if (venue === "hyperliquid") return operationClass === "limit_order";
   return false;
 }
@@ -1100,6 +1101,13 @@ function normalizeMarket(value) {
 
 function baseMarket(productId) {
   return String(productId || "SOL-USD").split("-")[0].split("/")[0].toUpperCase();
+}
+
+function venueMarketSymbol(venue, productId) {
+  const base = baseMarket(productId);
+  if (venue === "phoenix") return `${base}-PERP`;
+  if (venue === "backpack") return `${base}_USDC_PERP`;
+  return base;
 }
 
 function defaultExecutionMode(venue) {

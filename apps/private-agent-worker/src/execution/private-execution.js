@@ -777,11 +777,11 @@ export async function executeAutopilotOrder({
       state,
     });
   }
-  if (venue_id === "phoenix") {
+  if (venue_id === "phoenix" || venue_id === "backpack") {
     return executeSolanaPerpsOrder({
       body: {
         ...body,
-        venue_id: "phoenix",
+        venue_id,
         platform_class: "solana_perps_market",
         execution_mode: execution.execution_mode || "ghola_pooled",
       },
@@ -860,13 +860,13 @@ export async function verifyAutopilotOrder({
       state,
     });
   }
-  if (venue_id === "phoenix") {
+  if (venue_id === "phoenix" || venue_id === "backpack") {
     return verifySolanaPerpsOrderNoSubmit({
       body: {
         ...body,
-        venue_id: "phoenix",
+        venue_id,
         platform_class: "solana_perps_market",
-        execution_mode: execution.execution_mode || "user_stealth",
+        execution_mode: execution.execution_mode || (venue_id === "backpack" ? "ghola_pooled" : "user_stealth"),
       },
       recipient,
       state,

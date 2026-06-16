@@ -651,9 +651,19 @@ function normalizeMarket(market, venueId) {
 
 function marketAllowedByPolicy(market, allowlist) {
   const normalized = String(market || "").toUpperCase();
+  const base = normalized
+    .replace(/_USDC_PERP$/, "")
+    .replace(/-PERP$/, "")
+    .split("-")[0]
+    .split("/")[0];
   return allowlist.includes(normalized) ||
     allowlist.includes(`${normalized}-USD`) ||
-    allowlist.includes(`${normalized}/USDC`);
+    allowlist.includes(`${normalized}/USDC`) ||
+    allowlist.includes(base) ||
+    allowlist.includes(`${base}-USD`) ||
+    allowlist.includes(`${base}/USDC`) ||
+    allowlist.includes(`${base}-PERP`) ||
+    allowlist.includes(`${base}_USDC_PERP`);
 }
 
 function normalizeTif(tif, venueId) {

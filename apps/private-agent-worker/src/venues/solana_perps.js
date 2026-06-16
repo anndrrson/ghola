@@ -16,10 +16,13 @@ import {
   placeMarketOrder,
   Side,
 } from "@ellipsis-labs/rise";
+import { ed25519 } from "@noble/curves/ed25519";
 
 const SUPPORTED_SOLANA_PERPS_VENUES = new Set(["phoenix", "drift", "backpack", "solana_perps"]);
 const DEFAULT_PHOENIX_API_URL = "https://perp-api.phoenix.trade";
 const DEFAULT_SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com";
+const DEFAULT_BACKPACK_API_URL = "https://api.backpack.exchange";
+const BACKPACK_SOL_PERP_SYMBOL = "SOL_USDC_PERP";
 
 export class SolanaPerpsExecutionError extends Error {
   constructor(message, status = 502, code = "connector_submit_failed") {
@@ -48,6 +51,29 @@ export function solanaPerpsCredentialFromVault(vault) {
     throw new SolanaPerpsExecutionError("solana perps execution vault kind is invalid", 400, "venue_access_required");
   }
   const venueId = normalizeSolanaPerpsVenueId(vault.venue_id);
+  if (venueId === "backpack") {
+    const apiKey = stringValue(vault.api_key || vault.apiKey || vault.backpack_api_key);
+    const privateSeed = backpackPrivateSeed(
+      vault.api_secret ||
+        vault.api_private_key_b64 ||
+        vault.backpack_api_secret ||
+        vault.private_key,
+    );
+    if (!apiKey || !privateSeed) {
+      throw new SolanaPerpsExecutionError("backpack execution credentials are missing", 400, "venue_access_required");
+    }
+    return {
+      venueId,
+      network: "mainnet",
+      apiKey,
+      privateSeed,
+      apiUrl: stringValue(vault.api_url) || stringValue(vault.apiUrl) || DEFAULT_BACKPACK_API_URL,
+      allowedSymbols: envList(vault.allowed_symbols || vault.allowedSymbols || BACKPACK_SOL_PERP_SYMBOL),
+      maxOrderNotionalUsd: positiveNumber(vault.max_order_notional_usd, 5),
+      dailyNotionalCapUsd: positiveNumber(vault.daily_notional_cap_usd, 25),
+      postOnlyMarketMaking: vault.post_only_mm !== false,
+    };
+  }
   if (venueId !== "phoenix") {
     throw new SolanaPerpsExecutionError("only phoenix solana perps live pilot is enabled", 400, "venue_rejected");
   }
@@ -84,8 +110,9 @@ export function solanaPerpsCredentialFromVault(vault) {
 
 export function loadPooledSolanaPerpsCredential(venueId = "phoenix") {
   const normalizedVenueId = normalizeSolanaPerpsVenueId(venueId);
+  if (normalizedVenueId === "backpack") return loadPooledBackpackCredential();
   if (normalizedVenueId !== "phoenix") {
-    throw new SolanaPerpsExecutionError("only phoenix pooled solana perps pilot is enabled", 400, "venue_rejected");
+    throw new SolanaPerpsExecutionError("only phoenix/backpack pooled solana perps pilot is enabled", 400, "venue_rejected");
   }
   const raw = process.env.PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON ||
     process.env.PRIVATE_AGENT_SOLANA_PERPS_POOL_VAULT_JSON ||
@@ -122,15 +149,67 @@ export function loadPooledSolanaPerpsCredential(venueId = "phoenix") {
   }
 }
 
+function loadPooledBackpackCredential() {
+  const apiKey = stringValue(process.env.PRIVATE_AGENT_BACKPACK_API_KEY || process.env.GHOLA_BACKPACK_API_KEY);
+  const privateSeed = backpackPrivateSeed(
+    process.env.PRIVATE_AGENT_BACKPACK_API_SECRET ||
+      process.env.PRIVATE_AGENT_BACKPACK_API_PRIVATE_KEY_B64 ||
+      process.env.GHOLA_BACKPACK_API_SECRET ||
+      process.env.GHOLA_BACKPACK_API_PRIVATE_KEY_B64,
+  );
+  if (!apiKey || !privateSeed) {
+    if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
+      return {
+        venueId: "backpack",
+        network: "mainnet",
+        apiKey: "dry-run",
+        privateSeed: new Uint8Array(32),
+        apiUrl: DEFAULT_BACKPACK_API_URL,
+        allowedSymbols: [BACKPACK_SOL_PERP_SYMBOL],
+        maxOrderNotionalUsd: 5,
+        dailyNotionalCapUsd: 25,
+        postOnlyMarketMaking: true,
+      };
+    }
+    throw new SolanaPerpsExecutionError("pooled Backpack API key is unavailable", 503, "venue_access_required");
+  }
+  return {
+    venueId: "backpack",
+    network: "mainnet",
+    apiKey,
+    privateSeed,
+    apiUrl: stringValue(process.env.PRIVATE_AGENT_BACKPACK_API_URL || process.env.GHOLA_BACKPACK_API_URL) ||
+      DEFAULT_BACKPACK_API_URL,
+    allowedSymbols: envList(
+      process.env.PRIVATE_AGENT_BACKPACK_ALLOWED_SYMBOLS ||
+        process.env.GHOLA_BACKPACK_ALLOWED_SYMBOLS ||
+        BACKPACK_SOL_PERP_SYMBOL,
+    ),
+    maxOrderNotionalUsd: positiveNumber(
+      process.env.PRIVATE_AGENT_BACKPACK_MAX_ORDER_NOTIONAL_USD ||
+        process.env.GHOLA_BACKPACK_MAX_ORDER_NOTIONAL_USD,
+      5,
+    ),
+    dailyNotionalCapUsd: positiveNumber(
+      process.env.PRIVATE_AGENT_BACKPACK_DAILY_NOTIONAL_CAP_USD ||
+        process.env.GHOLA_BACKPACK_DAILY_NOTIONAL_CAP_USD,
+      25,
+    ),
+    postOnlyMarketMaking: process.env.PRIVATE_AGENT_BACKPACK_POST_ONLY_MM === "true" ||
+      process.env.GHOLA_BACKPACK_POST_ONLY_MM === "true",
+  };
+}
+
 export async function submitSolanaPerpsExecution({
   credential,
   instruction,
   clientOrderId,
   venueId = "phoenix",
   executionMode = "user_stealth",
-  runner = runPhoenixLiveOrder,
+  runner = null,
 }) {
   const normalizedVenueId = normalizeSolanaPerpsVenueId(venueId);
+  const executionRunner = runner || (normalizedVenueId === "backpack" ? runBackpackLiveOrder : runPhoenixLiveOrder);
   const status = statusForOperation(instruction.operation_class);
   if (process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
     return {
@@ -153,7 +232,7 @@ export async function submitSolanaPerpsExecution({
 
   assertSolanaPerpsLiveEnabled(normalizedVenueId, instruction, credential);
   try {
-    const result = await runner({
+    const result = await executionRunner({
       credential,
       instruction,
       clientOrderId,
@@ -186,12 +265,13 @@ export async function verifySolanaPerpsNoSubmit({
   clientOrderId,
   venueId = "phoenix",
   executionMode = "user_stealth",
-  checker = checkPhoenixNoSubmit,
+  checker = null,
 }) {
   const normalizedVenueId = normalizeSolanaPerpsVenueId(venueId);
+  const noSubmitChecker = checker || (normalizedVenueId === "backpack" ? checkBackpackNoSubmit : checkPhoenixNoSubmit);
   assertSolanaPerpsLiveEnabled(normalizedVenueId, instruction, credential);
   try {
-    const result = await checker({
+    const result = await noSubmitChecker({
       credential,
       instruction,
       clientOrderId,
@@ -212,6 +292,7 @@ export async function verifySolanaPerpsNoSubmit({
         market_commitment: sha256Hex(String(instruction.order?.market || "")).slice(0, 32),
         rpc_checked: result.rpc_checked === true,
         phoenix_checked: result.phoenix_checked === true,
+        backpack_checked: result.backpack_checked === true,
         order_packet_checked: result.order_packet_checked === true,
       },
       checks: {
@@ -222,6 +303,7 @@ export async function verifySolanaPerpsNoSubmit({
         live_gate_enforced: true,
         rpc_reachable: result.rpc_checked === true,
         phoenix_sdk_ready: result.phoenix_checked === true,
+        backpack_rest_ready: result.backpack_checked === true,
         order_packet_built: result.order_packet_checked === true,
         transaction_broadcast: false,
       },
@@ -262,6 +344,7 @@ async function checkPhoenixNoSubmit({ credential, instruction, clientOrderId }) 
 }
 
 function assertSolanaPerpsLiveEnabled(venueId, instruction, credential) {
+  if (venueId === "backpack") return assertBackpackLiveEnabled(instruction, credential);
   const liveMode = process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE || "disabled";
   if (liveMode !== "sdk_runner" && liveMode !== "full_ticket") {
     throw new SolanaPerpsExecutionError(
@@ -328,6 +411,59 @@ function assertSolanaPerpsLiveEnabled(venueId, instruction, credential) {
   }
 }
 
+function assertBackpackLiveEnabled(instruction, credential) {
+  const liveMode = process.env.PRIVATE_AGENT_BACKPACK_LIVE_MODE ||
+    process.env.GHOLA_BACKPACK_LIVE_MODE ||
+    "disabled";
+  if (liveMode !== "tiny_live" && liveMode !== "full_ticket") {
+    throw new SolanaPerpsExecutionError("backpack live submit is disabled", 503, "connector_submit_failed");
+  }
+  if (!credential?.apiKey || !credential.privateSeed || !credential.apiUrl) {
+    throw new SolanaPerpsExecutionError("backpack execution credentials are unavailable", 400, "venue_access_required");
+  }
+  if (instruction.operation_class !== "perp_limit_order" && instruction.operation_class !== "cancel") {
+    throw new SolanaPerpsExecutionError("backpack live pilot only supports perp limit orders and cancels", 400);
+  }
+  if (instruction.operation_class === "cancel") return;
+  const order = instruction.order || {};
+  const symbol = backpackSymbol(order.market);
+  const allowedSymbols = (credential.allowedSymbols || []).map((item) => String(item).toUpperCase());
+  if (!allowedSymbols.includes(symbol)) {
+    throw new SolanaPerpsExecutionError("backpack symbol is outside policy", 400, "venue_rejected");
+  }
+  if (liveMode !== "full_ticket" && (order.live_order_mode !== "tiny_fill" || !/^ioc$/i.test(String(order.tif || "")))) {
+    throw new SolanaPerpsExecutionError("backpack live order must use tiny_live IOC mode", 400);
+  }
+  if (order.post_only === true && credential.postOnlyMarketMaking !== true) {
+    throw new SolanaPerpsExecutionError("backpack post-only market making is disabled", 400, "venue_rejected");
+  }
+  const notional = estimateOrderNotionalUsd(order);
+  const cap = Math.min(
+    positiveNumber(credential.maxOrderNotionalUsd, 5),
+    capUsd(process.env.PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD || process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD, 5),
+    5,
+  );
+  if (notional <= 0) {
+    throw new SolanaPerpsExecutionError("backpack live order notional must be positive", 400);
+  }
+  if (notional > cap) {
+    throw new SolanaPerpsExecutionError("backpack live order exceeds live notional cap", 400);
+  }
+  const slippage = Number.parseInt(order.max_slippage_bps || "25", 10);
+  const maxSlippage = Math.min(
+    capBps(
+      process.env.PRIVATE_AGENT_BACKPACK_MAX_SLIPPAGE_BPS ||
+        process.env.GHOLA_BACKPACK_MAX_SLIPPAGE_BPS ||
+        process.env.GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS,
+      25,
+    ),
+    25,
+  );
+  if (!Number.isInteger(slippage) || slippage < 1 || slippage > maxSlippage) {
+    throw new SolanaPerpsExecutionError("backpack slippage is outside policy", 400, "venue_rejected");
+  }
+}
+
 async function runPhoenixLiveOrder({ credential, instruction, clientOrderId }) {
   const order = instruction.order;
   const client = createPhoenixClient({
@@ -368,6 +504,169 @@ async function runPhoenixLiveOrder({ credential, instruction, clientOrderId }) {
   } finally {
     client.dispose?.();
   }
+}
+
+async function runBackpackLiveOrder({ credential, instruction, clientOrderId }) {
+  if (instruction.operation_class === "cancel") {
+    const body = {
+      symbol: backpackSymbol(instruction.cancel?.market || instruction.order?.market),
+      ...(instruction.cancel?.order_id ? { orderId: String(instruction.cancel.order_id) } : {}),
+      ...(instruction.cancel?.client_id ? { clientId: Number(instruction.cancel.client_id) } : {}),
+    };
+    const result = await backpackRequest({
+      credential,
+      instruction: "orderCancel",
+      method: "DELETE",
+      path: "/api/v1/order",
+      params: body,
+      body,
+    });
+    return { status: "cancelled", provider_order_id: result?.id || result?.orderId || null };
+  }
+  const order = backpackOrderRequest(instruction.order || {}, clientOrderId);
+  const result = await backpackRequest({
+    credential,
+    instruction: "orderExecute",
+    method: "POST",
+    path: "/api/v1/order",
+    params: order,
+    body: order,
+  });
+  return { status: "submitted", provider_order_id: result?.id || result?.orderId || null };
+}
+
+async function checkBackpackNoSubmit({ credential, instruction, clientOrderId }) {
+  if (instruction.operation_class === "cancel") {
+    backpackSignedHeaders({
+      credential,
+      instruction: "orderCancel",
+      params: {
+        symbol: backpackSymbol(instruction.cancel?.market || instruction.order?.market),
+      },
+    });
+  } else {
+    const order = backpackOrderRequest(instruction.order || {}, clientOrderId);
+    backpackSignedHeaders({ credential, instruction: "orderExecute", params: order });
+  }
+  if (process.env.PRIVATE_AGENT_BACKPACK_NO_SUBMIT_LOCAL_CHECKS === "true") {
+    return {
+      backpack_checked: true,
+      order_packet_checked: true,
+    };
+  }
+  await backpackRequest({
+    credential,
+    instruction: "accountQuery",
+    method: "GET",
+    path: "/api/v1/account",
+    params: {},
+  });
+  return {
+    backpack_checked: true,
+    order_packet_checked: true,
+  };
+}
+
+function backpackOrderRequest(order, clientOrderId) {
+  const price = Number.parseFloat(order.limit_price || "");
+  const request = {
+    symbol: backpackSymbol(order.market),
+    side: order.side === "sell" ? "Ask" : "Bid",
+    orderType: "Limit",
+    quantity: order.base_size ? trimDecimal(Number.parseFloat(order.base_size)) : orderBaseUnits(order, order.limit_price),
+    price: Number.isFinite(price) && price > 0 ? trimDecimal(price) : undefined,
+    postOnly: order.post_only === true,
+    timeInForce: backpackTimeInForce(order.tif),
+    selfTradePrevention: "RejectTaker",
+    clientId: clientOrderIdNumber(clientOrderId),
+  };
+  return Object.fromEntries(Object.entries(request).filter(([, value]) => value !== undefined && value !== ""));
+}
+
+async function backpackRequest({ credential, instruction, method, path, params = {}, body = null }) {
+  const response = await fetch(`${credential.apiUrl.replace(/\/$/, "")}${path}`, {
+    method,
+    cache: "no-store",
+    headers: {
+      ...backpackSignedHeaders({ credential, instruction, params }),
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const responseBody = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new SolanaPerpsExecutionError(
+      `backpack api request failed with ${response.status}`,
+      response.status === 401 || response.status === 403 ? 400 : 502,
+      response.status === 401 || response.status === 403 ? "venue_access_required" : "connector_submit_failed",
+    );
+  }
+  return responseBody;
+}
+
+function backpackSignedHeaders({ credential, instruction, params = {}, timestamp = Date.now(), windowMs = 5_000 }) {
+  const normalizedWindow = normalizeBackpackWindow(windowMs);
+  const signingString = backpackSigningString({ instruction, params, timestamp, windowMs: normalizedWindow });
+  const signature = ed25519.sign(new TextEncoder().encode(signingString), credential.privateSeed);
+  return {
+    "X-API-Key": credential.apiKey,
+    "X-Signature": Buffer.from(signature).toString("base64"),
+    "X-Timestamp": String(timestamp),
+    "X-Window": String(normalizedWindow),
+  };
+}
+
+function backpackSigningString({ instruction, params, timestamp, windowMs }) {
+  const prefix = `instruction=${instruction}`;
+  const query = orderedQuery(params || {});
+  return `${prefix}${query ? `&${query}` : ""}&timestamp=${timestamp}&window=${windowMs}`;
+}
+
+function orderedQuery(value) {
+  return Object.entries(value || {})
+    .filter(([, item]) => item !== undefined && item !== null && item !== "")
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${encodeURIComponent(key)}=${encodeURIComponent(queryValue(item))}`)
+    .join("&");
+}
+
+function queryValue(value) {
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return String(value);
+}
+
+function normalizeBackpackWindow(value) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isInteger(parsed)) return 5_000;
+  return Math.min(60_000, Math.max(1_000, parsed));
+}
+
+function backpackSymbol(value) {
+  const raw = stringValue(value).toUpperCase();
+  if (
+    raw === "" ||
+    raw === "SOL" ||
+    raw === "SOL-USD" ||
+    raw === "SOL/USDC" ||
+    raw === "SOL-PERP" ||
+    raw === BACKPACK_SOL_PERP_SYMBOL
+  ) {
+    return BACKPACK_SOL_PERP_SYMBOL;
+  }
+  throw new SolanaPerpsExecutionError("backpack symbol is unsupported", 400, "venue_rejected");
+}
+
+function backpackTimeInForce(value) {
+  const raw = stringValue(value).toUpperCase();
+  if (raw === "GTC" || raw === "GTC_POST_ONLY" || raw === "ALO") return "GTC";
+  if (raw === "FOK") return "FOK";
+  return "IOC";
+}
+
+function clientOrderIdNumber(value) {
+  const hex = createHash("sha256").update(String(value || "backpack")).digest("hex").slice(0, 13);
+  return Number.parseInt(hex, 16);
 }
 
 async function sendAndConfirmPhoenixInstruction({ credential, ix, commitment, priorityFee }) {
@@ -539,6 +838,35 @@ function capUsd(value, fallback) {
 function capBps(value, fallback) {
   const parsed = Number.parseInt(String(value || ""), 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function positiveNumber(value, fallback) {
+  const parsed = Number.parseFloat(String(value ?? ""));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function envList(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function backpackPrivateSeed(value) {
+  const text = stringValue(value);
+  if (!text) return null;
+  try {
+    const bytes = Buffer.from(text, "base64");
+    if (bytes.length === 32) return new Uint8Array(bytes);
+    if (bytes.length === 64) return new Uint8Array(bytes.subarray(0, 32));
+  } catch {
+    // Try hex below.
+  }
+  const cleanHex = text.startsWith("0x") ? text.slice(2) : text;
+  if (/^[0-9a-fA-F]{64}$/.test(cleanHex)) return new Uint8Array(Buffer.from(cleanHex, "hex"));
+  if (/^[0-9a-fA-F]{128}$/.test(cleanHex)) return new Uint8Array(Buffer.from(cleanHex, "hex").subarray(0, 32));
+  return null;
 }
 
 function readPooledVaultPath(path) {
