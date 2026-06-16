@@ -25,6 +25,10 @@ import {
   type GholaChartMode,
   type GholaMarketFrame,
 } from "@/lib/ghola-market-chart";
+import {
+  buildPrivateExecutionInstructionBundle,
+  type PrivateExecutionOrderDraft,
+} from "@/lib/private-execution-instruction-seal";
 import type {
   TriVenueMarketBundle,
   TriVenueOpportunity,
@@ -50,7 +54,7 @@ type Challenge = {
   message: string;
 };
 
-type LiveResult = {
+type TriVenueLiveResult = {
   version: 1;
   error?: string;
   access_mode?: string;
@@ -65,6 +69,27 @@ type LiveResult = {
   status?: TriVenueStatus;
 };
 
+type PhoenixLiveResult = {
+  version: 1;
+  error?: string;
+  status?: "submitted" | string;
+  venue_id?: "phoenix";
+  execution_mode?: "ghola_pooled";
+  work_order_commitment?: string;
+  policy_commitment?: string;
+  allocation_commitment?: string;
+  worker_receipt?: Record<string, unknown> | null;
+  live_access?: {
+    allocation_commitment?: string;
+    policy_commitment?: string;
+  };
+  wallet_proof?: {
+    proof_commitment?: string;
+  };
+};
+
+type LiveResult = TriVenueLiveResult | PhoenixLiveResult;
+
 const VENUES = ["phoenix", "hyperliquid", "backpack"] as const;
 type VenueId = (typeof VENUES)[number];
 
@@ -75,6 +100,7 @@ export function TriVenueArbConsole() {
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [acceptedRisk, setAcceptedRisk] = useState(false);
   const [notProhibited, setNotProhibited] = useState(false);
+  const [phoenixSide, setPhoenixSide] = useState<"buy" | "sell">("buy");
   const [selectedVenue, setSelectedVenue] = useState<VenueId>("phoenix");
   const [chartMode, setChartMode] = useState<GholaChartMode>("candles");
   const [working, setWorking] = useState<string | null>(null);
@@ -127,6 +153,8 @@ export function TriVenueArbConsole() {
   const opportunities = bundle?.opportunities ?? [];
   const bestOpportunity = opportunities.find((item) => item.status === "preflight_pass") ?? opportunities[0] ?? null;
   const ready = status?.can_live_submit === true;
+  const phoenixQuote = quotes.find((quote) => quote.venue_id === "phoenix") ?? null;
+  const phoenixLimit = phoenixTinyFillLimit(phoenixQuote, phoenixSide);
   const workerStandby = status?.worker_readiness.endpoint_configured === true && status?.worker_readiness.status !== "ready";
   const workerReady = status?.worker_readiness.status === "ready";
   const workerOnline = workerReady || workerStandby;
@@ -155,6 +183,7 @@ export function TriVenueArbConsole() {
     : "Ghola is reading live Phoenix, Hyperliquid, and Backpack books, building arb and market-maker plans, and keeping multi-venue submit fail-closed until real venue credentials are sealed into the worker.";
   const acknowledgementsReady = acceptedTerms && acceptedRisk && notProhibited;
   const canSign = Boolean(wallet && acknowledgementsReady);
+  const phoenixCanSubmit = canSign && phoenixConfigured && Boolean(phoenixLimit);
   const gateReasons = status?.gates.flatMap((gate) => gate.reason_codes.map((reason) => `${gate.id}:${reason}`)) ?? [];
 
   async function connectWallet() {
@@ -202,7 +231,7 @@ export function TriVenueArbConsole() {
     try {
       const proof = await signFreshChallenge(wallet);
       const path = `/v1/private-account/arb/tri-venue/${action}`;
-      const response = await postJson<LiveResult>(path, {
+      const response = await postJson<TriVenueLiveResult>(path, {
         ...proof,
         accepted_terms: acceptedTerms,
         accepted_risk: acceptedRisk,
@@ -216,6 +245,53 @@ export function TriVenueArbConsole() {
       if (response.error) setError(response.error);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Live command failed.");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function runPhoenixTinyFill() {
+    if (!canSign) {
+      setError("Connect a wallet and accept the live execution checks.");
+      return;
+    }
+    if (!phoenixLimit || !phoenixQuote) {
+      setError("Phoenix live quote is not ready.");
+      return;
+    }
+    setWorking("phoenix-submit");
+    setError(null);
+    try {
+      await postJson("/v1/private-account/public-live/phoenix/wake", { reason: "arb_phoenix_tiny_fill" });
+      const proof = await signFreshPublicLiveChallenge(wallet);
+      const workOrderCommitment = publicLivePhoenixWorkOrderCommitment();
+      const order = phoenixTinyFillOrder({
+        side: phoenixSide,
+        limitPrice: phoenixLimit,
+      });
+      const sealed = await buildPrivateExecutionInstructionBundle({
+        ownerWalletAddress: wallet,
+        previewCommitment: "",
+        workOrderCommitment,
+        order,
+        signBytes: async (bytes) => walletSignBytes(requiredSolanaProvider(), bytes),
+      });
+      const response = await postJson<PhoenixLiveResult>("/v1/private-account/public-live/phoenix/submit", {
+        ...proof,
+        accepted_terms: acceptedTerms,
+        accepted_risk: acceptedRisk,
+        not_prohibited_person: notProhibited,
+        jurisdiction_assertion: "self_attested_eligible",
+        utilization_bucket: "5",
+        ack_live_order: true,
+        work_order_commitment: workOrderCommitment,
+        encrypted_execution_instruction_bundle: sealed.encrypted_execution_instruction_bundle,
+      });
+      setWorkerProbeEnabled(true);
+      setResult(response);
+      if (response.error) setError(response.error);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Phoenix live submit failed.");
     } finally {
       setWorking(null);
     }
@@ -381,6 +457,7 @@ export function TriVenueArbConsole() {
                 <PlanRow label="Market" value="SOL-USD" />
                 <PlanRow label="Venues" value="Phoenix + Hype + Backpack" />
                 <PlanRow label="Live submit" value={ready ? "tri-venue enabled" : "Phoenix path; multi-venue gated"} />
+                <PlanRow label="Phoenix ticket" value={`${phoenixSide} $5${phoenixLimit ? ` @ ${phoenixLimit}` : ""}`} />
                 <PlanRow label="Edge filter" value="25 bps net" />
                 <PlanRow label="Hedge state" value="zero net SOL target" />
                 <PlanRow label="Maker loop" value="2 orders, 10s TTL" />
@@ -410,6 +487,42 @@ export function TriVenueArbConsole() {
                 <CheckRow checked={notProhibited} onChange={setNotProhibited} label="I self-attest that I am legally allowed to use this feature." />
               </div>
 
+              <div className="mt-4 rounded-md border border-emerald-300/20 bg-emerald-300/5 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-semibold text-white">Phoenix tiny fill</div>
+                    <div className="mt-1 font-mono text-xs text-[#8ea1bf]">
+                      {phoenixLimit ? `$5 ${phoenixSide} IOC @ ${phoenixLimit}` : "waiting for Phoenix quote"}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setPhoenixSide("buy")}
+                      className={phoenixSide === "buy" ? sideButtonClass("active") : sideButtonClass("idle")}
+                    >
+                      Buy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPhoenixSide("sell")}
+                      className={phoenixSide === "sell" ? sideButtonClass("active") : sideButtonClass("idle")}
+                    >
+                      Sell
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void runPhoenixTinyFill()}
+                  disabled={!phoenixCanSubmit || working !== null}
+                  className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-emerald-300/30 bg-emerald-300/12 px-3 text-sm font-medium text-emerald-50 transition hover:bg-emerald-300/18 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  <Send className="h-4 w-4" />
+                  {working === "phoenix-submit" ? "Submitting Phoenix" : "Submit Phoenix $5"}
+                </button>
+              </div>
+
               <div className="mt-4 grid gap-2 sm:grid-cols-2">
                 <ActionButton icon={<KeyRound className="h-4 w-4" />} disabled={!ready || !canSign || working !== null} onClick={() => void runLive("arm")}>
                   {working === "arm" ? "Arming" : "Arm tiny live"}
@@ -429,10 +542,10 @@ export function TriVenueArbConsole() {
                 <div className="mt-4 rounded-md border border-[#24324a] bg-[#070a10] p-3">
                   <div className="text-[11px] uppercase tracking-[0.16em] text-[#7f90aa]">Live result</div>
                   <p className={error ? "mt-2 text-sm text-amber-100" : "mt-2 text-sm text-emerald-100"}>
-                    {error ?? result?.session?.next_step ?? result?.session?.status ?? "Command accepted."}
+                    {error ?? liveResultMessage(result)}
                   </p>
-                  {result?.session?.autopilot_session_id && (
-                    <p className="mt-2 truncate font-mono text-xs text-[#8ea1bf]">{result.session.autopilot_session_id}</p>
+                  {liveResultCommitment(result) && (
+                    <p className="mt-2 truncate font-mono text-xs text-[#8ea1bf]">{liveResultCommitment(result)}</p>
                   )}
                 </div>
               )}
@@ -440,7 +553,7 @@ export function TriVenueArbConsole() {
           </aside>
         </section>
 
-        <section className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(420px,0.65fr)]">
+        <section className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(420px,0.65fr)]">
           <VenueMatrix quotes={quotes} />
           <OpportunityRail opportunities={opportunities} />
         </section>
@@ -451,22 +564,22 @@ export function TriVenueArbConsole() {
 
 function VenueMatrix({ quotes }: { quotes: TriVenueQuote[] }) {
   return (
-    <section className="rounded-lg border border-[#172033] bg-[#090d14] p-4">
+    <section className="min-w-0 rounded-lg border border-[#172033] bg-[#090d14] p-4">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h2 className="text-base font-semibold text-white">Venue matrix</h2>
         <span className="font-mono text-xs text-[#8ea1bf]">SOL only</span>
       </div>
-      <div className="grid gap-3 lg:grid-cols-3">
+      <div className="grid min-w-0 gap-3 lg:grid-cols-3">
         {quotes.map((quote) => (
-          <article key={quote.venue_id} className="rounded-md border border-[#1a2639] bg-[#070a10] p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
+          <article key={quote.venue_id} className="min-w-0 rounded-md border border-[#1a2639] bg-[#070a10] p-4">
+            <div className="flex min-w-0 items-center justify-between gap-3">
+              <div className="min-w-0">
                 <h3 className="text-sm font-semibold text-white">{quote.label}</h3>
                 <p className="mt-1 font-mono text-xs text-[#7f90aa]">{quote.venue_symbol}</p>
               </div>
               <span className={quote.status === "live" ? badgeClass("good") : badgeClass("warn")}>{quote.status}</span>
             </div>
-            <div className="mt-4 grid grid-cols-2 gap-2">
+            <div className="mt-4 grid min-w-0 grid-cols-2 gap-2">
               <Metric label="Bid" value={quote.best_bid ?? "n/a"} tone="good" />
               <Metric label="Ask" value={quote.best_ask ?? "n/a"} tone="bad" />
               <Metric label="Spread" value={quote.spread_bps === null ? "n/a" : `${quote.spread_bps} bps`} />
@@ -481,7 +594,7 @@ function VenueMatrix({ quotes }: { quotes: TriVenueQuote[] }) {
 
 function OpportunityRail({ opportunities }: { opportunities: TriVenueOpportunity[] }) {
   return (
-    <section className="rounded-lg border border-[#172033] bg-[#090d14] p-4">
+    <section className="min-w-0 rounded-lg border border-[#172033] bg-[#090d14] p-4">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h2 className="text-base font-semibold text-white">Opportunity rail</h2>
         <span className="font-mono text-xs text-[#8ea1bf]">{opportunities.length} plans</span>
@@ -493,9 +606,9 @@ function OpportunityRail({ opportunities }: { opportunities: TriVenueOpportunity
           </div>
         )}
         {opportunities.slice(0, 5).map((item) => (
-          <article key={item.commitment} className="rounded-md border border-[#1a2639] bg-[#070a10] p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
+          <article key={item.commitment} className="min-w-0 rounded-md border border-[#1a2639] bg-[#070a10] p-4">
+            <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className={item.status === "preflight_pass" ? badgeClass("good") : item.strategy === "market_making" ? badgeClass("accent") : badgeClass("warn")}>
                     {item.strategy === "market_making" ? "maker" : "delta-neutral"}
@@ -607,6 +720,22 @@ async function signFreshChallenge(wallet: string) {
   };
 }
 
+async function signFreshPublicLiveChallenge(wallet: string) {
+  const challenge = await fetchJson<Challenge>(`/v1/private-account/public-live/phoenix/challenge?wallet_pubkey=${encodeURIComponent(wallet)}`);
+  const signature = await walletSignBytes(requiredSolanaProvider(), new TextEncoder().encode(challenge.message));
+  return {
+    wallet_pubkey: wallet,
+    message: challenge.message,
+    signature_b64: bytesToBase64(signature),
+  };
+}
+
+function requiredSolanaProvider(): SolanaProvider {
+  const provider = solanaProvider();
+  if (!provider?.signMessage) throw new Error("Wallet message signing is required.");
+  return provider;
+}
+
 async function walletSignBytes(provider: SolanaProvider, bytes: Uint8Array): Promise<Uint8Array> {
   if (!provider.signMessage) throw new Error("Wallet message signing is required.");
   const signed = await provider.signMessage(bytes, "utf8");
@@ -677,6 +806,89 @@ function venueLabel(venue?: string) {
 
 function formatReason(value: string) {
   return value.replace(/_/g, " ").replace(/:/g, " · ");
+}
+
+function phoenixTinyFillLimit(quote: TriVenueQuote | null, side: "buy" | "sell"): string | null {
+  if (!quote || quote.status !== "live") return null;
+  const raw = side === "buy" ? quote.best_ask : quote.best_bid;
+  const price = numericPrice(raw);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const guarded = side === "buy" ? price * 1.0025 : price * 0.9975;
+  return formatPhoenixPrice(guarded);
+}
+
+function numericPrice(value: string | null): number {
+  if (!value) return Number.NaN;
+  return Number(value.replace(/,/g, ""));
+}
+
+function formatPhoenixPrice(value: number): string {
+  if (value >= 1000) return value.toFixed(1);
+  if (value >= 100) return value.toFixed(2);
+  return value.toFixed(3);
+}
+
+function phoenixTinyFillOrder({
+  side,
+  limitPrice,
+}: {
+  side: "buy" | "sell";
+  limitPrice: string;
+}): PrivateExecutionOrderDraft {
+  return {
+    venue_id: "phoenix",
+    operation_class: "perp_limit_order",
+    market: "SOL-PERP",
+    side,
+    base_size: "",
+    quote_size: "5",
+    limit_price: limitPrice,
+    max_slippage_bps: "25",
+    live_order_mode: "tiny_fill",
+    order_type: "limit",
+    size_mode: "quote",
+    tif: "Ioc",
+    agent_strategy_profile: "venue_route_edge",
+    agent_entry_trigger: "preview_now",
+    agent_exit_rule: "manual_approval",
+    agent_time_horizon: "scalp",
+    agent_route_priority: "most_private",
+    agent_strategy_note: "Phoenix capped public tiny fill from the Ghola arb console.",
+  };
+}
+
+function publicLivePhoenixWorkOrderCommitment() {
+  const randomPart = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  return `public_live_phoenix_work_order_${randomPart}`;
+}
+
+function sideButtonClass(state: "active" | "idle") {
+  return state === "active"
+    ? "h-9 rounded-md border border-emerald-300/40 bg-emerald-300/18 px-3 text-sm font-medium text-emerald-50"
+    : "h-9 rounded-md border border-[#24324a] bg-[#070a10] px-3 text-sm font-medium text-[#91a2bc] transition hover:text-white";
+}
+
+function liveResultMessage(result: LiveResult | null): string {
+  if (!result) return "Command accepted.";
+  if (isPhoenixLiveResult(result)) {
+    if (result.status === "submitted") return "Phoenix tiny fill submitted.";
+    return `Phoenix ${String(result.status || "accepted").replace(/_/g, " ")}.`;
+  }
+  return result.session?.next_step || result.session?.status || "Command accepted.";
+}
+
+function liveResultCommitment(result: LiveResult | null): string | null {
+  if (!result) return null;
+  if (isPhoenixLiveResult(result)) {
+    return result.work_order_commitment || result.allocation_commitment || null;
+  }
+  return result.session?.autopilot_session_id || result.session?.worker_session_commitment || null;
+}
+
+function isPhoenixLiveResult(result: LiveResult): result is PhoenixLiveResult {
+  return "work_order_commitment" in result || ("venue_id" in result && result.venue_id === "phoenix");
 }
 
 function short(value: string) {
