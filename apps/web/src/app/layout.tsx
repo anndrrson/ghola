@@ -23,9 +23,8 @@ const funnelDisplay = Funnel_Display({
 });
 
 // metadataBase tells Next.js how to resolve relative URLs in the
-// metadata blocks below (opengraph-image.tsx ships its own absolute
-// URL, but openGraph.url and friends need this as a base). If the
-// site ever moves off the apex domain this is the one place to flip.
+// metadata blocks below. If the site ever moves off the apex domain
+// this is the one place to flip.
 const SITE_URL = "https://ghola.xyz";
 const SOCIAL_IMAGE_URL = `${SITE_URL}/og/trade-like-a-ghost-v2`;
 
