@@ -66,11 +66,27 @@ export interface AutopilotOwner {
 export type AutopilotStrategyId =
   | "momentum_micro_trader"
   | "hedged_spread_arbitrage_v1"
-  | "tri_venue_market_maker_v1";
+  | "tri_venue_market_maker_v1"
+  | "level_trigger_v1";
+
+// Directional plan drawn on /trade and executed by the worker level_trigger
+// strategy. Field values use the worker mandate vocabulary (see
+// private-agent-worker/src/execution/policy.js).
+export interface AutopilotAgentMandate {
+  strategy_profile: string;
+  entry_trigger: string;
+  exit_rule: string;
+  time_horizon: string;
+  trigger_level?: string;
+  invalidation_level?: string;
+  edge_threshold_bps?: string;
+  time_window?: string;
+  strategy_note?: string;
+}
 
 export interface AutopilotSessionPolicy {
   strategy_id: AutopilotStrategyId;
-  decision_model: "rules_plus_ai_score" | "ai_direct_order_v1";
+  decision_model: "rules_plus_ai_score" | "ai_direct_order_v1" | "deterministic_level_trigger";
   ai_direct_enabled: boolean;
   venue_allowlist: AutopilotVenueId[];
   market_allowlist: string[];
@@ -95,6 +111,8 @@ export interface AutopilotSessionPolicy {
   reduce_only_on_reconcile_failure: boolean;
   locale_hint: "en" | "zh-CN" | "id";
   timezone: string | null;
+  agent_mandate?: AutopilotAgentMandate | null;
+  agent_side?: "buy" | "sell";
   policy_commitment: string;
 }
 
@@ -108,12 +126,13 @@ export interface AutopilotSession {
   strategy: {
     version: 1;
     strategy_id: AutopilotStrategyId;
-    decision_model: "rules_plus_ai_score" | "ai_direct_order_v1";
+    decision_model: "rules_plus_ai_score" | "ai_direct_order_v1" | "deterministic_level_trigger";
     executable_order_source:
       | "deterministic_guarded_strategy"
       | "ai_structured_decision_validated_by_policy"
       | "deterministic_guarded_arb_planner"
-      | "deterministic_guarded_market_maker";
+      | "deterministic_guarded_market_maker"
+      | "deterministic_level_trigger";
     ai_can_execute_directly: boolean;
   };
   session_policy: AutopilotSessionPolicy;
@@ -917,8 +936,18 @@ function strategyValue(value: unknown): AutopilotSession["strategy"] | null {
     strategyId &&
     strategyId !== "momentum_micro_trader" &&
     strategyId !== "hedged_spread_arbitrage_v1" &&
-    strategyId !== "tri_venue_market_maker_v1"
+    strategyId !== "tri_venue_market_maker_v1" &&
+    strategyId !== "level_trigger_v1"
   ) return null;
+  if (strategyId === "level_trigger_v1") {
+    return {
+      version: 1,
+      strategy_id: "level_trigger_v1",
+      decision_model: "deterministic_level_trigger",
+      executable_order_source: "deterministic_level_trigger",
+      ai_can_execute_directly: false,
+    };
+  }
   if (strategyId === "hedged_spread_arbitrage_v1") {
     return {
       version: 1,
@@ -953,6 +982,15 @@ function strategyValue(value: unknown): AutopilotSession["strategy"] | null {
 }
 
 function strategyForPolicy(policy: AutopilotSessionPolicy): AutopilotSession["strategy"] {
+  if (policy.strategy_id === "level_trigger_v1") {
+    return {
+      version: 1,
+      strategy_id: "level_trigger_v1",
+      decision_model: "deterministic_level_trigger",
+      executable_order_source: "deterministic_level_trigger",
+      ai_can_execute_directly: false,
+    };
+  }
   if (policy.strategy_id === "hedged_spread_arbitrage_v1") {
     return {
       version: 1,
@@ -1251,12 +1289,17 @@ function normalizePolicy(value: Record<string, unknown>): AutopilotSessionPolicy
   const rawPolicy = optionalRecord(value.session_policy) ?? value;
   const rawStrategyId = stringValue(rawPolicy.strategy_id);
   const strategyId: AutopilotStrategyId = rawStrategyId === "hedged_spread_arbitrage_v1" ||
-    rawStrategyId === "tri_venue_market_maker_v1"
+    rawStrategyId === "tri_venue_market_maker_v1" ||
+    rawStrategyId === "level_trigger_v1"
     ? rawStrategyId
     : "momentum_micro_trader";
   const aiDirectEnabled = rawPolicy.ai_direct_enabled !== false &&
     strategyId === "momentum_micro_trader" &&
     stringValue(rawPolicy.decision_model) !== "rules_plus_ai_score";
+  const agentMandate = strategyId === "level_trigger_v1"
+    ? sanitizeAgentMandate(rawPolicy.agent_mandate)
+    : null;
+  const agentSide: "buy" | "sell" = stringValue(rawPolicy.agent_side) === "sell" ? "sell" : "buy";
   const venues = stringArray(rawPolicy.venue_allowlist)
     .map((venue) => venue.toLowerCase())
     .filter((venue): venue is AutopilotVenueId => SUPPORTED_VENUES.has(venue as AutopilotVenueId));
@@ -1295,10 +1338,40 @@ function normalizePolicy(value: Record<string, unknown>): AutopilotSessionPolicy
     reduce_only_on_reconcile_failure: rawPolicy.reduce_only_on_reconcile_failure !== false,
     locale_hint: localeHint(rawPolicy.locale_hint),
     timezone: stringValue(rawPolicy.timezone)?.slice(0, 64) ?? null,
+    ...(strategyId === "level_trigger_v1"
+      ? { agent_mandate: agentMandate, agent_side: agentSide }
+      : {}),
   };
   return {
     ...policy,
     policy_commitment: `autopilot_policy_${digest(policy)}`,
+  };
+}
+
+// Structural pass-through of a drawn directional mandate. The worker
+// (normalizeAgentMandate in policy.js) is the authoritative validator and will
+// reject anything that violates the mandate vocabulary, so this only trims
+// known string fields and drops empties.
+function sanitizeAgentMandate(value: unknown): AutopilotAgentMandate | null {
+  const raw = optionalRecord(value);
+  if (!raw) return null;
+  const profile = stringValue(raw.strategy_profile);
+  const entry = stringValue(raw.entry_trigger);
+  if (!profile || !entry) return null;
+  const optional = (key: keyof AutopilotAgentMandate): string | undefined => {
+    const text = stringValue(raw[key]);
+    return text ? text : undefined;
+  };
+  return {
+    strategy_profile: profile,
+    entry_trigger: entry,
+    exit_rule: stringValue(raw.exit_rule) || "manual_approval",
+    time_horizon: stringValue(raw.time_horizon) || "scalp",
+    trigger_level: optional("trigger_level"),
+    invalidation_level: optional("invalidation_level"),
+    edge_threshold_bps: optional("edge_threshold_bps"),
+    time_window: optional("time_window"),
+    strategy_note: optional("strategy_note"),
   };
 }
 

@@ -3,8 +3,13 @@ import {
   isArbitrageSession,
   runGuardedArbitrageTick,
 } from "./arbitrage.js";
+import {
+  isLevelTriggerSession,
+  runGuardedLevelTriggerTick,
+} from "./level-trigger.js";
 import { decideAiDirectOrder, publicDecisionRecord } from "./ai-direct-order.js";
 import { executeAutopilotOrder, verifyAutopilotOrder } from "./private-execution.js";
+import { normalizeAgentMandate } from "./policy.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -182,6 +187,26 @@ export async function runAutopilotTick({
     await state.putAutopilotSession(session);
     return { ok: false, error: "autopilot_not_running" };
   }
+
+  // Directional level-trigger sessions own their full lifecycle (watch the
+  // level, fire a single entry, monitor the stop/horizon), so dispatch before
+  // the momentum cooldown gate.
+  if (isLevelTriggerSession(session)) {
+    session.last_tick_at = now.toISOString();
+    await state.putAutopilotSession(session);
+    return runGuardedLevelTriggerTick({
+      session,
+      state,
+      recipient,
+      now,
+      env,
+      fetchImpl,
+      appendEvent,
+      executeOrder: executeAutopilotOrder,
+      verifyOrder: verifyAutopilotOrder,
+    });
+  }
+
   if (session.last_execution_at) {
     const elapsed = now.getTime() - new Date(session.last_execution_at).getTime();
     if (elapsed < session.session_policy.cooldown_ms) {
@@ -467,11 +492,16 @@ function normalizeAutopilotPolicy(raw, now) {
     .map(normalizeMarket)
     .filter((market) => SUPPORTED_MARKETS.has(market)));
   const ttlMs = clampInt(raw.ttl_ms, 5 * 60_000, 4 * 60 * 60_000, 2 * 60 * 60_000);
-  const strategyId = stringValue(raw.strategy_id) === "hedged_spread_arbitrage_v1"
+  const rawStrategy = stringValue(raw.strategy_id);
+  const strategyId = rawStrategy === "hedged_spread_arbitrage_v1"
     ? "hedged_spread_arbitrage_v1"
-    : "momentum_micro_trader";
-  const aiDirectEnabled = strategyId !== "hedged_spread_arbitrage_v1" &&
+    : rawStrategy === "level_trigger_v1"
+      ? "level_trigger_v1"
+      : "momentum_micro_trader";
+  const aiDirectEnabled = strategyId === "momentum_micro_trader" &&
     (raw.ai_direct_enabled === true || stringValue(raw.decision_model) === "ai_direct_order_v1");
+  const agentMandate = strategyId === "level_trigger_v1" ? normalizeAgentMandate(raw.agent_mandate) : null;
+  const agentSide = stringValue(raw.agent_side).toLowerCase() === "sell" ? "sell" : "buy";
   const policy = {
     version: 2,
     strategy_id: strategyId,
@@ -499,6 +529,9 @@ function normalizeAutopilotPolicy(raw, now) {
     locale_hint: localeHint(raw.locale_hint),
     timezone: stringValue(raw.timezone) || null,
     expires_at: new Date(now.getTime() + ttlMs).toISOString(),
+    ...(strategyId === "level_trigger_v1"
+      ? { agent_mandate: agentMandate, agent_side: agentSide }
+      : {}),
   };
   return {
     ...policy,
@@ -507,6 +540,15 @@ function normalizeAutopilotPolicy(raw, now) {
 }
 
 function strategyForPolicy(policy) {
+  if (policy.strategy_id === "level_trigger_v1") {
+    return {
+      version: 1,
+      strategy_id: "level_trigger_v1",
+      decision_model: "deterministic_level_trigger",
+      executable_order_source: "deterministic_level_trigger",
+      ai_can_execute_directly: false,
+    };
+  }
   if (policy.strategy_id === "hedged_spread_arbitrage_v1") {
     return {
       version: 1,

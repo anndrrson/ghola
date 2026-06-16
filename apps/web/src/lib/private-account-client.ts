@@ -108,8 +108,27 @@ export interface PrivateAccountLiveTradingStatus {
   checked_at: string;
 }
 
+export interface PrivateAutopilotAgentMandate {
+  strategy_profile: string;
+  entry_trigger: string;
+  exit_rule: string;
+  time_horizon: string;
+  trigger_level?: string;
+  invalidation_level?: string;
+  edge_threshold_bps?: string;
+  time_window?: string;
+  strategy_note?: string;
+}
+
 export interface PrivateAutopilotSessionPolicy {
-  decision_model: "rules_plus_ai_score" | "ai_direct_order_v1";
+  strategy_id?:
+    | "momentum_micro_trader"
+    | "hedged_spread_arbitrage_v1"
+    | "tri_venue_market_maker_v1"
+    | "level_trigger_v1";
+  agent_mandate?: PrivateAutopilotAgentMandate | null;
+  agent_side?: "buy" | "sell";
+  decision_model: "rules_plus_ai_score" | "ai_direct_order_v1" | "deterministic_level_trigger";
   ai_direct_enabled: boolean;
   venue_allowlist: PrivateAutopilotVenueId[];
   market_allowlist: string[];
@@ -144,9 +163,18 @@ export interface PrivateAutopilotSession {
   status: PrivateAutopilotStatus;
   strategy: {
     version: 1;
-    strategy_id: "momentum_micro_trader";
-    decision_model: "rules_plus_ai_score" | "ai_direct_order_v1";
-    executable_order_source: "deterministic_guarded_strategy" | "ai_structured_decision_validated_by_policy";
+    strategy_id:
+      | "momentum_micro_trader"
+      | "hedged_spread_arbitrage_v1"
+      | "tri_venue_market_maker_v1"
+      | "level_trigger_v1";
+    decision_model: "rules_plus_ai_score" | "ai_direct_order_v1" | "deterministic_level_trigger";
+    executable_order_source:
+      | "deterministic_guarded_strategy"
+      | "ai_structured_decision_validated_by_policy"
+      | "deterministic_guarded_arb_planner"
+      | "deterministic_guarded_market_maker"
+      | "deterministic_level_trigger";
     ai_can_execute_directly: boolean;
   };
   session_policy: PrivateAutopilotSessionPolicy;
@@ -409,6 +437,103 @@ export async function createPrivateAutopilotSession(input: {
     method: "POST",
     body: JSON.stringify(input),
   }) as Promise<PrivateAutopilotCreateResponse>;
+}
+
+// --- Drawn directional plan -> level_trigger agent ---------------------------
+// Maps the /trade order draft vocabulary onto the worker mandate vocabulary and
+// arms a deterministic level_trigger agent. The worker (policy.js) is the
+// authoritative validator.
+
+const LEVEL_TRIGGER_STRATEGY_PROFILE: Record<string, string> = {
+  trend_following: "momentum_continuation",
+  breakout: "breakout_retest",
+  reversal: "sweep_reclaim",
+  mean_reversion: "mean_reversion",
+  range_trade: "mean_reversion",
+  funding_basis: "funding_mark_divergence",
+  custom: "custom",
+};
+
+// Entry triggers the deterministic level strategy can actually evaluate from a
+// single price snapshot. Other triggers (book imbalance, funding, route) need
+// the momentum/arb strategies and are not armable as a level plan yet.
+const LEVEL_TRIGGER_SUPPORTED_ENTRIES = new Set([
+  "preview_now",
+  "break_level",
+  "retest_level",
+  "sweep_reclaim",
+]);
+
+export interface LevelTriggerPlanInput {
+  side: "buy" | "sell";
+  venueId: string;
+  market: string;
+  notionalUsd: number;
+  maxSlippageBps: number;
+  strategyProfile: string;
+  entryTrigger: string;
+  exitRule: string;
+  timeHorizon: string;
+  triggerLevel?: string;
+  invalidationLevel?: string;
+  strategyNote?: string;
+}
+
+// A plan is armable as a level agent when the entry is level-based and both the
+// trigger and invalidation (stop) levels are present.
+export function levelTriggerSupportsPlan(plan: {
+  entryTrigger: string;
+  triggerLevel?: string;
+  invalidationLevel?: string;
+}): boolean {
+  if (!LEVEL_TRIGGER_SUPPORTED_ENTRIES.has(plan.entryTrigger)) return false;
+  if (!plan.invalidationLevel) return false;
+  return plan.entryTrigger === "preview_now" || Boolean(plan.triggerLevel);
+}
+
+export function mandateFromPlan(plan: LevelTriggerPlanInput): PrivateAutopilotAgentMandate {
+  return {
+    strategy_profile: LEVEL_TRIGGER_STRATEGY_PROFILE[plan.strategyProfile] ?? "custom",
+    entry_trigger: LEVEL_TRIGGER_SUPPORTED_ENTRIES.has(plan.entryTrigger) ? plan.entryTrigger : "break_level",
+    exit_rule: plan.invalidationLevel ? "exit_on_invalidation" : (plan.exitRule || "manual_approval"),
+    time_horizon: plan.timeHorizon || "until_invalidated",
+    trigger_level: plan.triggerLevel,
+    invalidation_level: plan.invalidationLevel,
+    strategy_note: plan.strategyNote,
+  };
+}
+
+export async function armLevelTriggerAgent(plan: LevelTriggerPlanInput): Promise<PrivateAutopilotCreateResponse> {
+  return createPrivateAutopilotSession({
+    session_policy: {
+      strategy_id: "level_trigger_v1",
+      agent_side: plan.side,
+      agent_mandate: mandateFromPlan(plan),
+      venue_allowlist: [levelTriggerVenue(plan.venueId)],
+      market_allowlist: [levelTriggerMarket(plan.market)],
+      max_notional_bucket: levelTriggerNotionalBucket(plan.notionalUsd),
+      max_slippage_bps: Math.max(1, Math.min(100, Math.round(plan.maxSlippageBps) || 50)),
+    } as Partial<PrivateAutopilotSessionPolicy>,
+  });
+}
+
+function levelTriggerVenue(venueId: string): PrivateAutopilotVenueId {
+  const lowered = String(venueId || "").toLowerCase();
+  return (lowered === "coinbase" ? "coinbase_advanced" : lowered) as PrivateAutopilotVenueId;
+}
+
+function levelTriggerMarket(market: string): string {
+  const base = String(market || "SOL-USD").split("-")[0].split("/")[0].toUpperCase();
+  return ["BTC", "ETH", "SOL"].includes(base) ? `${base}-USD` : "SOL-USD";
+}
+
+function levelTriggerNotionalBucket(usd: number): "5" | "10" | "25" | "50" | "100" {
+  const value = Number.isFinite(usd) ? usd : 0;
+  if (value <= 5) return "5";
+  if (value <= 10) return "10";
+  if (value <= 25) return "25";
+  if (value <= 50) return "50";
+  return "100";
 }
 
 export async function getPrivateAutopilotSession(
