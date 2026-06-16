@@ -357,6 +357,7 @@ function mockPooledWorkerReady() {
     venues: [
       { venue_id: "hyperliquid", status: "ready", ready: true, reason_codes: [], credential_count: 1 },
       { venue_id: "phoenix", status: "ready", ready: true, reason_codes: [], authority_commitment: "phoenix_authority_commitment" },
+      { venue_id: "backpack", status: "ready", ready: true, reason_codes: [], credential_commitment: "backpack_credential_commitment" },
       { venue_id: "jupiter", status: "ready", ready: true, reason_codes: [], authority_commitment: "jupiter_authority_commitment" },
       { venue_id: "coinbase", status: "ready", ready: true, reason_codes: [], credential_commitment: "coinbase_credential_commitment" },
     ],

@@ -39,7 +39,7 @@ export interface PrivateAccountSafeInput {
   solver_count_bucket: "1" | "2-4" | "5+";
 }
 
-export type PrivateAutopilotVenueId = "jupiter" | "phoenix" | "hyperliquid" | "coinbase_advanced";
+export type PrivateAutopilotVenueId = "jupiter" | "phoenix" | "hyperliquid" | "coinbase_advanced" | "backpack";
 export type PrivateAutopilotStatus =
   | "armed"
   | "watching"

@@ -22,7 +22,7 @@ import {
   type PrivateAutopilotSessionRecordV1,
 } from "./private-account-store";
 
-export type AutopilotVenueId = "jupiter" | "phoenix" | "hyperliquid" | "coinbase_advanced";
+export type AutopilotVenueId = "jupiter" | "phoenix" | "hyperliquid" | "coinbase_advanced" | "backpack";
 export type AutopilotStatus =
   | "armed"
   | "watching"
@@ -63,8 +63,13 @@ export interface AutopilotOwner {
   user?: PrivateAccountRequestOwner["user"];
 }
 
+export type AutopilotStrategyId =
+  | "momentum_micro_trader"
+  | "hedged_spread_arbitrage_v1"
+  | "tri_venue_market_maker_v1";
+
 export interface AutopilotSessionPolicy {
-  strategy_id: "momentum_micro_trader" | "hedged_spread_arbitrage_v1";
+  strategy_id: AutopilotStrategyId;
   decision_model: "rules_plus_ai_score" | "ai_direct_order_v1";
   ai_direct_enabled: boolean;
   venue_allowlist: AutopilotVenueId[];
@@ -102,9 +107,13 @@ export interface AutopilotSession {
   status: AutopilotStatus;
   strategy: {
     version: 1;
-    strategy_id: "momentum_micro_trader" | "hedged_spread_arbitrage_v1";
+    strategy_id: AutopilotStrategyId;
     decision_model: "rules_plus_ai_score" | "ai_direct_order_v1";
-    executable_order_source: "deterministic_guarded_strategy" | "ai_structured_decision_validated_by_policy" | "deterministic_guarded_arb_planner";
+    executable_order_source:
+      | "deterministic_guarded_strategy"
+      | "ai_structured_decision_validated_by_policy"
+      | "deterministic_guarded_arb_planner"
+      | "deterministic_guarded_market_maker";
     ai_can_execute_directly: boolean;
   };
   session_policy: AutopilotSessionPolicy;
@@ -170,12 +179,14 @@ interface AutopilotWorkerRuntime {
 }
 
 const DEFAULT_VENUES: AutopilotVenueId[] = ["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"];
-const SUPPORTED_VENUES = new Set<AutopilotVenueId>([
+const SUPPORTED_VENUE_LIST: AutopilotVenueId[] = [
   "jupiter",
   "phoenix",
   "hyperliquid",
   "coinbase_advanced",
-]);
+  "backpack",
+];
+const SUPPORTED_VENUES = new Set<AutopilotVenueId>(SUPPORTED_VENUE_LIST);
 const DEFAULT_MARKETS = ["SOL-USD", "BTC-USD", "ETH-USD"];
 const SUPPORTED_MARKETS = new Set([
   "SOL-USD",
@@ -902,7 +913,12 @@ function strategyValue(value: unknown): AutopilotSession["strategy"] | null {
   const raw = optionalRecord(value);
   if (!raw) return null;
   const strategyId = stringValue(raw.strategy_id);
-  if (strategyId && strategyId !== "momentum_micro_trader" && strategyId !== "hedged_spread_arbitrage_v1") return null;
+  if (
+    strategyId &&
+    strategyId !== "momentum_micro_trader" &&
+    strategyId !== "hedged_spread_arbitrage_v1" &&
+    strategyId !== "tri_venue_market_maker_v1"
+  ) return null;
   if (strategyId === "hedged_spread_arbitrage_v1") {
     return {
       version: 1,
@@ -910,6 +926,15 @@ function strategyValue(value: unknown): AutopilotSession["strategy"] | null {
       decision_model: "rules_plus_ai_score",
       executable_order_source: "deterministic_guarded_arb_planner",
       ai_can_execute_directly: true,
+    };
+  }
+  if (strategyId === "tri_venue_market_maker_v1") {
+    return {
+      version: 1,
+      strategy_id: "tri_venue_market_maker_v1",
+      decision_model: "rules_plus_ai_score",
+      executable_order_source: "deterministic_guarded_market_maker",
+      ai_can_execute_directly: false,
     };
   }
   const decisionModel = stringValue(raw.decision_model) === "ai_direct_order_v1"
@@ -937,6 +962,15 @@ function strategyForPolicy(policy: AutopilotSessionPolicy): AutopilotSession["st
       ai_can_execute_directly: true,
     };
   }
+  if (policy.strategy_id === "tri_venue_market_maker_v1") {
+    return {
+      version: 1,
+      strategy_id: "tri_venue_market_maker_v1",
+      decision_model: "rules_plus_ai_score",
+      executable_order_source: "deterministic_guarded_market_maker",
+      ai_can_execute_directly: false,
+    };
+  }
   if (policy.ai_direct_enabled) {
     return {
       version: 1,
@@ -957,13 +991,18 @@ function strategyForPolicy(policy: AutopilotSessionPolicy): AutopilotSession["st
 
 function publicPolicyPatch(raw: Record<string, unknown>): Partial<AutopilotSessionPolicy> {
   const patch: Partial<AutopilotSessionPolicy> = {};
-  if (stringValue(raw.strategy_id) === "hedged_spread_arbitrage_v1") {
-    patch.strategy_id = "hedged_spread_arbitrage_v1";
+  const strategyId = stringValue(raw.strategy_id);
+  if (strategyId === "hedged_spread_arbitrage_v1" || strategyId === "tri_venue_market_maker_v1") {
+    patch.strategy_id = strategyId;
     patch.decision_model = "rules_plus_ai_score";
     patch.ai_direct_enabled = false;
   }
   const decisionModel = stringValue(raw.decision_model);
-  if (patch.strategy_id !== "hedged_spread_arbitrage_v1" && (decisionModel === "ai_direct_order_v1" || raw.ai_direct_enabled === true)) {
+  if (
+    patch.strategy_id !== "hedged_spread_arbitrage_v1" &&
+    patch.strategy_id !== "tri_venue_market_maker_v1" &&
+    (decisionModel === "ai_direct_order_v1" || raw.ai_direct_enabled === true)
+  ) {
     patch.decision_model = "ai_direct_order_v1";
     patch.ai_direct_enabled = true;
   } else if (decisionModel === "rules_plus_ai_score" || raw.ai_direct_enabled === false) {
@@ -1027,7 +1066,7 @@ function venueAccessValue(value: unknown): AutopilotSession["venue_access"] | nu
   const raw = optionalRecord(value);
   if (!raw) return null;
   const entries: Array<[AutopilotVenueId, AutopilotSession["venue_access"][AutopilotVenueId]]> = [];
-  for (const venue of DEFAULT_VENUES) {
+  for (const venue of SUPPORTED_VENUE_LIST) {
     const item = optionalRecord(raw[venue]);
     if (!item) continue;
     const status = venueAccessStatusValue(item.status) ??
@@ -1210,11 +1249,13 @@ function coinbaseAutopilotReadiness(
 
 function normalizePolicy(value: Record<string, unknown>): AutopilotSessionPolicy {
   const rawPolicy = optionalRecord(value.session_policy) ?? value;
-  const strategyId = stringValue(rawPolicy.strategy_id) === "hedged_spread_arbitrage_v1"
-    ? "hedged_spread_arbitrage_v1"
+  const rawStrategyId = stringValue(rawPolicy.strategy_id);
+  const strategyId: AutopilotStrategyId = rawStrategyId === "hedged_spread_arbitrage_v1" ||
+    rawStrategyId === "tri_venue_market_maker_v1"
+    ? rawStrategyId
     : "momentum_micro_trader";
   const aiDirectEnabled = rawPolicy.ai_direct_enabled !== false &&
-    strategyId !== "hedged_spread_arbitrage_v1" &&
+    strategyId === "momentum_micro_trader" &&
     stringValue(rawPolicy.decision_model) !== "rules_plus_ai_score";
   const venues = stringArray(rawPolicy.venue_allowlist)
     .map((venue) => venue.toLowerCase())
