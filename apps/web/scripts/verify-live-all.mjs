@@ -28,32 +28,33 @@ const VENUES = [
   {
     id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
-    page: "/app/account?flow=hyperliquid-live",
+    page: "/arb",
     market: "/v1/private-account/hyperliquid/market-snapshot?coin=BTC&interval=1m",
   },
   {
     id: "phoenix",
     platform_class: "solana_perps_market",
-    page: "/app/account?flow=phoenix-live",
+    page: "/trade",
     market: "/v1/private-account/phoenix/market-snapshot?market=SOL&interval=1m",
   },
   {
     id: "jupiter",
     platform_class: "solana_swap_aggregator",
-    page: "/app/account?flow=jupiter-live",
+    page: "/trade",
     market: null,
   },
   {
     id: "coinbase",
     platform_class: "coinbase_style_provider",
-    page: "/app/account?flow=coinbase",
+    page: "/trade",
     market: "/v1/private-account/coinbase/market-snapshot?product_id=BTC-USD&interval=1m",
   },
 ];
 
 try {
   await checkHead("landing", "/");
-  await checkHead("trade_terminal", "/app/account?flow=trade");
+  await checkHead("trade_terminal", "/trade");
+  await checkHead("arb_terminal", "/arb");
   const liveTradingGate = await safeGetJson("/v1/private-account/live-trading/status");
   report.live_trading_gate = summarizeLiveTradingGate(liveTradingGate);
   record(
