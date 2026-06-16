@@ -25,6 +25,7 @@ local.properties
 .claude/
 .vercel
 .dev/
+deploy/private-agent-pooled-credentials.env
 ios/Ghola.xcodeproj/
 ios/build/
 .env*.local
