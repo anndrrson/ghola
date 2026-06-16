@@ -19,7 +19,31 @@ openssl rand -hex 32      # -> EXEC_TOKEN
 openssl rand -hex 32      # -> PROOF_SECRET
 ```
 
-## 1. Deploy the worker (Fly.io)
+## 1. Deploy the worker — Render (recommended; auto-binds Render's $PORT)
+1. Render dashboard → **New → Web Service** → connect the `ghola` repo.
+2. **Root Directory:** `apps/private-agent-worker` (it has a Dockerfile — Render auto-detects it).
+3. **Instance Type:** Free.
+4. **Environment variables:**
+   ```
+   PRIVATE_AGENT_EXECUTION_TOKEN = <EXEC_TOKEN>
+   PRIVATE_AGENT_ALLOW_UNATTESTED_DEV = true
+   PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = true
+   PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = full_ticket
+   PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD = 1000
+   PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD = 5000
+   PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS = 100
+   # leave PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT off until the no-submit canary passes
+   ```
+5. Create. When live, open `https://<service>.onrender.com/.well-known/private-agent-recipient` →
+   a JSON blob with `x25519_pub_hex` means it's working.
+
+> Free-tier caveat: it sleeps after ~15 min idle and **regenerates its identity key on wake** — fine
+> for first deploy + demo. To make it permanent (so connected users don't break), pin the identity by
+> generating an X25519 keypair once and setting `PRIVATE_AGENT_RECIPIENT_ID`,
+> `PRIVATE_AGENT_X25519_PUB_HEX`, `PRIVATE_AGENT_X25519_PRIVATE_KEY_PKCS8_PEM`
+> (`loadRecipient`, `server.js:189`). A small paid disk mounted at `/data` also works.
+
+## 1-alt. Deploy the worker (Fly.io)
 ```sh
 # one-time: brew install flyctl && fly auth signup   (free)
 cd apps/private-agent-worker
