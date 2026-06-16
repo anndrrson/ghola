@@ -1980,7 +1980,8 @@ function AgentActivity({
   if (sessions.length === 0) {
     return (
       <p className="px-4 py-4 text-xs leading-5 text-[#566278]">
-        No agent sessions yet. Draw your levels on the chart and preview the plan to arm one.
+        No agent sessions yet. Drag the entry and stop lines on the chart, then preview the plan and
+        execute it live to start an agent.
       </p>
     );
   }
