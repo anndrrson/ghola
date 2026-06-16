@@ -145,8 +145,7 @@ export function pooledWorkerVenueGateFromReadiness(
 }
 
 async function pooledWorkerConfig(env: Record<string, string | undefined>) {
-  const discoveredUrl = await discoverCurrentPhalaWorkerUrl(env);
-  const url = discoveredUrl || firstEnv(env, [
+  const explicitUrl = firstEnv(env, [
     "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
     "GHOLA_PRIVATE_AGENT_WORKER_URL",
     "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL",
@@ -154,6 +153,8 @@ async function pooledWorkerConfig(env: Record<string, string | undefined>) {
     "GHOLA_CONNECTOR_SOLANA_SWAP_AGGREGATOR_URL",
     "GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_URL",
   ]);
+  const discoveredUrl = explicitUrl ? "" : await discoverCurrentPhalaWorkerUrl(env);
+  const url = explicitUrl || discoveredUrl;
   const token = firstEnv(env, [
     "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN",
     "PRIVATE_AGENT_EXECUTION_TOKEN",
