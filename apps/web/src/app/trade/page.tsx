@@ -55,6 +55,7 @@ type LiveExecutionState =
   | { status: "working"; stage: "session" | "linking" | "submitting" }
   | { status: "done"; runStatus: string; commitment: string; orderId?: string | null }
   | { status: "error"; message: string };
+type WorkerWakeState = "idle" | "waking" | "ready" | "error";
 
 const CHART_INTERVALS: ChartInterval[] = ["1m", "5m", "15m", "1h"];
 type EntryTrigger =
@@ -221,6 +222,7 @@ export default function TradePage() {
   const [liveStatus, setLiveStatus] = useState<PrivateAccountLiveTradingStatus | null>(null);
   const [workerReady, setWorkerReady] = useState(false);
   const [workerLabel, setWorkerLabel] = useState("checking");
+  const [workerWakeState, setWorkerWakeState] = useState<WorkerWakeState>("idle");
   const [strategy, setStrategy] = useState<StrategyProfile>("trend_following");
   const [entryTrigger, setEntryTrigger] = useState<EntryTrigger>("preview_now");
   const [horizon, setHorizon] = useState<Horizon>("scalp");
@@ -250,6 +252,7 @@ export default function TradePage() {
   const mid = frameMidNumber(frame);
   const [midFlash, setMidFlash] = useState(false);
   const prevMidRef = useRef<number | null>(null);
+  const wakeAttemptedRef = useRef(false);
 
   useEffect(() => {
     if (prevMidRef.current != null && mid != null && prevMidRef.current !== mid) {
@@ -297,27 +300,62 @@ export default function TradePage() {
 
   useEffect(() => {
     let cancelled = false;
+    async function refreshLiveStatus() {
+      const res = await fetch("/v1/private-account/live-trading/status", { cache: "no-store" });
+      if (!res.ok) return null;
+      return (await res.json()) as PrivateAccountLiveTradingStatus;
+    }
+    async function refreshWorkerStatus() {
+      const res = await fetch("/api/private-agent/status", { cache: "no-store" });
+      if (!res.ok) return null;
+      return await res.json() as {
+        remote_execution_ready?: boolean;
+        providers?: Array<{ id: string; evidence?: { cvm_status?: string } }>;
+      };
+    }
+    function applyWorkerStatus(worker: Awaited<ReturnType<typeof refreshWorkerStatus>>) {
+      if (!worker || cancelled) return;
+      setWorkerReady(worker.remote_execution_ready === true);
+      const phala = worker.providers?.find((provider) => provider.id === "phala");
+      setWorkerLabel(worker.remote_execution_ready ? "attested" : phala?.evidence?.cvm_status || "off");
+    }
+    async function wakeWorkerIfNeeded(status: PrivateAccountLiveTradingStatus) {
+      if (!shouldWakePooledWorker(status) || wakeAttemptedRef.current) return;
+      wakeAttemptedRef.current = true;
+      setWorkerWakeState("waking");
+      setWorkerLabel("starting");
+      try {
+        const wake = await fetch("/v1/private-account/public-live/phoenix/wake", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reason: "trade_page_auto_wake" }),
+        });
+        if (!wake.ok) throw new Error(`wake_${wake.status}`);
+        const [nextLive, nextWorker] = await Promise.all([
+          refreshLiveStatus(),
+          refreshWorkerStatus(),
+        ]);
+        if (!cancelled) {
+          if (nextLive) setLiveStatus(nextLive);
+          applyWorkerStatus(nextWorker);
+          setWorkerWakeState(nextLive?.pooled_live_trading_enabled ? "ready" : "idle");
+        }
+      } catch {
+        if (!cancelled) setWorkerWakeState("error");
+      }
+    }
     async function loadStatus() {
       try {
-        const [liveRes, workerRes] = await Promise.all([
-          fetch("/v1/private-account/live-trading/status", { cache: "no-store" }),
-          fetch("/api/private-agent/status", { cache: "no-store" }),
+        const [live, worker] = await Promise.all([
+          refreshLiveStatus(),
+          refreshWorkerStatus(),
         ]);
-        if (liveRes.ok) {
-          const live = (await liveRes.json()) as PrivateAccountLiveTradingStatus;
-          if (!cancelled) setLiveStatus(live);
+        if (live && !cancelled) {
+          setLiveStatus(live);
+          if (live.pooled_live_trading_enabled) setWorkerWakeState("ready");
+          void wakeWorkerIfNeeded(live);
         }
-        if (workerRes.ok) {
-          const worker = await workerRes.json() as {
-            remote_execution_ready?: boolean;
-            providers?: Array<{ id: string; evidence?: { cvm_status?: string } }>;
-          };
-          if (!cancelled) {
-            setWorkerReady(worker.remote_execution_ready === true);
-            const phala = worker.providers?.find((provider) => provider.id === "phala");
-            setWorkerLabel(worker.remote_execution_ready ? "attested" : phala?.evidence?.cvm_status || "off");
-          }
-        }
+        applyWorkerStatus(worker);
       } catch {
         if (!cancelled) setWorkerLabel("unknown");
       }
@@ -581,6 +619,19 @@ export default function TradePage() {
   const userSignedPayloadRequired = venue.id !== "coinbase";
   const liveWorking = liveExecution.status === "working";
   const readyToExecute = thumperAuth.authenticated && (!userSignedPayloadRequired || signedPayloadText.trim().length > 0);
+  const workerSleeping = Boolean(liveStatus && shouldWakePooledWorker(liveStatus));
+  const workerStatusValue = workerWakeState === "waking" || workerSleeping ? "starting" : workerLabel;
+  const workerStatusTone = workerReady || workerWakeState === "ready" || workerWakeState === "waking" || workerSleeping
+    ? "good"
+    : "warn";
+  const pooledStatusValue = liveStatus?.pooled_live_trading_enabled
+    ? "enabled"
+    : workerWakeState === "waking" || workerSleeping
+      ? "starting"
+      : "off";
+  const pooledStatusTone = liveStatus?.pooled_live_trading_enabled || workerWakeState === "waking" || workerSleeping
+    ? "good"
+    : "warn";
 
   const stopDistancePct = entryLevel && stopLevel ? Math.abs(entryLevel - stopLevel) / entryLevel : null;
   const maxLossUsd = stopDistancePct != null ? notional * (stopDistancePct + slippageBps / 10_000) : null;
@@ -641,8 +692,8 @@ export default function TradePage() {
         <div className="hidden items-center gap-2 text-xs text-[#8b95a8] md:flex">
           <StatusPill label="Market" value={loadingMarket ? "loading" : marketError ? "fallback" : frame?.stale ? "stale" : "live"} tone={marketError ? "warn" : frame?.stale ? "warn" : "good"} />
           <StatusPill label="BYO live" value={liveStatus?.byo_live_trading_enabled ? "enabled" : "locked"} tone={liveStatus?.byo_live_trading_enabled ? "good" : "warn"} />
-          <StatusPill label="Worker" value={workerLabel} tone={workerReady ? "good" : "warn"} />
-          <StatusPill label="Pooled" value={liveStatus?.pooled_live_trading_enabled ? "enabled" : "off"} tone={liveStatus?.pooled_live_trading_enabled ? "good" : "warn"} />
+          <StatusPill label="Worker" value={workerStatusValue} tone={workerStatusTone} />
+          <StatusPill label="Pooled" value={pooledStatusValue} tone={pooledStatusTone} />
         </div>
         <div className="flex items-center gap-2">
           <Link
@@ -2256,6 +2307,15 @@ function venueStatus(status: PrivateAccountLiveTradingStatus | null, venue: Venu
   if (!status) return "unknown";
   const id = venue === "coinbase" ? "coinbase" : venue;
   return status.byo_live_venues.find((item) => item.id === id)?.status ?? "unknown";
+}
+
+function shouldWakePooledWorker(status: PrivateAccountLiveTradingStatus) {
+  if (status.pooled_live_trading_enabled) return false;
+  const reasonCodes = [
+    ...(status.pooled_unavailable_reason_codes ?? []),
+    ...(status.pooled_worker_readiness?.reason_codes ?? []),
+  ];
+  return reasonCodes.some((reason) => reason === "pooled_worker_probe_failed" || reason.endsWith(":pooled_worker_probe_failed"));
 }
 
 function formatPrice(value: number | string | null | undefined) {

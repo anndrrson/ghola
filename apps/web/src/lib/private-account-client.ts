@@ -78,7 +78,7 @@ export interface PrivateAccountLiveTradingStatus {
   public_market_data_enabled: boolean;
   default_access_mode: "ghola_auto_access";
   required_venues: Array<{
-    id: "hyperliquid" | "phoenix" | "jupiter" | "coinbase";
+    id: "hyperliquid" | "phoenix" | "backpack" | "jupiter" | "coinbase";
     label: string;
     submit_source?: "ghola_pooled_account";
     status: "green" | "red";
@@ -88,13 +88,21 @@ export interface PrivateAccountLiveTradingStatus {
     reason_codes: string[];
   }>;
   byo_live_venues: Array<{
-    id: "hyperliquid" | "phoenix" | "jupiter" | "coinbase";
+    id: "hyperliquid" | "phoenix" | "backpack" | "jupiter" | "coinbase";
     label: string;
     submit_source: "user_scoped_credential";
     status: "green" | "red";
     reason_codes: string[];
   }>;
   pooled_reason_codes: string[];
+  pooled_unavailable_reason_codes?: string[];
+  pooled_live_venues?: string[];
+  pooled_worker_readiness?: {
+    status: "ready" | "blocked" | "unavailable" | string;
+    ready: boolean;
+    endpoint_configured?: boolean;
+    reason_codes: string[];
+  };
   reason_codes: string[];
   gate_commitment: string;
   checked_at: string;
