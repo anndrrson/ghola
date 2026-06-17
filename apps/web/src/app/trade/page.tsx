@@ -1983,7 +1983,7 @@ function AgentActivity({
     return (
       <p className="px-4 py-4 text-xs leading-5 text-[#566278]">
         No agent sessions yet. Drag the entry and stop lines on the chart, then preview the plan and
-        execute it live to start an agent.
+        arm an agent.
       </p>
     );
   }
@@ -1992,25 +1992,83 @@ function AgentActivity({
     .slice(0, 5);
   return (
     <div className="grid gap-2 px-4 py-3">
-      {shown.map((session) => (
-        <div key={session.autopilot_session_id} className="rounded-md border border-[#1e2a3a] bg-[#090d14] px-3 py-2 shadow-[inset_0_1px_0_rgba(220,238,255,0.04)]">
-          <div className="flex items-center justify-between gap-2 text-xs">
-            <span className="flex items-center gap-1.5 font-medium capitalize text-[#eef1f8]">
-              <span aria-hidden className={`trade-live-dot h-1.5 w-1.5 rounded-full ${autopilotStatusDot(session.status)}`} />
-              {session.status.replaceAll("_", " ")}
-            </span>
-            <span className="font-mono text-[10px] tabular-nums text-[#566278]">{formatAgo(session.updated_at)}</span>
+      {shown.map((session) => {
+        const copy = autopilotStatusCopy(session);
+        return (
+          <div key={session.autopilot_session_id} className="rounded-md border border-[#1e2a3a] bg-[#090d14] px-3 py-2 shadow-[inset_0_1px_0_rgba(220,238,255,0.04)]">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="flex items-center gap-1.5 font-medium text-[#eef1f8]">
+                <span aria-hidden className={`trade-live-dot h-1.5 w-1.5 rounded-full ${autopilotStatusDot(session.status)}`} />
+                {copy.label}
+              </span>
+              <span className="font-mono text-[10px] tabular-nums text-[#566278]">{formatAgo(session.updated_at)}</span>
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-[#8b95a8]">
+              <span className="shrink-0 font-mono tabular-nums">
+                {session.order_count} order{session.order_count === 1 ? "" : "s"}
+              </span>
+              <span className="truncate text-right">{copy.nextStep}</span>
+            </div>
           </div>
-          <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-[#8b95a8]">
-            <span className="shrink-0 font-mono tabular-nums">
-              {session.order_count} order{session.order_count === 1 ? "" : "s"}
-            </span>
-            <span className="truncate text-right">{session.next_step}</span>
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
+}
+
+function autopilotStatusCopy(session: PrivateAutopilotSession): { label: string; nextStep: string } {
+  if (session.execution_enabled || session.status === "running") {
+    return {
+      label: "Agent live",
+      nextStep: session.next_step || "Watching and allowed to execute inside your plan.",
+    };
+  }
+  if (session.status === "watching") {
+    return {
+      label: "Watching market",
+      nextStep: session.next_step || "Waiting for the trigger before submitting an order.",
+    };
+  }
+  if (session.status === "pending_funding") {
+    return {
+      label: "Funding needed",
+      nextStep: "No order sent. Fund or connect venue funds, then refresh status.",
+    };
+  }
+  if (session.status === "pending_worker") {
+    return {
+      label: "Worker starting",
+      nextStep: session.next_step || "Waiting for the private worker to accept the session.",
+    };
+  }
+  if (session.status === "armed") {
+    return {
+      label: "Agent staged",
+      nextStep: session.next_step || "No order sent until execution is enabled.",
+    };
+  }
+  if (session.status === "paused") {
+    return {
+      label: "Paused",
+      nextStep: session.next_step || "Resume when you want the agent to continue.",
+    };
+  }
+  if (session.status === "blocked") {
+    return {
+      label: "Blocked",
+      nextStep: session.next_step || "Resolve the blocker before this session can execute.",
+    };
+  }
+  if (session.status === "killed") {
+    return {
+      label: "Killed",
+      nextStep: session.next_step || "Create a new plan to continue.",
+    };
+  }
+  return {
+    label: "Expired",
+    nextStep: session.next_step || "Create a new agent session.",
+  };
 }
 
 function autopilotStatusDot(status: PrivateAutopilotStatus) {
