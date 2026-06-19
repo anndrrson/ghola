@@ -6,14 +6,19 @@ import { assertRecipientSecretMatches } from "./crypto/envelope.js";
 import {
   capabilityRequired,
   verifyWorkerCapability,
+  workerCapabilitySecret,
 } from "./auth/capability.js";
 import {
   controlAutopilotSession,
   createAutopilotSession,
   listAutopilotEvents,
+  listAutopilotReplay,
+  runDueAutopilotSessions,
   runAutopilotTick,
+  startAutopilotDueLoop,
   startAutopilotLoop,
 } from "./execution/autopilot.js";
+import { revenueEvidenceStatement } from "./execution/revenue-evidence.js";
 import {
   createHyperliquidManagedAllocation,
   executeCoinbaseOrder,
@@ -43,7 +48,11 @@ import {
   loadManagedHyperliquidCredential,
 } from "./venues/hyperliquid.js";
 import { loadPooledSolanaPerpsCredential } from "./venues/solana_perps.js";
-import { loadPooledJupiterCredential } from "./venues/jupiter.js";
+import {
+  jupiterPlatformFeeAccountReadiness,
+  jupiterPlatformFeeConfig,
+  loadPooledJupiterCredential,
+} from "./venues/jupiter.js";
 import { loadPartnerCoinbaseCredential } from "./venues/coinbase.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -127,6 +136,13 @@ function writeSse(res, event, data) {
 
 function env(name, fallback = "") {
   const value = process.env[name];
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : fallback;
+}
+
+function envFrom(sourceEnv, name, fallback = "") {
+  const value = sourceEnv?.[name];
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : fallback;
@@ -639,6 +655,57 @@ function validatePooledReadinessRequest(body) {
   return errors;
 }
 
+function validateAutopilotExecutionReadinessRequest(body) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.operation_class !== "autopilot_execution_readiness") {
+    errors.push("operation_class must be autopilot_execution_readiness");
+  }
+  if (body.venues !== undefined) {
+    if (!Array.isArray(body.venues)) {
+      errors.push("venues must be an array");
+    } else {
+      for (const venue of body.venues) {
+        if (!POOLED_READINESS_VENUES.includes(String(venue))) {
+          errors.push(`venue ${String(venue)} is unsupported`);
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+function validateRevenueEvidenceRequest(body) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.operation_class !== "revenue_evidence_export") {
+    errors.push("operation_class must be revenue_evidence_export");
+  }
+  if (body.limit !== undefined && !(Number.isInteger(body.limit) && body.limit > 0 && body.limit <= 1000)) {
+    errors.push("limit must be an integer from 1 to 1000 when provided");
+  }
+  if (body.venue_id !== undefined && !isNonEmptyString(body.venue_id)) {
+    errors.push("venue_id must be a non-empty string when provided");
+  }
+  if (body.autopilot_session_id !== undefined && !isNonEmptyString(body.autopilot_session_id)) {
+    errors.push("autopilot_session_id must be a non-empty string when provided");
+  }
+  for (const field of ["from", "to"]) {
+    if (body[field] !== undefined && Number.isNaN(new Date(body[field]).getTime())) {
+      errors.push(`${field} must be an ISO timestamp when provided`);
+    }
+  }
+  return errors;
+}
+
 function pooledReadinessVenueIds(body = {}) {
   if (!Array.isArray(body.venues) || body.venues.length === 0) return POOLED_READINESS_VENUES;
   return [...new Set(body.venues.map((venue) => String(venue)).filter((venue) =>
@@ -861,6 +928,370 @@ function pooledReadinessResponse(body) {
     venues,
     reason_codes: reasonCodes,
     checked_at: new Date().toISOString(),
+  };
+}
+
+async function autopilotExecutionReadinessResponse({ body, runtimeReady, now = new Date() }) {
+  const pooled = pooledReadinessResponse({
+    version: 1,
+    operation_class: "pooled_readiness",
+    venues: body.venues,
+  });
+  const revenue = await autopilotRevenueReadiness();
+  const reasonCodes = [];
+  const advisoryReasons = [];
+  const dryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true";
+  const stateMode = stateStoreMode();
+  const sharedState = ["postgres", "postgresql", "neon"].includes(stateMode);
+  if (!runtimeReady.ready) {
+    reasonCodes.push("runtime_not_attested_ready");
+    for (const missing of runtimeReady.missing || []) {
+      reasonCodes.push(`runtime_missing_${missing}`);
+    }
+  }
+  if (!capabilityRequired()) reasonCodes.push("worker_capability_not_required");
+  if (!workerCapabilitySecret()) reasonCodes.push("worker_capability_secret_missing");
+  if (!sharedState) reasonCodes.push("shared_state_store_required");
+  if (dryRun) reasonCodes.push("venue_dry_run_enabled");
+  if (process.env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT !== "true") {
+    reasonCodes.push("autopilot_live_submit_disabled");
+  }
+  if (process.env.PRIVATE_AGENT_AUTOPILOT_SWEEP_ENABLED === "false") {
+    reasonCodes.push("autopilot_sweep_disabled");
+  }
+  if (process.env.PRIVATE_AGENT_AUTOPILOT_SIGNAL_MODE === "force") {
+    reasonCodes.push("forced_signal_mode_enabled");
+  }
+  if (revenue.required && !revenue.live_fee_collection_enabled) {
+    reasonCodes.push(revenue.error_code || "autopilot_revenue_fee_account_missing");
+  }
+  for (const reason of revenue.reason_codes || []) reasonCodes.push(reason);
+  const readyVenues = pooled.venues.filter((venue) => venue.ready);
+  if (readyVenues.length === 0) reasonCodes.push("no_live_venue_ready");
+  for (const reason of pooled.reason_codes) reasonCodes.push(reason);
+  const canary = liveCanaryStatus(now);
+  if (!canary.ready) advisoryReasons.push(canary.reason_code);
+
+  const uniqueCriticalReasons = [...new Set(reasonCodes)];
+  const uniqueAdvisoryReasons = [...new Set(advisoryReasons)];
+  const liveSubmit = process.env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT === "true";
+  const sweepEnabled = process.env.PRIVATE_AGENT_AUTOPILOT_SWEEP_ENABLED !== "false";
+  const perSessionProofMode = process.env.PRIVATE_AGENT_PUBLIC_LIVE_PROOF_MODE !== "false";
+  const status = uniqueCriticalReasons.length === 0
+    ? uniqueAdvisoryReasons.length === 0
+      ? "live_ready"
+      : perSessionProofMode
+        ? "public_live_ready"
+        : "alpha_active"
+    : "setup_required";
+  const firstReadyVenue = readyVenues[0]?.venue_id || null;
+  const liveOrdersEnabled = status !== "setup_required";
+  return {
+    version: 1,
+    operation_class: "autopilot_execution_readiness",
+    recommended_strategy: {
+      strategy_id: "bounded_intent_executor_v1",
+      label: "Bounded intent executor",
+      default_order_source: "deterministic_bounded_intent_executor",
+      first_live_lane: firstReadyVenue,
+    },
+    status,
+    ready: status === "live_ready" || status === "public_live_ready",
+    blocking: false,
+    progress_mode: status,
+    current_mode: dryRun ? "dry_run" : liveSubmit ? "live_configured" : "setup",
+    safe_to_recommend: status === "live_ready"
+      ? "production_live"
+      : status === "public_live_ready"
+        ? "public_live_with_per_session_proofs"
+      : status === "alpha_active"
+        ? "controlled_alpha_only"
+        : dryRun
+          ? "dry_run_or_setup_only"
+          : "setup_required",
+    reason_codes: [...uniqueCriticalReasons, ...uniqueAdvisoryReasons],
+    critical_reason_codes: uniqueCriticalReasons,
+    advisory_reason_codes: uniqueAdvisoryReasons,
+    enabled_capabilities: {
+      create_autopilot_sessions: true,
+      dry_run_orders: dryRun,
+      no_submit_verification: true,
+      live_autopilot_orders: liveOrdersEnabled,
+      revenue_collection: revenue.live_fee_collection_enabled,
+      revenue_evidence_export: true,
+      due_session_runner: sweepEnabled,
+      replay_evidence: true,
+      per_session_live_proofs: perSessionProofMode,
+      kill_switch: true,
+    },
+    revenue,
+    proof_model: {
+      version: 1,
+      mode: "per_session_live_proofs",
+      live_submit_mode: liveSubmit ? "enabled" : "disabled",
+      funded_operator_canary_required: false,
+      funded_operator_canary_status: canary.ready ? "green" : "advisory_missing_or_stale",
+      funded_operator_canary_advisory_reason_codes: uniqueAdvisoryReasons,
+      per_session_requirements: {
+        scoped_worker_capability: true,
+        no_submit_preflight: true,
+        initialized_fee_accounts: true,
+        policy_caps: true,
+        deterministic_work_order: true,
+        receipt_commitment: true,
+        replay_evidence: true,
+        revenue_evidence: true,
+      },
+      first_order_policy: {
+        max_notional_usd: 5,
+        max_slippage_bps: 100,
+        require_reconciled_receipt_before_graduation: true,
+      },
+      evidence_endpoints: {
+        readiness: "/autopilot/readiness",
+        replay: "/autopilot/replay",
+        revenue: "/revenue/evidence",
+      },
+    },
+    first_available_path: liveOrdersEnabled
+      ? {
+          mode: "live_autopilot",
+          strategy_id: "bounded_intent_executor_v1",
+          venue_id: firstReadyVenue,
+          note: "Start with the first ready venue and capped session policy.",
+        }
+      : dryRun
+        ? {
+            mode: "dry_run_autopilot",
+            strategy_id: "bounded_intent_executor_v1",
+            venue_id: firstReadyVenue || "jupiter",
+            note: "Users can still create sessions, run simulated execution, and inspect replay evidence.",
+          }
+        : {
+            mode: "setup",
+            strategy_id: "bounded_intent_executor_v1",
+            venue_id: firstReadyVenue,
+            note: "Enable the next setup action before live orders.",
+          },
+    next_actions: readinessNextActions([...uniqueCriticalReasons, ...uniqueAdvisoryReasons]),
+    checks: {
+      runtime: {
+        ready: runtimeReady.ready,
+        missing: runtimeReady.missing || [],
+      },
+      worker_capability: {
+        required: capabilityRequired(),
+        secret_configured: Boolean(workerCapabilitySecret()),
+      },
+      state_store: {
+        mode: stateMode,
+        shared: sharedState,
+      },
+      execution_gates: {
+        venue_dry_run: dryRun,
+        autopilot_live_submit: liveSubmit,
+        autopilot_sweep_enabled: sweepEnabled,
+        signal_mode: env("PRIVATE_AGENT_AUTOPILOT_SIGNAL_MODE", "live"),
+      },
+      canary,
+      safety_controls: {
+        durable_tick_lease: true,
+        deterministic_work_order: true,
+        pending_execution_replay: true,
+        kill_switch_terminal: true,
+        replay_evidence: true,
+        revenue_evidence_ledger: true,
+      },
+    },
+    venues: pooled.venues,
+    ready_venue_count: readyVenues.length,
+    checked_at: now.toISOString(),
+  };
+}
+
+function readinessNextActions(reasonCodes) {
+  const labels = {
+    runtime_not_attested_ready: "Run in an attested worker or explicitly keep this as dev/alpha.",
+    runtime_missing_attestation: "Configure runtime attestation evidence.",
+    runtime_missing_attestation_hash: "Configure a runtime attestation hash.",
+    runtime_missing_measurement: "Configure a runtime measurement or image digest.",
+    runtime_missing_image_digest: "Publish the worker image digest.",
+    runtime_missing_funding_signer: "Configure the funding attestation signing key.",
+    worker_capability_not_required: "Require scoped worker capabilities for money-moving endpoints.",
+    worker_capability_secret_missing: "Configure the worker capability signing secret.",
+    shared_state_store_required: "Use Postgres/Neon shared state for live autonomous sessions.",
+    venue_dry_run_enabled: "Turn off dry-run only after no-submit checks pass.",
+    autopilot_live_submit_disabled: "Enable autopilot live submit for the selected capped venue path.",
+    autopilot_sweep_disabled: "Enable the due-session runner so agents keep working without an open UI.",
+    forced_signal_mode_enabled: "Use live market signals instead of forced signal mode.",
+    no_live_venue_ready: "Configure one venue end-to-end before expanding to more venues.",
+    live_canary_missing: "Record a compliant no-submit or tiny-live canary timestamp when available.",
+    live_canary_invalid: "Fix the live canary timestamp.",
+    live_canary_from_future: "Fix the live canary timestamp.",
+    live_canary_stale: "Refresh the live canary in an allowed environment.",
+    autopilot_revenue_fee_account_missing: "Configure PRIVATE_AGENT_JUPITER_PLATFORM_FEE_BPS plus either PRIVATE_AGENT_JUPITER_FEE_ACCOUNT or PRIVATE_AGENT_JUPITER_FEE_OWNER with PRIVATE_AGENT_JUPITER_FEE_MINT for collectable Jupiter autopilot revenue.",
+    autopilot_revenue_config_invalid: "Fix the configured Jupiter autopilot fee account or fee bps.",
+    autopilot_revenue_jupiter_fee_account_not_initialized: "Initialize the configured Jupiter fee token account or switch to PRIVATE_AGENT_JUPITER_FEE_OWNER plus PRIVATE_AGENT_JUPITER_FEE_MINT so the worker can create the ATA.",
+    autopilot_revenue_jupiter_fee_account_setup_payer_missing: "Configure the pooled Jupiter payer vault so the worker can create the fee ATA.",
+    autopilot_revenue_jupiter_fee_account_setup_payer_needs_sol: "Fund the pooled Jupiter payer with enough SOL to create the fee ATA and pay setup fees.",
+    autopilot_revenue_jupiter_fee_account_preflight_failed: "Fix Solana RPC or Jupiter fee account preflight before accepting live Jupiter revenue orders.",
+  };
+  return [...new Set(reasonCodes)]
+    .map((code) => ({
+      code,
+      action: labels[code] || actionForVenueReason(code),
+    }))
+    .filter((item) => item.action);
+}
+
+function actionForVenueReason(code) {
+  const [venue, reason] = String(code || "").split(":");
+  if (!reason) return null;
+  if (reason.endsWith("_live_mode_disabled")) return `Enable ${venue} live mode for the selected capped rollout path.`;
+  if (reason.endsWith("_api_key_missing") || reason.endsWith("_private_key_missing")) return `Configure ${venue} pooled trade credentials.`;
+  if (reason.endsWith("_max_order_cap_missing")) return `Configure ${venue} max order cap.`;
+  if (reason.endsWith("_daily_cap_missing")) return `Configure ${venue} daily notional cap.`;
+  if (reason.endsWith("_slippage_cap_missing")) return `Configure ${venue} slippage cap.`;
+  if (reason.endsWith("_allowlist_missing")) return `Configure ${venue} market/mint/symbol allowlist.`;
+  if (reason.endsWith("_pooled_disabled")) return `Enable ${venue} pooled execution.`;
+  if (reason.endsWith("_pooled_credentials_missing") || reason.endsWith("_pooled_authority_missing")) return `Configure ${venue} pooled execution authority.`;
+  return `Resolve ${venue} readiness item: ${reason}.`;
+}
+
+async function autopilotRevenueReadiness(sourceEnv = process.env) {
+  const required = sourceEnv.PRIVATE_AGENT_AUTOPILOT_REVENUE_REQUIRED === "true" ||
+    sourceEnv.GHOLA_AUTOPILOT_REVENUE_REQUIRED === "true";
+  const feeBpsConfigured = Boolean(
+    envFrom(sourceEnv, "PRIVATE_AGENT_JUPITER_PLATFORM_FEE_BPS") ||
+    envFrom(sourceEnv, "GHOLA_JUPITER_PLATFORM_FEE_BPS") ||
+    envFrom(sourceEnv, "PRIVATE_AGENT_AUTOPILOT_JUPITER_FEE_BPS") ||
+    envFrom(sourceEnv, "GHOLA_AUTOPILOT_JUPITER_FEE_BPS")
+  );
+  try {
+    const config = jupiterPlatformFeeConfig(sourceEnv);
+    if (!config) {
+      return {
+        version: 1,
+        status: required ? "missing" : "not_configured",
+        required,
+        model: "jupiter_integrator_fee",
+        live_fee_collection_enabled: false,
+        venue_id: "jupiter",
+        fee_bps: 0,
+        fee_recipient: "jupiter_fee_account",
+        fee_recipient_configured: false,
+        fee_recipient_commitment: null,
+        evidence_ledger_enabled: true,
+        investor_export_available: true,
+        error_code: required ? "autopilot_revenue_fee_account_missing" : null,
+        reason_codes: required ? ["autopilot_revenue_fee_account_missing"] : [],
+      };
+    }
+    const shouldPreflight = config.feeAccountDerived ||
+      sourceEnv.PRIVATE_AGENT_AUTOPILOT_REVENUE_PREFLIGHT === "true" ||
+      sourceEnv.GHOLA_AUTOPILOT_REVENUE_PREFLIGHT === "true";
+    const feeAccountReadiness = shouldPreflight
+      ? await jupiterPlatformFeeAccountReadiness({ env: sourceEnv })
+      : null;
+    const feeAccountReady = !feeAccountReadiness || feeAccountReadiness.ready === true;
+    const feeAccountReasonCodes = (feeAccountReadiness?.reason_codes || [])
+      .map((reason) => `autopilot_revenue_${reason}`);
+    return {
+      version: 1,
+      status: feeAccountReadiness?.status === "setup_ready"
+        ? "setup_ready"
+        : feeAccountReady
+          ? "configured"
+          : feeAccountReadiness?.status || "invalid",
+      required,
+      model: config.revenue_model,
+      live_fee_collection_enabled: feeAccountReady,
+      venue_id: "jupiter",
+      fee_bps: config.feeBps,
+      fee_recipient: config.feeAccountDerived ? "jupiter_fee_owner_associated_token_account" : "jupiter_fee_account",
+      fee_recipient_configured: true,
+      fee_recipient_commitment: config.feeAccountCommitment,
+      fee_owner_commitment: config.feeOwnerCommitment || null,
+      fee_mint_commitment: config.feeMintCommitment || null,
+      fee_account_derived: config.feeAccountDerived,
+      fee_account_create_mode: config.feeAccountCreateMode,
+      fee_account_readiness: feeAccountReadiness,
+      evidence_ledger_enabled: true,
+      investor_export_available: true,
+      error_code: feeAccountReady
+        ? null
+        : feeAccountReasonCodes[0] || "autopilot_revenue_fee_account_preflight_failed",
+      reason_codes: feeAccountReady ? [] : feeAccountReasonCodes,
+    };
+  } catch (error) {
+    return {
+      version: 1,
+      status: "invalid",
+      required: required || feeBpsConfigured,
+      model: "jupiter_integrator_fee",
+      live_fee_collection_enabled: false,
+      venue_id: "jupiter",
+      fee_bps: 0,
+      fee_recipient: "jupiter_fee_account",
+      fee_recipient_configured: false,
+      fee_recipient_commitment: null,
+      evidence_ledger_enabled: true,
+      investor_export_available: true,
+      error_code: feeBpsConfigured || required
+        ? "autopilot_revenue_config_invalid"
+        : null,
+      reason_codes: feeBpsConfigured || required ? ["autopilot_revenue_config_invalid"] : [],
+      error: String(error?.message || "autopilot revenue config invalid"),
+    };
+  }
+}
+
+function liveCanaryStatus(now = new Date()) {
+  const raw = env("PRIVATE_AGENT_LAST_LIVE_CANARY_AT", env("GHOLA_LAST_LIVE_CANARY_AT", ""));
+  const maxAgeMs = positiveCap("PRIVATE_AGENT_LIVE_CANARY_MAX_AGE_MS", "GHOLA_LIVE_CANARY_MAX_AGE_MS") ||
+    7 * 24 * 60 * 60_000;
+  if (!raw) {
+    return {
+      ready: false,
+      reason_code: "live_canary_missing",
+      last_live_canary_at: null,
+      max_age_ms: maxAgeMs,
+    };
+  }
+  const observedAt = new Date(raw);
+  if (!Number.isFinite(observedAt.getTime())) {
+    return {
+      ready: false,
+      reason_code: "live_canary_invalid",
+      last_live_canary_at: raw,
+      max_age_ms: maxAgeMs,
+    };
+  }
+  const ageMs = now.getTime() - observedAt.getTime();
+  if (ageMs < -5 * 60_000) {
+    return {
+      ready: false,
+      reason_code: "live_canary_from_future",
+      last_live_canary_at: observedAt.toISOString(),
+      age_ms: ageMs,
+      max_age_ms: maxAgeMs,
+    };
+  }
+  if (ageMs > maxAgeMs) {
+    return {
+      ready: false,
+      reason_code: "live_canary_stale",
+      last_live_canary_at: observedAt.toISOString(),
+      age_ms: ageMs,
+      max_age_ms: maxAgeMs,
+    };
+  }
+  return {
+    ready: true,
+    reason_code: null,
+    last_live_canary_at: observedAt.toISOString(),
+    age_ms: ageMs,
+    max_age_ms: maxAgeMs,
   };
 }
 
@@ -1635,6 +2066,25 @@ function validateAutopilotSessionRequest(body, recipient) {
   return errors;
 }
 
+function validateAutopilotRunDueRequest(body) {
+  const errors = [];
+  if (!isObject(body)) return ["request body must be an object"];
+  if (containsPlaintextLeakKey(body)) {
+    errors.push("request must not contain plaintext credentials, strategy, prompt, policy text, or order payloads");
+  }
+  if (body.version !== 1) errors.push("version must be 1");
+  if (body.operation_class !== "autopilot_run_due") {
+    errors.push("operation_class must be autopilot_run_due");
+  }
+  if (
+    body.max_sessions !== undefined &&
+    !(Number.isInteger(body.max_sessions) && body.max_sessions > 0 && body.max_sessions <= 100)
+  ) {
+    errors.push("max_sessions must be an integer from 1 to 100 when provided");
+  }
+  return errors;
+}
+
 function validateTriVenueCommandRequest(body) {
   const errors = [];
   if (!isObject(body)) return ["request body must be an object"];
@@ -1706,8 +2156,11 @@ function triVenueSessionBody(body, strategy = "arb", hyperliquidAllocation = nul
 export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
   const state = options.state || createConfiguredWorkerState(dataDir());
+  const dueLoop = options.startAutopilotDueLoop === false
+    ? null
+    : startAutopilotDueLoop({ state, recipient });
 
-  return createServer(async (req, res) => {
+  const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || "/", "http://localhost");
       const ready = await readiness(recipient);
@@ -1754,6 +2207,73 @@ export function createPrivateAgentWorkerServer(options = {}) {
         return json(res, 200, pooledReadinessResponse(body));
       }
 
+      if (req.method === "POST" && url.pathname === "/autopilot/readiness") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "autopilot:read",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            operation_class: "autopilot_execution_readiness",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateAutopilotExecutionReadinessRequest(body);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid autopilot execution readiness request",
+            details: errors,
+          });
+        }
+        return json(res, 200, await autopilotExecutionReadinessResponse({
+          body,
+          runtimeReady: ready,
+        }));
+      }
+
+      if (req.method === "POST" && url.pathname === "/revenue/evidence") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "revenue:read",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            operation_class: "revenue_evidence_export",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateRevenueEvidenceRequest(body);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid revenue evidence request",
+            details: errors,
+          });
+        }
+        const events = state.listRevenueEvidence
+          ? await state.listRevenueEvidence(body)
+          : [];
+        return json(res, 200, {
+          version: 1,
+          operation_class: "revenue_evidence_export",
+          filters: {
+            autopilot_session_id: body.autopilot_session_id || null,
+            venue_id: body.venue_id || null,
+            revenue_status: body.revenue_status || null,
+            from: body.from || null,
+            to: body.to || null,
+            limit: body.limit || 200,
+          },
+          statement: revenueEvidenceStatement(events),
+          events,
+        });
+      }
+
       if (req.method === "POST" && url.pathname === "/autopilot/sessions") {
         if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
           return json(res, 400, { error: "sealed execution header is required" });
@@ -1790,6 +2310,41 @@ export function createPrivateAgentWorkerServer(options = {}) {
           session,
           events: await state.listAutopilotEvents(session.autopilot_session_id),
         });
+      }
+
+      if (req.method === "POST" && url.pathname === "/autopilot/run-due") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "autopilot:control",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            operation_class: "autopilot_run_due",
+          }),
+        });
+        if (authorized.rejected) return;
+        const { body } = authorized;
+        const errors = validateAutopilotRunDueRequest(body);
+        if (errors.length > 0) {
+          return json(res, 400, {
+            error: "invalid autopilot run-due request",
+            details: errors,
+          });
+        }
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, {
+            error: "attested sealed execution is unavailable",
+            missing: ready.missing,
+          });
+        }
+        const result = await runDueAutopilotSessions({
+          state,
+          recipient,
+          maxSessions: Number.parseInt(String(body.max_sessions || "25"), 10) || 25,
+        });
+        return json(res, 200, result);
       }
 
       const triVenueCommand = url.pathname.match(/^\/autopilot\/tri-venue\/(run|market-maker\/start|kill)$/);
@@ -1870,13 +2425,11 @@ export function createPrivateAgentWorkerServer(options = {}) {
           provider: env("PRIVATE_AGENT_PROVIDER_ID", "phala"),
           startLoop: false,
         });
-        const tick = action === "market-maker/start"
-          ? { ok: true, status: "maker_session_armed", mode: "post_only_quotes_deferred_to_policy_loop" }
-          : await runAutopilotTick({
-              sessionId: session.autopilot_session_id,
-              state,
-              recipient,
-            });
+        const tick = await runAutopilotTick({
+          sessionId: session.autopilot_session_id,
+          state,
+          recipient,
+        });
         return json(res, tick.ok === false ? 202 : 200, {
           version: 1,
           action,
@@ -1950,6 +2503,24 @@ export function createPrivateAgentWorkerServer(options = {}) {
           session: result.session,
           decisions: await state.listAutopilotDecisions(autopilotDecisions[1]),
         });
+      }
+
+      const autopilotReplay = url.pathname.match(/^\/autopilot\/sessions\/([^/]+)\/replay$/);
+      if (req.method === "GET" && autopilotReplay) {
+        const rejected = await authorizeWorkerRequest(req, {
+          path: url.pathname,
+          scope: "autopilot:read",
+          body: {},
+          state,
+          expected: { autopilot_session_id: autopilotReplay[1] },
+        });
+        if (authJson(res, rejected)) return;
+        const result = await listAutopilotReplay({
+          sessionId: autopilotReplay[1],
+          state,
+        });
+        if (!result) return json(res, 404, { error: "autopilot_session_not_found" });
+        return json(res, 200, result);
       }
 
       const autopilotPositions = url.pathname.match(/^\/autopilot\/sessions\/([^/]+)\/positions$/);
@@ -2854,6 +3425,10 @@ export function createPrivateAgentWorkerServer(options = {}) {
       });
     }
   });
+  server.on("close", () => {
+    dueLoop?.stop?.();
+  });
+  return server;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

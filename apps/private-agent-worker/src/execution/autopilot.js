@@ -5,12 +5,21 @@ import {
 } from "./arbitrage.js";
 import { decideAiDirectOrder, publicDecisionRecord } from "./ai-direct-order.js";
 import { executeAutopilotOrder, verifyAutopilotOrder } from "./private-execution.js";
+import { jupiterPlatformFeeQuote } from "../venues/jupiter.js";
+import {
+  agentControllerId,
+  executorRecord,
+  replayBundle,
+  tickSnapshot,
+} from "./replay.js";
+import { revenueEvidenceEvent } from "./revenue-evidence.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
 const SUPPORTED_VENUES = new Set(["jupiter", "phoenix", "backpack", "hyperliquid", "coinbase_advanced"]);
 const SUPPORTED_MARKETS = new Set(["SOL-USD", "BTC-USD", "ETH-USD", "SOL/USDC", "SOL", "BTC", "ETH", "HYPE"]);
+const BOUNDED_INTENT_STRATEGY = "bounded_intent_executor_v1";
 const DEFAULT_VENUES = ["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"];
 const DEFAULT_MARKETS = ["SOL-USD", "BTC-USD", "ETH-USD"];
 const LOOP_TIMERS = new Map();
@@ -31,6 +40,11 @@ export async function createAutopilotSession({ body, recipient, state, provider,
   const session = {
     version: 2,
     autopilot_session_id: id,
+    agent_controller_id: `agentctl_${digest({
+      owner_commitment: stringValue(body?.owner_commitment) || "owner_redacted",
+      policy_commitment: policy.policy_commitment,
+      recipient: recipient.recipient_id,
+    }).slice(0, 32)}`,
     worker_session_commitment: `worker_autopilot_${digest({ id, recipient: recipient.recipient_id })}`,
     owner_commitment: stringValue(body?.owner_commitment) || "owner_redacted",
     provider,
@@ -39,14 +53,16 @@ export async function createAutopilotSession({ body, recipient, state, provider,
     session_policy: policy,
     venue_access: venueAccess,
     order_count: 0,
+    tick_count: 0,
     daily_notional_used_bucket: "0",
     last_tick_at: null,
     last_execution_at: null,
+    pending_execution: null,
     created_at: now.toISOString(),
     updated_at: now.toISOString(),
     expires_at: policy.expires_at,
     next_step: status === "running"
-      ? "Autonomous worker is running. Trades require fresh market data, AI score, and policy guardrails."
+      ? "Bounded intent executor is running. Trades require fresh market data, policy caps, and submit-time guardrails."
       : status === "pending_funding"
         ? "Fund an isolated venue vault or connect a trade-only venue vault before live execution."
         : "Kill switch is active.",
@@ -99,6 +115,17 @@ export async function controlAutopilotSession({ sessionId, action, state, recipi
   if (action === "kill") {
     refreshed.status = "killed";
     refreshed.execution_enabled = false;
+    refreshed.session_policy = {
+      ...refreshed.session_policy,
+      kill_switch: true,
+    };
+    if (refreshed.pending_execution) {
+      refreshed.pending_execution = {
+        ...refreshed.pending_execution,
+        status: "cancelled_by_kill",
+        updated_at: now.toISOString(),
+      };
+    }
     refreshed.next_step = "Kill switch active. No autonomous execution is allowed.";
     stopAutopilotLoop(sessionId);
   } else if (refreshed.status === "expired") {
@@ -108,16 +135,30 @@ export async function controlAutopilotSession({ sessionId, action, state, recipi
   } else if (action === "pause") {
     refreshed.status = "paused";
     refreshed.execution_enabled = false;
+    if (refreshed.pending_execution) {
+      refreshed.pending_execution = {
+        ...refreshed.pending_execution,
+        status: "paused",
+        updated_at: now.toISOString(),
+      };
+    }
     refreshed.next_step = "Autopilot paused.";
     stopAutopilotLoop(sessionId);
   } else if (action === "resume") {
-    const ready = readyVenues(refreshed);
-    refreshed.status = ready.length ? "running" : "pending_funding";
-    refreshed.execution_enabled = ready.length > 0;
-    refreshed.next_step = ready.length
-      ? "Autonomous worker is running."
-      : "Fund an isolated venue vault before live execution.";
-    if (recipient && ready.length) startAutopilotLoop({ sessionId, state, recipient });
+    if (refreshed.status === "killed" || refreshed.session_policy?.kill_switch === true) {
+      refreshed.status = "killed";
+      refreshed.execution_enabled = false;
+      refreshed.next_step = "Kill switch active. Create a new autonomous session to trade again.";
+      stopAutopilotLoop(sessionId);
+    } else {
+      const ready = readyVenues(refreshed);
+      refreshed.status = ready.length ? "running" : "pending_funding";
+      refreshed.execution_enabled = ready.length > 0;
+      refreshed.next_step = ready.length
+        ? "Bounded intent executor is running."
+        : "Fund an isolated venue vault before live execution.";
+      if (recipient && ready.length) startAutopilotLoop({ sessionId, state, recipient });
+    }
   }
   refreshed.updated_at = now.toISOString();
   await state.putAutopilotSession(refreshed);
@@ -134,6 +175,27 @@ export async function listAutopilotEvents({ sessionId, state, now = new Date() }
     session: publicSession(refreshed),
     events: await state.listAutopilotEvents(sessionId),
   };
+}
+
+export async function listAutopilotReplay({ sessionId, state, now = new Date() }) {
+  const session = await state.getAutopilotSession(sessionId);
+  if (!session) return null;
+  const refreshed = refreshSession(session, now);
+  if (refreshed.status !== session.status) await state.putAutopilotSession(refreshed);
+  const [events, executors, tickSnapshots, positions] = await Promise.all([
+    state.listAutopilotEvents(sessionId),
+    state.listExecutorRecords?.(sessionId) || [],
+    state.listTickSnapshots?.(sessionId) || [],
+    state.listAutopilotPositions(sessionId),
+  ]);
+  return replayBundle({
+    session: publicSession(refreshed),
+    events,
+    executors,
+    tick_snapshots: tickSnapshots,
+    positions: positions.map(publicPosition),
+    now,
+  });
 }
 
 export function startAutopilotLoop({ sessionId, state, recipient }) {
@@ -167,6 +229,85 @@ export function stopAutopilotLoop(sessionId) {
   LOOP_TIMERS.delete(sessionId);
 }
 
+export async function runDueAutopilotSessions({
+  state,
+  recipient,
+  now = new Date(),
+  fetchImpl = fetch,
+  env = process.env,
+  maxSessions = 25,
+} = {}) {
+  const sessions = typeof state?.listAutopilotSessions === "function"
+    ? await state.listAutopilotSessions()
+    : [];
+  const limit = Math.max(1, Math.min(
+    Number.parseInt(String(maxSessions ?? ""), 10) || 25,
+    100,
+  ));
+  const due = sessions
+    .map((session) => refreshSession(session, now))
+    .filter((session) => isSessionDueForTick(session, now, env))
+    .slice(0, limit);
+  const results = [];
+  for (const session of due) {
+    const result = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+      now,
+      fetchImpl,
+      env,
+    });
+    results.push({
+      autopilot_session_id: session.autopilot_session_id,
+      ok: result.ok === true,
+      status: result.status || null,
+      error: result.error || null,
+      tick_id: result.tick_id || null,
+      receipt_commitment: result.receipt?.result_commitment || null,
+    });
+  }
+  return {
+    version: 1,
+    checked_count: sessions.length,
+    due_count: due.length,
+    ran_count: results.length,
+    results,
+    updated_at: now.toISOString(),
+  };
+}
+
+export function startAutopilotDueLoop({
+  state,
+  recipient,
+  env = process.env,
+  fetchImpl = fetch,
+} = {}) {
+  if (String(env.PRIVATE_AGENT_AUTOPILOT_SWEEP_ENABLED ?? "true").toLowerCase() === "false") {
+    return { stop() {} };
+  }
+  const intervalMs = integerEnvFrom(env, "PRIVATE_AGENT_AUTOPILOT_SWEEP_MS", 30_000);
+  const initialDelayMs = integerEnvFrom(env, "PRIVATE_AGENT_AUTOPILOT_SWEEP_INITIAL_DELAY_MS", 2_500);
+  let timer = null;
+  let stopped = false;
+  const schedule = (delay) => {
+    if (stopped) return;
+    timer = setTimeout(async () => {
+      await runDueAutopilotSessions({ state, recipient, env, fetchImpl }).catch(() => null);
+      schedule(intervalMs);
+    }, delay);
+    timer.unref?.();
+  };
+  schedule(initialDelayMs);
+  return {
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+  };
+}
+
 export async function runAutopilotTick({
   sessionId,
   state,
@@ -174,12 +315,71 @@ export async function runAutopilotTick({
   now = new Date(),
   fetchImpl = fetch,
   env = process.env,
+  claimLease = true,
+  leaseId = null,
 }) {
   const stored = await state.getAutopilotSession(sessionId);
   if (!stored) return { ok: false, error: "autopilot_session_not_found" };
+  let lease = null;
+  const tickLeaseId = leaseId || `ticklease_${digest({
+    session: sessionId,
+    now: now.toISOString(),
+    nonce: randomUUID(),
+  }).slice(0, 32)}`;
+  if (claimLease && state.claimAutopilotTickLease) {
+    lease = await state.claimAutopilotTickLease(sessionId, {
+      lease_id: tickLeaseId,
+      lease_ms: integerEnvFrom(env, "PRIVATE_AGENT_AUTOPILOT_TICK_LEASE_MS", 120_000),
+      now,
+    });
+    if (!lease.ok) {
+      return {
+        ok: false,
+        error: lease.error || "tick_lease_active",
+        lease_id: lease.lease_id || null,
+        lease_until: lease.lease_until || null,
+      };
+    }
+  }
+  try {
+    return await runAutopilotTickUnlocked({
+      sessionId,
+      state,
+      recipient,
+      now,
+      fetchImpl,
+      env,
+      initialSession: lease?.session || stored,
+    });
+  } finally {
+    if (lease?.ok && state.releaseAutopilotTickLease) {
+      await state.releaseAutopilotTickLease(sessionId, lease.lease_id, { now }).catch(() => null);
+    }
+  }
+}
+
+async function runAutopilotTickUnlocked({
+  sessionId,
+  state,
+  recipient,
+  now,
+  fetchImpl,
+  env,
+  initialSession = null,
+}) {
+  const stored = initialSession || await state.getAutopilotSession(sessionId);
+  if (!stored) return { ok: false, error: "autopilot_session_not_found" };
   const session = refreshSession(stored, now);
+  const tickId = tickIdForSession(session);
+  const executionSlot = nextExecutionSlot(session);
   if (session.status !== "running" || !session.execution_enabled) {
     await state.putAutopilotSession(session);
+    await putTick(state, session, {
+      tick_id: tickId,
+      status: "rejected",
+      risk_result: { ok: false, reason: "autopilot_not_running" },
+      now,
+    });
     return { ok: false, error: "autopilot_not_running" };
   }
   if (session.last_execution_at) {
@@ -191,6 +391,12 @@ export async function runAutopilotTick({
         cooldown_ms: session.session_policy.cooldown_ms,
         elapsed_ms: elapsed,
       }, now);
+      await putTick(state, session, {
+        tick_id: tickId,
+        status: "rejected",
+        risk_result: { ok: false, reason: "cooldown_active", elapsed_ms: elapsed },
+        now,
+      });
       return { ok: false, error: "cooldown_active" };
     }
   }
@@ -211,6 +417,17 @@ export async function runAutopilotTick({
     });
   }
 
+  if (isPrivateLiquiditySession(session)) {
+    return runPrivateLiquidityTick({
+      session,
+      state,
+      now,
+      fetchImpl,
+      env,
+      tickId,
+    });
+  }
+
   const market = await marketSnapshotForSession(session, { fetchImpl, env, now });
   session.last_tick_at = now.toISOString();
   await state.putAutopilotSession(session);
@@ -226,6 +443,13 @@ export async function runAutopilotTick({
   await appendEvent(state, session, "position_update", "Native position state loaded for policy evaluation.", {
     positions: positions.map(publicPosition),
   }, now);
+  await putTick(state, session, {
+    tick_id: tickId,
+    status: "evaluating",
+    market,
+    positions,
+    now,
+  });
 
   let proposal;
   if (session.session_policy.ai_direct_enabled) {
@@ -233,6 +457,14 @@ export async function runAutopilotTick({
       await appendEvent(state, session, "risk_reject", "AI-direct execution is disabled in worker configuration.", {
         required_env: "PRIVATE_AGENT_AI_DIRECT_ENABLED=true",
       }, now);
+      await putTick(state, session, {
+        tick_id: tickId,
+        status: "rejected",
+        market,
+        positions,
+        risk_result: { ok: false, reason: "ai_direct_disabled" },
+        now,
+      });
       return { ok: false, error: "ai_direct_disabled" };
     }
     const budget = await reserveAiDecisionBudget({ state, session, env, now });
@@ -240,6 +472,14 @@ export async function runAutopilotTick({
       await appendEvent(state, session, "risk_reject", "AI decision budget is exhausted for this hour.", {
         max_decisions_per_hour: budget.max,
       }, now);
+      await putTick(state, session, {
+        tick_id: tickId,
+        status: "rejected",
+        market,
+        positions,
+        risk_result: { ok: false, reason: "ai_decision_budget_exhausted" },
+        now,
+      });
       return { ok: false, error: "ai_decision_budget_exhausted" };
     }
     const decision = await decideAiDirectOrder({
@@ -259,14 +499,32 @@ export async function runAutopilotTick({
         error: decision.error,
         decision_id: decision.record.decision_id,
       }, now);
+      await putTick(state, session, {
+        tick_id: tickId,
+        status: "rejected",
+        market,
+        positions,
+        decision: decision.record,
+        risk_result: { ok: false, reason: decision.error },
+        now,
+      });
       return { ok: false, error: decision.error };
     }
-    const built = buildAiDirectProposal(session, market, decision.decision, { now, positions });
+    const built = buildAiDirectProposal(session, market, decision.decision, { env, now, positions });
     if (!built.ok) {
       await appendEvent(state, session, "risk_reject", built.message, {
         ...built.data,
         decision_id: decision.record.decision_id,
       }, now);
+      await putTick(state, session, {
+        tick_id: tickId,
+        status: "rejected",
+        market,
+        positions,
+        decision: decision.record,
+        risk_result: { ok: false, reason: built.error },
+        now,
+      });
       return { ok: false, error: built.error };
     }
     proposal = { ...built, decision_id: decision.record.decision_id };
@@ -281,9 +539,17 @@ export async function runAutopilotTick({
     proposal = buildMomentumProposal(session, market, { env, now });
     if (!proposal.ok) {
       await appendEvent(state, session, "guardrail", proposal.message, proposal.data, now);
+      await putTick(state, session, {
+        tick_id: tickId,
+        status: "rejected",
+        market,
+        positions,
+        risk_result: { ok: false, reason: proposal.error },
+        now,
+      });
       return { ok: false, error: proposal.error };
     }
-    await appendEvent(state, session, "proposal", "Momentum micro-trader proposed a bounded order.", publicProposal(proposal), now);
+    await appendEvent(state, session, "proposal", "Bounded intent executor proposed a capped order.", publicProposal(proposal), now);
 
     const score = scoreProposal(proposal, { env });
     await appendEvent(state, session, "ai_score", score.message, {
@@ -296,6 +562,15 @@ export async function runAutopilotTick({
         score_bps: score.score_bps,
         threshold_bps: session.session_policy.min_ai_score_bps,
       }, now);
+      await putTick(state, session, {
+        tick_id: tickId,
+        status: "rejected",
+        market,
+        positions,
+        proposal,
+        risk_result: { ok: false, reason: "ai_score_below_threshold" },
+        now,
+      });
       return { ok: false, error: "ai_score_below_threshold" };
     }
   }
@@ -303,14 +578,102 @@ export async function runAutopilotTick({
     await appendEvent(state, session, "guardrail", "Live submit gate is disabled.", {
       required_env: "PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT=true",
     }, now);
+    await putTick(state, session, {
+      tick_id: tickId,
+      status: "rejected",
+      market,
+      positions,
+      proposal,
+      risk_result: { ok: false, reason: "live_submit_disabled" },
+      now,
+    });
     return { ok: false, error: "live_submit_disabled" };
   }
 
-  const workOrderCommitment = `autopilot_work_order_${digest({
-    session: session.autopilot_session_id,
-    proposal: proposal.proposal_commitment,
-    tick: now.toISOString(),
-  })}`;
+  const pending = await ensurePendingExecution(state, session, {
+    executionSlot,
+    proposal,
+    tickId,
+    now,
+  });
+  proposal = pending.proposal;
+  const workOrderCommitment = pending.work_order_commitment;
+  const executionTickId = pending.tick_id;
+  let revenueQuote = null;
+  try {
+    revenueQuote = autopilotRevenueQuote(proposal, { env });
+  } catch (error) {
+    await appendEvent(state, session, "guardrail", "Autopilot revenue configuration rejected execution before venue submission.", {
+      error: String(error?.message || "autopilot_revenue_config_invalid"),
+      work_order_commitment: workOrderCommitment,
+    }, now);
+    await putTick(state, session, {
+      tick_id: executionTickId,
+      status: "rejected",
+      market,
+      positions,
+      proposal,
+      risk_result: { ok: false, reason: "autopilot_revenue_config_invalid" },
+      now,
+    });
+    return { ok: false, error: "autopilot_revenue_config_invalid", work_order_commitment: workOrderCommitment };
+  }
+  const submitGate = await currentSubmitGate(state, sessionId, now);
+  if (!submitGate.ok) {
+    if (submitGate.session) {
+      await state.putAutopilotSession({
+        ...submitGate.session,
+        pending_execution: submitGate.session.pending_execution
+          ? {
+              ...submitGate.session.pending_execution,
+              status: submitGate.reason,
+              updated_at: now.toISOString(),
+            }
+          : submitGate.session.pending_execution,
+        updated_at: now.toISOString(),
+      });
+    }
+    await appendEvent(state, submitGate.session || session, "guardrail", "Autopilot submit gate closed before venue submission.", {
+      reason: submitGate.reason,
+      work_order_commitment: workOrderCommitment,
+    }, now);
+    await putTick(state, submitGate.session || session, {
+      tick_id: executionTickId,
+      status: "rejected",
+      market,
+      positions,
+      proposal,
+      risk_result: { ok: false, reason: submitGate.reason },
+      now,
+    });
+    return { ok: false, error: submitGate.reason, work_order_commitment: workOrderCommitment };
+  }
+  const createdExecutor = await putExecutor(state, session, executorRecord({
+    session,
+    kind: "order",
+    tick_id: executionTickId,
+    status: "created",
+    proposal,
+    work_order_commitment: workOrderCommitment,
+    now,
+    extra: {
+      fee_quote_bucket: revenueQuote?.fee_bucket || "0",
+      metadata: {
+        execution_slot: executionSlot,
+        ...revenueMetadata(revenueQuote, env),
+      },
+    },
+  }));
+  await appendEvent(state, session, "executor_created", "Durable executor created for bounded order.", {
+    executor_id: createdExecutor.executor_id,
+    agent_controller_id: createdExecutor.agent_controller_id,
+    kind: createdExecutor.kind,
+    venue_id: createdExecutor.venue_id,
+    notional_bucket: createdExecutor.notional_bucket,
+    work_order_commitment: workOrderCommitment,
+    execution_slot: executionSlot,
+    revenue_quote: publicRevenueQuote(revenueQuote, env),
+  }, now);
   const receipt = await executeAutopilotOrder({
     venue_id: proposal.venue_id,
     operation_class: proposal.operation_class,
@@ -322,14 +685,56 @@ export async function runAutopilotTick({
     recipient,
     state,
   });
+  const submittedExecutor = await putExecutor(state, session, executorRecord({
+    session,
+    kind: "order",
+    tick_id: executionTickId,
+    status: "submitted",
+    proposal,
+    work_order_commitment: workOrderCommitment,
+    receipt,
+    now,
+    extra: {
+      executor_id: createdExecutor.executor_id,
+      created_at: createdExecutor.created_at,
+      fee_quote_bucket: revenueQuote?.fee_bucket || "0",
+      metadata: revenueMetadata(revenueQuote, env),
+    },
+  }));
+  const revenueEvidence = state.appendRevenueEvidence
+    ? await state.appendRevenueEvidence(revenueEvidenceEvent({
+        session,
+        proposal,
+        receipt,
+        revenueQuote,
+        executorId: submittedExecutor.executor_id,
+        tickId: executionTickId,
+        workOrderCommitment,
+        now,
+      }))
+    : null;
   const updated = await state.getAutopilotSession(sessionId) || session;
   updated.order_count = Number(updated.order_count || 0) + 1;
+  updated.tick_count = Number(updated.tick_count || 0) + 1;
   updated.last_execution_at = now.toISOString();
   updated.daily_notional_used_bucket = String(
     Math.min(bucketToUsd(updated.session_policy.max_daily_notional_bucket), (
       Number(updated.daily_notional_used_bucket || 0) + proposal.notional_usd
     )),
   );
+  updated.pending_execution = null;
+  updated.last_completed_execution = {
+    version: 1,
+    execution_slot: executionSlot,
+    tick_id: executionTickId,
+    work_order_commitment: workOrderCommitment,
+    result_commitment: receipt.result_commitment || null,
+    final_proof: receipt.final_proof || null,
+    revenue_receipt: publicRevenueQuote(revenueQuote, env),
+    revenue_evidence_event_id: revenueEvidence?.revenue_event_id || null,
+    revenue_evidence_hash: revenueEvidence?.event_hash || null,
+    completed_at: now.toISOString(),
+  };
   updated.updated_at = now.toISOString();
   await state.putAutopilotSession(updated);
   await appendEvent(state, updated, "execution", "Autopilot submitted a bounded live order.", {
@@ -339,6 +744,7 @@ export async function runAutopilotTick({
     side: proposal.side,
     notional_bucket: String(proposal.notional_usd),
     work_order_commitment: workOrderCommitment,
+    revenue_quote: publicRevenueQuote(revenueQuote, env),
   }, now);
   await appendEvent(state, updated, "live_order_submitted", "Worker submitted a bounded venue order.", {
     venue_id: proposal.venue_id,
@@ -348,14 +754,19 @@ export async function runAutopilotTick({
     notional_bucket: String(proposal.notional_usd),
     decision_id: proposal.decision_id || null,
     work_order_commitment: workOrderCommitment,
+    revenue_quote: publicRevenueQuote(revenueQuote, env),
   }, now);
   await appendEvent(state, updated, "receipt", "Venue receipt recorded.", {
     venue_id: proposal.venue_id,
     status: receipt.status,
     work_order_commitment: receipt.work_order_commitment,
+    executor_id: submittedExecutor.executor_id,
     provider_ref_commitment: receipt.provider_ref_commitment,
     result_commitment: receipt.result_commitment,
     final_proof: receipt.final_proof || null,
+    revenue_receipt: publicRevenueQuote(revenueQuote, env),
+    revenue_evidence_event_id: revenueEvidence?.revenue_event_id || null,
+    revenue_evidence_hash: revenueEvidence?.event_hash || null,
   }, now);
   const position = await state.putAutopilotPosition(sessionId, {
     venue_id: proposal.venue_id,
@@ -370,9 +781,288 @@ export async function runAutopilotTick({
     venue_id: proposal.venue_id,
     status: receipt.status,
     work_order_commitment: receipt.work_order_commitment,
+    executor_id: submittedExecutor.executor_id,
     position: publicPosition(position),
   }, now);
-  return { ok: true, receipt, proposal };
+  await putExecutor(state, updated, executorRecord({
+    session: updated,
+    kind: "order",
+    tick_id: executionTickId,
+    status: "reconciled",
+    proposal,
+    work_order_commitment: workOrderCommitment,
+    receipt,
+    now,
+    extra: {
+      executor_id: submittedExecutor.executor_id,
+      created_at: submittedExecutor.created_at,
+      fee_quote_bucket: revenueQuote?.fee_bucket || "0",
+      metadata: revenueMetadata(revenueQuote, env),
+    },
+  }));
+  await putTick(state, updated, {
+    tick_id: executionTickId,
+    status: "submitted",
+    market,
+    positions: [position],
+    proposal,
+    risk_result: { ok: true, reason: "policy_passed" },
+    executor_ids: [submittedExecutor.executor_id],
+    receipt_commitments: [receipt.result_commitment, receipt.final_proof].filter(Boolean),
+    now,
+  });
+  await appendEvent(state, updated, "tick_snapshot", "Replay snapshot recorded for this agent tick.", {
+    tick_id: executionTickId,
+    executor_ids: [submittedExecutor.executor_id],
+    status: "submitted",
+  }, now);
+  return {
+    ok: true,
+    receipt,
+    proposal,
+    tick_id: executionTickId,
+    work_order_commitment: workOrderCommitment,
+    revenue_quote: publicRevenueQuote(revenueQuote, env),
+    revenue_evidence: publicRevenueEvidence(revenueEvidence),
+  };
+}
+
+async function runPrivateLiquidityTick({
+  session,
+  state,
+  now,
+  fetchImpl,
+  env,
+  tickId,
+}) {
+  const market = await marketSnapshotForSession(session, { fetchImpl, env, now });
+  session.last_tick_at = now.toISOString();
+  await state.putAutopilotSession(session);
+  await appendEvent(state, session, "agent_tick", "Private liquidity agent evaluated market data.", {
+    product_id: market.product_id,
+    live_status: market.live_status,
+    price: market.price,
+    spread_bps: market.spread_bps,
+  }, now);
+  const positions = await state.listAutopilotPositions(session.autopilot_session_id);
+  await appendEvent(state, session, "position_update", "Liquidity inventory state loaded for quote simulation.", {
+    positions: positions.map(publicPosition),
+  }, now);
+
+  const venue = selectMakerVenue(session);
+  const price = Number(market.price || market.mid || 0);
+  const notional = Math.min(
+    bucketToUsd(session.session_policy.max_notional_bucket),
+    remainingDailyNotional(session),
+  );
+  if (!venue || market.stale || !Number.isFinite(price) || price <= 0 || notional <= 0) {
+    const reason = !venue
+      ? "maker_venue_not_ready"
+      : market.stale
+        ? "market_data_stale"
+        : !Number.isFinite(price) || price <= 0
+          ? "price_unavailable"
+          : "notional_cap_exhausted";
+    await appendEvent(state, session, "risk_reject", "Private liquidity quote simulation failed closed.", {
+      reason,
+      venue_allowlist: session.session_policy.venue_allowlist,
+    }, now);
+    await putTick(state, session, {
+      tick_id: tickId,
+      status: "rejected",
+      market,
+      positions,
+      risk_result: { ok: false, reason },
+      now,
+    });
+    return { ok: false, error: reason };
+  }
+
+  const quoteSpreadBps = Math.max(10, Math.min(
+    Number.parseInt(String(env.PRIVATE_AGENT_MARKET_MAKER_QUOTE_SPREAD_BPS || ""), 10) || 25,
+    session.session_policy.max_spread_bps,
+  ));
+  const halfSpread = quoteSpreadBps / 20_000;
+  const quoteNotional = Math.max(1, notional / 2);
+  const proposals = [
+    makerProposal({ session, venue, market, side: "buy", price: price * (1 - halfSpread), notional: quoteNotional, quoteSpreadBps, now }),
+    makerProposal({ session, venue, market, side: "sell", price: price * (1 + halfSpread), notional: quoteNotional, quoteSpreadBps, now }),
+  ];
+  const executors = [];
+  for (const proposal of proposals) {
+    const record = await putExecutor(state, session, executorRecord({
+      session,
+      kind: "quote",
+      tick_id: tickId,
+      status: "simulated",
+      proposal,
+      work_order_commitment: `${proposal.proposal_commitment}_no_submit`,
+      close_reason: "no_submit_private_liquidity_simulation",
+      now,
+      extra: {
+        metadata: {
+          quote_spread_bps: quoteSpreadBps,
+          post_only: true,
+          no_submit: true,
+        },
+      },
+    }));
+    executors.push(record);
+  }
+  await appendEvent(state, session, "proposal", "Private liquidity agent simulated a bounded post-only quote pair.", {
+    venue_id: venue,
+    market: market.product_id,
+    quote_spread_bps: quoteSpreadBps,
+    quote_notional_bucket: String(quoteNotional),
+    executor_ids: executors.map((item) => item.executor_id),
+  }, now);
+  await appendEvent(state, session, "executor_created", "No-submit private liquidity executors recorded.", {
+    agent_controller_id: agentControllerId(session),
+    kind: "quote_pair",
+    executor_ids: executors.map((item) => item.executor_id),
+    no_submit: true,
+  }, now);
+  await appendEvent(state, session, "guardrail", "Market-maker live submit is disabled; quote pair stayed in simulation.", {
+    required_env: "PRIVATE_AGENT_MARKET_MAKER_LIVE_SUBMIT=true",
+    no_submit: true,
+  }, now);
+  await putTick(state, session, {
+    tick_id: tickId,
+    status: "simulated",
+    market,
+    positions,
+    proposal: {
+      proposal_commitment: `maker_quote_pair_${digest({ tickId, venue, market: market.product_id, quoteSpreadBps }).slice(0, 32)}`,
+      venue_id: venue,
+      operation_class: operationClassForMakerVenue(venue),
+      market: market.product_id,
+      side: "both",
+      notional_usd: quoteNotional * 2,
+    },
+    risk_result: { ok: true, reason: "no_submit_private_liquidity_simulation" },
+    executor_ids: executors.map((item) => item.executor_id),
+    now,
+  });
+  await appendEvent(state, session, "tick_snapshot", "Private liquidity replay snapshot recorded.", {
+    tick_id: tickId,
+    executor_ids: executors.map((item) => item.executor_id),
+    status: "simulated",
+  }, now);
+  const updated = await state.getAutopilotSession(session.autopilot_session_id) || session;
+  updated.tick_count = Number(updated.tick_count || 0) + 1;
+  updated.last_tick_at = now.toISOString();
+  updated.updated_at = now.toISOString();
+  await state.putAutopilotSession(updated);
+  return { ok: true, status: "simulated", tick_id: tickId, executors };
+}
+
+function tickIdForSession(session) {
+  if (session?.pending_execution?.tick_id) return session.pending_execution.tick_id;
+  return `tick_${digest({
+    session: session.autopilot_session_id,
+    policy_commitment: session.session_policy?.policy_commitment || null,
+    tick_anchor: session.last_tick_at || session.created_at || session.updated_at || null,
+    order_count: Number(session.order_count || 0),
+    tick_count: Number(session.tick_count || 0),
+  }).slice(0, 32)}`;
+}
+
+function nextExecutionSlot(session) {
+  const count = Number.parseInt(String(session?.order_count ?? "0"), 10);
+  return (Number.isInteger(count) && count >= 0 ? count : 0) + 1;
+}
+
+async function ensurePendingExecution(state, session, { executionSlot, proposal, tickId, now }) {
+  const current = await state.getAutopilotSession(session.autopilot_session_id) || session;
+  const pending = current.pending_execution;
+  if (
+    pending &&
+    Number(pending.execution_slot) === executionSlot &&
+    pending.work_order_commitment &&
+    pending.proposal
+  ) {
+    return {
+      session: current,
+      proposal: pending.proposal,
+      tick_id: pending.tick_id || tickId,
+      work_order_commitment: pending.work_order_commitment,
+      reused: true,
+    };
+  }
+  const workOrderCommitment = workOrderCommitmentForExecutionSlot(current, executionSlot);
+  const next = {
+    ...current,
+    pending_execution: {
+      version: 1,
+      execution_slot: executionSlot,
+      tick_id: tickId,
+      status: "created",
+      proposal,
+      proposal_commitment: proposal.proposal_commitment,
+      work_order_commitment: workOrderCommitment,
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    },
+    updated_at: now.toISOString(),
+  };
+  await state.putAutopilotSession(next);
+  return {
+    session: next,
+    proposal,
+    tick_id: tickId,
+    work_order_commitment: workOrderCommitment,
+    reused: false,
+  };
+}
+
+async function currentSubmitGate(state, sessionId, now) {
+  const session = await state.getAutopilotSession(sessionId);
+  if (!session) {
+    return { ok: false, reason: "autopilot_session_not_found", session: null };
+  }
+  const refreshed = refreshSession(session, now);
+  if (refreshed.status !== session.status) {
+    await state.putAutopilotSession(refreshed);
+  }
+  if (refreshed.session_policy?.kill_switch === true || refreshed.status === "killed") {
+    return { ok: false, reason: "kill_switch_active", session: refreshed };
+  }
+  if (refreshed.status !== "running" || !refreshed.execution_enabled) {
+    return { ok: false, reason: "autopilot_not_running", session: refreshed };
+  }
+  return { ok: true, session: refreshed };
+}
+
+function workOrderCommitmentForExecutionSlot(session, executionSlot) {
+  return `autopilot_work_order_${digest({
+    session: session.autopilot_session_id,
+    policy_commitment: session.session_policy?.policy_commitment || null,
+    execution_slot: executionSlot,
+  })}`;
+}
+
+function isSessionDueForTick(session, now, env) {
+  if (!session || session.status !== "running" || !session.execution_enabled) return false;
+  if (session.session_policy?.kill_switch === true) return false;
+  if (leaseActive(session, now)) return false;
+  if (session.last_execution_at) {
+    const lastExecutionAt = new Date(session.last_execution_at).getTime();
+    const cooldownMs = Number(session.session_policy?.cooldown_ms || 0);
+    if (Number.isFinite(lastExecutionAt) && cooldownMs > 0 && now.getTime() - lastExecutionAt < cooldownMs) {
+      return false;
+    }
+  }
+  const intervalMs = integerEnvFrom(env, "PRIVATE_AGENT_AUTOPILOT_TICK_MS", 30_000);
+  if (!session.last_tick_at) return true;
+  const lastTickAt = new Date(session.last_tick_at).getTime();
+  if (!Number.isFinite(lastTickAt)) return true;
+  return now.getTime() - lastTickAt >= intervalMs;
+}
+
+function leaseActive(session, now) {
+  if (!session?.tick_lease_id || !session.tick_lease_until) return false;
+  const until = new Date(session.tick_lease_until).getTime();
+  return Number.isFinite(until) && until > now.getTime();
 }
 
 function normalizeAutopilotPolicy(raw, now) {
@@ -383,10 +1073,9 @@ function normalizeAutopilotPolicy(raw, now) {
     .map(normalizeMarket)
     .filter((market) => SUPPORTED_MARKETS.has(market)));
   const ttlMs = clampInt(raw.ttl_ms, 5 * 60_000, 4 * 60 * 60_000, 2 * 60 * 60_000);
-  const strategyId = stringValue(raw.strategy_id) === "hedged_spread_arbitrage_v1"
-    ? "hedged_spread_arbitrage_v1"
-    : "momentum_micro_trader";
+  const strategyId = normalizeStrategyId(raw.strategy_id);
   const aiDirectEnabled = strategyId !== "hedged_spread_arbitrage_v1" &&
+    strategyId !== "tri_venue_market_maker_v1" &&
     (raw.ai_direct_enabled === true || stringValue(raw.decision_model) === "ai_direct_order_v1");
   const policy = {
     version: 2,
@@ -432,10 +1121,19 @@ function strategyForPolicy(policy) {
       ai_can_execute_directly: true,
     };
   }
+  if (policy.strategy_id === "tri_venue_market_maker_v1") {
+    return {
+      version: 1,
+      strategy_id: "tri_venue_market_maker_v1",
+      decision_model: "rules_plus_ai_score",
+      executable_order_source: "deterministic_guarded_market_maker",
+      ai_can_execute_directly: true,
+    };
+  }
   if (policy.ai_direct_enabled) {
     return {
       version: 1,
-      strategy_id: "momentum_micro_trader",
+      strategy_id: BOUNDED_INTENT_STRATEGY,
       decision_model: "ai_direct_order_v1",
       executable_order_source: "ai_structured_decision_validated_by_policy",
       ai_can_execute_directly: true,
@@ -443,11 +1141,17 @@ function strategyForPolicy(policy) {
   }
   return {
     version: 1,
-    strategy_id: "momentum_micro_trader",
+    strategy_id: BOUNDED_INTENT_STRATEGY,
     decision_model: "rules_plus_ai_score",
-    executable_order_source: "deterministic_guarded_strategy",
+    executable_order_source: "deterministic_bounded_intent_executor",
     ai_can_execute_directly: false,
   };
+}
+
+function normalizeStrategyId(value) {
+  const raw = stringValue(value);
+  if (raw === "hedged_spread_arbitrage_v1" || raw === "tri_venue_market_maker_v1") return raw;
+  return BOUNDED_INTENT_STRATEGY;
 }
 
 function normalizeVenueAccess(raw, policy) {
@@ -524,7 +1228,7 @@ function buildMomentumProposal(session, market, { env, now }) {
       data: { max_daily_notional_bucket: session.session_policy.max_daily_notional_bucket },
     };
   }
-  const instruction = instructionForVenue({ venue, market, side, price, notional, policy: session.session_policy, now });
+  const instruction = instructionForVenue({ venue, market, side, price, notional, policy: session.session_policy, env, now });
   return {
     ok: true,
     proposal_commitment: `autopilot_proposal_${digest({ session: session.autopilot_session_id, venue, market, side, notional, now: now.toISOString() })}`,
@@ -538,7 +1242,7 @@ function buildMomentumProposal(session, market, { env, now }) {
   };
 }
 
-function buildAiDirectProposal(session, market, decision, { now, positions = [] }) {
+function buildAiDirectProposal(session, market, decision, { env = process.env, now, positions = [] }) {
   if (decision.action !== "trade") {
     return {
       ok: false,
@@ -678,6 +1382,7 @@ function buildAiDirectProposal(session, market, decision, { now, positions = [] 
     price,
     notional,
     policy: session.session_policy,
+    env,
     now,
   });
   instruction.operation_class = operationClass;
@@ -728,7 +1433,7 @@ function buildAiDirectProposal(session, market, decision, { now, positions = [] 
   };
 }
 
-function instructionForVenue({ venue, market, side, price, notional, policy, now }) {
+function instructionForVenue({ venue, market, side, price, notional, policy, env = process.env, now }) {
   const expiresAt = new Date(now.getTime() + Math.min(5 * 60_000, policy.ttl_ms)).toISOString();
   if (venue === "jupiter") {
     const inputMint = side === "buy" ? USDC_MINT : SOL_MINT;
@@ -748,7 +1453,7 @@ function instructionForVenue({ venue, market, side, price, notional, policy, now
         amount,
         quote_size: String(notional),
         max_slippage_bps: String(policy.max_slippage_bps),
-        routing_mode: "meta_aggregator",
+        routing_mode: jupiterPlatformFeeRequested(env) ? "router" : "meta_aggregator",
       },
     };
   }
@@ -893,7 +1598,7 @@ function scoreProposal(proposal, { env }) {
     ok: score >= 6_500,
     score_bps: score,
     message: score >= 6_500
-      ? "AI scorer accepted the deterministic momentum proposal."
+      ? "AI scorer accepted the deterministic bounded order."
       : "AI scorer rejected the proposal.",
   };
 }
@@ -963,9 +1668,88 @@ async function appendEvent(state, session, type, message, data = {}, now = new D
   });
 }
 
+async function putExecutor(state, session, record) {
+  if (!state.putExecutorRecord) return record;
+  return state.putExecutorRecord(session.autopilot_session_id, record);
+}
+
+async function putTick(state, session, input) {
+  const snapshot = tickSnapshot({
+    session,
+    ...input,
+  });
+  if (!state.putTickSnapshot) return snapshot;
+  return state.putTickSnapshot(session.autopilot_session_id, snapshot);
+}
+
+function isPrivateLiquiditySession(session) {
+  return session?.session_policy?.strategy_id === "tri_venue_market_maker_v1" ||
+    session?.strategy?.strategy_id === "tri_venue_market_maker_v1";
+}
+
 function readyVenues(session) {
   return session.session_policy.venue_allowlist
     .filter((venue) => session.venue_access?.[venue]?.status === "ready");
+}
+
+function selectMakerVenue(session) {
+  const ready = readyVenues(session);
+  if (ready.includes("phoenix")) return "phoenix";
+  if (ready.includes("backpack")) return "backpack";
+  if (ready.includes("hyperliquid")) return "hyperliquid";
+  if (ready.includes("coinbase_advanced")) return "coinbase_advanced";
+  return null;
+}
+
+function makerProposal({ session, venue, market, side, price, notional, quoteSpreadBps, now }) {
+  const operationClass = operationClassForMakerVenue(venue);
+  const proposal = {
+    proposal_commitment: `maker_quote_${digest({
+      session: session.autopilot_session_id,
+      venue,
+      market: market.product_id,
+      side,
+      price,
+      notional,
+      now: now.toISOString(),
+    }).slice(0, 32)}`,
+    decision_source: "deterministic_private_liquidity_v1",
+    venue_id: venue,
+    operation_class: operationClass,
+    market: market.product_id,
+    side,
+    notional_usd: notional,
+    signal_bps: 0,
+    confidence_bps: 10_000,
+    policy_commitment: session.session_policy.policy_commitment,
+    instruction: {
+      version: 1,
+      kind: "ghola_private_execution_instruction",
+      venue_id: venue,
+      operation_class: operationClass,
+      expires_at: new Date(now.getTime() + Math.min(10_000, session.session_policy.ttl_ms)).toISOString(),
+      order: {
+        market: venueMarketSymbol(venue, market.product_id),
+        side,
+        quote_size: String(notional),
+        limit_price: trim(price),
+        order_type: "limit",
+        size_mode: "quote",
+        live_order_mode: "post_only_quote",
+        max_slippage_bps: "1",
+        tif: timeInForceForVenue("post_only", venue),
+        post_only: true,
+      },
+    },
+  };
+  proposal.instruction.order.quote_spread_bps = String(quoteSpreadBps);
+  return proposal;
+}
+
+function operationClassForMakerVenue(venue) {
+  if (venue === "coinbase_advanced") return "spot_limit_order";
+  if (venue === "hyperliquid") return "limit_order";
+  return "perp_limit_order";
 }
 
 function primaryProduct(session) {
@@ -975,14 +1759,31 @@ function primaryProduct(session) {
 }
 
 function publicSession(session) {
-  return JSON.parse(JSON.stringify(session));
+  const out = JSON.parse(JSON.stringify(session));
+  if (out.pending_execution) {
+    out.pending_execution = publicPendingExecution(out.pending_execution);
+  }
+  return out;
+}
+
+function publicPendingExecution(pending) {
+  return {
+    version: pending.version || 1,
+    execution_slot: pending.execution_slot || null,
+    tick_id: pending.tick_id || null,
+    status: pending.status || null,
+    proposal_commitment: pending.proposal_commitment || pending.proposal?.proposal_commitment || null,
+    work_order_commitment: pending.work_order_commitment || null,
+    created_at: pending.created_at || null,
+    updated_at: pending.updated_at || null,
+  };
 }
 
 function publicProposal(proposal) {
   return {
     proposal_commitment: proposal.proposal_commitment,
     decision_id: proposal.decision_id || null,
-    decision_source: proposal.decision_source || "deterministic_guarded_strategy",
+    decision_source: proposal.decision_source || "deterministic_bounded_intent_executor",
     venue_id: proposal.venue_id,
     operation_class: proposal.operation_class,
     market: proposal.market,
@@ -991,6 +1792,81 @@ function publicProposal(proposal) {
     signal_bps: proposal.signal_bps,
     confidence_bps: proposal.confidence_bps || null,
   };
+}
+
+function autopilotRevenueQuote(proposal, { env = process.env } = {}) {
+  if (proposal?.venue_id !== "jupiter") return null;
+  const quote = jupiterPlatformFeeQuote({ notionalUsd: proposal.notional_usd, env });
+  if (!quote) return null;
+  const feeBucket = trim(quote.fee_usd);
+  return {
+    ...quote,
+    fee_bucket: feeBucket,
+    collection_status: env.PRIVATE_AGENT_VENUE_DRY_RUN === "true"
+      ? "dry_run_quoted"
+      : "routed_in_jupiter_order",
+  };
+}
+
+function publicRevenueQuote(quote, env = process.env) {
+  if (!quote) return null;
+  return {
+    version: 1,
+    revenue_model: quote.revenue_model,
+    venue_id: quote.venue_id,
+    fee_bps: quote.fee_bps,
+    notional_bucket: trim(quote.notional_usd),
+    fee_bucket: quote.fee_bucket,
+    fee_recipient: quote.fee_recipient,
+    fee_recipient_commitment: quote.fee_recipient_commitment,
+    collection_status: quote.collection_status,
+    dry_run: env.PRIVATE_AGENT_VENUE_DRY_RUN === "true",
+  };
+}
+
+function publicRevenueEvidence(event) {
+  if (!event) return null;
+  return {
+    version: 1,
+    revenue_event_id: event.revenue_event_id,
+    event_hash: event.event_hash,
+    previous_event_hash: event.previous_event_hash || null,
+    ledger_sequence: event.ledger_sequence || null,
+    revenue_status: event.revenue_status,
+    collection_status: event.collection_status,
+    revenue_model: event.revenue_model,
+    venue_id: event.venue_id,
+    expected_fee_bucket: event.expected_fee_bucket,
+    fee_recipient_commitment: event.fee_recipient_commitment || null,
+  };
+}
+
+function revenueMetadata(quote, env = process.env) {
+  if (!quote) return {
+    revenue_model: "none",
+    fee_collection_status: "not_configured",
+  };
+  return {
+    revenue_model: quote.revenue_model,
+    fee_bps: quote.fee_bps,
+    fee_usd: quote.fee_bucket,
+    fee_recipient: quote.fee_recipient,
+    fee_recipient_commitment: quote.fee_recipient_commitment,
+    fee_collection_status: quote.collection_status,
+    fee_dry_run: env.PRIVATE_AGENT_VENUE_DRY_RUN === "true",
+  };
+}
+
+function jupiterPlatformFeeRequested(env = process.env) {
+  return [
+    "PRIVATE_AGENT_JUPITER_PLATFORM_FEE_BPS",
+    "GHOLA_JUPITER_PLATFORM_FEE_BPS",
+    "PRIVATE_AGENT_AUTOPILOT_JUPITER_FEE_BPS",
+    "GHOLA_AUTOPILOT_JUPITER_FEE_BPS",
+  ].some((name) => {
+    const value = Number.parseInt(String(env?.[name] ?? ""), 10);
+    return Number.isInteger(value) && value > 0;
+  });
 }
 
 function publicPosition(position) {
@@ -1073,6 +1949,11 @@ function clampInt(value, min, max, fallback) {
 
 function integerEnv(name, fallback) {
   const parsed = Number.parseInt(String(process.env[name] ?? ""), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function integerEnvFrom(env, name, fallback) {
+  const parsed = Number.parseInt(String(env?.[name] ?? ""), 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 

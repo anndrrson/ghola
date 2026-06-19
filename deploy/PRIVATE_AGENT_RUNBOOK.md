@@ -180,6 +180,23 @@ PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON='{"kind":"ghola_coinbase_advanced
 If quoting multiline JSON or PEM is awkward, provide any JSON value as
 `*_JSON_B64`; the installer decodes it before pushing sealed envs.
 
+The installer also requires non-secret intake evidence for external pooled
+venues so shape-valid placeholder keys cannot accidentally make readiness look
+real:
+
+```bash
+PRIVATE_AGENT_HYPERLIQUID_APPROVAL_EVIDENCE='approveAgent action id, venue note, or operator ticket'
+PRIVATE_AGENT_JUPITER_API_KEY_EVIDENCE='Jupiter portal key id or operator ticket'
+PRIVATE_AGENT_JUPITER_AUTHORITY_FUNDING_EVIDENCE='funding transaction or custody ticket'
+PRIVATE_AGENT_COINBASE_OMNIBUS_EVIDENCE='Coinbase key permission check or operator ticket'
+PRIVATE_AGENT_COINBASE_TRANSFERS_DISABLED_CONFIRMED='true'
+```
+
+These fields must never contain secrets. They are audit notes confirming the
+secret-bearing values came from an approved venue workflow. Generated Solana
+authorities from `scripts/bootstrap-phala-pooled-credentials.mjs` are marked as
+generated/unfunded until an operator adds funding or custody evidence.
+
 Validate without touching production:
 
 ```bash
@@ -188,15 +205,37 @@ node scripts/install-phala-pooled-credentials.mjs \
   --dry-run
 ```
 
+Before installing credentials, verify the web-to-worker path without printing
+secret material:
+
+```bash
+set -a; source .dev/private-agent-staging.env; set +a
+node scripts/canary/private-agent-pooled-readiness.mjs
+```
+
+If this fails with `401` or `worker_capability_*`, align the Vercel
+`GHOLA_WORKER_CAPABILITY_SECRET` with the Phala
+`PRIVATE_AGENT_WORKER_CAPABILITY_SECRET`. If it fails with a network, non-JSON,
+or 404 response, update the web-side worker URL to the live Phala CVM endpoint
+or redeploy the CVM before proceeding.
+
 Install into the Phala CVM:
 
 ```bash
 node scripts/install-phala-pooled-credentials.mjs \
-  --env deploy/private-agent-pooled-credentials.env
+  --env deploy/private-agent-pooled-credentials.env \
+  --worker-env .dev/phala-worker.env
 ```
 
-The script validates credential shape, pushes only the required sealed env keys
-with `phala envs update`, deletes its temp env file, then checks:
+`--worker-env` must be the full sealed Phala worker env used for this CVM. It
+must include the execution token, capability secret, funding signer, image pin,
+runtime policy caps, and any already-live pooled credentials. Phala sealed env
+updates replace the worker env set for this CVM, so the installer refuses
+non-dry updates without this full env file.
+
+The script validates credential shape, merges the selected pooled credentials
+into the full worker env, writes JSON credentials as raw compact JSON for Phala
+dotenv parsing, deletes its temp env file, then checks:
 
 ```bash
 curl -fsS https://ghola.xyz/v1/private-account/live-trading/status
@@ -206,11 +245,24 @@ Expected result after a successful install:
 
 ```json
 {
-  "live_submit_mode": "pooled_and_byo",
+  "live_submit_mode": "pooled_account",
+  "launch_mode": "public_pooled_account",
   "pooled_live_trading_enabled": true,
+  "pooled_live_venues": ["phoenix"],
+  "proof_model": {
+    "mode": "per_session_live_proofs",
+    "funded_operator_canary_required": false
+  },
   "pooled_reason_codes": []
 }
 ```
+
+If BYO mainnet execution is also configured, `live_submit_mode` should report
+`pooled_and_byo` and `launch_mode` should report `public_pooled_and_byo`.
+
+Use `--allow-partial --venues phoenix` when only the Phoenix pooled authority is
+available. Hyperliquid, Jupiter, and Coinbase stay unavailable until their
+external venue credentials are present in `deploy/private-agent-pooled-credentials.env`.
 
 You can also deploy `apps/private-agent-worker/docker-compose.phala.yml`
 manually as the Phala CVM payload, then fetch the worker recipient metadata:
@@ -262,7 +314,91 @@ PRIVATE_AGENT_JUPITER_LIVE_MODE=full
 PRIVATE_AGENT_JUPITER_API_KEY=<jupiter-api-key>
 PRIVATE_AGENT_JUPITER_ALLOWED_INPUT_MINTS=<comma-separated-mainnet-mints>
 PRIVATE_AGENT_JUPITER_ALLOWED_OUTPUT_MINTS=<comma-separated-mainnet-mints>
+PRIVATE_AGENT_JUPITER_PLATFORM_FEE_BPS=10
+# Preferred: route revenue to an owner wallet and let the worker derive/create
+# the associated token account before the first live Jupiter swap.
+PRIVATE_AGENT_JUPITER_FEE_OWNER=Fbw73e5YfhivsTeFud97CFBZc5bZ2PbdDVgcgfYRSgwJ
+PRIVATE_AGENT_JUPITER_FEE_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+# Owner-derived fee accounts are preflighted by /autopilot/readiness. It checks
+# the ATA and the pooled Jupiter payer SOL balance before public-live readiness.
+PRIVATE_AGENT_AUTOPILOT_REVENUE_PREFLIGHT=true
+# Alternative: provide an already-initialized token account directly.
+# PRIVATE_AGENT_JUPITER_FEE_ACCOUNT=<jupiter-usdc-fee-token-account>
 PRIVATE_AGENT_JUPITER_POOLED_VAULT_PATH=/secrets/jupiter-pooled-vault.json
+```
+
+Revenue collection should be audited through the worker revenue evidence ledger,
+not only through the venue-specific fee rail. Every submitted autopilot work
+order records a sanitized revenue event with the fee quote, fee recipient
+commitment, work order commitment, venue result commitment, final proof
+commitment, and a hash-chain head. Export an investor-safe evidence package with
+a scoped `revenue:read` worker capability:
+
+```bash
+curl -fsS "$PRIVATE_AGENT_WORKER_URL/revenue/evidence" \
+  -H "authorization: Bearer <scoped-revenue-read-capability>" \
+  -H "content-type: application/json" \
+  -H "x-ghola-sealed-execution-required: true" \
+  -d '{
+    "version": 1,
+    "operation_class": "revenue_evidence_export",
+    "venue_id": "jupiter",
+    "limit": 1000
+  }'
+```
+
+The export is commitment-based so it can be shared for diligence without
+exposing user strategy, raw venue credentials, wallet private keys, API keys, or
+full order payloads. For stronger accounting, reconcile the exported
+`venue_signature_commitment` / `final_proof_commitment` entries against venue
+statements or the configured fee owner ATA transaction history. When
+`PRIVATE_AGENT_JUPITER_FEE_OWNER` is used, the worker derives the fee ATA from
+`PRIVATE_AGENT_JUPITER_FEE_MINT` and submits an idempotent ATA-create
+transaction before the first live Jupiter swap if the account does not exist.
+`/autopilot/readiness` preflights this path: `revenue.status` should be
+`configured` or `setup_ready`, and `revenue.fee_account_readiness.status` should
+be `ready` or `setup_ready`; neither value should be `needs_funds`. If it is
+`needs_funds`, fund the pooled Jupiter payer with enough SOL for ATA rent and
+transaction fees before public live traffic.
+
+Public live launch proof is per session. The funded operator live canary is
+useful investor/operator evidence, but it is not required for public readiness
+when the worker reports `public_live_ready` or `live_ready`. Public readiness
+must instead show scoped worker capability enforcement, live submit enabled,
+shared worker state, venue allowlists, notional/slippage caps, no-submit
+preflight support, deterministic work-order commitments, replay evidence, and
+revenue evidence. Confirm that with:
+
+```bash
+curl -fsS "$PRIVATE_AGENT_WORKER_URL/autopilot/readiness" \
+  -H "authorization: Bearer <scoped-autopilot-read-capability>" \
+  -H "content-type: application/json" \
+  -H "x-ghola-sealed-execution-required: true" \
+  -d '{
+    "version": 1,
+    "operation_class": "autopilot_execution_readiness",
+    "venues": ["jupiter"]
+  }'
+```
+
+Expected public-live response shape when the restricted funded canary is not
+available:
+
+```json
+{
+  "status": "public_live_ready",
+  "ready": true,
+  "safe_to_recommend": "public_live_with_per_session_proofs",
+  "critical_reason_codes": [],
+  "advisory_reason_codes": ["live_canary_missing"],
+  "proof_model": {
+    "mode": "per_session_live_proofs",
+    "funded_operator_canary_required": false,
+    "first_order_policy": {
+      "max_notional_usd": 5
+    }
+  }
+}
 ```
 
 Set the matching web env on `ghola.xyz`:
@@ -324,8 +460,11 @@ pass does the worker submit the bounded buy/sell legs. If one submitted leg
 fails before reconciliation, the session pauses and emits
 `unhedged_leg_requires_human`.
 
-Run the production guarded-arbitrage canary before enabling user access. The
-default mode verifies sealed Coinbase and Hyperliquid credentials, live market
+Run the production guarded-arbitrage canary continuously for diagnostics and
+operator evidence. The canary is not a user-facing launch gate for Agent
+Passport arbitrage: `arm-arb` succeeds only when the worker actually arms a
+running session, and it fails fast if the worker is unavailable. The default
+canary mode verifies sealed Coinbase and Hyperliquid credentials, live market
 data freshness, paired no-submit order construction, and no-broadcast receipts:
 
 ```bash
@@ -342,7 +481,19 @@ GHOLA_ARB_CANARY_HYPERLIQUID_API_WALLET_PRIVATE_KEY=0x... \
 npm run canary:arb:prod
 ```
 
-Only after no-submit passes, run the tiny-live pair canary:
+To post redacted canary diagnostics into the web backend, add:
+
+```bash
+GHOLA_WEB_BASE_URL=https://ghola.xyz
+# or GHOLA_ARB_CANARY_REPORT_URL=https://ghola.xyz/v1/private-account/agent-passport/arb-canary-report
+GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN=<internal-token>
+```
+
+The report endpoint stores only diagnostic status, commitments, reason codes,
+and redacted worker URL data. Missing, red, or stale Agent Passport arb canaries
+must not be added to `can_arm`, `can_live_submit`, or `arm-arb` blockers.
+
+Only after no-submit passes, optionally run the tiny-live pair canary:
 
 ```bash
 GHOLA_ARB_CANARY_LIVE_SUBMIT=true \
@@ -479,17 +630,21 @@ GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN=<internal-token> \
 node scripts/canary/private-agent-venue-live.mjs
 ```
 
-Hyperliquid live/testnet canaries require an already-approved API/agent wallet:
-set `GHOLA_CANARY_HYPERLIQUID_ACCOUNT_ADDRESS` and
+Hyperliquid BYO live/testnet canaries require an already-approved API/agent
+wallet: set `GHOLA_CANARY_HYPERLIQUID_ACCOUNT_ADDRESS` and
 `GHOLA_CANARY_HYPERLIQUID_API_WALLET_PRIVATE_KEY`. Coinbase BYO canaries require
 an Advanced Trade key with view+trade permissions and transfer disabled: set
-`GHOLA_CANARY_VENUE=coinbase_byo`,
-`GHOLA_CANARY_COINBASE_API_KEY_NAME`, and either
-`GHOLA_CANARY_COINBASE_API_PRIVATE_KEY_PEM_B64` or
-`GHOLA_CANARY_COINBASE_API_PRIVATE_KEY_PEM_PATH`. Jupiter canaries use
-`GHOLA_CANARY_VENUE=jupiter`; live mode requires
-`GHOLA_CANARY_JUPITER_AUTHORITY_PRIVATE_KEY`, strict input/output mint
-allowlists, and the worker-side `PRIVATE_AGENT_JUPITER_API_KEY`.
+`GHOLA_CANARY_VENUE=coinbase_byo`, `GHOLA_CANARY_COINBASE_API_KEY_NAME`, and
+either `GHOLA_CANARY_COINBASE_API_PRIVATE_KEY_PEM_B64` or
+`GHOLA_CANARY_COINBASE_API_PRIVATE_KEY_PEM_PATH`.
+
+Pooled launch canaries must use Ghola-controlled worker credentials sealed in
+Phala, not user-provided vaults. Use these venue values:
+
+- `GHOLA_CANARY_VENUE=hyperliquid_pooled`
+- `GHOLA_CANARY_VENUE=phoenix_pooled`
+- `GHOLA_CANARY_VENUE=jupiter_pooled`
+- `GHOLA_CANARY_VENUE=coinbase_omnibus`
 
 By default the venue canary uses no-submit/preview flows and does not write live
 launch evidence. To create a green launch canary, set
@@ -514,6 +669,28 @@ GHOLA_CANARY_REPORT_URL=https://ghola.xyz/v1/private-account/live-trading/canary
 GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN=<internal-token> \
 node scripts/canary/private-agent-venue-live.mjs
 ```
+
+After installing pooled credentials and confirming
+`/v1/private-account/live-trading/status` reports `public_pooled_account` or
+`public_pooled_and_byo`, optionally run the same full-ticket live canary once
+per pooled venue as supplemental operator evidence:
+
+```bash
+for venue in hyperliquid_pooled phoenix_pooled jupiter_pooled coinbase_omnibus; do
+  GHOLA_CANARY_VENUE="$venue" \
+  GHOLA_RUN_LIVE_VENUE_CANARY=1 \
+  GHOLA_CANARY_LIVE_MODE=full_ticket \
+  GHOLA_CANARY_SUBMIT_ORDER=1 \
+  GHOLA_CANARY_ACK_TINY_ORDER_RISK=1 \
+  GHOLA_CANARY_REPORT_URL=https://ghola.xyz/v1/private-account/live-trading/canary-report \
+  GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN=<internal-token> \
+  node scripts/canary/private-agent-venue-live.mjs
+done
+```
+
+The canary script signs worker requests with
+`PRIVATE_AGENT_WORKER_CAPABILITY_SECRET` or `GHOLA_WORKER_CAPABILITY_SECRET`
+when available. Otherwise it falls back to the legacy worker bearer token.
 
 ## Rollback
 

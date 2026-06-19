@@ -1,4 +1,5 @@
 import { gholaCommitment } from "@/lib/private-account";
+import { backpackPooledReadiness } from "@/lib/backpack-exchange";
 import {
   getLatestLiveTradingCanaryReport,
   type PrivateLiveTradingCanaryReportRecordV1,
@@ -15,27 +16,46 @@ export const dynamic = "force-dynamic";
 const VENUES = [
   { id: "hyperliquid", label: "Hyperliquid" },
   { id: "phoenix", label: "Phoenix" },
+  { id: "backpack", label: "Backpack" },
   { id: "jupiter", label: "Jupiter" },
   { id: "coinbase", label: "Coinbase" },
 ] as const;
 
+type LaunchMode =
+  | "disabled"
+  | "public_byo_mainnet"
+  | "public_pooled_account"
+  | "public_pooled_and_byo";
+
 export async function GET() {
+  return liveTradingStatusResponse();
+}
+
+type LiveTradingCanaryReader = typeof getLatestLiveTradingCanaryReport;
+
+export async function liveTradingStatusResponse(input: {
+  env?: Record<string, string | undefined>;
+  getCanaryReport?: LiveTradingCanaryReader;
+  workerReadiness?: PooledWorkerReadiness;
+} = {}) {
+  const env = input.env ?? process.env;
+  const getCanaryReport = input.getCanaryReport ?? getLatestLiveTradingCanaryReport;
   const [reports, capitalFreeProofs, workerReadiness] = await Promise.all([
-    Promise.all(VENUES.map((venue) => getLatestLiveTradingCanaryReport(venue.id))),
-    Promise.all(VENUES.map((venue) => getLatestLiveTradingCanaryReport(venue.id, "capital_free_no_submit"))),
-    getPooledWorkerReadiness(process.env),
+    Promise.all(VENUES.map((venue) => getCanaryReport(venue.id))),
+    Promise.all(VENUES.map((venue) => getCanaryReport(venue.id, "capital_free_no_submit"))),
+    input.workerReadiness ?? getPooledWorkerReadiness(env),
   ]);
   const venues = VENUES.map((venue, index) =>
     venuePooledLiveGate(
       venue.id,
-      process.env,
+      env,
       evaluateCanary(venue.id, reports[index]),
       evaluateCapitalFreeProof(venue.id, capitalFreeProofs[index]),
       workerReadiness,
     )
   );
-  const pooledGlobalFailures = pooledLiveGateFailures(process.env, workerReadiness);
-  const byoGlobalFailures = byoLiveGateFailures(process.env);
+  const pooledGlobalFailures = pooledLiveGateFailures(env, workerReadiness);
+  const byoGlobalFailures = byoLiveGateFailures(env);
   const pooledUnavailableReasons = pooledGlobalFailures.concat(
     venues.flatMap((venue) => venue.reason_codes.map((reason) => `${venue.id}:${reason}`)),
   );
@@ -46,8 +66,8 @@ export async function GET() {
     .filter((venue) => venue.capital_free_proof_status === "green")
     .map((venue) => venue.id);
   const pooledGreen = pooledGlobalFailures.length === 0 && pooledReadyVenueIds.length > 0;
-  const publicLiveCopyAllowed = process.env.GHOLA_LIVE_TRADING_PUBLIC_ENABLED === "true";
-  const byoVenues = VENUES.map((venue) => venueByoLiveGate(venue.id, process.env));
+  const publicLiveCopyAllowed = env.GHOLA_LIVE_TRADING_PUBLIC_ENABLED === "true";
+  const byoVenues = VENUES.map((venue) => venueByoLiveGate(venue.id, env));
   const byoGreen = byoGlobalFailures.length === 0 && byoVenues.some((venue) => venue.status === "green");
   const liveTradingEnabled = pooledGreen || byoGreen;
   const liveSubmitMode = pooledGreen && byoGreen
@@ -60,18 +80,103 @@ export async function GET() {
   const reasonCodes = liveTradingEnabled
     ? []
     : byoGlobalFailures.concat(byoVenues.flatMap((venue) => venue.reason_codes.map((reason) => `${venue.id}:${reason}`)));
+  const hyperliquidByoVenue = byoVenues.find((venue) => venue.id === "hyperliquid") ??
+    venueByoLiveGate("hyperliquid", env);
+  const hyperliquidPooledVenue = venues.find((venue) => venue.id === "hyperliquid") ??
+    venuePooledLiveGate(
+      "hyperliquid",
+      env,
+      { status: "missing", reason_codes: ["funded_full_ticket_canary_missing"], report: null },
+      { status: "missing", reason_codes: ["capital_free_no_submit_proof_missing"], report: null },
+      workerReadiness,
+    );
+  const freshUserGlobalFailures = freshUserLaunchGateFailures(env);
+  const hyperliquidCanaryAdvisoryReasonCodes = strictCanaryReasonCodes(
+    hyperliquidPooledVenue.canary_status,
+    hyperliquidPooledVenue.canary_reason_codes,
+  );
+  const hyperliquidByoReasonCodes = uniqueStrings([
+    ...freshUserGlobalFailures,
+    ...byoGlobalFailures,
+    ...hyperliquidByoVenue.reason_codes,
+  ]);
+  const hyperliquidPooledReasonCodes = uniqueStrings([
+    ...freshUserGlobalFailures,
+    ...pooledGlobalFailures,
+    ...hyperliquidPooledVenue.reason_codes,
+  ]);
+  const hyperliquidByoLaunchReady = hyperliquidByoReasonCodes.length === 0;
+  const hyperliquidPooledLaunchReady = hyperliquidPooledReasonCodes.length === 0;
+  const publicLaunchReady = liveTradingEnabled && freshUserGlobalFailures.length === 0;
+  const freshUserLiveReady = pooledGreen && freshUserGlobalFailures.length === 0;
+  const launchMode = publicLaunchReady && pooledGreen && byoGreen
+    ? "public_pooled_and_byo"
+    : publicLaunchReady && pooledGreen
+      ? "public_pooled_account"
+      : publicLaunchReady && byoGreen
+        ? "public_byo_mainnet"
+        : "disabled";
+  const proofModel = publicLiveProofModel({
+    launchMode,
+    liveSubmitMode,
+    pooledLiveVenues: pooledReadyVenueIds,
+    byoLiveVenues: byoVenues.filter((venue) => venue.status === "green").map((venue) => venue.id),
+    hyperliquidCanaryAdvisoryReasonCodes,
+  });
   return json({
     version: 1,
     status: liveTradingEnabled ? "green" : "red",
     live_trading_enabled: liveTradingEnabled,
     live_submit_mode: liveSubmitMode,
+    fresh_user_live_ready: freshUserLiveReady,
+    launch_mode: launchMode satisfies LaunchMode,
+    bounded_beta_enabled: envIs(env, "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED", "true"),
     byo_live_trading_enabled: byoGreen,
     pooled_live_trading_enabled: pooledGreen,
+    launch_terms_gate: {
+      required: true,
+      launch_scope: "hyperliquid_pooled_non_us_beta",
+      jurisdiction_scope: "non_us_beta",
+      terms_version: "ghola-public-beta-2026-06-13",
+      risk_disclosure_version: "ghola-risk-disclosure-2026-06-13",
+    },
+    hyperliquid_byo: {
+      status: hyperliquidByoLaunchReady ? "green" : "red",
+      reason_codes: hyperliquidByoReasonCodes,
+      canary_status: hyperliquidPooledVenue.canary_status,
+      canary_reason_codes: hyperliquidPooledVenue.canary_reason_codes,
+      canary_advisory_reason_codes: hyperliquidCanaryAdvisoryReasonCodes,
+    },
+    hyperliquid_pooled: {
+      status: hyperliquidPooledLaunchReady ? "green" : "red",
+      reason_codes: hyperliquidPooledReasonCodes,
+      canary_status: hyperliquidPooledVenue.canary_status,
+      canary_reason_codes: hyperliquidPooledVenue.canary_reason_codes,
+      canary_advisory_reason_codes: hyperliquidCanaryAdvisoryReasonCodes,
+      worker_readiness: {
+        status: workerReadiness.status,
+        ready: workerReadiness.ready,
+        endpoint_configured: workerReadiness.endpoint_configured,
+        reason_codes: workerReadiness.reason_codes,
+        venue_status: workerReadiness.venues.hyperliquid.status,
+        venue_ready: workerReadiness.venues.hyperliquid.ready,
+        venue_reason_codes: workerReadiness.venues.hyperliquid.reason_codes,
+        checked_at: workerReadiness.checked_at,
+      },
+      ghola_balance_required: {
+        required: true,
+        per_user: true,
+        funding_status_path: "/v1/private-account/balance",
+        funding_intent_path: "/v1/private-account/balance/funding-intent",
+        import_credit_path: "/v1/private-account/balance/import-credit",
+      },
+    },
     pooled_live_venues: pooledReadyVenueIds,
     pooled_capital_free_proven_venues: pooledCapitalFreeProvenVenueIds,
     public_live_copy_allowed: publicLiveCopyAllowed,
     public_market_data_enabled: publicLiveCopyAllowed,
     default_access_mode: "ghola_auto_access",
+    proof_model: proofModel,
     pooled_worker_readiness: {
       status: workerReadiness.status,
       ready: workerReadiness.ready,
@@ -86,6 +191,22 @@ export async function GET() {
     reason_codes: reasonCodes,
     gate_commitment: gholaCommitment("live_trading_launch_gate", {
       live_submit_mode: liveSubmitMode,
+      fresh_user_live_ready: freshUserLiveReady,
+      launch_mode: launchMode,
+      hyperliquid_byo: {
+        status: hyperliquidByoLaunchReady ? "green" : "red",
+        canary_status: hyperliquidPooledVenue.canary_status,
+        reason_codes: hyperliquidByoReasonCodes,
+        canary_advisory_reason_codes: hyperliquidCanaryAdvisoryReasonCodes,
+      },
+      hyperliquid_pooled: {
+        status: hyperliquidPooledLaunchReady ? "green" : "red",
+        canary_status: hyperliquidPooledVenue.canary_status,
+        reason_codes: hyperliquidPooledReasonCodes,
+        canary_advisory_reason_codes: hyperliquidCanaryAdvisoryReasonCodes,
+        worker_readiness_status: workerReadiness.status,
+        worker_hyperliquid_ready: workerReadiness.venues.hyperliquid.ready,
+      },
       pooled_live_venues: pooledReadyVenueIds,
       byo_venues: byoVenues.map((venue) => ({
         id: venue.id,
@@ -107,6 +228,62 @@ export async function GET() {
     }),
     checked_at: new Date().toISOString(),
   });
+}
+
+function freshUserLaunchGateFailures(env: Record<string, string | undefined>) {
+  const failures: string[] = [];
+  if (!envIs(env, "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED", "true")) {
+    failures.push("bounded_beta_public_flag_disabled");
+  }
+  if (
+    envIs(env, "GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN", "true") ||
+    envIs(env, "GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED", "true")
+  ) {
+    failures.push("operator_spend_lock");
+  }
+  return failures;
+}
+
+function publicLiveProofModel(input: {
+  launchMode: LaunchMode;
+  liveSubmitMode: string;
+  pooledLiveVenues: Array<(typeof VENUES)[number]["id"]>;
+  byoLiveVenues: Array<(typeof VENUES)[number]["id"]>;
+  hyperliquidCanaryAdvisoryReasonCodes: string[];
+}) {
+  return {
+    version: 1,
+    mode: "per_session_live_proofs",
+    launch_mode: input.launchMode,
+    live_submit_mode: input.liveSubmitMode,
+    funded_operator_canary_required: false,
+    funded_operator_canary_status: input.hyperliquidCanaryAdvisoryReasonCodes.length === 0 ? "green" : "advisory_missing_or_stale",
+    funded_operator_canary_advisory_reason_codes: input.hyperliquidCanaryAdvisoryReasonCodes,
+    per_session_requirements: {
+      scoped_worker_capability: true,
+      no_submit_preflight: true,
+      initialized_fee_accounts: true,
+      venue_allowlist: true,
+      notional_cap: true,
+      slippage_cap: true,
+      receipt_commitment: true,
+      replay_evidence: true,
+      revenue_evidence: true,
+    },
+    first_order_policy: {
+      cap_usd: 5,
+      graduate_after_reconciled_receipt: true,
+      max_slippage_bps: 100,
+    },
+    evidence_paths: {
+      live_trading_status: "/v1/private-account/live-trading/status",
+      autopilot_readiness: "/v1/private-account/autopilot/readiness",
+      autopilot_replay: "/v1/private-account/autopilot/sessions/{session_id}/replay",
+      revenue_evidence: "/revenue/evidence",
+    },
+    pooled_live_venues: input.pooledLiveVenues,
+    byo_live_venues: input.byoLiveVenues,
+  };
 }
 
 function byoLiveGateFailures(env: Record<string, string | undefined>) {
@@ -168,6 +345,21 @@ function venueByoLiveGate(
     }
     if (!capEnvAtMost(env, ["PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS", "GHOLA_SOLANA_PERPS_MAX_SLIPPAGE_BPS"], 100)) {
       reasonCodes.push("phoenix_slippage_cap_missing");
+    }
+  }
+  if (id === "backpack") {
+    if (!envIs(env, "GHOLA_VENUE_BACKPACK_PILOT_ENABLED", "true")) reasonCodes.push("backpack_pilot_disabled");
+    if (!envIs(env, "PRIVATE_AGENT_BACKPACK_LIVE_MODE", "tiny_live") && !envIs(env, "PRIVATE_AGENT_BACKPACK_LIVE_MODE", "full_ticket")) {
+      reasonCodes.push("backpack_worker_live_mode_disabled");
+    }
+    if (!env.PRIVATE_AGENT_BACKPACK_ALLOWED_SYMBOLS?.includes("SOL_USDC_PERP") && !env.GHOLA_BACKPACK_ALLOWED_SYMBOLS?.includes("SOL_USDC_PERP")) {
+      reasonCodes.push("backpack_symbol_allowlist_missing");
+    }
+    if (!capEnvEquals(env, ["PRIVATE_AGENT_BACKPACK_MAX_ORDER_NOTIONAL_USD", "GHOLA_BACKPACK_MAX_ORDER_NOTIONAL_USD"], 5)) {
+      reasonCodes.push("backpack_max_order_cap_missing");
+    }
+    if (!capEnvEquals(env, ["PRIVATE_AGENT_BACKPACK_DAILY_NOTIONAL_CAP_USD", "GHOLA_BACKPACK_DAILY_NOTIONAL_CAP_USD"], 25)) {
+      reasonCodes.push("backpack_daily_cap_missing");
     }
   }
   if (id === "jupiter") {
@@ -246,6 +438,13 @@ function venuePooledLiveGate(
     }
     if (!capEnvAtMost(env, ["PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS", "GHOLA_SOLANA_PERPS_MAX_SLIPPAGE_BPS"], 100)) {
       reasonCodes.push("phoenix_slippage_cap_missing");
+    }
+  }
+  if (id === "backpack") {
+    reasonCodes.push(...backpackPooledReadiness(env).reason_codes);
+    if (!envIs(env, "GHOLA_VENUE_BACKPACK_PILOT_ENABLED", "true")) reasonCodes.push("backpack_pilot_disabled");
+    if (!envIs(env, "GHOLA_BACKPACK_LIVE_MODE", "tiny_live") && !envIs(env, "PRIVATE_AGENT_BACKPACK_LIVE_MODE", "tiny_live")) {
+      reasonCodes.push("backpack_live_mode_disabled");
     }
   }
   if (id === "jupiter") {
@@ -495,4 +694,17 @@ function envFlag(env: Record<string, string | undefined>, key: string): boolean 
 
 function envPresent(env: Record<string, string | undefined>, keys: string[]): boolean {
   return keys.some((key) => Boolean(env[key]?.trim()));
+}
+
+function strictCanaryReasonCodes(
+  status: string,
+  reasonCodes: string[] | undefined,
+) {
+  if (status === "green") return [];
+  const reasons = reasonCodes?.length ? reasonCodes : [`funded_full_ticket_canary_${status}`];
+  return reasons.map((reason) => `hyperliquid:${reason}`);
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values.filter(Boolean))];
 }

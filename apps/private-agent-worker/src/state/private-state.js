@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { finalizeRevenueEvidenceEvent } from "../execution/revenue-evidence.js";
 
 const STATE_VERSION = 1;
 
@@ -25,6 +26,9 @@ function emptyState() {
     autopilot_decisions: {},
     autopilot_positions: {},
     autopilot_opportunities: {},
+    executor_records: {},
+    tick_snapshots: {},
+    revenue_evidence: [],
     hyperliquid_managed_allocations: {},
     omnibus: {},
     updated_at: new Date().toISOString(),
@@ -70,6 +74,9 @@ export function createWorkerState(dir) {
       autopilot_decisions: loaded.autopilot_decisions || {},
       autopilot_positions: loaded.autopilot_positions || {},
       autopilot_opportunities: loaded.autopilot_opportunities || {},
+      executor_records: loaded.executor_records || {},
+      tick_snapshots: loaded.tick_snapshots || {},
+      revenue_evidence: Array.isArray(loaded.revenue_evidence) ? loaded.revenue_evidence : [],
       hyperliquid_managed_allocations: loaded.hyperliquid_managed_allocations || {},
       omnibus: loaded.omnibus || {},
     };
@@ -345,16 +352,79 @@ export function createPostgresWorkerState(databaseUrl) {
           ON worker_autopilot_positions (autopilot_session_id, updated_at DESC)
         `;
         await sql`
-          CREATE TABLE IF NOT EXISTS worker_autopilot_opportunities (
-            opportunity_id TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS worker_autopilot_opportunities (
+          opportunity_id TEXT PRIMARY KEY,
+          autopilot_session_id TEXT NOT NULL,
+          opportunity_json JSONB NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `;
+        await sql`
+        CREATE INDEX IF NOT EXISTS idx_worker_autopilot_opportunities_session
+          ON worker_autopilot_opportunities (autopilot_session_id, created_at DESC)
+        `;
+        await sql`
+          CREATE TABLE IF NOT EXISTS worker_executor_records (
+            executor_id TEXT PRIMARY KEY,
             autopilot_session_id TEXT NOT NULL,
-            opportunity_json JSONB NOT NULL,
+            agent_controller_id TEXT,
+            status TEXT,
+            executor_json JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_executor_records_session
+          ON worker_executor_records (autopilot_session_id, created_at DESC)
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_executor_records_controller
+          ON worker_executor_records (agent_controller_id, created_at DESC)
+        `;
+        await sql`
+          CREATE TABLE IF NOT EXISTS worker_tick_snapshots (
+            tick_id TEXT PRIMARY KEY,
+            autopilot_session_id TEXT NOT NULL,
+            agent_controller_id TEXT,
+            status TEXT,
+            tick_json JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_tick_snapshots_session
+          ON worker_tick_snapshots (autopilot_session_id, created_at DESC)
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_tick_snapshots_controller
+          ON worker_tick_snapshots (agent_controller_id, created_at DESC)
+        `;
+        await sql`
+          CREATE TABLE IF NOT EXISTS worker_revenue_events (
+            revenue_event_id TEXT PRIMARY KEY,
+            work_order_commitment TEXT UNIQUE,
+            autopilot_session_id TEXT,
+            venue_id TEXT,
+            revenue_status TEXT,
+            event_hash TEXT NOT NULL UNIQUE,
+            previous_event_hash TEXT,
+            event_json JSONB NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
         await sql`
-          CREATE INDEX IF NOT EXISTS idx_worker_autopilot_opportunities_session
-          ON worker_autopilot_opportunities (autopilot_session_id, created_at DESC)
+          CREATE INDEX IF NOT EXISTS idx_worker_revenue_events_created
+          ON worker_revenue_events (created_at DESC)
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_revenue_events_session
+          ON worker_revenue_events (autopilot_session_id, created_at DESC)
+        `;
+        await sql`
+          CREATE INDEX IF NOT EXISTS idx_worker_revenue_events_venue
+          ON worker_revenue_events (venue_id, created_at DESC)
         `;
         await sql`
           CREATE TABLE IF NOT EXISTS worker_hyperliquid_managed_allocations (
@@ -576,8 +646,78 @@ export function createPostgresWorkerState(databaseUrl) {
           SELECT session_json
           FROM worker_autopilot_sessions
           ORDER BY created_at DESC
-        `;
+      `;
       return rows.map((row) => decodeJson(row.session_json)).filter(Boolean);
+    },
+
+    async claimAutopilotTickLease(sessionId, input = {}) {
+      const sql = await ensureInitialized();
+      const now = dateValue(input.now);
+      const leaseId = stringValue(input.lease_id) ||
+        stableRecordId("ticklease", { sessionId, now: now.toISOString() });
+      const leaseMs = positiveInt(input.lease_ms, 60_000);
+      const leaseUntil = new Date(now.getTime() + leaseMs).toISOString();
+      const patch = {
+        tick_lease_id: leaseId,
+        tick_lease_until: leaseUntil,
+        last_tick_claimed_at: now.toISOString(),
+        updated_at: now.toISOString(),
+      };
+      const rows = await sql`
+        UPDATE worker_autopilot_sessions
+        SET
+          session_json = session_json || ${jsonParam(patch)}::jsonb,
+          updated_at = NOW()
+        WHERE autopilot_session_id = ${sessionId}
+          AND (
+            session_json->>'tick_lease_id' IS NULL
+            OR session_json->>'tick_lease_until' IS NULL
+            OR (session_json->>'tick_lease_until')::timestamptz <= ${now.toISOString()}::timestamptz
+            OR session_json->>'tick_lease_id' = ${leaseId}
+          )
+        RETURNING session_json
+      `;
+      if (rows[0]) {
+        return {
+          ok: true,
+          lease_id: leaseId,
+          lease_until: leaseUntil,
+          session: decodeJson(rows[0].session_json),
+        };
+      }
+      const session = await this.getAutopilotSession(sessionId);
+      if (!session) return { ok: false, error: "autopilot_session_not_found" };
+      return {
+        ok: false,
+        error: "tick_lease_active",
+        lease_id: session.tick_lease_id || null,
+        lease_until: session.tick_lease_until || null,
+        session,
+      };
+    },
+
+    async releaseAutopilotTickLease(sessionId, leaseId, input = {}) {
+      const sql = await ensureInitialized();
+      const now = dateValue(input.now);
+      const patch = {
+        last_tick_released_at: now.toISOString(),
+        updated_at: now.toISOString(),
+      };
+      const rows = await sql`
+        UPDATE worker_autopilot_sessions
+        SET
+          session_json = (session_json - 'tick_lease_id' - 'tick_lease_until') || ${jsonParam(patch)}::jsonb,
+          updated_at = NOW()
+        WHERE autopilot_session_id = ${sessionId}
+          AND session_json->>'tick_lease_id' = ${stringValue(leaseId)}
+        RETURNING session_json
+      `;
+      if (rows[0]) {
+        return { ok: true, session: decodeJson(rows[0].session_json) };
+      }
+      const session = await this.getAutopilotSession(sessionId);
+      if (!session) return { ok: false, error: "autopilot_session_not_found" };
+      return { ok: false, error: "tick_lease_not_owned", session };
     },
 
     async appendAutopilotEvent(sessionId, event) {
@@ -693,6 +833,173 @@ export function createPostgresWorkerState(databaseUrl) {
         LIMIT 50
       `;
       return rows.map((row) => decodeJson(row.opportunity_json)).filter(Boolean).reverse();
+    },
+
+    async putExecutorRecord(sessionId, executor) {
+      const sql = await ensureInitialized();
+      const next = {
+        ...executor,
+        autopilot_session_id: sessionId,
+        updated_at: new Date().toISOString(),
+      };
+      const executorId = next.executor_id || stableRecordId("executor", { sessionId, executor });
+      await sql`
+        INSERT INTO worker_executor_records (
+          executor_id,
+          autopilot_session_id,
+          agent_controller_id,
+          status,
+          executor_json,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          ${executorId},
+          ${sessionId},
+          ${next.agent_controller_id || null},
+          ${next.status || null},
+          ${jsonParam({ ...next, executor_id: executorId })}::jsonb,
+          ${next.created_at || new Date().toISOString()},
+          NOW()
+        )
+        ON CONFLICT (executor_id)
+        DO UPDATE SET
+          agent_controller_id = excluded.agent_controller_id,
+          status = excluded.status,
+          executor_json = excluded.executor_json,
+          updated_at = excluded.updated_at
+      `;
+      return { ...next, executor_id: executorId };
+    },
+
+    async listExecutorRecords(sessionId) {
+      const sql = await ensureInitialized();
+      const rows = await sql`
+        SELECT executor_json
+        FROM worker_executor_records
+        WHERE autopilot_session_id = ${sessionId}
+        ORDER BY created_at DESC
+        LIMIT 200
+      `;
+      return rows.map((row) => decodeJson(row.executor_json)).filter(Boolean).reverse();
+    },
+
+    async putTickSnapshot(sessionId, snapshot) {
+      const sql = await ensureInitialized();
+      const next = {
+        ...snapshot,
+        autopilot_session_id: sessionId,
+        updated_at: new Date().toISOString(),
+      };
+      const tickId = next.tick_id || stableRecordId("tick", { sessionId, snapshot });
+      await sql`
+        INSERT INTO worker_tick_snapshots (
+          tick_id,
+          autopilot_session_id,
+          agent_controller_id,
+          status,
+          tick_json,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          ${tickId},
+          ${sessionId},
+          ${next.agent_controller_id || null},
+          ${next.status || null},
+          ${jsonParam({ ...next, tick_id: tickId })}::jsonb,
+          ${next.created_at || new Date().toISOString()},
+          NOW()
+        )
+        ON CONFLICT (tick_id)
+        DO UPDATE SET
+          agent_controller_id = excluded.agent_controller_id,
+          status = excluded.status,
+          tick_json = excluded.tick_json,
+          updated_at = excluded.updated_at
+      `;
+      return { ...next, tick_id: tickId };
+    },
+
+    async listTickSnapshots(sessionId) {
+      const sql = await ensureInitialized();
+      const rows = await sql`
+        SELECT tick_json
+        FROM worker_tick_snapshots
+        WHERE autopilot_session_id = ${sessionId}
+        ORDER BY created_at DESC
+        LIMIT 100
+      `;
+      return rows.map((row) => decodeJson(row.tick_json)).filter(Boolean).reverse();
+    },
+
+    async appendRevenueEvidence(event) {
+      const sql = await ensureInitialized();
+      if (event?.work_order_commitment) {
+        const existing = await sql`
+          SELECT event_json
+          FROM worker_revenue_events
+          WHERE work_order_commitment = ${event.work_order_commitment}
+        `;
+        const existingEvent = decodeJson(existing[0]?.event_json);
+        if (existingEvent) return existingEvent;
+      }
+      const latest = await sql`
+        SELECT event_json
+        FROM worker_revenue_events
+        ORDER BY created_at DESC
+        LIMIT 1
+      `;
+      const latestEvent = decodeJson(latest[0]?.event_json);
+      const countRows = await sql`
+        SELECT COUNT(*)::int AS count
+        FROM worker_revenue_events
+      `;
+      const finalized = finalizeRevenueEvidenceEvent(event, {
+        previousEventHash: latestEvent?.event_hash || null,
+        sequence: Number(countRows[0]?.count || 0) + 1,
+      });
+      await sql`
+        INSERT INTO worker_revenue_events (
+          revenue_event_id,
+          work_order_commitment,
+          autopilot_session_id,
+          venue_id,
+          revenue_status,
+          event_hash,
+          previous_event_hash,
+          event_json,
+          created_at
+        )
+        VALUES (
+          ${finalized.revenue_event_id},
+          ${finalized.work_order_commitment || null},
+          ${finalized.autopilot_session_id || null},
+          ${finalized.venue_id || null},
+          ${finalized.revenue_status || null},
+          ${finalized.event_hash},
+          ${finalized.previous_event_hash || null},
+          ${jsonParam(finalized)}::jsonb,
+          ${finalized.created_at || new Date().toISOString()}
+        )
+        ON CONFLICT (revenue_event_id) DO NOTHING
+      `;
+      return finalized;
+    },
+
+    async listRevenueEvidence(input = {}) {
+      const sql = await ensureInitialized();
+      const limit = Math.max(1, Math.min(positiveInt(input.limit, 200), 1000));
+      const rows = await sql`
+        SELECT event_json
+        FROM worker_revenue_events
+        ORDER BY created_at DESC
+        LIMIT ${limit}
+      `;
+      return filterRevenueEvidenceRows(
+        rows.map((row) => decodeJson(row.event_json)).filter(Boolean).reverse(),
+        input,
+      );
     },
 
     async putSession(session) {
@@ -997,6 +1304,27 @@ function timestampOrNow(value) {
   return Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
 }
 
+function dateValue(value) {
+  if (value instanceof Date && Number.isFinite(value.getTime())) return value;
+  const parsed = value ? new Date(value) : new Date();
+  return Number.isFinite(parsed.getTime()) ? parsed : new Date();
+}
+
+function positiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function stringValue(value) {
+  return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+}
+
+function leaseActive(session, now) {
+  if (!session?.tick_lease_id || !session.tick_lease_until) return false;
+  const until = new Date(session.tick_lease_until).getTime();
+  return Number.isFinite(until) && until > now.getTime();
+}
+
 async function upsertOmnibusAllocation(sql, allocation) {
   const next = allocation || {};
   const allocationCommitment = next.allocation_commitment;
@@ -1053,6 +1381,23 @@ async function readOmnibusAllocation(sql, allocationCommitment) {
     fills,
     updated_at: toIso(allocationRows[0].updated_at),
   };
+}
+
+function filterRevenueEvidenceRows(events, input = {}) {
+  const sessionId = stringValue(input.autopilot_session_id || input.session_id);
+  const venueId = stringValue(input.venue_id);
+  const revenueStatus = stringValue(input.revenue_status);
+  const fromMs = input.from ? new Date(input.from).getTime() : null;
+  const toMs = input.to ? new Date(input.to).getTime() : null;
+  return events.filter((event) => {
+    if (sessionId && event.autopilot_session_id !== sessionId) return false;
+    if (venueId && event.venue_id !== venueId) return false;
+    if (revenueStatus && event.revenue_status !== revenueStatus) return false;
+    const createdMs = new Date(event.created_at || 0).getTime();
+    if (Number.isFinite(fromMs) && createdMs < fromMs) return false;
+    if (Number.isFinite(toMs) && createdMs > toMs) return false;
+    return true;
+  });
 }
 
 async function migrateLegacyPostgresDocument(sql) {
@@ -1223,6 +1568,35 @@ async function migrateLegacyPostgresDocument(sql) {
     }
   }
 
+  for (const event of Array.isArray(state.revenue_evidence) ? state.revenue_evidence : []) {
+    if (!event?.event_hash || !event.revenue_event_id) continue;
+    await sql`
+      INSERT INTO worker_revenue_events (
+        revenue_event_id,
+        work_order_commitment,
+        autopilot_session_id,
+        venue_id,
+        revenue_status,
+        event_hash,
+        previous_event_hash,
+        event_json,
+        created_at
+      )
+      VALUES (
+        ${event.revenue_event_id},
+        ${event.work_order_commitment || null},
+        ${event.autopilot_session_id || null},
+        ${event.venue_id || null},
+        ${event.revenue_status || null},
+        ${event.event_hash},
+        ${event.previous_event_hash || null},
+        ${jsonParam(event)}::jsonb,
+        ${timestampOrNow(event.created_at)}
+      )
+      ON CONFLICT (revenue_event_id) DO NOTHING
+    `;
+  }
+
   for (const [allocationCommitment, record] of Object.entries(state.hyperliquid_managed_allocations || {})) {
     if (!record) continue;
     await sql`
@@ -1377,6 +1751,61 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
         .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
     },
 
+    async claimAutopilotTickLease(sessionId, input = {}) {
+      const state = await loadState();
+      const session = state.autopilot_sessions[sessionId] || null;
+      if (!session) return { ok: false, error: "autopilot_session_not_found" };
+      const now = dateValue(input.now);
+      const leaseId = stringValue(input.lease_id) ||
+        stableRecordId("ticklease", { sessionId, now: now.toISOString() });
+      if (leaseActive(session, now) && session.tick_lease_id !== leaseId) {
+        return {
+          ok: false,
+          error: "tick_lease_active",
+          lease_id: session.tick_lease_id || null,
+          lease_until: session.tick_lease_until || null,
+          session,
+        };
+      }
+      const leaseMs = positiveInt(input.lease_ms, 60_000);
+      const leaseUntil = new Date(now.getTime() + leaseMs).toISOString();
+      const next = {
+        ...session,
+        tick_lease_id: leaseId,
+        tick_lease_until: leaseUntil,
+        last_tick_claimed_at: now.toISOString(),
+        updated_at: now.toISOString(),
+      };
+      state.autopilot_sessions[sessionId] = next;
+      await save(state);
+      return {
+        ok: true,
+        lease_id: leaseId,
+        lease_until: leaseUntil,
+        session: next,
+      };
+    },
+
+    async releaseAutopilotTickLease(sessionId, leaseId, input = {}) {
+      const state = await loadState();
+      const session = state.autopilot_sessions[sessionId] || null;
+      if (!session) return { ok: false, error: "autopilot_session_not_found" };
+      if (session.tick_lease_id !== stringValue(leaseId)) {
+        return { ok: false, error: "tick_lease_not_owned", session };
+      }
+      const now = dateValue(input.now);
+      const next = {
+        ...session,
+        last_tick_released_at: now.toISOString(),
+        updated_at: now.toISOString(),
+      };
+      delete next.tick_lease_id;
+      delete next.tick_lease_until;
+      state.autopilot_sessions[sessionId] = next;
+      await save(state);
+      return { ok: true, session: next };
+    },
+
     async appendAutopilotEvent(sessionId, event) {
       const state = await loadState();
       const existing = Array.isArray(state.autopilot_events[sessionId])
@@ -1442,6 +1871,79 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
 
     async listAutopilotOpportunities(sessionId) {
       return ((await loadState()).autopilot_opportunities[sessionId] || []).slice(-50);
+    },
+
+    async putExecutorRecord(sessionId, executor) {
+      const state = await loadState();
+      const existing = Array.isArray(state.executor_records[sessionId])
+        ? state.executor_records[sessionId]
+        : [];
+      const executorId = executor.executor_id || stableRecordId("executor", { sessionId, executor });
+      const next = {
+        ...executor,
+        executor_id: executorId,
+        autopilot_session_id: sessionId,
+        updated_at: new Date().toISOString(),
+      };
+      state.executor_records[sessionId] = existing
+        .filter((item) => item.executor_id !== executorId)
+        .concat(next)
+        .slice(-250);
+      await save(state);
+      return next;
+    },
+
+    async listExecutorRecords(sessionId) {
+      return ((await loadState()).executor_records[sessionId] || []).slice(-200);
+    },
+
+    async putTickSnapshot(sessionId, snapshot) {
+      const state = await loadState();
+      const existing = Array.isArray(state.tick_snapshots[sessionId])
+        ? state.tick_snapshots[sessionId]
+        : [];
+      const tickId = snapshot.tick_id || stableRecordId("tick", { sessionId, snapshot });
+      const next = {
+        ...snapshot,
+        tick_id: tickId,
+        autopilot_session_id: sessionId,
+        updated_at: new Date().toISOString(),
+      };
+      state.tick_snapshots[sessionId] = existing
+        .filter((item) => item.tick_id !== tickId)
+        .concat(next)
+        .slice(-150);
+      await save(state);
+      return next;
+    },
+
+    async listTickSnapshots(sessionId) {
+      return ((await loadState()).tick_snapshots[sessionId] || []).slice(-100);
+    },
+
+    async appendRevenueEvidence(event) {
+      const state = await loadState();
+      const existing = Array.isArray(state.revenue_evidence) ? state.revenue_evidence : [];
+      if (event?.work_order_commitment) {
+        const matched = existing.find((item) => item.work_order_commitment === event.work_order_commitment);
+        if (matched) return matched;
+      }
+      const finalized = finalizeRevenueEvidenceEvent(event, {
+        previousEventHash: existing.at(-1)?.event_hash || null,
+        sequence: existing.length + 1,
+      });
+      state.revenue_evidence = existing.concat(finalized);
+      await save(state);
+      return finalized;
+    },
+
+    async listRevenueEvidence(input = {}) {
+      const state = await loadState();
+      const limit = Math.max(1, Math.min(positiveInt(input.limit, 200), 1000));
+      return filterRevenueEvidenceRows(
+        (Array.isArray(state.revenue_evidence) ? state.revenue_evidence : []).slice(-limit),
+        input,
+      );
     },
 
     async putSession(session) {
@@ -1615,6 +2117,9 @@ function normalizeState(value) {
     autopilot_decisions: loaded.autopilot_decisions || {},
     autopilot_positions: loaded.autopilot_positions || {},
     autopilot_opportunities: loaded.autopilot_opportunities || {},
+    executor_records: loaded.executor_records || {},
+    tick_snapshots: loaded.tick_snapshots || {},
+    revenue_evidence: Array.isArray(loaded.revenue_evidence) ? loaded.revenue_evidence : [],
     hyperliquid_managed_allocations: loaded.hyperliquid_managed_allocations || {},
     omnibus: loaded.omnibus || {},
   };

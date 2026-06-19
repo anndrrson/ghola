@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,7 @@ import {
   sealForTest,
 } from "../src/crypto/envelope.js";
 import { bodyHash } from "../src/auth/capability.js";
+import { createWorkerState } from "../src/state/private-state.js";
 
 const OLD_ENV = { ...process.env };
 
@@ -45,6 +46,7 @@ const senderPublic = ed25519.getPublicKey(senderSecret);
 const senderDid = didKeyFromVerifying(senderPublic);
 const JUPITER_SOL_MINT = "So11111111111111111111111111111111111111112";
 const JUPITER_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const JUPITER_FEE_OWNER = "Fbw73e5YfhivsTeFud97CFBZc5bZ2PbdDVgcgfYRSgwJ";
 
 async function recipient(baseUrl) {
   const response = await fetch(`${baseUrl}/.well-known/private-agent-recipient`);
@@ -586,6 +588,418 @@ describe("private agent worker", () => {
     assert.ok(readiness.venues[0].reason_codes.includes("backpack_symbol_allowlist_missing"));
   });
 
+  it("requires scoped worker capabilities for autopilot execution readiness", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    const response = await fetch(`${baseUrl}/autopilot/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        operation_class: "autopilot_execution_readiness",
+        venues: ["jupiter"],
+      }),
+    });
+
+    assert.equal(response.status, 401);
+    const body = await response.json();
+    assert.equal(body.error_code, "worker_capability_required");
+  });
+
+  it("reports setup progress when live execution is not yet enabled", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    const body = {
+      version: 1,
+      operation_class: "autopilot_execution_readiness",
+      venues: ["jupiter"],
+    };
+    const token = capabilityToken({
+      path: "/autopilot/readiness",
+      scope: "autopilot:read",
+      body,
+      expected: { operation_class: "autopilot_execution_readiness" },
+    });
+    const response = await fetch(`${baseUrl}/autopilot/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal(response.status, 200);
+    const readiness = await response.json();
+    assert.equal(readiness.status, "setup_required");
+    assert.equal(readiness.ready, false);
+    assert.equal(readiness.blocking, false);
+    assert.equal(readiness.safe_to_recommend, "dry_run_or_setup_only");
+    assert.equal(readiness.recommended_strategy.strategy_id, "bounded_intent_executor_v1");
+    assert.equal(readiness.recommended_strategy.default_order_source, "deterministic_bounded_intent_executor");
+    assert.equal(readiness.enabled_capabilities.create_autopilot_sessions, true);
+    assert.equal(readiness.enabled_capabilities.dry_run_orders, true);
+    assert.equal(readiness.first_available_path.mode, "dry_run_autopilot");
+    assert.equal(readiness.first_available_path.strategy_id, "bounded_intent_executor_v1");
+    assert.ok(readiness.reason_codes.includes("venue_dry_run_enabled"));
+    assert.ok(readiness.reason_codes.includes("autopilot_live_submit_disabled"));
+    assert.ok(readiness.reason_codes.includes("shared_state_store_required"));
+    assert.ok(readiness.reason_codes.includes("live_canary_missing"));
+    assert.ok(readiness.next_actions.some((action) => action.code === "autopilot_live_submit_disabled"));
+  });
+
+  it("reports public live readiness with per-session proofs when funded canary is unavailable", async () => {
+    await close(server);
+    const fundingKey = generateKeyPairSync("ed25519").privateKey;
+    process.env.PRIVATE_AGENT_ALLOW_UNATTESTED_DEV = "false";
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    process.env.PRIVATE_AGENT_STATE_STORE = "postgres";
+    process.env.PRIVATE_AGENT_ATTESTED_READY = "true";
+    process.env.PRIVATE_AGENT_ATTESTATION_HASH = "a".repeat(64);
+    process.env.PRIVATE_AGENT_MEASUREMENT_HEX = "b".repeat(64);
+    process.env.PHALA_CVM_IMAGE_DIGEST = "sha256:test";
+    process.env.PRIVATE_AGENT_FUNDING_SIGNING_KEY = fundingKey
+      .export({ format: "der", type: "pkcs8" })
+      .toString("base64");
+    process.env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT = "true";
+    process.env.PRIVATE_AGENT_AUTOPILOT_SWEEP_ENABLED = "true";
+    process.env.PRIVATE_AGENT_AUTOPILOT_SIGNAL_MODE = "live";
+    process.env.PRIVATE_AGENT_JUPITER_LIVE_MODE = "full";
+    process.env.PRIVATE_AGENT_JUPITER_API_KEY = "test-jupiter-api-key";
+    process.env.PRIVATE_AGENT_JUPITER_ALLOWED_INPUT_MINTS = JUPITER_USDC_MINT;
+    process.env.PRIVATE_AGENT_JUPITER_ALLOWED_OUTPUT_MINTS = JUPITER_SOL_MINT;
+    process.env.PRIVATE_AGENT_JUPITER_MAX_SLIPPAGE_BPS = "100";
+    process.env.PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD = "5000";
+    process.env.PRIVATE_AGENT_JUPITER_PLATFORM_FEE_BPS = "10";
+    process.env.PRIVATE_AGENT_JUPITER_FEE_ACCOUNT = "11111111111111111111111111111111";
+    process.env.PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON = JSON.stringify({
+      wallet_private_key: Array.from(Keypair.generate().secretKey),
+    });
+    server = createPrivateAgentWorkerServer({
+      startAutopilotDueLoop: false,
+      state: createWorkerState(dir),
+    });
+    baseUrl = await listen(server);
+    const body = {
+      version: 1,
+      operation_class: "autopilot_execution_readiness",
+      venues: ["jupiter"],
+    };
+    const token = capabilityToken({
+      path: "/autopilot/readiness",
+      scope: "autopilot:read",
+      body,
+      expected: { operation_class: "autopilot_execution_readiness" },
+    });
+    const response = await fetch(`${baseUrl}/autopilot/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal(response.status, 200);
+    const readiness = await response.json();
+    assert.equal(readiness.status, "public_live_ready");
+    assert.equal(readiness.ready, true);
+    assert.equal(readiness.blocking, false);
+    assert.equal(readiness.safe_to_recommend, "public_live_with_per_session_proofs");
+    assert.deepEqual(readiness.critical_reason_codes, []);
+    assert.deepEqual(readiness.advisory_reason_codes, ["live_canary_missing"]);
+    assert.equal(readiness.enabled_capabilities.live_autopilot_orders, true);
+    assert.equal(readiness.enabled_capabilities.per_session_live_proofs, true);
+    assert.equal(readiness.proof_model.mode, "per_session_live_proofs");
+    assert.equal(readiness.proof_model.funded_operator_canary_required, false);
+    assert.equal(readiness.proof_model.funded_operator_canary_status, "advisory_missing_or_stale");
+    assert.deepEqual(readiness.proof_model.funded_operator_canary_advisory_reason_codes, ["live_canary_missing"]);
+    assert.equal(readiness.proof_model.per_session_requirements.scoped_worker_capability, true);
+    assert.equal(readiness.proof_model.per_session_requirements.receipt_commitment, true);
+    assert.equal(readiness.proof_model.first_order_policy.max_notional_usd, 5);
+    assert.equal(readiness.proof_model.evidence_endpoints.revenue, "/revenue/evidence");
+    assert.equal(readiness.first_available_path.mode, "live_autopilot");
+    assert.equal(readiness.first_available_path.venue_id, "jupiter");
+    assert.equal(readiness.checks.canary.ready, false);
+    assert.equal(readiness.venues[0].ready, true);
+  });
+
+  it("blocks autopilot readiness when derived Jupiter revenue setup payer lacks SOL", async () => {
+    await close(server);
+    const oldFetch = globalThis.fetch;
+    const fundingKey = generateKeyPairSync("ed25519").privateKey;
+    const jupiterPayer = Keypair.generate();
+    process.env.PRIVATE_AGENT_ALLOW_UNATTESTED_DEV = "false";
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    process.env.PRIVATE_AGENT_STATE_STORE = "postgres";
+    process.env.PRIVATE_AGENT_ATTESTED_READY = "true";
+    process.env.PRIVATE_AGENT_ATTESTATION_HASH = "a".repeat(64);
+    process.env.PRIVATE_AGENT_MEASUREMENT_HEX = "b".repeat(64);
+    process.env.PHALA_CVM_IMAGE_DIGEST = "sha256:test";
+    process.env.PRIVATE_AGENT_FUNDING_SIGNING_KEY = fundingKey
+      .export({ format: "der", type: "pkcs8" })
+      .toString("base64");
+    process.env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT = "true";
+    process.env.PRIVATE_AGENT_AUTOPILOT_SWEEP_ENABLED = "true";
+    process.env.PRIVATE_AGENT_AUTOPILOT_SIGNAL_MODE = "live";
+    process.env.PRIVATE_AGENT_JUPITER_LIVE_MODE = "full";
+    process.env.PRIVATE_AGENT_JUPITER_API_KEY = "test-jupiter-api-key";
+    process.env.PRIVATE_AGENT_JUPITER_ALLOWED_INPUT_MINTS = JUPITER_USDC_MINT;
+    process.env.PRIVATE_AGENT_JUPITER_ALLOWED_OUTPUT_MINTS = JUPITER_SOL_MINT;
+    process.env.PRIVATE_AGENT_JUPITER_MAX_SLIPPAGE_BPS = "100";
+    process.env.PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD = "5000";
+    process.env.PRIVATE_AGENT_JUPITER_PLATFORM_FEE_BPS = "10";
+    process.env.PRIVATE_AGENT_JUPITER_FEE_OWNER = JUPITER_FEE_OWNER;
+    process.env.PRIVATE_AGENT_JUPITER_FEE_MINT = JUPITER_USDC_MINT;
+    process.env.PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON = JSON.stringify({
+      wallet_private_key: Array.from(jupiterPayer.secretKey),
+    });
+    globalThis.fetch = async (url, init) => {
+      if (String(url) === "https://api.mainnet-beta.solana.com") {
+        const rpc = JSON.parse(String(init?.body || "{}"));
+        if (rpc.method === "getAccountInfo") {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            result: { value: null },
+            id: rpc.id,
+          }), { status: 200 });
+        }
+        if (rpc.method === "getMinimumBalanceForRentExemption") {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            result: 2_039_280,
+            id: rpc.id,
+          }), { status: 200 });
+        }
+        if (rpc.method === "getBalance") {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            result: { value: 1_000 },
+            id: rpc.id,
+          }), { status: 200 });
+        }
+      }
+      return oldFetch(url, init);
+    };
+    try {
+      server = createPrivateAgentWorkerServer({
+        startAutopilotDueLoop: false,
+        state: createWorkerState(dir),
+      });
+      baseUrl = await listen(server);
+      const body = {
+        version: 1,
+        operation_class: "autopilot_execution_readiness",
+        venues: ["jupiter"],
+      };
+      const token = capabilityToken({
+        path: "/autopilot/readiness",
+        scope: "autopilot:read",
+        body,
+        expected: { operation_class: "autopilot_execution_readiness" },
+      });
+      const response = await fetch(`${baseUrl}/autopilot/readiness`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-ghola-sealed-execution-required": "true",
+        },
+        body: JSON.stringify(body),
+      });
+
+      assert.equal(response.status, 200);
+      const readiness = await response.json();
+      assert.equal(readiness.status, "setup_required");
+      assert.equal(readiness.ready, false);
+      assert.equal(readiness.revenue.status, "needs_funds");
+      assert.equal(readiness.revenue.live_fee_collection_enabled, false);
+      assert.equal(readiness.revenue.fee_account_readiness.status, "needs_funds");
+      assert.ok(readiness.critical_reason_codes.includes(
+        "autopilot_revenue_jupiter_fee_account_setup_payer_needs_sol",
+      ));
+      assert.ok(readiness.next_actions.some((action) =>
+        action.code === "autopilot_revenue_jupiter_fee_account_setup_payer_needs_sol"
+      ));
+    } finally {
+      globalThis.fetch = oldFetch;
+    }
+  });
+
+  it("reports production autopilot readiness when all live gates and venue checks pass", async () => {
+    await close(server);
+    const fundingKey = generateKeyPairSync("ed25519").privateKey;
+    process.env.PRIVATE_AGENT_ALLOW_UNATTESTED_DEV = "false";
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    process.env.PRIVATE_AGENT_STATE_STORE = "postgres";
+    process.env.PRIVATE_AGENT_ATTESTED_READY = "true";
+    process.env.PRIVATE_AGENT_ATTESTATION_HASH = "a".repeat(64);
+    process.env.PRIVATE_AGENT_MEASUREMENT_HEX = "b".repeat(64);
+    process.env.PHALA_CVM_IMAGE_DIGEST = "sha256:test";
+    process.env.PRIVATE_AGENT_FUNDING_SIGNING_KEY = fundingKey
+      .export({ format: "der", type: "pkcs8" })
+      .toString("base64");
+    process.env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT = "true";
+    process.env.PRIVATE_AGENT_AUTOPILOT_SWEEP_ENABLED = "true";
+    process.env.PRIVATE_AGENT_AUTOPILOT_SIGNAL_MODE = "live";
+    process.env.PRIVATE_AGENT_LAST_LIVE_CANARY_AT = new Date().toISOString();
+    process.env.PRIVATE_AGENT_JUPITER_LIVE_MODE = "full";
+    process.env.PRIVATE_AGENT_JUPITER_API_KEY = "test-jupiter-api-key";
+    process.env.PRIVATE_AGENT_JUPITER_ALLOWED_INPUT_MINTS = JUPITER_USDC_MINT;
+    process.env.PRIVATE_AGENT_JUPITER_ALLOWED_OUTPUT_MINTS = JUPITER_SOL_MINT;
+    process.env.PRIVATE_AGENT_JUPITER_MAX_SLIPPAGE_BPS = "100";
+    process.env.PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD = "5000";
+    process.env.PRIVATE_AGENT_JUPITER_PLATFORM_FEE_BPS = "10";
+    process.env.PRIVATE_AGENT_JUPITER_FEE_ACCOUNT = "11111111111111111111111111111111";
+    process.env.PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON = JSON.stringify({
+      wallet_private_key: Array.from(Keypair.generate().secretKey),
+    });
+    server = createPrivateAgentWorkerServer({
+      startAutopilotDueLoop: false,
+      state: createWorkerState(dir),
+    });
+    baseUrl = await listen(server);
+    const body = {
+      version: 1,
+      operation_class: "autopilot_execution_readiness",
+      venues: ["jupiter"],
+    };
+    const token = capabilityToken({
+      path: "/autopilot/readiness",
+      scope: "autopilot:read",
+      body,
+      expected: { operation_class: "autopilot_execution_readiness" },
+    });
+    const response = await fetch(`${baseUrl}/autopilot/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal(response.status, 200);
+    const readiness = await response.json();
+    assert.equal(readiness.status, "live_ready");
+    assert.equal(readiness.ready, true);
+    assert.equal(readiness.blocking, false);
+    assert.equal(readiness.safe_to_recommend, "production_live");
+    assert.deepEqual(readiness.reason_codes, []);
+    assert.equal(readiness.enabled_capabilities.live_autopilot_orders, true);
+    assert.equal(readiness.enabled_capabilities.revenue_collection, true);
+    assert.equal(readiness.revenue.status, "configured");
+    assert.equal(readiness.revenue.model, "jupiter_integrator_fee");
+    assert.equal(readiness.revenue.fee_bps, 10);
+    assert.equal(readiness.revenue.fee_recipient, "jupiter_fee_account");
+    assert.match(readiness.revenue.fee_recipient_commitment, /^jupiter_fee_account_/);
+    assert.equal(readiness.recommended_strategy.strategy_id, "bounded_intent_executor_v1");
+    assert.equal(readiness.recommended_strategy.default_order_source, "deterministic_bounded_intent_executor");
+    assert.equal(readiness.first_available_path.mode, "live_autopilot");
+    assert.equal(readiness.first_available_path.strategy_id, "bounded_intent_executor_v1");
+    assert.equal(readiness.first_available_path.venue_id, "jupiter");
+    assert.equal(readiness.checks.state_store.shared, true);
+    assert.equal(readiness.checks.execution_gates.autopilot_live_submit, true);
+    assert.equal(readiness.checks.canary.ready, true);
+    assert.equal(readiness.venues[0].venue_id, "jupiter");
+    assert.equal(readiness.venues[0].ready, true);
+    const serialized = JSON.stringify(readiness).toLowerCase();
+    assert.equal(serialized.includes("wallet_private_key"), false);
+    assert.equal(serialized.includes("test-jupiter-api-key"), false);
+  });
+
+  it("exports sanitized revenue evidence through scoped worker capability", async () => {
+    await close(server);
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    const state = createWorkerState(dir);
+    const stored = await state.appendRevenueEvidence({
+      version: 1,
+      evidence_kind: "autopilot_order_revenue_v1",
+      revenue_status: "expected",
+      collection_status: "routed_in_jupiter_order",
+      revenue_model: "jupiter_integrator_fee",
+      venue_id: "jupiter",
+      operation_class: "swap",
+      market: "SOL-USD",
+      fee_bps: 10,
+      notional_bucket: "50",
+      expected_fee_bucket: "0.05",
+      fee_currency: "USD",
+      fee_recipient: "jupiter_fee_account",
+      fee_recipient_commitment: "jupiter_fee_account_commitment",
+      work_order_commitment: "autopilot_work_order_revenue_export",
+      autopilot_session_id: "autopilot_revenue_export",
+      agent_controller_id: "agentctl_revenue_export",
+      policy_commitment: "policy_revenue_export",
+      tick_id: "tick_revenue_export",
+      executor_id: "executor_revenue_export",
+      provider_ref_commitment: "provider_ref_revenue_export",
+      result_commitment: "jupiter_result_revenue_export",
+      final_proof_commitment: "final_proof_revenue_export",
+      venue_signature_commitment: "jupiter_signature_revenue_export",
+      onchain_collection_proof: true,
+      created_at: new Date().toISOString(),
+    });
+    server = createPrivateAgentWorkerServer({
+      startAutopilotDueLoop: false,
+      state,
+    });
+    baseUrl = await listen(server);
+
+    const body = {
+      version: 1,
+      operation_class: "revenue_evidence_export",
+      venue_id: "jupiter",
+      limit: 50,
+    };
+    const token = capabilityToken({
+      path: "/revenue/evidence",
+      scope: "revenue:read",
+      body,
+      expected: {
+        operation_class: "revenue_evidence_export",
+        venue_id: body.venue_id,
+      },
+    });
+    const response = await fetch(`${baseUrl}/revenue/evidence`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.operation_class, "revenue_evidence_export");
+    assert.equal(result.statement.statement_kind, "ghola_revenue_evidence_statement_v1");
+    assert.equal(result.statement.totals.expected_fee_bucket, "0.05");
+    assert.equal(result.statement.hash_chain.valid, true);
+    assert.equal(result.statement.hash_chain.head_event_hash, stored.event_hash);
+    assert.equal(result.events.length, 1);
+    assert.equal(result.events[0].event_hash, stored.event_hash);
+    assert.equal(result.events[0].expected_fee_bucket, "0.05");
+    const serialized = JSON.stringify(result).toLowerCase();
+    assert.equal(serialized.includes("wallet_private_key"), false);
+    assert.equal(serialized.includes("api_key"), false);
+  });
+
   it("accepts a tri-venue arb run command through scoped worker capability", async () => {
     process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
     process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
@@ -639,6 +1053,82 @@ describe("private agent worker", () => {
     assert.equal(result.tick.ok, true);
     assert.equal(result.tick.receipts.length, 2);
     assert.equal(JSON.stringify(result).includes("test-backpack-api-key"), false);
+  });
+
+  it("runs due autopilot sessions through a scoped worker capability", async () => {
+    await close(server);
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_AUTOPILOT_SWEEP_ENABLED = "false";
+    process.env.PRIVATE_AGENT_AUTOPILOT_INITIAL_DELAY_MS = "60000";
+    process.env.PRIVATE_AGENT_AUTOPILOT_SIGNAL_MODE = "force";
+    process.env.PRIVATE_AGENT_AUTOPILOT_FORCE_PRICE = "100";
+    process.env.PRIVATE_AGENT_AUTOPILOT_FORCE_CHANGE_PCT = "1";
+    process.env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT = "true";
+    server = createPrivateAgentWorkerServer();
+    baseUrl = await listen(server);
+
+    const sessionBody = {
+      version: 1,
+      owner_commitment: "owner_autopilot_run_due_123",
+      session_policy: {
+        venue_allowlist: ["jupiter"],
+        market_allowlist: ["SOL-USD"],
+        max_notional_bucket: "50",
+        max_daily_notional_bucket: "250",
+        max_order_count: 10,
+        ttl_ms: 2 * 60 * 60_000,
+        max_slippage_bps: 50,
+      },
+    };
+    const createToken = capabilityToken({
+      path: "/autopilot/sessions",
+      scope: "autopilot:control",
+      body: sessionBody,
+      expected: { owner_commitment: sessionBody.owner_commitment },
+    });
+    const created = await fetch(`${baseUrl}/autopilot/sessions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${createToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(sessionBody),
+    });
+    assert.equal(created.status, 201);
+    const createdBody = await created.json();
+    assert.equal(createdBody.session.status, "running");
+
+    const runDueBody = {
+      version: 1,
+      operation_class: "autopilot_run_due",
+      max_sessions: 5,
+    };
+    const runDueToken = capabilityToken({
+      path: "/autopilot/run-due",
+      scope: "autopilot:control",
+      body: runDueBody,
+      expected: { operation_class: "autopilot_run_due" },
+    });
+    const response = await fetch(`${baseUrl}/autopilot/run-due`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${runDueToken}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(runDueBody),
+    });
+
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.checked_count, 1);
+    assert.equal(result.due_count, 1);
+    assert.equal(result.ran_count, 1);
+    assert.equal(result.results[0].autopilot_session_id, createdBody.session.autopilot_session_id);
+    assert.equal(result.results[0].ok, true);
+    assert.match(result.results[0].receipt_commitment, /^jupiter_result_/);
   });
 
   it("blocks live pooled readiness when worker state is not shared", async () => {

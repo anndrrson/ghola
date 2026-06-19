@@ -1,10 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GET } from "./route";
+import { GET, liveTradingStatusResponse } from "./route";
 import { POST as POSTCanaryReport } from "../canary-report/route";
-import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
+import {
+  resetPrivateAccountStoreForTests,
+  type PrivateLiveTradingCanaryKind,
+  type PrivateLiveTradingCanaryReportRecordV1,
+  type PrivateLiveTradingVenueId,
+} from "@/lib/private-account-store";
 
 const ENV_KEYS = [
   "GHOLA_LIVE_TRADING_PUBLIC_ENABLED",
+  "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED",
+  "GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN",
+  "GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED",
   "PRIVATE_AGENT_VENUE_DRY_RUN",
   "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET",
   "GHOLA_PRIVATE_RUNTIME_URL",
@@ -48,6 +56,20 @@ const ENV_KEYS = [
   "PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE",
   "PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS",
+  "GHOLA_VENUE_BACKPACK_PILOT_ENABLED",
+  "GHOLA_BACKPACK_LIVE_MODE",
+  "PRIVATE_AGENT_BACKPACK_LIVE_MODE",
+  "PRIVATE_AGENT_BACKPACK_ALLOWED_SYMBOLS",
+  "GHOLA_BACKPACK_ALLOWED_SYMBOLS",
+  "PRIVATE_AGENT_BACKPACK_MAX_ORDER_NOTIONAL_USD",
+  "GHOLA_BACKPACK_MAX_ORDER_NOTIONAL_USD",
+  "PRIVATE_AGENT_BACKPACK_DAILY_NOTIONAL_CAP_USD",
+  "GHOLA_BACKPACK_DAILY_NOTIONAL_CAP_USD",
+  "GHOLA_BACKPACK_POOLED_ENABLED",
+  "GHOLA_BACKPACK_API_KEY",
+  "GHOLA_BACKPACK_API_SECRET",
+  "GHOLA_BACKPACK_API_PRIVATE_KEY_B64",
+  "GHOLA_BACKPACK_POST_ONLY_MM",
   "GHOLA_VENUE_JUPITER_PILOT_ENABLED",
   "GHOLA_JUPITER_LIVE_MODE",
   "PRIVATE_AGENT_JUPITER_LIVE_MODE",
@@ -89,14 +111,25 @@ describe("private account live trading launch gate", () => {
       status: "red",
       live_trading_enabled: false,
       live_submit_mode: "disabled",
+      fresh_user_live_ready: false,
+      launch_mode: "disabled",
+      bounded_beta_enabled: false,
       byo_live_trading_enabled: false,
       pooled_live_trading_enabled: false,
+      hyperliquid_byo: {
+        status: "red",
+        canary_status: "missing",
+      },
+      hyperliquid_pooled: {
+        status: "red",
+        canary_status: "missing",
+      },
       public_live_copy_allowed: false,
       public_market_data_enabled: false,
       default_access_mode: "ghola_auto_access",
     });
     expect(body.reason_codes).toContain("live_trading_public_flag_disabled");
-    expect(body.required_venues).toHaveLength(4);
+    expect(body.required_venues).toHaveLength(5);
     expect(body.required_venues.every((venue: { status: string }) => venue.status === "red")).toBe(true);
   });
 
@@ -109,8 +142,21 @@ describe("private account live trading launch gate", () => {
     expect(body.status).toBe("green");
     expect(body.live_trading_enabled).toBe(true);
     expect(body.live_submit_mode).toBe("byo_mainnet");
+    expect(body.fresh_user_live_ready).toBe(false);
+    expect(body.launch_mode).toBe("public_byo_mainnet");
     expect(body.byo_live_trading_enabled).toBe(true);
     expect(body.pooled_live_trading_enabled).toBe(false);
+    expect(body.hyperliquid_byo.status).toBe("green");
+    expect(body.hyperliquid_byo.reason_codes).toEqual([]);
+    expect(body.hyperliquid_byo.canary_advisory_reason_codes).toContain("hyperliquid:funded_full_ticket_canary_missing");
+    expect(body.hyperliquid_byo.reason_codes).not.toContain("hyperliquid_max_order_cap_missing");
+    expect(body.hyperliquid_pooled.status).toBe("red");
+    expect(body.hyperliquid_pooled.reason_codes).toContain("pooled_worker_endpoint_missing");
+    expect(body.proof_model).toMatchObject({
+      mode: "per_session_live_proofs",
+      launch_mode: "public_byo_mainnet",
+      funded_operator_canary_required: false,
+    });
     expect(body.public_live_copy_allowed).toBe(true);
     expect(body.public_market_data_enabled).toBe(true);
     expect(body.reason_codes).toEqual([]);
@@ -118,6 +164,7 @@ describe("private account live trading launch gate", () => {
     expect(body.byo_live_venues.filter((venue: { status: string }) => venue.status === "green").map((venue: { id: string }) => venue.id)).toEqual([
       "hyperliquid",
       "phoenix",
+      "backpack",
       "jupiter",
       "coinbase",
     ]);
@@ -127,6 +174,7 @@ describe("private account live trading launch gate", () => {
     }))).toEqual([
       { id: "hyperliquid", canary_status: "missing" },
       { id: "phoenix", canary_status: "missing" },
+      { id: "backpack", canary_status: "missing" },
       { id: "jupiter", canary_status: "missing" },
       { id: "coinbase", canary_status: "missing" },
     ]);
@@ -146,6 +194,25 @@ describe("private account live trading launch gate", () => {
     expect(body.pooled_live_trading_enabled).toBe(false);
     expect(body.reason_codes).toEqual([]);
     expect(body.pooled_reason_codes).toContain("pooled_worker_endpoint_missing");
+  });
+
+  it("keeps funded canary as advisory evidence for BYO launch readiness", async () => {
+    enableGreenGateEnv();
+
+    const res = await liveTradingStatusResponse({
+      getCanaryReport: greenHyperliquidCanaryReader(),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.fresh_user_live_ready).toBe(false);
+    expect(body.launch_mode).toBe("public_byo_mainnet");
+    expect(body.hyperliquid_byo).toMatchObject({
+      status: "green",
+      reason_codes: [],
+      canary_status: "green",
+    });
+    expect(body.hyperliquid_pooled.status).toBe("red");
+    expect(body.hyperliquid_pooled.reason_codes).toContain("pooled_worker_endpoint_missing");
   });
 
   it("rejects unauthenticated canary reports", async () => {
@@ -184,6 +251,8 @@ describe("private account live trading launch gate", () => {
       status: "green",
       live_trading_enabled: true,
       live_submit_mode: "pooled_and_byo",
+      fresh_user_live_ready: true,
+      launch_mode: "public_pooled_and_byo",
       byo_live_trading_enabled: true,
       pooled_live_trading_enabled: true,
       public_live_copy_allowed: true,
@@ -192,6 +261,18 @@ describe("private account live trading launch gate", () => {
       reason_codes: [],
     });
     expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(body.hyperliquid_byo.reason_codes).toEqual([]);
+    expect(body.hyperliquid_pooled.reason_codes).toEqual([]);
+    expect(body.hyperliquid_pooled.canary_advisory_reason_codes).toContain("hyperliquid:funded_full_ticket_canary_missing");
+    expect(body.proof_model).toMatchObject({
+      mode: "per_session_live_proofs",
+      launch_mode: "public_pooled_and_byo",
+      funded_operator_canary_required: false,
+      first_order_policy: {
+        cap_usd: 5,
+        graduate_after_reconciled_receipt: true,
+      },
+    });
     expect(body.pooled_worker_readiness).toMatchObject({
       status: "ready",
       ready: true,
@@ -206,9 +287,64 @@ describe("private account live trading launch gate", () => {
     }))).toEqual([
       { id: "hyperliquid", status: "green", canary_status: "missing", canary_required: false },
       { id: "phoenix", status: "green", canary_status: "missing", canary_required: false },
+      { id: "backpack", status: "green", canary_status: "missing", canary_required: false },
       { id: "jupiter", status: "green", canary_status: "missing", canary_required: false },
       { id: "coinbase", status: "green", canary_status: "missing", canary_required: false },
     ]);
+  });
+
+  it("turns the fresh-user launch gate green from live venue gates and records canary evidence when present", async () => {
+    enableGreenGateEnv();
+    enablePooledPoolEnv();
+    enablePooledWorkerEnv();
+    const fetchSpy = mockPooledWorkerReady();
+
+    const res = await liveTradingStatusResponse({
+      getCanaryReport: greenHyperliquidCanaryReader(),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(body.fresh_user_live_ready).toBe(true);
+    expect(body.launch_mode).toBe("public_pooled_and_byo");
+    expect(body.hyperliquid_byo).toMatchObject({
+      status: "green",
+      reason_codes: [],
+      canary_status: "green",
+    });
+    expect(body.hyperliquid_pooled).toMatchObject({
+      status: "green",
+      reason_codes: [],
+      canary_status: "green",
+      ghola_balance_required: {
+        required: true,
+        per_user: true,
+      },
+    });
+    expect(body.hyperliquid_pooled.worker_readiness).toMatchObject({
+      status: "ready",
+      venue_ready: true,
+      venue_reason_codes: [],
+    });
+  });
+
+  it("keeps the fresh-user launch gate red while the operator spend lock is active", async () => {
+    enableGreenGateEnv();
+    enablePooledPoolEnv();
+    enablePooledWorkerEnv();
+    process.env.GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN = "true";
+    const fetchSpy = mockPooledWorkerReady();
+
+    const res = await liveTradingStatusResponse({
+      getCanaryReport: greenHyperliquidCanaryReader(),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(body.fresh_user_live_ready).toBe(false);
+    expect(body.launch_mode).toBe("disabled");
+    expect(body.hyperliquid_byo.reason_codes).toContain("operator_spend_lock");
+    expect(body.hyperliquid_pooled.reason_codes).toContain("operator_spend_lock");
   });
 
   it("turns pooled live for the ready venues without blocking on every pooled venue", async () => {
@@ -231,6 +367,7 @@ describe("private account live trading launch gate", () => {
     expect(fetchSpy).toHaveBeenCalledOnce();
     expect(body.pooled_unavailable_reason_codes).toEqual(expect.arrayContaining([
       "hyperliquid:hyperliquid_pooled_account_pool_missing",
+      "backpack:backpack_pooled_disabled",
       "jupiter:jupiter_api_key_missing",
       "coinbase:coinbase_omnibus_pool_not_ready",
     ]));
@@ -240,6 +377,7 @@ describe("private account live trading launch gate", () => {
     }))).toEqual([
       { id: "hyperliquid", status: "red" },
       { id: "phoenix", status: "green" },
+      { id: "backpack", status: "red" },
       { id: "jupiter", status: "red" },
       { id: "coinbase", status: "red" },
     ]);
@@ -266,7 +404,18 @@ describe("private account live trading launch gate", () => {
     });
 
     const fetchSpy = mockPooledWorkerPartiallyReady();
-    const res = await GET();
+    const capitalFreeReport: PrivateLiveTradingCanaryReportRecordV1 = {
+      ...reportBody.report,
+      version: 1,
+      reason: null,
+      created_at: new Date().toISOString(),
+    };
+    const res = await liveTradingStatusResponse({
+      getCanaryReport: async (
+        venueId: PrivateLiveTradingVenueId,
+        canaryKind: PrivateLiveTradingCanaryKind = "full_ticket_broadcast",
+      ) => venueId === "phoenix" && canaryKind === "capital_free_no_submit" ? capitalFreeReport : null,
+    });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(fetchSpy).toHaveBeenCalledOnce();
@@ -299,6 +448,7 @@ function clearGateEnv() {
 
 function enableGreenGateEnv() {
   process.env.GHOLA_LIVE_TRADING_PUBLIC_ENABLED = "true";
+  process.env.GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED = "true";
   process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET = "secure_private_account_request_proof_secret_32bytes";
   process.env.GHOLA_PRIVATE_RUNTIME_URL = "https://runtime.ghola.example";
   process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN = "internal_live_canary_token_32_bytes";
@@ -318,6 +468,12 @@ function enableGreenGateEnv() {
   process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE = "full_ticket";
   process.env.PRIVATE_AGENT_SOLANA_PERPS_FULL_TICKET_MAX_NOTIONAL_USD = "1000";
   process.env.PRIVATE_AGENT_SOLANA_PERPS_MAX_SLIPPAGE_BPS = "100";
+  process.env.GHOLA_VENUE_BACKPACK_PILOT_ENABLED = "true";
+  process.env.GHOLA_BACKPACK_LIVE_MODE = "tiny_live";
+  process.env.PRIVATE_AGENT_BACKPACK_LIVE_MODE = "tiny_live";
+  process.env.PRIVATE_AGENT_BACKPACK_ALLOWED_SYMBOLS = "SOL_USDC_PERP";
+  process.env.PRIVATE_AGENT_BACKPACK_MAX_ORDER_NOTIONAL_USD = "5";
+  process.env.PRIVATE_AGENT_BACKPACK_DAILY_NOTIONAL_CAP_USD = "25";
   process.env.GHOLA_VENUE_JUPITER_PILOT_ENABLED = "true";
   process.env.GHOLA_JUPITER_LIVE_MODE = "full";
   process.env.PRIVATE_AGENT_JUPITER_LIVE_MODE = "full";
@@ -337,6 +493,13 @@ function enableGreenGateEnv() {
 function enablePooledPoolEnv() {
   process.env.GHOLA_HYPERLIQUID_POOLED_ACCOUNT_POOL_READY = "true";
   process.env.GHOLA_PHOENIX_POOLED_AUTHORITY_READY = "true";
+  process.env.GHOLA_BACKPACK_POOLED_ENABLED = "true";
+  process.env.GHOLA_BACKPACK_API_KEY = "backpack-api-key";
+  process.env.GHOLA_BACKPACK_API_SECRET = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+  process.env.GHOLA_BACKPACK_ALLOWED_SYMBOLS = "SOL_USDC_PERP";
+  process.env.GHOLA_BACKPACK_MAX_ORDER_NOTIONAL_USD = "5";
+  process.env.GHOLA_BACKPACK_DAILY_NOTIONAL_CAP_USD = "25";
+  process.env.GHOLA_BACKPACK_POST_ONLY_MM = "true";
   process.env.GHOLA_JUPITER_POOLED_AUTHORITY_READY = "true";
   process.env.GHOLA_JUPITER_API_KEY_READY = "true";
   process.env.GHOLA_COINBASE_PARTNER_OMNIBUS_POOL_READY = "true";
@@ -357,6 +520,7 @@ function mockPooledWorkerReady() {
     venues: [
       { venue_id: "hyperliquid", status: "ready", ready: true, reason_codes: [], credential_count: 1 },
       { venue_id: "phoenix", status: "ready", ready: true, reason_codes: [], authority_commitment: "phoenix_authority_commitment" },
+      { venue_id: "backpack", status: "ready", ready: true, reason_codes: [], credential_commitment: "backpack_credential_commitment" },
       { venue_id: "jupiter", status: "ready", ready: true, reason_codes: [], authority_commitment: "jupiter_authority_commitment" },
       { venue_id: "coinbase", status: "ready", ready: true, reason_codes: [], credential_commitment: "coinbase_credential_commitment" },
     ],
@@ -378,6 +542,7 @@ function mockPooledWorkerPartiallyReady() {
     venues: [
       { venue_id: "hyperliquid", status: "blocked", ready: false, reason_codes: ["hyperliquid_pooled_account_pool_missing"] },
       { venue_id: "phoenix", status: "ready", ready: true, reason_codes: [], authority_commitment: "phoenix_authority_commitment" },
+      { venue_id: "backpack", status: "blocked", ready: false, reason_codes: ["backpack_pooled_disabled"] },
       { venue_id: "jupiter", status: "blocked", ready: false, reason_codes: ["jupiter_api_key_missing", "jupiter_pooled_authority_missing"] },
       { venue_id: "coinbase", status: "blocked", ready: false, reason_codes: ["coinbase_omnibus_pool_not_ready"] },
     ],
@@ -387,6 +552,43 @@ function mockPooledWorkerPartiallyReady() {
     status: 200,
     headers: { "content-type": "application/json" },
   }));
+}
+
+function greenHyperliquidCanaryReader() {
+  const report = greenFundedCanaryRecord("hyperliquid");
+  return async (
+    venueId: PrivateLiveTradingVenueId,
+    canaryKind: PrivateLiveTradingCanaryKind = "full_ticket_broadcast",
+  ) => venueId === "hyperliquid" && canaryKind === "full_ticket_broadcast" ? report : null;
+}
+
+function greenFundedCanaryRecord(
+  venueId: "hyperliquid" | "phoenix" | "jupiter" | "coinbase",
+): PrivateLiveTradingCanaryReportRecordV1 {
+  const body = greenCanaryBody(venueId);
+  const observedAt = Date.parse(body.observed_at);
+  return {
+    version: 1,
+    report_id: body.report_id,
+    venue_id: venueId,
+    network: "mainnet",
+    status: "green",
+    live_mode: "full_ticket",
+    canary_kind: "full_ticket_broadcast",
+    broadcast_performed: true,
+    reconcile_status: "reconciled",
+    order_notional_usd: body.order_notional_usd,
+    max_order_notional_usd: body.max_order_notional_usd,
+    daily_cap_usd: body.daily_cap_usd,
+    max_slippage_bps: body.max_slippage_bps,
+    receipt_commitment: body.receipt_commitment,
+    result_commitment: body.result_commitment,
+    evidence_commitment: `evidence_${venueId}_commitment`,
+    reason: null,
+    observed_at: body.observed_at,
+    expires_at: new Date(observedAt + 24 * 60 * 60 * 1_000).toISOString(),
+    created_at: body.observed_at,
+  };
 }
 
 function greenCanaryBody(venueId: "hyperliquid" | "phoenix" | "jupiter" | "coinbase") {
