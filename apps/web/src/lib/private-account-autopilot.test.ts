@@ -328,6 +328,7 @@ describe("private account autopilot sessions", () => {
       new Date("2026-06-01T12:00:00.000Z"),
       {
         GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+        GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "false",
         PHALA_CLOUD_API_KEY: "phala-key",
       },
       fetchImpl,

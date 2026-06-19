@@ -234,8 +234,7 @@ export function phalaWakeOnUseEnabled(): boolean {
   if (privateAgentRemoteExecutionDisabled()) return false;
   const explicitWake = nullableBoolEnv("GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED");
   if (explicitWake !== null) return explicitWake;
-  const explicitJit = nullableBoolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING");
-  if (explicitJit !== null) return explicitJit;
+  if (boolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING")) return true;
   return phalaWakeOnUseConfigPresent();
 }
 
@@ -281,8 +280,7 @@ export function privateAgentSpendArmed(): boolean {
   if (explicit !== null) return explicit;
   const explicitWake = nullableBoolEnv("GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED");
   if (explicitWake !== null) return explicitWake;
-  const explicitJit = nullableBoolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING");
-  if (explicitJit !== null) return explicitJit;
+  if (boolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING")) return true;
   if (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production") {
     return phalaWakeOnUseConfigPresent();
   }

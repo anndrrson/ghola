@@ -1187,8 +1187,7 @@ function phalaAutopilotWakeEnabled(env: Record<string, string | undefined>): boo
   const wakeOnUse = boolEnvValue(env.GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED);
   if (wakeOnUse !== null) return wakeOnUse;
 
-  const jit = boolEnvValue(env.GHOLA_PRIVATE_AGENT_JIT_PROVISIONING);
-  if (jit !== null) return jit;
+  if (boolEnvValue(env.GHOLA_PRIVATE_AGENT_JIT_PROVISIONING) === true) return true;
 
   if (spendArmed === true) return true;
   return Boolean(phalaApiKeyForEnv(env) && phalaWorkerTokenForEnv(env));

@@ -243,6 +243,7 @@ describe("private-agent Phala provisioning", () => {
   it("auto-arms production wake-on-use when Phala credentials are configured", () => {
     setTestEnv({
       GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
+      GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "false",
       PHALA_CLOUD_API_KEY: "phala-key",
       VERCEL_ENV: "production",
     });
