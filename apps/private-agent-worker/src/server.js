@@ -942,7 +942,8 @@ async function autopilotExecutionReadinessResponse({ body, runtimeReady, now = n
   const advisoryReasons = [];
   const dryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true";
   const stateMode = stateStoreMode();
-  const sharedState = ["postgres", "postgresql", "neon"].includes(stateMode);
+  const stateReadiness = sharedStateReady();
+  const sharedState = stateReadiness.ready;
   if (!runtimeReady.ready) {
     reasonCodes.push("runtime_not_attested_ready");
     for (const missing of runtimeReady.missing || []) {
@@ -1086,6 +1087,7 @@ async function autopilotExecutionReadinessResponse({ body, runtimeReady, now = n
       state_store: {
         mode: stateMode,
         shared: sharedState,
+        reason_codes: stateReadiness.reason_codes,
       },
       execution_gates: {
         venue_dry_run: dryRun,

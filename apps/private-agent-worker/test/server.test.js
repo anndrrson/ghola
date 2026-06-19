@@ -648,9 +648,44 @@ describe("private agent worker", () => {
     assert.equal(readiness.first_available_path.strategy_id, "bounded_intent_executor_v1");
     assert.ok(readiness.reason_codes.includes("venue_dry_run_enabled"));
     assert.ok(readiness.reason_codes.includes("autopilot_live_submit_disabled"));
-    assert.ok(readiness.reason_codes.includes("shared_state_store_required"));
+    assert.ok(!readiness.reason_codes.includes("shared_state_store_required"));
     assert.ok(readiness.reason_codes.includes("live_canary_missing"));
     assert.ok(readiness.next_actions.some((action) => action.code === "autopilot_live_submit_disabled"));
+  });
+
+  it("honors single-CVM persistent state for autopilot readiness", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    process.env.PRIVATE_AGENT_VENUE_DRY_RUN = "false";
+    process.env.PRIVATE_AGENT_STATE_STORE = "json";
+    process.env.PRIVATE_AGENT_STATE_SINGLE_CVM_OK = "true";
+    const body = {
+      version: 1,
+      operation_class: "autopilot_execution_readiness",
+      venues: ["jupiter"],
+    };
+    const token = capabilityToken({
+      path: "/autopilot/readiness",
+      scope: "autopilot:read",
+      body,
+      expected: { operation_class: "autopilot_execution_readiness" },
+    });
+    const response = await fetch(`${baseUrl}/autopilot/readiness`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+
+    assert.equal(response.status, 200);
+    const readiness = await response.json();
+    assert.equal(readiness.checks.state_store.mode, "json");
+    assert.equal(readiness.checks.state_store.shared, true);
+    assert.ok(!readiness.reason_codes.includes("shared_state_store_required"));
+    assert.ok(!readiness.next_actions.some((action) => action.code === "shared_state_store_required"));
   });
 
   it("reports public live readiness with per-session proofs when funded canary is unavailable", async () => {
