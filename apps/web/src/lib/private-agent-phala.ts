@@ -226,14 +226,15 @@ function nullableBoolEnv(name: string): boolean | null {
   return null;
 }
 
-function phalaWakeOnUseConfigPresent(): boolean {
+export function phalaWakeOnUseConfigPresent(): boolean {
   return Boolean(phalaApiKey() && phalaWorkerExecutionToken());
 }
 
 export function phalaWakeOnUseEnabled(): boolean {
   if (privateAgentRemoteExecutionDisabled()) return false;
   const explicitWake = nullableBoolEnv("GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED");
-  if (explicitWake !== null) return explicitWake;
+  if (explicitWake === true) return true;
+  if (explicitWake === false && !productionCredentialWakeOnUseAllowed()) return false;
   if (boolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING")) return true;
   return phalaWakeOnUseConfigPresent();
 }
@@ -270,21 +271,43 @@ export async function markPhalaPrivateAgentActivity(input: {
 export function privateAgentRemoteExecutionDisabled(): boolean {
   return (
     boolEnv("GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED") ||
-    boolEnv("GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN") ||
+    privateAgentSpendLockdownEnabled() ||
     !privateAgentSpendArmed()
   );
+}
+
+export function privateAgentSpendLockdownEnabled(): boolean {
+  return boolEnv("GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN");
 }
 
 export function privateAgentSpendArmed(): boolean {
   const explicit = nullableBoolEnv("GHOLA_PRIVATE_AGENT_SPEND_ARMED");
   if (explicit !== null) return explicit;
   const explicitWake = nullableBoolEnv("GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED");
-  if (explicitWake !== null) return explicitWake;
+  if (explicitWake === true) return true;
+  if (explicitWake === false && !productionCredentialWakeOnUseAllowed()) return false;
   if (boolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING")) return true;
-  if (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production") {
+  if (productionCredentialWakeOnUseAllowed()) {
     return phalaWakeOnUseConfigPresent();
   }
   return true;
+}
+
+function phalaWakeOnUseEvidence() {
+  return {
+    wake_on_use_config_present: phalaWakeOnUseConfigPresent(),
+    wake_on_use_enabled: phalaWakeOnUseEnabled(),
+    spend_armed: privateAgentSpendArmed(),
+    remote_execution_disabled: privateAgentRemoteExecutionDisabled(),
+    spend_lockdown: privateAgentSpendLockdownEnabled(),
+  };
+}
+
+function productionCredentialWakeOnUseAllowed(): boolean {
+  return (
+    (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production") &&
+    phalaWakeOnUseConfigPresent()
+  );
 }
 
 export function phalaJitProvisioningConfigIssue(): string | null {
@@ -500,6 +523,7 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
       supports_trading_execution: false,
       reason: "Ghola private-agent worker token is not configured.",
       evidence: {
+        ...phalaWakeOnUseEvidence(),
         provisioning_enabled: phalaJitProvisioningEnabled(),
         execution_url_configured: false,
       },
@@ -585,6 +609,7 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
         }
       : {}),
     evidence: {
+      ...phalaWakeOnUseEvidence(),
       tee_kind: "phala",
       verifier_url_configured: true,
       execution_url_configured: Boolean(executionUrl),

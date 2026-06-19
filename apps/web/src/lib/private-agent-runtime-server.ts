@@ -11,9 +11,13 @@ import {
 import {
   discoverPhalaPrivateAgentProvider,
   privateAgentRemoteExecutionDisabled,
+  privateAgentSpendArmed,
+  privateAgentSpendLockdownEnabled,
   phalaJitProvisioningConfigIssue,
   phalaJitProvisioningConfigured,
   phalaJitProvisioningEnabled,
+  phalaWakeOnUseConfigPresent,
+  phalaWakeOnUseEnabled,
   phalaWorkerImageConfiguredForRequestedMode,
 } from "@/lib/private-agent-phala";
 
@@ -70,6 +74,16 @@ function preferredProvider(): ConfidentialComputeProviderId | null {
     return raw;
   }
   return null;
+}
+
+function phalaWakeOnUseEvidence() {
+  return {
+    wake_on_use_config_present: phalaWakeOnUseConfigPresent(),
+    wake_on_use_enabled: phalaWakeOnUseEnabled(),
+    spend_armed: privateAgentSpendArmed(),
+    remote_execution_disabled: privateAgentRemoteExecutionDisabled(),
+    spend_lockdown: privateAgentSpendLockdownEnabled(),
+  };
 }
 
 async function fetchJson<T>(url: URL, timeoutMs = 4000): Promise<T | null> {
@@ -187,6 +201,7 @@ async function phalaProvider(): Promise<ConfidentialComputeProviderStatus> {
         ? "Phala just-in-time provisioning is armed. The worker starts after a paid private-agent request and remains unavailable until attestation-bound recipient evidence is verified."
         : configIssue ?? "Phala just-in-time provisioning is enabled but missing required configuration.",
       evidence: {
+        ...phalaWakeOnUseEvidence(),
         provisioning_enabled: true,
         execution_url_configured: false,
         image_digest_configured: phalaWorkerImageConfiguredForRequestedMode(),
@@ -267,6 +282,7 @@ async function phalaProvider(): Promise<ConfidentialComputeProviderStatus> {
         }
       : {}),
     evidence: {
+      ...phalaWakeOnUseEvidence(),
       verifier_url_configured: verifierConfigured,
       execution_url_configured: executionConfigured,
       image_digest_configured: imageDigestConfigured,
@@ -370,6 +386,7 @@ export async function getPrivateAgentRuntimeStatus(): Promise<PrivateAgentRuntim
           supports_trading_execution: false,
           reason: "Remote private-agent execution is disabled by operator spend lock.",
           evidence: {
+            ...phalaWakeOnUseEvidence(),
             provisioning_enabled: false,
             execution_url_configured: false,
           },

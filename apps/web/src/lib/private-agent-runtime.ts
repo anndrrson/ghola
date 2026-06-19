@@ -44,6 +44,11 @@ export interface ConfidentialComputeProviderStatus {
     report_data_bound?: boolean;
     funding_signer_bound?: boolean;
     phala_attestation_present?: boolean;
+    wake_on_use_config_present?: boolean;
+    wake_on_use_enabled?: boolean;
+    spend_armed?: boolean;
+    remote_execution_disabled?: boolean;
+    spend_lockdown?: boolean;
   };
 }
 

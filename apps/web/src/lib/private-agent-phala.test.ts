@@ -255,6 +255,12 @@ describe("private-agent Phala provisioning", () => {
     expect(phalaIdleShutdownEnabled()).toBe(true);
 
     process.env.GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED = "false";
+    expect(privateAgentSpendArmed()).toBe(true);
+    expect(privateAgentRemoteExecutionDisabled()).toBe(false);
+    expect(phalaWakeOnUseEnabled()).toBe(true);
+    expect(phalaJitProvisioningEnabled()).toBe(true);
+
+    process.env.GHOLA_PRIVATE_AGENT_SPEND_ARMED = "false";
     expect(privateAgentSpendArmed()).toBe(false);
     expect(privateAgentRemoteExecutionDisabled()).toBe(true);
     expect(phalaWakeOnUseEnabled()).toBe(false);
