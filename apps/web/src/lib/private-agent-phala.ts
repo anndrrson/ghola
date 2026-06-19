@@ -219,15 +219,35 @@ function composeEncryptedEnvLine(name: string): string {
   return `      ${name}: "\${${name}:-}"`;
 }
 
+function nullableBoolEnv(name: string): boolean | null {
+  const value = env(name)?.toLowerCase();
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return null;
+}
+
+function phalaWakeOnUseConfigPresent(): boolean {
+  return Boolean(phalaApiKey() && phalaWorkerExecutionToken());
+}
+
+export function phalaWakeOnUseEnabled(): boolean {
+  if (privateAgentRemoteExecutionDisabled()) return false;
+  const explicitWake = nullableBoolEnv("GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED");
+  if (explicitWake !== null) return explicitWake;
+  const explicitJit = nullableBoolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING");
+  if (explicitJit !== null) return explicitJit;
+  return phalaWakeOnUseConfigPresent();
+}
+
 export function phalaJitProvisioningEnabled(): boolean {
-  return !privateAgentRemoteExecutionDisabled() && boolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING");
+  return phalaWakeOnUseEnabled();
 }
 
 export function phalaIdleShutdownEnabled(): boolean {
   if (env("GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN")?.toLowerCase() === "false") {
     return false;
   }
-  return boolEnv("GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN") || boolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING");
+  return boolEnv("GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN") || phalaWakeOnUseEnabled();
 }
 
 export function phalaIdleLeaseMs(): number {
@@ -257,10 +277,14 @@ export function privateAgentRemoteExecutionDisabled(): boolean {
 }
 
 export function privateAgentSpendArmed(): boolean {
-  const explicit = env("GHOLA_PRIVATE_AGENT_SPEND_ARMED");
-  if (explicit !== null) return explicit.toLowerCase() === "true";
+  const explicit = nullableBoolEnv("GHOLA_PRIVATE_AGENT_SPEND_ARMED");
+  if (explicit !== null) return explicit;
+  const explicitWake = nullableBoolEnv("GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED");
+  if (explicitWake !== null) return explicitWake;
+  const explicitJit = nullableBoolEnv("GHOLA_PRIVATE_AGENT_JIT_PROVISIONING");
+  if (explicitJit !== null) return explicitJit;
   if (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production") {
-    return false;
+    return phalaWakeOnUseConfigPresent();
   }
   return true;
 }

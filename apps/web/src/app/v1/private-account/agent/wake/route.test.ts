@@ -7,9 +7,12 @@ const ENV_KEYS = [
   "GHOLA_PUBLIC_LIVE_WORKER_WAKE_ENABLED",
   "GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN",
   "GHOLA_PRIVATE_AGENT_SPEND_ARMED",
+  "GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED",
+  "GHOLA_PRIVATE_AGENT_JIT_PROVISIONING",
   "GHOLA_PRIVATE_AGENT_PROVIDER",
   "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
   "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN",
+  "PHALA_CLOUD_API_KEY",
   "PHALA_AGENT_ENDPOINT",
   "PHALA_API_KEY",
   "PHALA_ATTESTATION_VERIFIER_URL",
@@ -17,6 +20,7 @@ const ENV_KEYS = [
   "PHALA_ENCLAVE_KEY_ID",
   "PHALA_ENCLAVE_X25519_PUB_HEX",
   "GHOLA_PRIVATE_AGENT_ATTESTED_READY",
+  "VERCEL_ENV",
 ] as const;
 
 function wakeRequest(headers: Record<string, string> = {}) {
@@ -81,9 +85,8 @@ describe("public agent wake route", () => {
     expect(JSON.stringify(body)).not.toContain("operator_spend_lock");
   });
 
-  it("returns ready when the configured Phala provider is already attested", async () => {
-    process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED = "true";
-    process.env.GHOLA_PRIVATE_AGENT_SPEND_ARMED = "true";
+  it("allows production wake-on-use from configured Phala credentials", async () => {
+    process.env.VERCEL_ENV = "production";
     process.env.GHOLA_PRIVATE_AGENT_PROVIDER = "phala";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://phala-worker.ghola.example";
     process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "phala-worker-token";
@@ -99,18 +102,15 @@ describe("public agent wake route", () => {
     const res = await POST(wakeRequest());
     const body = await res.json();
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     expect(body).toMatchObject({
-      status: "ready",
-      ready: true,
-      message: "Secure worker is ready.",
-      action: "already_running",
+      ready: false,
+      message: "Live agents are temporarily unavailable. Your venue access was not used.",
+      action: expect.stringMatching(/^wake_(checked|requested)$/),
     });
+    expect(["warming", "blocked"]).toContain(body.status);
     expect(body.provider).toMatchObject({
-      selected_provider: "phala",
-      remote_execution_ready: true,
-      available: true,
-      attested: true,
+      remote_execution_ready: false,
     });
   });
 });

@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { wakePhalaPrivateAgentForUse } from "@/lib/private-agent-phala";
+import {
+  phalaJitProvisioningConfigured,
+  wakePhalaPrivateAgentForUse,
+} from "@/lib/private-agent-phala";
 import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server";
 
 export const dynamic = "force-dynamic";
@@ -86,7 +89,8 @@ function json(body: unknown, status = 200) {
 
 function publicWakeEnabled() {
   return process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED === "true" ||
-    process.env.GHOLA_PUBLIC_LIVE_WORKER_WAKE_ENABLED === "true";
+    process.env.GHOLA_PUBLIC_LIVE_WORKER_WAKE_ENABLED === "true" ||
+    phalaJitProvisioningConfigured();
 }
 
 function sameOrigin(request: Request) {
