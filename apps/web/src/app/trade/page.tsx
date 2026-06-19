@@ -472,6 +472,22 @@ export default function TradePage() {
   }, [agentStartup, thumperAuth.authenticated]);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const flow = params.get("flow");
+    if (flow === "coinbase") {
+      selectVenue("coinbase");
+      return;
+    }
+    if (flow === "phoenix-live") {
+      selectVenue("phoenix");
+      return;
+    }
+    if (flow === "hyperliquid-live" || flow === "trade") {
+      selectVenue("hyperliquid");
+    }
+  }, []);
+
+  useEffect(() => {
     if (!entryPinned && mid) setEntryPrice(mid);
   }, [entryPinned, mid]);
 
@@ -789,7 +805,7 @@ export default function TradePage() {
         open={authOpen}
         onClose={() => setAuthOpen(false)}
         onModeChange={setAuthMode}
-        redirectTo="/trade"
+        redirectTo={`/account?flow=${venueId === "coinbase" ? "coinbase" : venueId === "phoenix" ? "phoenix-live" : "hyperliquid-live"}`}
       />
       <header className="relative flex h-14 items-center justify-between border-b border-[#182234] bg-gradient-to-b from-[#0a0e16] to-[#070a10] px-4 sm:px-6">
         <span
@@ -808,10 +824,10 @@ export default function TradePage() {
         </div>
         <div className="flex items-center gap-2">
           <Link
-            href="/private-balance"
+            href="/account?flow=trade"
             className="trade-chip hidden rounded-md px-3 py-1.5 text-sm sm:inline-flex"
           >
-            Balance
+            API-key trading
           </Link>
           {thumperAuth.authenticated ? (
             <span className="rounded-md bg-[#101927] px-3 py-1.5 text-sm text-[#a8d8ff]">
@@ -1327,7 +1343,7 @@ export default function TradePage() {
                   className="trade-action flex h-12 items-center justify-center gap-2 rounded-md text-sm font-semibold"
                 >
                   <KeyRound className="h-4 w-4" />
-                  Sign in to connect venue
+                  Sign in to connect API keys
                 </button>
               ) : (
                 <>
@@ -2080,13 +2096,13 @@ function PublicAgentLaunchPanel({
   const actionLabel = !startup
     ? "Checking live agents"
     : !authenticated
-      ? "Sign in to connect venue"
+      ? "Sign in to connect API keys"
       : canWake
         ? wakeState === "waking" ? "Starting secure worker" : "Start secure worker"
         : readyVenue
           ? `Use ${readyVenue.label} agent`
           : startup.primary_action.label;
-  const actionMessage = wakeMessage || startup?.primary_action.message || "Checking secure worker and venue access.";
+  const actionMessage = wakeMessage || startup?.primary_action.message || "Sign in, connect scoped venue access, then arm a capped agent.";
   const actionDisabled = !startup || wakeState === "waking" || (authenticated && !canWake && !readyVenue);
 
   function handlePrimaryAction() {
@@ -2109,13 +2125,13 @@ function PublicAgentLaunchPanel({
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-[#8ec7ff]">
               <ShieldCheck className="h-3.5 w-3.5" />
-              Live agent path
+              Scoped API-key agent path
             </div>
             <h2 className="mt-2 font-display text-2xl font-semibold tracking-tight text-[#f6f8ff]">
-              Trade like a ghost
+              Bring API keys to trade
             </h2>
             <p className="mt-2 max-w-xl text-sm leading-6 text-[#8b95a8]">
-              Scoped venue access, capped order policy, and a private worker have to agree before the agent can trade.
+              Sign in, connect a scoped Hyperliquid API wallet, Coinbase key, or Phoenix authority, then approve bounded agent execution.
             </p>
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <span className={`inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium ${launchToneClass(runtimeTone)}`}>

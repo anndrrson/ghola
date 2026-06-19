@@ -81,7 +81,7 @@ export function ArmAgentButton({
   }
 
   const hint = !ready
-    ? "Sign in and connect a venue to arm an agent."
+    ? "Sign in and connect scoped venue access to arm an agent."
     : !supported
       ? "Draw an entry level and a stop, with a level-based trigger, to arm an agent."
       : plan.entryTrigger === "preview_now"

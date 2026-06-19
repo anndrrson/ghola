@@ -195,4 +195,74 @@ describe("Coinbase venue and omnibus routes", () => {
     expect(preflight.venue_account_hidden).toBe(false);
     expect(preflight.venue_sees).toBe("stealth venue account and order");
   });
+
+  it("arms Phoenix and Jupiter BYO venue agent sessions after sealing scoped access", async () => {
+    const cases = [
+      {
+        platformClass: "solana_perps_market",
+        venueId: "phoenix",
+        aadPrefix: "ghola/solana-perps-execution-vault-v1",
+        ciphertext: "sealed-phoenix-agent-vault",
+        marketAllowlist: ["SOL-PERP"],
+      },
+      {
+        platformClass: "solana_swap_aggregator",
+        venueId: "jupiter",
+        aadPrefix: "ghola/solana-swap-execution-vault-v1",
+        ciphertext: "sealed-jupiter-agent-vault",
+        marketAllowlist: ["SOL/USDC"],
+      },
+    ];
+
+    for (const item of cases) {
+      const statusRes = await coinbaseVaultStatus(
+        request(`/v1/private-account/venues/${item.platformClass}/vault`),
+        venueParams(item.platformClass),
+      );
+      const status = await statusRes.json();
+      const aad = [
+        item.aadPrefix,
+        `account:${status.account_commitment}`,
+        "recipient:mock_attested:dev",
+        "mode:user_stealth",
+        "network:mainnet",
+        `venue:${item.venueId}`,
+      ].join("|");
+
+      const sealRes = await sealCoinbaseVault(
+        request(`/v1/private-account/venues/${item.platformClass}/vault`, {
+          execution_mode: "user_stealth",
+          encrypted_execution_vault: {
+            alg: "sealed-provider-v1",
+            ciphertext: item.ciphertext,
+            recipient: "mock_attested:dev",
+            aad,
+          },
+        }),
+        venueParams(item.platformClass),
+      );
+      expect(sealRes.status).toBe(201);
+
+      const armRes = await armVenueAgent(
+        request(`/v1/private-account/venues/${item.platformClass}/agent/session`, {
+          execution_mode: "user_stealth",
+          market_allowlist: item.marketAllowlist,
+          max_notional_bucket: "5",
+          max_order_count: 3,
+        }),
+        venueParams(item.platformClass),
+      );
+      const armed = await armRes.json();
+
+      expect(armRes.status).toBe(201);
+      expect(armed).toMatchObject({
+        status: "armed",
+        venue_id: item.venueId,
+        platform_class: item.platformClass,
+        execution_mode: "user_stealth",
+      });
+      expect(armed.agent_session_commitment).toMatch(/^venue_agent_session_/);
+      expect(JSON.stringify(armed)).not.toContain(item.ciphertext);
+    }
+  });
 });
