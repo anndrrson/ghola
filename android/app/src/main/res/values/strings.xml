@@ -25,7 +25,6 @@
     <string name="home_hero_body">Choose a market, set a dollar cap, then arm the agent.</string>
     <string name="home_live_strip">Wallet signs only • You set limits • Stop anytime</string>
     <string name="home_trust">Wallet signs only · Limits first · Stop anytime</string>
-    <string name="home_secondary_cta">Ask Ghola</string>
     <string name="home_empty_tasks">No active tasks yet</string>
     <string name="home_empty_tasks_sub">Arm an agent to see live positions here.</string>
     <string name="home_pillar_never">Wallet signs only</string>
@@ -37,7 +36,6 @@
     <string name="home_launch_terminal">View markets</string>
     <string name="home_create_account">Seeker wallet</string>
     <string name="home_tile_markets">Markets</string>
-    <string name="home_tile_trade">Ask Ghola</string>
     <string name="home_tile_agents">Wallet</string>
     <string name="home_tile_chat">Agents</string>
     <!-- Redesigned quick-action tiles: label + one-line description -->
@@ -49,8 +47,6 @@
     <string name="home_tile_activity_desc">History &amp; fills</string>
     <string name="home_tile_messages_label">Messages</string>
     <string name="home_tile_messages_desc">Encrypted inbox</string>
-    <string name="home_tile_ask_label">Ask Ghola</string>
-    <string name="home_tile_ask_desc">AI assistant</string>
     <string name="home_tile_settings_label">Settings</string>
     <string name="home_tile_settings_desc">Preferences</string>
     <string name="autopilot_title">Live agent</string>

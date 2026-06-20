@@ -216,261 +216,187 @@
 
                 <LinearLayout
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical">
+                    android:layout_height="120dp"
+                    android:orientation="horizontal">
 
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="118dp"
-                        android:orientation="horizontal">
+                    <com.google.android.material.card.MaterialCardView
+                        android:id="@+id/actionCall"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_marginEnd="5dp"
+                        android:layout_weight="1"
+                        android:clickable="true"
+                        android:focusable="true"
+                        app:cardBackgroundColor="@color/ghola_surface"
+                        app:cardCornerRadius="16dp"
+                        app:cardElevation="0dp"
+                        app:rippleColor="@color/ghola_accent_wash"
+                        app:strokeColor="@color/ghola_border"
+                        app:strokeWidth="1dp">
 
-                        <com.google.android.material.card.MaterialCardView
-                            android:id="@+id/actionCall"
-                            android:layout_width="0dp"
+                        <LinearLayout
+                            android:layout_width="match_parent"
                             android:layout_height="match_parent"
-                            android:layout_marginEnd="5dp"
-                            android:layout_weight="1"
-                            android:clickable="true"
-                            android:focusable="true"
-                            app:cardBackgroundColor="@color/ghola_surface"
-                            app:cardCornerRadius="16dp"
-                            app:cardElevation="0dp"
-                            app:rippleColor="@color/ghola_accent_wash"
-                            app:strokeColor="@color/ghola_border"
-                            app:strokeWidth="1dp">
+                            android:orientation="vertical"
+                            android:paddingStart="14dp"
+                            android:paddingTop="14dp"
+                            android:paddingEnd="14dp"
+                            android:paddingBottom="14dp">
 
-                            <LinearLayout
+                            <FrameLayout
+                                android:layout_width="38dp"
+                                android:layout_height="38dp"
+                                android:background="@drawable/bg_icon_plate">
+
+                                <ImageView
+                                    android:layout_width="20dp"
+                                    android:layout_height="20dp"
+                                    android:layout_gravity="center"
+                                    android:importantForAccessibility="no"
+                                    android:src="@drawable/ic_nav_wallet"
+                                    app:tint="@color/ghola_accent" />
+                            </FrameLayout>
+
+                            <TextView
                                 android:layout_width="match_parent"
-                                android:layout_height="match_parent"
-                                android:orientation="vertical"
-                                android:paddingStart="15dp"
-                                android:paddingTop="14dp"
-                                android:paddingEnd="15dp"
-                                android:paddingBottom="14dp">
+                                android:layout_height="0dp"
+                                android:layout_weight="1"
+                                android:layout_marginTop="11dp"
+                                android:fontFamily="@font/geist"
+                                android:text="@string/home_tile_wallet_label"
+                                android:textColor="@color/ghola_text_primary"
+                                android:textFontWeight="500"
+                                android:textSize="15sp" />
 
-                                <FrameLayout
-                                    android:layout_width="38dp"
-                                    android:layout_height="38dp"
-                                    android:background="@drawable/bg_icon_plate">
+                            <TextView
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:fontFamily="@font/geist"
+                                android:text="@string/home_tile_wallet_desc"
+                                android:textColor="@color/ghola_text_muted"
+                                android:textSize="12sp" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
 
-                                    <ImageView
-                                        android:layout_width="20dp"
-                                        android:layout_height="20dp"
-                                        android:layout_gravity="center"
-                                        android:importantForAccessibility="no"
-                                        android:src="@drawable/ic_nav_wallet"
-                                        app:tint="@color/ghola_accent" />
-                                </FrameLayout>
+                    <com.google.android.material.card.MaterialCardView
+                        android:id="@+id/actionDevice"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_marginEnd="5dp"
+                        android:layout_weight="1"
+                        android:clickable="true"
+                        android:focusable="true"
+                        app:cardBackgroundColor="@color/ghola_surface"
+                        app:cardCornerRadius="16dp"
+                        app:cardElevation="0dp"
+                        app:rippleColor="@color/ghola_accent_wash"
+                        app:strokeColor="@color/ghola_border"
+                        app:strokeWidth="1dp">
 
-                                <TextView
-                                    android:layout_width="match_parent"
-                                    android:layout_height="0dp"
-                                    android:layout_weight="1"
-                                    android:layout_marginTop="11dp"
-                                    android:fontFamily="@font/geist"
-                                    android:text="@string/home_tile_wallet_label"
-                                    android:textColor="@color/ghola_text_primary"
-                                    android:textFontWeight="500"
-                                    android:textSize="16sp" />
-
-                                <TextView
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:layout_marginTop="2dp"
-                                    android:fontFamily="@font/geist"
-                                    android:text="@string/home_tile_wallet_desc"
-                                    android:textColor="@color/ghola_text_muted"
-                                    android:textSize="12sp" />
-                            </LinearLayout>
-                        </com.google.android.material.card.MaterialCardView>
-
-                        <com.google.android.material.card.MaterialCardView
-                            android:id="@+id/actionEmail"
-                            android:layout_width="0dp"
+                        <LinearLayout
+                            android:layout_width="match_parent"
                             android:layout_height="match_parent"
-                            android:layout_marginStart="5dp"
-                            android:layout_weight="1"
-                            android:clickable="true"
-                            android:focusable="true"
-                            app:cardBackgroundColor="@color/ghola_surface"
-                            app:cardCornerRadius="16dp"
-                            app:cardElevation="0dp"
-                            app:rippleColor="@color/ghola_accent_wash"
-                            app:strokeColor="@color/ghola_border"
-                            app:strokeWidth="1dp">
+                            android:orientation="vertical"
+                            android:paddingStart="14dp"
+                            android:paddingTop="14dp"
+                            android:paddingEnd="14dp"
+                            android:paddingBottom="14dp">
 
-                            <LinearLayout
+                            <FrameLayout
+                                android:layout_width="38dp"
+                                android:layout_height="38dp"
+                                android:background="@drawable/bg_icon_plate">
+
+                                <ImageView
+                                    android:layout_width="20dp"
+                                    android:layout_height="20dp"
+                                    android:layout_gravity="center"
+                                    android:importantForAccessibility="no"
+                                    android:src="@drawable/ic_nav_messages"
+                                    app:tint="@color/ghola_accent" />
+                            </FrameLayout>
+
+                            <TextView
                                 android:layout_width="match_parent"
-                                android:layout_height="match_parent"
-                                android:orientation="vertical"
-                                android:paddingStart="15dp"
-                                android:paddingTop="14dp"
-                                android:paddingEnd="15dp"
-                                android:paddingBottom="14dp">
+                                android:layout_height="0dp"
+                                android:layout_weight="1"
+                                android:layout_marginTop="11dp"
+                                android:fontFamily="@font/geist"
+                                android:text="@string/home_tile_messages_label"
+                                android:textColor="@color/ghola_text_primary"
+                                android:textFontWeight="500"
+                                android:textSize="15sp" />
 
-                                <FrameLayout
-                                    android:layout_width="38dp"
-                                    android:layout_height="38dp"
-                                    android:background="@drawable/bg_icon_plate">
+                            <TextView
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:fontFamily="@font/geist"
+                                android:text="@string/home_tile_messages_desc"
+                                android:textColor="@color/ghola_text_muted"
+                                android:textSize="12sp" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
 
-                                    <ImageView
-                                        android:layout_width="20dp"
-                                        android:layout_height="20dp"
-                                        android:layout_gravity="center"
-                                        android:importantForAccessibility="no"
-                                        android:src="@drawable/ic_spark"
-                                        app:tint="@color/ghola_accent" />
-                                </FrameLayout>
+                    <com.google.android.material.card.MaterialCardView
+                        android:id="@+id/actionChat"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:clickable="true"
+                        android:focusable="true"
+                        app:cardBackgroundColor="@color/ghola_surface"
+                        app:cardCornerRadius="16dp"
+                        app:cardElevation="0dp"
+                        app:rippleColor="@color/ghola_accent_wash"
+                        app:strokeColor="@color/ghola_border"
+                        app:strokeWidth="1dp">
 
-                                <TextView
-                                    android:layout_width="match_parent"
-                                    android:layout_height="0dp"
-                                    android:layout_weight="1"
-                                    android:layout_marginTop="11dp"
-                                    android:fontFamily="@font/geist"
-                                    android:text="@string/home_tile_ask_label"
-                                    android:textColor="@color/ghola_text_primary"
-                                    android:textFontWeight="500"
-                                    android:textSize="16sp" />
-
-                                <TextView
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:layout_marginTop="2dp"
-                                    android:fontFamily="@font/geist"
-                                    android:text="@string/home_tile_ask_desc"
-                                    android:textColor="@color/ghola_text_muted"
-                                    android:textSize="12sp" />
-                            </LinearLayout>
-                        </com.google.android.material.card.MaterialCardView>
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="118dp"
-                        android:layout_marginTop="10dp"
-                        android:orientation="horizontal">
-
-                        <com.google.android.material.card.MaterialCardView
-                            android:id="@+id/actionDevice"
-                            android:layout_width="0dp"
+                        <LinearLayout
+                            android:layout_width="match_parent"
                             android:layout_height="match_parent"
-                            android:layout_marginEnd="5dp"
-                            android:layout_weight="1"
-                            android:clickable="true"
-                            android:focusable="true"
-                            app:cardBackgroundColor="@color/ghola_surface"
-                            app:cardCornerRadius="16dp"
-                            app:cardElevation="0dp"
-                            app:rippleColor="@color/ghola_accent_wash"
-                            app:strokeColor="@color/ghola_border"
-                            app:strokeWidth="1dp">
+                            android:orientation="vertical"
+                            android:paddingStart="14dp"
+                            android:paddingTop="14dp"
+                            android:paddingEnd="14dp"
+                            android:paddingBottom="14dp">
 
-                            <LinearLayout
+                            <FrameLayout
+                                android:layout_width="38dp"
+                                android:layout_height="38dp"
+                                android:background="@drawable/bg_icon_plate">
+
+                                <ImageView
+                                    android:layout_width="20dp"
+                                    android:layout_height="20dp"
+                                    android:layout_gravity="center"
+                                    android:importantForAccessibility="no"
+                                    android:src="@drawable/ic_settings_thin"
+                                    app:tint="@color/ghola_accent" />
+                            </FrameLayout>
+
+                            <TextView
                                 android:layout_width="match_parent"
-                                android:layout_height="match_parent"
-                                android:orientation="vertical"
-                                android:paddingStart="15dp"
-                                android:paddingTop="14dp"
-                                android:paddingEnd="15dp"
-                                android:paddingBottom="14dp">
+                                android:layout_height="0dp"
+                                android:layout_weight="1"
+                                android:layout_marginTop="11dp"
+                                android:fontFamily="@font/geist"
+                                android:text="@string/home_tile_settings_label"
+                                android:textColor="@color/ghola_text_primary"
+                                android:textFontWeight="500"
+                                android:textSize="15sp" />
 
-                                <FrameLayout
-                                    android:layout_width="38dp"
-                                    android:layout_height="38dp"
-                                    android:background="@drawable/bg_icon_plate">
-
-                                    <ImageView
-                                        android:layout_width="20dp"
-                                        android:layout_height="20dp"
-                                        android:layout_gravity="center"
-                                        android:importantForAccessibility="no"
-                                        android:src="@drawable/ic_nav_messages"
-                                        app:tint="@color/ghola_accent" />
-                                </FrameLayout>
-
-                                <TextView
-                                    android:layout_width="match_parent"
-                                    android:layout_height="0dp"
-                                    android:layout_weight="1"
-                                    android:layout_marginTop="11dp"
-                                    android:fontFamily="@font/geist"
-                                    android:text="@string/home_tile_messages_label"
-                                    android:textColor="@color/ghola_text_primary"
-                                    android:textFontWeight="500"
-                                    android:textSize="16sp" />
-
-                                <TextView
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:layout_marginTop="2dp"
-                                    android:fontFamily="@font/geist"
-                                    android:text="@string/home_tile_messages_desc"
-                                    android:textColor="@color/ghola_text_muted"
-                                    android:textSize="12sp" />
-                            </LinearLayout>
-                        </com.google.android.material.card.MaterialCardView>
-
-                        <com.google.android.material.card.MaterialCardView
-                            android:id="@+id/actionChat"
-                            android:layout_width="0dp"
-                            android:layout_height="match_parent"
-                            android:layout_marginStart="5dp"
-                            android:layout_weight="1"
-                            android:clickable="true"
-                            android:focusable="true"
-                            app:cardBackgroundColor="@color/ghola_surface"
-                            app:cardCornerRadius="16dp"
-                            app:cardElevation="0dp"
-                            app:rippleColor="@color/ghola_accent_wash"
-                            app:strokeColor="@color/ghola_border"
-                            app:strokeWidth="1dp">
-
-                            <LinearLayout
+                            <TextView
                                 android:layout_width="match_parent"
-                                android:layout_height="match_parent"
-                                android:orientation="vertical"
-                                android:paddingStart="15dp"
-                                android:paddingTop="14dp"
-                                android:paddingEnd="15dp"
-                                android:paddingBottom="14dp">
-
-                                <FrameLayout
-                                    android:layout_width="38dp"
-                                    android:layout_height="38dp"
-                                    android:background="@drawable/bg_icon_plate">
-
-                                    <ImageView
-                                        android:layout_width="20dp"
-                                        android:layout_height="20dp"
-                                        android:layout_gravity="center"
-                                        android:importantForAccessibility="no"
-                                        android:src="@drawable/ic_settings_thin"
-                                        app:tint="@color/ghola_accent" />
-                                </FrameLayout>
-
-                                <TextView
-                                    android:layout_width="match_parent"
-                                    android:layout_height="0dp"
-                                    android:layout_weight="1"
-                                    android:layout_marginTop="11dp"
-                                    android:fontFamily="@font/geist"
-                                    android:text="@string/home_tile_settings_label"
-                                    android:textColor="@color/ghola_text_primary"
-                                    android:textFontWeight="500"
-                                    android:textSize="16sp" />
-
-                                <TextView
-                                    android:layout_width="match_parent"
-                                    android:layout_height="wrap_content"
-                                    android:layout_marginTop="2dp"
-                                    android:fontFamily="@font/geist"
-                                    android:text="@string/home_tile_settings_desc"
-                                    android:textColor="@color/ghola_text_muted"
-                                    android:textSize="12sp" />
-                            </LinearLayout>
-                        </com.google.android.material.card.MaterialCardView>
-                    </LinearLayout>
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:fontFamily="@font/geist"
+                                android:text="@string/home_tile_settings_desc"
+                                android:textColor="@color/ghola_text_muted"
+                                android:textSize="12sp" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
                 </LinearLayout>
             </FrameLayout>
 

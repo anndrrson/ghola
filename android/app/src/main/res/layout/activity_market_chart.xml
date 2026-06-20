@@ -201,44 +201,20 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <LinearLayout
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/tradePlanButton"
+                style="@style/Widget.MaterialComponents.Button"
                 android:layout_width="match_parent"
                 android:layout_height="58dp"
                 android:layout_marginTop="12dp"
-                android:orientation="horizontal">
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/tradePlanButton"
-                    style="@style/Widget.MaterialComponents.Button"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_marginEnd="5dp"
-                    android:layout_weight="1"
-                    android:backgroundTint="#3da8ff"
-                    android:fontFamily="@font/geist"
-                    android:text="Set limits"
-                    android:textAllCaps="false"
-                    android:textColor="#05131d"
-                    android:textFontWeight="500"
-                    android:textSize="18sp"
-                    app:cornerRadius="0dp" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/askAgentButton"
-                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_marginStart="5dp"
-                    android:layout_weight="1"
-                    android:fontFamily="@font/geist"
-                    android:text="Ask Ghola"
-                    android:textAllCaps="false"
-                    android:textColor="#eef1f8"
-                    android:textSize="18sp"
-                    app:backgroundTint="#000000"
-                    app:cornerRadius="0dp"
-                    app:strokeColor="#1e2a3a" />
-            </LinearLayout>
+                android:backgroundTint="#3da8ff"
+                android:fontFamily="@font/geist"
+                android:text="Set limits"
+                android:textAllCaps="false"
+                android:textColor="#05131d"
+                android:textFontWeight="500"
+                android:textSize="18sp"
+                app:cornerRadius="0dp" />
 
             <!-- Active agents — your armed sessions across markets. Hidden when
                  none are armed; populated by MarketChartActivity.renderActiveAgents(). -->

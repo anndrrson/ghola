@@ -324,6 +324,11 @@ class SettingsActivity : AppCompatActivity() {
             startActivity(Intent(this, PairDeviceSenderActivity::class.java))
         }
 
+        // De-emphasized assistant chat entry (removed as a home/trade CTA).
+        findViewById<View>(R.id.openAssistantButton).setOnClickListener {
+            startActivity(Intent(this, ChatActivity::class.java))
+        }
+
         saveButton.setOnClickListener {
             saveSettings()
         }

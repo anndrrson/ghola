@@ -70,6 +70,15 @@
 
         </RadioGroup>
 
+        <!-- De-emphasized entry to the assistant chat (no longer a home/trade CTA). -->
+        <Button
+            android:id="@+id/openAssistantButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Open assistant"
+            android:layout_marginBottom="16dp"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
         <!-- Cloud Configuration Section -->
         <LinearLayout
             android:id="@+id/cloudSection"

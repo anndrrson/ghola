@@ -22,7 +22,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
-import xyz.ghola.app.market.AgentContextKind
 import xyz.ghola.app.market.MarketDataClient
 import xyz.ghola.app.market.MarketSnapshot
 import xyz.ghola.app.market.MarketStreamStatus
@@ -83,9 +82,6 @@ class MarketChartActivity : AppCompatActivity(), TradeSenderHost {
 
         findViewById<View>(R.id.backButton).setOnClickListener { finish() }
         refreshButton.setOnClickListener { restartFeed() }
-        findViewById<View>(R.id.askAgentButton).setOnClickListener {
-            openAgent(AgentContextKind.MarketBrief)
-        }
         findViewById<View>(R.id.tradePlanButton).setOnClickListener {
             openTradingSession()
         }
@@ -314,23 +310,6 @@ class MarketChartActivity : AppCompatActivity(), TradeSenderHost {
         )
         button.strokeColor = ColorStateList.valueOf(Color.rgb(30, 42, 58))
         button.setTextColor(if (selected) Color.rgb(5, 19, 29) else Color.rgb(139, 149, 168))
-    }
-
-    private fun openAgent(kind: AgentContextKind) {
-        val snapshot = currentSnapshot
-        if (snapshot == null || snapshot.candles.isEmpty()) {
-            Toast.makeText(this, "Load market data first", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val quickAction = when (kind) {
-            AgentContextKind.MarketBrief -> "markets"
-            AgentContextKind.TradePlan -> "trade"
-        }
-        val intent = Intent(this, ChatActivity::class.java).apply {
-            putExtra("prefill_message", snapshot.toAgentContext(kind))
-            putExtra("quick_action", quickAction)
-        }
-        startActivity(intent)
     }
 
     private fun openTradingSession() {

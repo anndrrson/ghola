@@ -82,9 +82,6 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         findViewById<MaterialCardView>(R.id.actionCall).setOnClickListener {
             startActivity(Intent(this, WalletActivity::class.java))
         }
-        findViewById<MaterialCardView>(R.id.actionEmail).setOnClickListener {
-            startActivity(Intent(this, ChatActivity::class.java))
-        }
         findViewById<MaterialCardView>(R.id.actionDevice).setOnClickListener {
             startActivity(Intent(this, MessagesActivity::class.java))
         }
