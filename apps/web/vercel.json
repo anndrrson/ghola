@@ -4,7 +4,7 @@
   "crons": [
     {
       "path": "/api/private-agent/idle",
-      "schedule": "*/10 * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
