@@ -324,61 +324,6 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="18dp"
-                android:text="Before you trade" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:background="@drawable/bubble_assistant"
-                    android:fontFamily="@font/geist"
-                    android:gravity="center_vertical"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="14dp"
-                    android:text="Wallet stays in your control"
-                    android:textColor="#eef1f8"
-                    android:textFontWeight="500"
-                    android:textSize="15sp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="8dp"
-                    android:background="@drawable/bubble_assistant"
-                    android:fontFamily="@font/geist"
-                    android:gravity="center_vertical"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="14dp"
-                    android:text="Dollar caps required"
-                    android:textColor="#eef1f8"
-                    android:textFontWeight="500"
-                    android:textSize="15sp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="8dp"
-                    android:background="@drawable/bubble_assistant"
-                    android:fontFamily="@font/geist"
-                    android:gravity="center_vertical"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="14dp"
-                    android:text="Stop button always available"
-                    android:textColor="#eef1f8"
-                    android:textFontWeight="500"
-                    android:textSize="15sp" />
-            </LinearLayout>
-
-            <TextView
-                style="@style/Ghola.Text.Eyebrow"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
                 android:text="Market details" />
 
             <LinearLayout
