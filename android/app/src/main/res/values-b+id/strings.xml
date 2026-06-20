@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="home_balance_label">› SEEKER SIAP</string>
+    <string name="home_active_label">› AKTIVITAS TERBARU</string>
+    <string name="home_desk_label">Aksi cepat</string>
+    <string name="home_tile_markets">Market</string>
+    <string name="home_tile_trade">Tanya Ghola</string>
+    <string name="home_tile_agents">Wallet</string>
+    <string name="home_tile_chat">Agen</string>
+    <string name="autopilot_title">Agen live</string>
+    <string name="autopilot_subtitle">Tetapkan batas jelas. Wallet tetap terpisah. Hentikan agen kapan saja.</string>
+    <string name="autopilot_venue_allowlist">Venue yang diizinkan</string>
+    <string name="autopilot_default_venues">jupiter / phoenix / hyperliquid / coinbase</string>
+    <string name="autopilot_max_order">Maks order (USD)</string>
+    <string name="autopilot_orders">Maks order</string>
+    <string name="autopilot_daily_cap">Batas harian (USD)</string>
+    <string name="autopilot_slippage">Maks slippage (bps)</string>
+    <string name="autopilot_expires">Sesi berakhir dalam menit</string>
+    <string name="autopilot_events">Aktivitas live</string>
+    <string name="autopilot_event_empty">Belum ada aktivitas agen.</string>
+    <string name="autopilot_arm">Aktifkan agen</string>
+    <string name="autopilot_pause">Jeda</string>
+    <string name="autopilot_resume">Lanjutkan</string>
+    <string name="autopilot_agent">Tanya Ghola</string>
+    <string name="autopilot_cloud_required">Login ke Ghola Cloud sebelum mengaktifkan agen.</string>
+    <string name="autopilot_requesting">Meminta sesi agen terbatas...</string>
+    <string name="autopilot_no_session">Tidak ada sesi agen aktif.</string>
+    <string name="autopilot_event_armed">Agen aktif. Pemeriksaan batas berlaku.</string>
+    <string name="autopilot_event_killed">Agen dihentikan.</string>
+    <string name="autopilot_killed">Agen dihentikan lokal untuk %1$s. Aksi agen baru perlu persetujuan ulang.</string>
+</resources>

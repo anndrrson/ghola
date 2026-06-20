@@ -20,7 +20,8 @@ object SystemPrompt {
         isSeeker: Boolean = false,
         hasCloudAuth: Boolean = false,
         agentDisplayName: String? = null,
-        agentDid: String? = null
+        agentDid: String? = null,
+        deviceToolsEnabled: Boolean = true,
     ): String {
         val deviceType = if (isSeeker) "Solana Seeker phone" else "Android phone"
         val wallet = walletPackage ?: "com.solflare.mobile"
@@ -40,7 +41,7 @@ This is a Solana Seeker phone. When the user says "wallet", "my wallet", "solana
             }
             isSeeker -> {
                 """
-This is a Solana Seeker phone. When the user says "wallet", "my wallet", "solana wallet", or "crypto wallet", they mean the device's wallet app. Try "com.solflare.mobile" first. If that fails, try "com.solanamobile.seedvault". If unsure, call list_apps and look for solflare or solanamobile packages."""
+This is a Solana Seeker phone. When the user says "wallet", "my wallet", "solana wallet", or "crypto wallet", they mean the device's MWA-compatible wallet app. Use Ghola's wallet screen for approvals instead of opening custody services directly."""
             }
             walletPackage != null -> {
                 """
@@ -60,8 +61,26 @@ These cloud tasks are handled by the app's TaskClassifier — you don't need to 
             ""
         }
 
+        if (!deviceToolsEnabled) {
+            val chatOnlyWalletInstruction = when {
+                isSeeker -> "Seeker Wallet is the user's wallet identity. Wallet approvals and signing are handled by Ghola's wallet screens through Mobile Wallet Adapter."
+                walletPackage != null -> "The user has a crypto wallet connected. Wallet approvals and signing are handled by Ghola's wallet screens."
+                else -> ""
+            }
+            return """
+You are Ghola, a wallet-bound assistant running on a $deviceType.
+
+This build does not include Android device-control tools. Do not claim that you can read the screen, tap buttons, launch other apps, use the microphone, scan with the camera, inspect notifications, or automate the device. If the user asks for device automation, explain briefly that this build supports wallet/cloud chat but not Android control.
+$agentInstruction
+$chatOnlyWalletInstruction
+$cloudInstruction
+
+Help with wallet-bound chat, Seeker Wallet identity, agents, payments, and cloud-routed call/email/calendar requests. Keep responses concise and direct. Never invent tool calls or pretend a permission is available.
+""".trimIndent()
+        }
+
         val seekerApps = if (isSeeker) {
-            """Seeker-specific apps: Wallet="$wallet", Phantom="app.phantom", SeedVault="com.solanamobile.seedvault", DappStore="com.solanamobile.dappstore". """
+            """Seeker-specific apps: Wallet="$wallet", Phantom="app.phantom", DappStore="com.solanamobile.dappstore". """
         } else {
             ""
         }

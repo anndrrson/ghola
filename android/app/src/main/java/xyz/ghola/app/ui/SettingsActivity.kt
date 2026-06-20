@@ -23,6 +23,7 @@ import com.google.android.material.textfield.TextInputEditText
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.ModelStatus
 import xyz.ghola.app.ai.SecureStorage
@@ -104,7 +105,10 @@ class SettingsActivity : AppCompatActivity() {
     // Common
     private lateinit var a11yStatus: TextView
     private lateinit var enableA11yButton: Button
+    private lateinit var deviceControlSection: View
+    private lateinit var relayModeSection: View
     private lateinit var openRelayButton: Button
+    private lateinit var localHomeConnectButton: Button
     private lateinit var connectGoogleButton: Button
     private lateinit var saveButton: Button
 
@@ -153,9 +157,16 @@ class SettingsActivity : AppCompatActivity() {
         hfTokenStatusText = findViewById(R.id.hfTokenStatus)
         a11yStatus = findViewById(R.id.a11yStatus)
         enableA11yButton = findViewById(R.id.enableA11yButton)
+        deviceControlSection = findViewById(R.id.deviceControlSection)
+        relayModeSection = findViewById(R.id.relayModeSection)
         openRelayButton = findViewById(R.id.openRelayButton)
+        localHomeConnectButton = findViewById(R.id.localHomeConnectButton)
         connectGoogleButton = findViewById(R.id.connectGoogleButton)
         saveButton = findViewById(R.id.saveButton)
+        deviceControlSection.visibility =
+            if (BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED) View.VISIBLE else View.GONE
+        relayModeSection.visibility =
+            if (BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED) View.VISIBLE else View.GONE
 
         // Load existing values
         apiKeyInput.setText(secureStorage.getApiKey())
@@ -268,13 +279,17 @@ class SettingsActivity : AppCompatActivity() {
         hfTokenClearButton.setOnClickListener { onClearHfToken() }
 
         enableA11yButton.setOnClickListener {
-            AccessibilitySetup.open(this)
+            if (BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED) {
+                AccessibilitySetup.open(this)
+            }
         }
 
         openRelayButton.setOnClickListener {
-            startActivity(Intent(this, MainActivity::class.java))
+            if (BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED) {
+                startActivity(Intent(this, MainActivity::class.java))
+            }
         }
-        findViewById<View>(R.id.localHomeConnectButton).setOnClickListener {
+        localHomeConnectButton.setOnClickListener {
             startActivity(Intent(this, LocalServerConnectActivity::class.java))
         }
 
@@ -316,7 +331,9 @@ class SettingsActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        updateA11yStatus()
+        if (BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED) {
+            updateA11yStatus()
+        }
         updateModelStatus()
         updateLitertNpuStatus()
     }

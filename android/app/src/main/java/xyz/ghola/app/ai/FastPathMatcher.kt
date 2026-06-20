@@ -65,7 +65,6 @@ object FastPathMatcher {
         "google maps" to "com.google.android.apps.maps",
         "google chrome" to "com.android.chrome",
         "google photos" to "com.google.android.apps.photos",
-        "seed vault" to "com.solanamobile.seedvault",
         "play store" to "com.android.vending",
         "app store" to "com.android.vending",
         "dapp store" to "com.solanamobile.dappstore",

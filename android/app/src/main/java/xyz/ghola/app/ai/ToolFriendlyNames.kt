@@ -28,7 +28,6 @@ object ToolFriendlyNames {
         "com.google.android.deskclock" to "Clock",
         "com.android.vending" to "Play Store",
         "com.solanamobile.dappstore" to "dApp Store",
-        "com.solanamobile.seedvault" to "Seed Vault",
         "com.solflare.mobile" to "Solflare"
     )
 

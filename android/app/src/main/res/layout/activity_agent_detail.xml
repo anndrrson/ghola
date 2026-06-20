@@ -179,7 +179,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
                         android:fontFamily="@font/geist"
-                        android:text="Seed Vault derived key"
+                        android:text="Wallet-derived key"
                         android:textColor="@color/ghola_text_secondary"
                         android:textSize="13sp" />
 

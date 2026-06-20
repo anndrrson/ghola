@@ -1,0 +1,421 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <LinearLayout
+        android:id="@+id/topBar"
+        android:layout_width="0dp"
+        android:layout_height="56dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="20dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <ImageButton
+            android:id="@+id/backButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Back"
+            android:padding="12dp"
+            android:src="@drawable/ic_arrow_back"
+            app:tint="#8b95a8" />
+
+        <TextView
+            android:id="@+id/sessionTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:fontFamily="@font/geist"
+            android:text="@string/autopilot_title"
+            android:textColor="#eef1f8"
+            android:textFontWeight="500"
+            android:textSize="20sp" />
+    </LinearLayout>
+
+    <ScrollView
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:fillViewport="true"
+        app:layout_constraintTop_toBottomOf="@id/topBar"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <LinearLayout
+            android:id="@+id/content"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingHorizontal="24dp"
+            android:paddingBottom="28dp">
+
+            <TextView
+                android:id="@+id/marketLine"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/geist_mono"
+                android:text="BTC-USD"
+                android:textColor="#eef1f8"
+                android:textFontWeight="500"
+                android:textSize="34sp" />
+
+            <TextView
+                android:id="@+id/sessionSubtitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:fontFamily="@font/geist"
+                android:text="@string/autopilot_subtitle"
+                android:textColor="#8b95a8"
+                android:textSize="15sp" />
+
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="Pick limits" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="74dp"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/presetSmallButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:maxLines="2"
+                    android:text="Small\n$10/$50"
+                    android:textAllCaps="false"
+                    android:textColor="#eef1f8"
+                    android:textSize="12sp"
+                    app:backgroundTint="#000000"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#1e2a3a" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/presetStandardButton"
+                    style="@style/Widget.MaterialComponents.Button"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="#3da8ff"
+                    android:fontFamily="@font/geist"
+                    android:maxLines="2"
+                    android:text="Standard\n$50/$250"
+                    android:textAllCaps="false"
+                    android:textColor="#05131d"
+                    android:textSize="12sp"
+                    app:cornerRadius="0dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/presetActiveButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:maxLines="2"
+                    android:text="Active\n$100/$250"
+                    android:textAllCaps="false"
+                    android:textColor="#eef1f8"
+                    android:textSize="12sp"
+                    app:backgroundTint="#000000"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#1e2a3a" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="22dp"
+                android:text="Edit numbers" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="6dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        style="@style/Ghola.Text.Eyebrow"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/autopilot_max_order" />
+
+                    <EditText
+                        android:id="@+id/maxNotionalInput"
+                        android:layout_width="match_parent"
+                        android:layout_height="54dp"
+                        android:background="@drawable/bubble_assistant"
+                        android:fontFamily="@font/geist_mono"
+                        android:inputType="number"
+                        android:paddingHorizontal="12dp"
+                        android:text="50"
+                        android:textColor="#eef1f8"
+                        android:textSize="18sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        style="@style/Ghola.Text.Eyebrow"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/autopilot_daily_cap" />
+
+                    <EditText
+                        android:id="@+id/maxDailyInput"
+                        android:layout_width="match_parent"
+                        android:layout_height="54dp"
+                        android:background="@drawable/bubble_assistant"
+                        android:fontFamily="@font/geist_mono"
+                        android:inputType="number"
+                        android:paddingHorizontal="12dp"
+                        android:text="250"
+                        android:textColor="#eef1f8"
+                        android:textSize="18sp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="6dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        style="@style/Ghola.Text.Eyebrow"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/autopilot_orders" />
+
+                    <EditText
+                        android:id="@+id/maxOrdersInput"
+                        android:layout_width="match_parent"
+                        android:layout_height="54dp"
+                        android:background="@drawable/bubble_assistant"
+                        android:fontFamily="@font/geist_mono"
+                        android:inputType="number"
+                        android:paddingHorizontal="12dp"
+                        android:text="10"
+                        android:textColor="#eef1f8"
+                        android:textSize="18sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        style="@style/Ghola.Text.Eyebrow"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/autopilot_slippage" />
+
+                    <EditText
+                        android:id="@+id/slippageInput"
+                        android:layout_width="match_parent"
+                        android:layout_height="54dp"
+                        android:background="@drawable/bubble_assistant"
+                        android:fontFamily="@font/geist_mono"
+                        android:inputType="number"
+                        android:paddingHorizontal="12dp"
+                        android:text="50"
+                        android:textColor="#eef1f8"
+                        android:textSize="18sp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/autopilot_expires" />
+
+            <EditText
+                android:id="@+id/ttlInput"
+                android:layout_width="match_parent"
+                android:layout_height="54dp"
+                android:background="@drawable/bubble_assistant"
+                android:fontFamily="@font/geist_mono"
+                android:inputType="number"
+                android:paddingHorizontal="12dp"
+                android:text="120"
+                android:textColor="#eef1f8"
+                android:textSize="18sp" />
+
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="22dp"
+                android:text="Agent can use" />
+
+            <TextView
+                android:id="@+id/allowlistLine"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bubble_assistant"
+                android:fontFamily="@font/geist_mono"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="12dp"
+                android:textColor="#eef1f8"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/venueLine"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bubble_assistant"
+                android:ellipsize="end"
+                android:fontFamily="@font/geist_mono"
+                android:gravity="center_vertical"
+                android:maxLines="1"
+                android:paddingHorizontal="12dp"
+                android:text="@string/autopilot_default_venues"
+                android:textColor="#eef1f8"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:fontFamily="@font/geist"
+                android:text="No active session."
+                android:textColor="#8b95a8"
+                android:textSize="14sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/approveSessionButton"
+                style="@style/Widget.MaterialComponents.Button"
+                android:layout_width="match_parent"
+                android:layout_height="62dp"
+                android:layout_marginTop="18dp"
+                android:backgroundTint="#3da8ff"
+                android:fontFamily="@font/geist"
+                android:text="@string/autopilot_arm"
+                android:textAllCaps="false"
+                android:textColor="#05131d"
+                android:textFontWeight="500"
+                android:textSize="18sp"
+                app:cornerRadius="0dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="54dp"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/pauseResumeButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:text="@string/autopilot_pause"
+                    android:textAllCaps="false"
+                    android:textColor="#eef1f8"
+                    app:backgroundTint="#000000"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#1e2a3a" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/askAgentButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:text="@string/autopilot_agent"
+                    android:textAllCaps="false"
+                    android:textColor="#eef1f8"
+                    app:backgroundTint="#000000"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#1e2a3a" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/killSwitchButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:text="Stop agent"
+                    android:textAllCaps="false"
+                    android:textColor="#ff5a64"
+                    app:backgroundTint="#000000"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#4b1d26" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:text="@string/autopilot_events" />
+
+            <TextView
+                android:id="@+id/eventLogText"
+                android:layout_width="match_parent"
+                android:layout_height="96dp"
+                android:layout_marginTop="8dp"
+                android:background="#05070b"
+                android:fontFamily="@font/geist_mono"
+                android:gravity="bottom"
+                android:padding="12dp"
+                android:text="@string/autopilot_event_empty"
+                android:textColor="#8b95a8"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </ScrollView>
+</androidx.constraintlayout.widget.ConstraintLayout>

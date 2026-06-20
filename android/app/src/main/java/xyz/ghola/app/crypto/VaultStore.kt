@@ -29,13 +29,13 @@ import javax.crypto.spec.SecretKeySpec
  *   the AndroidKeystore master key, AND the KEK itself is wrapped under
  *   a key derived from the wallet signature. A dump is useless without
  *   both.
- * - Backgrounded app: `lock()` zeros in-memory secrets; the next vault-
- *   needing call re-prompts the wallet.
+ * - Idle app/session: after [DEFAULT_IDLE_TTL_MILLIS], the next vault-
+ *   touching call zeros in-memory secrets and re-prompts the wallet.
  *
  * ## Idle TTL
- * Auto-lock fires [lock] after [DEFAULT_IDLE_TTL_MILLIS] of no usage AND
- * on app background. The mechanism is a check on each call (`maybeIdleLock`),
- * not a scheduled task — keeps it dependency-free.
+ * Auto-lock fires [lock] after [DEFAULT_IDLE_TTL_MILLIS] of no usage. The
+ * mechanism is a check on each vault-touching call (`maybeIdleLock`), not a
+ * scheduled task — keeps it dependency-free.
  */
 class VaultStore internal constructor(
     private val prefs: SharedPreferences,
@@ -149,17 +149,14 @@ class VaultStore internal constructor(
      *  signature produces a different kekWrapKey, which fails to unwrap and
      *  yields WrongSignature). Tests pass true to exercise the explicit guard.
      *
-     *  H1: On the FRESH-INSTALL branch (where this device first creates and
-     *  wraps the KEK) the determinism check is ALWAYS performed, regardless
-     *  of this flag. That is a one-time event per device, so the extra popup
-     *  is acceptable, and it is the only moment where a non-deterministic
-     *  signature does irreversible damage — it would wrap the KEK under a key
-     *  that can never be re-derived, permanently bricking the vault. We refuse
-     *  to persist a wrapped KEK we cannot prove is reproducible.
+     *  Production callers leave [verifyDeterminism] false so a fresh vault
+     *  creation uses one explicit wallet approval. Tests and diagnostics pass
+     *  true when they need to exercise the non-deterministic-wallet guard.
      */
     @Throws(VaultLockedError::class)
     @JvmOverloads
     fun unlock(signMessage: SignMessage, verifyDeterminism: Boolean = false) {
+        maybeIdleLock()
         if (masterKek != null) {
             touch()
             return
@@ -194,22 +191,23 @@ class VaultStore internal constructor(
             material = mat
             touch()
         } else {
-            // Fresh install for this DID on this device. This branch CREATES
-            // the wrapped KEK, so a non-deterministic signature here is
-            // unrecoverable — force the determinism re-sign unconditionally
-            // before we persist anything (H1).
+            // Fresh install for this DID on this device. Keep the production
+            // flow to one explicit wallet approval; the optional second sign
+            // is reserved for tests and diagnostics.
             val salt = ByteArray(SALT_LEN).also { rng.nextBytes(it) }
             val challenge = VaultIdentity.unlockChallenge(userDid, salt)
             val sig = sigOrThrow(signMessage.sign(challenge))
-            val sigVerify = sigOrThrow(signMessage.sign(challenge))
-            if (!sig.contentEquals(sigVerify)) {
-                Log.e(TAG, "non-deterministic wallet signature on first-unlock KEK creation")
-                sig.fill(0)
+            if (verifyDeterminism) {
+                val sigVerify = sigOrThrow(signMessage.sign(challenge))
+                if (!sig.contentEquals(sigVerify)) {
+                    Log.e(TAG, "non-deterministic wallet signature on first-unlock KEK creation")
+                    sig.fill(0)
+                    sigVerify.fill(0)
+                    // Nothing persisted yet, so the vault is simply not created.
+                    throw VaultLockedError.DeterminismViolation
+                }
                 sigVerify.fill(0)
-                // Nothing persisted yet, so the vault is simply not created.
-                throw VaultLockedError.DeterminismViolation
             }
-            sigVerify.fill(0)
             val mat = VaultIdentity.deriveVaultMaterial(sig, salt)
             sig.fill(0)
             val kek = ByteArray(KEK_LEN).also { rng.nextBytes(it) }

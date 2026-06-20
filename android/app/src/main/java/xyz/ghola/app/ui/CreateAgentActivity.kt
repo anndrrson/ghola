@@ -17,19 +17,21 @@ import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.CloudAuthManager
+import xyz.ghola.app.cloud.DeviceIdentity
 import xyz.ghola.app.cloud.DeviceSignerProvider
 import xyz.ghola.app.cloud.SaidCloudClient
 import xyz.ghola.app.crypto.PrivateAgentIdentity
-import xyz.ghola.app.solana.SeedVaultNative
+import xyz.ghola.app.solana.MWAConnect
+import xyz.ghola.app.solana.MwaWalletDeviceSigner
 import java.util.concurrent.Executors
 
 /**
  * Agent creation wizard (Phase M5).
  *
- * Two inputs: display_name (auto-derives slug) and optional bio. On Seeker,
- * the agent identity is derived locally from a Seed Vault signature and only
- * the public DID/address plus signature proof are sent to said-cloud. Legacy
- * clients keep the server-generated identity path.
+ * Two inputs: display_name (auto-derives slug) and optional bio. On Seeker, the
+ * agent identity is derived locally from a wallet-approved MWA signature and
+ * only the public DID/address plus signature proof are sent to said-cloud.
+ * Legacy clients keep the server-generated identity path.
  */
 class CreateAgentActivity : AppCompatActivity() {
 
@@ -42,7 +44,6 @@ class CreateAgentActivity : AppCompatActivity() {
     private lateinit var loading: ProgressBar
     private val executor = Executors.newSingleThreadExecutor()
     private val activityResultSender = ActivityResultSender(this)
-    private val seedVaultNative = SeedVaultNative(this)
 
     private var slugTouched = false
 
@@ -122,14 +123,14 @@ class CreateAgentActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             val privateIdentity = if (BuildConfig.GHOLA_SEEKER_BUILD) {
-                val session = ensureSeedVaultSession().getOrElse { err ->
+                val signer = ensureMwaDeviceSigner().getOrElse { err ->
                     loading.visibility = View.GONE
                     createButton.isEnabled = true
-                    showError(err.message ?: "Seed Vault connection failed")
+                    showError(err.message ?: "Wallet connection failed")
                     return@launch
                 }
                 PrivateAgentIdentity.derive(
-                    signer = seedVaultNative.signer(session),
+                    signer = signer,
                     slug = form.slug,
                     displayName = form.displayName,
                     bio = form.bio,
@@ -173,7 +174,7 @@ class CreateAgentActivity : AppCompatActivity() {
                     encryptedConfig = privateIdentity.encryptedConfig,
                     publicAgentId = result.optString("id", ""),
                 )
-                result.put("identity_mode", "seed_vault_derived")
+                result.put("identity_mode", "mwa_wallet_derived")
                 result.put("private_config_synced", privateConfig != null)
                 if (privateConfig != null) {
                     result.put("private_chat_agent_id", privateConfig.optString("id", ""))
@@ -218,14 +219,14 @@ class CreateAgentActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val result = when {
                 BuildConfig.GHOLA_SEEKER_BUILD -> {
-                    val session = ensureSeedVaultSession().getOrElse {
+                    val walletAddress = ensureMwaWalletSession().getOrElse {
                         loading.visibility = View.GONE
                         createButton.isEnabled = true
-                        showError(it.message ?: "Seed Vault connection failed")
+                        showError(it.message ?: "Wallet connection failed")
                         return@launch
                     }
                     CloudAuthManager(this@CreateAgentActivity)
-                        .signInSaidWithDeviceSigner(seedVaultNative.signer(session))
+                        .signInSaidWithWallet(activityResultSender, walletAddress.address)
                 }
                 BuildConfig.GHOLA_PLAY_STORE_BUILD -> {
                     val signer = DeviceSignerProvider.cached(this@CreateAgentActivity)
@@ -260,23 +261,45 @@ class CreateAgentActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun ensureSeedVaultSession(): Result<SeedVaultNative.Session> {
-        currentSeedVaultSession()?.let { return Result.success(it) }
-        return seedVaultNative.authorizeSession().map { session ->
-            storage.setSeedVaultSession(
+    private suspend fun ensureMwaDeviceSigner(): Result<MwaWalletDeviceSigner> =
+        ensureMwaWalletSession().map { session ->
+            MwaWalletDeviceSigner(
+                sender = activityResultSender,
+                identity = DeviceIdentity(
+                    address = session.address,
+                    displayName = session.accountLabel ?: getString(R.string.wallet_auth_label_seeker),
+                    provider = "mwa",
+                ),
+                authTokenProvider = { storage.getMwaAuthToken() },
+            )
+        }
+
+    private suspend fun ensureMwaWalletSession(): Result<MWAConnect.WalletSession> {
+        val existingAddress = storage.getSolanaAddress()
+        if (!existingAddress.isNullOrBlank()) {
+            return Result.success(
+                MWAConnect.WalletSession(
+                    address = existingAddress,
+                    authToken = storage.getMwaAuthToken(),
+                    walletUriBase = storage.getMwaWalletUriBase(),
+                    accountLabel = storage.getMwaAccountLabel(),
+                    cluster = storage.getMwaCluster() ?: MWAConnect.clusterName(),
+                ),
+            )
+        }
+        return MWAConnect.authorizeSession(
+            activityResultSender,
+            previousAuthToken = storage.getMwaAuthToken(),
+        ).map { session ->
+            storage.setMwaSession(
                 address = session.address,
                 authToken = session.authToken,
-                derivationPathUri = session.derivationPathUri,
+                walletUriBase = session.walletUriBase,
+                accountLabel = session.accountLabel,
+                cluster = session.cluster,
             )
             session
         }
-    }
-
-    private fun currentSeedVaultSession(): SeedVaultNative.Session? {
-        val address = storage.getSeedVaultAddress() ?: return null
-        val token = storage.getSeedVaultAuthToken() ?: return null
-        val path = storage.getSeedVaultDerivationPathUri() ?: return null
-        return SeedVaultNative.Session(address, token, path)
     }
 
     private fun showError(msg: String) {

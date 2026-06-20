@@ -39,6 +39,17 @@ class VaultStoreTest {
         }
     }
 
+    private class CountingWalletSigner(seed: ByteArray) : VaultStore.SignMessage {
+        private val delegate = FakeWalletSigner(seed)
+        var calls: Int = 0
+            private set
+
+        override fun sign(challenge: ByteArray): VaultStore.SignResult {
+            calls += 1
+            return delegate.sign(challenge)
+        }
+    }
+
     private fun freshDid(): String {
         val seed = ByteArray(32).also { rng.nextBytes(it) }
         val pub = Ed25519PrivateKeyParameters(seed, 0).generatePublicKey().encoded
@@ -72,6 +83,24 @@ class VaultStoreTest {
         b.unlock(signer)
         val dek2 = b.getOrCreateSessionDek(sessionId)
         assertArrayEquals(dek1, dek2)
+    }
+
+    @Test
+    fun cached_unlock_does_not_resign_until_idle_ttl_expires() {
+        val did = freshDid()
+        val vault = VaultStore.createInMemoryForTests(did)
+        val signer = CountingWalletSigner(ByteArray(32) { 0x42 })
+
+        vault.unlock(signer)
+        assertEquals(1, signer.calls)
+
+        vault.unlock(signer)
+        assertEquals(1, signer.calls)
+
+        vault.setIdleTtlMillisForTests(1)
+        Thread.sleep(10)
+        vault.unlock(signer)
+        assertEquals(2, signer.calls)
     }
 
     @Test

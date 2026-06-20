@@ -13,6 +13,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.card.MaterialCardView
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.CloudAuthManager
@@ -22,9 +23,8 @@ import xyz.ghola.app.demo.DemoScript
 import xyz.ghola.app.service.VoiceInputService
 
 /**
- * New home screen for Thumper — the AI personal assistant.
- * Shows greeting, active tasks, quick actions, and mic FAB.
- * Routes to ChatActivity for device control or cloud for calls/emails.
+ * New home screen for Ghola's trading-agent command center.
+ * Shows balance, active tasks, trading shortcuts, and the blue action orb.
  */
 class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
 
@@ -34,7 +34,7 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
     }
 
     private lateinit var secureStorage: SecureStorage
-    private lateinit var voiceService: VoiceInputService
+    private var voiceService: VoiceInputService? = null
     private lateinit var greetingText: TextView
     private lateinit var activeTasksContainer: LinearLayout
     private lateinit var quickActionsContainer: View
@@ -49,8 +49,9 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         setContentView(R.layout.activity_home)
 
         secureStorage = SecureStorage(this)
-        voiceService = VoiceInputService(this)
-        voiceService.initialize(this)
+        if (BuildConfig.GHOLA_VOICE_INPUT_ENABLED) {
+            voiceService = VoiceInputService(this).also { it.initialize(this) }
+        }
 
         greetingText = findViewById(R.id.greetingText)
         activeTasksContainer = findViewById(R.id.activeTasksContainer)
@@ -59,23 +60,40 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         voiceStatusText = findViewById(R.id.voiceStatusText)
         homeWalletButton = findViewById(R.id.homeWalletButton)
 
-        // Mic FAB
-        micFab.setOnClickListener { toggleVoiceInput() }
+        findViewById<View>(R.id.micOrbContainer).visibility =
+            if (BuildConfig.GHOLA_VOICE_INPUT_ENABLED) View.VISIBLE else View.GONE
+        micFab.setImageResource(
+            if (BuildConfig.GHOLA_VOICE_INPUT_ENABLED) {
+                android.R.drawable.ic_btn_speak_now
+            } else {
+                android.R.drawable.ic_menu_send
+            }
+        )
+        micFab.setOnClickListener {
+            if (BuildConfig.GHOLA_VOICE_INPUT_ENABLED) {
+                toggleVoiceInput()
+            } else {
+                startActivity(Intent(this, ChatActivity::class.java))
+            }
+        }
 
-        // Quick action buttons
+        // Quick-action tiles → secondary surfaces. Markets/Agents/Activity live
+        // in the bottom nav, so these are the destinations that don't.
         findViewById<MaterialCardView>(R.id.actionCall).setOnClickListener {
-            startChatWith("I need to make a phone call", "call")
+            startActivity(Intent(this, WalletActivity::class.java))
         }
         findViewById<MaterialCardView>(R.id.actionEmail).setOnClickListener {
-            startChatWith("I need to send an email", "email")
+            startActivity(Intent(this, ChatActivity::class.java))
         }
         findViewById<MaterialCardView>(R.id.actionDevice).setOnClickListener {
-            startActivity(Intent(this, ChatActivity::class.java))
+            startActivity(Intent(this, MessagesActivity::class.java))
         }
-        // Phase M6: bottom nav now handles Agents tab. actionChat reverts
-        // to opening ChatActivity (its original behavior pre-M5).
         findViewById<MaterialCardView>(R.id.actionChat).setOnClickListener {
-            startActivity(Intent(this, ChatActivity::class.java))
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+        // Hero primary CTA → markets/trade terminal.
+        findViewById<View>(R.id.launchTerminalButton).setOnClickListener {
+            startMarketChart("trade")
         }
 
         // Settings button in greeting area
@@ -99,13 +117,13 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         }
         updateGreeting()
         updateWalletEntry()
-        refreshActiveTasks()
         initCloudClient()
+        refreshActiveTasks()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        voiceService.destroy()
+        voiceService?.destroy()
     }
 
     private fun updateGreeting() {
@@ -159,12 +177,7 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
                         )
                     }
                 } else {
-                    val emptyText = TextView(this).apply {
-                        text = "No active tasks"
-                        setTextColor(0xFF999999.toInt())
-                        setPadding(16, 8, 16, 8)
-                    }
-                    activeTasksContainer.addView(emptyText)
+                    activeTasksContainer.addView(buildEmptyTasksView())
                 }
             }
         }.start()
@@ -182,10 +195,39 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         activeTasksContainer.addView(card)
     }
 
+    /** Styled empty-state card for the Recent activity section. */
+    private fun buildEmptyTasksView(): View {
+        val density = resources.displayMetrics.density
+        fun dp(v: Int) = (v * density).toInt()
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = ContextCompat.getDrawable(this@HomeActivity, R.drawable.bg_pill_trust)
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+        }
+        val title = TextView(this).apply {
+            text = getString(R.string.home_empty_tasks)
+            setTextColor(ContextCompat.getColor(this@HomeActivity, R.color.ghola_text_secondary))
+            textSize = 14f
+        }
+        val subtitle = TextView(this).apply {
+            text = getString(R.string.home_empty_tasks_sub)
+            setTextColor(ContextCompat.getColor(this@HomeActivity, R.color.ghola_text_muted))
+            textSize = 12.5f
+            setPadding(0, dp(4), 0, 0)
+        }
+        container.addView(title)
+        container.addView(subtitle)
+        return container
+    }
+
     private fun formatTaskType(type: String): String = when (type) {
         "call" -> "Phone Call"
         "email" -> "Email"
         "calendar" -> "Calendar"
+        "market_analysis" -> "Market Brief"
+        "trade_plan" -> "Trade Plan"
+        "agent_task" -> "Agent Task"
         "device_action" -> "Device Action"
         else -> type.replaceFirstChar { it.uppercase() }
     }
@@ -203,10 +245,21 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         startActivity(intent)
     }
 
+    private fun startMarketChart(action: String) {
+        val intent = Intent(this, MarketChartActivity::class.java)
+        intent.putExtra(MarketChartActivity.EXTRA_ACTION, action)
+        startActivity(intent)
+    }
+
     // --- Voice Input ---
 
     private fun toggleVoiceInput() {
-        if (!voiceService.isAvailable()) {
+        val voice = voiceService ?: run {
+            Toast.makeText(this, "Voice input is not enabled in this build", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (!voice.isAvailable()) {
             Toast.makeText(this, "Voice input not available on this device", Toast.LENGTH_SHORT).show()
             return
         }
@@ -222,10 +275,10 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
             return
         }
 
-        if (voiceService.isCurrentlyListening()) {
-            voiceService.stopListening()
+        if (voice.isCurrentlyListening()) {
+            voice.stopListening()
         } else {
-            voiceService.startListening()
+            voice.startListening()
         }
     }
 
@@ -235,7 +288,7 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_AUDIO_PERMISSION &&
             grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            voiceService.startListening()
+            voiceService?.startListening()
         }
     }
 
@@ -269,7 +322,6 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
                 // Route to device agent
                 val intent = Intent(this, ChatActivity::class.java)
                 intent.putExtra("prefill_message", text)
-                intent.putExtra("auto_send", true)
                 startActivity(intent)
             }
         }
@@ -289,7 +341,7 @@ class HomeActivity : AppCompatActivity(), VoiceInputService.VoiceListener {
     }
 
     override fun onListeningStopped() {
-        micFab.setImageResource(android.R.drawable.ic_btn_speak_now)
+        micFab.setImageResource(android.R.drawable.ic_menu_send)
         voiceStatusText.visibility = View.GONE
     }
 }

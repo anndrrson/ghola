@@ -3,17 +3,13 @@
     <item
         android:id="@+id/tab_assistant"
         android:title="Home"
-        android:icon="@drawable/ic_nav_assistant" />
+        android:icon="@drawable/ic_nav_home" />
     <item
-        android:id="@+id/tab_agents"
-        android:title="Agents"
-        android:icon="@drawable/ic_nav_agents" />
+        android:id="@+id/tab_markets"
+        android:title="Trade"
+        android:icon="@drawable/ic_nav_markets" />
     <item
         android:id="@+id/tab_activity"
         android:title="Activity"
         android:icon="@drawable/ic_nav_activity" />
-    <item
-        android:id="@+id/tab_messages"
-        android:title="Messages"
-        android:icon="@android:drawable/ic_dialog_email" />
 </menu>

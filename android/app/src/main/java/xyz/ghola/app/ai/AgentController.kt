@@ -28,6 +28,7 @@ class AgentController(
     private val walletPackage: String? = null,
     private val isSeeker: Boolean = false,
     private val hasCloudAuth: Boolean = false,
+    private val deviceToolsEnabled: Boolean = true,
     /**
      * Phase M7: the cryptographically-owned agent the user is currently
      * operating as. When set, the system prompt tells the LLM it's acting
@@ -73,7 +74,7 @@ class AgentController(
         consecutiveErrors = 0
 
         // Fast-path: intercept obvious commands before hitting the LLM
-        val fastMatch = FastPathMatcher.match(userText, walletPackage)
+        val fastMatch = if (deviceToolsEnabled) FastPathMatcher.match(userText, walletPackage) else null
         if (fastMatch != null) {
             conversationHistory.add(JSONObject().apply {
                 put("role", "user")
@@ -113,7 +114,8 @@ class AgentController(
         }
     }
 
-    fun matchFastPath(text: String): FastMatch? = FastPathMatcher.match(text, walletPackage)
+    fun matchFastPath(text: String): FastMatch? =
+        if (deviceToolsEnabled) FastPathMatcher.match(text, walletPackage) else null
 
     fun clearHistory() {
         conversationHistory.clear()
@@ -252,8 +254,15 @@ class AgentController(
             try {
                 response = backend.generate(
                     messages,
-                    ToolDefinitions.getTools(),
-                    SystemPrompt.get(walletPackage, isSeeker, hasCloudAuth, agentDisplayName, agentDid),
+                    if (deviceToolsEnabled) ToolDefinitions.getTools() else JSONArray(),
+                    SystemPrompt.get(
+                        walletPackage,
+                        isSeeker,
+                        hasCloudAuth,
+                        agentDisplayName,
+                        agentDid,
+                        deviceToolsEnabled,
+                    ),
                     false
                 )
             } catch (e: Exception) {
@@ -328,6 +337,15 @@ class AgentController(
                 for (block in response.contentBlocks) {
                     if (block is ContentBlock.ToolUse) {
                         if (isCancelled.get()) return
+                        if (!deviceToolsEnabled) {
+                            toolResults.put(JSONObject().apply {
+                                put("type", "tool_result")
+                                put("tool_use_id", block.id)
+                                put("is_error", true)
+                                put("content", "Device-control tools are not available in this build. Respond with text only.")
+                            })
+                            continue
+                        }
 
                         // Repeat-detection guardrail
                         val callKey = Pair(block.name, block.input.toString())

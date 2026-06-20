@@ -26,6 +26,11 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
+# okhttp-sse 4.12's RealEventSource (used by PrivateAccountClient's autopilot
+# event stream) references okhttp3.internal.Util, which R8 reports as missing
+# under the standardRelease shrink. The reference is a dead/relocated internal
+# symbol — not exercised at runtime — so suppress the missing-class warning.
+-dontwarn okhttp3.internal.Util
 
 # ---------- Google Sign-In / Credentials ----------
 -keep class com.google.android.gms.** { *; }

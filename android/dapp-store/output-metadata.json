@@ -5,15 +5,15 @@
     "kind": "Directory"
   },
   "applicationId": "xyz.ghola.app",
-  "variantName": "release",
+  "variantName": "seekerRelease",
   "elements": [
     {
       "type": "SINGLE",
       "filters": [],
       "attributes": [],
-      "versionCode": 7,
-      "versionName": "0.7.0",
-      "outputFile": "app-release.apk"
+      "versionCode": 11,
+      "versionName": "0.7.1",
+      "outputFile": "app-seeker-release.apk"
     }
   ],
   "elementType": "File"

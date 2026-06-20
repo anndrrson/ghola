@@ -15,7 +15,7 @@ import android.util.Log
  * communicates with the wallet app via an Android Intent + async callback.
  *
  * For v1 we implement the **intent-based fallback path** that works with
- * every Solana wallet on Android (Phantom, Solflare, Seed Vault) without
+ * every compatible Solana wallet on Android without
  * requiring the AAR: launch the wallet via its deep-link scheme, the wallet
  * returns the connected pubkey via onActivityResult. This ships today.
  *

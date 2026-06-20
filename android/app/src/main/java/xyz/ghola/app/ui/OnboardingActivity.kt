@@ -15,7 +15,6 @@ import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
 import xyz.ghola.app.cloud.CloudAuthManager
 import xyz.ghola.app.solana.MWAConnect
-import xyz.ghola.app.solana.SeedVaultNative
 
 /**
  * 2-screen onboarding flow:
@@ -31,7 +30,6 @@ class OnboardingActivity : AppCompatActivity() {
 
     // ActivityResultSender must be initialized as a field.
     private val activityResultSender = ActivityResultSender(this)
-    private val seedVaultNative = SeedVaultNative(this)
 
     private lateinit var stepSignIn: View
     private lateinit var stepAccessibility: View
@@ -90,35 +88,7 @@ class OnboardingActivity : AppCompatActivity() {
                 when (result) {
                     is CloudAuthManager.AuthResult.Success -> {
                         Toast.makeText(this@OnboardingActivity, "Turnkey wallet connected", Toast.LENGTH_SHORT).show()
-                        showStep(1)
-                    }
-                    is CloudAuthManager.AuthResult.Error -> {
-                        Toast.makeText(this@OnboardingActivity, result.message, Toast.LENGTH_LONG).show()
-                    }
-                }
-                return@launch
-            }
-            if (BuildConfig.GHOLA_SEEKER_BUILD) {
-                val savedSession = currentSeedVaultSession()
-                val session = savedSession ?: seedVaultNative.authorizeSession().getOrElse { err ->
-                    Toast.makeText(
-                        this@OnboardingActivity,
-                        err.message ?: "Seed Vault connection failed",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                    return@launch
-                }
-                if (savedSession == null) {
-                    secureStorage.setSeedVaultSession(
-                        address = session.address,
-                        authToken = session.authToken,
-                        derivationPathUri = session.derivationPathUri,
-                    )
-                }
-                when (val result = cloudAuthManager.signInWithDeviceSigner(seedVaultNative.signer(session))) {
-                    is CloudAuthManager.AuthResult.Success -> {
-                        Toast.makeText(this@OnboardingActivity, "Seed Vault connected", Toast.LENGTH_SHORT).show()
-                        showStep(1)
+                        afterWalletSignIn()
                     }
                     is CloudAuthManager.AuthResult.Error -> {
                         Toast.makeText(this@OnboardingActivity, result.message, Toast.LENGTH_LONG).show()
@@ -144,7 +114,7 @@ class OnboardingActivity : AppCompatActivity() {
                     when (result) {
                         is CloudAuthManager.AuthResult.Success -> {
                             Toast.makeText(this@OnboardingActivity, "Wallet connected", Toast.LENGTH_SHORT).show()
-                            showStep(1)
+                            afterWalletSignIn()
                         }
                         is CloudAuthManager.AuthResult.Error -> {
                             Toast.makeText(this@OnboardingActivity, result.message, Toast.LENGTH_LONG).show()
@@ -167,18 +137,20 @@ class OnboardingActivity : AppCompatActivity() {
         }
     }
 
-    private fun currentSeedVaultSession(): SeedVaultNative.Session? {
-        val address = secureStorage.getSeedVaultAddress() ?: return null
-        val token = secureStorage.getSeedVaultAuthToken() ?: return null
-        val path = secureStorage.getSeedVaultDerivationPathUri() ?: return null
-        return SeedVaultNative.Session(address, token, path)
-    }
-
     private fun showStep(step: Int) {
         currentStep = step
         stepSignIn.visibility = if (step == 0) View.VISIBLE else View.GONE
         stepAccessibility.visibility = if (step == 1) View.VISIBLE else View.GONE
-        findViewById<TextView>(R.id.stepIndicator).text = "Step ${step + 1} of 2"
+        val totalSteps = if (BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED) 2 else 1
+        findViewById<TextView>(R.id.stepIndicator).text = "Step ${step + 1} of $totalSteps"
+    }
+
+    private fun afterWalletSignIn() {
+        if (BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED) {
+            showStep(1)
+        } else {
+            finishOnboarding()
+        }
     }
 
     private fun finishOnboarding() {

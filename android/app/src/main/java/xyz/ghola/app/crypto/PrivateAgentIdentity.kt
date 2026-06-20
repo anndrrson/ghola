@@ -13,10 +13,11 @@ import javax.crypto.spec.SecretKeySpec
 /**
  * Locally derives agent identity from a device-held signer.
  *
- * On Seeker this signer is Seed Vault. The wallet key never leaves Seed Vault:
- * the app asks Seed Vault to sign a domain-separated per-agent challenge, derives a
- * per-agent Ed25519 seed from that signature, and sends only the public DID,
- * Solana address, and a proof that the app holds the matching agent secret.
+ * On Seeker this signer is the user's MWA wallet. The wallet key never leaves
+ * the wallet app: Ghola asks the wallet to sign a domain-separated per-agent
+ * challenge, derives a per-agent Ed25519 seed from that signature, and sends
+ * only the public DID, Solana address, and a proof that the app holds the
+ * matching agent secret.
  */
 object PrivateAgentIdentity {
     private val ROOT_SALT = "ghola-agent-root-v1".toByteArray(Charsets.UTF_8)
@@ -42,9 +43,9 @@ object PrivateAgentIdentity {
         val rootMessage = rootMessage(signer.identity.address, slug)
         val rootSignature = when (val signed = signer.sign(rootMessage)) {
             is DeviceSignResult.Success -> signed.signature
-            DeviceSignResult.NoSigner -> return Result.failure(IllegalStateException("Seed Vault signer is unavailable"))
-            DeviceSignResult.Declined -> return Result.failure(IllegalStateException("Seed Vault signing was declined"))
-            DeviceSignResult.Cancelled -> return Result.failure(IllegalStateException("Seed Vault signing was cancelled"))
+            DeviceSignResult.NoSigner -> return Result.failure(IllegalStateException("Wallet signer is unavailable"))
+            DeviceSignResult.Declined -> return Result.failure(IllegalStateException("Wallet signing was declined"))
+            DeviceSignResult.Cancelled -> return Result.failure(IllegalStateException("Wallet signing was cancelled"))
             is DeviceSignResult.Failure -> return Result.failure(signed.cause)
         }
 
@@ -140,7 +141,7 @@ object PrivateAgentIdentity {
             put("did", did)
             put("solana_address", solanaAddress)
             put("owner_wallet", ownerWallet)
-            put("key_source", "seed_vault_signature_hkdf")
+            put("key_source", "mwa_wallet_signature_hkdf")
         }.toString().toByteArray(Charsets.UTF_8)
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -151,7 +152,7 @@ object PrivateAgentIdentity {
         return JSONObject().apply {
             put("v", 1)
             put("alg", "AES-256-GCM")
-            put("kdf", "seed-vault-signature-hkdf-sha256")
+            put("kdf", "mwa-wallet-signature-hkdf-sha256")
             put("nonce", Base64.encodeToString(nonce, Base64.NO_WRAP))
             put("ciphertext", Base64.encodeToString(ciphertext, Base64.NO_WRAP))
         }.toString()

@@ -9,10 +9,28 @@
     <color name="ghola_text_primary">#eef1f8</color>
     <color name="ghola_text_secondary">#8b95a8</color>
     <color name="ghola_text_tertiary">#4a5568</color>
+    <color name="ghola_text_muted">#717c90</color>
     <color name="ghola_accent">#3da8ff</color>
     <color name="ghola_accent_hover">#5bb8ff</color>
     <color name="ghola_accent_dim">#2b96f0</color>
     <color name="ghola_success">#34d399</color>
     <color name="ghola_warning">#fbbf24</color>
     <color name="ghola_error">#ef4444</color>
+
+    <!-- Redesign tokens: gradients, washes, plates -->
+    <color name="ghola_surface_top">#15181f</color>
+    <color name="ghola_surface_low">#0c0e13</color>
+    <color name="ghola_card_top">#13161e</color>
+    <color name="ghola_card_bottom">#0d0f15</color>
+    <color name="ghola_accent_top">#5bb8ff</color>
+    <color name="ghola_accent_bottom">#2b96f0</color>
+    <color name="ghola_cta_ink">#04121d</color>
+    <!-- Translucent accent wash for icon plates / ripples (≈13–22% over black) -->
+    <color name="ghola_accent_wash">#223da8ff</color>
+    <color name="ghola_accent_wash_soft">#143da8ff</color>
+    <color name="ghola_accent_plate">#16243a</color>
+    <!-- Translucent success wash for the status pill -->
+    <color name="ghola_success_wash">#1a34d399</color>
+    <color name="ghola_success_stroke">#3834d399</color>
+    <color name="ghola_chip_bg">#0e1320</color>
 </resources>

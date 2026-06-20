@@ -35,48 +35,56 @@ release:
   catalog:
     en-US:
       name: Ghola
-      short_description: Private wallet-first AI.
+      short_description: Private AI trading agents.
       long_description: |
-        Ghola is a private, wallet-first AI app built for Solana Seeker.
-        It lets users create wallet-owned AI agents, start encrypted native
-        messaging, and use Seeker Wallet through Mobile Wallet Adapter.
+        Ghola is a private, wallet-first AI trading app built for Solana Seeker.
 
         Privacy posture:
-        • Ghola never asks for or collects seed phrases, private keys, or
-          recovery material.
-        • Wallet-first sign-in keeps identity and approvals tied to the user's
-          Seeker Wallet session.
-        • Wallet-owned agents keep agent identity, authorization, and payment
-          approval boundaries explicit.
-        • End-to-end encrypted native messaging relays ciphertext, not message
-          text.
-        • Accessibility and notification access are optional, user-granted,
-          and revocable from Android settings.
+        • Wallet-first sign-in through Seeker Wallet and Mobile Wallet Adapter.
+        • No seed phrases, private keys, or recovery material are collected by Ghola.
+        • Wallet-owned agents keep identity and approvals tied to the user wallet.
+        • End-to-end encrypted native messaging relays ciphertext, not message text.
+        • The Seeker build does not request camera, microphone, accessibility,
+          notification listener, boot, foreground-service, Wi-Fi multicast,
+          wake-lock, or Seed Vault permissions.
+        • Seeker wallet access uses Mobile Wallet Adapter for user-approved signing.
+        • The release permission audit allows only network access and Ghola's
+          app-local signature receiver permission.
         • Optional integrations stay behind explicit user actions.
         • Local AI runtime paths are built for Seeker-class hardware.
 
         Core experience:
-        • Create and manage wallet-owned AI agents from the mobile app.
-        • Chat, message, and device actions share the same wallet session.
+        • Create and manage wallet-owned trading agents from the mobile app.
+        • Use the native trading cockpit for BTC, ETH, and SOL charts, market
+          state, and bounded autopilot sessions.
+        • Arm an autopilot once with conservative limits, then pause or kill it
+          from the phone anytime.
+        • Chat and messaging share the same wallet session.
         • Invite links make Ghola messaging easy to start from any app.
         • Solana-native payment rails make settlement transparent when used.
+
+        Ghola is non-custodial: your wallet holds your keys and approves every
+        action through Mobile Wallet Adapter — Ghola never takes custody of your
+        funds. Trading digital assets involves risk and nothing in the app is
+        financial advice.
       new_in_version: |
-        0.7.1 private Seeker agent update.
-          • Create Seeker-native private agents with local Seed Vault-derived identity.
-          • Sync only encrypted private-agent config to Ghola Cloud.
-          • Agent details now show the private shield state, local identity mode, and copy actions.
-          • Production said-cloud preserves private agent linkage across reloads.
-          • Wallet-owned agents, encrypted messaging, and privacy-forward Seeker flows remain unchanged.
+        0.7.5 — Trading-first redesign.
+          • Unified Trade tab: browse BTC/ETH/SOL, set limits, and see your active agents in one place.
+          • Trading-focused activity feed and polished Messages and Wallet screens.
+          • Fixed Seeker Wallet (Mobile Wallet Adapter) connection.
+          • Stability and consistency fixes throughout.
       saga_features: |
-        • Mobile Wallet Adapter integration for Seeker Wallet sign-in.
+        • Mobile Wallet Adapter integration for Seeker Wallet sign-in and signing.
         • Wallet-owned agents and Solana-native identity.
-        • Optional, revocable device permissions for user-initiated agent actions.
+        • Permission-minimized Seeker build with no camera, microphone,
+          accessibility, notification listener, boot, foreground-service,
+          Wi-Fi multicast, wake-lock, or Seed Vault access.
         • Seeker-focused local AI runtime path.
   android_details:
     cert_fingerprint: fb6d833b43c0d16c7152eeb5ff2ead110dda6baf3d1222292b444f3058b95510
     min_sdk: 28
-    version: 0.7.1
-    version_code: 11
+    version: 0.7.5
+    version_code: 13
     locales:
       - en-US
       - af
@@ -167,22 +175,22 @@ release:
       - zh-HK
       - zh-TW
       - zu
-  address: 4k3zvw5LYYAj6JjPjqB2w7qyJeGCgQWxo6osJNpFa8ZW
+  address: FzqmMGUpKauEzTjT8MXLWngYvSPEP1mfnGK6X34EuyDL
 solana_mobile_dapp_publisher_portal:
   google_store_package: xyz.ghola.app
   testing_instructions: |
-    The app boots to an onboarding flow explaining how agents work. After
-    tapping through onboarding, users reach the home with USDC balance,
-    Activity / Agents / Wallet tabs, and a mic FAB.
+    The app opens to an onboarding flow, then a bottom navigation with three
+    tabs: Home, Trade, and Activity. Sign in with Seeker Wallet through Mobile
+    Wallet Adapter to associate a wallet.
 
-    To fully exercise agent creation + device control, the app needs a
-    backend API key (Qwen Cloud by default). Reviewers can skip this by
-    tapping "Not now" on the setup gate — browsing and the Wallet tab
-    (showing Seed Vault detection on Seeker) are reachable without any
-    sign-in.
+    Reviewers can browse the Trade tab (BTC/ETH/SOL markets and charts) and
+    view Seeker wallet detection in the Wallet screen without placing any
+    trades. The Trade tab also lists active agents. Note that live autopilot
+    trading may be limited depending on backend availability, so reviewers do
+    not need to execute a live trade to evaluate the app.
 lastSubmittedVersionOnChain:
-  address: 4k3zvw5LYYAj6JjPjqB2w7qyJeGCgQWxo6osJNpFa8ZW
-  version_code: 10
-  apk_hash: jlHn/lY/oiPWpkHdMEyEQ0bDuKImpCoqA2VFxBYGNy8=
+  address: FzqmMGUpKauEzTjT8MXLWngYvSPEP1mfnGK6X34EuyDL
+  version_code: 12
+  apk_hash: FWrycK5gxiFQXV9KCo5QKtjno2xCXRB/r6Z/p6tvTtA=
 lastUpdatedVersionOnStore:
-  address: 4k3zvw5LYYAj6JjPjqB2w7qyJeGCgQWxo6osJNpFa8ZW
+  address: FzqmMGUpKauEzTjT8MXLWngYvSPEP1mfnGK6X34EuyDL

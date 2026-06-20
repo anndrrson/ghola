@@ -11,17 +11,76 @@
     <string name="pair_device_receive_button">This is my new phone</string>
     <string name="pair_device_send_button">This is my old phone</string>
 
-    <!-- Quick-action tile prerequisites. Shown when a user taps Call/Email
-         on the home grid without an active cloud session. -->
-    <string name="cloud_required_for_call">Connect your wallet to enable calls.</string>
-    <string name="cloud_required_for_email">Connect your wallet to enable email.</string>
+    <!-- Quick-action tile prerequisites. Shown when a user taps trading
+         shortcuts on the home grid without an active cloud session. -->
+    <string name="cloud_required_for_call">Connect your wallet to enable market briefs.</string>
+    <string name="cloud_required_for_email">Connect your wallet to enable trade planning.</string>
+
+    <!-- Seeker trading cockpit / autopilot -->
+    <string name="home_balance_label">› SEEKER READY</string>
+    <string name="home_status_ready">Seeker ready</string>
+    <string name="home_active_label">Recent activity</string>
+    <string name="home_desk_label">Quick actions</string>
+    <string name="home_hero_title">Private trading agents</string>
+    <string name="home_hero_body">Choose a market, set a dollar cap, then arm the agent.</string>
+    <string name="home_live_strip">Wallet signs only • You set limits • Stop anytime</string>
+    <string name="home_trust">Wallet signs only · Limits first · Stop anytime</string>
+    <string name="home_secondary_cta">Ask Ghola</string>
+    <string name="home_empty_tasks">No active tasks yet</string>
+    <string name="home_empty_tasks_sub">Arm an agent to see live positions here.</string>
+    <string name="home_pillar_never">Wallet signs only</string>
+    <string name="home_pillar_never_body">Your wallet approves access and stays in your control.</string>
+    <string name="home_pillar_caps">Limits first</string>
+    <string name="home_pillar_caps_body">Set size, daily cap, and slippage before arming.</string>
+    <string name="home_pillar_verifiable">Stop anytime</string>
+    <string name="home_pillar_verifiable_body">Stop the agent from your phone.</string>
+    <string name="home_launch_terminal">View markets</string>
+    <string name="home_create_account">Seeker wallet</string>
+    <string name="home_tile_markets">Markets</string>
+    <string name="home_tile_trade">Ask Ghola</string>
+    <string name="home_tile_agents">Wallet</string>
+    <string name="home_tile_chat">Agents</string>
+    <!-- Redesigned quick-action tiles: label + one-line description -->
+    <string name="home_tile_wallet_label">Wallet</string>
+    <string name="home_tile_wallet_desc">Balance &amp; funds</string>
+    <string name="home_tile_agents_label">Agents</string>
+    <string name="home_tile_agents_desc">Running strategies</string>
+    <string name="home_tile_activity_label">Activity</string>
+    <string name="home_tile_activity_desc">History &amp; fills</string>
+    <string name="home_tile_messages_label">Messages</string>
+    <string name="home_tile_messages_desc">Encrypted inbox</string>
+    <string name="home_tile_ask_label">Ask Ghola</string>
+    <string name="home_tile_ask_desc">AI assistant</string>
+    <string name="home_tile_settings_label">Settings</string>
+    <string name="home_tile_settings_desc">Preferences</string>
+    <string name="autopilot_title">Live agent</string>
+    <string name="autopilot_subtitle">Set clear limits. Your wallet stays separate. Stop the agent anytime.</string>
+    <string name="autopilot_venue_allowlist">Allowed venues</string>
+    <string name="autopilot_default_venues">jupiter / phoenix / hyperliquid / coinbase</string>
+    <string name="autopilot_max_order">Max order (USD)</string>
+    <string name="autopilot_orders">Max orders</string>
+    <string name="autopilot_daily_cap">Daily spend cap (USD)</string>
+    <string name="autopilot_slippage">Max slippage (bps)</string>
+    <string name="autopilot_expires">Session expires in minutes</string>
+    <string name="autopilot_events">Live activity</string>
+    <string name="autopilot_event_empty">No agent activity yet.</string>
+    <string name="autopilot_arm">Arm agent</string>
+    <string name="autopilot_pause">Pause</string>
+    <string name="autopilot_resume">Resume</string>
+    <string name="autopilot_agent">Ask Ghola</string>
+    <string name="autopilot_cloud_required">Sign in to Ghola Cloud before arming the agent.</string>
+    <string name="autopilot_requesting">Requesting bounded agent session...</string>
+    <string name="autopilot_no_session">No active agent session.</string>
+    <string name="autopilot_event_armed">Agent armed. Limit checks are active.</string>
+    <string name="autopilot_event_killed">Agent stopped.</string>
+    <string name="autopilot_killed">Agent stopped locally for %1$s. New agent actions must be reapproved.</string>
 
     <!-- Onboarding hero -->
     <string name="onboarding_step_1">› 01 / 02</string>
     <string name="onboarding_step_2">› 02 / 02</string>
     <string name="onboarding_title_wallet">Wallet-bound</string>
     <string name="onboarding_title_a11y">Accessibility</string>
-    <string name="onboarding_body_wallet">Your wallet is your identity. One signature unlocks call, email, chat, and your owned agents.</string>
+    <string name="onboarding_body_wallet">Your wallet is your identity. One signature unlocks trading agents, encrypted chat, and wallet-bound approvals.</string>
     <string name="onboarding_body_a11y">Grant accessibility access so Ghola can read the screen and act on your behalf inside other apps.</string>
     <string name="onboarding_cta_idle">Sign in with wallet</string>
     <string name="onboarding_cta_requesting">Requesting challenge…</string>
@@ -31,7 +90,7 @@
     <string name="onboarding_cta_finish">Finish</string>
     <string name="onboarding_cta_done">Done</string>
     <string name="onboarding_welcome_title">Welcome to Ghola</string>
-    <string name="onboarding_welcome_body">Sign in with your Solana wallet. Call, email, chat, and agents stay bound to your wallet.</string>
+    <string name="onboarding_welcome_body">Sign in with your Solana wallet. Trading agents, encrypted chat, and payments stay bound to your wallet.</string>
     <string name="onboarding_primary_sign_in">Sign in with wallet</string>
     <string name="onboarding_accessibility_title">Enable Device Control</string>
     <string name="onboarding_accessibility_body">Tap Ghola in the next screen, then turn it on. Android will ask you to confirm.</string>
@@ -41,23 +100,22 @@
     <string name="onboarding_accessibility_get_started">Get Started</string>
 
     <!-- Wallet surface -->
-    <string name="wallet_nav_title">wallet</string>
-    <string name="wallet_primary_section_title">› SEEKER WALLET</string>
-    <string name="wallet_proof_section_title">› SEEKER PROOF</string>
-    <string name="wallet_connect_button">SIGN IN WITH SEEKER WALLET</string>
-    <string name="wallet_verify_button">VERIFY SEEKER</string>
+    <string name="wallet_nav_title">Wallet</string>
+    <string name="wallet_primary_section_title">Seeker wallet</string>
+    <string name="wallet_proof_section_title">Seeker proof</string>
+    <string name="wallet_connect_button">Sign in with Seeker Wallet</string>
+    <string name="wallet_verify_button">Verify Seeker</string>
     <string name="wallet_device_seeker">Seeker Wallet</string>
     <string name="wallet_device_standard">Wallet</string>
-    <string name="wallet_status_seed_vault">Connect once to use wallet-bound chat, pairing, and payments.</string>
     <string name="wallet_status_seeker">Connect once to use wallet-bound chat and pairing.</string>
     <string name="wallet_status_standard">Connect a Solana wallet to use Ghola.</string>
-    <string name="wallet_missing_seeker">No Solana wallet installed. Try Seed Vault on Seeker.</string>
+    <string name="wallet_missing_seeker">No MWA-compatible Solana wallet found on this device.</string>
     <string name="wallet_missing_standard">No compatible Solana wallet installed. Install Solflare or Phantom to continue.</string>
-    <string name="wallet_package_missing">none detected - install Solflare, Phantom, or Seed Vault</string>
-    <string name="wallet_connect_seeker">SIGN IN WITH SEEKER WALLET</string>
-    <string name="wallet_connect_standard">SIGN IN WITH WALLET</string>
-    <string name="wallet_refresh_seeker">REFRESH SEEKER SIGN-IN</string>
-    <string name="wallet_refresh_standard">REFRESH WALLET SIGN-IN</string>
+    <string name="wallet_package_missing">none detected - install an MWA-compatible Solana wallet</string>
+    <string name="wallet_connect_seeker">Sign in with Seeker Wallet</string>
+    <string name="wallet_connect_standard">Sign in with wallet</string>
+    <string name="wallet_refresh_seeker">Refresh Seeker sign-in</string>
+    <string name="wallet_refresh_standard">Refresh wallet sign-in</string>
     <string name="wallet_standard_proof_status">Seeker proof is only available in the Solana dApp Store build.</string>
     <string name="wallet_seeker_only_toast">Seeker verification is only available in the Solana dApp Store build.</string>
     <string name="wallet_auth_label_seeker">Seeker Wallet</string>
@@ -95,4 +153,24 @@
     <string name="hf_token_empty_toast">Paste a token first</string>
     <string name="hf_token_docs_link">Create a token at huggingface.co/settings/tokens</string>
     <string name="hf_token_docs_url">https://huggingface.co/settings/tokens</string>
+
+    <!-- Agents tab -->
+    <string name="agents_title">Agents</string>
+    <string name="agents_new">+ New</string>
+    <string name="agents_empty_title">No agents yet</string>
+    <string name="agents_empty_body">Pick a market, set a dollar cap, and arm an agent to trade within your limits. Pause or stop it anytime.</string>
+    <string name="agents_empty_cta">View markets</string>
+
+    <!-- Activity tab -->
+    <string name="activity_title">Activity</string>
+    <string name="activity_eyebrow">Recent sessions</string>
+    <string name="activity_empty_title">No activity yet</string>
+    <string name="activity_empty_body">Arm an agent from Markets and its fills, take-profits, and session events will stream here.</string>
+
+    <!-- Messages tab -->
+    <string name="messages_title">Messages</string>
+    <string name="messages_new">New message</string>
+    <string name="messages_copy_invite">Copy invite link</string>
+    <string name="messages_recent">Recent</string>
+    <string name="messages_refresh">Refresh</string>
 </resources>

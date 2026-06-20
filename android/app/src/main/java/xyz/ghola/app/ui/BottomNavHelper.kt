@@ -29,9 +29,9 @@ object BottomNavHelper {
             }
             val target: Class<*>? = when (item.itemId) {
                 R.id.tab_assistant -> HomeActivity::class.java
+                R.id.tab_markets -> MarketChartActivity::class.java
                 R.id.tab_agents -> AgentsActivity::class.java
                 R.id.tab_activity -> ActivityFeedActivity::class.java
-                R.id.tab_messages -> MessagesActivity::class.java
                 else -> null
             }
             if (target != null) {

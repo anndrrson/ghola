@@ -1,119 +1,174 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout
+<ScrollView
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="#0f1117"
-    android:padding="24dp">
+    android:background="#000000"
+    android:fillViewport="true">
 
-    <!-- Step indicator -->
-    <TextView
-        android:id="@+id/stepIndicator"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Step 1 of 2"
-        android:textSize="14sp"
-        android:textColor="#4a5568"
-        android:textAlignment="center"
-        android:layout_marginBottom="32dp"
-        android:layout_marginTop="16dp" />
-
-    <!-- Step 1: Wallet Sign-In -->
-    <LinearLayout
-        android:id="@+id/stepSignIn"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
+        android:minHeight="640dp"
         android:orientation="vertical"
-        android:gravity="center"
-        android:visibility="visible">
+        android:paddingStart="24dp"
+        android:paddingTop="28dp"
+        android:paddingEnd="24dp"
+        android:paddingBottom="32dp">
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/onboarding_welcome_title"
-            android:textSize="28sp"
-            android:textStyle="bold"
+            android:fontFamily="@font/geist"
+            android:text="ghola"
             android:textColor="#eef1f8"
-            android:textAlignment="center"
-            android:layout_marginBottom="8dp" />
+            android:textFontWeight="500"
+            android:textSize="22sp" />
 
         <TextView
+            android:id="@+id/stepIndicator"
+            style="@style/Ghola.Text.Eyebrow"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/onboarding_welcome_body"
-            android:textSize="16sp"
-            android:textColor="#8b95a8"
-            android:textAlignment="center"
-            android:layout_marginBottom="48dp" />
+            android:layout_marginTop="38dp"
+            android:text="Step 1 of 2"
+            android:textColor="#4a5568" />
 
-        <Button
-            android:id="@+id/btnWalletSignIn"
-            android:layout_width="280dp"
-            android:layout_height="48dp"
-            android:text="@string/onboarding_primary_sign_in"
-            android:layout_marginBottom="16dp"
-            style="@style/Widget.MaterialComponents.Button" />
+        <LinearLayout
+            android:id="@+id/stepSignIn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="vertical"
+            android:visibility="visible">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/geist"
+                android:includeFontPadding="false"
+                android:text="Connect your wallet"
+                android:textColor="#f6f8ff"
+                android:textFontWeight="500"
+                android:textSize="34sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:fontFamily="@font/geist"
+                android:text="Use Ghola with wallet approval, trade limits, and a kill switch."
+                android:textColor="#aab5c8"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnWalletSignIn"
+                style="@style/Ghola.PrimaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="60dp"
+                android:layout_marginTop="26dp"
+                android:text="@string/onboarding_primary_sign_in" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="18dp"
+                android:background="@drawable/bubble_assistant"
+                android:fontFamily="@font/geist"
+                android:gravity="center_vertical"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:text="1. Pick a market"
+                android:textColor="#eef1f8"
+                android:textFontWeight="500"
+                android:textSize="16sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bubble_assistant"
+                android:fontFamily="@font/geist"
+                android:gravity="center_vertical"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:text="2. Set limits"
+                android:textColor="#eef1f8"
+                android:textFontWeight="500"
+                android:textSize="16sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bubble_assistant"
+                android:fontFamily="@font/geist"
+                android:gravity="center_vertical"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:text="3. Arm or stop anytime"
+                android:textColor="#eef1f8"
+                android:textFontWeight="500"
+                android:textSize="16sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/stepAccessibility"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/geist"
+                android:text="@string/onboarding_accessibility_title"
+                android:textColor="#eef1f8"
+                android:textFontWeight="500"
+                android:textSize="34sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:fontFamily="@font/geist"
+                android:text="@string/onboarding_accessibility_body"
+                android:textColor="#8b95a8"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnEnableAccessibility"
+                style="@style/Ghola.PrimaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="60dp"
+                android:layout_marginTop="30dp"
+                android:text="@string/onboarding_accessibility_open" />
+
+            <Button
+                android:id="@+id/btnCheckAccessibility"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="match_parent"
+                android:layout_height="54dp"
+                android:layout_marginTop="10dp"
+                android:text="@string/onboarding_accessibility_done" />
+
+            <Button
+                android:id="@+id/btnFinish"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="match_parent"
+                android:layout_height="54dp"
+                android:layout_marginTop="8dp"
+                android:text="@string/onboarding_accessibility_skip" />
+
+            <Button
+                android:id="@+id/btnDone"
+                style="@style/Ghola.PrimaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="60dp"
+                android:text="@string/onboarding_accessibility_get_started"
+                android:visibility="gone" />
+        </LinearLayout>
     </LinearLayout>
-
-    <!-- Step 2: Accessibility -->
-    <LinearLayout
-        android:id="@+id/stepAccessibility"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:visibility="gone">
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/onboarding_accessibility_title"
-            android:textSize="28sp"
-            android:textStyle="bold"
-            android:textColor="#eef1f8"
-            android:textAlignment="center"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/onboarding_accessibility_body"
-            android:textSize="16sp"
-            android:textColor="#8b95a8"
-            android:textAlignment="center"
-            android:layout_marginBottom="48dp" />
-
-        <Button
-            android:id="@+id/btnEnableAccessibility"
-            android:layout_width="280dp"
-            android:layout_height="48dp"
-            android:text="@string/onboarding_accessibility_open"
-            android:layout_marginBottom="16dp"
-            style="@style/Widget.MaterialComponents.Button" />
-
-        <Button
-            android:id="@+id/btnCheckAccessibility"
-            android:layout_width="280dp"
-            android:layout_height="48dp"
-            android:text="@string/onboarding_accessibility_done"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
-
-        <Button
-            android:id="@+id/btnFinish"
-            android:layout_width="280dp"
-            android:layout_height="48dp"
-            android:text="@string/onboarding_accessibility_skip"
-            android:layout_marginTop="16dp"
-            style="@style/Widget.MaterialComponents.Button.TextButton" />
-
-        <Button
-            android:id="@+id/btnDone"
-            android:layout_width="280dp"
-            android:layout_height="48dp"
-            android:text="@string/onboarding_accessibility_get_started"
-            android:visibility="gone"
-            style="@style/Widget.MaterialComponents.Button" />
-    </LinearLayout>
-
-</LinearLayout>
+</ScrollView>

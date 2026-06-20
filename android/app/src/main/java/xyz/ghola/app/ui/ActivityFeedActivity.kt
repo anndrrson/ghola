@@ -7,6 +7,7 @@ import android.view.ViewGroup
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.bottomnavigation.BottomNavigationView
@@ -73,19 +74,15 @@ class ActivityFeedActivity : AppCompatActivity() {
         val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
         for (i in 0 until seed.length()) {
             val row = seed.getJSONObject(i)
-            val verb = when (row.optString("kind")) {
-                "paid_by" -> "earned"
-                "paid" -> "spent"
-                else -> "—"
-            }
             val time = timeFmt.format(java.util.Date(row.optLong("timestamp_ms")))
-            val note = row.optString("note", "")
+            val detail = row.optString("detail", "")
             items.add(
                 FeedItem(
                     agentName = row.optString("agent_name", "Agent"),
-                    verb = verb,
+                    action = row.optString("action", ""),
                     amountMicroUsdc = row.optLong("amount_micro_usdc", 0L),
-                    subtext = "$time · $note",
+                    tone = row.optString("tone", "neutral"),
+                    subtext = "$time · $detail",
                 )
             )
         }
@@ -97,8 +94,9 @@ class ActivityFeedActivity : AppCompatActivity() {
 
     data class FeedItem(
         val agentName: String,
-        val verb: String,
+        val action: String,
         val amountMicroUsdc: Long,
+        val tone: String,
         val subtext: String
     )
 
@@ -119,13 +117,28 @@ class ActivityFeedActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(holder: VH, position: Int) {
             val item = items[position]
-            val usdc = item.amountMicroUsdc / 1_000_000.0
-            val amount = if (usdc < 0.01) String.format("$%.4f", usdc) else String.format("$%.2f", usdc)
-            holder.title.text = "${item.agentName} ${item.verb} $amount"
+            holder.title.text = "${item.agentName} · ${item.action}"
             holder.slug.text = item.subtext
+
+            // Right-aligned realized P&L, coloured by tone. Hidden when the
+            // event has no settlement (armed / filled / skipped / expired).
+            if (item.amountMicroUsdc != 0L) {
+                val usdc = item.amountMicroUsdc / 1_000_000.0
+                val sign = if (usdc >= 0) "+" else "−"
+                holder.status.text = String.format("%s$%.2f", sign, kotlin.math.abs(usdc))
+                val colorRes = when (item.tone) {
+                    "gain" -> R.color.ghola_success
+                    "loss" -> R.color.ghola_error
+                    else -> R.color.ghola_text_secondary
+                }
+                holder.status.setTextColor(ContextCompat.getColor(holder.itemView.context, colorRes))
+                holder.status.visibility = View.VISIBLE
+            } else {
+                holder.status.visibility = View.GONE
+            }
+
             holder.bio.visibility = View.GONE
             holder.did.visibility = View.GONE
-            holder.status.visibility = View.GONE
         }
 
         override fun getItemCount(): Int = items.size

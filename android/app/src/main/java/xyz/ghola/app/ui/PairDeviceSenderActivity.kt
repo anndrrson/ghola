@@ -3,6 +3,7 @@ package xyz.ghola.app.ui
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
+import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -24,10 +25,10 @@ import xyz.ghola.app.cloud.DeviceSignerProvider
 import xyz.ghola.app.crypto.Envelope
 import xyz.ghola.app.crypto.PairDevice
 import xyz.ghola.app.crypto.VaultStore
+import xyz.ghola.app.crypto.VaultStoreHolder
 import xyz.ghola.app.crypto.mwaSignerForVault
 import xyz.ghola.app.solana.Base58
 import xyz.ghola.app.solana.MWAConnect
-import xyz.ghola.app.solana.SeedVaultNative
 
 /**
  * Pair Device — sender side. Uses the code from the new phone, asks the
@@ -47,7 +48,6 @@ class PairDeviceSenderActivity : AppCompatActivity() {
     private lateinit var confirmSendButton: MaterialButton
     private lateinit var cancelPairButton: MaterialButton
     private val activityResultSender = ActivityResultSender(this)
-    private val seedVaultNative = SeedVaultNative(this)
     private var vault: VaultStore? = null
     private var pendingDescriptor: PairDevice.HandshakeDescriptor? = null
     private var pendingSolanaAddress: String? = null
@@ -77,6 +77,11 @@ class PairDeviceSenderActivity : AppCompatActivity() {
         cancelPairButton = findViewById(R.id.cancelPairButton)
 
         pasteButton.setOnClickListener { pastePairingCode() }
+        scanButton.visibility = if (BuildConfig.GHOLA_CAMERA_QR_ENABLED) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
         scanButton.setOnClickListener { launchScan() }
         confirmSendButton.setOnClickListener { sendPendingPairing() }
         cancelPairButton.setOnClickListener {
@@ -171,27 +176,35 @@ class PairDeviceSenderActivity : AppCompatActivity() {
         pasteButton.isEnabled = false
         confirmSendButton.isEnabled = false
         cancelPairButton.isEnabled = false
-        val v = VaultStore.create(this, ourDid)
+        val v = VaultStoreHolder.get(this, ourDid)
         vault = v
 
         lifecycleScope.launch {
             runCatching {
-                val signer = if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
-                    (DeviceSignerProvider.cached(this@PairDeviceSenderActivity)
-                        ?: DeviceSignerProvider.signIn(this@PairDeviceSenderActivity).getOrThrow())
-                        .vaultSigner()
-                } else if (BuildConfig.GHOLA_SEEKER_BUILD && storage.hasSeedVaultSession()) {
-                    val seedSession = currentSeedVaultSession()
-                        ?: error("Seed Vault session unavailable; reconnect in Wallet")
-                    seedVaultNative.signer(seedSession).vaultSigner()
+                val signer = if (v.isUnlocked()) {
+                    null
                 } else {
-                    mwaSignerForVault(
-                        activityResultSender,
-                        solanaAddress,
-                        storage.getMwaAuthToken(),
-                    )
+                    ApprovalGate.request(
+                        context = this@PairDeviceSenderActivity,
+                        reason = ApprovalGate.Reason.PAIR_DEVICE,
+                        caller = "PairDeviceSenderActivity.startSend.unlock",
+                    ) {
+                        if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                            (DeviceSignerProvider.cached(this@PairDeviceSenderActivity)
+                                ?: DeviceSignerProvider.signIn(this@PairDeviceSenderActivity).getOrThrow())
+                                .vaultSigner()
+                        } else {
+                            mwaSignerForVault(
+                                activityResultSender,
+                                solanaAddress,
+                                storage.getMwaAuthToken(),
+                            )
+                        }
+                    }
                 }
-                withContext(Dispatchers.IO) { v.unlock(signer) }
+                if (signer != null) {
+                    withContext(Dispatchers.IO) { v.unlock(signer) }
+                }
                 statusView.text = "Sending encrypted chats..."
                 // The handshake envelope must be signed by the wallet
                 // (not the cached chat-sign seed) so the receiver can
@@ -208,7 +221,16 @@ class PairDeviceSenderActivity : AppCompatActivity() {
                             else -> error("Turnkey sign failed: $sig")
                         }
                     } else {
-                        when (val sig = kotlinx.coroutines.runBlocking(Dispatchers.IO) { signWithNativeWalletFirst(solanaAddress, msg) }) {
+                        val outcome = kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+                            ApprovalGate.request(
+                                context = this@PairDeviceSenderActivity,
+                                reason = ApprovalGate.Reason.PAIR_DEVICE,
+                                caller = "PairDeviceSenderActivity.startSend.walletEnvelope",
+                            ) {
+                                signWithNativeWalletFirst(solanaAddress, msg)
+                            }
+                        }
+                        when (val sig = outcome) {
                             is MWAConnect.SignOutcome.Success -> sig.signature
                             else -> error("wallet sign failed: $sig")
                         }
@@ -240,22 +262,6 @@ class PairDeviceSenderActivity : AppCompatActivity() {
         walletAddress: String,
         message: ByteArray,
     ): MWAConnect.SignOutcome {
-        val seedToken = storage.getSeedVaultAuthToken()
-        val seedPath = storage.getSeedVaultDerivationPathUri()
-        if (
-            BuildConfig.GHOLA_SEEKER_BUILD &&
-            seedVaultNative.isAvailable() &&
-            seedToken != null &&
-            !seedPath.isNullOrBlank()
-        ) {
-            return when (val out = seedVaultNative.signMessage(seedToken, seedPath, message)) {
-                is SeedVaultNative.SignOutcome.Success -> MWAConnect.SignOutcome.Success(out.signature)
-                SeedVaultNative.SignOutcome.NoSeedVault -> MWAConnect.SignOutcome.NoWallet
-                SeedVaultNative.SignOutcome.Declined -> MWAConnect.SignOutcome.Declined
-                SeedVaultNative.SignOutcome.Cancelled -> MWAConnect.SignOutcome.Cancelled
-                is SeedVaultNative.SignOutcome.Failure -> MWAConnect.SignOutcome.Failure(out.cause)
-            }
-        }
         return MWAConnect.signMessageDetached(
             activityResultSender,
             walletAddress,
@@ -264,16 +270,8 @@ class PairDeviceSenderActivity : AppCompatActivity() {
         )
     }
 
-    private fun currentSeedVaultSession(): SeedVaultNative.Session? {
-        val address = storage.getSeedVaultAddress() ?: return null
-        val token = storage.getSeedVaultAuthToken() ?: return null
-        val path = storage.getSeedVaultDerivationPathUri() ?: return null
-        return SeedVaultNative.Session(address, token, path)
-    }
-
     override fun onDestroy() {
         super.onDestroy()
-        vault?.lock()
     }
 
     private fun walletLabel(): String =

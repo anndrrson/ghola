@@ -16,6 +16,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import android.util.Log
+import com.google.android.material.button.MaterialButton
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -48,10 +49,10 @@ import xyz.ghola.app.cloud.TaskClassifier
 import xyz.ghola.app.cloud.ThumperCloudClient
 import xyz.ghola.app.crypto.Envelope
 import xyz.ghola.app.crypto.VaultStore
+import xyz.ghola.app.crypto.VaultStoreHolder
 import xyz.ghola.app.crypto.mwaSignerForVault
 import xyz.ghola.app.service.ThumperAccessibilityService
 import xyz.ghola.app.solana.Base58
-import xyz.ghola.app.solana.SeedVaultNative
 import xyz.ghola.app.ui.components.IntegrityBadge
 import xyz.ghola.app.ui.components.IntegrityBadgeDetailDialog
 
@@ -63,20 +64,16 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         // Wallet package candidates in priority order (Seeker + general crypto)
         private val WALLET_CANDIDATES = listOf(
             "com.solflare.mobile",
-            "com.solanamobile.seedvault",
-            "com.solanamobile.seedvaultimpl",
             "app.phantom"
         )
 
         // Keywords in app labels that indicate a Solana wallet
         private val WALLET_LABEL_KEYWORDS = listOf(
-            "seed vault", "seedvault", "solflare", "wallet"
+            "solflare", "phantom", "wallet"
         )
 
         // Packages that indicate this is a Solana Seeker device
         private val SEEKER_INDICATOR_PACKAGES = listOf(
-            "com.solanamobile.seedvault",
-            "com.solanamobile.seedvaultimpl",
             "com.solanamobile.dappstore"
         )
 
@@ -135,7 +132,9 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     private lateinit var chatRecyclerView: RecyclerView
     private lateinit var messageInput: EditText
     private lateinit var sendButton: ImageButton
+    private lateinit var statusPanel: View
     private lateinit var statusBar: TextView
+    private lateinit var statusActionButton: MaterialButton
     private lateinit var chatAdapter: ChatAdapter
     private lateinit var integrityBadge: IntegrityBadge
     private lateinit var backendNameText: TextView
@@ -163,7 +162,6 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     // activity-result handler at construction time so the MWA SDK can
     // dispatch the wallet's intent result back to us.
     private val activityResultSender = ActivityResultSender(this)
-    private val seedVaultNative = SeedVaultNative(this)
 
     private var agentController: AgentController? = null
     private var localBackend: LocalLlamaBackend? = null
@@ -173,6 +171,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     private var pendingScreenshot: String? = null
     private var lastToolWasExplicitScreenshot = false
     private var isSigningIntoCloud = false
+    private var statusAction: (() -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -186,7 +185,10 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         chatRecyclerView = findViewById(R.id.chatRecyclerView)
         messageInput = findViewById(R.id.messageInput)
         sendButton = findViewById(R.id.sendButton)
+        statusPanel = findViewById(R.id.statusPanel)
         statusBar = findViewById(R.id.statusBar)
+        statusActionButton = findViewById(R.id.statusActionButton)
+        statusActionButton.setOnClickListener { statusAction?.invoke() }
 
         integrityBadge = findViewById(R.id.integrityBadge)
         backendNameText = findViewById(R.id.backendNameText)
@@ -238,28 +240,18 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         // Handle prefill from HomeActivity voice input or quick actions
         intent.getStringExtra("prefill_message")?.let { prefill ->
             messageInput.setText(prefill)
-            if (intent.getBooleanExtra("auto_send", false)) {
-                // Auto-send after agent is initialized (delayed to allow setup)
-                messageInput.post {
-                    messageInput.postDelayed({
-                        if (agentController != null && messageInput.text.isNotEmpty()) {
-                            sendMessage()
-                        }
-                    }, 500)
-                }
-            }
         }
     }
 
     private fun applyQuickActionMode(mode: String?) {
         when (mode) {
-            "call" -> {
-                chatTitle.text = "ghola / call"
-                messageInput.hint = "Who should I call?"
+            "markets" -> {
+                chatTitle.text = "ghola / markets"
+                messageInput.hint = "Ask for a market brief"
             }
-            "email" -> {
-                chatTitle.text = "ghola / email"
-                messageInput.hint = "What should I write?"
+            "trade" -> {
+                chatTitle.text = "ghola / trade"
+                messageInput.hint = "Describe the trade setup"
             }
             else -> {
                 chatTitle.text = "ghola / chat"
@@ -270,7 +262,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
 
     override fun onResume() {
         super.onResume()
-        checkPrerequisites()
+        checkPrerequisites(allowWalletApproval = false)
         // The user may have switched backends in Settings while we were
         // paused — re-hash and re-bind the badge so it tells the truth.
         refreshIntegrityBadge()
@@ -301,17 +293,12 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         // Clear conversation history when user leaves the app so a fresh
         // session starts on return (prevents stale context issues).
         agentController?.clearHistory()
-        // Lock the E2E vault when backgrounded so a stolen device that's
-        // already unlocked-once can't read on-disk session DEKs without
-        // a fresh wallet sign. Re-prompts on the next chat send.
-        vaultStore?.lock()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         agentController?.shutdown()
         localBackend?.shutdown()
-        vaultStore?.lock()
     }
 
     /**
@@ -409,72 +396,29 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         return SecureStorage.BACKEND_E2E_CLOUD
     }
 
-    private fun checkPrerequisites() {
+    private fun checkPrerequisites(allowWalletApproval: Boolean = false) {
+        if (agentController != null) return
         val mode = activeBackendMode()
         if (mode == SecureStorage.BACKEND_E2E_CLOUD) {
             if (!secureStorage.hasSolanaAddress()) {
-                if (BuildConfig.GHOLA_PLAY_STORE_BUILD && !isSigningIntoCloud) {
-                    isSigningIntoCloud = true
-                    showStatus("Signing in with Turnkey…")
-                    lifecycleScope.launch {
-                        val auth = CloudAuthManager(this@ChatActivity).signInWithTurnkey(this@ChatActivity)
-                        isSigningIntoCloud = false
-                        when (auth) {
-                            is CloudAuthManager.AuthResult.Success -> {
-                                hideStatus()
-                                checkPrerequisites()
-                            }
-                            is CloudAuthManager.AuthResult.Error -> {
-                                showStatus(auth.message)
-                                Toast.makeText(this@ChatActivity, auth.message, Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    }
-                    return
+                if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                    showStatusAction(
+                        "Connect with Turnkey to enable encrypted chat.",
+                        "Connect",
+                    ) { signInToCloudThenInitialize() }
+                } else {
+                    showStatusAction(
+                        "Connect a Solana wallet to enable encrypted chat.",
+                        "Connect",
+                    ) { startActivity(Intent(this, WalletActivity::class.java)) }
                 }
-                Toast.makeText(
-                    this,
-                    "Connect a Solana wallet first to enable end-to-end encrypted chat",
-                    Toast.LENGTH_LONG,
-                ).show()
-                startActivity(Intent(this, WalletActivity::class.java))
                 return
             }
             if (!secureStorage.hasCloudAuth()) {
-                if (isSigningIntoCloud) return
-                val walletAddress = secureStorage.getSolanaAddress().orEmpty()
-                if (walletAddress.isBlank()) {
-                    startActivity(Intent(this, WalletActivity::class.java))
-                    return
-                }
-                isSigningIntoCloud = true
-                showStatus(if (BuildConfig.GHOLA_PLAY_STORE_BUILD) "Signing in with Turnkey…" else "Signing in with wallet…")
-                lifecycleScope.launch {
-                    val auth = if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
-                        CloudAuthManager(this@ChatActivity).signInWithTurnkey(this@ChatActivity)
-                    } else if (BuildConfig.GHOLA_SEEKER_BUILD && secureStorage.hasSeedVaultSession()) {
-                        val session = currentSeedVaultSession()
-                        if (session == null) {
-                            CloudAuthManager.AuthResult.Error("Reconnect Seed Vault in Wallet")
-                        } else {
-                            CloudAuthManager(this@ChatActivity).signInWithDeviceSigner(seedVaultNative.signer(session))
-                        }
-                    } else {
-                        CloudAuthManager(this@ChatActivity)
-                            .signInWithWallet(activityResultSender, walletAddress)
-                    }
-                    isSigningIntoCloud = false
-                    when (auth) {
-                        is CloudAuthManager.AuthResult.Success -> {
-                            hideStatus()
-                            checkPrerequisites()
-                        }
-                        is CloudAuthManager.AuthResult.Error -> {
-                            showStatus(auth.message)
-                            Toast.makeText(this@ChatActivity, auth.message, Toast.LENGTH_LONG).show()
-                        }
-                    }
-                }
+                showStatusAction(
+                    "Sign in to Ghola Cloud to enable encrypted chat.",
+                    "Sign in",
+                ) { signInToCloudThenInitialize() }
                 return
             }
         } else if (mode == SecureStorage.BACKEND_LOCAL) {
@@ -515,7 +459,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
         }
 
         val service = ThumperAccessibilityService.instance
-        if (service == null) {
+        if (BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED && service == null) {
             Toast.makeText(this, "Tap Ghola, then turn it on to control apps.", Toast.LENGTH_LONG).show()
             if (!promptedAccessibilityThisSession) {
                 promptedAccessibilityThisSession = true
@@ -524,37 +468,88 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             return
         }
 
-        initializeAgent()
+        initializeAgent(allowWalletApproval)
     }
 
-    private fun initializeAgent() {
-        val service = ThumperAccessibilityService.instance ?: return
-        val commandHandler = service.commandHandler ?: return
-        val toolExecutor = LocalToolExecutor(commandHandler, packageName)
+    private fun signInToCloudThenInitialize() {
+        if (isSigningIntoCloud) return
+        val walletAddress = secureStorage.getSolanaAddress().orEmpty()
+        if (!BuildConfig.GHOLA_PLAY_STORE_BUILD && walletAddress.isBlank()) {
+            startActivity(Intent(this, WalletActivity::class.java))
+            return
+        }
+
+        isSigningIntoCloud = true
+        setInputEnabled(false)
+        showStatus(if (BuildConfig.GHOLA_PLAY_STORE_BUILD) "Signing in with Turnkey..." else "Signing in with wallet...")
+        lifecycleScope.launch {
+            val auth = runCatching {
+                ApprovalGate.request(
+                    context = this@ChatActivity,
+                    reason = ApprovalGate.Reason.CONNECT,
+                    caller = "ChatActivity.signInToCloud",
+                ) {
+                    if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                        CloudAuthManager(this@ChatActivity).signInWithTurnkey(this@ChatActivity)
+                    } else {
+                        CloudAuthManager(this@ChatActivity)
+                            .signInWithWallet(activityResultSender, walletAddress)
+                    }
+                }
+            }.getOrElse { err ->
+                CloudAuthManager.AuthResult.Error(err.message ?: "Sign-in failed")
+            }
+            isSigningIntoCloud = false
+            setInputEnabled(true)
+            when (auth) {
+                is CloudAuthManager.AuthResult.Success -> {
+                    hideStatus()
+                    checkPrerequisites(allowWalletApproval = false)
+                }
+                is CloudAuthManager.AuthResult.Error -> {
+                    showStatusAction(auth.message, "Retry") { signInToCloudThenInitialize() }
+                    Toast.makeText(this@ChatActivity, auth.message, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun initializeAgent(allowWalletApproval: Boolean = false) {
+        val toolExecutor = if (BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED) {
+            val service = ThumperAccessibilityService.instance ?: return
+            val commandHandler = service.commandHandler ?: return
+            LocalToolExecutor(commandHandler, packageName)
+        } else {
+            if (BuildConfig.GHOLA_SEEKER_BUILD) {
+                secureStorage.setIsSeeker(true)
+                secureStorage.setCryptoEnabled(true)
+            }
+            LocalToolExecutor(null, packageName)
+        }
 
         // Run device detection on background thread, then initialize the agent
-        if (!secureStorage.hasWalletPackage()) {
+        if (BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED && !secureStorage.hasWalletPackage()) {
             showStatus("Discovering device apps...")
             Thread {
                 discoverDeviceCapabilities(toolExecutor)
                 runOnUiThread {
                     hideStatus()
-                    createAgent(toolExecutor)
+                    createAgent(toolExecutor, allowWalletApproval)
                 }
             }.start()
         } else {
-            createAgent(toolExecutor)
+            createAgent(toolExecutor, allowWalletApproval)
         }
     }
 
-    private fun createAgent(toolExecutor: LocalToolExecutor) {
+    private fun createAgent(toolExecutor: LocalToolExecutor, allowWalletApproval: Boolean = false) {
         // Pre-warm wallet intent cache if crypto is enabled
         secureStorage.getWalletPackage()?.let { pkg ->
             intentCache[pkg] = packageManager.getLaunchIntentForPackage(pkg)
         }
 
         when {
-            activeBackendMode() == SecureStorage.BACKEND_E2E_CLOUD -> initializeE2eAgent(toolExecutor)
+            activeBackendMode() == SecureStorage.BACKEND_E2E_CLOUD -> initializeE2eAgent(toolExecutor, allowWalletApproval)
             activeBackendMode() == SecureStorage.BACKEND_LOCAL -> initializeLocalAgent(toolExecutor)
             activeBackendMode() == SecureStorage.BACKEND_QWEN_CLOUD -> initializeQwenCloudAgent(toolExecutor)
             activeBackendMode() == SecureStorage.BACKEND_LITERT_NPU ->
@@ -620,6 +615,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                         secureStorage.getWalletPackage(),
                         secureStorage.isSeeker(),
                         secureStorage.hasCloudAuth(),
+                        deviceToolsEnabled = BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED,
                     )
                     hideStatus()
                     setInputEnabled(true)
@@ -655,22 +651,25 @@ class ChatActivity : AppCompatActivity(), AgentListener {
      *   1. Read the cached Solana address (set by WalletActivity).
      *   2. Construct the user's `did:key:zXXX` from that address.
      *   3. Build a [VaultStore] for that DID.
-     *   4. Off-thread, prompt MWA `signMessage` once on the unlock
+     *   4. Off-thread, prompt MWA `signMessage` once only after the user
+     *      taps the explicit Unlock action
      *      challenge so the vault material is derived.
      *   5. On success → instantiate [EnvelopeCloudBackend] and start
      *      AgentController. On failure → user-friendly toast and bail.
      */
-    private fun initializeE2eAgent(toolExecutor: LocalToolExecutor) {
+    private fun initializeE2eAgent(toolExecutor: LocalToolExecutor, allowWalletApproval: Boolean = false) {
         val solanaAddress = secureStorage.getSolanaAddress()
         if (solanaAddress.isNullOrBlank()) {
-            showStatus("No Solana wallet connected")
-            startActivity(Intent(this, WalletActivity::class.java))
+            showStatusAction("No Solana wallet connected.", "Connect") {
+                startActivity(Intent(this, WalletActivity::class.java))
+            }
             return
         }
         val authToken = secureStorage.getCloudAuthToken()
         if (authToken.isNullOrBlank()) {
-            showStatus("Sign in to Ghola Cloud")
-            startActivity(Intent(this, SettingsActivity::class.java))
+            showStatusAction("Sign in to Ghola Cloud.", "Sign in") {
+                signInToCloudThenInitialize()
+            }
             return
         }
 
@@ -686,31 +685,55 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             return
         }
         val userDid = Envelope.didKeyFromVerifying(pubBytes)
-        val vault = VaultStore.create(this, userDid)
+        val vault = VaultStoreHolder.get(this, userDid)
         vaultStore = vault
 
+        if (!vault.isUnlocked() && !allowWalletApproval) {
+            setInputEnabled(true)
+            showStatusAction("Encrypted chat is locked.", "Unlock") {
+                initializeAgent(allowWalletApproval = true)
+            }
+            return
+        }
+
         setInputEnabled(false)
-        showStatus(if (BuildConfig.GHOLA_PLAY_STORE_BUILD) "Approve with Turnkey to unlock end-to-end chat…" else "Tap your wallet to unlock end-to-end chat…")
+        showStatus(
+            if (vault.isUnlocked()) {
+                "Opening encrypted chat..."
+            } else if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                "Approve with Turnkey to unlock end-to-end chat…"
+            } else {
+                "Tap your wallet to unlock end-to-end chat…"
+            },
+        )
 
         lifecycleScope.launch {
             val outcome = runCatching {
-                val signer = if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
-                    DeviceSignerProvider.cached(this@ChatActivity)
-                        ?: DeviceSignerProvider.signIn(this@ChatActivity).getOrThrow()
-                    DeviceSignerProvider.cached(this@ChatActivity)?.vaultSigner()
-                        ?: error("Turnkey signer unavailable after sign-in")
-                } else if (BuildConfig.GHOLA_SEEKER_BUILD && secureStorage.hasSeedVaultSession()) {
-                    val session = currentSeedVaultSession()
-                        ?: error("Seed Vault session unavailable; reconnect in Wallet")
-                    seedVaultNative.signer(session).vaultSigner()
+                val signer = if (vault.isUnlocked()) {
+                    null
                 } else {
-                    mwaSignerForVault(
-                        activityResultSender,
-                        solanaAddress,
-                        secureStorage.getMwaAuthToken(),
-                    )
+                    ApprovalGate.request(
+                        context = this@ChatActivity,
+                        reason = ApprovalGate.Reason.UNLOCK_CHAT,
+                        caller = "ChatActivity.initializeE2eAgent",
+                    ) {
+                        if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                            DeviceSignerProvider.cached(this@ChatActivity)
+                                ?: DeviceSignerProvider.signIn(this@ChatActivity).getOrThrow()
+                            DeviceSignerProvider.cached(this@ChatActivity)?.vaultSigner()
+                                ?: error("Turnkey signer unavailable after sign-in")
+                        } else {
+                            mwaSignerForVault(
+                                activityResultSender,
+                                solanaAddress,
+                                secureStorage.getMwaAuthToken(),
+                            )
+                        }
+                    }
                 }
-                withContext(Dispatchers.IO) { vault.unlock(signer) }
+                if (signer != null) {
+                    withContext(Dispatchers.IO) { vault.unlock(signer) }
+                }
             }
             outcome.onSuccess {
                 hideStatus()
@@ -724,6 +747,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                     secureStorage.getWalletPackage(),
                     secureStorage.isSeeker(),
                     secureStorage.hasCloudAuth(),
+                    deviceToolsEnabled = BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED,
                 )
                 setInputEnabled(true)
             }
@@ -733,7 +757,7 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                     is VaultStore.VaultLockedError.NoWalletPaired ->
                         "Connect a Solana wallet to enable encrypted chat"
                     is VaultStore.VaultLockedError.WalletDeclined ->
-                        "Wallet declined — tap Send again to retry"
+                        "Wallet declined — tap Unlock to retry"
                     is VaultStore.VaultLockedError.WalletCancelled ->
                         "Sign request cancelled"
                     is VaultStore.VaultLockedError.DeterminismViolation ->
@@ -742,17 +766,12 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                         "Couldn't unlock the encrypted vault"
                     else -> err.message ?: "Couldn't unlock the encrypted vault"
                 }
-                showStatus(msg)
+                showStatusAction(msg, "Unlock") {
+                    initializeAgent(allowWalletApproval = true)
+                }
                 setInputEnabled(true)
             }
         }
-    }
-
-    private fun currentSeedVaultSession(): SeedVaultNative.Session? {
-        val address = secureStorage.getSeedVaultAddress() ?: return null
-        val token = secureStorage.getSeedVaultAuthToken() ?: return null
-        val path = secureStorage.getSeedVaultDerivationPathUri() ?: return null
-        return SeedVaultNative.Session(address, token, path)
     }
 
     private fun initializeCloudAgent(toolExecutor: LocalToolExecutor) {
@@ -765,7 +784,8 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             backend, toolExecutor, this,
             secureStorage.getWalletPackage(),
             secureStorage.isSeeker(),
-            secureStorage.hasCloudAuth()
+            secureStorage.hasCloudAuth(),
+            deviceToolsEnabled = BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED,
         )
 
         setInputEnabled(true)
@@ -781,7 +801,8 @@ class ChatActivity : AppCompatActivity(), AgentListener {
             backend, toolExecutor, this,
             secureStorage.getWalletPackage(),
             secureStorage.isSeeker(),
-            secureStorage.hasCloudAuth()
+            secureStorage.hasCloudAuth(),
+            deviceToolsEnabled = BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED,
         )
 
         setInputEnabled(true)
@@ -805,7 +826,8 @@ class ChatActivity : AppCompatActivity(), AgentListener {
                         backend, toolExecutor, this,
                         secureStorage.getWalletPackage(),
                         secureStorage.isSeeker(),
-                        secureStorage.hasCloudAuth()
+                        secureStorage.hasCloudAuth(),
+                        deviceToolsEnabled = BuildConfig.GHOLA_DEVICE_CONTROL_ENABLED,
                     )
                     hideStatus()
                     setInputEnabled(true)
@@ -1039,12 +1061,24 @@ class ChatActivity : AppCompatActivity(), AgentListener {
     }
 
     private fun showStatus(text: String) {
+        statusAction = null
         statusBar.text = text
-        statusBar.visibility = View.VISIBLE
+        statusActionButton.visibility = View.GONE
+        statusPanel.visibility = View.VISIBLE
+    }
+
+    private fun showStatusAction(text: String, actionText: String, action: () -> Unit) {
+        statusAction = action
+        statusBar.text = text
+        statusActionButton.text = actionText
+        statusActionButton.visibility = View.VISIBLE
+        statusPanel.visibility = View.VISIBLE
     }
 
     private fun hideStatus() {
-        statusBar.visibility = View.GONE
+        statusAction = null
+        statusActionButton.visibility = View.GONE
+        statusPanel.visibility = View.GONE
     }
 
     // AgentListener implementation

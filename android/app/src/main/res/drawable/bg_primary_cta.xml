@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Primary call-to-action. Accent gradient (top-lit), rounded, with a soft
+  white ripple on press. Foreground ink is near-black for AA contrast.
+-->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#40ffffff">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="16dp" />
+            <gradient
+                android:angle="270"
+                android:startColor="@color/ghola_accent_top"
+                android:endColor="@color/ghola_accent_bottom" />
+        </shape>
+    </item>
+</ripple>

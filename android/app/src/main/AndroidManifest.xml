@@ -50,6 +50,13 @@
             android:name=".ui.ChatActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".ui.MarketChartActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ui.AgentTradingSessionActivity"
+            android:exported="false" />
+
         <!-- Legacy relay setup -->
         <activity
             android:name=".ui.MainActivity"

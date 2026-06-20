@@ -25,21 +25,19 @@ import xyz.ghola.app.crypto.ChatHistoryStore
 import xyz.ghola.app.crypto.Envelope
 import xyz.ghola.app.crypto.VaultStoreHolder
 import xyz.ghola.app.demo.DemoSeed
+import xyz.ghola.app.market.PrivateAccountClient
 import xyz.ghola.app.solana.Base58
 import xyz.ghola.app.solana.MWAConnect
-import xyz.ghola.app.solana.SeedVaultManager
-import xyz.ghola.app.solana.SeedVaultNative
-import xyz.ghola.app.solana.ShieldedPoolClient
 import xyz.ghola.app.solana.SolanaConstants
 import java.util.concurrent.Executors
 
 /**
  * Phase M6 — Wallet tab. v1 is read-only:
  *   - Detected wallet package (from existing Seeker detection logic)
- *   - Seed Vault availability flag (from SecureStorage.isSeeker)
+ *   - Seeker availability flag (from SecureStorage.isSeeker)
  *   - Owned agent count (each agent has its own isolated wallet)
  *
- * MWA signing + Seed Vault hardware integration land in Phase M4.
+ * MWA signing lands in Phase M4.
  * For now this is a landing surface that tells the user what's wired up.
  */
 class WalletActivity : AppCompatActivity() {
@@ -47,7 +45,7 @@ class WalletActivity : AppCompatActivity() {
     private lateinit var storage: SecureStorage
     private lateinit var walletStatus: TextView
     private lateinit var deviceType: TextView
-    private lateinit var seedVaultStatus: TextView
+    private lateinit var walletCapabilityStatus: TextView
     private lateinit var walletPackage: TextView
     private lateinit var agentCount: TextView
     private lateinit var connectButton: MaterialButton
@@ -76,7 +74,6 @@ class WalletActivity : AppCompatActivity() {
     // convert this to `by lazy` or initialize inside onCreate; both land
     // after STARTED and raise IllegalStateException at runtime.
     private val activityResultSender = ActivityResultSender(this)
-    private val seedVaultNative = SeedVaultNative(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -86,7 +83,7 @@ class WalletActivity : AppCompatActivity() {
 
         walletStatus = findViewById(R.id.walletStatus)
         deviceType = findViewById(R.id.deviceType)
-        seedVaultStatus = findViewById(R.id.seedVaultStatus)
+        walletCapabilityStatus = findViewById(R.id.walletCapabilityStatus)
         walletPackage = findViewById(R.id.walletPackage)
         agentCount = findViewById(R.id.agentCount)
         connectButton = findViewById(R.id.connectWalletButton)
@@ -119,17 +116,13 @@ class WalletActivity : AppCompatActivity() {
     }
 
     /**
-     * Fire the real MWA authorize flow. Launches the installed wallet
-     * (Seed Vault on Seeker), waits for user approval, displays the
+     * Fire the real MWA authorize flow. Launches the installed wallet,
+     * waits for user approval, displays the
      * returned Solana address on success or a toast on failure.
      */
     private fun startConnect() {
         if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
             startTurnkeyConnect()
-            return
-        }
-        if (BuildConfig.GHOLA_SEEKER_BUILD) {
-            startSeedVaultConnect()
             return
         }
         connectButton.isEnabled = false
@@ -183,47 +176,6 @@ class WalletActivity : AppCompatActivity() {
         }
     }
 
-    private fun startSeedVaultConnect() {
-        connectButton.isEnabled = false
-        connectStatus.text = "Opening Seed Vault..."
-        connectedPubkey.text = ""
-
-        lifecycleScope.launch {
-            val sessionResult = seedVaultNative.authorizeSession()
-            connectButton.isEnabled = true
-            sessionResult.fold(
-                onSuccess = { session ->
-                    storage.setSeedVaultSession(
-                        address = session.address,
-                        authToken = session.authToken,
-                        derivationPathUri = session.derivationPathUri,
-                    )
-                    connectStatus.text = "connected · approve sign-in"
-                    connectedPubkey.text = session.address
-                    when (val auth = CloudAuthManager(this@WalletActivity).signInWithDeviceSigner(seedVaultNative.signer(session))) {
-                        is CloudAuthManager.AuthResult.Success -> {
-                            connectStatus.text = "connected · signed in"
-                        }
-                        is CloudAuthManager.AuthResult.Error -> {
-                            connectStatus.text = "connected · sign-in needed"
-                            Toast.makeText(this@WalletActivity, auth.message, Toast.LENGTH_LONG).show()
-                        }
-                    }
-                    render()
-                },
-                onFailure = { err ->
-                    connectStatus.text = "not connected"
-                    connectedPubkey.text = ""
-                    Toast.makeText(
-                        this@WalletActivity,
-                        err.message ?: "Seed Vault authorization failed",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                },
-            )
-        }
-    }
-
     private fun startTurnkeyConnect() {
         connectButton.isEnabled = false
         connectStatus.text = "Opening Turnkey…"
@@ -268,7 +220,6 @@ class WalletActivity : AppCompatActivity() {
             if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
                 storage.clearTurnkeySession()
             } else {
-                storage.clearSeedVaultSession()
                 storage.clearMwaSession()
             }
             connectButton.isEnabled = true
@@ -293,7 +244,6 @@ class WalletActivity : AppCompatActivity() {
             VaultStoreHolder.lockAll()
         }
         CloudAuthManager(this).signOut()
-            storage.clearSeedVaultSession()
             storage.clearMwaSession()
             storage.clearTurnkeySession()
     }
@@ -310,7 +260,7 @@ class WalletActivity : AppCompatActivity() {
     private fun toggleAdvancedWallet() {
         advancedWalletVisible = !advancedWalletVisible
         advancedWalletSection.visibility = if (advancedWalletVisible) View.VISIBLE else View.GONE
-        advancedWalletButton.text = if (advancedWalletVisible) "HIDE ADVANCED" else "ADVANCED"
+        advancedWalletButton.text = if (advancedWalletVisible) "Hide advanced" else "Advanced"
         if (advancedWalletVisible) {
             loadPrivateWalletState()
         }
@@ -344,7 +294,6 @@ class WalletActivity : AppCompatActivity() {
             storage.setWalletPackage(installedWallet)
         }
 
-        val seedVaultAvailable = SeedVaultManager(this).isAvailable()
         val showSeekerSurface = BuildConfig.GHOLA_SEEKER_BUILD && seeker
 
         deviceType.text = if (showSeekerSurface) {
@@ -352,10 +301,10 @@ class WalletActivity : AppCompatActivity() {
         } else {
             getString(R.string.wallet_device_standard)
         }
-        seedVaultStatus.text = when {
-            showSeekerSurface && seedVaultAvailable -> getString(R.string.wallet_status_seed_vault)
-            showSeekerSurface -> getString(R.string.wallet_status_seeker)
-            else -> getString(R.string.wallet_status_standard)
+        walletCapabilityStatus.text = if (showSeekerSurface) {
+            getString(R.string.wallet_status_seeker)
+        } else {
+            getString(R.string.wallet_status_standard)
         }
 
         val connectedAddress = storage.getSolanaAddress()
@@ -364,9 +313,6 @@ class WalletActivity : AppCompatActivity() {
         if (BuildConfig.GHOLA_PLAY_STORE_BUILD && !turnkeyAddress.isNullOrBlank()) {
             walletPackage.text = "Turnkey"
             walletStatus.text = "Turnkey wallet connected"
-        } else if (storage.hasSeedVaultSession()) {
-            walletPackage.text = "Seed Vault"
-            walletStatus.text = "Native Seed Vault connected"
         } else if (installedWallet != null) {
             walletPackage.text = installedWallet
             walletStatus.text = "Wallet detected"
@@ -386,11 +332,7 @@ class WalletActivity : AppCompatActivity() {
             disconnectButton.visibility = View.GONE
             verifySeekerButton.isEnabled = false
         } else {
-            val label = if (storage.hasSeedVaultSession()) {
-                "Seed Vault"
-            } else {
-                storage.getMwaAccountLabel()?.takeIf { it.isNotBlank() }
-            }
+            val label = storage.getMwaAccountLabel()?.takeIf { it.isNotBlank() }
             connectStatus.text = buildString {
                 append("connected")
                 if (label != null) append(" · ").append(label)
@@ -476,10 +418,6 @@ class WalletActivity : AppCompatActivity() {
                 Toast.makeText(this, "Sign in with ${walletApprovalLabel()} first", Toast.LENGTH_LONG).show()
                 return
             }
-            BuildConfig.GHOLA_SEEKER_BUILD && !storage.hasSeedVaultSession() -> {
-                Toast.makeText(this, "Reconnect Seed Vault before Solana shielded sends", Toast.LENGTH_LONG).show()
-                return
-            }
             !isPrivateRecipientForBuild(recipient) -> {
                 Toast.makeText(this, privateRecipientErrorForBuild(), Toast.LENGTH_LONG).show()
                 return
@@ -541,29 +479,10 @@ class WalletActivity : AppCompatActivity() {
     }
 
     private fun startShieldedSelfTest() {
-        if (!BuildConfig.GHOLA_SEEKER_BUILD) {
-            privateIntentStatus.text = getString(R.string.wallet_standard_proof_status)
-            return
-        }
-        val session = currentSeedVaultSession()
-        if (session == null) {
-            privateIntentStatus.text = "Reconnect Seed Vault before real local proof test"
-            return
-        }
-        privateSelfTestButton.isEnabled = false
-        privateIntentStatus.text = "Running real local Solana shielded proof..."
-        lifecycleScope.launch {
-            val result = ShieldedPoolClient(this@WalletActivity, storage, seedVaultNative)
-                .runUnfundedSelfTest(session)
-            privateSelfTestButton.isEnabled = true
-            result.fold(
-                onSuccess = { json ->
-                    privateIntentStatus.text = "Real local proof ready · ${json.optString("backend", "backend")} · submitted=false"
-                },
-                onFailure = { err ->
-                    privateIntentStatus.text = err.message ?: "Local proof self-test failed"
-                },
-            )
+        privateIntentStatus.text = if (BuildConfig.GHOLA_SEEKER_BUILD) {
+            "Private proof self-test is disabled in this dApp Store build."
+        } else {
+            getString(R.string.wallet_standard_proof_status)
         }
     }
 
@@ -591,8 +510,13 @@ class WalletActivity : AppCompatActivity() {
             append("nonce=").append(java.util.UUID.randomUUID())
         }
         verifySeekerButton.isEnabled = false
-        seekerVerificationStatus.text = "Waiting for Seeker Wallet proof..."
+        seekerVerificationStatus.text = "Binding Seeker Wallet to Ghola Cloud..."
         lifecycleScope.launch {
+            bindPrivateAccountWallet(walletAddress).getOrElse {
+                seekerVerifyFailed(it.message ?: "Seeker Wallet binding failed")
+                return@launch
+            }
+            seekerVerificationStatus.text = "Waiting for Seeker Wallet proof..."
             val signed = signWithNativeWalletFirst(walletAddress, message.toByteArray(Charsets.UTF_8))
             when (signed) {
                 is MWAConnect.SignOutcome.Success -> {
@@ -608,26 +532,41 @@ class WalletActivity : AppCompatActivity() {
         }
     }
 
+    private suspend fun bindPrivateAccountWallet(walletAddress: String): Result<Unit> {
+        val client = PrivateAccountClient(
+            baseUrl = storage.getCloudBaseUrl(),
+            tokenProvider = { storage.getCloudAuthToken() },
+        )
+        val challenge = client.fetchMobileWalletBindingChallenge(walletAddress).getOrElse {
+            return Result.failure(it)
+        }
+        val message = challenge.optString("message").takeIf { it.isNotBlank() }
+            ?: return Result.failure(IllegalStateException("Wallet binding challenge was empty."))
+        val signed = signWithNativeWalletFirst(walletAddress, message.toByteArray(Charsets.UTF_8))
+        val signature = when (signed) {
+            is MWAConnect.SignOutcome.Success ->
+                AndroidBase64.encodeToString(signed.signature, AndroidBase64.NO_WRAP)
+            MWAConnect.SignOutcome.NoWallet ->
+                return Result.failure(IllegalStateException("No Seeker Wallet found."))
+            MWAConnect.SignOutcome.Declined ->
+                return Result.failure(IllegalStateException("Seeker Wallet binding declined."))
+            MWAConnect.SignOutcome.Cancelled ->
+                return Result.failure(IllegalStateException("Seeker Wallet binding cancelled."))
+            is MWAConnect.SignOutcome.Failure ->
+                return Result.failure(signed.cause)
+        }
+        val bound = client.bindMobileWallet(walletAddress, message, signature)
+        return if (bound.ok) {
+            Result.success(Unit)
+        } else {
+            Result.failure(IllegalStateException(bound.error ?: "Seeker Wallet binding failed."))
+        }
+    }
+
     private suspend fun signWithNativeWalletFirst(
         walletAddress: String,
         message: ByteArray,
     ): MWAConnect.SignOutcome {
-        val seedToken = storage.getSeedVaultAuthToken()
-        val seedPath = storage.getSeedVaultDerivationPathUri()
-        if (
-            BuildConfig.GHOLA_SEEKER_BUILD &&
-            seedVaultNative.isAvailable() &&
-            seedToken != null &&
-            !seedPath.isNullOrBlank()
-        ) {
-            return when (val out = seedVaultNative.signMessage(seedToken, seedPath, message)) {
-                is SeedVaultNative.SignOutcome.Success -> MWAConnect.SignOutcome.Success(out.signature)
-                SeedVaultNative.SignOutcome.NoSeedVault -> MWAConnect.SignOutcome.NoWallet
-                SeedVaultNative.SignOutcome.Declined -> MWAConnect.SignOutcome.Declined
-                SeedVaultNative.SignOutcome.Cancelled -> MWAConnect.SignOutcome.Cancelled
-                is SeedVaultNative.SignOutcome.Failure -> MWAConnect.SignOutcome.Failure(out.cause)
-            }
-        }
         return MWAConnect.signMessageDetached(
             activityResultSender,
             walletAddress,
@@ -654,7 +593,8 @@ class WalletActivity : AppCompatActivity() {
                             storage.setSeekerVerified(mint.ifBlank { null })
                             seekerVerificationStatus.text = "verified SGT · ${mask(mint)}"
                         } else {
-                            seekerVerificationStatus.text = json.optString("reason", "No Seeker Genesis Token found")
+                            seekerVerificationStatus.text = json.optString("reason")
+                                .ifBlank { "No Seeker Genesis Token found" }
                         }
                     },
                     onFailure = { err ->
@@ -707,13 +647,9 @@ class WalletActivity : AppCompatActivity() {
                 result.fold(
                     onSuccess = { json ->
                         if (BuildConfig.GHOLA_SEEKER_BUILD) {
-                            submitSeekerShieldedTransfer(
-                                client = client,
-                                intent = json,
-                                recipient = recipient,
-                                amountMicroUsdc = amountMicroUsdc,
-                                signerDid = signerDid,
-                            )
+                            createPrivateIntentButton.isEnabled = true
+                            privateIntentStatus.text = "Private USDCx intent ${json.optString("status", "created")} · wallet approved · no public fallback"
+                            loadPrivateWalletState()
                         } else {
                             createPrivateIntentButton.isEnabled = true
                             privateIntentStatus.text = "Private USDCx intent ${json.optString("status", "created")} · ${json.optString("recipient_preview", mask(recipient))}"
@@ -729,42 +665,6 @@ class WalletActivity : AppCompatActivity() {
         }
     }
 
-    private fun submitSeekerShieldedTransfer(
-        client: PrivateWalletClient,
-        intent: JSONObject,
-        recipient: String,
-        amountMicroUsdc: Long,
-        signerDid: String,
-    ) {
-        val session = currentSeedVaultSession()
-        if (session == null) {
-            privateIntentFailed("Reconnect Seed Vault before Solana shielded sends")
-            return
-        }
-        privateIntentStatus.text = "Building local Solana shielded proof..."
-        lifecycleScope.launch {
-            val result = ShieldedPoolClient(this@WalletActivity, storage, seedVaultNative).buildAndSubmitPrivateTransfer(
-                session = session,
-                client = client,
-                intent = intent,
-                recipient = recipient,
-                amountMicroUsdc = amountMicroUsdc,
-                signerDid = signerDid,
-            )
-            createPrivateIntentButton.isEnabled = true
-            result.fold(
-                onSuccess = { json ->
-                    privateIntentStatus.text = "Solana shielded transfer ${json.optString("status", "submitted")} · ${json.optString("recipient_preview", mask(recipient))}"
-                    loadPrivateWalletState()
-                },
-                onFailure = { err ->
-                    privateIntentStatus.text = err.message ?: "Solana shielded proof failed"
-                    loadPrivateWalletState()
-                },
-            )
-        }
-    }
-
     private fun privateIntentFailed(message: String) {
         createPrivateIntentButton.isEnabled = true
         privateIntentStatus.text = message
@@ -774,14 +674,7 @@ class WalletActivity : AppCompatActivity() {
         if (BuildConfig.GHOLA_SEEKER_BUILD) "solana_shielded_pool" else "aleo_usdcx_shielded"
 
     private fun privateSigningModeForBuild(): String =
-        if (BuildConfig.GHOLA_SEEKER_BUILD) "seed_vault_device" else "aleo_device"
-
-    private fun currentSeedVaultSession(): SeedVaultNative.Session? {
-        val address = storage.getSeedVaultAddress() ?: return null
-        val token = storage.getSeedVaultAuthToken() ?: return null
-        val path = storage.getSeedVaultDerivationPathUri() ?: return null
-        return SeedVaultNative.Session(address, token, path)
-    }
+        if (BuildConfig.GHOLA_SEEKER_BUILD) "mwa_wallet" else "aleo_device"
 
     private fun isPrivateRecipientForBuild(recipient: String): Boolean {
         if (BuildConfig.GHOLA_SEEKER_BUILD) {

@@ -1,54 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Activity — text-first, crumb header "ghola / activity", hard-edged list.
-  Widget IDs: activityRecycler, activityEmptyState, activityLoading, bottomNav.
+  Activity — top-level tab. Chronological trading feed in the polished
+  Home/Markets design. Widget IDs: activityRecycler, activityEmptyState,
+  activityLoading, bottomNav.
 -->
 <androidx.coordinatorlayout.widget.CoordinatorLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000">
+    android:background="@color/ghola_bg">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:paddingTop="24dp"
-        android:paddingStart="24dp"
-        android:paddingEnd="24dp">
+        android:paddingStart="18dp"
+        android:paddingEnd="18dp"
+        android:paddingTop="14dp">
 
-        <!-- Crumb header -->
+        <!-- Top bar -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
+            android:layout_height="52dp"
             android:gravity="center_vertical"
-            android:layout_marginTop="16dp"
-            android:layout_marginBottom="40dp">
+            android:orientation="horizontal">
+
             <TextView
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:text="ghola"
-                android:textColor="#4a5568"
-                android:textSize="14sp"
-                android:fontFamily="@font/geist" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="  /  "
-                android:textColor="#4a5568"
-                android:textSize="14sp"
-                android:fontFamily="@font/geist_mono" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="activity"
-                android:textColor="#eef1f8"
-                android:textSize="14sp"
+                android:layout_weight="1"
                 android:fontFamily="@font/geist"
-                android:textFontWeight="500" />
+                android:letterSpacing="-0.01"
+                android:text="@string/activity_title"
+                android:textColor="@color/ghola_text_primary"
+                android:textFontWeight="600"
+                android:textSize="23sp" />
         </LinearLayout>
+
+        <TextView
+            style="@style/Ghola.Text.Eyebrow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="12dp"
+            android:text="@string/activity_eyebrow" />
 
         <FrameLayout
             android:layout_width="match_parent"
@@ -60,42 +56,58 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:clipToPadding="false"
-                android:paddingBottom="96dp" />
+                android:paddingBottom="96dp"
+                android:scrollbars="none" />
 
-            <!-- Empty state — typographic -->
+            <!-- Empty state — centered, polished -->
             <LinearLayout
                 android:id="@+id/activityEmptyState"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:layout_marginBottom="72dp"
+                android:gravity="center_horizontal"
                 android:orientation="vertical"
-                android:layout_marginTop="64dp"
+                android:paddingStart="20dp"
+                android:paddingEnd="20dp"
                 android:visibility="gone">
 
+                <FrameLayout
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:background="@drawable/bg_icon_plate">
+
+                    <ImageView
+                        android:layout_width="26dp"
+                        android:layout_height="26dp"
+                        android:layout_gravity="center"
+                        android:importantForAccessibility="no"
+                        android:src="@drawable/ic_nav_activity"
+                        app:tint="@color/ghola_accent" />
+                </FrameLayout>
+
                 <TextView
-                    style="@style/Ghola.Text.Eyebrow"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="› IDLE"
-                    android:layout_marginBottom="12dp" />
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Nothing yet."
-                    android:textColor="#eef1f8"
-                    android:textSize="32sp"
+                    android:layout_marginTop="18dp"
                     android:fontFamily="@font/geist"
-                    android:textFontWeight="500"
-                    android:letterSpacing="-0.03"
                     android:includeFontPadding="false"
-                    android:layout_marginBottom="16dp" />
+                    android:letterSpacing="-0.02"
+                    android:text="@string/activity_empty_title"
+                    android:textColor="@color/ghola_text_primary"
+                    android:textFontWeight="600"
+                    android:textSize="22sp" />
+
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Your agents&apos; earnings, transactions, and tool invocations will stream here in real time."
-                    android:textColor="#8b95a8"
-                    android:textSize="15sp"
+                    android:layout_marginTop="9dp"
                     android:fontFamily="@font/geist"
-                    android:lineSpacingMultiplier="1.4" />
+                    android:lineSpacingMultiplier="1.4"
+                    android:text="@string/activity_empty_body"
+                    android:textAlignment="center"
+                    android:textColor="@color/ghola_text_secondary"
+                    android:textSize="15sp" />
             </LinearLayout>
 
             <ProgressBar
@@ -103,25 +115,26 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="center"
-                android:indeterminateTint="#3da8ff"
+                android:indeterminateTint="@color/ghola_accent"
                 android:visibility="gone" />
         </FrameLayout>
     </LinearLayout>
-
-    <com.google.android.material.bottomnavigation.BottomNavigationView
-        android:id="@+id/bottomNav"
-        android:layout_width="match_parent"
-        android:layout_height="72dp"
-        android:layout_gravity="bottom"
-        android:background="#000000"
-        app:elevation="0dp"
-        app:menu="@menu/bottom_nav" />
 
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
         android:layout_gravity="bottom"
         android:layout_marginBottom="72dp"
-        android:background="#1e2a3a" />
+        android:background="@color/ghola_border" />
+
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNav"
+        android:layout_width="match_parent"
+        android:layout_height="72dp"
+        android:layout_gravity="bottom"
+        android:background="@color/ghola_bg"
+        app:elevation="0dp"
+        app:labelVisibilityMode="labeled"
+        app:menu="@menu/bottom_nav" />
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

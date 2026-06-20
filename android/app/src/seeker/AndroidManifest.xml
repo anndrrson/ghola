@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission
+        android:name="android.permission.CAMERA"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.RECORD_AUDIO"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.RECEIVE_BOOT_COMPLETED"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.WAKE_LOCK"
+        tools:node="remove" />
+    <uses-permission
+        android:name="com.solanamobile.seedvault.ACCESS_SEED_VAULT"
+        tools:node="remove" />
+
+    <uses-feature
+        android:name="android.hardware.camera"
+        tools:node="remove" />
+    <uses-feature
+        android:name="android.hardware.camera.front"
+        tools:node="remove" />
+    <uses-feature
+        android:name="android.hardware.camera.autofocus"
+        tools:node="remove" />
+    <uses-feature
+        android:name="android.hardware.camera.flash"
+        tools:node="remove" />
+
+    <application>
+        <activity
+            android:name=".ui.MainActivity"
+            tools:node="remove" />
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            tools:node="remove" />
+        <service
+            android:name=".service.ThumperAccessibilityService"
+            tools:node="remove" />
+        <service
+            android:name=".service.NotificationListener"
+            tools:node="remove" />
+        <service
+            android:name=".service.ProactiveService"
+            tools:node="remove" />
+    </application>
+
+</manifest>

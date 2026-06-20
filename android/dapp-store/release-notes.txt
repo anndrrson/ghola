@@ -1,8 +1,6 @@
-Ghola 0.7.1 — Private Seeker agent update
+Ghola 0.7.5 — Trading-first redesign
 
-• Create Seeker-native private agents with local Seed Vault-derived identity.
-• Sync only encrypted private-agent config to Ghola Cloud.
-• Agent details now show the private shield state, local identity mode, and copy actions.
-• Production said-cloud preserves private agent linkage across reloads.
-• Wallet-owned agents, encrypted messaging, and privacy-forward Seeker flows remain unchanged.
-• No seed phrases, private keys, or recovery material are collected by Ghola.
+• Unified Trade tab: browse BTC/ETH/SOL, set limits, and see your active agents in one place.
+• Trading-focused activity feed and polished Messages and Wallet screens.
+• Fixed Seeker Wallet (Mobile Wallet Adapter) connection.
+• Stability and consistency fixes throughout.

@@ -55,10 +55,6 @@ class SecureStorage(context: Context) {
         private const val KEY_MWA_ACCOUNT_LABEL = "mwa_account_label"
         private const val KEY_MWA_CLUSTER = "mwa_cluster"
         private const val KEY_MWA_CONNECTED_AT = "mwa_connected_at_millis"
-        private const val KEY_SEED_VAULT_AUTH_TOKEN = "seed_vault_auth_token"
-        private const val KEY_SEED_VAULT_DERIVATION_PATH = "seed_vault_derivation_path"
-        private const val KEY_SEED_VAULT_ADDRESS = "seed_vault_address"
-        private const val KEY_SEED_VAULT_CONNECTED_AT = "seed_vault_connected_at_millis"
         private const val KEY_SHIELDED_POOL_RECIPIENT = "solana_shielded_pool_recipient"
         private const val KEY_SHIELDED_POOL_NOTES_JSON = "solana_shielded_pool_notes_json"
         private const val KEY_TURNKEY_ADDRESS = "turnkey_solana_address"
@@ -281,54 +277,6 @@ class SecureStorage(context: Context) {
     fun getMwaCluster(): String? = prefs.getString(KEY_MWA_CLUSTER, null)
     fun getMwaConnectedAtMillis(): Long = prefs.getLong(KEY_MWA_CONNECTED_AT, 0L)
 
-    // --- Native Seed Vault session metadata (Seeker) ---
-
-    fun setSeedVaultSession(
-        address: String,
-        authToken: Long,
-        derivationPathUri: String,
-    ) {
-        prefs.edit()
-            .putString(KEY_SOLANA_ADDRESS, address)
-            .putString(KEY_SEED_VAULT_ADDRESS, address)
-            .putLong(KEY_SEED_VAULT_AUTH_TOKEN, authToken)
-            .putString(KEY_SEED_VAULT_DERIVATION_PATH, derivationPathUri)
-            .putLong(KEY_SEED_VAULT_CONNECTED_AT, System.currentTimeMillis())
-            .apply()
-    }
-
-    fun getSeedVaultAddress(): String? = prefs.getString(KEY_SEED_VAULT_ADDRESS, null)
-
-    fun getSeedVaultAuthToken(): Long? =
-        if (prefs.contains(KEY_SEED_VAULT_AUTH_TOKEN)) {
-            prefs.getLong(KEY_SEED_VAULT_AUTH_TOKEN, 0L)
-        } else {
-            null
-        }
-
-    fun getSeedVaultDerivationPathUri(): String? = prefs.getString(KEY_SEED_VAULT_DERIVATION_PATH, null)
-
-    fun getSeedVaultConnectedAtMillis(): Long = prefs.getLong(KEY_SEED_VAULT_CONNECTED_AT, 0L)
-
-    fun hasSeedVaultSession(): Boolean =
-        getSeedVaultAuthToken() != null &&
-            !getSeedVaultAddress().isNullOrBlank() &&
-            !getSeedVaultDerivationPathUri().isNullOrBlank()
-
-    fun clearSeedVaultSession() {
-        prefs.edit()
-            .remove(KEY_SEED_VAULT_AUTH_TOKEN)
-            .remove(KEY_SEED_VAULT_DERIVATION_PATH)
-            .remove(KEY_SEED_VAULT_ADDRESS)
-            .remove(KEY_SEED_VAULT_CONNECTED_AT)
-            .remove(KEY_SHIELDED_POOL_RECIPIENT)
-            .remove(KEY_SHIELDED_POOL_NOTES_JSON)
-            .remove(KEY_SOLANA_ADDRESS)
-            .remove(KEY_SEEKER_VERIFIED_AT)
-            .remove(KEY_SEEKER_SGT_MINT)
-            .apply()
-    }
-
     fun clearMwaSession() {
         prefs.edit()
             .remove(KEY_SOLANA_ADDRESS)
@@ -337,10 +285,6 @@ class SecureStorage(context: Context) {
             .remove(KEY_MWA_ACCOUNT_LABEL)
             .remove(KEY_MWA_CLUSTER)
             .remove(KEY_MWA_CONNECTED_AT)
-            .remove(KEY_SEED_VAULT_AUTH_TOKEN)
-            .remove(KEY_SEED_VAULT_DERIVATION_PATH)
-            .remove(KEY_SEED_VAULT_ADDRESS)
-            .remove(KEY_SEED_VAULT_CONNECTED_AT)
             .remove(KEY_SHIELDED_POOL_RECIPIENT)
             .remove(KEY_SHIELDED_POOL_NOTES_JSON)
             .remove(KEY_SEEKER_VERIFIED_AT)

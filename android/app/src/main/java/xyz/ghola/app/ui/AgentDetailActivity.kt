@@ -133,7 +133,7 @@ class AgentDetailActivity : AppCompatActivity() {
         solanaAddressView.text = agent.optString("solana_address", "—")
 
         if (
-            agent.optString("identity_mode") == "seed_vault_derived" ||
+            agent.optString("identity_mode") == "mwa_wallet_derived" ||
             agent.optBoolean("private_config_synced", false)
         ) {
             privateIdentityKnown = true
@@ -203,7 +203,7 @@ class AgentDetailActivity : AppCompatActivity() {
             identityModeIcon.imageTintList = ColorStateList.valueOf(success)
             identityModeView.setTextColor(success)
             identityModeView.text = "Private"
-            identityModeDetailView.text = "Seed Vault derived key"
+            identityModeDetailView.text = "Wallet-derived key"
             privateConfigStateView.text = if (privateConfigSynced) {
                 "Encrypted config synced"
             } else {

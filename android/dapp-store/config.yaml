@@ -15,8 +15,8 @@ app:
   android_package: xyz.ghola.app
 
 release:
-  version_code: 11
-  version_name: 0.7.1
+  version_code: 13
+  version_name: 0.7.5
   media:
     - purpose: icon
       uri: assets/icon.png
@@ -37,37 +37,72 @@ release:
   catalog:
     en-US:
       name: Ghola
-      short_description: |
-        Private, wallet-first AI for Solana Seeker.
+      short_description: Private AI trading agents.
       long_description: |
-        Ghola is a private, wallet-first AI app built for Solana Seeker.
+        Ghola is a private, wallet-first AI trading app built for Solana Seeker.
 
         Privacy posture:
         • Wallet-first sign-in through Seeker Wallet and Mobile Wallet Adapter.
         • No seed phrases, private keys, or recovery material are collected by Ghola.
         • Wallet-owned agents keep identity and approvals tied to the user wallet.
         • End-to-end encrypted native messaging relays ciphertext, not message text.
-        • Accessibility and notification access stay optional, user-granted, and revocable.
+        • The Seeker build does not request camera, microphone, accessibility, notification listener, boot, foreground-service, Wi-Fi multicast, wake-lock, or Seed Vault permissions.
+        • Seeker wallet access uses Mobile Wallet Adapter for user-approved signing.
+        • The release permission audit allows only network access and Ghola's app-local signature receiver permission.
         • Optional integrations stay behind explicit user actions.
         • Local AI runtime paths are built for Seeker-class hardware.
 
         Core experience:
-        • Create and manage wallet-owned AI agents from the mobile app.
-        • Chat, message, and device actions share the same wallet session.
+        • Create and manage wallet-owned trading agents from the mobile app.
+        • Use the native trading cockpit for BTC, ETH, and SOL charts, market state, and bounded autopilot sessions.
+        • Arm an autopilot once with conservative limits, then pause or kill it from the phone anytime.
+        • Chat and messaging share the same wallet session.
         • Invite links make Ghola messaging easy to start from any app.
         • Solana-native payment rails make settlement transparent when used.
+
+        Ghola is non-custodial: your wallet holds your keys and approves every
+        action through Mobile Wallet Adapter — Ghola never takes custody of your
+        funds. Trading digital assets involves risk and nothing in the app is
+        financial advice.
       new_in_version: |
-        0.7.1 — Private Seeker agent update.
-          • Create Seeker-native private agents with local Seed Vault-derived identity.
+        0.7.5 — Trading-first redesign.
+          • Unified Trade tab: browse BTC/ETH/SOL, set limits, and see your active agents in one place.
+          • Trading-focused activity feed and polished Messages and Wallet screens.
+          • Fixed Seeker Wallet (Mobile Wallet Adapter) connection.
+          • Stability and consistency fixes throughout.
+
+        0.7.4 — mobile usability update.
+          • Simplified the Seeker home screen into a button-led mobile flow: Start Trading, Wallet, Ask Ghola, and Agents.
+          • Reworked onboarding around one clear wallet action and three simple setup steps.
+          • Simplified the trading terminal so users choose a market, see price/chart, then tap Trade or Ask Ghola.
+          • Replaced long explanatory blocks with short safety chips for wallet hiding, limits, and kill switch.
+          • Reworked the live-agent screen with Small, Standard, and Active limit presets before editable controls.
+
+        0.7.3 — ghola.xyz alignment update.
+          • Reworked the Seeker home screen around the live ghola.xyz message: "Trade like a ghost."
+          • Added native launch/create-account CTAs, live venue strip, and privacy pillars matching the web experience.
+          • Updated onboarding to lead with wallet privacy, hard caps, and verifiable execution commitments.
+          • Rebuilt the mobile trading terminal with venue tabs, live status, contract hero metrics, chart, agent activity, order book, market tape, mandate draft, risk, and visibility sections.
+          • Updated autopilot copy to emphasize sealed limits, arm-once approval, pause, and kill-switch controls.
+
+        0.7.2 — Seeker policy compliance update.
+          • Removed direct Seed Vault permission from the Seeker release build.
+          • Seeker wallet sign-in, chat unlock, pairing, and private-agent identity now use Mobile Wallet Adapter wallet approvals.
+          • Added a Seeker trading cockpit with native BTC/ETH/SOL charts and APAC-focused copy.
+          • Added bounded autopilot sessions with venue allowlists, order caps, daily caps, slippage limits, and kill switch controls.
+          • Added English, Simplified Chinese, and Indonesian trading surface localization.
+          • Reduced repeated wallet approval prompts by reusing the unlocked encrypted chat vault within the idle window.
           • Sync only encrypted private-agent config to Ghola Cloud.
           • Agent details now show the private shield state, local identity mode, and copy actions.
           • Production said-cloud now preserves private agent linkage across reloads.
           • Release hardening for Solana dApp Store update submission.
 
       saga_features: |
-        • Mobile Wallet Adapter integration for Seeker Wallet sign-in.
+        • Mobile Wallet Adapter integration for Seeker Wallet sign-in and signing.
         • Wallet-owned agents and Solana-native identity.
-        • Optional, revocable device permissions for user-initiated agent actions.
+        • Permission-minimized Seeker build with no camera, microphone, accessibility,
+          notification listener, foreground-service, wake-lock, Wi-Fi multicast,
+          or Seed Vault access.
         • Seeker-focused local AI runtime path.
 
       google_store_package: xyz.ghola.app
@@ -80,5 +115,5 @@ solana_mobile_dapp_publisher_portal:
   google_store_package: xyz.ghola.app
 
 categories:
+  - finance
   - productivity
-  - social

@@ -99,10 +99,12 @@
     </style>
 
     <style name="Ghola.BottomNav" parent="Widget.MaterialComponents.BottomNavigationView">
-        <item name="android:background">@color/ghola_surface</item>
+        <item name="android:background">@color/ghola_bg</item>
         <item name="itemIconTint">@color/ghola_bottom_nav_tint</item>
         <item name="itemTextColor">@color/ghola_bottom_nav_tint</item>
         <item name="itemRippleColor">#223da8ff</item>
+        <item name="labelVisibilityMode">labeled</item>
+        <item name="itemIconSize">23dp</item>
         <item name="elevation">0dp</item>
     </style>
 
@@ -124,5 +126,25 @@
         <item name="android:letterSpacing">-0.01</item>
         <item name="android:paddingTop">16dp</item>
         <item name="android:paddingBottom">16dp</item>
+    </style>
+
+    <!-- Bottom sheet: transparent container so the rounded @drawable/bg_sheet
+         root shows through; dark scrim behind keeps the chart visible. -->
+    <style name="Ghola.BottomSheet" parent="Widget.MaterialComponents.BottomSheet.Modal">
+        <item name="backgroundTint">@android:color/transparent</item>
+        <item name="android:background">@android:color/transparent</item>
+    </style>
+
+    <style name="Ghola.BottomSheetDialog" parent="Theme.MaterialComponents.DayNight.BottomSheetDialog">
+        <item name="bottomSheetStyle">@style/Ghola.BottomSheet</item>
+        <item name="android:navigationBarColor">@color/ghola_bg</item>
+        <item name="android:fontFamily">@font/geist</item>
+        <item name="fontFamily">@font/geist</item>
+        <item name="colorPrimary">@color/ghola_accent</item>
+        <item name="colorOnPrimary">@color/ghola_bg</item>
+        <item name="colorSurface">@color/ghola_surface</item>
+        <item name="colorOnSurface">@color/ghola_text_primary</item>
+        <item name="android:textColorPrimary">@color/ghola_text_primary</item>
+        <item name="android:textColorSecondary">@color/ghola_text_secondary</item>
     </style>
 </resources>

@@ -426,31 +426,39 @@
             android:layout_marginBottom="16dp" />
 
         <!-- Accessibility Service Section -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Device Control"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:textColor="#eef1f8"
-            android:layout_marginBottom="12dp" />
-
-        <TextView
-            android:id="@+id/a11yStatus"
+        <LinearLayout
+            android:id="@+id/deviceControlSection"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Status: Unknown"
-            android:textSize="14sp"
-            android:textColor="#8b95a8"
-            android:layout_marginBottom="8dp" />
+            android:orientation="vertical">
 
-        <Button
-            android:id="@+id/enableA11yButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Open Ghola Permission"
-            android:layout_marginBottom="24dp"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Device Control"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="#eef1f8"
+                android:layout_marginBottom="12dp" />
+
+            <TextView
+                android:id="@+id/a11yStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Status: Unknown"
+                android:textSize="14sp"
+                android:textColor="#8b95a8"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/enableA11yButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Open Ghola Permission"
+                android:layout_marginBottom="24dp"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        </LinearLayout>
 
         <!-- Divider -->
         <View
@@ -460,38 +468,46 @@
             android:layout_marginBottom="16dp" />
 
         <!-- Relay Mode Section -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Relay Mode"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:textColor="#eef1f8"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
+        <LinearLayout
+            android:id="@+id/relayModeSection"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Advanced: Connect to desktop relay"
-            android:textSize="13sp"
-            android:textColor="#4a5568"
-            android:layout_marginBottom="8dp" />
+            android:orientation="vertical">
 
-        <Button
-            android:id="@+id/openRelayButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Open Relay Setup"
-            android:layout_marginBottom="8dp"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Relay Mode"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="#eef1f8"
+                android:layout_marginBottom="8dp" />
 
-        <Button
-            android:id="@+id/localHomeConnectButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Connect Ghola Home"
-            android:layout_marginBottom="24dp"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Advanced: Connect to desktop relay"
+                android:textSize="13sp"
+                android:textColor="#4a5568"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/openRelayButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Open Relay Setup"
+                android:layout_marginBottom="8dp"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+            <Button
+                android:id="@+id/localHomeConnectButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Connect Ghola Home"
+                android:layout_marginBottom="24dp"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+
+        </LinearLayout>
 
         <!-- Chat backup and transfer -->
         <TextView

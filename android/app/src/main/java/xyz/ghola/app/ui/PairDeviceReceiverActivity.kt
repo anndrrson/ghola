@@ -30,9 +30,9 @@ import xyz.ghola.app.cloud.DeviceSignerProvider
 import xyz.ghola.app.crypto.Envelope
 import xyz.ghola.app.crypto.PairDevice
 import xyz.ghola.app.crypto.VaultStore
+import xyz.ghola.app.crypto.VaultStoreHolder
 import xyz.ghola.app.crypto.mwaSignerForVault
 import xyz.ghola.app.solana.Base58
-import xyz.ghola.app.solana.SeedVaultNative
 
 /**
  * Pair Device — receiver side. The user opens this on a new phone that
@@ -58,7 +58,6 @@ class PairDeviceReceiverActivity : AppCompatActivity() {
     private lateinit var showPairQrButton: MaterialButton
     private lateinit var pairCodeActions: LinearLayout
     private val activityResultSender = ActivityResultSender(this)
-    private val seedVaultNative = SeedVaultNative(this)
     private var vault: VaultStore? = null
     private var receiver: PairDevice.ReceiverHandshake? = null
     private var pairingDescriptorJson: String? = null
@@ -104,29 +103,37 @@ class PairDeviceReceiverActivity : AppCompatActivity() {
             return
         }
         val userDid = Envelope.didKeyFromVerifying(pubBytes)
-        val v = VaultStore.create(this, userDid)
+        val v = VaultStoreHolder.get(this, userDid)
         vault = v
 
         statusView.text = "Approve with ${walletLabel()} to create a receive code."
         createPairCodeButton.isEnabled = false
         lifecycleScope.launch {
             runCatching {
-                val signer = if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
-                    (DeviceSignerProvider.cached(this@PairDeviceReceiverActivity)
-                        ?: DeviceSignerProvider.signIn(this@PairDeviceReceiverActivity).getOrThrow())
-                        .vaultSigner()
-                } else if (BuildConfig.GHOLA_SEEKER_BUILD && storage.hasSeedVaultSession()) {
-                    val seedSession = currentSeedVaultSession()
-                        ?: error("Seed Vault session unavailable; reconnect in Wallet")
-                    seedVaultNative.signer(seedSession).vaultSigner()
+                val signer = if (v.isUnlocked()) {
+                    null
                 } else {
-                    mwaSignerForVault(
-                        activityResultSender,
-                        solanaAddress,
-                        storage.getMwaAuthToken(),
-                    )
+                    ApprovalGate.request(
+                        context = this@PairDeviceReceiverActivity,
+                        reason = ApprovalGate.Reason.PAIR_DEVICE,
+                        caller = "PairDeviceReceiverActivity.startReceiverFlow",
+                    ) {
+                        if (BuildConfig.GHOLA_PLAY_STORE_BUILD) {
+                            (DeviceSignerProvider.cached(this@PairDeviceReceiverActivity)
+                                ?: DeviceSignerProvider.signIn(this@PairDeviceReceiverActivity).getOrThrow())
+                                .vaultSigner()
+                        } else {
+                            mwaSignerForVault(
+                                activityResultSender,
+                                solanaAddress,
+                                storage.getMwaAuthToken(),
+                            )
+                        }
+                    }
                 }
-                withContext(Dispatchers.IO) { v.unlock(signer) }
+                if (signer != null) {
+                    withContext(Dispatchers.IO) { v.unlock(signer) }
+                }
             }.onSuccess {
                 val handshake = PairDevice.createReceiverHandshake(userDid)
                 receiver = handshake
@@ -142,13 +149,6 @@ class PairDeviceReceiverActivity : AppCompatActivity() {
                 createPairCodeButton.isEnabled = true
             }
         }
-    }
-
-    private fun currentSeedVaultSession(): SeedVaultNative.Session? {
-        val address = storage.getSeedVaultAddress() ?: return null
-        val token = storage.getSeedVaultAuthToken() ?: return null
-        val path = storage.getSeedVaultDerivationPathUri() ?: return null
-        return SeedVaultNative.Session(address, token, path)
     }
 
     private fun runReceiverPoll(handshake: PairDevice.ReceiverHandshake, vault: VaultStore) {
@@ -230,7 +230,6 @@ class PairDeviceReceiverActivity : AppCompatActivity() {
         super.onDestroy()
         pairingDescriptorJson = null
         receiver?.zeroize()
-        vault?.lock()
     }
 
     private fun walletLabel(): String =

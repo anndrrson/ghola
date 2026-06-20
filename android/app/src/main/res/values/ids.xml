@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Retained so messaging screens (Messages, NewMessage, PairDevice*) that
+         pass this as their "current tab" still compile after Messages was
+         removed from the bottom navigation. It is intentionally not a menu
+         item, so those screens simply show no highlighted tab. -->
+    <item name="tab_messages" type="id" />
+    <!-- Retained for the same reason after Agents was merged into the Trade
+         tab: dormant AgentsActivity/AgentDetailActivity still reference it. -->
+    <item name="tab_agents" type="id" />
+</resources>

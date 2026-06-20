@@ -49,10 +49,7 @@ class CloudAuthManager(private val context: Context) {
     suspend fun signInWithDeviceSigner(signer: DeviceSigner): AuthResult {
         val primary = siwsAuthFlow.signInWithDeviceSigner(signer)
         if (primary is AuthResult.Success) {
-            when (val said = signInSaidWithDeviceSigner(signer)) {
-                is AuthResult.Success -> Log.i(TAG, "said-cloud device signer sign-in succeeded")
-                is AuthResult.Error -> Log.w(TAG, "said-cloud device signer sign-in failed: ${said.message}")
-            }
+            ensureSaidAuth("device signer") { signInSaidWithDeviceSigner(signer) }
         }
         return primary
     }
@@ -63,12 +60,30 @@ class CloudAuthManager(private val context: Context) {
     ): AuthResult {
         val primary = siwsAuthFlow.signInWithWallet(sender, walletPubkey)
         if (primary is AuthResult.Success) {
-            when (val said = signInSaidWithWallet(sender, walletPubkey)) {
-                is AuthResult.Success -> Log.i(TAG, "said-cloud wallet sign-in succeeded")
-                is AuthResult.Error -> Log.w(TAG, "said-cloud wallet sign-in failed: ${said.message}")
-            }
+            ensureSaidAuth("wallet") { signInSaidWithWallet(sender, walletPubkey) }
         }
         return primary
+    }
+
+    private suspend fun ensureSaidAuth(
+        label: String,
+        interactiveSignIn: suspend () -> AuthResult,
+    ) {
+        if (secureStorage.hasSaidAuth()) {
+            Log.i(TAG, "said-cloud $label sign-in skipped; existing token is valid")
+            return
+        }
+        if (secureStorage.hasSaidRefreshToken()) {
+            val refreshed = withContext(Dispatchers.IO) { refreshSaidToken() }
+            if (refreshed && secureStorage.hasSaidAuth()) {
+                Log.i(TAG, "said-cloud $label sign-in skipped; refresh succeeded")
+                return
+            }
+        }
+        when (val said = interactiveSignIn()) {
+            is AuthResult.Success -> Log.i(TAG, "said-cloud $label sign-in succeeded")
+            is AuthResult.Error -> Log.w(TAG, "said-cloud $label sign-in failed: ${said.message}")
+        }
     }
 
     suspend fun signInSaidWithWallet(

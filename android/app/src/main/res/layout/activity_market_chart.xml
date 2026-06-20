@@ -1,0 +1,495 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipToPadding="false"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="20dp"
+            android:paddingTop="20dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="100dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <ImageButton
+                    android:id="@+id/backButton"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Back"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_arrow_back"
+                    app:tint="#8b95a8" />
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:text="Trade"
+                    android:textColor="#eef1f8"
+                    android:textFontWeight="500"
+                    android:textSize="20sp" />
+
+                <ImageButton
+                    android:id="@+id/refreshButton"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Refresh"
+                    android:padding="12dp"
+                    android:src="@android:drawable/ic_popup_sync"
+                    app:tint="#8b95a8" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:text="Choose market" />
+
+            <com.google.android.material.button.MaterialButtonToggleGroup
+                android:id="@+id/productToggle"
+                android:layout_width="match_parent"
+                android:layout_height="54dp"
+                android:layout_marginTop="10dp"
+                app:checkedButton="@id/productBtc"
+                app:selectionRequired="true"
+                app:singleSelection="true">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/productBtc"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:text="BTC"
+                    android:textAllCaps="false"
+                    android:textColor="#eef1f8"
+                    android:textSize="16sp"
+                    app:backgroundTint="#05070b"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#1e2a3a" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/productEth"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:text="ETH"
+                    android:textAllCaps="false"
+                    android:textColor="#8b95a8"
+                    android:textSize="16sp"
+                    app:backgroundTint="#000000"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#1e2a3a" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/productSol"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:text="SOL"
+                    android:textAllCaps="false"
+                    android:textColor="#8b95a8"
+                    android:textSize="16sp"
+                    app:backgroundTint="#000000"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#1e2a3a" />
+            </com.google.android.material.button.MaterialButtonToggleGroup>
+
+            <TextView
+                android:id="@+id/liveStatusText"
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="› CONNECTING" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:background="@drawable/bubble_assistant"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:id="@+id/marketTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="@font/geist_mono"
+                    android:text="BTC"
+                    android:textColor="#eef1f8"
+                    android:textFontWeight="500"
+                    android:textSize="34sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/Ghola.Text.Eyebrow"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Price" />
+
+                        <TextView
+                            android:id="@+id/priceText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="@font/geist_mono"
+                            android:text="$--"
+                            android:textColor="#eef1f8"
+                            android:textFontWeight="500"
+                            android:textSize="30sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:gravity="end"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/Ghola.Text.Eyebrow"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="24h" />
+
+                        <TextView
+                            android:id="@+id/changeText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="@font/geist_mono"
+                            android:text="--"
+                            android:textColor="#8b95a8"
+                            android:textFontWeight="500"
+                            android:textSize="22sp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="58dp"
+                android:layout_marginTop="12dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/tradePlanButton"
+                    style="@style/Widget.MaterialComponents.Button"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginEnd="5dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="#3da8ff"
+                    android:fontFamily="@font/geist"
+                    android:text="Set limits"
+                    android:textAllCaps="false"
+                    android:textColor="#05131d"
+                    android:textFontWeight="500"
+                    android:textSize="18sp"
+                    app:cornerRadius="0dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/askAgentButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="5dp"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:text="Ask Ghola"
+                    android:textAllCaps="false"
+                    android:textColor="#eef1f8"
+                    android:textSize="18sp"
+                    app:backgroundTint="#000000"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#1e2a3a" />
+            </LinearLayout>
+
+            <!-- Active agents — your armed sessions across markets. Hidden when
+                 none are armed; populated by MarketChartActivity.renderActiveAgents(). -->
+            <TextView
+                android:id="@+id/activeAgentsLabel"
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:text="Active agents"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:id="@+id/activeAgentsList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="vertical"
+                android:visibility="gone" />
+
+            <xyz.ghola.app.ui.MarketChartView
+                android:id="@+id/chartView"
+                android:layout_width="match_parent"
+                android:layout_height="250dp"
+                android:layout_marginTop="16dp"
+                android:background="#05070b" />
+
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:text="Chart range" />
+
+            <com.google.android.material.button.MaterialButtonToggleGroup
+                android:id="@+id/timeframeToggle"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                app:checkedButton="@id/timeframe5m"
+                app:selectionRequired="true"
+                app:singleSelection="true">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/timeframe1m"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist_mono"
+                    android:text="1m"
+                    android:textAllCaps="false"
+                    android:textColor="#8b95a8"
+                    android:textSize="12sp"
+                    app:backgroundTint="#000000"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#1e2a3a" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/timeframe5m"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist_mono"
+                    android:text="5m"
+                    android:textAllCaps="false"
+                    android:textColor="#eef1f8"
+                    android:textSize="12sp"
+                    app:backgroundTint="#05070b"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#1e2a3a" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/timeframe15m"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist_mono"
+                    android:text="15m"
+                    android:textAllCaps="false"
+                    android:textColor="#8b95a8"
+                    android:textSize="12sp"
+                    app:backgroundTint="#000000"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#1e2a3a" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/timeframe1h"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist_mono"
+                    android:text="1h"
+                    android:textAllCaps="false"
+                    android:textColor="#8b95a8"
+                    android:textSize="12sp"
+                    app:backgroundTint="#000000"
+                    app:cornerRadius="0dp"
+                    app:strokeColor="#1e2a3a" />
+            </com.google.android.material.button.MaterialButtonToggleGroup>
+
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:text="Before you trade" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:background="@drawable/bubble_assistant"
+                    android:fontFamily="@font/geist"
+                    android:gravity="center_vertical"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:text="Wallet stays in your control"
+                    android:textColor="#eef1f8"
+                    android:textFontWeight="500"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bubble_assistant"
+                    android:fontFamily="@font/geist"
+                    android:gravity="center_vertical"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:text="Dollar caps required"
+                    android:textColor="#eef1f8"
+                    android:textFontWeight="500"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bubble_assistant"
+                    android:fontFamily="@font/geist"
+                    android:gravity="center_vertical"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:text="Stop button always available"
+                    android:textColor="#eef1f8"
+                    android:textFontWeight="500"
+                    android:textSize="15sp" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:text="Market details" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bubble_assistant"
+                android:orientation="vertical"
+                android:padding="14dp">
+
+                <TextView
+                    android:id="@+id/bookText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:fontFamily="@font/geist_mono"
+                    android:maxLines="2"
+                    android:text="bid -- / ask --"
+                    android:textColor="#8b95a8"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/spreadText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:fontFamily="@font/geist_mono"
+                    android:text="-- bps"
+                    android:textColor="#8b95a8"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/dexPanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bubble_assistant"
+                android:orientation="vertical"
+                android:padding="14dp"
+                android:visibility="gone">
+
+                <TextView
+                    style="@style/Ghola.Text.Eyebrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Solana routes" />
+
+                <TextView
+                    android:id="@+id/phoenixText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:fontFamily="@font/geist_mono"
+                    android:maxLines="1"
+                    android:text="phoenix --"
+                    android:textColor="#8b95a8"
+                    android:textSize="11sp" />
+
+                <TextView
+                    android:id="@+id/jupiterText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:fontFamily="@font/geist_mono"
+                    android:maxLines="2"
+                    android:text="jupiter --"
+                    android:textColor="#8b95a8"
+                    android:textSize="11sp" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="72dp"
+        android:background="@color/ghola_border" />
+
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNav"
+        android:layout_width="match_parent"
+        android:layout_height="72dp"
+        android:layout_gravity="bottom"
+        android:background="@color/ghola_bg"
+        app:elevation="0dp"
+        app:labelVisibilityMode="labeled"
+        app:menu="@menu/bottom_nav" />
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

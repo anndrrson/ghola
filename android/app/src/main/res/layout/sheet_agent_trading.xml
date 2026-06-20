@@ -1,0 +1,625 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_sheet"
+    android:orientation="vertical">
+
+    <View
+        android:layout_width="40dp"
+        android:layout_height="4dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/bg_grabber" />
+
+    <androidx.core.widget.NestedScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="22dp"
+            android:paddingTop="14dp"
+            android:paddingEnd="22dp"
+            android:paddingBottom="26dp">
+
+            <!-- ── Header ─────────────────────────────────────────── -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/marketLine"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="12dp"
+                    android:background="@drawable/bg_icon_plate"
+                    android:fontFamily="@font/geist_mono"
+                    android:gravity="center"
+                    android:minWidth="52dp"
+                    android:paddingStart="12dp"
+                    android:paddingTop="8dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="8dp"
+                    android:text="BTC"
+                    android:textColor="@color/ghola_accent"
+                    android:textFontWeight="600"
+                    android:textSize="16sp" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/geist"
+                        android:letterSpacing="-0.01"
+                        android:text="Arm trading agent"
+                        android:textColor="@color/ghola_text_primary"
+                        android:textFontWeight="600"
+                        android:textSize="20sp" />
+
+                    <TextView
+                        android:id="@+id/sessionSubtitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:fontFamily="@font/geist"
+                        android:text="Bounded session · stop anytime"
+                        android:textColor="@color/ghola_text_muted"
+                        android:textSize="13sp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- ── Readiness ──────────────────────────────────────── -->
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:background="@drawable/bg_input"
+                android:fontFamily="@font/geist"
+                android:gravity="center_vertical"
+                android:lineSpacingMultiplier="1.2"
+                android:minHeight="48dp"
+                android:paddingStart="14dp"
+                android:paddingTop="10dp"
+                android:paddingEnd="14dp"
+                android:paddingBottom="10dp"
+                android:text="No active session."
+                android:textColor="@color/ghola_text_secondary"
+                android:textSize="13sp" />
+
+            <!-- ── Plan summary ───────────────────────────────────── -->
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:text="Plan" />
+
+            <TextView
+                android:id="@+id/mandateSentence"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_input"
+                android:fontFamily="@font/geist"
+                android:lineSpacingMultiplier="1.35"
+                android:paddingStart="14dp"
+                android:paddingTop="12dp"
+                android:paddingEnd="14dp"
+                android:paddingBottom="12dp"
+                android:text="Auto $50 of BTC"
+                android:textColor="@color/ghola_text_primary"
+                android:textSize="15sp" />
+
+            <!-- ── Direction ──────────────────────────────────────── -->
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:text="Direction" />
+
+            <xyz.ghola.app.ui.FlowLayout
+                android:id="@+id/sideRow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" />
+
+            <!-- ── Size ───────────────────────────────────────────── -->
+            <TextView
+                style="@style/Ghola.Text.Eyebrow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="Size" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/presetSmallButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:lineSpacingMultiplier="1.1"
+                    android:maxLines="2"
+                    android:text="Small\n$10/$50"
+                    android:textAllCaps="false"
+                    android:textColor="@color/ghola_text_primary"
+                    android:textSize="12sp"
+                    app:backgroundTint="@color/ghola_chip_bg"
+                    app:cornerRadius="13dp"
+                    app:strokeColor="@color/ghola_border" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/presetStandardButton"
+                    style="@style/Widget.MaterialComponents.Button"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="@color/ghola_accent"
+                    android:fontFamily="@font/geist"
+                    android:lineSpacingMultiplier="1.1"
+                    android:maxLines="2"
+                    android:text="Standard\n$50/$250"
+                    android:textAllCaps="false"
+                    android:textColor="@color/ghola_cta_ink"
+                    android:textSize="12sp"
+                    app:cornerRadius="13dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/presetActiveButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:lineSpacingMultiplier="1.1"
+                    android:maxLines="2"
+                    android:text="Active\n$100/$250"
+                    android:textAllCaps="false"
+                    android:textColor="@color/ghola_text_primary"
+                    android:textSize="12sp"
+                    app:backgroundTint="@color/ghola_chip_bg"
+                    app:cornerRadius="13dp"
+                    app:strokeColor="@color/ghola_border" />
+            </LinearLayout>
+
+            <!-- ── Arm ────────────────────────────────────────────── -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/approveSessionButton"
+                style="@style/Widget.MaterialComponents.Button"
+                android:layout_width="match_parent"
+                android:layout_height="58dp"
+                android:layout_marginTop="20dp"
+                android:backgroundTint="@color/ghola_accent"
+                android:fontFamily="@font/geist"
+                android:text="@string/autopilot_arm"
+                android:textAllCaps="false"
+                android:textColor="@color/ghola_cta_ink"
+                android:textFontWeight="600"
+                android:textSize="17sp"
+                app:cornerRadius="16dp"
+                app:icon="@drawable/ic_shield_check"
+                app:iconGravity="textStart"
+                app:iconPadding="8dp"
+                app:iconSize="18dp"
+                app:iconTint="@color/ghola_cta_ink" />
+
+            <!-- ── Collapsible: Strategy ──────────────────────────── -->
+            <LinearLayout
+                android:id="@+id/strategyHeader"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:background="@drawable/bg_input"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:minHeight="52dp"
+                android:orientation="horizontal"
+                android:paddingStart="16dp"
+                android:paddingEnd="14dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:text="Strategy"
+                    android:textColor="@color/ghola_text_primary"
+                    android:textFontWeight="500"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:fontFamily="@font/geist"
+                    android:text="optional"
+                    android:textColor="@color/ghola_text_muted"
+                    android:textSize="12sp" />
+
+                <ImageView
+                    android:id="@+id/strategyChevron"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:importantForAccessibility="no"
+                    android:src="@drawable/ic_chevron_right"
+                    app:tint="@color/ghola_text_secondary" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/strategyContent"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    style="@style/Ghola.Text.Eyebrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:text="Trade idea" />
+
+                <xyz.ghola.app.ui.FlowLayout
+                    android:id="@+id/ideaRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp" />
+
+                <TextView
+                    style="@style/Ghola.Text.Eyebrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="Entry" />
+
+                <xyz.ghola.app.ui.FlowLayout
+                    android:id="@+id/entryRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp" />
+
+                <TextView
+                    style="@style/Ghola.Text.Eyebrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="Horizon" />
+
+                <xyz.ghola.app.ui.FlowLayout
+                    android:id="@+id/horizonRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp" />
+
+                <TextView
+                    style="@style/Ghola.Text.Eyebrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="Exit" />
+
+                <xyz.ghola.app.ui.FlowLayout
+                    android:id="@+id/exitRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp" />
+            </LinearLayout>
+
+            <!-- ── Collapsible: Limits ────────────────────────────── -->
+            <LinearLayout
+                android:id="@+id/limitsHeader"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_input"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:minHeight="52dp"
+                android:orientation="horizontal"
+                android:paddingStart="16dp"
+                android:paddingEnd="14dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:fontFamily="@font/geist"
+                    android:text="Limits"
+                    android:textColor="@color/ghola_text_primary"
+                    android:textFontWeight="500"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:fontFamily="@font/geist"
+                    android:text="set by Size"
+                    android:textColor="@color/ghola_text_muted"
+                    android:textSize="12sp" />
+
+                <ImageView
+                    android:id="@+id/limitsChevron"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:importantForAccessibility="no"
+                    android:src="@drawable/ic_chevron_right"
+                    app:tint="@color/ghola_text_secondary" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/limitsContent"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="6dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/Ghola.Text.Eyebrow"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/autopilot_max_order" />
+
+                        <EditText
+                            android:id="@+id/maxNotionalInput"
+                            android:layout_width="match_parent"
+                            android:layout_height="52dp"
+                            android:layout_marginTop="6dp"
+                            android:background="@drawable/bg_input"
+                            android:fontFamily="@font/geist_mono"
+                            android:inputType="number"
+                            android:paddingHorizontal="14dp"
+                            android:text="50"
+                            android:textColor="@color/ghola_text_primary"
+                            android:textSize="18sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/Ghola.Text.Eyebrow"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/autopilot_daily_cap" />
+
+                        <EditText
+                            android:id="@+id/maxDailyInput"
+                            android:layout_width="match_parent"
+                            android:layout_height="52dp"
+                            android:layout_marginTop="6dp"
+                            android:background="@drawable/bg_input"
+                            android:fontFamily="@font/geist_mono"
+                            android:inputType="number"
+                            android:paddingHorizontal="14dp"
+                            android:text="250"
+                            android:textColor="@color/ghola_text_primary"
+                            android:textSize="18sp" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="6dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/Ghola.Text.Eyebrow"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/autopilot_orders" />
+
+                        <EditText
+                            android:id="@+id/maxOrdersInput"
+                            android:layout_width="match_parent"
+                            android:layout_height="52dp"
+                            android:layout_marginTop="6dp"
+                            android:background="@drawable/bg_input"
+                            android:fontFamily="@font/geist_mono"
+                            android:inputType="number"
+                            android:paddingHorizontal="14dp"
+                            android:text="10"
+                            android:textColor="@color/ghola_text_primary"
+                            android:textSize="18sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/Ghola.Text.Eyebrow"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/autopilot_slippage" />
+
+                        <EditText
+                            android:id="@+id/slippageInput"
+                            android:layout_width="match_parent"
+                            android:layout_height="52dp"
+                            android:layout_marginTop="6dp"
+                            android:background="@drawable/bg_input"
+                            android:fontFamily="@font/geist_mono"
+                            android:inputType="number"
+                            android:paddingHorizontal="14dp"
+                            android:text="50"
+                            android:textColor="@color/ghola_text_primary"
+                            android:textSize="18sp" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <TextView
+                    style="@style/Ghola.Text.Eyebrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="@string/autopilot_expires" />
+
+                <EditText
+                    android:id="@+id/ttlInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="6dp"
+                    android:background="@drawable/bg_input"
+                    android:fontFamily="@font/geist_mono"
+                    android:inputType="number"
+                    android:paddingHorizontal="14dp"
+                    android:text="120"
+                    android:textColor="@color/ghola_text_primary"
+                    android:textSize="18sp" />
+
+                <TextView
+                    android:id="@+id/allowlistLine"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/bg_input"
+                    android:fontFamily="@font/geist_mono"
+                    android:gravity="center_vertical"
+                    android:minHeight="46dp"
+                    android:paddingHorizontal="14dp"
+                    android:paddingVertical="8dp"
+                    android:textColor="@color/ghola_text_secondary"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/venueLine"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_input"
+                    android:ellipsize="end"
+                    android:fontFamily="@font/geist_mono"
+                    android:gravity="center_vertical"
+                    android:maxLines="1"
+                    android:minHeight="46dp"
+                    android:paddingHorizontal="14dp"
+                    android:text="@string/autopilot_default_venues"
+                    android:textColor="@color/ghola_text_secondary"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <!-- ── Live session (shown once armed) ────────────────── -->
+            <LinearLayout
+                android:id="@+id/liveSection"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="50dp"
+                    android:layout_marginTop="16dp"
+                    android:orientation="horizontal">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/pauseResumeButton"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:fontFamily="@font/geist"
+                        android:text="@string/autopilot_pause"
+                        android:textAllCaps="false"
+                        android:textColor="@color/ghola_text_primary"
+                        android:textSize="14sp"
+                        app:backgroundTint="@color/ghola_chip_bg"
+                        app:cornerRadius="13dp"
+                        app:strokeColor="@color/ghola_border" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/killSwitchButton"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_marginStart="4dp"
+                        android:layout_weight="1"
+                        android:fontFamily="@font/geist"
+                        android:text="Stop"
+                        android:textAllCaps="false"
+                        android:textColor="@color/ghola_error"
+                        android:textSize="14sp"
+                        app:backgroundTint="@color/ghola_chip_bg"
+                        app:cornerRadius="13dp"
+                        app:strokeColor="#4b1d26" />
+                </LinearLayout>
+
+                <TextView
+                    style="@style/Ghola.Text.Eyebrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:text="@string/autopilot_events" />
+
+                <TextView
+                    android:id="@+id/eventLogText"
+                    android:layout_width="match_parent"
+                    android:layout_height="92dp"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_input"
+                    android:fontFamily="@font/geist_mono"
+                    android:gravity="bottom"
+                    android:padding="14dp"
+                    android:text="@string/autopilot_event_empty"
+                    android:textColor="@color/ghola_text_secondary"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+</LinearLayout>

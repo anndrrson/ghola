@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="home_balance_label">› SEEKER 已就绪</string>
+    <string name="home_active_label">› 最近活动</string>
+    <string name="home_desk_label">快捷操作</string>
+    <string name="home_tile_markets">市场</string>
+    <string name="home_tile_trade">询问 Ghola</string>
+    <string name="home_tile_agents">钱包</string>
+    <string name="home_tile_chat">代理</string>
+    <string name="autopilot_title">实时代理</string>
+    <string name="autopilot_subtitle">设置清晰限制。钱包保持独立。可随时停止代理。</string>
+    <string name="autopilot_venue_allowlist">允许的场所</string>
+    <string name="autopilot_default_venues">jupiter / phoenix / hyperliquid / coinbase</string>
+    <string name="autopilot_max_order">单笔上限 (USD)</string>
+    <string name="autopilot_orders">最大订单数</string>
+    <string name="autopilot_daily_cap">每日消费上限 (USD)</string>
+    <string name="autopilot_slippage">最大滑点 (bps)</string>
+    <string name="autopilot_expires">会话过期分钟数</string>
+    <string name="autopilot_events">实时活动</string>
+    <string name="autopilot_event_empty">暂无代理活动。</string>
+    <string name="autopilot_arm">启动代理</string>
+    <string name="autopilot_pause">暂停</string>
+    <string name="autopilot_resume">继续</string>
+    <string name="autopilot_agent">询问 Ghola</string>
+    <string name="autopilot_cloud_required">请先登录 Ghola Cloud，再启动代理。</string>
+    <string name="autopilot_requesting">正在请求受限代理会话...</string>
+    <string name="autopilot_no_session">没有正在运行的代理会话。</string>
+    <string name="autopilot_event_armed">代理已启动。限制检查已生效。</string>
+    <string name="autopilot_event_killed">代理已停止。</string>
+    <string name="autopilot_killed">%1$s 的本地代理已停止。新的代理操作必须重新授权。</string>
+</resources>

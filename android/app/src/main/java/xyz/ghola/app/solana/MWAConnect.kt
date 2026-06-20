@@ -17,8 +17,8 @@ import com.solana.mobilewalletadapter.clientlib.TransactionResult
  *
  * Real Mobile Wallet Adapter integration. Takes an [ActivityResultSender]
  * constructed from a `ComponentActivity` and walks the user through the
- * MWA authorize flow — launches the installed wallet (Seed Vault on
- * Seeker, Phantom/Solflare elsewhere), gets user approval, receives back
+ * MWA authorize flow — launches the installed compatible wallet, gets user
+ * approval, receives back
  * a signed `AuthorizationResult` containing one or more authorized
  * accounts, and returns the first account's public key as a base58
  * Solana address.
@@ -26,8 +26,8 @@ import com.solana.mobilewalletadapter.clientlib.TransactionResult
  * This is the replacement for [MWAManager], which is a stub that only
  * launches wallet apps via intent without doing any MWA protocol exchange.
  * MWAConnect speaks real MWA over the association intent + websocket,
- * and the returned pubkey is a genuine Seed-Vault-controlled address on
- * Seeker devices.
+ * and the returned pubkey is the MWA-authorized wallet account on Seeker
+ * devices.
  *
  * ## Usage
  *
@@ -63,7 +63,11 @@ import com.solana.mobilewalletadapter.clientlib.TransactionResult
 object MWAConnect {
     private const val TAG = "MWAConnect"
     private const val IDENTITY_URI = "https://ghola.xyz"
-    private const val ICON_URI = "/favicon.ico"
+    // MWA requires the icon to be a *relative* URI, resolved by the wallet
+    // against IDENTITY_URI (→ https://ghola.xyz/favicon.ico). Passing an
+    // absolute URI here makes MobileWalletAdapterClient.authorize throw
+    // "If non-null, iconRelativeUri must be a relative Uri" on every transact.
+    private const val ICON_URI = "favicon.ico"
 
     data class WalletSession(
         val address: String,
@@ -208,7 +212,14 @@ object MWAConnect {
         }
 
         val result = try {
-            adapter.transact(sender) {
+            adapter.transact(sender) { authResult ->
+                val authorized = authResult.accounts.firstOrNull()?.publicKey ?: run {
+                    @Suppress("DEPRECATION")
+                    authResult.publicKey
+                }
+                if (!authorized.contentEquals(addressBytes)) {
+                    error("authorized wallet does not match connected Ghola wallet")
+                }
                 // signMessagesDetached takes (messages, addresses) and
                 // returns SignedMessageResult[] with `signatures: byte[][]`.
                 val signed = signMessagesDetached(

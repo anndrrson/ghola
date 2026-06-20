@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
+import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.network.DeviceKeyManager
 import xyz.ghola.app.service.ThumperAccessibilityService
@@ -67,6 +68,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         scanQrButton.setOnClickListener {
+            if (!BuildConfig.GHOLA_CAMERA_QR_ENABLED) {
+                Toast.makeText(this, "QR scanning is not enabled in this build", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_GRANTED
             ) {

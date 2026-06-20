@@ -14,8 +14,8 @@ android {
         applicationId = "xyz.ghola.app"
         minSdk = 28
         targetSdk = 34
-        versionCode = 11
-        versionName = "0.7.1"
+        versionCode = 13
+        versionName = "0.7.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -156,6 +156,9 @@ android {
             buildConfigField("String", "GHOLA_AUTH_SURFACE", "\"seeker_mwa\"")
             buildConfigField("boolean", "GHOLA_SEEKER_BUILD", "true")
             buildConfigField("boolean", "GHOLA_PLAY_STORE_BUILD", "false")
+            buildConfigField("boolean", "GHOLA_DEVICE_CONTROL_ENABLED", "false")
+            buildConfigField("boolean", "GHOLA_VOICE_INPUT_ENABLED", "false")
+            buildConfigField("boolean", "GHOLA_CAMERA_QR_ENABLED", "false")
             resValue("string", "distribution_name", "Solana Seeker")
         }
         create("standard") {
@@ -165,6 +168,9 @@ android {
             buildConfigField("String", "GHOLA_AUTH_SURFACE", "\"turnkey_ready\"")
             buildConfigField("boolean", "GHOLA_SEEKER_BUILD", "false")
             buildConfigField("boolean", "GHOLA_PLAY_STORE_BUILD", "true")
+            buildConfigField("boolean", "GHOLA_DEVICE_CONTROL_ENABLED", "false")
+            buildConfigField("boolean", "GHOLA_VOICE_INPUT_ENABLED", "true")
+            buildConfigField("boolean", "GHOLA_CAMERA_QR_ENABLED", "true")
             resValue("string", "distribution_name", "Android")
         }
     }
@@ -198,11 +204,12 @@ android {
         }
         debug {
             isMinifyEnabled = false
-            // Override per dev: point at the developer's local thumper-cloud.
-            // Use the Mac's LAN IP so a Seeker on the same Wi-Fi can reach it.
-            // Override at build time:  ./gradlew … -PghoLaCloudUrl=http://10.0.0.5:3000
+            // Default to the live cloud so an on-device debug build (e.g. a Seeker
+            // over USB) can sign in without a dev server on the LAN. Devs running a
+            // local thumper-cloud override it at build time:
+            //   ./gradlew … -PghoLaCloudUrl=http://<mac-lan-ip>:3000
             val devUrl = providers.gradleProperty("ghoLaCloudUrl").orNull
-                ?: "http://192.168.1.169:3000"
+                ?: "https://thumper-cloud.onrender.com"
             val devSaidUrl = providers.gradleProperty("ghoLaSaidUrl").orNull
                 ?: "https://ghola-api.onrender.com/v1"
             buildConfigField("String", "DEFAULT_CLOUD_URL", "\"$devUrl\"")
@@ -298,6 +305,7 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
     implementation("androidx.cardview:cardview:1.0.0")
+    implementation("com.patrykandpatrick.vico:views:2.0.3")
     // Google Sign-In
     implementation("com.google.android.gms:play-services-auth:21.0.0")
     implementation("androidx.credentials:credentials:1.3.0")
@@ -329,7 +337,6 @@ dependencies {
         exclude(group = "junit")
         exclude(group = "org.hamcrest")
     }
-    implementation("com.solanamobile:seedvault-wallet-sdk:0.4.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     // ProcessLifecycleOwner — fires onStart exactly once per
     // background→foreground transition. Used by AppForegroundCoordinator.

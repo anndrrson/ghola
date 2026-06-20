@@ -71,10 +71,10 @@ class MessagesActivity : AppCompatActivity() {
             return
         }
 
-        statusTitle.text = "Messages"
+        statusTitle.text = "End-to-end encrypted"
         if (hasAuth) {
-            statusBody.text = ""
-            statusBody.visibility = View.GONE
+            statusBody.text = "Messages relay ciphertext only — never plain text."
+            statusBody.visibility = View.VISIBLE
         } else {
             statusBody.text = "Finish wallet sign-in."
             statusBody.visibility = View.VISIBLE

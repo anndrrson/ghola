@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Four-point spark — the "Ask Ghola" assistant glyph. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M12,2 C12.6,7 13.4,8.4 18,9 C13.4,9.6 12.6,11 12,16 C11.4,11 10.6,9.6 6,9 C10.6,8.4 11.4,7 12,2 Z" />
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M18.5,14 C18.8,16.2 19.1,16.9 21,17.2 C19.1,17.5 18.8,18.2 18.5,20.4 C18.2,18.2 17.9,17.5 16,17.2 C17.9,16.9 18.2,16.2 18.5,14 Z" />
+</vector>
