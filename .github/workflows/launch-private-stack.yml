@@ -193,6 +193,8 @@ jobs:
           setenv PRIVATE_AGENT_FUNDING_SIGNING_KEY "$FUNDING_SIGNING_KEY"
           setenv GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 "$FUNDING_SIGNER_PUBLIC_KEY"
           setenv GHOLA_PRIVATE_AGENT_PROVIDER "phala"
+          setenv GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN "true"
+          setenv GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES "10"
           if [ "${{ inputs.arm_phala }}" = "true" ]; then
             # Deliberate re-arm: Phala key present, JIT on, lockdowns off.
             setenv PHALA_CLOUD_API_KEY "$PHALA_KEY"
