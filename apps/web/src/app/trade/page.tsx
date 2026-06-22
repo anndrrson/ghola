@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Activity,
@@ -258,6 +258,17 @@ export default function TradePage() {
   const [openRow, setOpenRow] = useState<string | null>(null);
   const venue = VENUES.find((item) => item.id === venueId) ?? VENUES[0];
   const productLabel = venueProductLabel(venue.id, marketSel);
+
+  const applyAgentStartup = useCallback((startup: PublicAgentStartupStatus) => {
+    setAgentStartup(startup);
+    if (!startup.runtime.ready) return;
+    setAgentWakeState("ready");
+    setAgentWakeMessage((message) =>
+      message?.startsWith("Starting secure worker") ? startup.runtime.message : message
+    );
+    setWorkerReady(true);
+    setWorkerLabel("attested");
+  }, []);
   const mid = frameMidNumber(frame);
   const [midFlash, setMidFlash] = useState(false);
   const prevMidRef = useRef<number | null>(null);
@@ -381,7 +392,7 @@ export default function TradePage() {
   async function refreshAgentStartup() {
     try {
       const startup = await getPublicAgentStartupStatus();
-      setAgentStartup(startup);
+      applyAgentStartup(startup);
       setAgentStartupFailed(false);
       return startup;
     } catch {
@@ -418,7 +429,7 @@ export default function TradePage() {
       try {
         const startup = await getPublicAgentStartupStatus();
         if (!cancelled) {
-          setAgentStartup(startup);
+          applyAgentStartup(startup);
           setAgentStartupFailed(false);
         }
       } catch {
@@ -431,7 +442,7 @@ export default function TradePage() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [thumperAuth.authenticated]);
+  }, [applyAgentStartup, thumperAuth.authenticated]);
 
   useEffect(() => {
     if (!thumperAuth.authenticated || !agentStartup || agentWakeAttemptedRef.current) return;
@@ -455,7 +466,7 @@ export default function TradePage() {
         }
         const startup = await getPublicAgentStartupStatus();
         if (!cancelled) {
-          setAgentStartup(startup);
+          applyAgentStartup(startup);
           setAgentStartupFailed(false);
         }
       } catch (error) {
@@ -469,7 +480,7 @@ export default function TradePage() {
     return () => {
       cancelled = true;
     };
-  }, [agentStartup, thumperAuth.authenticated]);
+  }, [agentStartup, applyAgentStartup, thumperAuth.authenticated]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
