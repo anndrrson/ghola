@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  markPhalaPrivateAgentActivity,
   phalaJitProvisioningConfigured,
   wakePhalaPrivateAgentForUse,
 } from "@/lib/private-agent-phala";
@@ -17,19 +18,25 @@ export async function POST(request: Request) {
     return json({ error: "same_origin_required" }, 403);
   }
 
+  const leaseMs = boundedIntegerEnv("GHOLA_PUBLIC_LIVE_WORKER_WAKE_LEASE_MS", 10 * 60_000, 5 * 60_000, 30 * 60_000);
   const before = await getPrivateAgentRuntimeStatus();
   if (before.remote_execution_ready && before.selected_provider === "phala") {
+    const lease = await markPhalaPrivateAgentActivity({
+      reason: "public_live_phoenix_wake:already_running",
+      leaseMs,
+    });
     return json({
       version: 1,
       status: "ready",
       ready: true,
       action: "already_running",
+      lease_ms: leaseMs,
+      lease_expires_at: lease.lease_expires_at,
       provider: phalaSummary(before),
       checked_at: new Date().toISOString(),
     });
   }
 
-  const leaseMs = boundedIntegerEnv("GHOLA_PUBLIC_LIVE_WORKER_WAKE_LEASE_MS", 10 * 60_000, 5 * 60_000, 30 * 60_000);
   const waitForReadyMs = boundedIntegerEnv("GHOLA_PUBLIC_LIVE_WORKER_WAKE_WAIT_MS", 75_000, 5_000, 110_000);
   const provisioning = await wakePhalaPrivateAgentForUse({
     reason: "public_live_phoenix_wake",

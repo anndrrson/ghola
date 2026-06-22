@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
 import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
+import {
+  getPrivateAgentRuntimeLease,
+  resetPrivateAgentRuntimeLeaseStoreForTests,
+} from "@/lib/private-agent-runtime-lease";
+import * as runtimeServer from "@/lib/private-agent-runtime-server";
 
 const ENV_KEYS = [
   "GHOLA_PUBLIC_AGENT_WAKE_ENABLED",
@@ -20,6 +25,8 @@ const ENV_KEYS = [
   "PHALA_ENCLAVE_KEY_ID",
   "PHALA_ENCLAVE_X25519_PUB_HEX",
   "GHOLA_PRIVATE_AGENT_ATTESTED_READY",
+  "GHOLA_PRIVATE_AGENT_LEASE_STORE",
+  "GHOLA_PUBLIC_AGENT_WAKE_LEASE_MS",
   "VERCEL_ENV",
 ] as const;
 
@@ -38,12 +45,14 @@ describe("public agent wake route", () => {
   beforeEach(async () => {
     clearEnv();
     await resetPrivateAccountStoreForTests();
+    await resetPrivateAgentRuntimeLeaseStoreForTests();
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
     clearEnv();
     await resetPrivateAccountStoreForTests();
+    await resetPrivateAgentRuntimeLeaseStoreForTests();
   });
 
   it("is disabled unless explicitly enabled", async () => {
@@ -113,7 +122,71 @@ describe("public agent wake route", () => {
       remote_execution_ready: false,
     });
   });
+
+  it("renews the idle lease when Phala is already running", async () => {
+    process.env.GHOLA_PRIVATE_AGENT_LEASE_STORE = "memory";
+    process.env.GHOLA_PUBLIC_AGENT_WAKE_ENABLED = "true";
+    process.env.GHOLA_PUBLIC_AGENT_WAKE_LEASE_MS = "600000";
+    vi.spyOn(runtimeServer, "getPrivateAgentRuntimeStatus").mockResolvedValue(readyPhalaRuntime());
+
+    const res = await POST(wakeRequest());
+    const body = await res.json();
+    const lease = await getPrivateAgentRuntimeLease("phala");
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({
+      status: "ready",
+      ready: true,
+      action: "already_running",
+      lease_ms: 600000,
+    });
+    expect(body.lease_expires_at).toBe(lease?.lease_expires_at);
+    expect(lease).toMatchObject({
+      state: "active",
+      last_reason: "public_agent_byo_wake:already_running",
+    });
+  });
 });
+
+function readyPhalaRuntime(): Awaited<ReturnType<typeof runtimeServer.getPrivateAgentRuntimeStatus>> {
+  return {
+    version: 1,
+    checked_at: "2026-06-22T23:27:00.000Z",
+    sealed_execution_required: true,
+    entitlement_required: "paid_private_agent_plan",
+    preferred_provider: "phala",
+    selected_provider: "phala",
+    remote_execution_ready: true,
+    shielded_rail_ready: true,
+    blocking_reasons: [],
+    disclosure: "test",
+    providers: [
+      {
+        id: "phala",
+        label: "Phala TEE",
+        configured: true,
+        available: true,
+        attested: true,
+        supports_sealed_secrets: true,
+        supports_background_agents: true,
+        supports_trading_execution: true,
+        reason: null,
+        execution_url: "https://phala-worker.ghola.example",
+        sealed_recipient: {
+          recipient_id: "phala:test",
+          x25519_pub_hex: "11".repeat(32),
+          tee_kind: "phala",
+          measurement_hex: null,
+          attestation_hash: null,
+          expires_at_unix: null,
+        },
+        evidence: {
+          cvm_status: "running",
+        },
+      },
+    ],
+  };
+}
 
 function clearEnv() {
   for (const key of ENV_KEYS) delete process.env[key];
