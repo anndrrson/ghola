@@ -63,7 +63,7 @@
 
             <Button
                 android:id="@+id/btnWalletSignIn"
-                style="@style/Ghola.PrimaryButton"
+                style="@style/Ghola.Button.Primary"
                 android:layout_width="match_parent"
                 android:layout_height="60dp"
                 android:layout_marginTop="26dp"
@@ -140,7 +140,7 @@
 
             <Button
                 android:id="@+id/btnEnableAccessibility"
-                style="@style/Ghola.PrimaryButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="60dp"
                 android:layout_marginTop="30dp"
@@ -148,7 +148,7 @@
 
             <Button
                 android:id="@+id/btnCheckAccessibility"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="54dp"
                 android:layout_marginTop="10dp"
@@ -156,7 +156,7 @@
 
             <Button
                 android:id="@+id/btnFinish"
-                style="@style/Widget.MaterialComponents.Button.TextButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="54dp"
                 android:layout_marginTop="8dp"
@@ -164,7 +164,7 @@
 
             <Button
                 android:id="@+id/btnDone"
-                style="@style/Ghola.PrimaryButton"
+                style="@style/Ghola.Button.Primary"
                 android:layout_width="match_parent"
                 android:layout_height="60dp"
                 android:text="@string/onboarding_accessibility_get_started"

@@ -33,4 +33,13 @@
     <color name="ghola_success_wash">#1a34d399</color>
     <color name="ghola_success_stroke">#3834d399</color>
     <color name="ghola_chip_bg">#0e1320</color>
+
+    <!-- Dimensional button tokens: top-lit gradient face + darker bottom "lip"
+         (bevel) so buttons read as raised, not flat, on the dark surface. -->
+    <color name="ghola_btn_accent_top">#6cc1ff</color>
+    <color name="ghola_btn_accent_bottom">#2f93ec</color>
+    <color name="ghola_btn_accent_lip">#1c6cad</color>
+    <color name="ghola_btn_surface_top">#1a1e29</color>
+    <color name="ghola_btn_surface_bottom">#0f131c</color>
+    <color name="ghola_btn_surface_lip">#070a11</color>
 </resources>

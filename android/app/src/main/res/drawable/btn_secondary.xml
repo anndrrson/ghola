@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Dimensional secondary button. Dark beveled lip + a subtle top-lit surface
+  gradient with a hairline border, so outline/secondary actions feel raised
+  rather than flat-black. Accent-wash ripple on press.
+-->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/ghola_accent_wash">
+    <item>
+        <selector>
+
+            <!-- Pressed: face drops onto the lip. -->
+            <item android:state_pressed="true">
+                <layer-list>
+                    <item>
+                        <shape android:shape="rectangle">
+                            <corners android:radius="14dp" />
+                            <solid android:color="@color/ghola_btn_surface_lip" />
+                        </shape>
+                    </item>
+                    <item android:bottom="1dp">
+                        <shape android:shape="rectangle">
+                            <corners android:radius="14dp" />
+                            <solid android:color="@color/ghola_btn_surface_bottom" />
+                            <stroke android:width="1dp" android:color="@color/ghola_border" />
+                        </shape>
+                    </item>
+                </layer-list>
+            </item>
+
+            <!-- Default: 2dp dark lip + top-lit surface gradient + border. -->
+            <item>
+                <layer-list>
+                    <item>
+                        <shape android:shape="rectangle">
+                            <corners android:radius="14dp" />
+                            <solid android:color="@color/ghola_btn_surface_lip" />
+                        </shape>
+                    </item>
+                    <item android:bottom="2dp">
+                        <shape android:shape="rectangle">
+                            <corners android:radius="14dp" />
+                            <gradient
+                                android:angle="270"
+                                android:startColor="@color/ghola_btn_surface_top"
+                                android:endColor="@color/ghola_btn_surface_bottom" />
+                            <stroke android:width="1dp" android:color="@color/ghola_border" />
+                        </shape>
+                    </item>
+                </layer-list>
+            </item>
+
+        </selector>
+    </item>
+</ripple>

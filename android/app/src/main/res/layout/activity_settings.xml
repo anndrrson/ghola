@@ -73,11 +73,11 @@
         <!-- De-emphasized entry to the assistant chat (no longer a home/trade CTA). -->
         <Button
             android:id="@+id/openAssistantButton"
+            style="@style/Ghola.Button.Secondary"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Open assistant"
-            android:layout_marginBottom="16dp"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+            android:layout_marginBottom="16dp" />
 
         <!-- Cloud Configuration Section -->
         <LinearLayout
@@ -226,21 +226,21 @@
 
             <Button
                 android:id="@+id/downloadButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Download Model (~2.5 GB)"
-                android:layout_marginBottom="8dp"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+                android:layout_marginBottom="8dp" />
 
             <Button
                 android:id="@+id/deleteModelButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Delete Model"
                 android:textColor="#ef4444"
                 android:visibility="gone"
-                android:layout_marginBottom="16dp"
-                style="@style/Widget.MaterialComponents.Button.TextButton" />
+                android:layout_marginBottom="16dp" />
 
         </LinearLayout>
 
@@ -300,21 +300,21 @@
 
             <Button
                 android:id="@+id/litertNpuDownloadButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/litert_npu_download_cta"
-                android:layout_marginBottom="8dp"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+                android:layout_marginBottom="8dp" />
 
             <Button
                 android:id="@+id/litertNpuDeleteButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/litert_npu_delete_cta"
                 android:textColor="#ef4444"
                 android:visibility="gone"
-                android:layout_marginBottom="16dp"
-                style="@style/Widget.MaterialComponents.Button.TextButton" />
+                android:layout_marginBottom="16dp" />
 
             <!-- HuggingFace Bearer token (Phase γ.4 / L3) — nested inside the
                  NPU section because the gated repo it unlocks is the only
@@ -368,20 +368,20 @@
 
             <Button
                 android:id="@+id/hfTokenSaveButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/hf_token_save"
-                android:layout_marginBottom="8dp"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+                android:layout_marginBottom="8dp" />
 
             <Button
                 android:id="@+id/hfTokenClearButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/hf_token_clear"
                 android:textColor="#ef4444"
-                android:layout_marginBottom="8dp"
-                style="@style/Widget.MaterialComponents.Button.TextButton" />
+                android:layout_marginBottom="8dp" />
 
             <TextView
                 android:layout_width="match_parent"
@@ -421,11 +421,11 @@
 
         <Button
             android:id="@+id/connectGoogleButton"
+            style="@style/Ghola.Button.Secondary"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Connect Google for Gmail integration"
-            android:layout_marginBottom="24dp"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+            android:layout_marginBottom="24dp" />
 
         <!-- Divider -->
         <View
@@ -461,11 +461,11 @@
 
             <Button
                 android:id="@+id/enableA11yButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Open Ghola Permission"
-                android:layout_marginBottom="24dp"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+                android:layout_marginBottom="24dp" />
 
         </LinearLayout>
 
@@ -502,19 +502,19 @@
 
             <Button
                 android:id="@+id/openRelayButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Open Relay Setup"
-                android:layout_marginBottom="8dp"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+                android:layout_marginBottom="8dp" />
 
             <Button
                 android:id="@+id/localHomeConnectButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Connect Ghola Home"
-                android:layout_marginBottom="24dp"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+                android:layout_marginBottom="24dp" />
 
         </LinearLayout>
 
@@ -538,27 +538,27 @@
 
         <Button
             android:id="@+id/pairDeviceReceiveButton"
+            style="@style/Ghola.Button.Secondary"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="This is my new phone"
-            android:layout_marginBottom="8dp"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+            android:layout_marginBottom="8dp" />
 
         <Button
             android:id="@+id/pairDeviceSendButton"
+            style="@style/Ghola.Button.Secondary"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="This is my old phone"
-            android:layout_marginBottom="32dp"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
+            android:layout_marginBottom="32dp" />
 
         <!-- Save Button -->
         <Button
             android:id="@+id/saveButton"
+            style="@style/Ghola.Button.Primary"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Save Settings"
-            android:backgroundTint="#3da8ff" />
+            android:text="Save Settings" />
 
     </LinearLayout>
 

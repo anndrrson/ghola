@@ -1,17 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Primary call-to-action. Accent gradient (top-lit), rounded, with a soft
-  white ripple on press. Foreground ink is near-black for AA contrast.
+  Primary call-to-action used by container-style CTAs (Home hero, onboarding).
+  Matches @drawable/btn_primary: a darker bevel "lip" under a top-lit accent
+  gradient face, with a soft white ripple on press. Ink is near-black for AA.
 -->
 <ripple xmlns:android="http://schemas.android.com/apk/res/android"
-    android:color="#40ffffff">
+    android:color="#33ffffff">
     <item>
-        <shape android:shape="rectangle">
-            <corners android:radius="16dp" />
-            <gradient
-                android:angle="270"
-                android:startColor="@color/ghola_accent_top"
-                android:endColor="@color/ghola_accent_bottom" />
-        </shape>
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <corners android:radius="16dp" />
+                    <solid android:color="@color/ghola_btn_accent_lip" />
+                </shape>
+            </item>
+            <item android:bottom="3dp">
+                <shape android:shape="rectangle">
+                    <corners android:radius="16dp" />
+                    <gradient
+                        android:angle="270"
+                        android:startColor="@color/ghola_btn_accent_top"
+                        android:endColor="@color/ghola_btn_accent_bottom" />
+                </shape>
+            </item>
+        </layer-list>
     </item>
 </ripple>

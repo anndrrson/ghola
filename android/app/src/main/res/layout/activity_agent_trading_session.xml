@@ -329,20 +329,14 @@
                 android:textColor="#8b95a8"
                 android:textSize="14sp" />
 
-            <com.google.android.material.button.MaterialButton
+            <Button
                 android:id="@+id/approveSessionButton"
-                style="@style/Widget.MaterialComponents.Button"
+                style="@style/Ghola.Button.Primary"
                 android:layout_width="match_parent"
                 android:layout_height="62dp"
                 android:layout_marginTop="18dp"
-                android:backgroundTint="#3da8ff"
-                android:fontFamily="@font/geist"
                 android:text="@string/autopilot_arm"
-                android:textAllCaps="false"
-                android:textColor="#05131d"
-                android:textFontWeight="500"
-                android:textSize="18sp"
-                app:cornerRadius="0dp" />
+                android:textSize="18sp" />
 
             <LinearLayout
                 android:layout_width="match_parent"

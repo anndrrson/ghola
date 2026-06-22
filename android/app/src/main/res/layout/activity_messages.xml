@@ -78,43 +78,21 @@
                 android:textSize="13sp"
                 android:visibility="gone" />
 
-            <com.google.android.material.button.MaterialButton
+            <Button
                 android:id="@+id/newMessageButton"
+                style="@style/Ghola.Button.Primary"
                 android:layout_width="match_parent"
                 android:layout_height="56dp"
                 android:layout_marginTop="22dp"
-                android:fontFamily="@font/geist"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="@string/messages_new"
-                android:textAllCaps="false"
-                android:textColor="@color/ghola_cta_ink"
-                android:textFontWeight="600"
-                android:textSize="16sp"
-                app:backgroundTint="@color/ghola_accent"
-                app:cornerRadius="16dp"
-                app:elevation="0dp" />
+                android:text="@string/messages_new" />
 
-            <com.google.android.material.button.MaterialButton
+            <Button
                 android:id="@+id/copyInviteButton"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="52dp"
                 android:layout_marginTop="10dp"
-                android:fontFamily="@font/geist"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="@string/messages_copy_invite"
-                android:textAllCaps="false"
-                android:textColor="@color/ghola_text_secondary"
-                android:textFontWeight="500"
-                android:textSize="15sp"
-                app:backgroundTint="@color/ghola_chip_bg"
-                app:cornerRadius="13dp"
-                app:elevation="0dp"
-                app:rippleColor="@color/ghola_accent_wash"
-                app:strokeColor="@color/ghola_border"
-                app:strokeWidth="1dp" />
+                android:text="@string/messages_copy_invite" />
 
             <!-- Recent header + refresh -->
             <LinearLayout
@@ -132,27 +110,16 @@
                     android:layout_weight="1"
                     android:text="@string/messages_recent" />
 
-                <com.google.android.material.button.MaterialButton
+                <Button
                     android:id="@+id/refreshInboxButton"
+                    style="@style/Ghola.Button.Secondary"
                     android:layout_width="wrap_content"
                     android:layout_height="40dp"
-                    android:fontFamily="@font/geist"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
                     android:minWidth="0dp"
                     android:paddingStart="16dp"
                     android:paddingEnd="16dp"
                     android:text="@string/messages_refresh"
-                    android:textAllCaps="false"
-                    android:textColor="@color/ghola_text_secondary"
-                    android:textFontWeight="500"
-                    android:textSize="13sp"
-                    app:backgroundTint="@color/ghola_chip_bg"
-                    app:cornerRadius="13dp"
-                    app:elevation="0dp"
-                    app:rippleColor="@color/ghola_accent_wash"
-                    app:strokeColor="@color/ghola_border"
-                    app:strokeWidth="1dp" />
+                    android:textSize="13sp" />
             </LinearLayout>
 
             <LinearLayout

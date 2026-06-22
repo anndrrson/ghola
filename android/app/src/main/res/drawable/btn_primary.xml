@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Dimensional primary (accent) button. A darker "lip" layer peeks out at the
+  bottom under a top-lit gradient face, so the button reads as raised. On press
+  the face drops onto the lip (1dp) for a tactile push-in. White ripple on top.
+-->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#33ffffff">
+    <item>
+        <selector>
+
+            <!-- Pressed: face pushed down onto the lip, slightly dimmer. -->
+            <item android:state_pressed="true">
+                <layer-list>
+                    <item>
+                        <shape android:shape="rectangle">
+                            <corners android:radius="16dp" />
+                            <solid android:color="@color/ghola_btn_accent_lip" />
+                        </shape>
+                    </item>
+                    <item android:bottom="1dp">
+                        <shape android:shape="rectangle">
+                            <corners android:radius="16dp" />
+                            <gradient
+                                android:angle="270"
+                                android:startColor="@color/ghola_btn_accent_bottom"
+                                android:endColor="@color/ghola_btn_accent_lip" />
+                        </shape>
+                    </item>
+                </layer-list>
+            </item>
+
+            <!-- Disabled: flat, muted. -->
+            <item android:state_enabled="false">
+                <shape android:shape="rectangle">
+                    <corners android:radius="16dp" />
+                    <solid android:color="@color/ghola_accent_dim" />
+                </shape>
+            </item>
+
+            <!-- Default: 3dp dark lip + top-lit gradient face. -->
+            <item>
+                <layer-list>
+                    <item>
+                        <shape android:shape="rectangle">
+                            <corners android:radius="16dp" />
+                            <solid android:color="@color/ghola_btn_accent_lip" />
+                        </shape>
+                    </item>
+                    <item android:bottom="3dp">
+                        <shape android:shape="rectangle">
+                            <corners android:radius="16dp" />
+                            <gradient
+                                android:angle="270"
+                                android:startColor="@color/ghola_btn_accent_top"
+                                android:endColor="@color/ghola_btn_accent_bottom" />
+                        </shape>
+                    </item>
+                </layer-list>
+            </item>
+
+        </selector>
+    </item>
+</ripple>

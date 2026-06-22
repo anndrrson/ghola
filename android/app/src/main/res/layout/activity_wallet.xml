@@ -69,42 +69,21 @@
                 android:textColor="@color/ghola_text_secondary"
                 android:textSize="15sp" />
 
-            <com.google.android.material.button.MaterialButton
+            <Button
                 android:id="@+id/connectWalletButton"
+                style="@style/Ghola.Button.Primary"
                 android:layout_width="match_parent"
                 android:layout_height="56dp"
-                android:fontFamily="@font/geist"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="@string/wallet_connect_button"
-                android:textAllCaps="false"
-                android:textColor="@color/ghola_cta_ink"
-                android:textFontWeight="600"
-                android:textSize="16sp"
-                app:backgroundTint="@color/ghola_accent"
-                app:cornerRadius="16dp"
-                app:elevation="0dp" />
+                android:text="@string/wallet_connect_button" />
 
-            <com.google.android.material.button.MaterialButton
+            <Button
                 android:id="@+id/disconnectWalletButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="52dp"
                 android:layout_marginTop="10dp"
-                android:fontFamily="@font/geist"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
                 android:text="Sign out"
-                android:textAllCaps="false"
-                android:textColor="@color/ghola_text_secondary"
-                android:textFontWeight="500"
-                android:textSize="15sp"
-                android:visibility="gone"
-                app:backgroundTint="@color/ghola_chip_bg"
-                app:cornerRadius="13dp"
-                app:elevation="0dp"
-                app:rippleColor="@color/ghola_accent_wash"
-                app:strokeColor="@color/ghola_border"
-                app:strokeWidth="1dp" />
+                android:visibility="gone" />
 
             <TextView
                 android:id="@+id/connectStatus"
@@ -133,24 +112,12 @@
                 android:layout_marginBottom="16dp"
                 android:background="@color/ghola_border" />
 
-            <com.google.android.material.button.MaterialButton
+            <Button
                 android:id="@+id/advancedWalletButton"
+                style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
                 android:layout_height="52dp"
-                android:fontFamily="@font/geist"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="Advanced"
-                android:textAllCaps="false"
-                android:textColor="@color/ghola_text_secondary"
-                android:textFontWeight="500"
-                android:textSize="15sp"
-                app:backgroundTint="@color/ghola_chip_bg"
-                app:cornerRadius="13dp"
-                app:elevation="0dp"
-                app:rippleColor="@color/ghola_accent_wash"
-                app:strokeColor="@color/ghola_border"
-                app:strokeWidth="1dp" />
+                android:text="Advanced" />
 
             <LinearLayout
                 android:id="@+id/advancedWalletSection"
@@ -183,24 +150,12 @@
                     android:layout_marginBottom="8dp"
                     android:text="@string/wallet_proof_section_title" />
 
-                <com.google.android.material.button.MaterialButton
+                <Button
                     android:id="@+id/verifySeekerButton"
+                    style="@style/Ghola.Button.Secondary"
                     android:layout_width="match_parent"
                     android:layout_height="52dp"
-                    android:fontFamily="@font/geist"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:text="@string/wallet_verify_button"
-                    android:textAllCaps="false"
-                    android:textColor="@color/ghola_text_secondary"
-                    android:textFontWeight="500"
-                    android:textSize="15sp"
-                    app:backgroundTint="@color/ghola_chip_bg"
-                    app:cornerRadius="13dp"
-                    app:elevation="0dp"
-                    app:rippleColor="@color/ghola_accent_wash"
-                    app:strokeColor="@color/ghola_border"
-                    app:strokeWidth="1dp" />
+                    android:text="@string/wallet_verify_button" />
 
                 <TextView
                     android:id="@+id/seekerVerificationStatus"
@@ -231,25 +186,13 @@
                     android:textColor="@color/ghola_text_secondary"
                     android:textSize="13sp" />
 
-                <com.google.android.material.button.MaterialButton
+                <Button
                     android:id="@+id/privateSelfTestButton"
+                    style="@style/Ghola.Button.Secondary"
                     android:layout_width="match_parent"
                     android:layout_height="52dp"
                     android:layout_marginBottom="12dp"
-                    android:fontFamily="@font/geist"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:text="Run real local proof"
-                    android:textAllCaps="false"
-                    android:textColor="@color/ghola_text_secondary"
-                    android:textFontWeight="500"
-                    android:textSize="15sp"
-                    app:backgroundTint="@color/ghola_chip_bg"
-                    app:cornerRadius="13dp"
-                    app:elevation="0dp"
-                    app:rippleColor="@color/ghola_accent_wash"
-                    app:strokeColor="@color/ghola_border"
-                    app:strokeWidth="1dp" />
+                    android:text="Run real local proof" />
 
                 <EditText
                     android:id="@+id/privateRecipientInput"
@@ -278,24 +221,12 @@
                     android:textColorHint="@color/ghola_text_tertiary"
                     android:textSize="13sp" />
 
-                <com.google.android.material.button.MaterialButton
+                <Button
                     android:id="@+id/createPrivateIntentButton"
+                    style="@style/Ghola.Button.Secondary"
                     android:layout_width="match_parent"
                     android:layout_height="52dp"
-                    android:fontFamily="@font/geist"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:text="Approve private payment"
-                    android:textAllCaps="false"
-                    android:textColor="@color/ghola_text_secondary"
-                    android:textFontWeight="500"
-                    android:textSize="15sp"
-                    app:backgroundTint="@color/ghola_chip_bg"
-                    app:cornerRadius="13dp"
-                    app:elevation="0dp"
-                    app:rippleColor="@color/ghola_accent_wash"
-                    app:strokeColor="@color/ghola_border"
-                    app:strokeWidth="1dp" />
+                    android:text="Approve private payment" />
 
                 <TextView
                     android:id="@+id/privateIntentStatus"
