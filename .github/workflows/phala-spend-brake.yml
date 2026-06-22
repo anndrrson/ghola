@@ -35,6 +35,7 @@ jobs:
     env:
       PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
       PHALA_CLOUD_API_PREFIX: ${{ vars.PHALA_CLOUD_API_PREFIX }}
+      BASE_URL: ${{ vars.GHOLA_PRIVATE_AGENT_BASE_URL }}
       CVM_NAMES: ${{ inputs.cvm_names || 'ghola-private-agent-worker-d36f9cc,ghola-private-agent-worker-4cbdf74,ghola-private-agent-worker-77ce835,ghola-private-agent-worker-no-submit-f510d61,ghola-private-agent-worker' }}
       CVM_PREFIXES: ${{ inputs.cvm_prefixes || 'ghola-' }}
       DRY_RUN: ${{ inputs.dry_run || 'false' }}
@@ -51,6 +52,32 @@ jobs:
           if [ -z "${PHALA_CLOUD_API_KEY}" ]; then
             echo "## Phala spend brake skipped" >> "$GITHUB_STEP_SUMMARY"
             echo "- PHALA_CLOUD_API_KEY is not configured." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$DRY_RUN" != "true" ]; then
+            base="${BASE_URL:-https://ghola.xyz}"
+            echo "Running idle-aware Phala stop through $base/api/private-agent/idle"
+            out=$(curl -fsS -m 75 "$base/api/private-agent/idle" -H "x-vercel-cron: 1")
+            echo "$out"
+            OUT="$out" node <<'NODE'
+          const { appendFileSync } = require("node:fs");
+          const result = JSON.parse(process.env.OUT || "{}");
+          const idle = result.idle || {};
+          appendFileSync(
+            process.env.GITHUB_STEP_SUMMARY,
+            [
+              "## Phala spend brake",
+              "",
+              "- mode: `idle-aware`",
+              `- status: \`${idle.status || "unknown"}\``,
+              `- attempted: \`${Boolean(idle.attempted)}\``,
+              `- stopped: \`${Boolean(idle.stopped)}\``,
+              idle.lease_expires_at ? `- lease_expires_at: \`${idle.lease_expires_at}\`` : "",
+              idle.reason ? `- reason: \`${idle.reason}\`` : "",
+              "",
+            ].filter(Boolean).join("\n"),
+          );
+          NODE
             exit 0
           fi
           work="$RUNNER_TEMP/phala-spend-brake"
