@@ -219,13 +219,8 @@ export async function submitPublicLivePhoenixOrder(input: {
   if (!isSealedExecutionInstructionBundle(encryptedInstruction)) {
     return { error: "encrypted_execution_instruction_required" as const, status: 400 };
   }
-  if (publicLivePhoenixRevenueGuardMode(input.env ?? process.env) === "enforce") {
-    return {
-      error: "private_agent_subscription_required" as const,
-      entitlement_required: "paid_private_agent_plan" as const,
-      status: 402,
-    };
-  }
+  const revenueGuard = publicLivePhoenixRevenueGuard(input.env ?? process.env);
+  if (!revenueGuard.ok) return revenueGuard;
   const cfg = publicLiveWorkerConfig(input.env ?? process.env);
   if (!cfg.url) return { error: "private_agent_worker_endpoint_missing" as const, status: 503 };
 
@@ -359,6 +354,23 @@ function publicLiveWorkerConfig(env: Record<string, string | undefined>) {
     "GHOLA_CONNECTOR_SOLANA_PERPS_MARKET_TOKEN",
   ]);
   return { url, token };
+}
+
+export function publicLivePhoenixRevenueGuard(env: Record<string, string | undefined> = process.env):
+  | { ok: true }
+  | {
+      ok: false;
+      error: "private_agent_subscription_required";
+      entitlement_required: "paid_private_agent_plan";
+      status: 402;
+    } {
+  if (publicLivePhoenixRevenueGuardMode(env) !== "enforce") return { ok: true };
+  return {
+    ok: false,
+    error: "private_agent_subscription_required",
+    entitlement_required: "paid_private_agent_plan",
+    status: 402,
+  };
 }
 
 function publicLivePhoenixRevenueGuardMode(env: Record<string, string | undefined>): "enforce" | "report_only" {
