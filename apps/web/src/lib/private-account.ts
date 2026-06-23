@@ -141,6 +141,7 @@ export interface GholaPrivateModeEvidenceChain {
   linkability_score_commitment?: string | null;
   work_order_commitment?: string | null;
   connector_result_commitment?: string | null;
+  platform_fee_policy_commitment?: string | null;
   execution_plan_commitment?: string | null;
   approval_commitment: string | null;
   execution_commitment: string | null;
@@ -665,6 +666,7 @@ export interface GholaPrivateAccountReceipt {
   linkability_score_commitment: string | null;
   work_order_commitment: string | null;
   connector_result_commitment: string | null;
+  platform_fee_policy_commitment: string | null;
   runtime_envelope_commitment: string | null;
   runtime_attestation_commitment: string | null;
   runtime_health_commitment: string | null;
@@ -827,6 +829,7 @@ export interface GholaReceiptVerificationResult {
     | "linkability_bound"
     | "work_order_bound"
     | "connector_result_bound"
+    | "platform_fee_policy_bound"
     | "runtime_envelope_bound"
     | "runtime_attestation_bound"
     | "schedule_bound"
@@ -2010,6 +2013,7 @@ export function buildPrivateAccountReceipt(input: {
         linkability_score_commitment: input.preview.connector_context?.linkability_score_commitment ??
           input.evidence_chain.linkability_score_commitment ??
           null,
+        platform_fee_policy_commitment: input.evidence_chain.platform_fee_policy_commitment ?? null,
         runtime_envelope_commitment: input.preview.sealed_runtime_context?.runtime_envelope_commitment ??
           input.evidence_chain.runtime_envelope_commitment ??
           null,
@@ -2073,6 +2077,7 @@ export function buildPrivateAccountReceipt(input: {
       null,
     work_order_commitment: evidenceChain?.work_order_commitment ?? null,
     connector_result_commitment: evidenceChain?.connector_result_commitment ?? null,
+    platform_fee_policy_commitment: evidenceChain?.platform_fee_policy_commitment ?? null,
     runtime_envelope_commitment: evidenceChain?.runtime_envelope_commitment ??
       input.preview.sealed_runtime_context?.runtime_envelope_commitment ??
       null,

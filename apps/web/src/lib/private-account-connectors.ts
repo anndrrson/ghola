@@ -3,6 +3,7 @@ import {
   containsForbiddenPublicPrivateAccountField,
   getPlatformPrivacyProfile,
   gholaCommitment,
+  isFundingAmountBucket,
   venueIdForPlatformClass,
   type GholaConnectorPreviewContext,
   type GholaPlatformClass,
@@ -143,6 +144,19 @@ export interface GholaLinkabilityScore {
   created_at: string;
 }
 
+export interface GholaConnectorPlatformFeePolicy {
+  version: 1;
+  policy_kind: "ghola_connector_platform_fee_policy_v1";
+  fee_policy_commitment: string;
+  fee_bps: number;
+  min_fee_micro_usdc: number;
+  estimated_notional_micro_usdc: number;
+  fee_micro_usdc: number;
+  fee_recipient: string;
+  quote_asset: "USDC";
+  collection_mode: "paid_private_agent_plan_and_worker_bound_fee";
+}
+
 export interface GholaConnectorWorkOrder {
   version: 1;
   work_order_commitment: string;
@@ -159,6 +173,7 @@ export interface GholaConnectorWorkOrder {
   connector_readiness_commitment: string;
   compiler_commitment: string;
   linkability_score_commitment: string;
+  platform_fee_policy_commitment: string | null;
   platform_funding_account_commitment: string;
   rotation_commitment: string;
   status: GholaConnectorWorkOrderStatus;
@@ -190,6 +205,7 @@ export interface GholaConnectorResult {
     | "privacy_claim"
   >;
   reason: string | null;
+  platform_fee_policy_commitment?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -593,6 +609,61 @@ export function connectorPreviewContext(input: {
   };
 }
 
+const MICRO_USDC_PER_USD = 1_000_000;
+
+function amountBucketMicroUsdc(bucket: string): number {
+  if (!isFundingAmountBucket(bucket)) return 0;
+  return Number.parseInt(bucket, 10) * MICRO_USDC_PER_USD;
+}
+
+export function connectorPlatformFeePolicy(input: {
+  owner_commitment: string;
+  intent_id: string;
+  account_commitment: string;
+  action_commitment: string;
+  manifest_commitment: string;
+  compiler_commitment: string;
+  amount_bucket: string;
+  asset_bucket: string;
+  fee_recipient: string;
+  fee_bps: number;
+  min_fee_micro_usdc: number;
+}): GholaConnectorPlatformFeePolicy {
+  const estimatedNotional = amountBucketMicroUsdc(input.amount_bucket);
+  const proportionalFee = Math.ceil((estimatedNotional * input.fee_bps) / 10_000);
+  const feeMicroUsdc = Math.max(input.min_fee_micro_usdc, proportionalFee);
+  const seed = {
+    policy_kind: "ghola_connector_platform_fee_policy_v1",
+    owner_commitment: input.owner_commitment,
+    intent_id: input.intent_id,
+    account_commitment: input.account_commitment,
+    action_commitment: input.action_commitment,
+    manifest_commitment: input.manifest_commitment,
+    compiler_commitment: input.compiler_commitment,
+    amount_bucket: input.amount_bucket,
+    asset_bucket: input.asset_bucket,
+    fee_recipient: input.fee_recipient,
+    fee_bps: input.fee_bps,
+    min_fee_micro_usdc: input.min_fee_micro_usdc,
+    estimated_notional_micro_usdc: estimatedNotional,
+    fee_micro_usdc: feeMicroUsdc,
+    quote_asset: "USDC",
+    collection_mode: "paid_private_agent_plan_and_worker_bound_fee",
+  };
+  return {
+    version: 1,
+    policy_kind: "ghola_connector_platform_fee_policy_v1",
+    fee_policy_commitment: gholaCommitment("connector_platform_fee_policy", seed),
+    fee_bps: input.fee_bps,
+    min_fee_micro_usdc: input.min_fee_micro_usdc,
+    estimated_notional_micro_usdc: estimatedNotional,
+    fee_micro_usdc: feeMicroUsdc,
+    fee_recipient: input.fee_recipient,
+    quote_asset: "USDC",
+    collection_mode: "paid_private_agent_plan_and_worker_bound_fee",
+  };
+}
+
 export function buildConnectorWorkOrder(input: {
   owner_commitment: string;
   intent_id: string;
@@ -605,6 +676,7 @@ export function buildConnectorWorkOrder(input: {
   manifest: GholaConnectorManifest;
   readiness: GholaConnectorReadiness;
   linkability_score: GholaLinkabilityScore;
+  platform_fee_policy?: GholaConnectorPlatformFeePolicy | null;
   now?: Date;
 }): GholaConnectorWorkOrder {
   const now = input.now ?? new Date();
@@ -632,6 +704,7 @@ export function buildConnectorWorkOrder(input: {
       compiler_commitment: input.compiled_intent.compiler_commitment,
       readiness_commitment: input.readiness.readiness_commitment,
       linkability_score_commitment: input.linkability_score.score_commitment,
+      platform_fee_policy_commitment: input.platform_fee_policy?.fee_policy_commitment ?? null,
     }),
     owner_commitment: input.owner_commitment,
     intent_id: input.intent_id,
@@ -646,6 +719,7 @@ export function buildConnectorWorkOrder(input: {
     connector_readiness_commitment: input.readiness.readiness_commitment,
     compiler_commitment: input.compiled_intent.compiler_commitment,
     linkability_score_commitment: input.linkability_score.score_commitment,
+    platform_fee_policy_commitment: input.platform_fee_policy?.fee_policy_commitment ?? null,
     platform_funding_account_commitment: platformFundingAccountCommitment,
     rotation_commitment: rotationCommitment,
     status: "prepared",
@@ -660,6 +734,7 @@ export async function submitConnectorWorkOrder(input: {
   compiled_intent: GholaCompiledPrivateIntent;
   preview: GholaPrivacyPreview;
   readiness: GholaConnectorReadiness;
+  platform_fee_policy?: GholaConnectorPlatformFeePolicy | null;
   hyperliquid_execution_vault?: {
     vault_commitment: string;
     encrypted_vault_commitment: string;
@@ -1133,6 +1208,7 @@ function connectorResult(input: {
     work_order_commitment: input.work_order.work_order_commitment,
     status: input.status,
     provider_ref_commitment: providerRefCommitment,
+    platform_fee_policy_commitment: input.work_order.platform_fee_policy_commitment ?? null,
     reason: input.reason,
   };
   return {
@@ -1151,6 +1227,7 @@ function connectorResult(input: {
     },
     venue_access_summary: connectorAccessContext(input.manifest),
     reason: input.reason,
+    platform_fee_policy_commitment: input.work_order.platform_fee_policy_commitment ?? null,
     created_at: input.now.toISOString(),
     updated_at: input.now.toISOString(),
   };
@@ -1279,6 +1356,7 @@ function redactedConnectorPayload(input: {
   manifest: GholaConnectorManifest;
   compiled_intent: GholaCompiledPrivateIntent;
   preview: GholaPrivacyPreview;
+  platform_fee_policy?: GholaConnectorPlatformFeePolicy | null;
   hyperliquid_execution_vault?: {
     vault_commitment: string;
     encrypted_vault_commitment: string;
@@ -1344,6 +1422,12 @@ function redactedConnectorPayload(input: {
     selected_rail: input.preview.selected_rail,
     claim_status: input.preview.claim_status,
     operation_class: operationForAction(input.manifest.platform_class, input.compiled_intent.action_class),
+    ...(input.platform_fee_policy
+      ? {
+          platform_fee_policy: input.platform_fee_policy,
+          platform_fee_policy_commitment: input.platform_fee_policy.fee_policy_commitment,
+        }
+      : {}),
     ...(input.encrypted_execution_instruction_bundle
       ? { encrypted_execution_instruction_bundle: input.encrypted_execution_instruction_bundle }
       : {}),

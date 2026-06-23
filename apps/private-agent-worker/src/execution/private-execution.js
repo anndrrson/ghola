@@ -1335,6 +1335,7 @@ function executionReceipt(input) {
     execution_mode: input.execution_mode || undefined,
     status: input.status || "submitted",
     work_order_commitment: input.body.work_order_commitment,
+    platform_fee_policy_commitment: input.body.platform_fee_policy_commitment || null,
     vault_commitment: input.body.vault_commitment || null,
     allocation_commitment: input.body.omnibus_allocation?.allocation_commitment ||
       input.body.managed_allocation_commitment ||
@@ -1344,6 +1345,7 @@ function executionReceipt(input) {
     result_commitment: commitment(`${input.venue_id}_result`, {
       work_order_commitment: input.body.work_order_commitment,
       provider_ref_commitment: providerRefCommitment,
+      platform_fee_policy_commitment: input.body.platform_fee_policy_commitment || null,
       status: input.status,
       seed: input.result_seed,
     }),

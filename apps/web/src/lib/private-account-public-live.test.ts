@@ -94,4 +94,38 @@ describe("public private-account live Phoenix access", () => {
     expect(JSON.stringify(calls[0].body)).not.toContain("private_key");
     expect(JSON.stringify(calls[0].body)).not.toContain("strategy_note");
   });
+
+  it("blocks public Phoenix live submit in production without a paid private-agent context", async () => {
+    const calls: Array<unknown> = [];
+    const result = await submitPublicLivePhoenixOrder({
+      env: {
+        VERCEL_ENV: "production",
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
+      },
+      fetchImpl: (async (...args: unknown[]) => {
+        calls.push(args);
+        return new Response("{}", { status: 202 });
+      }) as typeof fetch,
+      allocation_commitment: "pooled_venue_allocation_abc",
+      policy_commitment: "public_live_policy_abc",
+      body: {
+        ack_live_order: true,
+        work_order_commitment: "public_live_phoenix_work_order_abc",
+        encrypted_execution_instruction_bundle: {
+          alg: "sealed-provider-v1",
+          ciphertext: "ciphertext-ciphertext-ciphertext",
+          recipient: "phala:cvm:test",
+          aad: "ghola/private-execution-instruction-v1|work_order:public_live_phoenix_work_order_abc|venue:phoenix|recipient:phala:cvm:test",
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      error: "private_agent_subscription_required",
+      entitlement_required: "paid_private_agent_plan",
+      status: 402,
+    });
+    expect(calls).toHaveLength(0);
+  });
 });

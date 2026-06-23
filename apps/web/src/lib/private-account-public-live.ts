@@ -219,6 +219,13 @@ export async function submitPublicLivePhoenixOrder(input: {
   if (!isSealedExecutionInstructionBundle(encryptedInstruction)) {
     return { error: "encrypted_execution_instruction_required" as const, status: 400 };
   }
+  if (publicLivePhoenixRevenueGuardMode(input.env ?? process.env) === "enforce") {
+    return {
+      error: "private_agent_subscription_required" as const,
+      entitlement_required: "paid_private_agent_plan" as const,
+      status: 402,
+    };
+  }
   const cfg = publicLiveWorkerConfig(input.env ?? process.env);
   if (!cfg.url) return { error: "private_agent_worker_endpoint_missing" as const, status: 503 };
 
@@ -352,6 +359,27 @@ function publicLiveWorkerConfig(env: Record<string, string | undefined>) {
     "GHOLA_CONNECTOR_SOLANA_PERPS_MARKET_TOKEN",
   ]);
   return { url, token };
+}
+
+function publicLivePhoenixRevenueGuardMode(env: Record<string, string | undefined>): "enforce" | "report_only" {
+  const configured = (
+    env.GHOLA_PUBLIC_LIVE_PHOENIX_REVENUE_GUARD_MODE ||
+    env.GHOLA_PRIVATE_ACCOUNT_REVENUE_GUARD_MODE ||
+    ""
+  ).trim().toLowerCase();
+  if (configured === "enforce") return publicLivePhoenixUnpaidAllowed(env) ? "report_only" : "enforce";
+  if (configured === "report_only" || configured === "off") return "report_only";
+  if (!publicLivePhoenixProductionLike(env)) return "report_only";
+  return publicLivePhoenixUnpaidAllowed(env) ? "report_only" : "enforce";
+}
+
+function publicLivePhoenixUnpaidAllowed(env: Record<string, string | undefined>): boolean {
+  return env.GHOLA_PUBLIC_LIVE_PHOENIX_ALLOW_UNPAID === "true" ||
+    env.GHOLA_PUBLIC_LIVE_ALLOW_UNPAID === "true";
+}
+
+function publicLivePhoenixProductionLike(env: Record<string, string | undefined>): boolean {
+  return env.NODE_ENV === "production" || env.VERCEL_ENV === "production" || env.SECURITY_PROFILE === "prod";
 }
 
 function firstEnv(env: Record<string, string | undefined>, names: string[]) {
