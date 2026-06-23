@@ -195,6 +195,8 @@ jobs:
           setenv GHOLA_PRIVATE_AGENT_PROVIDER "phala"
           setenv GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN "true"
           setenv GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES "10"
+          setenv GHOLA_PRIVATE_ACCOUNT_LIVE_TRADE_RESERVATION_SECONDS "600"
+          setenv GHOLA_PRIVATE_ACCOUNT_REVENUE_GUARD_MODE "enforce"
           if [ "${{ inputs.arm_phala }}" = "true" ]; then
             # Deliberate re-arm: Phala key present, JIT on, lockdowns off.
             setenv PHALA_CLOUD_API_KEY "$PHALA_KEY"

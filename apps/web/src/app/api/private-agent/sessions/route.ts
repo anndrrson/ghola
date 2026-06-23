@@ -134,6 +134,7 @@ async function reservePrivateAgentCompute(input: {
   bearer: string;
   reservationId: string;
   seconds: number;
+  reason: "private_agent_session" | "live_trade_submit";
 }): Promise<{ ok: boolean; status: number; error?: string }> {
   const upstream = await fetchWithTimeout(
     `${THUMPER_API_BASE}/api/billing/private-agent/compute/reserve`,
@@ -147,6 +148,7 @@ async function reservePrivateAgentCompute(input: {
       body: JSON.stringify({
         session_id: input.reservationId,
         seconds: input.seconds,
+        reason: input.reason,
       }),
       cache: "no-store",
     },
@@ -329,6 +331,7 @@ export async function POST(req: NextRequest) {
     bearer: billing.bearer,
     reservationId,
     seconds: PRIVATE_AGENT_SESSION_RESERVATION_SECONDS,
+    reason: "private_agent_session",
   });
   if (!reservation.ok) {
     return json(

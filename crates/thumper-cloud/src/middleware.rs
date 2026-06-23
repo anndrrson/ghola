@@ -53,7 +53,7 @@ impl RateLimiter {
     /// Returns Ok(()) if allowed, Err(CloudError::RateLimit) if exceeded.
     pub async fn check(&self, user_id: uuid::Uuid, tier: &str) -> Result<(), CloudError> {
         let max_per_min = match tier {
-            "pro" => 300,
+            "pro" | "private_agent" => 300,
             "unlimited" | "enterprise" => 1000,
             _ => 60, // free
         };

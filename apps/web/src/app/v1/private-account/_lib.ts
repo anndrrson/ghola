@@ -324,6 +324,9 @@ import {
   phalaIdleLeaseMs,
   wakePhalaPrivateAgentForUse,
 } from "@/lib/private-agent-phala";
+import {
+  privateAgentLiveTradeReservationSeconds,
+} from "@/lib/private-agent-pricing";
 import { enterpriseGateStatus } from "@/lib/enterprise-gate-status";
 
 export const PRIVATE_ACCOUNT_HEADERS = {
@@ -617,6 +620,24 @@ type PrivateAccountLiveGuardResult =
       ok: true;
       body: unknown;
       owner: PrivateAccountRequestOwner;
+      revenue?: PrivateAccountLiveRevenueReservation;
+    }
+  | {
+      ok: false;
+      response: Response;
+    };
+
+export interface PrivateAccountLiveRevenueReservation {
+  session_id: string;
+  reservation_id: string | null;
+  reserved_seconds: number;
+  authorization: string;
+}
+
+type PrivateAccountLiveRevenueGuardResult =
+  | {
+      ok: true;
+      reservation?: PrivateAccountLiveRevenueReservation;
     }
   | {
       ok: false;
@@ -651,8 +672,9 @@ export async function privateAccountLiveGuard(
   if (proofRejected) return { ok: false, response: proofRejected };
 
   if (options.requireRevenue) {
-    const revenueRejected = await verifyLiveRevenueGuard(req);
-    if (revenueRejected) return { ok: false, response: revenueRejected };
+    const revenue = await verifyLiveRevenueGuard(req, owner, body);
+    if (!revenue.ok) return { ok: false, response: revenue.response };
+    return { ok: true, body, owner, revenue: revenue.reservation };
   }
 
   return { ok: true, body, owner };
@@ -850,16 +872,23 @@ function billingAuthorizationForRequest(req: Request): string | null {
   return cookie ? `Bearer ${cookie}` : null;
 }
 
-async function verifyLiveRevenueGuard(req: Request): Promise<Response | null> {
-  if (privateAccountRevenueGuardMode() !== "enforce") return null;
+async function verifyLiveRevenueGuard(
+  req: Request,
+  owner: PrivateAccountRequestOwner,
+  body: unknown,
+): Promise<PrivateAccountLiveRevenueGuardResult> {
+  if (privateAccountRevenueGuardMode() !== "enforce") return { ok: true };
   if (!connectorPlatformFeeEnvConfig()) {
-    return json({
-      error: "platform_fee_recipient_unconfigured",
-      entitlement_required: "paid_private_agent_plan",
-    }, 503);
+    return {
+      ok: false,
+      response: json({
+        error: "platform_fee_recipient_unconfigured",
+        entitlement_required: "paid_private_agent_plan",
+      }, 503),
+    };
   }
   const authorization = billingAuthorizationForRequest(req);
-  if (!authorization) return unauthorized();
+  if (!authorization) return { ok: false, response: unauthorized() };
   const upstream = await fetchWithTimeout(`${THUMPER_API_BASE}/api/billing/status`, {
     method: "GET",
     headers: {
@@ -869,20 +898,151 @@ async function verifyLiveRevenueGuard(req: Request): Promise<Response | null> {
     cache: "no-store",
   }).catch(() => null);
   if (!upstream) {
-    return json({ error: "billing_unavailable" }, 503);
+    return { ok: false, response: json({ error: "billing_unavailable" }, 503) };
   }
   if (!upstream.ok) {
-    return json({ error: "billing_rejected_request" }, upstream.status);
+    return { ok: false, response: json({ error: "billing_rejected_request" }, upstream.status) };
   }
-  const body = await upstream.json().catch(() => null) as { tier?: string | null } | null;
-  if (!hasPrivateAgentEntitlement(body?.tier)) {
-    return json({
-      error: "private_agent_subscription_required",
-      entitlement_required: "paid_private_agent_plan",
-      tier: body?.tier ?? "free",
-    }, 402);
+  const billing = await upstream.json().catch(() => null) as {
+    tier?: string | null;
+    private_agent_compute?: {
+      remaining_seconds?: number | null;
+      active_agent_limit?: number | null;
+      active_agent_count?: number | null;
+    } | null;
+  } | null;
+  if (!hasPrivateAgentEntitlement(billing?.tier)) {
+    return {
+      ok: false,
+      response: json({
+        error: "private_agent_subscription_required",
+        entitlement_required: "paid_private_agent_plan",
+        tier: billing?.tier ?? "free",
+      }, 402),
+    };
   }
-  return null;
+  const reservationSeconds = privateAgentLiveTradeReservationSeconds(process.env);
+  const compute = billing?.private_agent_compute ?? null;
+  if (billing?.tier !== "enterprise") {
+    if (!compute) {
+      return {
+        ok: false,
+        response: json({
+          error: "private_agent_compute_allowance_required",
+          entitlement_required: "paid_private_agent_plan",
+          reservation_seconds: reservationSeconds,
+        }, 402),
+      };
+    }
+    const remainingSeconds = Number(compute.remaining_seconds ?? 0);
+    if (!Number.isFinite(remainingSeconds) || remainingSeconds < reservationSeconds) {
+      return {
+        ok: false,
+        response: json({
+          error: "private_agent_compute_exhausted",
+          entitlement_required: "private_agent_compute_balance",
+          reservation_seconds: reservationSeconds,
+          remaining_seconds: Math.max(0, Number.isFinite(remainingSeconds) ? remainingSeconds : 0),
+        }, 402),
+      };
+    }
+    const activeAgentLimit = Number(compute.active_agent_limit ?? 1);
+    const activeAgentCount = Number(compute.active_agent_count ?? 0);
+    if (
+      Number.isFinite(activeAgentLimit) &&
+      Number.isFinite(activeAgentCount) &&
+      activeAgentLimit > 0 &&
+      activeAgentCount >= activeAgentLimit
+    ) {
+      return {
+        ok: false,
+        response: json({
+          error: "private_agent_active_agent_limit_reached",
+          entitlement_required: "private_agent_compute_balance",
+          active_agent_limit: activeAgentLimit,
+          active_agent_count: activeAgentCount,
+        }, 402),
+      };
+    }
+  }
+  const sessionId = liveRevenueSessionId(req, owner, body);
+  const reserved = await fetchWithTimeout(`${THUMPER_API_BASE}/api/billing/private-agent/compute/reserve`, {
+    method: "POST",
+    headers: {
+      Authorization: authorization,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      session_id: sessionId,
+      seconds: reservationSeconds,
+      reason: "live_trade_submit",
+    }),
+    cache: "no-store",
+  }).catch(() => null);
+  if (!reserved) {
+    return { ok: false, response: json({ error: "private_agent_compute_reservation_unavailable" }, 503) };
+  }
+  const reserveBody = await reserved.json().catch(() => null) as {
+    ok?: boolean;
+    reservation_id?: string | null;
+    reserved_seconds?: number | null;
+    error?: string | null;
+  } | null;
+  if (!reserved.ok || reserveBody?.ok === false) {
+    return {
+      ok: false,
+      response: json({
+        error: reserveBody?.error || "private_agent_compute_reservation_failed",
+        reservation_seconds: reservationSeconds,
+      }, reserved.status === 402 ? 402 : reserved.status),
+    };
+  }
+  return {
+    ok: true,
+    reservation: {
+      session_id: sessionId,
+      reservation_id: typeof reserveBody?.reservation_id === "string" ? reserveBody.reservation_id : null,
+      reserved_seconds: Number(reserveBody?.reserved_seconds ?? reservationSeconds) || reservationSeconds,
+      authorization,
+    },
+  };
+}
+
+function liveRevenueSessionId(
+  req: Request,
+  owner: PrivateAccountRequestOwner,
+  body: unknown,
+): string {
+  const nonce = req.headers.get("x-ghola-request-nonce")?.trim() || `${Date.now()}:${Math.random()}`;
+  const digest = createHash("sha256").update(stableJson({
+    method: req.method,
+    pathname: new URL(req.url).pathname,
+    owner_commitment: owner.owner_commitment,
+    nonce,
+    body_hash: createHash("sha256").update(stableJson(body)).digest("hex"),
+  })).digest("hex").slice(0, 40);
+  return `ghola_live_${digest}`;
+}
+
+export async function releasePrivateAccountLiveRevenueReservation(
+  reservation: PrivateAccountLiveRevenueReservation | undefined,
+  status: "paused" | "completed" | "failed" = "failed",
+): Promise<void> {
+  if (!reservation) return;
+  await fetchWithTimeout(`${THUMPER_API_BASE}/api/billing/private-agent/compute/release`, {
+    method: "POST",
+    headers: {
+      Authorization: reservation.authorization,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      session_id: reservation.session_id,
+      status,
+    }),
+    cache: "no-store",
+  }).catch(() => null);
 }
 
 function stableJson(value: unknown): string {

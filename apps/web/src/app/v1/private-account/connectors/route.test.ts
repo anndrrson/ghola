@@ -185,6 +185,7 @@ describe("private account connector gateway routes", () => {
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_RATE_LIMIT_MAX;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_RATE_LIMIT_WINDOW_MS;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REVENUE_GUARD_MODE;
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_TRADE_RESERVATION_SECONDS;
     delete process.env.GHOLA_PRIVATE_EXECUTION_FEE_RECIPIENT;
     delete process.env.GHOLA_PRIVATE_EXECUTION_FEE_BPS;
     delete process.env.GHOLA_PRIVATE_EXECUTION_MIN_FEE_MICRO_USDC;
@@ -289,6 +290,74 @@ describe("private account connector gateway routes", () => {
       tier: "free",
     });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("reserves and releases private-agent compute for failed live execution", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_REVENUE_GUARD_MODE = "enforce";
+    process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_TRADE_RESERVATION_SECONDS = "600";
+    process.env.GHOLA_PRIVATE_EXECUTION_FEE_RECIPIENT =
+      "solana:usdc:3dAfDNBneCLoCiFK9tPQKQm5dWVzsybfzsrBNDUHDCPg";
+    const calls: Array<{ url: string; body: unknown }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      const requestBody = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      calls.push({ url, body: requestBody });
+      if (url.endsWith("/api/billing/status")) {
+        return new Response(JSON.stringify({
+          tier: "private_agent",
+          private_agent_compute: {
+            included_seconds: 216000,
+            reserved_seconds: 0,
+            used_seconds: 0,
+            remaining_seconds: 216000,
+            active_agent_limit: 1,
+            active_agent_count: 0,
+            period_start: "2026-06-01T00:00:00.000Z",
+            period_end: "2026-07-01T00:00:00.000Z",
+            metering_unit: "agent_second",
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/billing/private-agent/compute/reserve")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          reservation_id: "reservation_test",
+          reserved_seconds: 600,
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/billing/private-agent/compute/release")) {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ error: "unexpected_fetch" }), { status: 500 });
+    });
+
+    const res = await executeAction(
+      post("/v1/private-account/actions/execute", {
+        intent_id: "missing_intent_after_reservation",
+        preview_commitment: "missing_preview_after_reservation",
+        approval_commitment: "missing_approval_after_reservation",
+      }),
+    );
+    const body = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(body).toMatchObject({ error: "intent_not_found" });
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      "/api/billing/status",
+      "/api/billing/private-agent/compute/reserve",
+      "/api/billing/private-agent/compute/release",
+    ]);
+    expect(calls[1].body).toMatchObject({ seconds: 600, reason: "live_trade_submit" });
+    expect(calls[2].body).toMatchObject({ status: "failed" });
   });
 
   it("publishes commitment-safe connector manifests and readiness", async () => {

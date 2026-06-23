@@ -138,7 +138,7 @@ pub async fn sms_webhook(
 
 async fn check_sms_limit(state: &AppState, user_id: Uuid, tier: &str) -> Result<(), CloudError> {
     let max_sms = match tier {
-        "pro" => 50,
+        "pro" | "private_agent" => 50,
         "unlimited" => i64::MAX,
         _ => 10, // free
     };

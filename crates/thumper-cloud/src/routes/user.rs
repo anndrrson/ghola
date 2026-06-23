@@ -118,7 +118,7 @@ pub async fn get_usage(
     .unwrap_or((0, 0, 0, 0, 0));
 
     let (call_limit, email_limit, api_call_limit) = match claims.tier.as_str() {
-        "pro" => (30, 50, 10_000),
+        "pro" | "private_agent" => (30, 50, 10_000),
         "unlimited" => (999, 999, 100_000),
         "enterprise" => (999, 999, i32::MAX),
         _ => (5, 10, 100),

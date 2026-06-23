@@ -217,7 +217,7 @@ fn friendly_llm_error(err: &CloudError) -> String {
 /// Check chat usage against tier limits.
 async fn check_chat_limit(state: &AppState, user_id: Uuid, tier: &str) -> Result<(), CloudError> {
     let max_messages: i64 = match tier {
-        "pro" => 1000,
+        "pro" | "private_agent" => 1000,
         "unlimited" | "enterprise" => i64::MAX,
         _ => 50, // free
     };

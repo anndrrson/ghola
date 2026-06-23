@@ -806,7 +806,7 @@ pub async fn send_via_intermediate(
 
 fn spending_limit_daily(tier: &str) -> i64 {
     match tier {
-        "pro" => 100_000_000,         // $100 in micro-USDC
+        "pro" | "private_agent" => 100_000_000, // $100 in micro-USDC
         "unlimited" => 1_000_000_000, // $1,000 in micro-USDC
         "enterprise" => i64::MAX,
         _ => 500_000, // $0.50 free tier
@@ -815,7 +815,7 @@ fn spending_limit_daily(tier: &str) -> i64 {
 
 fn spending_limit_per_tx(tier: &str) -> i64 {
     match tier {
-        "pro" => 50_000_000,        // $50
+        "pro" | "private_agent" => 50_000_000, // $50
         "unlimited" => 500_000_000, // $500
         "enterprise" => i64::MAX,
         _ => 250_000, // $0.25 free tier
