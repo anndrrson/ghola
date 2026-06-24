@@ -17,6 +17,8 @@ pub struct CloudConfig {
     pub stripe_secret_key: Option<String>,
     pub stripe_webhook_secret: Option<String>,
     pub stripe_price_pro: Option<String>,
+    pub stripe_price_private_agent_starter: Option<String>,
+    pub stripe_price_private_agent_trial_pack: Option<String>,
     pub stripe_price_private_agent: Option<String>,
     pub stripe_price_unlimited: Option<String>,
     pub base_url: String,
@@ -41,7 +43,7 @@ impl CloudConfig {
     pub fn from_env() -> Self {
         let encryption_hex = env::var("THUMPER_ENCRYPTION_KEY").expect(
             "THUMPER_ENCRYPTION_KEY must be set (generate with `openssl rand -hex 32`). \
-             Without it, BYOM API keys and Gmail tokens cannot be encrypted."
+             Without it, BYOM API keys and Gmail tokens cannot be encrypted.",
         );
 
         let encryption_key = parse_hex_key(&encryption_hex);
@@ -64,10 +66,8 @@ impl CloudConfig {
                     let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
                     format!("0.0.0.0:{port}").parse().expect("invalid PORT")
                 }),
-            database_url: env::var("DATABASE_URL")
-                .expect("DATABASE_URL must be set"),
-            jwt_secret: env::var("JWT_SECRET")
-                .expect("JWT_SECRET must be set"),
+            database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
+            jwt_secret: env::var("JWT_SECRET").expect("JWT_SECRET must be set"),
             bland_api_key: env::var("BLAND_API_KEY").ok(),
             bland_webhook_url: env::var("BLAND_WEBHOOK_URL").ok(),
             claude_api_key,
@@ -79,17 +79,27 @@ impl CloudConfig {
             stripe_secret_key: env::var("STRIPE_SECRET_KEY").ok(),
             stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET").ok(),
             stripe_price_pro: env::var("STRIPE_PRICE_PRO").ok(),
+            stripe_price_private_agent_starter: env::var("STRIPE_PRICE_PRIVATE_AGENT_STARTER").ok(),
+            stripe_price_private_agent_trial_pack: env::var(
+                "STRIPE_PRICE_PRIVATE_AGENT_TRIAL_PACK",
+            )
+            .ok(),
             stripe_price_private_agent: env::var("STRIPE_PRICE_PRIVATE_AGENT").ok(),
             stripe_price_unlimited: env::var("STRIPE_PRICE_UNLIMITED").ok(),
-            base_url: env::var("BASE_URL")
-                .unwrap_or_else(|_| "http://localhost:3000".to_string()),
+            base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
             encryption_key,
             telegram_bot_token: env::var("TELEGRAM_BOT_TOKEN").ok(),
-            solana_rpc_url: env::var("SOLANA_RPC_URL").ok()
+            solana_rpc_url: env::var("SOLANA_RPC_URL")
+                .ok()
                 .or_else(|| {
                     env::var("HELIUS_API_KEY").ok().map(|key| {
-                        let network = env::var("SOLANA_NETWORK").unwrap_or_else(|_| "mainnet-beta".to_string());
-                        let host = if network == "devnet" { "devnet" } else { "mainnet" };
+                        let network = env::var("SOLANA_NETWORK")
+                            .unwrap_or_else(|_| "mainnet-beta".to_string());
+                        let host = if network == "devnet" {
+                            "devnet"
+                        } else {
+                            "mainnet"
+                        };
                         format!("https://{host}.helius-rpc.com/?api-key={key}")
                     })
                 })
@@ -134,7 +144,11 @@ impl CloudConfig {
 fn parse_hex_key(hex_str: &str) -> [u8; 32] {
     let bytes: Vec<u8> = (0..hex_str.len())
         .step_by(2)
-        .filter_map(|i| hex_str.get(i..i + 2).and_then(|s| u8::from_str_radix(s, 16).ok()))
+        .filter_map(|i| {
+            hex_str
+                .get(i..i + 2)
+                .and_then(|s| u8::from_str_radix(s, 16).ok())
+        })
         .collect();
     let mut key = [0u8; 32];
     let len = bytes.len().min(32);

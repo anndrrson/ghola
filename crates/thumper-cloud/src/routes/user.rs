@@ -68,7 +68,18 @@ pub async fn update_profile(
     AuthUser(claims): AuthUser,
     Json(req): Json<UpdateProfileRequest>,
 ) -> Result<Json<UserProfile>, CloudError> {
-    let row = sqlx::query_as::<_, (Uuid, Option<String>, Option<String>, Option<String>, String, String, DateTime<Utc>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            DateTime<Utc>,
+        ),
+    >(
         r#"
         UPDATE users SET
             display_name = COALESCE($2, display_name),
@@ -102,7 +113,10 @@ pub async fn get_usage(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<UsageResponse>, CloudError> {
-    let period_start = chrono::Utc::now().date_naive().format("%Y-%m-01").to_string();
+    let period_start = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-01")
+        .to_string();
 
     let row = sqlx::query_as::<_, (i32, i32, i32, i32, i32)>(
         r#"
@@ -118,6 +132,8 @@ pub async fn get_usage(
     .unwrap_or((0, 0, 0, 0, 0));
 
     let (call_limit, email_limit, api_call_limit) = match claims.tier.as_str() {
+        "trial_pack" => (10, 15, 1_000),
+        "starter" => (20, 30, 5_000),
         "pro" | "private_agent" => (30, 50, 10_000),
         "unlimited" => (999, 999, 100_000),
         "enterprise" => (999, 999, i32::MAX),

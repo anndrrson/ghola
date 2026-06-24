@@ -1,5 +1,5 @@
-use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
 use std::time::Duration;
 
 pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT,
     phone_number TEXT,
     timezone TEXT DEFAULT 'America/New_York',
-    tier TEXT DEFAULT 'free' CHECK (tier IN ('free', 'pro', 'private_agent', 'unlimited')),
+    tier TEXT DEFAULT 'free' CHECK (tier IN ('free', 'pro', 'trial_pack', 'starter', 'private_agent', 'unlimited')),
+    tier_expires_at TIMESTAMPTZ,
     stripe_customer_id TEXT,
     said_identity_id TEXT,
     created_at TIMESTAMPTZ DEFAULT now(),
@@ -310,6 +311,7 @@ ALTER TABLE usage_tracking ADD COLUMN IF NOT EXISTS sms_count INT DEFAULT 0;
 
 -- Ensure tier column exists (may be missing if table was created without it)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS tier TEXT DEFAULT 'free';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS tier_expires_at TIMESTAMPTZ;
 
 -- Fix any existing rows with NULL tier
 UPDATE users SET tier = 'free' WHERE tier IS NULL;
@@ -355,7 +357,7 @@ $$;
 -- Enterprise tier support
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
 ALTER TABLE users ADD CONSTRAINT users_tier_check
-    CHECK (tier IN ('free', 'pro', 'private_agent', 'unlimited', 'enterprise'));
+    CHECK (tier IN ('free', 'pro', 'trial_pack', 'starter', 'private_agent', 'unlimited', 'enterprise'));
 
 CREATE TABLE IF NOT EXISTS private_agent_compute_reservations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

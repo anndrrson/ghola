@@ -42,6 +42,8 @@ describe("private agent runtime", () => {
   it("treats paid private-agent tiers as private-agent entitlements", () => {
     expect(hasPrivateAgentEntitlement("free")).toBe(false);
     expect(hasPrivateAgentEntitlement("pro")).toBe(false);
+    expect(hasPrivateAgentEntitlement("trial_pack")).toBe(true);
+    expect(hasPrivateAgentEntitlement("starter")).toBe(true);
     expect(hasPrivateAgentEntitlement("private_agent")).toBe(true);
     expect(hasPrivateAgentEntitlement("unlimited")).toBe(true);
     expect(hasPrivateAgentEntitlement("enterprise")).toBe(true);

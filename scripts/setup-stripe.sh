@@ -30,7 +30,7 @@ echo ""
 
 # --- Step 1: Create Products ---
 
-echo "1/6 Creating Consumer Pro product..."
+echo "1/10 Creating Consumer Pro product..."
 CONSUMER_PRO_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
   -u "$SK:" \
   -d "name=Ghola Consumer Pro" \
@@ -39,7 +39,7 @@ CONSUMER_PRO_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 echo "   Product: $CONSUMER_PRO_PRODUCT"
 
-echo "2/6 Creating Consumer Pro price ($9/mo)..."
+echo "2/10 Creating Consumer Pro price ($9/mo)..."
 CONSUMER_PRO_PRICE=$(curl -s -X POST "$STRIPE/prices" \
   -u "$SK:" \
   -d "product=$CONSUMER_PRO_PRODUCT" \
@@ -49,7 +49,7 @@ CONSUMER_PRO_PRICE=$(curl -s -X POST "$STRIPE/prices" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 echo "   Price: $CONSUMER_PRO_PRICE"
 
-echo "3/6 Creating Business product..."
+echo "3/10 Creating Business product..."
 BUSINESS_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
   -u "$SK:" \
   -d "name=Ghola Business" \
@@ -58,7 +58,7 @@ BUSINESS_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 echo "   Product: $BUSINESS_PRODUCT"
 
-echo "4/6 Creating Business price ($29/mo)..."
+echo "4/10 Creating Business price ($29/mo)..."
 BUSINESS_PRICE=$(curl -s -X POST "$STRIPE/prices" \
   -u "$SK:" \
   -d "product=$BUSINESS_PRODUCT" \
@@ -68,22 +68,72 @@ BUSINESS_PRICE=$(curl -s -X POST "$STRIPE/prices" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 echo "   Price: $BUSINESS_PRICE"
 
-echo "5/6 Creating Private Agent product..."
+echo "5/10 Creating Private Agent Trial Pack product..."
+PRIVATE_AGENT_TRIAL_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
+  -u "$SK:" \
+  -d "name=Ghola Private Agent Trial Pack" \
+  -d "description=5 secure private compute hours, valid for 14 days, no profit share" \
+  -d "metadata[ghola_tier]=trial_pack" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "   Product: $PRIVATE_AGENT_TRIAL_PRODUCT"
+
+echo "6/10 Creating Private Agent Trial Pack price ($9 one-time)..."
+PRIVATE_AGENT_TRIAL_PRICE=$(curl -s -X POST "$STRIPE/prices" \
+  -u "$SK:" \
+  -d "product=$PRIVATE_AGENT_TRIAL_PRODUCT" \
+  -d "lookup_key=ghola_private_agent_trial_pack_v1" \
+  -d "unit_amount=900" \
+  -d "currency=usd" \
+  -d "metadata[ghola_plan]=trial_pack" \
+  -d "metadata[tier]=trial_pack" \
+  -d "metadata[included_compute_seconds]=18000" \
+  -d "metadata[expires_days]=14" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "   Price: $PRIVATE_AGENT_TRIAL_PRICE"
+
+echo "7/10 Creating Private Agent Starter product..."
+PRIVATE_AGENT_STARTER_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
+  -u "$SK:" \
+  -d "name=Ghola Starter Agent" \
+  -d "description=Live secure worker, 20 private compute hours/month, 1 active confidential agent, no profit share" \
+  -d "metadata[ghola_tier]=starter" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "   Product: $PRIVATE_AGENT_STARTER_PRODUCT"
+
+echo "8/10 Creating Private Agent Starter price ($19/mo)..."
+PRIVATE_AGENT_STARTER_PRICE=$(curl -s -X POST "$STRIPE/prices" \
+  -u "$SK:" \
+  -d "product=$PRIVATE_AGENT_STARTER_PRODUCT" \
+  -d "lookup_key=ghola_private_agent_starter_v1" \
+  -d "unit_amount=1900" \
+  -d "currency=usd" \
+  -d "recurring[interval]=month" \
+  -d "metadata[ghola_plan]=starter" \
+  -d "metadata[tier]=starter" \
+  -d "metadata[included_compute_seconds]=72000" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "   Price: $PRIVATE_AGENT_STARTER_PRICE"
+
+echo "9/10 Creating Private Agent product..."
 PRIVATE_AGENT_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
   -u "$SK:" \
   -d "name=Ghola Private Agent" \
-  -d "description=Live secure worker, 60 private compute hours/month, 1 active confidential agent" \
+  -d "description=Live secure worker, 80 private compute hours/month, 1 active confidential agent, no profit share" \
   -d "metadata[ghola_tier]=private_agent" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 echo "   Product: $PRIVATE_AGENT_PRODUCT"
 
-echo "6/6 Creating Private Agent price ($49/mo)..."
+echo "10/10 Creating Private Agent price ($49/mo)..."
 PRIVATE_AGENT_PRICE=$(curl -s -X POST "$STRIPE/prices" \
   -u "$SK:" \
   -d "product=$PRIVATE_AGENT_PRODUCT" \
+  -d "lookup_key=ghola_private_agent_v1" \
   -d "unit_amount=4900" \
   -d "currency=usd" \
   -d "recurring[interval]=month" \
+  -d "metadata[ghola_plan]=private_agent" \
+  -d "metadata[tier]=private_agent" \
+  -d "metadata[included_compute_seconds]=288000" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 echo "   Price: $PRIVATE_AGENT_PRICE"
 
@@ -117,6 +167,8 @@ echo ""
 echo "  STRIPE_SECRET_KEY=$SK"
 echo "  STRIPE_WEBHOOK_SECRET=$WEBHOOK_SECRET"
 echo "  STRIPE_PRICE_PRO=$CONSUMER_PRO_PRICE"
+echo "  STRIPE_PRICE_PRIVATE_AGENT_TRIAL_PACK=$PRIVATE_AGENT_TRIAL_PRICE"
+echo "  STRIPE_PRICE_PRIVATE_AGENT_STARTER=$PRIVATE_AGENT_STARTER_PRICE"
 echo "  STRIPE_PRICE_PRIVATE_AGENT=$PRIVATE_AGENT_PRICE"
 echo "  STRIPE_PRICE_UNLIMITED=$BUSINESS_PRICE"
 echo "  STRIPE_PRICE_CONSUMER_PRO=$CONSUMER_PRO_PRICE"

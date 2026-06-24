@@ -8,6 +8,8 @@ export type ConfidentialComputeProviderId =
 export type PrivateAgentEntitlementTier =
   | "free"
   | "pro"
+  | "trial_pack"
+  | "starter"
   | "private_agent"
   | "unlimited"
   | "enterprise"
@@ -79,6 +81,8 @@ export function normalizePrivateAgentTier(
 ): PrivateAgentEntitlementTier {
   if (
     tier === "pro" ||
+    tier === "trial_pack" ||
+    tier === "starter" ||
     tier === "private_agent" ||
     tier === "unlimited" ||
     tier === "enterprise"
@@ -94,6 +98,8 @@ export function hasPrivateAgentEntitlement(
 ): boolean {
   const normalized = normalizePrivateAgentTier(tier);
   return (
+    normalized === "trial_pack" ||
+    normalized === "starter" ||
     normalized === "private_agent" ||
     normalized === "unlimited" ||
     normalized === "enterprise"
