@@ -1,7 +1,6 @@
 package xyz.ghola.app.cloud
 
 import android.content.Context
-import android.util.Base64
 import android.util.Log
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +15,7 @@ import xyz.ghola.app.crypto.SigningDomains
 import xyz.ghola.app.crypto.signWithWallet
 import xyz.ghola.app.solana.MWAConnect
 import java.io.IOException
+import java.util.Base64
 
 /**
  * Wallet-only Sign-In With Solana flow for thumper-cloud.
@@ -101,7 +101,7 @@ class SiwsAuthFlow(context: Context) {
             DeviceSignResult.Cancelled -> return@withContext CloudAuthManager.AuthResult.Error("Sign-in was cancelled")
             is DeviceSignResult.Failure -> return@withContext CloudAuthManager.AuthResult.Error(out.cause.message ?: "Signing failed")
         }
-        val signatureB64 = Base64.encodeToString(sig1, Base64.NO_WRAP)
+        val signatureB64 = Base64.getEncoder().encodeToString(sig1)
         val verifyBody = JSONObject().apply {
             put("wallet_pubkey", walletPubkey)
             put("nonce", nonce)
@@ -131,6 +131,30 @@ class SiwsAuthFlow(context: Context) {
             val userId = json.getString("user_id")
             val isNewUser = json.optBoolean("is_new_user", false)
 
+            // The reviewed user journey promises one wallet approval. said-cloud
+            // accepts the same SIWS payload shape, so reuse the already-approved
+            // signature and populate agent auth before returning success.
+            val saidJson = try {
+                SaidCloudClient(secureStorage.getSaidBaseUrl(), null)
+                    .siwsSignIn(walletPubkey, nonce, challenge, sig1)
+            } catch (e: Exception) {
+                Log.e(TAG, "said-cloud SIWS request failed", e)
+                null
+            }
+            if (saidJson == null) {
+                return@withContext CloudAuthManager.AuthResult.Error(
+                    "Wallet sign-in failed for agents. Please try again."
+                )
+            }
+            val saidToken = saidJson.optString("token", "")
+            val saidUserId = saidJson.optString("user_id", "")
+            if (saidToken.isBlank() || saidUserId.isBlank()) {
+                Log.e(TAG, "said-cloud SIWS returned incomplete auth payload: $saidJson")
+                return@withContext CloudAuthManager.AuthResult.Error(
+                    "Wallet sign-in failed for agents. Please try again."
+                )
+            }
+
             secureStorage.setCloudAuthToken(
                 token = token,
                 expSeconds = json.optLongOrNull("exp"),
@@ -138,6 +162,13 @@ class SiwsAuthFlow(context: Context) {
                 refreshExpSeconds = json.optLongOrNull("refresh_exp"),
             )
             secureStorage.setCloudUserId(userId)
+            secureStorage.setSaidToken(
+                token = saidToken,
+                expSeconds = saidJson.optLongOrNull("exp"),
+                refreshToken = saidJson.optString("refresh_token", "").ifBlank { null },
+                refreshExpSeconds = saidJson.optLongOrNull("refresh_exp"),
+            )
+            secureStorage.setSaidUserId(saidUserId)
 
             CloudAuthManager.AuthResult.Success(token, userId, isNewUser)
         }

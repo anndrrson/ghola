@@ -1,7 +1,6 @@
 package xyz.ghola.app.cloud
 
 import android.util.Log
-import android.util.Base64
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -9,6 +8,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 /**
@@ -106,7 +106,7 @@ class SaidCloudClient private constructor(
             put("wallet_pubkey", walletPubkey)
             put("nonce", nonce)
             put("challenge", challenge)
-            put("signature", Base64.encodeToString(signature, Base64.NO_WRAP))
+            put("signature", Base64.getEncoder().encodeToString(signature))
         }
         return postUnauthenticated("/auth/siws", body)
     }
