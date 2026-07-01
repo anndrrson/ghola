@@ -416,7 +416,7 @@ export async function updateLlmConfig(data: {
   base_url?: string;
 }): Promise<ThumperLlmConfigResponse> {
   return thumperFetch<ThumperLlmConfigResponse>("/api/llm/config", {
-    method: "PUT",
+    method: "PATCH",
     body: JSON.stringify(data),
   });
 }
