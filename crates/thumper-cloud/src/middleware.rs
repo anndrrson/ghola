@@ -260,13 +260,24 @@ pub async fn track_api_usage(state: AppState, request: Request, next: Next) -> R
 }
 
 fn extract_client_ip(request: &Request) -> Option<std::net::IpAddr> {
-    // Check x-forwarded-for first (behind reverse proxy)
+    // Check x-forwarded-for first (behind reverse proxy).
+    //
+    // Prefer the RIGHTMOST parseable address, not the leftmost. `X-Forwarded-For`
+    // is `client, proxy1, proxy2, ...` where each hop APPENDS the address it saw.
+    // The leftmost value is whatever the original client sent and is fully
+    // attacker-controlled — a client can inject `X-Forwarded-For: 1.2.3.4` to
+    // spoof its rate-limit identity. The rightmost entry is the one written by
+    // our own trusted proxy (the hop closest to us), so it is the least
+    // spoofable address available for rate-limiting.
     request
         .headers()
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse().ok())
+        .and_then(|s| {
+            s.split(',')
+                .rev()
+                .find_map(|part| part.trim().parse::<std::net::IpAddr>().ok())
+        })
         // Fallback: ConnectInfo (direct connection)
         .or_else(|| {
             request
