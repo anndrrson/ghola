@@ -154,6 +154,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/auth/refresh", post(routes::auth::refresh_token))
         .route("/api/auth/email/signup", post(routes::auth::email_sign_up))
         .route("/api/auth/email/signin", post(routes::auth::email_sign_in))
+        // Cookie-only logout — clears ghola_session + ghola_csrf cookies.
+        .route("/api/auth/logout", post(routes::auth::logout))
+        // One-shot migration: re-emit a Set-Cookie for callers who still
+        // hold the JWT in localStorage from the pre-cookie deploy.
+        .route(
+            "/api/auth/refresh-cookie",
+            post(routes::auth::refresh_cookie),
+        )
         // Tasks
         .route("/api/tasks", post(routes::tasks::create_task))
         .route("/api/tasks", get(routes::tasks::list_tasks))
@@ -408,6 +416,9 @@ pub fn build_router(state: AppState) -> Router {
                 middleware::track_api_usage(state, request, next)
             },
         ))
+        // CSRF: enforced on cookie-authenticated non-GET requests. Bearer
+        // and API-key callers bypass automatically (see csrf_protect).
+        .layer(axum::middleware::from_fn(middleware::csrf_protect))
         .layer(TraceLayer::new_for_http())
         .layer(build_cors_layer(&state.config.base_url))
         .with_state(state)
@@ -446,6 +457,9 @@ fn build_cors_layer(base_url: &str) -> CorsLayer {
             axum::http::header::ACCEPT,
             axum::http::header::ORIGIN,
             axum::http::header::HeaderName::from_static("x-requested-with"),
+            // Double-submit CSRF token sent by browser SPA on non-GET
+            // cookie-authenticated requests.
+            axum::http::header::HeaderName::from_static("x-csrf-token"),
         ])
         .allow_credentials(true)
 }

@@ -1,5 +1,6 @@
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
+use axum::http::HeaderMap;
 use chrono::{Duration, Utc};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
@@ -9,6 +10,120 @@ use uuid::Uuid;
 
 use crate::error::CloudError;
 use crate::state::AppState;
+
+/// Cookie name carrying the session JWT in browser contexts.
+///
+/// Mobile and CLI clients keep using `Authorization: Bearer <jwt>`. Browser
+/// clients store the JWT in an HttpOnly cookie set by the auth endpoints; the
+/// extractor below honors both, preferring the explicit `Authorization` header
+/// when both are present (so a mobile-style explicit auth beats a tag-along
+/// browser cookie from the same user).
+pub const SESSION_COOKIE_NAME: &str = "ghola_session";
+
+/// CSRF defense for cookie-authenticated requests.
+///
+/// Threat model: SameSite=Lax stops most cross-site POSTs, but not GET-shaped
+/// state-changing endpoints, top-level form submits (POST with Lax IS allowed
+/// for top-level navigations on some browsers), or any subdomain takeover.
+/// We layer a double-submit token: at session creation we set a
+/// JS-readable `ghola_csrf` cookie; the SPA reads it and echoes it back as
+/// `X-CSRF-Token` on every non-GET; the middleware compares them in constant
+/// time. Mismatched / missing → 403.
+///
+/// Bearer-only callers (mobile/CLI) bypass this check because they don't
+/// authenticate via cookie.
+pub const CSRF_COOKIE_NAME: &str = "ghola_csrf";
+pub const CSRF_HEADER_NAME: &str = "x-csrf-token";
+
+/// Extract the session JWT from either the `Authorization: Bearer …` header
+/// or the `ghola_session` cookie. Header wins when both are present.
+///
+/// SECURITY: returns `None` (not `Err`) so callers can chain a clean
+/// "unauthorized" — the caller is the policy site.
+///
+/// reason: deferred to common-auth crate — this helper is duplicated in
+/// `orni-models-api::auth::extract_session_token` until we split a shared
+/// crate. Keep them byte-identical when changing.
+pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
+    if let Some(auth_val) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(bearer) = auth_val.strip_prefix("Bearer ") {
+            return Some(bearer.to_string());
+        }
+    }
+    extract_cookie_value(headers, SESSION_COOKIE_NAME)
+}
+
+/// Read a single cookie value by name from a `Cookie:` header. The cookie
+/// header may contain `a=1; b=2; ghola_session=…`. Returns the raw value
+/// without URL-decoding (JWTs are URL-safe base64 — no decoding needed).
+pub fn extract_cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let raw = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())?;
+    for pair in raw.split(';') {
+        let pair = pair.trim();
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == name {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Whether to mark cookies as `Secure`. True in production; can be disabled
+/// for local non-HTTPS dev by setting `COOKIES_INSECURE_DEV=true`.
+pub fn cookies_secure() -> bool {
+    !matches!(
+        std::env::var("COOKIES_INSECURE_DEV").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
+}
+
+/// Build the `Set-Cookie` header value for the session JWT.
+///
+/// HttpOnly  → JS in the page (any XSS) cannot read the JWT.
+/// Secure    → never sent over plain HTTP (overridable for dev).
+/// SameSite=Lax → blocks most cross-site CSRF on POST. Pair with the double-
+///                submit CSRF token (see `CSRF_*` constants) for defense in
+///                depth on cross-origin form submits.
+/// Path=/    → all routes share the same cookie.
+/// Max-Age   → matches the JWT's `exp` so the cookie disappears with the JWT.
+pub fn build_session_cookie(jwt: &str, max_age_seconds: i64) -> String {
+    let secure = if cookies_secure() { "; Secure" } else { "" };
+    let max_age = max_age_seconds.max(0);
+    format!(
+        "{SESSION_COOKIE_NAME}={jwt}; HttpOnly{secure}; SameSite=Lax; Path=/; Max-Age={max_age}"
+    )
+}
+
+/// Companion CSRF token cookie. NOT HttpOnly — the SPA reads it and echoes
+/// it back as `X-CSRF-Token`. Same lifetime as the session cookie.
+pub fn build_csrf_cookie(csrf_token: &str, max_age_seconds: i64) -> String {
+    let secure = if cookies_secure() { "; Secure" } else { "" };
+    let max_age = max_age_seconds.max(0);
+    format!("{CSRF_COOKIE_NAME}={csrf_token}{secure}; SameSite=Lax; Path=/; Max-Age={max_age}")
+}
+
+/// Build the `Set-Cookie` headers that expire the session + CSRF cookies.
+pub fn build_clear_cookies() -> [String; 2] {
+    let secure = if cookies_secure() { "; Secure" } else { "" };
+    [
+        format!("{SESSION_COOKIE_NAME}=; HttpOnly{secure}; SameSite=Lax; Path=/; Max-Age=0"),
+        format!("{CSRF_COOKIE_NAME}={secure}; SameSite=Lax; Path=/; Max-Age=0"),
+    ]
+}
+
+/// Generate a fresh CSRF token (32 random bytes, hex-encoded → 64 chars).
+pub fn generate_csrf_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
@@ -115,22 +230,18 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let auth_header = parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .ok_or(CloudError::Unauthorized)?;
-
-        let token = auth_header
-            .strip_prefix("Bearer ")
-            .ok_or(CloudError::Auth("expected Bearer token".to_string()))?;
+        // Accept the JWT from either `Authorization: Bearer …` (mobile/CLI)
+        // or the `ghola_session` cookie (web). Header wins when both are
+        // present so an explicit mobile/CLI call overrides a piggybacking
+        // browser cookie. API keys are header-only by design.
+        let token = extract_session_token(&parts.headers).ok_or(CloudError::Unauthorized)?;
 
         // Dual-path: API key or JWT
         if token.starts_with("sk-ghola-") {
-            let claims = verify_api_key(token, state).await?;
+            let claims = verify_api_key(&token, state).await?;
             Ok(AuthUser(claims))
         } else {
-            let claims = verify_jwt(token, &state.config.jwt_secret)?;
+            let claims = verify_jwt(&token, &state.config.jwt_secret)?;
             Ok(AuthUser(claims))
         }
     }

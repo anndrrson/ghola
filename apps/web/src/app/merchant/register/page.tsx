@@ -53,8 +53,11 @@ export default function RegisterServicePage() {
   const [receiveAddress, setReceiveAddress] = useState("");
 
   useEffect(() => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("ghola_token") : null;
-    if (!token) router.push("/signin");
+    // SECURITY: pre-migration this guarded the page by reading
+    // `localStorage["ghola_token"]`. The JWT is now in an HttpOnly cookie
+    // unreadable from JS; submission failures will surface 401 →
+    // "Please sign in" naturally via the API error path below.
+    void router;
   }, [router]);
 
   useEffect(() => {

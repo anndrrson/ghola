@@ -221,6 +221,9 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers([
             HeaderName::from_static("content-type"),
             HeaderName::from_static("authorization"),
+            // Double-submit CSRF token sent by browser SPA on non-GET
+            // cookie-authenticated requests.
+            HeaderName::from_static("x-csrf-token"),
         ])
         .allow_credentials(true);
 
@@ -248,6 +251,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/auth/register", post(routes::auth::register_email))
         .route("/auth/login", post(routes::auth::login_email))
+        // Cookie-only logout — clears ghola_session + ghola_csrf cookies.
+        .route("/auth/logout", post(routes::auth::logout))
+        // One-shot migration: re-emit Set-Cookie for callers still holding
+        // the JWT in localStorage from the pre-cookie deploy.
+        .route("/auth/refresh-cookie", post(routes::auth::refresh_cookie))
         .route("/payments/webhook", post(routes::payments::stripe_webhook));
 
     // Protected routes
@@ -361,6 +369,9 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state)
         // 256KB max request body
         .layer(DefaultBodyLimit::max(256 * 1024))
+        // CSRF protection for cookie-authenticated non-GET requests.
+        // Bearer/API-key callers bypass automatically.
+        .layer(middleware::from_fn(auth::csrf_protect))
         .layer(middleware::from_fn(security::rate_limit_middleware))
         .layer(axum::Extension(global_limiter))
         .layer(axum::Extension(anomaly_detector))

@@ -33,27 +33,32 @@ export default function MerchantAnalyticsPage() {
   const [aLoading, setALoading] = useState(false);
 
   useEffect(() => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("ghola_token") : null;
-    if (!token) { router.push("/signin"); return; }
+    // SECURITY: pre-migration this checked `localStorage["ghola_token"]`.
+    // JWT is now an HttpOnly cookie. Probe via the API; 401 → redirect.
     (async () => {
       try {
         const res = await getMyServices();
         setServices(res.services);
         if (res.services.length > 0) setSelectedId(res.services[0].id);
-      } catch (err) { console.error("Failed to load services:", err); }
-      finally { setLoading(false); }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "";
+        if (message.includes("401") || /unauth|not signed in/i.test(message)) {
+          router.push("/signin");
+          return;
+        }
+        console.error("Failed to load services:", err);
+      } finally { setLoading(false); }
     })();
   }, [router]);
 
   useEffect(() => {
     if (!selectedId) return;
-    const token = localStorage.getItem("ghola_token");
-    if (!token) return;
     setALoading(true);
     (async () => {
       try {
+        // Cookie auth: `credentials: "include"` sends `ghola_session`.
         const res = await fetch(`${API_BASE}/services/${selectedId}/analytics`, {
-          headers: { Authorization: `Bearer ${token}` },
+          credentials: "include",
         });
         if (!res.ok) throw new Error(`API error ${res.status}`);
         setAnalytics(await res.json());

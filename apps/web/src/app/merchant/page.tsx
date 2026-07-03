@@ -26,11 +26,10 @@ export default function MerchantDashboardPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("ghola_token") : null;
-    if (!token) {
-      router.push("/signin");
-      return;
-    }
+    // SECURITY: pre-migration this checked `localStorage["ghola_token"]`.
+    // The JWT is now in an HttpOnly cookie that JS can't read, so we let
+    // the API probe (the cookie rides on `credentials: "include"`) and
+    // treat 401 as "not signed in" → redirect.
     (async () => {
       try {
         const res = await getMyServices();
@@ -38,6 +37,11 @@ export default function MerchantDashboardPage() {
         setTotalRevenue(res.total_revenue_micro_usdc);
         setTotalRequests(res.total_requests);
       } catch (err) {
+        const message = err instanceof Error ? err.message : "";
+        if (message.includes("401") || /unauth|not signed in/i.test(message)) {
+          router.push("/signin");
+          return;
+        }
         console.error("Failed to load merchant services:", err);
       } finally {
         setLoading(false);

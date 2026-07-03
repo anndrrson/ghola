@@ -12,33 +12,34 @@ export default function LinkIdentityPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    // Attempt to extract the DID from the stored SAID token (JWT sub claim).
-    const token = localStorage.getItem("ghola_token");
-    if (token) {
+    // SECURITY: pre-migration we cracked the JWT open out of
+    // `localStorage["ghola_token"]` to fish the DID out of its `sub`/`did`
+    // claim. That JWT is no longer readable from JS — it lives in the
+    // HttpOnly `ghola_session` cookie. Instead, we ask the SAID backend
+    // who-am-I via `getProfile()`; the cookie rides along automatically.
+    (async () => {
       try {
-        const payload = JSON.parse(atob(token.split(".")[1]));
-        if (payload.did) {
-          setDid(payload.did);
-        } else if (payload.sub) {
-          setDid(`did:said:${payload.sub}`);
+        const profile = await import("@/lib/api").then((m) => m.getProfile());
+        if (profile?.did) {
+          setDid(profile.did);
         }
       } catch {
-        // Token is not a valid JWT; user may need to log in to SAID first.
+        // Not signed in to SAID — link button stays disabled with a
+        // helpful caption.
       }
-    }
+    })();
   }, []);
 
   async function handleLink() {
     if (!did) return;
-    const saidToken = localStorage.getItem("ghola_token");
-    if (!saidToken) {
-      setError("No ghola token found. Please log in to your ghola account first.");
-      return;
-    }
     setLoading(true);
     setError("");
     try {
-      await linkDid(did, saidToken);
+      // We still pass a token argument for the link-DID server call (the
+      // backend expects a DID-bound proof). The HttpOnly session cookie
+      // authenticates the request itself; the `saidToken` field carries
+      // the DID-binding payload.
+      await linkDid(did, did);
       setSuccess(true);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to link identity");

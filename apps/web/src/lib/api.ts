@@ -31,32 +31,68 @@ import type {
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/v1";
 
-function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("ghola_token");
-}
+// SECURITY: the JWT used to be stored in `localStorage["ghola_token"]`. After
+// the cookie migration the JWT lives in an HttpOnly `ghola_session` cookie set
+// by the backend on sign-in. JS cannot read it (mitigating XSS exfiltration);
+// the browser sends it automatically when we set `credentials: "include"`.
+//
+// Mobile + CLI clients still use `Authorization: Bearer …` against the same
+// backend — that path is unaffected by this file.
+//
+// `setToken` / `clearToken` are intentionally kept (no-op for set, real for
+// clear-on-logout) so callers that historically wrote the localStorage entry
+// don't crash. Both purge the legacy key on every call so the migration is
+// self-healing.
+const LEGACY_TOKEN_KEY = "ghola_token";
 
-export function setToken(token: string) {
-  localStorage.setItem("ghola_token", token);
+export function setToken(_token: string) {
+  // No-op: the JWT is set by the backend as an HttpOnly cookie. Kept as a
+  // shim so call sites that previously persisted the body's `token` field
+  // don't break.
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+  }
 }
 
 export function clearToken() {
-  localStorage.removeItem("ghola_token");
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+  }
+}
+
+/**
+ * Read the double-submit CSRF token written as a non-HttpOnly cookie by the
+ * backend at sign-in. Returns null if no session is active.
+ */
+function readCsrfCookie(): string | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(/(?:^|;\s*)ghola_csrf=([^;]+)/);
+  return match ? match[1] : null;
 }
 
 async function apiFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const token = getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...((options.headers as Record<string, string>) || {}),
   };
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  // Double-submit CSRF defense: backend's `csrf_protect` middleware
+  // compares this header to the `ghola_csrf` cookie on every non-GET
+  // cookie-authenticated request. See crates/thumper-cloud/src/middleware.rs.
+  const method = (options.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    const csrf = readCsrfCookie();
+    if (csrf) headers["X-CSRF-Token"] = csrf;
   }
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers,
+    // The browser sends `ghola_session` automatically when credentials
+    // are included on the cross-origin XHR.
+    credentials: "include",
+  });
   if (!res.ok) {
     const body = await res
       .json()
@@ -143,19 +179,18 @@ export async function checkDomainVerification(): Promise<{
 // Generated Files
 
 export async function getAgentsTxt(): Promise<string> {
-  const token = getToken();
-  const headers: Record<string, string> = {};
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetch(`${API_BASE}/business/agents-txt`, { headers });
+  // Cookie auth: browser sends `ghola_session` automatically.
+  const res = await fetch(`${API_BASE}/business/agents-txt`, {
+    credentials: "include",
+  });
   if (!res.ok) throw new Error("Failed to fetch agents.txt");
   return res.text();
 }
 
 export async function getWellKnownSaid(): Promise<string> {
-  const token = getToken();
-  const headers: Record<string, string> = {};
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetch(`${API_BASE}/business/well-known`, { headers });
+  const res = await fetch(`${API_BASE}/business/well-known`, {
+    credentials: "include",
+  });
   if (!res.ok) throw new Error("Failed to fetch said.json");
   return res.text();
 }
@@ -299,29 +334,33 @@ const ORNI_API_BASE =
   process.env.NEXT_PUBLIC_API_URL ||
   "https://orni-models-api.onrender.com/api";
 
-function getOrniToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("ghola_orni_token");
-}
-
-function setOrniToken(token: string) {
-  localStorage.setItem("ghola_orni_token", token);
-}
+// SECURITY: the Orni JWT used to be stored in `localStorage["ghola_orni_token"]`.
+// After the cookie migration it lives in the same HttpOnly `ghola_session`
+// cookie issued by orni-models-api on `/auth/verify`. The legacy key is
+// purged by `clearOrniToken` for backward compatibility.
+const LEGACY_ORNI_TOKEN_KEY = "ghola_orni_token";
 
 export function clearOrniToken() {
-  localStorage.removeItem("ghola_orni_token");
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(LEGACY_ORNI_TOKEN_KEY);
+  }
 }
 
 async function orniFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = getOrniToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...((options.headers as Record<string, string>) || {}),
   };
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  const method = (options.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    const csrf = readCsrfCookie();
+    if (csrf) headers["X-CSRF-Token"] = csrf;
   }
-  const res = await fetch(`${ORNI_API_BASE}${path}`, { ...options, headers });
+  const res = await fetch(`${ORNI_API_BASE}${path}`, {
+    ...options,
+    headers,
+    credentials: "include",
+  });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: `API error ${res.status}` }));
     throw new Error(body.error || `API error ${res.status}`);
@@ -350,6 +389,10 @@ export async function orniGetNonce(wallet: string) {
 }
 
 export async function orniVerifySignature(wallet: string, signature: string, nonce: string) {
+  // SECURITY: the response also carries `token` in the body so mobile/CLI
+  // consumers of the same backend continue to work. In the browser we
+  // intentionally do NOT persist it — the `ghola_session` HttpOnly cookie
+  // returned in `Set-Cookie` is the source of truth from this point on.
   const res = await orniFetch<{ token: string; user: { id: string; is_creator: boolean } }>(
     "/auth/verify",
     {
@@ -357,7 +400,10 @@ export async function orniVerifySignature(wallet: string, signature: string, non
       body: JSON.stringify({ wallet_address: wallet, signature, nonce }),
     }
   );
-  setOrniToken(res.token);
+  // Purge any legacy localStorage entry the pre-migration build wrote.
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(LEGACY_ORNI_TOKEN_KEY);
+  }
   return { token: res.token, is_creator: res.user.is_creator };
 }
 
@@ -423,9 +469,9 @@ export function sendMessage(
   message: string,
   sessionId?: string
 ): ReadableStream<string> {
-  const token = getOrniToken();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const csrf = readCsrfCookie();
+  if (csrf) headers["X-CSRF-Token"] = csrf;
 
   return new ReadableStream<string>({
     async start(controller) {
@@ -433,6 +479,7 @@ export function sendMessage(
         const res = await fetch(`${ORNI_API_BASE}/chat/${slug}/message`, {
           method: "POST",
           headers,
+          credentials: "include",
           body: JSON.stringify({ message, session_id: sessionId }),
         });
         if (!res.ok) {
@@ -583,9 +630,9 @@ export function chatRelay(
   system?: string,
   baseUrl?: string
 ): ReadableStream<string> {
-  const token = getToken();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const csrf = readCsrfCookie();
+  if (csrf) headers["X-CSRF-Token"] = csrf;
 
   return new ReadableStream<string>({
     async start(controller) {
@@ -595,6 +642,7 @@ export function chatRelay(
         const res = await fetch(`${API_BASE}/chat/relay`, {
           method: "POST",
           headers,
+          credentials: "include",
           body: JSON.stringify(payload),
         });
         if (!res.ok) {
@@ -678,7 +726,9 @@ export async function searchServices(
     params.set("min_uptime", String(filters.minUptime));
   if (filters?.region) params.set("region", filters.region);
 
-  const res = await fetch(`${API_BASE}/services/resolve?${params}`);
+  const res = await fetch(`${API_BASE}/services/resolve?${params}`, {
+    credentials: "include",
+  });
   if (!res.ok) throw new Error("Failed to search services");
   return res.json();
 }
@@ -699,7 +749,9 @@ export async function listServices(
   if (params?.page) p.set("page", String(params.page));
   if (params?.limit) p.set("limit", String(params.limit));
 
-  const res = await fetch(`${API_BASE}/services?${p}`);
+  const res = await fetch(`${API_BASE}/services?${p}`, {
+    credentials: "include",
+  });
   if (!res.ok) throw new Error("Failed to list services");
   return res.json();
 }
@@ -716,7 +768,9 @@ export async function getMyServices(): Promise<{
 export async function getServiceDetail(
   slugOrId: string
 ): Promise<{ service: ServiceDetail; heartbeats: unknown[] }> {
-  const res = await fetch(`${API_BASE}/services/${encodeURIComponent(slugOrId)}`);
+  const res = await fetch(`${API_BASE}/services/${encodeURIComponent(slugOrId)}`, {
+    credentials: "include",
+  });
   if (!res.ok) throw new Error("Service not found");
   return res.json();
 }
@@ -731,7 +785,9 @@ export async function registerService(
 }
 
 export async function getReputation(did: string): Promise<ReputationScore> {
-  const res = await fetch(`${API_BASE}/reputation/${encodeURIComponent(did)}`);
+  const res = await fetch(`${API_BASE}/reputation/${encodeURIComponent(did)}`, {
+    credentials: "include",
+  });
   if (!res.ok) throw new Error("Failed to get reputation");
   return res.json();
 }

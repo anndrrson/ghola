@@ -1,13 +1,40 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::{header, HeaderMap, HeaderValue};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use uuid::Uuid;
 
-use crate::auth::{issue_jwt, verify_siws};
+use crate::auth::{
+    build_csrf_cookie, build_session_cookie, extract_session_token, generate_csrf_token,
+    issue_jwt, validate_jwt, verify_siws,
+};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use orni_models_types::{AuthResponse, NonceRequest, NonceResponse, User, VerifyRequest};
+
+/// JWT lifetime in seconds — must match `JWT_EXPIRY` in auth.rs.
+const JWT_TTL_SECONDS: i64 = 86400;
+
+/// Wrap an `AuthResponse` so browser callers receive the JWT as an HttpOnly
+/// `ghola_session` cookie + JS-readable `ghola_csrf` companion. Mobile/CLI
+/// callers still read `token` out of the JSON body.
+fn auth_response_with_cookies(payload: AuthResponse) -> Response {
+    let session_cookie = build_session_cookie(&payload.token, JWT_TTL_SECONDS);
+    let csrf_token = generate_csrf_token();
+    let csrf_cookie = build_csrf_cookie(&csrf_token, JWT_TTL_SECONDS);
+
+    let mut response = Json(payload).into_response();
+    let headers = response.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&session_cookie) {
+        headers.append(header::SET_COOKIE, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&csrf_cookie) {
+        headers.append(header::SET_COOKIE, v);
+    }
+    response
+}
 
 pub async fn get_nonce(
     State(state): State<Arc<AppState>>,
@@ -25,7 +52,7 @@ pub async fn get_nonce(
 pub async fn verify(
     State(state): State<Arc<AppState>>,
     Json(req): Json<VerifyRequest>,
-) -> AppResult<Json<AuthResponse>> {
+) -> AppResult<Response> {
     // Validate nonce
     if !state.nonce_store.validate_and_remove(&req.nonce, &req.wallet_address) {
         return Err(AppError::Unauthorized("Invalid or expired nonce".into()));
@@ -55,13 +82,13 @@ pub async fn verify(
 
     let token = issue_jwt(&user.id, user.wallet_address.as_deref(), &state.config.jwt_secret)?;
 
-    Ok(Json(AuthResponse { token, user }))
+    Ok(auth_response_with_cookies(AuthResponse { token, user }))
 }
 
 pub async fn register_email(
     State(state): State<Arc<AppState>>,
     Json(req): Json<orni_models_types::EmailRegisterRequest>,
-) -> AppResult<Json<AuthResponse>> {
+) -> AppResult<Response> {
     use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
     use rand::rngs::OsRng;
 
@@ -107,13 +134,13 @@ pub async fn register_email(
 
     let token = issue_jwt(&user.id, None, &state.config.jwt_secret)?;
 
-    Ok(Json(AuthResponse { token, user }))
+    Ok(auth_response_with_cookies(AuthResponse { token, user }))
 }
 
 pub async fn login_email(
     State(state): State<Arc<AppState>>,
     Json(req): Json<orni_models_types::EmailLoginRequest>,
-) -> AppResult<Json<AuthResponse>> {
+) -> AppResult<Response> {
     use argon2::{Argon2, PasswordHash, PasswordVerifier};
 
     // Rate limit: 10 login attempts per email per 15 minutes
@@ -142,5 +169,50 @@ pub async fn login_email(
 
     let token = issue_jwt(&user.id, user.wallet_address.as_deref(), &state.config.jwt_secret)?;
 
-    Ok(Json(AuthResponse { token, user }))
+    Ok(auth_response_with_cookies(AuthResponse { token, user }))
+}
+
+/// POST /api/auth/logout — clears the session + csrf cookies. Idempotent.
+pub async fn logout() -> Response {
+    let mut response = Json(serde_json::json!({"ok": true})).into_response();
+    let headers = response.headers_mut();
+    for cookie in crate::auth::build_clear_cookies() {
+        if let Ok(v) = HeaderValue::from_str(&cookie) {
+            headers.append(header::SET_COOKIE, v);
+        }
+    }
+    response
+}
+
+/// POST /api/auth/refresh-cookie
+///
+/// One-shot migration helper: pre-cookie deploys stored the JWT in
+/// `localStorage`. The SPA reads it once and posts it here so we can re-emit
+/// it as a proper `Set-Cookie`. Verifies the JWT before re-issuing.
+pub async fn refresh_cookie(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Option<Json<serde_json::Value>>,
+) -> AppResult<Response> {
+    let header_token = extract_session_token(&headers);
+    let body_token = body
+        .and_then(|Json(v)| v.get("token").and_then(|t| t.as_str().map(String::from)));
+    let token = header_token
+        .or(body_token)
+        .ok_or_else(|| AppError::Unauthorized("missing JWT in header or body".into()))?;
+
+    let claims = validate_jwt(&token, &state.config.jwt_secret)?;
+
+    // Re-hydrate the user so the SPA response shape matches a normal sign-in.
+    let user_id: Uuid = claims
+        .sub
+        .parse()
+        .map_err(|_| AppError::Unauthorized("invalid JWT sub claim".into()))?;
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized("user not found".into()))?;
+
+    Ok(auth_response_with_cookies(AuthResponse { token, user }))
 }

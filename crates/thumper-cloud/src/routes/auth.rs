@@ -1,11 +1,16 @@
 use axum::extract::State;
+use axum::http::{header, HeaderMap, HeaderValue};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::Utc;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::{create_jwt, verify_apple_token, verify_google_token, verify_siws};
+use crate::auth::{
+    build_csrf_cookie, build_session_cookie, create_jwt, extract_session_token,
+    generate_csrf_token, verify_apple_token, verify_google_token, verify_jwt, verify_siws,
+};
 use crate::error::CloudError;
 use crate::privacy::log_id;
 use crate::state::{AppState, SiwsChallengeRecord};
@@ -19,6 +24,51 @@ use crate::state::{AppState, SiwsChallengeRecord};
 /// MUST stay byte-equal to `SigningDomains.SIWS_SIGN_IN` on the Android side
 /// (see `android/app/src/main/java/xyz/ghola/app/crypto/SigningDomains.kt`).
 const SIWS_DOMAIN_PREFIX: &str = "Sign in to Ghola\n";
+
+const INTERNAL_PROXY_HEADER: &str = "x-ghola-internal-proxy-secret";
+
+/// Verify the request came from the trusted web proxy by comparing the
+/// `X-Ghola-Internal-Proxy-Secret` header against `GHOLA_INTERNAL_PROXY_SECRET`
+/// in constant time. Fails CLOSED: if the env var is unset/empty the endpoint
+/// rejects all callers (so a misconfigured deploy cannot silently expose the
+/// account-takeover path).
+///
+/// TODO(security): replace this shared-secret gate with full server-side X
+/// OAuth verification — exchange the OAuth code (or validate the access token
+/// via `GET https://api.x.com/2/users/me`) inside thumper-cloud so the backend
+/// no longer trusts a client-asserted `twitter_id` relayed by the proxy.
+fn require_internal_proxy(headers: &HeaderMap) -> Result<(), CloudError> {
+    let expected = std::env::var("GHOLA_INTERNAL_PROXY_SECRET").unwrap_or_default();
+    if expected.trim().is_empty() {
+        tracing::error!(
+            "GHOLA_INTERNAL_PROXY_SECRET unset; refusing /api/auth/twitter (fail-closed)"
+        );
+        return Err(CloudError::Unauthorized);
+    }
+
+    let provided = headers
+        .get(INTERNAL_PROXY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+        tracing::warn!("rejected /api/auth/twitter: missing or invalid internal proxy secret");
+        return Err(CloudError::Unauthorized);
+    }
+    Ok(())
+}
+
+/// Constant-time byte comparison (length-equal AND content-equal).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
 
 #[derive(Deserialize)]
 pub struct GoogleSignInRequest {
@@ -126,6 +176,36 @@ async fn attach_refresh(
         refresh_token,
         refresh_exp,
     }
+}
+
+/// Wrap an `AuthResponse` so browser clients receive the JWT in an HttpOnly
+/// `ghola_session` cookie *and* a sibling `ghola_csrf` token. The JSON body
+/// still contains `token`/`refresh_token` for mobile + CLI consumers.
+///
+/// Cookie attributes (see `crate::auth::build_session_cookie`):
+///   HttpOnly  — JS in the page (any XSS) cannot read the JWT
+///   Secure    — never sent over plain HTTP (overridable for dev)
+///   SameSite=Lax — blocks the bulk of cross-site CSRF; the CSRF token
+///                  cookie + `X-CSRF-Token` header handle the residue
+///   Path=/    — every route shares one cookie
+///   Max-Age   — matches the JWT `exp`
+fn auth_response_with_cookies(payload: AuthResponse) -> Response {
+    let now = Utc::now().timestamp();
+    let session_max_age = payload.exp.map(|e| (e - now).max(0)).unwrap_or(60 * 60 * 24 * 30);
+
+    let session_cookie = build_session_cookie(&payload.token, session_max_age);
+    let csrf_token = generate_csrf_token();
+    let csrf_cookie = build_csrf_cookie(&csrf_token, session_max_age);
+
+    let mut response = Json(payload).into_response();
+    let headers = response.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&session_cookie) {
+        headers.append(header::SET_COOKIE, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&csrf_cookie) {
+        headers.append(header::SET_COOKIE, v);
+    }
+    response
 }
 
 /// GET /api/auth/siws/challenge
@@ -273,7 +353,7 @@ async fn validate_and_consume_siws_challenge(
 pub async fn siws_sign_in(
     State(state): State<AppState>,
     Json(req): Json<SiwsSignInRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
     let now = Utc::now().timestamp();
     let challenge_text = validate_and_consume_siws_challenge(
         &state.siws_challenges,
@@ -303,7 +383,7 @@ pub async fn siws_sign_in(
             &tier,
             &state.config.jwt_secret,
         )?;
-        return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
     }
 
     let row = sqlx::query_as::<_, (Uuid, String)>(
@@ -316,14 +396,14 @@ pub async fn siws_sign_in(
 
     auto_provision_wallet(state.clone(), user_id);
     let token = create_jwt(user_id, None, None, &tier, &state.config.jwt_secret)?;
-    Ok(Json(attach_refresh(&state, token, user_id, true).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, true).await))
 }
 
 /// POST /api/auth/google
 pub async fn google_sign_in(
     State(state): State<AppState>,
     Json(req): Json<GoogleSignInRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
     let google_client_id = state.config.google_client_id.as_deref().ok_or_else(|| {
         tracing::error!("Google sign-in attempted but GOOGLE_CLIENT_ID not configured");
         CloudError::ServiceUnavailable("Google sign-in is not configured".into())
@@ -367,7 +447,7 @@ pub async fn google_sign_in(
             &tier,
             &state.config.jwt_secret,
         )?;
-        return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
     }
 
     tracing::info!("google auth: no google_id match, checking email");
@@ -398,7 +478,7 @@ pub async fn google_sign_in(
             &tier,
             &state.config.jwt_secret,
         )?;
-        return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
     }
 
     tracing::info!("google auth: creating new user");
@@ -423,14 +503,14 @@ pub async fn google_sign_in(
         &tier,
         &state.config.jwt_secret,
     )?;
-    Ok(Json(attach_refresh(&state, token, user_id, true).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, true).await))
 }
 
 /// POST /api/auth/apple
 pub async fn apple_sign_in(
     State(state): State<AppState>,
     Json(req): Json<AppleSignInRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
     let apple_client_id = state.config.apple_client_id.as_deref().ok_or_else(|| {
         tracing::error!("Apple sign-in attempted but APPLE_CLIENT_ID not configured");
         CloudError::ServiceUnavailable("Sign in with Apple is not configured".into())
@@ -478,7 +558,7 @@ pub async fn apple_sign_in(
             &tier,
             &state.config.jwt_secret,
         )?;
-        return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
     }
 
     // 2. Email already in DB from another auth method? Link Apple to that account.
@@ -507,7 +587,7 @@ pub async fn apple_sign_in(
                 &tier,
                 &state.config.jwt_secret,
             )?;
-            return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+            return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
         }
     }
 
@@ -530,14 +610,17 @@ pub async fn apple_sign_in(
         &tier,
         &state.config.jwt_secret,
     )?;
-    Ok(Json(attach_refresh(&state, token, user_id, true).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, true).await))
 }
 
 /// POST /api/auth/twitter
 pub async fn twitter_sign_in(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<TwitterSignInRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
+    require_internal_proxy(&headers)?;
+
     let display = req.name.clone().or_else(|| req.username.clone());
 
     // 1. Returning user? (already linked Twitter)
@@ -568,7 +651,7 @@ pub async fn twitter_sign_in(
             &tier,
             &state.config.jwt_secret,
         )?;
-        return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
     }
 
     // 2. Email already in DB from another auth method? Link Twitter to that account.
@@ -597,7 +680,7 @@ pub async fn twitter_sign_in(
                 &tier,
                 &state.config.jwt_secret,
             )?;
-            return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+            return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
         }
     }
 
@@ -620,7 +703,7 @@ pub async fn twitter_sign_in(
         &tier,
         &state.config.jwt_secret,
     )?;
-    Ok(Json(attach_refresh(&state, token, user_id, true).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, true).await))
 }
 
 // ---------------------------------------------------------------------------
@@ -644,7 +727,7 @@ pub struct EmailSignInRequest {
 pub async fn email_sign_up(
     State(state): State<AppState>,
     Json(req): Json<EmailSignUpRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
     if req.email.is_empty() || !req.email.contains('@') {
         return Err(CloudError::BadRequest("invalid email".to_string()));
     }
@@ -692,14 +775,14 @@ pub async fn email_sign_up(
         &state.config.jwt_secret,
     )?;
 
-    Ok(Json(attach_refresh(&state, token, user_id, true).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, true).await))
 }
 
 /// POST /api/auth/email/signin
 pub async fn email_sign_in(
     State(state): State<AppState>,
     Json(req): Json<EmailSignInRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
     let row = sqlx::query_as::<_, (Uuid, String, Option<String>, Option<String>)>(
         "SELECT id, COALESCE(tier, 'free'), password_hash, display_name FROM users WHERE email = $1",
     )
@@ -737,7 +820,7 @@ pub async fn email_sign_in(
         &state.config.jwt_secret,
     )?;
 
-    Ok(Json(attach_refresh(&state, token, user_id, false).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await))
 }
 
 /// Hash a password with PBKDF2-HMAC-SHA256 (600k iterations) using a per-user random salt.
@@ -884,7 +967,7 @@ fn auto_provision_wallet(_state: AppState, user_id: Uuid) {
 pub async fn refresh_token(
     State(state): State<AppState>,
     Json(req): Json<RefreshRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
     // Prefer refresh_token if present.
     let user_id = if let Some(rt) = req.refresh_token.as_deref() {
         let (new_refresh, new_refresh_exp, user_id) =
@@ -907,7 +990,7 @@ pub async fn refresh_token(
             &state.config.jwt_secret,
         )?;
         let exp = jwt_exp(&access, &state.config.jwt_secret);
-        return Ok(Json(AuthResponse {
+        return Ok(auth_response_with_cookies(AuthResponse {
             token: access,
             user_id,
             is_new_user: false,
@@ -942,7 +1025,66 @@ pub async fn refresh_token(
         &tier,
         &state.config.jwt_secret,
     )?;
-    Ok(Json(attach_refresh(&state, token, user_id, false).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await))
+}
+
+/// POST /api/auth/logout
+///
+/// Clears the `ghola_session` and `ghola_csrf` cookies. Idempotent — safe to
+/// call with or without a valid session. The JSON body intentionally carries
+/// no information (mobile/CLI clients can also call it, but their primary
+/// action is just to drop the local token).
+pub async fn logout() -> Response {
+    let mut response = Json(serde_json::json!({"ok": true})).into_response();
+    let headers = response.headers_mut();
+    for cookie in crate::auth::build_clear_cookies() {
+        if let Ok(v) = HeaderValue::from_str(&cookie) {
+            headers.append(header::SET_COOKIE, v);
+        }
+    }
+    response
+}
+
+/// POST /api/auth/refresh-cookie
+///
+/// One-shot migration endpoint: the SPA's pre-cookie deploy stored the JWT in
+/// `localStorage`. On the first page load after the migration, the SPA reads
+/// the JWT from localStorage, posts it here, and we re-emit the same JWT
+/// (still valid for its original lifetime) as a proper `Set-Cookie`. The SPA
+/// then deletes the localStorage entry. Once everyone has refreshed, this
+/// endpoint can be removed — track via a feature-flag / deprecation timeline.
+///
+/// Accepts the JWT either in the `Authorization: Bearer …` header (preferred)
+/// or in the JSON body as `{ "token": "…" }`. Returns the same shape as a
+/// normal sign-in response.
+///
+/// SECURITY: this endpoint only *re-encodes the holder's existing JWT as a
+/// cookie*; it does not mint new tokens. The caller must already prove they
+/// hold a valid JWT (and we accept the body form because the localStorage
+/// reading path runs before the fetch wrapper attaches Authorization
+/// automatically — keeps the migration code path small).
+pub async fn refresh_cookie(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Option<Json<serde_json::Value>>,
+) -> Result<Response, CloudError> {
+    let header_token = extract_session_token(&headers);
+    let body_token = body
+        .and_then(|Json(v)| v.get("token").and_then(|t| t.as_str().map(String::from)));
+    let token = header_token
+        .or(body_token)
+        .ok_or_else(|| CloudError::Auth("missing JWT in header or body".to_string()))?;
+
+    let claims = verify_jwt(&token, &state.config.jwt_secret)?;
+    let payload = AuthResponse {
+        token,
+        user_id: claims.sub,
+        is_new_user: false,
+        exp: Some(claims.exp),
+        refresh_token: None,
+        refresh_exp: None,
+    };
+    Ok(auth_response_with_cookies(payload))
 }
 
 #[cfg(test)]
