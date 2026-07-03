@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Turnkey } from "@turnkey/sdk-server";
+import {
+  fetchSessionUser,
+  sameOrigin,
+  SESSION_COOKIE_NAME,
+} from "../../auth/session/_lib";
 
 const TURNKEY_API_BASE_URL = "https://api.turnkey.com";
 
@@ -100,6 +105,50 @@ export async function POST(req: NextRequest) {
           code: "turnkey_server_controlled_wallets_disabled",
           remediation:
             "Use Turnkey Swift SDK/Auth Proxy so wallet credentials are created and held by the user's device.",
+        },
+        { status: 403 }
+      );
+    }
+
+    // Defense-in-depth (only reachable once server-controlled wallets are
+    // explicitly enabled). Reject cross-site requests so a malicious page
+    // cannot ride the user's session cookie to create/enumerate wallets
+    // (CSRF).
+    if (!sameOrigin(req)) {
+      return NextResponse.json(
+        { error: "cross-site request rejected", code: "turnkey_cross_site_rejected" },
+        { status: 403 }
+      );
+    }
+
+    // Require a valid, server-verified session.
+    const sessionToken = req.cookies.get(SESSION_COOKIE_NAME)?.value;
+    if (!sessionToken) {
+      return NextResponse.json(
+        { error: "authentication required", code: "turnkey_auth_required" },
+        { status: 401 }
+      );
+    }
+    const session = await fetchSessionUser(sessionToken).catch(() => null);
+    if (!session || !session.ok) {
+      return NextResponse.json(
+        { error: "authentication required", code: "turnkey_auth_required" },
+        { status: 401 }
+      );
+    }
+
+    // Ownership assertion: a user may only create/retrieve the wallet for
+    // THEIR OWN email. The sub-org is derived from the email (the Turnkey
+    // lookup below filters by EMAIL), so binding the requested email to
+    // the authenticated session email prevents a signed-in user from
+    // provisioning or fetching a wallet under someone else's identity
+    // (IDOR). Compared case-insensitively to match the normalization
+    // applied to both values.
+    if (normalizedEmail !== session.user.email.trim().toLowerCase()) {
+      return NextResponse.json(
+        {
+          error: "email does not match the authenticated session",
+          code: "turnkey_email_session_mismatch",
         },
         { status: 403 }
       );
