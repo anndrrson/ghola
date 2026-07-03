@@ -98,10 +98,27 @@ export async function GET(req: NextRequest) {
     const userData = await userRes.json();
     const twitterUser = userData.data;
 
-    // Call thumper-cloud backend to create/authenticate user
+    // Call thumper-cloud backend to create/authenticate user.
+    //
+    // SECURITY: the backend cannot verify the X OAuth flow itself, so it trusts
+    // this proxy's resolved `twitter_id` only when accompanied by the shared
+    // internal-proxy secret. Without it the backend rejects the request (and
+    // is, by design, unreachable for Twitter auth from arbitrary clients).
+    const internalProxySecret = process.env.GHOLA_INTERNAL_PROXY_SECRET;
+    if (!internalProxySecret) {
+      logger.error(
+        "GHOLA_INTERNAL_PROXY_SECRET not configured — cannot authenticate Twitter"
+      );
+      return NextResponse.redirect(
+        new URL("/signup?error=server_error", req.nextUrl.origin)
+      );
+    }
     const authRes = await fetch(`${THUMPER_API_BASE}/api/auth/twitter`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Ghola-Internal-Proxy-Secret": internalProxySecret,
+      },
       body: JSON.stringify({
         twitter_id: twitterUser.id,
         name: twitterUser.name,
