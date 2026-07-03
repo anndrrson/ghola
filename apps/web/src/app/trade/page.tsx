@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import { ArmAgentButton } from "@/components/trade/ArmAgentButton";
+import { ConnectHyperliquidButton } from "@/components/trade/ConnectHyperliquidButton";
 import { GholaLogo } from "@/components/GholaLogo";
 import {
   buildGholaAgentChartOverlays,
@@ -1424,6 +1425,7 @@ export default function TradePage() {
                 Refresh market
               </button>
             </div>
+            {venue.id === "hyperliquid" ? <ConnectHyperliquidButton ready={thumperAuth.authenticated} /> : null}
             <ArmAgentButton orderDraft={orderDraft} ready={readyToPreview} />
           </div>
         </aside>
