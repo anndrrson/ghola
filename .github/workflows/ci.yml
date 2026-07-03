@@ -109,6 +109,24 @@ jobs:
       - name: Aleo mainnet-safety gate (merge mode)
         run: ./scripts/security/check-aleo-mainnet-safe.sh --mode=merge
 
+  shielded-pool-mainnet-safe:
+    name: Shielded-pool mainnet-safety gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Machine gate replacing the DO-NOT-DEPLOY comment banner on the
+      # said-shielded-pool Groth16 verifying key. The escrow/mint security
+      # logic is already in the code; this blocks the remaining ways to ship
+      # an unsafe binary: a stale VK that no longer matches the circuit, a VK
+      # not backed by a real multi-party ceremony (SPEC.md §13), an
+      # attestation bound to a different circuit, or dropping `real-verifier`
+      # from default features (which stubs proof verification). Merge mode
+      # does not block while the VK is honestly self-marked STALE; the
+      # deploy-time gate `--mode=deploy` enforces the full ceremony
+      # requirement immediately before a mainnet deploy.
+      - name: Shielded-pool mainnet-safety gate (merge mode)
+        run: ./scripts/security/check-shielded-pool-mainnet-safe.sh --mode=merge
+
   envelope-vector-drift:
     name: Envelope vector-drift gate
     runs-on: ubuntu-latest
@@ -170,6 +188,7 @@ jobs:
       - backend
       - frontend
       - aleo-mainnet-safe
+      - shielded-pool-mainnet-safe
       - envelope-vector-drift
       - android
       - docker

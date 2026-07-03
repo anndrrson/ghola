@@ -1,0 +1,33 @@
+# Trusted-setup ceremony attestation for said-shielded-pool (SPEC.md §13).
+#
+# Copy to ATTESTATION.toml and fill in with REAL values AFTER running the
+# multi-party Phase-2 MPC ceremony that regenerates ceremony/transaction_*.zkey
+# and the compiled-in programs/said-shielded-pool/src/verifying_key.rs.
+#
+# check-shielded-pool-mainnet-safe.sh --mode=deploy will REFUSE to pass unless:
+#   - contributors          >= 10
+#   - external_contributors >= 3   (contributors from outside the Ghola team)
+#   - beacon                 is set (public randomness beacon finalizing the setup)
+#   - circuit_sha256         == the current circuit hash the gate computes over
+#                               circuits/{transaction,merkleProof,commitment,keypair}.circom
+#                               + circuits/package-lock.json
+#
+# The circuit_sha256 binding is what stops a VK attested against a DIFFERENT
+# circuit from being deployed. After the ceremony, run:
+#   cat circuits/transaction.circom circuits/merkleProof.circom \
+#       circuits/commitment.circom circuits/keypair.circom \
+#       circuits/package-lock.json | sha256sum
+# and paste the digest below.
+#
+# You must also regenerate verifying_key.rs (examples/gen_vk_rs.rs) so its
+# STALE / DO-NOT-DEPLOY banner is gone; the deploy gate checks for that too.
+
+contributors = 0
+external_contributors = 0
+beacon = ""
+circuit_sha256 = ""
+
+# Optional provenance (not gate-enforced, but record it):
+# transcript_url = "https://..."
+# contributor_ids = ["ghola-core-1", "ghola-core-2", "ext-alice", ...]
+# ceremony_date = "2026-07-DD"
