@@ -8,7 +8,17 @@ use uuid::Uuid;
 use crate::auth::{create_jwt, verify_apple_token, verify_google_token, verify_siws};
 use crate::error::CloudError;
 use crate::privacy::log_id;
-use crate::state::AppState;
+use crate::state::{AppState, SiwsChallengeRecord};
+
+/// Leading line of every server-issued SIWS challenge. Defense-in-depth: even
+/// if the issuance path is ever changed/bypassed, the verify path will refuse
+/// to accept a stored challenge that does not start with this domain prefix,
+/// so we cannot be tricked into accepting a wallet signature minted for some
+/// other ghola signing domain (e.g. `ghola/vault-unlock-v1 …`).
+///
+/// MUST stay byte-equal to `SigningDomains.SIWS_SIGN_IN` on the Android side
+/// (see `android/app/src/main/java/xyz/ghola/app/crypto/SigningDomains.kt`).
+const SIWS_DOMAIN_PREFIX: &str = "Sign in to Ghola\n";
 
 #[derive(Deserialize)]
 pub struct GoogleSignInRequest {
@@ -129,12 +139,26 @@ pub async fn siws_challenge(
     // security. 5 minutes was demonstrably too tight in field testing.
     let expires_at = ts + 900;
     let challenge = format!(
-        "Sign in to Ghola\nNonce: {nonce}\nIssued At: {ts}\nExpires At: {expires_at}\nURI: https://ghola.xyz\nVersion: 1"
+        "{SIWS_DOMAIN_PREFIX}Nonce: {nonce}\nIssued At: {ts}\nExpires At: {expires_at}\nURI: https://ghola.xyz\nVersion: 1"
     );
 
+    // Defensive invariant: the format string above MUST start with the domain
+    // prefix. If a future refactor breaks that, the verify path will reject
+    // every challenge — and so will this debug_assert in test builds.
+    debug_assert!(
+        challenge.starts_with(SIWS_DOMAIN_PREFIX),
+        "minted SIWS challenge does not start with domain prefix"
+    );
+
+    let record = SiwsChallengeRecord {
+        nonce: nonce.clone(),
+        challenge_text: challenge.clone(),
+        expires_at,
+    };
+
     let mut store = state.siws_challenges.lock().await;
-    store.retain(|_, v| *v > ts);
-    store.insert(nonce.clone(), expires_at);
+    store.retain(|_, v| v.expires_at > ts);
+    store.insert(nonce.clone(), record);
     drop(store);
 
     Ok(Json(SiwsChallengeResponse {
@@ -145,33 +169,124 @@ pub async fn siws_challenge(
     }))
 }
 
+/// Pre-DB SIWS validation: lookup the issued challenge by nonce, enforce
+/// expiry / domain-prefix / byte-equal binding, then consume the nonce.
+///
+/// Extracted from `siws_sign_in` so it can be unit-tested without a Postgres
+/// connection — all four H1/M2 invariants live here.
+///
+/// Returns the stored challenge bytes that the caller should pass to
+/// `verify_siws`. Using the stored bytes (not the client bytes) keeps "what
+/// did the signature actually authenticate?" unambiguous, even though they
+/// are byte-equal on the success path.
+async fn validate_and_consume_siws_challenge(
+    store: &crate::state::SiwsChallengeStore,
+    nonce: &str,
+    client_challenge: &str,
+    now: i64,
+) -> Result<String, CloudError> {
+    // (1) Peek-only first: we must NOT remove the record before we've
+    // validated expiry. Otherwise an expired-challenge request would
+    // silently burn the client's nonce, forcing them to re-issue even
+    // though the call was an honest "I was slow" not "I'm an attacker".
+    let stored: SiwsChallengeRecord = {
+        let store = store.lock().await;
+        store
+            .get(nonce)
+            .cloned()
+            .ok_or(CloudError::Auth(
+                "invalid or expired SIWS challenge".to_string(),
+            ))?
+    };
+
+    // (2) Expiry check BEFORE consume. The record stays in the store; the
+    // periodic `retain(|_, v| v.expires_at > now)` in `siws_challenge` will
+    // garbage-collect it on the next issuance call. (M2 fix.)
+    if stored.expires_at <= now {
+        return Err(CloudError::Auth("SIWS challenge expired".to_string()));
+    }
+
+    // (3) Defense-in-depth: the stored challenge must carry our domain
+    // prefix. Protects against any future code path that inserts into the
+    // store without going through `siws_challenge`.
+    if !stored.challenge_text.starts_with(SIWS_DOMAIN_PREFIX) {
+        tracing::error!(
+            "stored SIWS challenge missing domain prefix; refusing verify (issuance bug)"
+        );
+        return Err(CloudError::Auth(
+            "invalid SIWS challenge (server)".to_string(),
+        ));
+    }
+
+    // (4) Byte-equal binding. This is the H1 fix: previously the server only
+    // checked `req.challenge.contains("Nonce: {nonce}")`, which let a MITM
+    // substitute arbitrary signed bytes. We now require the client to echo
+    // back the *exact* bytes we minted — extra whitespace, a different
+    // domain prefix, anything that mutates a single byte all fail here.
+    if client_challenge.as_bytes() != stored.challenge_text.as_bytes() {
+        tracing::warn!(
+            nonce = %nonce,
+            client_len = client_challenge.len(),
+            server_len = stored.challenge_text.len(),
+            "SIWS challenge byte mismatch — possible MITM substitution, rejecting"
+        );
+        return Err(CloudError::Auth(
+            "SIWS challenge does not match issued challenge".to_string(),
+        ));
+    }
+
+    // (5) Now consume the nonce — single-use from here on. Reaching this
+    // point means the caller has the *exact* server-issued bytes; if their
+    // signature fails downstream they don't get unlimited retries on the
+    // same nonce. (Byte-mismatch above intentionally does NOT consume:
+    // that protects honest users whose request was tampered in flight.)
+    {
+        let mut store = store.lock().await;
+        store.retain(|_, v| v.expires_at > now);
+        if store.remove(nonce).is_none() {
+            // Race: someone else consumed it between our peek and now.
+            return Err(CloudError::Auth(
+                "invalid or expired SIWS challenge".to_string(),
+            ));
+        }
+    }
+
+    Ok(stored.challenge_text)
+}
+
 /// POST /api/auth/siws
+///
+/// The verify path enforces, in order:
+///   1. A matching record exists in the issuance store for `req.nonce`
+///      (peek, do NOT consume yet — see M2 below).
+///   2. The stored challenge has not expired. M2 fix: if it has, leave the
+///      record in place so an honest client racing the clock against a
+///      retry doesn't double-consume their nonce on the expired call.
+///   3. The stored challenge starts with the SIWS domain prefix
+///      (defense-in-depth against issuance bypass).
+///   4. The client-supplied `challenge` is byte-equal to the stored
+///      `challenge_text`. Closes the H1 MITM substitution flaw: an attacker
+///      who intercepts the issued challenge cannot get the user to sign a
+///      different domain-prefixed message and have us still mint a session.
+///   5. Only then do we consume the nonce (single-use) and verify the
+///      Ed25519 signature.
 pub async fn siws_sign_in(
     State(state): State<AppState>,
     Json(req): Json<SiwsSignInRequest>,
 ) -> Result<Json<AuthResponse>, CloudError> {
     let now = Utc::now().timestamp();
-    let expected_expiry = {
-        let mut store = state.siws_challenges.lock().await;
-        store.retain(|_, v| *v > now);
-        store.remove(&req.nonce).ok_or(CloudError::Auth(
-            "invalid or expired SIWS challenge".to_string(),
-        ))?
-    };
-
-    if expected_expiry <= now {
-        return Err(CloudError::Auth("SIWS challenge expired".to_string()));
-    }
-    if !req.challenge.contains(&format!("Nonce: {}", req.nonce)) {
-        return Err(CloudError::Auth(
-            "SIWS challenge nonce mismatch".to_string(),
-        ));
-    }
+    let challenge_text = validate_and_consume_siws_challenge(
+        &state.siws_challenges,
+        &req.nonce,
+        &req.challenge,
+        now,
+    )
+    .await?;
 
     let sig_bytes =
         base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &req.signature)
             .map_err(|e| CloudError::Auth(format!("invalid SIWS signature encoding: {e}")))?;
-    verify_siws(&req.wallet_pubkey, req.challenge.as_bytes(), &sig_bytes)?;
+    verify_siws(&req.wallet_pubkey, challenge_text.as_bytes(), &sig_bytes)?;
 
     let existing = sqlx::query_as::<_, (Uuid, String, Option<String>, Option<String>)>(
         "SELECT id, COALESCE(tier, 'free'), email, display_name FROM users WHERE siws_pubkey = $1",
@@ -828,4 +943,169 @@ pub async fn refresh_token(
         &state.config.jwt_secret,
     )?;
     Ok(Json(attach_refresh(&state, token, user_id, false).await))
+}
+
+#[cfg(test)]
+mod siws_tests {
+    //! Tests for the H1 (challenge byte-binding) + M2 (consume-after-expiry)
+    //! SIWS fixes. These cover the pre-DB validation path only; they do not
+    //! exercise `verify_siws` (Ed25519 signature check) or the DB lookup,
+    //! since both happen *after* the invariants we care about here.
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn empty_store() -> crate::state::SiwsChallengeStore {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    /// Mint a challenge in the same shape `siws_challenge` produces and
+    /// stash it in the store. Returns the (nonce, challenge_text) pair.
+    async fn issue(
+        store: &crate::state::SiwsChallengeStore,
+        expires_at: i64,
+    ) -> (String, String) {
+        let nonce = "deadbeefcafebabe1234567890abcdef".to_string();
+        let challenge = format!(
+            "{SIWS_DOMAIN_PREFIX}Nonce: {nonce}\nIssued At: 1700000000\nExpires At: {expires_at}\nURI: https://ghola.xyz\nVersion: 1"
+        );
+        store.lock().await.insert(
+            nonce.clone(),
+            SiwsChallengeRecord {
+                nonce: nonce.clone(),
+                challenge_text: challenge.clone(),
+                expires_at,
+            },
+        );
+        (nonce, challenge)
+    }
+
+    #[tokio::test]
+    async fn matching_challenge_passes_and_consumes_nonce() {
+        let store = empty_store();
+        let now = 1_700_000_100;
+        let (nonce, challenge) = issue(&store, now + 60).await;
+
+        let out = validate_and_consume_siws_challenge(&store, &nonce, &challenge, now)
+            .await
+            .expect("matching challenge must succeed");
+        assert_eq!(out, challenge, "returned challenge must be the stored one");
+
+        // Single-use: the nonce is now gone.
+        assert!(
+            store.lock().await.get(&nonce).is_none(),
+            "successful verify must consume the nonce"
+        );
+    }
+
+    #[tokio::test]
+    async fn tampered_challenge_different_domain_rejected() {
+        let store = empty_store();
+        let now = 1_700_000_100;
+        let (nonce, _real) = issue(&store, now + 60).await;
+
+        // Attacker substitutes a different domain-prefixed message but
+        // keeps the same nonce ("Nonce: …") so the old `.contains` check
+        // would have happily accepted it.
+        let attacker_msg = format!(
+            "ghola/vault-unlock-v1 evil-did Nonce: {nonce}\nIssued At: 1700000000"
+        );
+
+        let err = validate_and_consume_siws_challenge(&store, &nonce, &attacker_msg, now)
+            .await
+            .expect_err("substituted-domain challenge must be rejected");
+        assert!(
+            matches!(err, CloudError::Auth(_)),
+            "expected auth error, got {err:?}"
+        );
+
+        // Byte-mismatch rejects BEFORE consuming the nonce: an honest user
+        // whose request was tampered in-flight can retry without re-issuing.
+        // (An attacker who knows the correct bytes is, by definition, no
+        // longer the substitution-MITM we're protecting against here.)
+        assert!(
+            store.lock().await.get(&nonce).is_some(),
+            "byte-mismatch must not consume the honest user's nonce"
+        );
+    }
+
+    #[tokio::test]
+    async fn tampered_challenge_extra_whitespace_rejected() {
+        let store = empty_store();
+        let now = 1_700_000_100;
+        let (nonce, real) = issue(&store, now + 60).await;
+
+        // One extra trailing newline — should fail byte-equal even though
+        // the human would call this "the same message".
+        let almost_real = format!("{real}\n");
+        let err = validate_and_consume_siws_challenge(&store, &nonce, &almost_real, now)
+            .await
+            .expect_err("whitespace-tampered challenge must be rejected");
+        assert!(matches!(err, CloudError::Auth(_)));
+    }
+
+    #[tokio::test]
+    async fn never_issued_nonce_rejected() {
+        let store = empty_store();
+        let now = 1_700_000_100;
+        let err = validate_and_consume_siws_challenge(
+            &store,
+            "deadbeef00000000000000000000ffff",
+            "anything",
+            now,
+        )
+        .await
+        .expect_err("unknown nonce must be rejected");
+        assert!(matches!(err, CloudError::Auth(_)));
+    }
+
+    #[tokio::test]
+    async fn expired_challenge_rejected_and_nonce_preserved() {
+        // M2: the original bug was that the nonce got `.remove`d before the
+        // expiry check, so an honest-but-slow client lost their nonce on
+        // their first attempt and had to re-issue. Verify that we now
+        // detect expiry without consuming.
+        let store = empty_store();
+        let now = 1_700_001_000;
+        let (nonce, challenge) = issue(&store, now - 1).await; // expired
+
+        let err = validate_and_consume_siws_challenge(&store, &nonce, &challenge, now)
+            .await
+            .expect_err("expired challenge must be rejected");
+        assert!(matches!(err, CloudError::Auth(_)));
+
+        // The bug fix's load-bearing assertion: the record is still in the
+        // store, untouched.
+        let still_there = store
+            .lock()
+            .await
+            .get(&nonce)
+            .cloned()
+            .expect("expired-but-rejected challenge must NOT be consumed");
+        assert_eq!(still_there.challenge_text, challenge);
+    }
+
+    #[tokio::test]
+    async fn stored_challenge_without_domain_prefix_rejected() {
+        // Defense-in-depth: if some other code path ever inserts into the
+        // store without going through `siws_challenge`, verify must refuse.
+        let store = empty_store();
+        let now = 1_700_000_100;
+        let nonce = "feedface00000000000000000000aaaa".to_string();
+        let bad_challenge = format!("not-a-siws-prefix Nonce: {nonce}");
+        store.lock().await.insert(
+            nonce.clone(),
+            SiwsChallengeRecord {
+                nonce: nonce.clone(),
+                challenge_text: bad_challenge.clone(),
+                expires_at: now + 60,
+            },
+        );
+
+        let err = validate_and_consume_siws_challenge(&store, &nonce, &bad_challenge, now)
+            .await
+            .expect_err("missing domain prefix must be rejected");
+        assert!(matches!(err, CloudError::Auth(_)));
+    }
 }
