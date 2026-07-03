@@ -191,9 +191,11 @@ pub async fn siws_sign_in(
         return Ok(Json(attach_refresh(&state, token, user_id, false).await));
     }
 
+    let synthetic_email = format!("{}.wallet@ghola.local", req.wallet_pubkey);
     let row = sqlx::query_as::<_, (Uuid, String)>(
-        "INSERT INTO users (siws_pubkey) VALUES ($1) RETURNING id, COALESCE(tier, 'free')",
+        "INSERT INTO users (email, siws_pubkey) VALUES ($1, $2) RETURNING id, COALESCE(tier, 'free')",
     )
+    .bind(&synthetic_email)
     .bind(&req.wallet_pubkey)
     .fetch_one(&state.db)
     .await?;
