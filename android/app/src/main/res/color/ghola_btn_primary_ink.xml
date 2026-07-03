@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Primary button ink: near-black on the accent fill, muted when disabled
+     (paired with the accent-plate disabled fill in @drawable/btn_primary). -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_enabled="false" android:color="@color/ghola_text_muted" />
+    <item android:color="@color/ghola_cta_ink" />
+</selector>

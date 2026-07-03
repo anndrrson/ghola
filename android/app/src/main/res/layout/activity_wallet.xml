@@ -69,14 +69,14 @@
                 android:textColor="@color/ghola_text_secondary"
                 android:textSize="15sp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/connectWalletButton"
                 style="@style/Ghola.Button.Primary"
                 android:layout_width="match_parent"
                 android:layout_height="56dp"
                 android:text="@string/wallet_connect_button" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/disconnectWalletButton"
                 style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
@@ -112,7 +112,7 @@
                 android:layout_marginBottom="16dp"
                 android:background="@color/ghola_border" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/advancedWalletButton"
                 style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
@@ -150,7 +150,7 @@
                     android:layout_marginBottom="8dp"
                     android:text="@string/wallet_proof_section_title" />
 
-                <Button
+                <androidx.appcompat.widget.AppCompatButton
                     android:id="@+id/verifySeekerButton"
                     style="@style/Ghola.Button.Secondary"
                     android:layout_width="match_parent"
@@ -186,7 +186,7 @@
                     android:textColor="@color/ghola_text_secondary"
                     android:textSize="13sp" />
 
-                <Button
+                <androidx.appcompat.widget.AppCompatButton
                     android:id="@+id/privateSelfTestButton"
                     style="@style/Ghola.Button.Secondary"
                     android:layout_width="match_parent"
@@ -221,7 +221,7 @@
                     android:textColorHint="@color/ghola_text_tertiary"
                     android:textSize="13sp" />
 
-                <Button
+                <androidx.appcompat.widget.AppCompatButton
                     android:id="@+id/createPrivateIntentButton"
                     style="@style/Ghola.Button.Secondary"
                     android:layout_width="match_parent"

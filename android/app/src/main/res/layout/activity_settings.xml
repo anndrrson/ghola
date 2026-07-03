@@ -71,7 +71,7 @@
         </RadioGroup>
 
         <!-- De-emphasized entry to the assistant chat (no longer a home/trade CTA). -->
-        <Button
+        <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/openAssistantButton"
             style="@style/Ghola.Button.Secondary"
             android:layout_width="match_parent"
@@ -224,7 +224,7 @@
                 android:visibility="gone"
                 android:layout_marginBottom="8dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/downloadButton"
                 style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
@@ -232,7 +232,7 @@
                 android:text="Download Model (~2.5 GB)"
                 android:layout_marginBottom="8dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/deleteModelButton"
                 style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
@@ -298,7 +298,7 @@
                 android:visibility="gone"
                 android:layout_marginBottom="8dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/litertNpuDownloadButton"
                 style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
@@ -306,7 +306,7 @@
                 android:text="@string/litert_npu_download_cta"
                 android:layout_marginBottom="8dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/litertNpuDeleteButton"
                 style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
@@ -366,7 +366,7 @@
 
             </com.google.android.material.textfield.TextInputLayout>
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/hfTokenSaveButton"
                 style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
@@ -374,7 +374,7 @@
                 android:text="@string/hf_token_save"
                 android:layout_marginBottom="8dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/hfTokenClearButton"
                 style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
@@ -419,7 +419,7 @@
             android:textColor="#4a5568"
             android:layout_marginBottom="8dp" />
 
-        <Button
+        <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/connectGoogleButton"
             style="@style/Ghola.Button.Secondary"
             android:layout_width="match_parent"
@@ -459,7 +459,7 @@
                 android:textColor="#8b95a8"
                 android:layout_marginBottom="8dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/enableA11yButton"
                 style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
@@ -500,7 +500,7 @@
                 android:textColor="#4a5568"
                 android:layout_marginBottom="8dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/openRelayButton"
                 style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
@@ -508,7 +508,7 @@
                 android:text="Open Relay Setup"
                 android:layout_marginBottom="8dp" />
 
-            <Button
+            <androidx.appcompat.widget.AppCompatButton
                 android:id="@+id/localHomeConnectButton"
                 style="@style/Ghola.Button.Secondary"
                 android:layout_width="match_parent"
@@ -536,7 +536,7 @@
             android:textColor="#4a5568"
             android:layout_marginBottom="8dp" />
 
-        <Button
+        <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/pairDeviceReceiveButton"
             style="@style/Ghola.Button.Secondary"
             android:layout_width="match_parent"
@@ -544,7 +544,7 @@
             android:text="This is my new phone"
             android:layout_marginBottom="8dp" />
 
-        <Button
+        <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/pairDeviceSendButton"
             style="@style/Ghola.Button.Secondary"
             android:layout_width="match_parent"
@@ -553,7 +553,7 @@
             android:layout_marginBottom="32dp" />
 
         <!-- Save Button -->
-        <Button
+        <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/saveButton"
             style="@style/Ghola.Button.Primary"
             android:layout_width="match_parent"

@@ -11,7 +11,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.bottomnavigation.BottomNavigationView
-import com.google.android.material.button.MaterialButton
+import androidx.appcompat.widget.AppCompatButton
 import xyz.ghola.app.BuildConfig
 import xyz.ghola.app.R
 import xyz.ghola.app.ai.SecureStorage
@@ -25,9 +25,9 @@ class MessagesActivity : AppCompatActivity() {
     private lateinit var statusBody: TextView
     private lateinit var walletLine: TextView
     private lateinit var inbox: LinearLayout
-    private lateinit var refreshButton: MaterialButton
-    private lateinit var newMessageButton: MaterialButton
-    private lateinit var copyInviteButton: MaterialButton
+    private lateinit var refreshButton: AppCompatButton
+    private lateinit var newMessageButton: AppCompatButton
+    private lateinit var copyInviteButton: AppCompatButton
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

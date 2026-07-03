@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Secondary button: surface "hardware key" — matches the unselected
-  preset chip (@drawable/bg_preset_amount): near-black lip, muted
-  rim-light, top-lit dark gradient face with a hairline border.
+  Unselected size preset: the surface version of the "hardware key" —
+  2dp near-black lip, 1dp muted rim-light, top-lit dark gradient face
+  with a hairline border. Same family as @drawable/btn_primary, in
+  surface tones.
 -->
 <ripple xmlns:android="http://schemas.android.com/apk/res/android"
     android:color="@color/ghola_accent_wash">
@@ -32,18 +33,21 @@
 
             <item>
                 <layer-list>
+                    <!-- Bottom lip -->
                     <item>
                         <shape android:shape="rectangle">
                             <corners android:radius="12dp" />
                             <solid android:color="#04060a" />
                         </shape>
                     </item>
+                    <!-- Top rim-light -->
                     <item android:bottom="2dp">
                         <shape android:shape="rectangle">
                             <corners android:radius="12dp" />
                             <solid android:color="#2c3750" />
                         </shape>
                     </item>
+                    <!-- Face -->
                     <item android:bottom="2dp" android:top="1dp">
                         <shape android:shape="rectangle">
                             <corners android:radius="12dp" />

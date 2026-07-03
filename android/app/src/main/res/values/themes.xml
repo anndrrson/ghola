@@ -108,14 +108,13 @@
         <item name="elevation">0dp</item>
     </style>
 
-    <!-- Onboarding CTA: hard-edged accent button. cornerRadius=0 matches the
-         home grid's trading-terminal aesthetic and keeps the screen feeling
-         deliberate, not retail. -->
+    <!-- Onboarding CTA: flat accent button on the shared 12dp radius so
+         every rectangular control in the app sits on one geometry. -->
     <style name="Ghola.PrimaryButton" parent="Widget.MaterialComponents.Button">
         <item name="android:textAllCaps">false</item>
         <item name="backgroundTint">@color/ghola_accent</item>
         <item name="android:textColor">@color/ghola_bg</item>
-        <item name="cornerRadius">0dp</item>
+        <item name="cornerRadius">12dp</item>
         <item name="iconTint">@color/ghola_bg</item>
         <item name="iconGravity">textStart</item>
         <item name="iconSize">20dp</item>
@@ -128,13 +127,13 @@
         <item name="android:paddingBottom">16dp</item>
     </style>
 
-    <!-- Dimensional buttons (plain AppCompat Button so the @drawable background
+    <!-- Flat buttons (plain AppCompat Button so the @drawable background
          renders — MaterialButton ignores custom backgrounds). The drawables
-         carry the top-lit gradient + beveled lip; these styles carry type,
-         sizing, and ink. -->
+         carry the flat fills, hairline borders, and press/disabled states;
+         these styles carry type, sizing, and ink. -->
     <style name="Ghola.Button.Primary" parent="Widget.AppCompat.Button">
         <item name="android:background">@drawable/btn_primary</item>
-        <item name="android:textColor">@color/ghola_cta_ink</item>
+        <item name="android:textColor">@color/ghola_btn_primary_ink</item>
         <item name="android:fontFamily">@font/geist</item>
         <item name="android:textFontWeight">600</item>
         <item name="android:textAllCaps">false</item>

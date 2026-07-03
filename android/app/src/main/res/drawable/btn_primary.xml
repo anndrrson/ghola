@@ -1,59 +1,76 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Dimensional primary (accent) button. A darker "lip" layer peeks out at the
-  bottom under a top-lit gradient face, so the button reads as raised. On press
-  the face drops onto the lip (1dp) for a tactile push-in. White ripple on top.
+  Primary (accent) button — the hero key. Construction, bottom to top:
+  a faint accent halo bleeding 2dp past the key, a 3dp deep-blue lip,
+  a 1dp rim-light along the top edge, and a three-stop top-lit gradient
+  face. Pressed drops the face onto the lip and dims it; disabled falls
+  back to the flat accent plate with muted ink
+  (@color/ghola_btn_primary_ink).
 -->
 <ripple xmlns:android="http://schemas.android.com/apk/res/android"
-    android:color="#33ffffff">
+    android:color="#26ffffff">
     <item>
         <selector>
 
-            <!-- Pressed: face pushed down onto the lip, slightly dimmer. -->
             <item android:state_pressed="true">
                 <layer-list>
-                    <item>
+                    <item android:left="2dp" android:right="2dp" android:top="2dp" android:bottom="2dp">
                         <shape android:shape="rectangle">
-                            <corners android:radius="16dp" />
-                            <solid android:color="@color/ghola_btn_accent_lip" />
+                            <corners android:radius="14dp" />
+                            <solid android:color="#124a78" />
                         </shape>
                     </item>
-                    <item android:bottom="1dp">
+                    <item android:left="2dp" android:right="2dp" android:top="2dp" android:bottom="3dp">
                         <shape android:shape="rectangle">
-                            <corners android:radius="16dp" />
+                            <corners android:radius="14dp" />
                             <gradient
                                 android:angle="270"
-                                android:startColor="@color/ghola_btn_accent_bottom"
-                                android:endColor="@color/ghola_btn_accent_lip" />
+                                android:startColor="#409df0"
+                                android:endColor="#2374c8" />
                         </shape>
                     </item>
                 </layer-list>
             </item>
 
-            <!-- Disabled: flat, muted. -->
             <item android:state_enabled="false">
                 <shape android:shape="rectangle">
-                    <corners android:radius="16dp" />
-                    <solid android:color="@color/ghola_accent_dim" />
+                    <corners android:radius="14dp" />
+                    <solid android:color="@color/ghola_accent_plate" />
+                    <stroke android:width="1dp" android:color="@color/ghola_border" />
                 </shape>
             </item>
 
-            <!-- Default: 3dp dark lip + top-lit gradient face. -->
             <item>
                 <layer-list>
+                    <!-- Ambient halo -->
                     <item>
                         <shape android:shape="rectangle">
                             <corners android:radius="16dp" />
-                            <solid android:color="@color/ghola_btn_accent_lip" />
+                            <solid android:color="#2e3da8ff" />
                         </shape>
                     </item>
-                    <item android:bottom="3dp">
+                    <!-- Bottom lip -->
+                    <item android:left="2dp" android:right="2dp" android:top="2dp" android:bottom="2dp">
                         <shape android:shape="rectangle">
-                            <corners android:radius="16dp" />
+                            <corners android:radius="14dp" />
+                            <solid android:color="#124a78" />
+                        </shape>
+                    </item>
+                    <!-- Top rim-light -->
+                    <item android:left="2dp" android:right="2dp" android:top="2dp" android:bottom="5dp">
+                        <shape android:shape="rectangle">
+                            <corners android:radius="14dp" />
+                            <solid android:color="#b5e3ff" />
+                        </shape>
+                    </item>
+                    <!-- Face -->
+                    <item android:left="2dp" android:right="2dp" android:top="3dp" android:bottom="5dp">
+                        <shape android:shape="rectangle">
+                            <corners android:radius="14dp" />
                             <gradient
                                 android:angle="270"
-                                android:startColor="@color/ghola_btn_accent_top"
-                                android:endColor="@color/ghola_btn_accent_bottom" />
+                                android:startColor="#8ed0ff"
+                                android:endColor="#2273cc" />
                         </shape>
                     </item>
                 </layer-list>

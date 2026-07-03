@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Selected size preset: a small accent key — same lip + rim-light +
+  gradient face recipe as @drawable/btn_primary, so the active preset
+  reads as a lit key on the same keyboard. Borderless: the old near-white
+  ring is what made this look like candy.
+-->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#26ffffff">
+    <item>
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <corners android:radius="12dp" />
+                    <solid android:color="#17527f" />
+                </shape>
+            </item>
+            <item android:bottom="2dp">
+                <shape android:shape="rectangle">
+                    <corners android:radius="12dp" />
+                    <solid android:color="#8ed3ff" />
+                </shape>
+            </item>
+            <item android:bottom="2dp" android:top="1dp">
+                <shape android:shape="rectangle">
+                    <corners android:radius="12dp" />
+                    <gradient
+                        android:angle="270"
+                        android:startColor="#5cb6fc"
+                        android:endColor="#2e8ee9" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+</ripple>
