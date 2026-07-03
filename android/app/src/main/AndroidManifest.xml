@@ -34,13 +34,11 @@
             </intent-filter>
         </activity>
 
-        <!-- Debug demo hook — lets adb broadcast trigger DemoScript directly
-             without needing to speak into the mic. Exported=true so the
-             component can be targeted from outside the app, but scoped to
-             xyz.ghola.app.DEMO action so nothing else can invoke it. -->
+        <!-- Local demo hook. Keep it non-exported in store builds so other
+             apps cannot trigger demo behavior by broadcast. -->
         <receiver
             android:name=".demo.DemoBroadcastReceiver"
-            android:exported="true">
+            android:exported="false">
             <intent-filter>
                 <action android:name="xyz.ghola.app.DEMO" />
             </intent-filter>
