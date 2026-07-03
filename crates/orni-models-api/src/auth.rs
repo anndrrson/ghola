@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
-use axum::http::header::AUTHORIZATION;
+use axum::http::HeaderMap;
 use axum::middleware::Next;
 use axum::response::Response;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -12,6 +12,87 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
+
+/// Cookie name carrying the session JWT in browser contexts.
+///
+/// Mobile and CLI clients keep using `Authorization: Bearer <jwt>`. Browser
+/// clients store the JWT in an HttpOnly cookie set by the auth endpoints;
+/// `extract_session_token` honours both, preferring the explicit header.
+pub const SESSION_COOKIE_NAME: &str = "ghola_session";
+
+/// Companion CSRF cookie + header for double-submit defense on cookie-
+/// authenticated non-GET requests. See thumper-cloud's auth.rs for the
+/// canonical comment — this file duplicates the same constants so the two
+/// services stay byte-compatible.
+///
+/// reason: deferred to common-auth crate
+pub const CSRF_COOKIE_NAME: &str = "ghola_csrf";
+pub const CSRF_HEADER_NAME: &str = "x-csrf-token";
+
+/// reason: deferred to common-auth crate — byte-identical to
+/// `thumper_cloud::auth::extract_session_token`. Keep them in sync.
+pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
+    if let Some(auth_val) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(bearer) = auth_val.strip_prefix("Bearer ") {
+            return Some(bearer.to_string());
+        }
+    }
+    extract_cookie_value(headers, SESSION_COOKIE_NAME)
+}
+
+pub fn extract_cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let raw = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())?;
+    for pair in raw.split(';') {
+        let pair = pair.trim();
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == name {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn cookies_secure() -> bool {
+    !matches!(
+        std::env::var("COOKIES_INSECURE_DEV").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
+}
+
+pub fn build_session_cookie(jwt: &str, max_age_seconds: i64) -> String {
+    let secure = if cookies_secure() { "; Secure" } else { "" };
+    let max_age = max_age_seconds.max(0);
+    format!(
+        "{SESSION_COOKIE_NAME}={jwt}; HttpOnly{secure}; SameSite=Lax; Path=/; Max-Age={max_age}"
+    )
+}
+
+pub fn build_csrf_cookie(csrf_token: &str, max_age_seconds: i64) -> String {
+    let secure = if cookies_secure() { "; Secure" } else { "" };
+    let max_age = max_age_seconds.max(0);
+    format!("{CSRF_COOKIE_NAME}={csrf_token}{secure}; SameSite=Lax; Path=/; Max-Age={max_age}")
+}
+
+pub fn build_clear_cookies() -> [String; 2] {
+    let secure = if cookies_secure() { "; Secure" } else { "" };
+    [
+        format!("{SESSION_COOKIE_NAME}=; HttpOnly{secure}; SameSite=Lax; Path=/; Max-Age=0"),
+        format!("{CSRF_COOKIE_NAME}={secure}; SameSite=Lax; Path=/; Max-Age=0"),
+    ]
+}
+
+pub fn generate_csrf_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 const NONCE_EXPIRY: Duration = Duration::from_secs(300); // 5 minutes
 const JWT_EXPIRY: u64 = 86400; // 24 hours
@@ -119,18 +200,67 @@ pub async fn auth_middleware(
     mut req: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    let auth_header = req
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| AppError::Unauthorized("Missing authorization header".into()))?;
+    // Accept the JWT from `Authorization: Bearer …` (mobile/CLI) or the
+    // `ghola_session` cookie (web). Header preferred when both exist.
+    let token = extract_session_token(req.headers())
+        .ok_or_else(|| AppError::Unauthorized("Missing session token".into()))?;
 
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| AppError::Unauthorized("Invalid authorization format".into()))?;
-
-    let claims = validate_jwt(token, &state.config.jwt_secret)?;
+    let claims = validate_jwt(&token, &state.config.jwt_secret)?;
     req.extensions_mut().insert(claims);
 
     Ok(next.run(req).await)
+}
+
+/// Double-submit CSRF middleware for cookie-authenticated requests. Mirror of
+/// `thumper_cloud::middleware::csrf_protect`. See that comment for the threat
+/// model.
+///
+/// reason: deferred to common-auth crate
+pub async fn csrf_protect(req: Request, next: Next) -> Result<Response, AppError> {
+    let method = req.method().clone();
+    if matches!(
+        method,
+        axum::http::Method::GET
+            | axum::http::Method::HEAD
+            | axum::http::Method::OPTIONS
+            | axum::http::Method::TRACE
+    ) {
+        return Ok(next.run(req).await);
+    }
+
+    let headers = req.headers();
+    let path = req.uri().path().to_string();
+
+    // Bypass auth endpoints (no CSRF token exists at sign-in time).
+    if path.starts_with("/api/auth/") {
+        return Ok(next.run(req).await);
+    }
+
+    let has_bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.starts_with("Bearer "))
+        .unwrap_or(false);
+    if has_bearer {
+        return Ok(next.run(req).await);
+    }
+
+    let session_present = extract_cookie_value(headers, SESSION_COOKIE_NAME).is_some();
+    if !session_present {
+        return Ok(next.run(req).await);
+    }
+
+    let cookie_token = extract_cookie_value(headers, CSRF_COOKIE_NAME);
+    let header_token = headers
+        .get(CSRF_HEADER_NAME)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    match (cookie_token.as_deref(), header_token.as_deref()) {
+        (Some(c), Some(h)) if !c.is_empty() && c == h => Ok(next.run(req).await),
+        _ => {
+            tracing::warn!(path = %path, "csrf check failed: cookie/header mismatch");
+            Err(AppError::Unauthorized("CSRF token missing or mismatched".into()))
+        }
+    }
 }

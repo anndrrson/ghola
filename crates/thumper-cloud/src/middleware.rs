@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::extract::Request;
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
@@ -84,6 +84,83 @@ impl RateLimiter {
         let mut windows = self.windows.lock().await;
         windows.retain(|_, (window, _)| *window >= now_minute - 1);
     }
+}
+
+/// Double-submit CSRF defense for cookie-authenticated requests.
+///
+/// Threat model: SameSite=Lax stops most cross-site POSTs, but not every
+/// case (top-level form submits, subdomain confusion, future browser
+/// quirks). When the request is cookie-authenticated (i.e. carries
+/// `ghola_session` but NO `Authorization: Bearer …`) we require the
+/// `X-CSRF-Token` header to match the `ghola_csrf` cookie that was set at
+/// session creation. Mismatched / missing → 403.
+///
+/// Bearer-authenticated callers (mobile, CLI, server-to-server, OpenAI-
+/// compat clients hitting `/v1/chat/completions` with an API key) bypass
+/// the check — they can't be forced into a cross-site request from a
+/// victim's browser.
+///
+/// The auth endpoints themselves (`/api/auth/*`) ALSO bypass because the
+/// CSRF token doesn't exist yet at sign-in time; SameSite=Lax + the
+/// `cross-site request rejected` origin check in the Next.js layer cover
+/// those routes.
+pub async fn csrf_protect(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    // Read-only methods don't need protection.
+    if matches!(
+        method,
+        axum::http::Method::GET
+            | axum::http::Method::HEAD
+            | axum::http::Method::OPTIONS
+            | axum::http::Method::TRACE
+    ) {
+        return next.run(request).await;
+    }
+
+    let headers = request.headers();
+    let path = request.uri().path().to_string();
+
+    // Bypass auth endpoints (no CSRF token exists at sign-in time).
+    if path.starts_with("/api/auth/") {
+        return next.run(request).await;
+    }
+
+    let has_bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.starts_with("Bearer "))
+        .unwrap_or(false);
+    if has_bearer {
+        // Bearer-auth callers (mobile/CLI/API-key) are not cookie-authed
+        // and therefore not in the CSRF attack surface.
+        return next.run(request).await;
+    }
+
+    let cookie_token =
+        crate::auth::extract_cookie_value(headers, crate::auth::CSRF_COOKIE_NAME);
+    let session_present =
+        crate::auth::extract_cookie_value(headers, crate::auth::SESSION_COOKIE_NAME).is_some();
+    if !session_present {
+        // No session → let the normal extractor return its own 401.
+        return next.run(request).await;
+    }
+
+    let header_token = headers
+        .get(crate::auth::CSRF_HEADER_NAME)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let valid = match (cookie_token.as_deref(), header_token.as_deref()) {
+        (Some(c), Some(h)) if !c.is_empty() && c == h => true,
+        _ => false,
+    };
+
+    if !valid {
+        tracing::warn!(path = %path, "csrf check failed: cookie/header mismatch");
+        return CloudError::Auth("CSRF token missing or mismatched".to_string()).into_response();
+    }
+
+    next.run(request).await
 }
 
 /// Middleware that tracks API usage for requests authenticated with API keys
@@ -182,16 +259,25 @@ pub async fn track_api_usage(state: AppState, request: Request, next: Next) -> R
     response
 }
 
-use axum::response::IntoResponse;
-
 fn extract_client_ip(request: &Request) -> Option<std::net::IpAddr> {
-    // Check x-forwarded-for first (behind reverse proxy)
+    // Check x-forwarded-for first (behind reverse proxy).
+    //
+    // Prefer the RIGHTMOST parseable address, not the leftmost. `X-Forwarded-For`
+    // is `client, proxy1, proxy2, ...` where each hop APPENDS the address it saw.
+    // The leftmost value is whatever the original client sent and is fully
+    // attacker-controlled — a client can inject `X-Forwarded-For: 1.2.3.4` to
+    // spoof its rate-limit identity. The rightmost entry is the one written by
+    // our own trusted proxy (the hop closest to us), so it is the least
+    // spoofable address available for rate-limiting.
     request
         .headers()
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse().ok())
+        .and_then(|s| {
+            s.split(',')
+                .rev()
+                .find_map(|part| part.trim().parse::<std::net::IpAddr>().ok())
+        })
         // Fallback: ConnectInfo (direct connection)
         .or_else(|| {
             request

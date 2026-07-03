@@ -2,7 +2,7 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::extract::{Request, State};
-use axum::http::header::AUTHORIZATION;
+use axum::http::HeaderMap;
 use axum::middleware::Next;
 use axum::response::Response;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -10,6 +10,82 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
+
+/// Cookie name carrying the session JWT in browser contexts. Mirrors
+/// thumper-cloud + orni-models-api so the SPA can use the same cookie across
+/// all three backends.
+///
+/// reason: deferred to common-auth crate — byte-identical to the constants in
+/// thumper-cloud and orni-models-api. Keep in sync.
+pub const SESSION_COOKIE_NAME: &str = "ghola_session";
+pub const CSRF_COOKIE_NAME: &str = "ghola_csrf";
+pub const CSRF_HEADER_NAME: &str = "x-csrf-token";
+
+/// Extract the session JWT from either `Authorization: Bearer …` (mobile/CLI)
+/// or the `ghola_session` cookie (browser). Header preferred when both are
+/// present.
+pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
+    if let Some(auth_val) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(bearer) = auth_val.strip_prefix("Bearer ") {
+            return Some(bearer.to_string());
+        }
+    }
+    extract_cookie_value(headers, SESSION_COOKIE_NAME)
+}
+
+pub fn extract_cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let raw = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())?;
+    for pair in raw.split(';') {
+        let pair = pair.trim();
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == name {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn cookies_secure() -> bool {
+    !matches!(
+        std::env::var("COOKIES_INSECURE_DEV").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
+}
+
+pub fn build_session_cookie(jwt: &str, max_age_seconds: i64) -> String {
+    let secure = if cookies_secure() { "; Secure" } else { "" };
+    let max_age = max_age_seconds.max(0);
+    format!(
+        "{SESSION_COOKIE_NAME}={jwt}; HttpOnly{secure}; SameSite=Lax; Path=/; Max-Age={max_age}"
+    )
+}
+
+pub fn build_csrf_cookie(csrf_token: &str, max_age_seconds: i64) -> String {
+    let secure = if cookies_secure() { "; Secure" } else { "" };
+    let max_age = max_age_seconds.max(0);
+    format!("{CSRF_COOKIE_NAME}={csrf_token}{secure}; SameSite=Lax; Path=/; Max-Age={max_age}")
+}
+
+pub fn build_clear_cookies() -> [String; 2] {
+    let secure = if cookies_secure() { "; Secure" } else { "" };
+    [
+        format!("{SESSION_COOKIE_NAME}=; HttpOnly{secure}; SameSite=Lax; Path=/; Max-Age=0"),
+        format!("{CSRF_COOKIE_NAME}={secure}; SameSite=Lax; Path=/; Max-Age=0"),
+    ]
+}
+
+pub fn generate_csrf_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 const JWT_EXPIRY: u64 = 2_592_000; // 30 days, matches thumper-cloud
 pub const REFRESH_TOKEN_TTL_SECONDS: u64 = 180 * 86400; // 180 days
@@ -174,22 +250,71 @@ pub fn verify_siws(wallet_pubkey: &str, message: &[u8], signature: &[u8]) -> App
         .map_err(|_| AppError::Unauthorized("signature verification failed".into()))
 }
 
+/// Double-submit CSRF middleware for cookie-authenticated requests. Mirror of
+/// the helpers in thumper-cloud and orni-models-api. See thumper-cloud's
+/// implementation for the threat model.
+///
+/// reason: deferred to common-auth crate
+pub async fn csrf_protect(req: Request, next: Next) -> Result<Response, AppError> {
+    let method = req.method().clone();
+    if matches!(
+        method,
+        axum::http::Method::GET
+            | axum::http::Method::HEAD
+            | axum::http::Method::OPTIONS
+            | axum::http::Method::TRACE
+    ) {
+        return Ok(next.run(req).await);
+    }
+
+    let headers = req.headers();
+    let path = req.uri().path().to_string();
+
+    // Bypass sign-in endpoints (no CSRF token exists at that point).
+    if path.starts_with("/v1/auth/") {
+        return Ok(next.run(req).await);
+    }
+
+    let has_bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.starts_with("Bearer "))
+        .unwrap_or(false);
+    if has_bearer {
+        return Ok(next.run(req).await);
+    }
+
+    let session_present = extract_cookie_value(headers, SESSION_COOKIE_NAME).is_some();
+    if !session_present {
+        return Ok(next.run(req).await);
+    }
+
+    let cookie_token = extract_cookie_value(headers, CSRF_COOKIE_NAME);
+    let header_token = headers
+        .get(CSRF_HEADER_NAME)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    match (cookie_token.as_deref(), header_token.as_deref()) {
+        (Some(c), Some(h)) if !c.is_empty() && c == h => Ok(next.run(req).await),
+        _ => {
+            tracing::warn!(path = %path, "csrf check failed: cookie/header mismatch");
+            Err(AppError::Unauthorized("CSRF token missing or mismatched".into()))
+        }
+    }
+}
+
 pub async fn auth_middleware(
     State(state): State<std::sync::Arc<crate::state::AppState>>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    let auth_header = req
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| AppError::Unauthorized("Missing authorization header".into()))?;
+    // Accept the JWT from `Authorization: Bearer …` (mobile/CLI) or the
+    // `ghola_session` cookie (web). Header preferred when both exist.
+    let token = extract_session_token(req.headers())
+        .ok_or_else(|| AppError::Unauthorized("Missing session token".into()))?;
 
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| AppError::Unauthorized("Invalid authorization format".into()))?;
-
-    let claims = validate_jwt(token, &state.config.jwt_secret)?;
+    let claims = validate_jwt(&token, &state.config.jwt_secret)?;
 
     // Enforce daily usage limits based on subscription tier
     let user_id: uuid::Uuid = claims
@@ -230,13 +355,9 @@ pub async fn check_bulk_auth(
     headers: &axum::http::HeaderMap,
     state: &crate::state::AppState,
 ) -> bool {
-    // Check Bearer JWT
-    if let Some(token) = headers
-        .get(AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-    {
-        if validate_jwt(token, &state.config.jwt_secret).is_ok() {
+    // Check Bearer JWT (or `ghola_session` cookie equivalent)
+    if let Some(token) = extract_session_token(headers) {
+        if validate_jwt(&token, &state.config.jwt_secret).is_ok() {
             return true;
         }
     }

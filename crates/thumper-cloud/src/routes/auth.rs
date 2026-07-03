@@ -1,14 +1,74 @@
 use axum::extract::State;
+use axum::http::{header, HeaderMap, HeaderValue};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::Utc;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::{create_jwt, verify_apple_token, verify_google_token, verify_siws};
+use crate::auth::{
+    build_csrf_cookie, build_session_cookie, create_jwt, extract_session_token,
+    generate_csrf_token, verify_apple_token, verify_google_token, verify_jwt, verify_siws,
+};
 use crate::error::CloudError;
 use crate::privacy::log_id;
-use crate::state::AppState;
+use crate::state::{AppState, SiwsChallengeRecord};
+
+/// Leading line of every server-issued SIWS challenge. Defense-in-depth: even
+/// if the issuance path is ever changed/bypassed, the verify path will refuse
+/// to accept a stored challenge that does not start with this domain prefix,
+/// so we cannot be tricked into accepting a wallet signature minted for some
+/// other ghola signing domain (e.g. `ghola/vault-unlock-v1 …`).
+///
+/// MUST stay byte-equal to `SigningDomains.SIWS_SIGN_IN` on the Android side
+/// (see `android/app/src/main/java/xyz/ghola/app/crypto/SigningDomains.kt`).
+const SIWS_DOMAIN_PREFIX: &str = "Sign in to Ghola\n";
+
+const INTERNAL_PROXY_HEADER: &str = "x-ghola-internal-proxy-secret";
+
+/// Verify the request came from the trusted web proxy by comparing the
+/// `X-Ghola-Internal-Proxy-Secret` header against `GHOLA_INTERNAL_PROXY_SECRET`
+/// in constant time. Fails CLOSED: if the env var is unset/empty the endpoint
+/// rejects all callers (so a misconfigured deploy cannot silently expose the
+/// account-takeover path).
+///
+/// TODO(security): replace this shared-secret gate with full server-side X
+/// OAuth verification — exchange the OAuth code (or validate the access token
+/// via `GET https://api.x.com/2/users/me`) inside thumper-cloud so the backend
+/// no longer trusts a client-asserted `twitter_id` relayed by the proxy.
+fn require_internal_proxy(headers: &HeaderMap) -> Result<(), CloudError> {
+    let expected = std::env::var("GHOLA_INTERNAL_PROXY_SECRET").unwrap_or_default();
+    if expected.trim().is_empty() {
+        tracing::error!(
+            "GHOLA_INTERNAL_PROXY_SECRET unset; refusing /api/auth/twitter (fail-closed)"
+        );
+        return Err(CloudError::Unauthorized);
+    }
+
+    let provided = headers
+        .get(INTERNAL_PROXY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+        tracing::warn!("rejected /api/auth/twitter: missing or invalid internal proxy secret");
+        return Err(CloudError::Unauthorized);
+    }
+    Ok(())
+}
+
+/// Constant-time byte comparison (length-equal AND content-equal).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
 
 #[derive(Deserialize)]
 pub struct GoogleSignInRequest {
@@ -118,6 +178,36 @@ async fn attach_refresh(
     }
 }
 
+/// Wrap an `AuthResponse` so browser clients receive the JWT in an HttpOnly
+/// `ghola_session` cookie *and* a sibling `ghola_csrf` token. The JSON body
+/// still contains `token`/`refresh_token` for mobile + CLI consumers.
+///
+/// Cookie attributes (see `crate::auth::build_session_cookie`):
+///   HttpOnly  — JS in the page (any XSS) cannot read the JWT
+///   Secure    — never sent over plain HTTP (overridable for dev)
+///   SameSite=Lax — blocks the bulk of cross-site CSRF; the CSRF token
+///                  cookie + `X-CSRF-Token` header handle the residue
+///   Path=/    — every route shares one cookie
+///   Max-Age   — matches the JWT `exp`
+fn auth_response_with_cookies(payload: AuthResponse) -> Response {
+    let now = Utc::now().timestamp();
+    let session_max_age = payload.exp.map(|e| (e - now).max(0)).unwrap_or(60 * 60 * 24 * 30);
+
+    let session_cookie = build_session_cookie(&payload.token, session_max_age);
+    let csrf_token = generate_csrf_token();
+    let csrf_cookie = build_csrf_cookie(&csrf_token, session_max_age);
+
+    let mut response = Json(payload).into_response();
+    let headers = response.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&session_cookie) {
+        headers.append(header::SET_COOKIE, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&csrf_cookie) {
+        headers.append(header::SET_COOKIE, v);
+    }
+    response
+}
+
 /// GET /api/auth/siws/challenge
 pub async fn siws_challenge(
     State(state): State<AppState>,
@@ -129,12 +219,26 @@ pub async fn siws_challenge(
     // security. 5 minutes was demonstrably too tight in field testing.
     let expires_at = ts + 900;
     let challenge = format!(
-        "Sign in to Ghola\nNonce: {nonce}\nIssued At: {ts}\nExpires At: {expires_at}\nURI: https://ghola.xyz\nVersion: 1"
+        "{SIWS_DOMAIN_PREFIX}Nonce: {nonce}\nIssued At: {ts}\nExpires At: {expires_at}\nURI: https://ghola.xyz\nVersion: 1"
     );
 
+    // Defensive invariant: the format string above MUST start with the domain
+    // prefix. If a future refactor breaks that, the verify path will reject
+    // every challenge — and so will this debug_assert in test builds.
+    debug_assert!(
+        challenge.starts_with(SIWS_DOMAIN_PREFIX),
+        "minted SIWS challenge does not start with domain prefix"
+    );
+
+    let record = SiwsChallengeRecord {
+        nonce: nonce.clone(),
+        challenge_text: challenge.clone(),
+        expires_at,
+    };
+
     let mut store = state.siws_challenges.lock().await;
-    store.retain(|_, v| *v > ts);
-    store.insert(nonce.clone(), expires_at);
+    store.retain(|_, v| v.expires_at > ts);
+    store.insert(nonce.clone(), record);
     drop(store);
 
     Ok(Json(SiwsChallengeResponse {
@@ -145,33 +249,124 @@ pub async fn siws_challenge(
     }))
 }
 
+/// Pre-DB SIWS validation: lookup the issued challenge by nonce, enforce
+/// expiry / domain-prefix / byte-equal binding, then consume the nonce.
+///
+/// Extracted from `siws_sign_in` so it can be unit-tested without a Postgres
+/// connection — all four H1/M2 invariants live here.
+///
+/// Returns the stored challenge bytes that the caller should pass to
+/// `verify_siws`. Using the stored bytes (not the client bytes) keeps "what
+/// did the signature actually authenticate?" unambiguous, even though they
+/// are byte-equal on the success path.
+async fn validate_and_consume_siws_challenge(
+    store: &crate::state::SiwsChallengeStore,
+    nonce: &str,
+    client_challenge: &str,
+    now: i64,
+) -> Result<String, CloudError> {
+    // (1) Peek-only first: we must NOT remove the record before we've
+    // validated expiry. Otherwise an expired-challenge request would
+    // silently burn the client's nonce, forcing them to re-issue even
+    // though the call was an honest "I was slow" not "I'm an attacker".
+    let stored: SiwsChallengeRecord = {
+        let store = store.lock().await;
+        store
+            .get(nonce)
+            .cloned()
+            .ok_or(CloudError::Auth(
+                "invalid or expired SIWS challenge".to_string(),
+            ))?
+    };
+
+    // (2) Expiry check BEFORE consume. The record stays in the store; the
+    // periodic `retain(|_, v| v.expires_at > now)` in `siws_challenge` will
+    // garbage-collect it on the next issuance call. (M2 fix.)
+    if stored.expires_at <= now {
+        return Err(CloudError::Auth("SIWS challenge expired".to_string()));
+    }
+
+    // (3) Defense-in-depth: the stored challenge must carry our domain
+    // prefix. Protects against any future code path that inserts into the
+    // store without going through `siws_challenge`.
+    if !stored.challenge_text.starts_with(SIWS_DOMAIN_PREFIX) {
+        tracing::error!(
+            "stored SIWS challenge missing domain prefix; refusing verify (issuance bug)"
+        );
+        return Err(CloudError::Auth(
+            "invalid SIWS challenge (server)".to_string(),
+        ));
+    }
+
+    // (4) Byte-equal binding. This is the H1 fix: previously the server only
+    // checked `req.challenge.contains("Nonce: {nonce}")`, which let a MITM
+    // substitute arbitrary signed bytes. We now require the client to echo
+    // back the *exact* bytes we minted — extra whitespace, a different
+    // domain prefix, anything that mutates a single byte all fail here.
+    if client_challenge.as_bytes() != stored.challenge_text.as_bytes() {
+        tracing::warn!(
+            nonce = %nonce,
+            client_len = client_challenge.len(),
+            server_len = stored.challenge_text.len(),
+            "SIWS challenge byte mismatch — possible MITM substitution, rejecting"
+        );
+        return Err(CloudError::Auth(
+            "SIWS challenge does not match issued challenge".to_string(),
+        ));
+    }
+
+    // (5) Now consume the nonce — single-use from here on. Reaching this
+    // point means the caller has the *exact* server-issued bytes; if their
+    // signature fails downstream they don't get unlimited retries on the
+    // same nonce. (Byte-mismatch above intentionally does NOT consume:
+    // that protects honest users whose request was tampered in flight.)
+    {
+        let mut store = store.lock().await;
+        store.retain(|_, v| v.expires_at > now);
+        if store.remove(nonce).is_none() {
+            // Race: someone else consumed it between our peek and now.
+            return Err(CloudError::Auth(
+                "invalid or expired SIWS challenge".to_string(),
+            ));
+        }
+    }
+
+    Ok(stored.challenge_text)
+}
+
 /// POST /api/auth/siws
+///
+/// The verify path enforces, in order:
+///   1. A matching record exists in the issuance store for `req.nonce`
+///      (peek, do NOT consume yet — see M2 below).
+///   2. The stored challenge has not expired. M2 fix: if it has, leave the
+///      record in place so an honest client racing the clock against a
+///      retry doesn't double-consume their nonce on the expired call.
+///   3. The stored challenge starts with the SIWS domain prefix
+///      (defense-in-depth against issuance bypass).
+///   4. The client-supplied `challenge` is byte-equal to the stored
+///      `challenge_text`. Closes the H1 MITM substitution flaw: an attacker
+///      who intercepts the issued challenge cannot get the user to sign a
+///      different domain-prefixed message and have us still mint a session.
+///   5. Only then do we consume the nonce (single-use) and verify the
+///      Ed25519 signature.
 pub async fn siws_sign_in(
     State(state): State<AppState>,
     Json(req): Json<SiwsSignInRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
     let now = Utc::now().timestamp();
-    let expected_expiry = {
-        let mut store = state.siws_challenges.lock().await;
-        store.retain(|_, v| *v > now);
-        store.remove(&req.nonce).ok_or(CloudError::Auth(
-            "invalid or expired SIWS challenge".to_string(),
-        ))?
-    };
-
-    if expected_expiry <= now {
-        return Err(CloudError::Auth("SIWS challenge expired".to_string()));
-    }
-    if !req.challenge.contains(&format!("Nonce: {}", req.nonce)) {
-        return Err(CloudError::Auth(
-            "SIWS challenge nonce mismatch".to_string(),
-        ));
-    }
+    let challenge_text = validate_and_consume_siws_challenge(
+        &state.siws_challenges,
+        &req.nonce,
+        &req.challenge,
+        now,
+    )
+    .await?;
 
     let sig_bytes =
         base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &req.signature)
             .map_err(|e| CloudError::Auth(format!("invalid SIWS signature encoding: {e}")))?;
-    verify_siws(&req.wallet_pubkey, req.challenge.as_bytes(), &sig_bytes)?;
+    verify_siws(&req.wallet_pubkey, challenge_text.as_bytes(), &sig_bytes)?;
 
     let existing = sqlx::query_as::<_, (Uuid, String, Option<String>, Option<String>)>(
         "SELECT id, COALESCE(tier, 'free'), email, display_name FROM users WHERE siws_pubkey = $1",
@@ -188,7 +383,7 @@ pub async fn siws_sign_in(
             &tier,
             &state.config.jwt_secret,
         )?;
-        return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
     }
 
     let row = sqlx::query_as::<_, (Uuid, String)>(
@@ -201,14 +396,14 @@ pub async fn siws_sign_in(
 
     auto_provision_wallet(state.clone(), user_id);
     let token = create_jwt(user_id, None, None, &tier, &state.config.jwt_secret)?;
-    Ok(Json(attach_refresh(&state, token, user_id, true).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, true).await))
 }
 
 /// POST /api/auth/google
 pub async fn google_sign_in(
     State(state): State<AppState>,
     Json(req): Json<GoogleSignInRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
     let google_client_id = state.config.google_client_id.as_deref().ok_or_else(|| {
         tracing::error!("Google sign-in attempted but GOOGLE_CLIENT_ID not configured");
         CloudError::ServiceUnavailable("Google sign-in is not configured".into())
@@ -252,7 +447,7 @@ pub async fn google_sign_in(
             &tier,
             &state.config.jwt_secret,
         )?;
-        return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
     }
 
     tracing::info!("google auth: no google_id match, checking email");
@@ -283,7 +478,7 @@ pub async fn google_sign_in(
             &tier,
             &state.config.jwt_secret,
         )?;
-        return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
     }
 
     tracing::info!("google auth: creating new user");
@@ -308,14 +503,14 @@ pub async fn google_sign_in(
         &tier,
         &state.config.jwt_secret,
     )?;
-    Ok(Json(attach_refresh(&state, token, user_id, true).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, true).await))
 }
 
 /// POST /api/auth/apple
 pub async fn apple_sign_in(
     State(state): State<AppState>,
     Json(req): Json<AppleSignInRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
     let apple_client_id = state.config.apple_client_id.as_deref().ok_or_else(|| {
         tracing::error!("Apple sign-in attempted but APPLE_CLIENT_ID not configured");
         CloudError::ServiceUnavailable("Sign in with Apple is not configured".into())
@@ -363,7 +558,7 @@ pub async fn apple_sign_in(
             &tier,
             &state.config.jwt_secret,
         )?;
-        return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
     }
 
     // 2. Email already in DB from another auth method? Link Apple to that account.
@@ -392,7 +587,7 @@ pub async fn apple_sign_in(
                 &tier,
                 &state.config.jwt_secret,
             )?;
-            return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+            return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
         }
     }
 
@@ -415,14 +610,17 @@ pub async fn apple_sign_in(
         &tier,
         &state.config.jwt_secret,
     )?;
-    Ok(Json(attach_refresh(&state, token, user_id, true).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, true).await))
 }
 
 /// POST /api/auth/twitter
 pub async fn twitter_sign_in(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<TwitterSignInRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
+    require_internal_proxy(&headers)?;
+
     let display = req.name.clone().or_else(|| req.username.clone());
 
     // 1. Returning user? (already linked Twitter)
@@ -453,7 +651,7 @@ pub async fn twitter_sign_in(
             &tier,
             &state.config.jwt_secret,
         )?;
-        return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
     }
 
     // 2. Email already in DB from another auth method? Link Twitter to that account.
@@ -482,7 +680,7 @@ pub async fn twitter_sign_in(
                 &tier,
                 &state.config.jwt_secret,
             )?;
-            return Ok(Json(attach_refresh(&state, token, user_id, false).await));
+            return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await));
         }
     }
 
@@ -505,7 +703,7 @@ pub async fn twitter_sign_in(
         &tier,
         &state.config.jwt_secret,
     )?;
-    Ok(Json(attach_refresh(&state, token, user_id, true).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, true).await))
 }
 
 // ---------------------------------------------------------------------------
@@ -529,7 +727,7 @@ pub struct EmailSignInRequest {
 pub async fn email_sign_up(
     State(state): State<AppState>,
     Json(req): Json<EmailSignUpRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
     if req.email.is_empty() || !req.email.contains('@') {
         return Err(CloudError::BadRequest("invalid email".to_string()));
     }
@@ -577,14 +775,14 @@ pub async fn email_sign_up(
         &state.config.jwt_secret,
     )?;
 
-    Ok(Json(attach_refresh(&state, token, user_id, true).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, true).await))
 }
 
 /// POST /api/auth/email/signin
 pub async fn email_sign_in(
     State(state): State<AppState>,
     Json(req): Json<EmailSignInRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
     let row = sqlx::query_as::<_, (Uuid, String, Option<String>, Option<String>)>(
         "SELECT id, COALESCE(tier, 'free'), password_hash, display_name FROM users WHERE email = $1",
     )
@@ -622,7 +820,7 @@ pub async fn email_sign_in(
         &state.config.jwt_secret,
     )?;
 
-    Ok(Json(attach_refresh(&state, token, user_id, false).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await))
 }
 
 /// Hash a password with PBKDF2-HMAC-SHA256 (600k iterations) using a per-user random salt.
@@ -769,7 +967,7 @@ fn auto_provision_wallet(_state: AppState, user_id: Uuid) {
 pub async fn refresh_token(
     State(state): State<AppState>,
     Json(req): Json<RefreshRequest>,
-) -> Result<Json<AuthResponse>, CloudError> {
+) -> Result<Response, CloudError> {
     // Prefer refresh_token if present.
     let user_id = if let Some(rt) = req.refresh_token.as_deref() {
         let (new_refresh, new_refresh_exp, user_id) =
@@ -792,7 +990,7 @@ pub async fn refresh_token(
             &state.config.jwt_secret,
         )?;
         let exp = jwt_exp(&access, &state.config.jwt_secret);
-        return Ok(Json(AuthResponse {
+        return Ok(auth_response_with_cookies(AuthResponse {
             token: access,
             user_id,
             is_new_user: false,
@@ -827,5 +1025,229 @@ pub async fn refresh_token(
         &tier,
         &state.config.jwt_secret,
     )?;
-    Ok(Json(attach_refresh(&state, token, user_id, false).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, false).await))
+}
+
+/// POST /api/auth/logout
+///
+/// Clears the `ghola_session` and `ghola_csrf` cookies. Idempotent — safe to
+/// call with or without a valid session. The JSON body intentionally carries
+/// no information (mobile/CLI clients can also call it, but their primary
+/// action is just to drop the local token).
+pub async fn logout() -> Response {
+    let mut response = Json(serde_json::json!({"ok": true})).into_response();
+    let headers = response.headers_mut();
+    for cookie in crate::auth::build_clear_cookies() {
+        if let Ok(v) = HeaderValue::from_str(&cookie) {
+            headers.append(header::SET_COOKIE, v);
+        }
+    }
+    response
+}
+
+/// POST /api/auth/refresh-cookie
+///
+/// One-shot migration endpoint: the SPA's pre-cookie deploy stored the JWT in
+/// `localStorage`. On the first page load after the migration, the SPA reads
+/// the JWT from localStorage, posts it here, and we re-emit the same JWT
+/// (still valid for its original lifetime) as a proper `Set-Cookie`. The SPA
+/// then deletes the localStorage entry. Once everyone has refreshed, this
+/// endpoint can be removed — track via a feature-flag / deprecation timeline.
+///
+/// Accepts the JWT either in the `Authorization: Bearer …` header (preferred)
+/// or in the JSON body as `{ "token": "…" }`. Returns the same shape as a
+/// normal sign-in response.
+///
+/// SECURITY: this endpoint only *re-encodes the holder's existing JWT as a
+/// cookie*; it does not mint new tokens. The caller must already prove they
+/// hold a valid JWT (and we accept the body form because the localStorage
+/// reading path runs before the fetch wrapper attaches Authorization
+/// automatically — keeps the migration code path small).
+pub async fn refresh_cookie(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Option<Json<serde_json::Value>>,
+) -> Result<Response, CloudError> {
+    let header_token = extract_session_token(&headers);
+    let body_token = body
+        .and_then(|Json(v)| v.get("token").and_then(|t| t.as_str().map(String::from)));
+    let token = header_token
+        .or(body_token)
+        .ok_or_else(|| CloudError::Auth("missing JWT in header or body".to_string()))?;
+
+    let claims = verify_jwt(&token, &state.config.jwt_secret)?;
+    let payload = AuthResponse {
+        token,
+        user_id: claims.sub,
+        is_new_user: false,
+        exp: Some(claims.exp),
+        refresh_token: None,
+        refresh_exp: None,
+    };
+    Ok(auth_response_with_cookies(payload))
+}
+
+#[cfg(test)]
+mod siws_tests {
+    //! Tests for the H1 (challenge byte-binding) + M2 (consume-after-expiry)
+    //! SIWS fixes. These cover the pre-DB validation path only; they do not
+    //! exercise `verify_siws` (Ed25519 signature check) or the DB lookup,
+    //! since both happen *after* the invariants we care about here.
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn empty_store() -> crate::state::SiwsChallengeStore {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    /// Mint a challenge in the same shape `siws_challenge` produces and
+    /// stash it in the store. Returns the (nonce, challenge_text) pair.
+    async fn issue(
+        store: &crate::state::SiwsChallengeStore,
+        expires_at: i64,
+    ) -> (String, String) {
+        let nonce = "deadbeefcafebabe1234567890abcdef".to_string();
+        let challenge = format!(
+            "{SIWS_DOMAIN_PREFIX}Nonce: {nonce}\nIssued At: 1700000000\nExpires At: {expires_at}\nURI: https://ghola.xyz\nVersion: 1"
+        );
+        store.lock().await.insert(
+            nonce.clone(),
+            SiwsChallengeRecord {
+                nonce: nonce.clone(),
+                challenge_text: challenge.clone(),
+                expires_at,
+            },
+        );
+        (nonce, challenge)
+    }
+
+    #[tokio::test]
+    async fn matching_challenge_passes_and_consumes_nonce() {
+        let store = empty_store();
+        let now = 1_700_000_100;
+        let (nonce, challenge) = issue(&store, now + 60).await;
+
+        let out = validate_and_consume_siws_challenge(&store, &nonce, &challenge, now)
+            .await
+            .expect("matching challenge must succeed");
+        assert_eq!(out, challenge, "returned challenge must be the stored one");
+
+        // Single-use: the nonce is now gone.
+        assert!(
+            store.lock().await.get(&nonce).is_none(),
+            "successful verify must consume the nonce"
+        );
+    }
+
+    #[tokio::test]
+    async fn tampered_challenge_different_domain_rejected() {
+        let store = empty_store();
+        let now = 1_700_000_100;
+        let (nonce, _real) = issue(&store, now + 60).await;
+
+        // Attacker substitutes a different domain-prefixed message but
+        // keeps the same nonce ("Nonce: …") so the old `.contains` check
+        // would have happily accepted it.
+        let attacker_msg = format!(
+            "ghola/vault-unlock-v1 evil-did Nonce: {nonce}\nIssued At: 1700000000"
+        );
+
+        let err = validate_and_consume_siws_challenge(&store, &nonce, &attacker_msg, now)
+            .await
+            .expect_err("substituted-domain challenge must be rejected");
+        assert!(
+            matches!(err, CloudError::Auth(_)),
+            "expected auth error, got {err:?}"
+        );
+
+        // Byte-mismatch rejects BEFORE consuming the nonce: an honest user
+        // whose request was tampered in-flight can retry without re-issuing.
+        // (An attacker who knows the correct bytes is, by definition, no
+        // longer the substitution-MITM we're protecting against here.)
+        assert!(
+            store.lock().await.get(&nonce).is_some(),
+            "byte-mismatch must not consume the honest user's nonce"
+        );
+    }
+
+    #[tokio::test]
+    async fn tampered_challenge_extra_whitespace_rejected() {
+        let store = empty_store();
+        let now = 1_700_000_100;
+        let (nonce, real) = issue(&store, now + 60).await;
+
+        // One extra trailing newline — should fail byte-equal even though
+        // the human would call this "the same message".
+        let almost_real = format!("{real}\n");
+        let err = validate_and_consume_siws_challenge(&store, &nonce, &almost_real, now)
+            .await
+            .expect_err("whitespace-tampered challenge must be rejected");
+        assert!(matches!(err, CloudError::Auth(_)));
+    }
+
+    #[tokio::test]
+    async fn never_issued_nonce_rejected() {
+        let store = empty_store();
+        let now = 1_700_000_100;
+        let err = validate_and_consume_siws_challenge(
+            &store,
+            "deadbeef00000000000000000000ffff",
+            "anything",
+            now,
+        )
+        .await
+        .expect_err("unknown nonce must be rejected");
+        assert!(matches!(err, CloudError::Auth(_)));
+    }
+
+    #[tokio::test]
+    async fn expired_challenge_rejected_and_nonce_preserved() {
+        // M2: the original bug was that the nonce got `.remove`d before the
+        // expiry check, so an honest-but-slow client lost their nonce on
+        // their first attempt and had to re-issue. Verify that we now
+        // detect expiry without consuming.
+        let store = empty_store();
+        let now = 1_700_001_000;
+        let (nonce, challenge) = issue(&store, now - 1).await; // expired
+
+        let err = validate_and_consume_siws_challenge(&store, &nonce, &challenge, now)
+            .await
+            .expect_err("expired challenge must be rejected");
+        assert!(matches!(err, CloudError::Auth(_)));
+
+        // The bug fix's load-bearing assertion: the record is still in the
+        // store, untouched.
+        let still_there = store
+            .lock()
+            .await
+            .get(&nonce)
+            .cloned()
+            .expect("expired-but-rejected challenge must NOT be consumed");
+        assert_eq!(still_there.challenge_text, challenge);
+    }
+
+    #[tokio::test]
+    async fn stored_challenge_without_domain_prefix_rejected() {
+        // Defense-in-depth: if some other code path ever inserts into the
+        // store without going through `siws_challenge`, verify must refuse.
+        let store = empty_store();
+        let now = 1_700_000_100;
+        let nonce = "feedface00000000000000000000aaaa".to_string();
+        let bad_challenge = format!("not-a-siws-prefix Nonce: {nonce}");
+        store.lock().await.insert(
+            nonce.clone(),
+            SiwsChallengeRecord {
+                nonce: nonce.clone(),
+                challenge_text: bad_challenge.clone(),
+                expires_at: now + 60,
+            },
+        );
+
+        let err = validate_and_consume_siws_challenge(&store, &nonce, &bad_challenge, now)
+            .await
+            .expect_err("missing domain prefix must be rejected");
+        assert!(matches!(err, CloudError::Auth(_)));
+    }
 }

@@ -128,6 +128,9 @@ async fn main() -> anyhow::Result<()> {
             HeaderName::from_static("content-type"),
             HeaderName::from_static("authorization"),
             HeaderName::from_static("x-service-key"),
+            // Double-submit CSRF token sent by browser SPA on non-GET
+            // cookie-authenticated requests.
+            HeaderName::from_static("x-csrf-token"),
         ])
         .allow_credentials(true);
 
@@ -148,6 +151,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/auth/siws", post(routes::auth::siws_sign_in))
         .route("/v1/auth/google", post(routes::auth::google_sign_in))
         .route("/v1/auth/refresh", post(routes::auth::refresh_token))
+        // Cookie-only logout — clears `ghola_session` + `ghola_csrf`.
+        .route("/v1/auth/logout", post(routes::auth::logout))
+        // One-shot migration: re-emit Set-Cookie for callers still holding
+        // the JWT in `localStorage["ghola_token"]` from the pre-cookie deploy.
+        .route(
+            "/v1/auth/refresh-cookie",
+            post(routes::auth::refresh_cookie),
+        )
         .route("/v1/consumer/register", post(routes::consumer::register))
         .route("/v1/profile/{did}", get(routes::consumer::get_public_profile))
         .route("/v1/resolve/{did_or_handle}", get(routes::resolve::resolve))
@@ -551,6 +562,9 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .merge(public)
         .merge(protected)
+        // CSRF protection for cookie-authenticated non-GET requests. Bearer
+        // and API-key callers bypass automatically.
+        .layer(middleware::from_fn(auth::csrf_protect))
         // IP rate limiting: 30/min unauthenticated, 300/min authenticated
         .layer(middleware::from_fn_with_state(
             state.clone(),

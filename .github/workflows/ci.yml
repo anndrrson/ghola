@@ -106,9 +106,23 @@ jobs:
         run: |
           cargo run -p said-envelope --example gen_vectors -- \
             --out android/app/src/test/resources/envelope_vectors.json
+      - name: Regenerate streaming_vectors.json
+        # Parity gate for the streaming envelope path (chunk nonce
+        # derivation, AAD wiring, transcript hashing, receipt signing).
+        # See StreamingParityVectorsTest.kt — without this drift gate, a
+        # Kotlin off-by-one in chunk-index nonce derivation could let a
+        # malicious cloud replay chunks undetected.
+        run: |
+          cargo run -p said-envelope --example gen_streaming_vectors -- \
+            --out android/app/src/test/resources/streaming_vectors.json
+      - name: Confirm committed streaming_vectors.json exists
+        run: |
+          test -s android/app/src/test/resources/streaming_vectors.json \
+            || (echo "streaming_vectors.json missing or empty" && exit 1)
       - name: Diff against committed fixture
         run: |
           git diff --exit-code android/app/src/test/resources/envelope_vectors.json
+          git diff --exit-code android/app/src/test/resources/streaming_vectors.json
 
   android:
     name: Android (lint + unit tests)

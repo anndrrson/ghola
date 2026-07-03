@@ -24,3 +24,7 @@ serde_json = { workspace = true }
 [[example]]
 name = "gen_vectors"
 path = "examples/gen_vectors.rs"
+
+[[example]]
+name = "gen_streaming_vectors"
+path = "examples/gen_streaming_vectors.rs"

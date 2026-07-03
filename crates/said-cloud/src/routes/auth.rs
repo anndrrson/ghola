@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::{header, HeaderMap, HeaderValue};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::Utc;
 use ed25519_dalek::SigningKey;
@@ -9,9 +11,37 @@ use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::{hash_password, issue_jwt, verify_google_id_token, verify_password, verify_siws};
+use crate::auth::{
+    build_csrf_cookie, build_session_cookie, extract_session_token, generate_csrf_token,
+    hash_password, issue_jwt, validate_jwt, verify_google_id_token, verify_password, verify_siws,
+};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
+
+/// SAID JWT lifetime in seconds — must match `JWT_EXPIRY` in auth.rs.
+const JWT_TTL_SECONDS: i64 = 2_592_000;
+
+/// Wrap an `AuthResponse` so browser clients receive the JWT in an HttpOnly
+/// `ghola_session` cookie + JS-readable `ghola_csrf` companion. Mobile/CLI
+/// callers continue reading `token` from the JSON body.
+fn auth_response_with_cookies(payload: AuthResponse) -> Response {
+    let now = Utc::now().timestamp();
+    let max_age = payload.exp.map(|e| (e - now).max(0)).unwrap_or(JWT_TTL_SECONDS);
+
+    let session_cookie = build_session_cookie(&payload.token, max_age);
+    let csrf_token = generate_csrf_token();
+    let csrf_cookie = build_csrf_cookie(&csrf_token, max_age);
+
+    let mut response = Json(payload).into_response();
+    let headers = response.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&session_cookie) {
+        headers.append(header::SET_COOKIE, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&csrf_cookie) {
+        headers.append(header::SET_COOKIE, v);
+    }
+    response
+}
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterRequest {
@@ -112,8 +142,11 @@ fn parse_expires_at_from_challenge(challenge: &str) -> Option<i64> {
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterRequest>,
-) -> AppResult<Json<AuthResponse>> {
-    if let Err(retry_after) = state.rate_limiter.check(&format!("register:{}", req.email), 5) {
+) -> AppResult<Response> {
+    if let Err(retry_after) = state
+        .rate_limiter
+        .check(&format!("register:{}", req.email), 5)
+    {
         return Err(AppError::TooManyRequests(retry_after));
     }
 
@@ -184,7 +217,7 @@ pub async fn register(
     // Issue JWT
     let token = issue_jwt(&user_id, &req.email, &state.config.jwt_secret)?;
 
-    Ok(Json(attach_refresh(&state, token, user_id, did).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, did).await))
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,8 +229,11 @@ pub struct LoginRequest {
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
-) -> AppResult<Json<AuthResponse>> {
-    if let Err(retry_after) = state.rate_limiter.check(&format!("login:{}", req.email), 10) {
+) -> AppResult<Response> {
+    if let Err(retry_after) = state
+        .rate_limiter
+        .check(&format!("login:{}", req.email), 10)
+    {
         return Err(AppError::TooManyRequests(retry_after));
     }
 
@@ -243,7 +279,7 @@ pub async fn login(
     // Issue JWT
     let token = issue_jwt(&user.id, &user.email, &state.config.jwt_secret)?;
 
-    Ok(Json(attach_refresh(&state, token, user.id, did).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user.id, did).await))
 }
 
 /// GET /v1/auth/siws/challenge
@@ -275,7 +311,7 @@ pub async fn siws_challenge(
 pub async fn siws_sign_in(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SiwsSignInRequest>,
-) -> AppResult<Json<AuthResponse>> {
+) -> AppResult<Response> {
     let now = Utc::now().timestamp();
     let expected_expiry = {
         let mut store = state.siws_challenges.lock().await;
@@ -309,7 +345,7 @@ pub async fn siws_sign_in(
     if let Some((user_id, email)) = existing {
         let did = lookup_did_for_user(&state.db, user_id).await?;
         let token = issue_jwt(&user_id, &email, &state.config.jwt_secret)?;
-        return Ok(Json(attach_refresh(&state, token, user_id, did).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, did).await));
     }
 
     let synthetic_email = format!("{}.wallet@ghola.local", req.wallet_pubkey);
@@ -326,7 +362,9 @@ pub async fn siws_sign_in(
     let user_id = new_user.0;
 
     let token = issue_jwt(&user_id, &synthetic_email, &state.config.jwt_secret)?;
-    Ok(Json(attach_refresh(&state, token, user_id, String::new()).await))
+    Ok(auth_response_with_cookies(
+        attach_refresh(&state, token, user_id, String::new()).await,
+    ))
 }
 
 // ── Google Sign-In (mobile / Seeker) ────────────────────────────────────────
@@ -352,14 +390,10 @@ pub struct GoogleSignInRequest {
 pub async fn google_sign_in(
     State(state): State<Arc<AppState>>,
     Json(req): Json<GoogleSignInRequest>,
-) -> AppResult<Json<AuthResponse>> {
-    let google_client_id = state
-        .config
-        .google_client_id
-        .as_deref()
-        .ok_or_else(|| {
-            AppError::Internal("Google sign-in not configured (GOOGLE_CLIENT_ID missing)".into())
-        })?;
+) -> AppResult<Response> {
+    let google_client_id = state.config.google_client_id.as_deref().ok_or_else(|| {
+        AppError::Internal("Google sign-in not configured (GOOGLE_CLIENT_ID missing)".into())
+    })?;
 
     let payload = verify_google_id_token(&req.id_token, google_client_id).await?;
 
@@ -390,7 +424,7 @@ pub async fn google_sign_in(
 
         let did = lookup_did_for_user(&state.db, user_id).await?;
         let token = issue_jwt(&user_id, &payload.email, &state.config.jwt_secret)?;
-        return Ok(Json(attach_refresh(&state, token, user_id, did).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, did).await));
     }
 
     // 2. Email already in DB from another auth method — link Google.
@@ -412,7 +446,7 @@ pub async fn google_sign_in(
 
         let did = lookup_did_for_user(&state.db, user_id).await?;
         let token = issue_jwt(&user_id, &payload.email, &state.config.jwt_secret)?;
-        return Ok(Json(attach_refresh(&state, token, user_id, did).await));
+        return Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, did).await));
     }
 
     // 3. Brand new user — insert with NULL password_hash. We do NOT auto-create
@@ -435,7 +469,9 @@ pub async fn google_sign_in(
     let user_id = new_user.0;
     let token = issue_jwt(&user_id, &payload.email, &state.config.jwt_secret)?;
 
-    Ok(Json(attach_refresh(&state, token, user_id, String::new()).await))
+    Ok(auth_response_with_cookies(
+        attach_refresh(&state, token, user_id, String::new()).await,
+    ))
 }
 
 /// Look up a user's DID from `business_profiles` or `public_profiles`.
@@ -465,7 +501,7 @@ async fn lookup_did_for_user(db: &sqlx::PgPool, user_id: Uuid) -> AppResult<Stri
 pub async fn refresh_token(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RefreshRequest>,
-) -> AppResult<Json<AuthResponse>> {
+) -> AppResult<Response> {
     // Prefer refresh_token if present.
     if let Some(rt) = req.refresh_token.as_deref() {
         let (new_refresh, new_refresh_exp, user_id) =
@@ -480,7 +516,7 @@ pub async fn refresh_token(
         let did = lookup_did_for_user(&state.db, user_id).await?;
         let access = issue_jwt(&user_id, &email, &state.config.jwt_secret)?;
         let exp = jwt_exp(&access, &state.config.jwt_secret);
-        return Ok(Json(AuthResponse {
+        return Ok(auth_response_with_cookies(AuthResponse {
             token: access,
             user_id,
             did,
@@ -501,5 +537,52 @@ pub async fn refresh_token(
         .map_err(|_| AppError::Internal("invalid user_id claim".into()))?;
     let did = lookup_did_for_user(&state.db, user_id).await?;
     let token = issue_jwt(&user_id, &claims.email, &state.config.jwt_secret)?;
-    Ok(Json(attach_refresh(&state, token, user_id, did).await))
+    Ok(auth_response_with_cookies(attach_refresh(&state, token, user_id, did).await))
+}
+
+/// POST /v1/auth/logout — clears the session + csrf cookies. Idempotent.
+pub async fn logout() -> Response {
+    let mut response = Json(serde_json::json!({"ok": true})).into_response();
+    let headers = response.headers_mut();
+    for cookie in crate::auth::build_clear_cookies() {
+        if let Ok(v) = HeaderValue::from_str(&cookie) {
+            headers.append(header::SET_COOKIE, v);
+        }
+    }
+    response
+}
+
+/// POST /v1/auth/refresh-cookie
+///
+/// One-shot migration helper: the SPA reads the pre-migration JWT out of
+/// `localStorage["ghola_token"]`, posts it here, and we re-emit it as a
+/// proper `Set-Cookie`. Verifies signature first.
+pub async fn refresh_cookie(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Option<Json<serde_json::Value>>,
+) -> AppResult<Response> {
+    let header_token = extract_session_token(&headers);
+    let body_token = body
+        .and_then(|Json(v)| v.get("token").and_then(|t| t.as_str().map(String::from)));
+    let token = header_token
+        .or(body_token)
+        .ok_or_else(|| AppError::Unauthorized("missing JWT in header or body".into()))?;
+
+    let claims = validate_jwt(&token, &state.config.jwt_secret)?;
+    let user_id: Uuid = claims
+        .sub
+        .parse()
+        .map_err(|_| AppError::Unauthorized("invalid JWT sub claim".into()))?;
+    let did = lookup_did_for_user(&state.db, user_id).await?;
+
+    let payload = AuthResponse {
+        token,
+        user_id,
+        did,
+        exp: Some(claims.exp as i64),
+        refresh_token: None,
+        refresh_exp: None,
+    };
+    Ok(auth_response_with_cookies(payload))
 }

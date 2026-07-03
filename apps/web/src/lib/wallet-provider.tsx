@@ -62,30 +62,26 @@ function TurnkeySIWSHandler({
     if (loading) return;
 
     if (walletAddress) {
-      // Only re-authenticate if wallet changed or we haven't authed yet
+      // Only re-authenticate if wallet changed or we haven't authed yet.
       if (lastWalletRef.current !== walletAddress) {
         lastWalletRef.current = walletAddress;
 
-        // Check for cached token first to avoid redundant SIWS
-        const cachedToken =
-          typeof window !== "undefined"
-            ? localStorage.getItem("ghola_orni_token")
-            : null;
-        if (cachedToken) {
-          try {
-            const payload = JSON.parse(atob(cachedToken.split(".")[1]));
-            if (payload.exp && payload.exp * 1000 > Date.now()) {
-              onAuthChange({
-                authenticated: true,
-                isCreator: !!payload.is_creator,
-              });
-              return;
-            }
-          } catch {
-            // Invalid token — fall through to full SIWS
-          }
-        }
-
+        // SECURITY: pre-migration we cached the JWT in
+        // `localStorage["ghola_orni_token"]` here. That's an XSS
+        // exfiltration target — any script that runs in the page can
+        // read it and impersonate the user until expiry. The JWT now
+        // lives in an HttpOnly cookie set by `/auth/verify`; JS cannot
+        // see it. We always run the lightweight SIWS round-trip on first
+        // load now — if the cookie is still valid the server will mint a
+        // fresh one (cheap), and if it isn't we needed a new sign-in
+        // anyway.
+        //
+        // Best-effort: purge the legacy localStorage entry so users who
+        // signed in before this deploy don't carry a stale, JS-readable
+        // JWT around. The `refresh-cookie` migration endpoint
+        // (apps/web/src/lib/migrate-token.ts) handles the smoother UX
+        // path of re-using the existing JWT instead of forcing a SIWS.
+        clearOrniToken();
         authenticate();
       }
     } else {

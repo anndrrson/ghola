@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
+use axum::http::{header, HeaderValue};
+use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use axum::Json;
 use base64::Engine;
@@ -9,7 +11,9 @@ use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::{hash_password, issue_jwt, Claims};
+use crate::auth::{
+    build_csrf_cookie, build_session_cookie, generate_csrf_token, hash_password, issue_jwt, Claims,
+};
 use crate::db::DbPublicProfile;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -39,7 +43,7 @@ pub struct ConsumerAuthUser {
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ConsumerRegisterRequest>,
-) -> AppResult<Json<ConsumerAuthResponse>> {
+) -> AppResult<Response> {
     // Validate input
     if req.email.is_empty() || !req.email.contains('@') {
         return Err(AppError::BadRequest("Invalid email address".into()));
@@ -102,13 +106,31 @@ pub async fn register(
     // Issue JWT
     let token = issue_jwt(&user_id, &req.email, &state.config.jwt_secret)?;
 
-    Ok(Json(ConsumerAuthResponse {
-        token,
+    let payload = ConsumerAuthResponse {
+        token: token.clone(),
         user: ConsumerAuthUser {
             id: user_id,
             email: req.email,
         },
-    }))
+    };
+
+    // Attach the same `ghola_session` + `ghola_csrf` cookies that
+    // /v1/auth/register sets, so browser callers transition off the
+    // localStorage-stored JWT here too. Mobile/CLI still read `token` from
+    // the JSON body.
+    let session_cookie = build_session_cookie(&token, 2_592_000);
+    let csrf_token = generate_csrf_token();
+    let csrf_cookie = build_csrf_cookie(&csrf_token, 2_592_000);
+
+    let mut response = Json(payload).into_response();
+    let headers = response.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&session_cookie) {
+        headers.append(header::SET_COOKIE, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&csrf_cookie) {
+        headers.append(header::SET_COOKIE, v);
+    }
+    Ok(response)
 }
 
 // ── Get Profile ──

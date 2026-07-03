@@ -453,14 +453,18 @@ fn verify_stripe_signature(
         ));
     }
 
-    // Reject if timestamp is older than 5 minutes (replay protection)
-    if let Ok(ts) = timestamp.parse::<i64>() {
-        let now = chrono::Utc::now().timestamp();
-        if (now - ts).abs() > 300 {
-            return Err(CloudError::BadRequest(
-                "Stripe webhook timestamp too old".to_string(),
-            ));
-        }
+    // Reject if timestamp is older than 5 minutes (replay protection).
+    // A non-numeric timestamp must be REJECTED rather than silently skipping
+    // the replay window (L1) — otherwise a malformed `t=` value would strip
+    // replay protection while a valid signature still passes.
+    let ts = timestamp.parse::<i64>().map_err(|_| {
+        CloudError::BadRequest("invalid timestamp in Stripe signature".to_string())
+    })?;
+    let now = chrono::Utc::now().timestamp();
+    if (now - ts).abs() > 300 {
+        return Err(CloudError::BadRequest(
+            "Stripe webhook timestamp too old".to_string(),
+        ));
     }
 
     // Compute expected signature: HMAC-SHA256(secret, "timestamp.payload")
