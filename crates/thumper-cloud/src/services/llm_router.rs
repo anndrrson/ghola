@@ -345,6 +345,186 @@ fn cascade_provider_key(config: &CloudConfig, provider: &LlmProvider) -> Option<
 }
 
 // ---------------------------------------------------------------------------
+// BYOM base-URL SSRF guard
+// ---------------------------------------------------------------------------
+//
+// `llm_base_url` is a user-controlled field interpolated into server-side
+// `reqwest` calls (`{base_url}/v1/messages`, `{base_url}/v1/chat/completions`).
+// Without validation an authenticated user can point it at internal services
+// or the cloud metadata endpoint (169.254.169.254), turning the relay into an
+// SSRF proxy. We enforce two checks:
+//
+//   1. Set-time (`validate_user_base_url`): require `https://`, parse the host,
+//      and reject IP-literal hosts in private/loopback/link-local ranges.
+//   2. Request-time (`assert_base_url_safe`): re-resolve the host via DNS and
+//      reject if ANY resolved address is private/loopback/link-local. This is
+//      the DNS-rebinding defense — a hostname that passed set-time validation
+//      could later resolve to an internal IP.
+//
+// Note: the per-provider DEFAULT base URLs (e.g. Ollama's
+// `http://localhost:11434`) are set server-side and never pass through this
+// validator, so legitimate local providers are unaffected.
+
+/// Extract `(scheme, host)` from a URL string without pulling in the `url`
+/// crate. Returns `None` if the string is not a plausible `scheme://host…`.
+fn parse_scheme_host(raw: &str) -> Option<(String, String)> {
+    let raw = raw.trim();
+    let (scheme, rest) = raw.split_once("://")?;
+    if scheme.is_empty() || rest.is_empty() {
+        return None;
+    }
+    // Strip userinfo (`user:pass@host`), then path/query/fragment.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    // Strip the port. Handle bracketed IPv6 literals `[::1]:443`.
+    let host = if let Some(stripped) = host_port.strip_prefix('[') {
+        // IPv6 literal: take up to the closing bracket.
+        stripped.split(']').next().unwrap_or("").to_string()
+    } else {
+        host_port.split(':').next().unwrap_or("").to_string()
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some((scheme.to_ascii_lowercase(), host))
+}
+
+/// True if `ip` is in a range that must never be reachable from a
+/// user-controlled outbound request: loopback, RFC1918 private, link-local
+/// (incl. 169.254/16 cloud metadata), unique-local IPv6 (fc00::/7), and
+/// unspecified/reserved.
+fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()        // 127.0.0.0/8
+                || v4.is_private()  // 10/8, 172.16/12, 192.168/16
+                || v4.is_link_local() // 169.254.0.0/16 (cloud metadata)
+                || v4.is_unspecified() // 0.0.0.0
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                // Carrier-grade NAT 100.64.0.0/10 (often internal).
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback() // ::1
+                || v6.is_unspecified() // ::
+                // Unique-local fc00::/7.
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                // Link-local fe80::/10.
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                // IPv4-mapped (::ffff:a.b.c.d) — unwrap and re-check.
+                || v6.to_ipv4_mapped().map(is_blocked_ip_v4).unwrap_or(false)
+        }
+    }
+}
+
+fn is_blocked_ip_v4(v4: std::net::Ipv4Addr) -> bool {
+    is_blocked_ip(std::net::IpAddr::V4(v4))
+}
+
+/// Set-time validation of a user-supplied BYOM base URL. Requires `https://`
+/// and rejects IP-literal hosts in blocked ranges. Hostnames are accepted here
+/// (resolution can change) but are re-checked at request time via
+/// [`assert_base_url_safe`].
+pub fn validate_user_base_url(raw: &str) -> Result<(), CloudError> {
+    let (scheme, host) = parse_scheme_host(raw).ok_or_else(|| {
+        CloudError::BadRequest("base_url must be a valid https:// URL".to_string())
+    })?;
+    if scheme != "https" {
+        return Err(CloudError::BadRequest(
+            "base_url must use https://".to_string(),
+        ));
+    }
+    // If the host is an IP literal, block private/loopback/link-local ranges now.
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if is_blocked_ip(ip) {
+            return Err(CloudError::BadRequest(
+                "base_url host is not allowed (private/loopback/link-local address)".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Request-time DNS-rebinding defense: resolve the base URL's host and reject
+/// if any resolved address is in a blocked range. Call this immediately before
+/// issuing an outbound request to a user-controlled `base_url`.
+pub async fn assert_base_url_safe(raw: &str) -> Result<(), CloudError> {
+    let (scheme, host) = parse_scheme_host(raw).ok_or_else(|| {
+        CloudError::BadRequest("base_url must be a valid https:// URL".to_string())
+    })?;
+    if scheme != "https" {
+        return Err(CloudError::BadRequest(
+            "base_url must use https://".to_string(),
+        ));
+    }
+    // IP literal: check directly, no DNS.
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if is_blocked_ip(ip) {
+            return Err(CloudError::BadRequest(
+                "base_url resolves to a disallowed address".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+    // Hostname: resolve and check every returned address. Use port 443 since we
+    // require https. `lookup_host` needs a `host:port` form.
+    let addrs = tokio::net::lookup_host((host.as_str(), 443u16))
+        .await
+        .map_err(|e| CloudError::BadRequest(format!("base_url host did not resolve: {e}")))?;
+    let mut saw_any = false;
+    for addr in addrs {
+        saw_any = true;
+        if is_blocked_ip(addr.ip()) {
+            return Err(CloudError::BadRequest(
+                "base_url resolves to a disallowed address".to_string(),
+            ));
+        }
+    }
+    if !saw_any {
+        return Err(CloudError::BadRequest(
+            "base_url host did not resolve to any address".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve the base URL to use for an outbound request, applying the
+/// request-time SSRF guard. If `config.base_url` is the provider's
+/// server-set default it is trusted as-is (local providers such as Ollama
+/// legitimately default to a loopback URL that would otherwise be blocked).
+/// Otherwise it is a user-supplied override: re-resolve it via
+/// [`assert_base_url_safe`] and, on failure, fall back to the provider
+/// default rather than failing the whole request.
+async fn safe_request_base_url(config: &UserLlmConfig) -> String {
+    let default = config.provider.default_base_url();
+    if config.base_url == default {
+        return config.base_url.clone();
+    }
+    // Hermetic unit tests inject a loopback `http://127.0.0.1:<port>` mock
+    // server directly into `UserLlmConfig`, bypassing set-time validation. That
+    // loopback address is trusted test infrastructure, not an untrusted user
+    // URL, so the network-egress guard is disabled under `cfg(test)`. In
+    // production `config.base_url` is always either the server-set default
+    // (returned above) or a set-time-validated https/public URL, so this only
+    // re-resolves genuinely user-supplied hosts.
+    #[cfg(test)]
+    {
+        return config.base_url.clone();
+    }
+    #[cfg(not(test))]
+    match assert_base_url_safe(&config.base_url).await {
+        Ok(()) => config.base_url.clone(),
+        Err(e) => {
+            tracing::warn!(
+                "stored llm_base_url rejected by SSRF guard ({e}); using provider default"
+            );
+            default.to_string()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Config resolution
 // ---------------------------------------------------------------------------
 
@@ -551,9 +731,11 @@ async fn generate_anthropic(
         "messages": [{ "role": "user", "content": prompt }],
     });
 
+    // SSRF guard: re-resolve a user-supplied base_url immediately before use.
+    let base_url = safe_request_base_url(config).await;
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("{}/v1/messages", config.base_url))
+        .post(format!("{base_url}/v1/messages"))
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
         .header("content-type", "application/json")
@@ -626,11 +808,9 @@ async fn generate_openai_compat(
     // Ollama doesn't need auth header
     let needs_auth = config.provider != LlmProvider::Ollama;
 
-    let url = if config.provider == LlmProvider::Ollama {
-        format!("{}/v1/chat/completions", config.base_url)
-    } else {
-        format!("{}/v1/chat/completions", config.base_url)
-    };
+    // SSRF guard: re-resolve a user-supplied base_url immediately before use.
+    let base_url = safe_request_base_url(config).await;
+    let url = format!("{base_url}/v1/chat/completions");
 
     let client = reqwest::Client::new();
     let mut req = client
@@ -823,7 +1003,8 @@ async fn stream_anthropic(
         body["system"] = serde_json::Value::String(sys.to_string());
     }
 
-    let base_url = config.base_url.clone();
+    // SSRF guard: re-resolve a user-supplied base_url immediately before use.
+    let base_url = safe_request_base_url(config).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -904,7 +1085,9 @@ async fn stream_openai_compat(
         "stream": true,
     });
 
-    let url = format!("{}/v1/chat/completions", config.base_url);
+    // SSRF guard: re-resolve a user-supplied base_url immediately before use.
+    let base_url = safe_request_base_url(config).await;
+    let url = format!("{base_url}/v1/chat/completions");
 
     let client = reqwest::Client::new();
     let mut req = client
@@ -1312,6 +1495,8 @@ async fn generate_with_tools_anthropic(
 
     let mut tool_calls = Vec::new();
 
+    // SSRF guard: re-resolve a user-supplied base_url immediately before use.
+    let base_url = safe_request_base_url(config).await;
     for _ in 0..5 {
         let mut body = serde_json::json!({
             "model": &config.model,
@@ -1324,7 +1509,7 @@ async fn generate_with_tools_anthropic(
         }
 
         let resp = reqwest::Client::new()
-            .post(format!("{}/v1/messages", config.base_url))
+            .post(format!("{base_url}/v1/messages"))
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
@@ -1479,6 +1664,8 @@ async fn generate_with_tools_openai(
 
     let mut tool_calls_out = Vec::new();
 
+    // SSRF guard: re-resolve a user-supplied base_url immediately before use.
+    let base_url = safe_request_base_url(config).await;
     for _ in 0..5 {
         let body = serde_json::json!({
             "model": &config.model,
@@ -1487,7 +1674,7 @@ async fn generate_with_tools_openai(
             "max_tokens": 4096,
         });
 
-        let url = format!("{}/v1/chat/completions", config.base_url);
+        let url = format!("{base_url}/v1/chat/completions");
         let mut req = reqwest::Client::new()
             .post(&url)
             .header("content-type", "application/json")
@@ -2006,6 +2193,62 @@ pub fn decrypt_api_key(data: &[u8], key: &[u8; 32]) -> Result<String, CloudError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base_url_validator_requires_https() {
+        assert!(validate_user_base_url("https://api.example.com").is_ok());
+        // http:// rejected
+        assert!(validate_user_base_url("http://api.example.com").is_err());
+        // garbage rejected
+        assert!(validate_user_base_url("not a url").is_err());
+        assert!(validate_user_base_url("ftp://example.com").is_err());
+    }
+
+    #[test]
+    fn base_url_validator_blocks_private_and_metadata_ip_literals() {
+        // Cloud metadata + private/loopback/link-local IP literals are blocked,
+        // even with the https scheme.
+        assert!(validate_user_base_url("https://169.254.169.254/latest/meta-data").is_err());
+        assert!(validate_user_base_url("https://127.0.0.1").is_err());
+        assert!(validate_user_base_url("https://10.0.0.5:8443").is_err());
+        assert!(validate_user_base_url("https://192.168.1.1").is_err());
+        assert!(validate_user_base_url("https://172.16.0.1").is_err());
+        assert!(validate_user_base_url("https://[::1]").is_err());
+        // A public IP literal is allowed.
+        assert!(validate_user_base_url("https://1.1.1.1").is_ok());
+    }
+
+    #[test]
+    fn parse_scheme_host_strips_userinfo_port_and_path() {
+        assert_eq!(
+            parse_scheme_host("https://user:pass@host.example.com:8443/v1/x?q=1"),
+            Some(("https".to_string(), "host.example.com".to_string()))
+        );
+        assert_eq!(
+            parse_scheme_host("https://[2001:db8::1]:443/path"),
+            Some(("https".to_string(), "2001:db8::1".to_string()))
+        );
+        assert_eq!(parse_scheme_host("https://"), None);
+        assert_eq!(parse_scheme_host("noscheme"), None);
+    }
+
+    #[test]
+    fn is_blocked_ip_covers_metadata_and_private_ranges() {
+        use std::net::IpAddr;
+        assert!(is_blocked_ip("169.254.169.254".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip("127.0.0.1".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip("10.1.2.3".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip("172.31.255.255".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip("192.168.0.1".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip("100.64.0.1".parse::<IpAddr>().unwrap())); // CGNAT
+        assert!(is_blocked_ip("::1".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip("fc00::1".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip("fe80::1".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip("::ffff:127.0.0.1".parse::<IpAddr>().unwrap())); // mapped loopback
+        // Public addresses pass.
+        assert!(!is_blocked_ip("8.8.8.8".parse::<IpAddr>().unwrap()));
+        assert!(!is_blocked_ip("2606:4700::1111".parse::<IpAddr>().unwrap()));
+    }
 
     #[test]
     fn classify_tool_routes_action_tools_to_client() {

@@ -105,6 +105,10 @@ pub async fn update_config(
         let url = if base_url.is_empty() {
             None
         } else {
+            // SSRF guard: reject non-https or private/loopback/link-local hosts
+            // before persisting. Re-checked at request time (DNS rebinding) in
+            // llm_router::assert_base_url_safe.
+            llm_router::validate_user_base_url(base_url)?;
             Some(base_url.as_str())
         };
         sqlx::query("UPDATE users SET llm_base_url = $1, updated_at = now() WHERE id = $2")
