@@ -961,6 +961,52 @@ function validateEncryptedBundle(bundle, recipient, fieldName) {
   return errors;
 }
 
+function platformFeePolicyMode() {
+  const configured = env("PRIVATE_AGENT_PLATFORM_FEE_POLICY_MODE", "").trim().toLowerCase();
+  if (configured === "enforce") return "enforce";
+  if (configured === "report_only" || configured === "off") return "report_only";
+  if (boolEnv("PRIVATE_AGENT_REQUIRE_PLATFORM_FEE_POLICY")) return "enforce";
+  return "report_only";
+}
+
+function validatePlatformFeePolicy(body, options = {}) {
+  if (options.requirePlatformFeePolicy === false || platformFeePolicyMode() !== "enforce") return [];
+  const errors = [];
+  const policy = body.platform_fee_policy;
+  if (!isObject(policy)) {
+    errors.push("platform_fee_policy is required");
+    return errors;
+  }
+  if (policy.version !== 1) errors.push("platform_fee_policy.version must be 1");
+  if (policy.policy_kind !== "ghola_connector_platform_fee_policy_v1") {
+    errors.push("platform_fee_policy.policy_kind is unsupported");
+  }
+  if (!isNonEmptyString(policy.fee_policy_commitment)) {
+    errors.push("platform_fee_policy.fee_policy_commitment is required");
+  }
+  if (body.platform_fee_policy_commitment !== policy.fee_policy_commitment) {
+    errors.push("platform_fee_policy_commitment must match platform_fee_policy.fee_policy_commitment");
+  }
+  if (!isNonEmptyString(policy.fee_recipient)) errors.push("platform_fee_policy.fee_recipient is required");
+  if (!Number.isInteger(policy.fee_bps) || policy.fee_bps <= 0) {
+    errors.push("platform_fee_policy.fee_bps must be a positive integer");
+  }
+  if (!Number.isInteger(policy.min_fee_micro_usdc) || policy.min_fee_micro_usdc < 0) {
+    errors.push("platform_fee_policy.min_fee_micro_usdc must be a non-negative integer");
+  }
+  if (!Number.isInteger(policy.estimated_notional_micro_usdc) || policy.estimated_notional_micro_usdc < 0) {
+    errors.push("platform_fee_policy.estimated_notional_micro_usdc must be a non-negative integer");
+  }
+  if (!Number.isInteger(policy.fee_micro_usdc) || policy.fee_micro_usdc <= 0) {
+    errors.push("platform_fee_policy.fee_micro_usdc must be a positive integer");
+  }
+  if (policy.quote_asset !== "USDC") errors.push("platform_fee_policy.quote_asset must be USDC");
+  if (policy.collection_mode !== "paid_private_agent_plan_and_worker_bound_fee") {
+    errors.push("platform_fee_policy.collection_mode is unsupported");
+  }
+  return errors;
+}
+
 function validateHyperliquidSessionRequest(body, recipient) {
   const errors = [];
   if (!isObject(body)) return ["request body must be an object"];
@@ -998,7 +1044,7 @@ function validateHyperliquidSessionRequest(body, recipient) {
   return errors;
 }
 
-function validateHyperliquidOrderRequest(body, recipient) {
+function validateHyperliquidOrderRequest(body, recipient, options = {}) {
   const errors = [];
   if (!isObject(body)) return ["request body must be an object"];
   if (containsPlaintextLeakKey(body)) {
@@ -1031,6 +1077,7 @@ function validateHyperliquidOrderRequest(body, recipient) {
       "encrypted_execution_instruction_bundle",
     ));
   }
+  errors.push(...validatePlatformFeePolicy(body, options));
   return errors;
 }
 
@@ -1181,12 +1228,14 @@ function hyperliquidOrderReceipt(body, status = "submitted") {
     execution_mode: executionMode,
     status,
     work_order_commitment: body.work_order_commitment,
+    platform_fee_policy_commitment: body.platform_fee_policy_commitment || null,
     vault_commitment: body.vault_commitment || null,
     allocation_commitment: body.managed_allocation_commitment || body.allocation_commitment || null,
     provider_ref_commitment: providerRefCommitment,
     result_commitment: commitment("hyperliquid_result", {
       work_order_commitment: body.work_order_commitment,
       provider_ref_commitment: providerRefCommitment,
+      platform_fee_policy_commitment: body.platform_fee_policy_commitment || null,
       status,
     }),
     visibility_summary: {
@@ -1257,7 +1306,7 @@ function validateCoinbaseSessionRequest(body, recipient) {
   return errors;
 }
 
-function validateCoinbaseOrderRequest(body, recipient) {
+function validateCoinbaseOrderRequest(body, recipient, options = {}) {
   const errors = [];
   if (!isObject(body)) return ["request body must be an object"];
   if (containsPlaintextLeakKey(body)) {
@@ -1288,6 +1337,7 @@ function validateCoinbaseOrderRequest(body, recipient) {
   if (body.execution_mode === "partner_omnibus") {
     errors.push(...validateOmnibusAllocation(body.omnibus_allocation));
   }
+  errors.push(...validatePlatformFeePolicy(body, options));
   return errors;
 }
 
@@ -1308,7 +1358,7 @@ function validateCoinbaseReconcileRequest(body, recipient) {
   return errors;
 }
 
-function validateSolanaPerpsOrderRequest(body, recipient) {
+function validateSolanaPerpsOrderRequest(body, recipient, options = {}) {
   const errors = [];
   if (!isObject(body)) return ["request body must be an object"];
   if (containsPlaintextLeakKey(body)) {
@@ -1344,6 +1394,7 @@ function validateSolanaPerpsOrderRequest(body, recipient) {
   } else {
     errors.push("encrypted_execution_instruction_bundle is required");
   }
+  errors.push(...validatePlatformFeePolicy(body, options));
   return errors;
 }
 
@@ -1364,7 +1415,7 @@ function validateSolanaPerpsReconcileRequest(body, recipient) {
   return errors;
 }
 
-function validateSolanaSwapOrderRequest(body, recipient) {
+function validateSolanaSwapOrderRequest(body, recipient, options = {}) {
   const errors = [];
   if (!isObject(body)) return ["request body must be an object"];
   if (containsPlaintextLeakKey(body)) {
@@ -1398,6 +1449,7 @@ function validateSolanaSwapOrderRequest(body, recipient) {
   } else {
     errors.push("encrypted_execution_instruction_bundle is required");
   }
+  errors.push(...validatePlatformFeePolicy(body, options));
   return errors;
 }
 
@@ -1481,12 +1533,14 @@ function coinbaseOrderReceipt(body, status = "submitted") {
     execution_mode: body.execution_mode || "partner_omnibus",
     status,
     work_order_commitment: body.work_order_commitment,
+    platform_fee_policy_commitment: body.platform_fee_policy_commitment || null,
     vault_commitment: body.vault_commitment || null,
     allocation_commitment: body.omnibus_allocation?.allocation_commitment || body.allocation_commitment || null,
     provider_ref_commitment: providerRefCommitment,
     result_commitment: commitment("coinbase_result", {
       work_order_commitment: body.work_order_commitment,
       provider_ref_commitment: providerRefCommitment,
+      platform_fee_policy_commitment: body.platform_fee_policy_commitment || null,
       status,
     }),
     visibility_summary: {
@@ -1517,12 +1571,14 @@ function solanaPerpsOrderReceipt(body, status = "submitted") {
     execution_mode: executionMode,
     status,
     work_order_commitment: body.work_order_commitment,
+    platform_fee_policy_commitment: body.platform_fee_policy_commitment || null,
     vault_commitment: body.vault_commitment || null,
     allocation_commitment: body.allocation_commitment || null,
     provider_ref_commitment: providerRefCommitment,
     result_commitment: commitment(`${venueId}_result`, {
       work_order_commitment: body.work_order_commitment,
       provider_ref_commitment: providerRefCommitment,
+      platform_fee_policy_commitment: body.platform_fee_policy_commitment || null,
       status,
     }),
     visibility_summary: {
@@ -2370,7 +2426,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         });
         if (authorized.rejected) return;
         const { body } = authorized;
-        const errors = validateHyperliquidOrderRequest(body, recipient);
+        const errors = validateHyperliquidOrderRequest(body, recipient, { requirePlatformFeePolicy: false });
         if (errors.length > 0) {
           return json(res, 400, {
             error: "invalid hyperliquid private verification request",
@@ -2512,7 +2568,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         });
         if (authorized.rejected) return;
         const { body } = authorized;
-        const errors = validateCoinbaseOrderRequest(body, recipient);
+        const errors = validateCoinbaseOrderRequest(body, recipient, { requirePlatformFeePolicy: false });
         if (errors.length > 0) {
           return json(res, 400, {
             error: "invalid coinbase private verification request",
@@ -2612,7 +2668,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         });
         if (authorized.rejected) return;
         const { body } = authorized;
-        const errors = validateSolanaPerpsOrderRequest(body, recipient);
+        const errors = validateSolanaPerpsOrderRequest(body, recipient, { requirePlatformFeePolicy: false });
         if (errors.length > 0) {
           return json(res, 400, {
             error: "invalid solana perps private verification request",
@@ -2717,7 +2773,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
         });
         if (authorized.rejected) return;
         const { body } = authorized;
-        const errors = validateSolanaSwapOrderRequest(body, recipient);
+        const errors = validateSolanaSwapOrderRequest(body, recipient, { requirePlatformFeePolicy: false });
         if (errors.length > 0) {
           return json(res, 400, {
             error: "invalid jupiter private verification request",

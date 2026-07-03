@@ -357,7 +357,9 @@ pub async fn send_email_direct(
 /// Check email usage against tier limits.
 async fn check_email_limit(state: &AppState, user_id: Uuid, tier: &str) -> Result<(), CloudError> {
     let max_emails: i64 = match tier {
-        "pro" => 50,
+        "trial_pack" => 15,
+        "starter" => 30,
+        "pro" | "private_agent" => 50,
         "unlimited" | "enterprise" => i64::MAX,
         _ => 10, // free
     };

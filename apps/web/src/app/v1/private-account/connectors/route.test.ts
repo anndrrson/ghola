@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash, createHmac } from "node:crypto";
 import { GET as manifestsRoute } from "./manifests/route";
 import { POST as readinessRoute } from "./readiness/route";
@@ -158,6 +158,7 @@ describe("private account connector gateway routes", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await resetPrivateAccountStoreForTests();
     delete process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
@@ -183,6 +184,11 @@ describe("private account connector gateway routes", () => {
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_RATE_LIMIT_MAX;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_RATE_LIMIT_WINDOW_MS;
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_REVENUE_GUARD_MODE;
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_TRADE_RESERVATION_SECONDS;
+    delete process.env.GHOLA_PRIVATE_EXECUTION_FEE_RECIPIENT;
+    delete process.env.GHOLA_PRIVATE_EXECUTION_FEE_BPS;
+    delete process.env.GHOLA_PRIVATE_EXECUTION_MIN_FEE_MICRO_USDC;
   });
 
   it("guards mutating live routes with JSON, auth, proof, replay, and rate limits", async () => {
@@ -257,6 +263,101 @@ describe("private account connector gateway routes", () => {
     await expect(secondLimited.json()).resolves.toMatchObject({
       error: "private_account_rate_limited",
     });
+  });
+
+  it("requires paid private-agent entitlement before live execution", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_REVENUE_GUARD_MODE = "enforce";
+    process.env.GHOLA_PRIVATE_EXECUTION_FEE_RECIPIENT =
+      "solana:usdc:3dAfDNBneCLoCiFK9tPQKQm5dWVzsybfzsrBNDUHDCPg";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      tier: "free",
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+
+    const res = await executeAction(
+      post("/v1/private-account/actions/execute", {
+        intent_id: "intent_missing_because_guard_should_stop_first",
+      }),
+    );
+    const body = await res.json();
+
+    expect(res.status).toBe(402);
+    expect(body).toMatchObject({
+      error: "private_agent_subscription_required",
+      entitlement_required: "paid_private_agent_plan",
+      tier: "free",
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("reserves and releases private-agent compute for failed live execution", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_REVENUE_GUARD_MODE = "enforce";
+    process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_TRADE_RESERVATION_SECONDS = "600";
+    process.env.GHOLA_PRIVATE_EXECUTION_FEE_RECIPIENT =
+      "solana:usdc:3dAfDNBneCLoCiFK9tPQKQm5dWVzsybfzsrBNDUHDCPg";
+    const calls: Array<{ url: string; body: unknown }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      const requestBody = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+      calls.push({ url, body: requestBody });
+      if (url.endsWith("/api/billing/status")) {
+        return new Response(JSON.stringify({
+          tier: "private_agent",
+          private_agent_compute: {
+            included_seconds: 216000,
+            reserved_seconds: 0,
+            used_seconds: 0,
+            remaining_seconds: 216000,
+            active_agent_limit: 1,
+            active_agent_count: 0,
+            period_start: "2026-06-01T00:00:00.000Z",
+            period_end: "2026-07-01T00:00:00.000Z",
+            metering_unit: "agent_second",
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/billing/private-agent/compute/reserve")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          reservation_id: "reservation_test",
+          reserved_seconds: 600,
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/billing/private-agent/compute/release")) {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ error: "unexpected_fetch" }), { status: 500 });
+    });
+
+    const res = await executeAction(
+      post("/v1/private-account/actions/execute", {
+        intent_id: "missing_intent_after_reservation",
+        preview_commitment: "missing_preview_after_reservation",
+        approval_commitment: "missing_approval_after_reservation",
+      }),
+    );
+    const body = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(body).toMatchObject({ error: "intent_not_found" });
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      "/api/billing/status",
+      "/api/billing/private-agent/compute/reserve",
+      "/api/billing/private-agent/compute/release",
+    ]);
+    expect(calls[1].body).toMatchObject({ seconds: 600, reason: "live_trade_submit" });
+    expect(calls[2].body).toMatchObject({ status: "failed" });
   });
 
   it("publishes commitment-safe connector manifests and readiness", async () => {
@@ -779,6 +880,10 @@ describe("private account connector gateway routes", () => {
   });
 
   it("binds connector evidence into Private Mode execution receipts", async () => {
+    process.env.GHOLA_PRIVATE_EXECUTION_FEE_RECIPIENT =
+      "solana:usdc:3dAfDNBneCLoCiFK9tPQKQm5dWVzsybfzsrBNDUHDCPg";
+    process.env.GHOLA_PRIVATE_EXECUTION_FEE_BPS = "10";
+    process.env.GHOLA_PRIVATE_EXECUTION_MIN_FEE_MICRO_USDC = "50000";
     await importCompatibleFunding("connector_user_1");
     await importCompatibleFunding("connector_user_2");
     const safeInput = {
@@ -860,6 +965,10 @@ describe("private account connector gateway routes", () => {
     expect(executed.receipt.compiler_commitment).toBe(refreshed.preview.connector_context.compiler_commitment);
     expect(executed.receipt.work_order_commitment).toMatch(/^connector_work_order_/);
     expect(executed.receipt.connector_result_commitment).toMatch(/^connector_result_/);
+    expect(executed.receipt.platform_fee_policy_commitment).toMatch(/^connector_platform_fee_policy_/);
+    expect(executed.receipt.evidence_chain.platform_fee_policy_commitment).toBe(
+      executed.receipt.platform_fee_policy_commitment,
+    );
     expect(executed.receipt.venue_access_source).toBe("none");
     expect(executed.receipt.ghola_access_role).toBe("private_state_operator");
 
@@ -876,13 +985,20 @@ describe("private account connector gateway routes", () => {
     expect(verified.checks.linkability_bound).toBe("pass");
     expect(verified.checks.work_order_bound).toBe("pass");
     expect(verified.checks.connector_result_bound).toBe("pass");
+    expect(verified.checks.platform_fee_policy_bound).toBe("pass");
 
     const opsRes = await operationsRoute(
       get("/v1/private-account/connectors/operations"),
     );
     const ops = await opsRes.json();
     expect(ops.work_order_depth).toBe(1);
+    expect(ops.work_orders[0].platform_fee_policy_commitment).toBe(
+      executed.receipt.platform_fee_policy_commitment,
+    );
     expect(ops.results[0].connector_result_commitment).toBe(executed.receipt.connector_result_commitment);
+    expect(ops.results[0].platform_fee_policy_commitment).toBe(
+      executed.receipt.platform_fee_policy_commitment,
+    );
     expect(ops.linkability.length).toBeGreaterThan(0);
   });
 });

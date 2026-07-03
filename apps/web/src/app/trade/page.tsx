@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Activity,
@@ -34,13 +34,17 @@ import {
 } from "@/lib/ghola-market-chart";
 import {
   createPrivateAccountIntent,
+  getPublicAgentStartupStatus,
   listPrivateAutopilotSessions,
   previewPrivateAccountAction,
+  wakePublicAgentWorker,
   type HyperliquidMarketSnapshot,
   type PrivateAccountLiveTradingStatus,
   type PrivateAccountSafeInput,
   type PrivateAutopilotSession,
   type PrivateAutopilotStatus,
+  type PublicAgentStartupStatus,
+  type PublicAgentStartupVenue,
 } from "@/lib/private-account-client";
 import type { CoinbaseMarketSnapshot } from "@/lib/coinbase-market-data";
 import type { PhoenixMarketSnapshot } from "@/lib/phoenix-market-data";
@@ -224,6 +228,10 @@ export default function TradePage() {
   const [workerReady, setWorkerReady] = useState(false);
   const [workerLabel, setWorkerLabel] = useState("checking");
   const [workerWakeState, setWorkerWakeState] = useState<WorkerWakeState>("idle");
+  const [agentStartup, setAgentStartup] = useState<PublicAgentStartupStatus | null>(null);
+  const [agentStartupFailed, setAgentStartupFailed] = useState(false);
+  const [agentWakeState, setAgentWakeState] = useState<WorkerWakeState>("idle");
+  const [agentWakeMessage, setAgentWakeMessage] = useState<string | null>(null);
   const [strategy, setStrategy] = useState<StrategyProfile>("trend_following");
   const [entryTrigger, setEntryTrigger] = useState<EntryTrigger>("preview_now");
   const [horizon, setHorizon] = useState<Horizon>("scalp");
@@ -250,10 +258,22 @@ export default function TradePage() {
   const [openRow, setOpenRow] = useState<string | null>(null);
   const venue = VENUES.find((item) => item.id === venueId) ?? VENUES[0];
   const productLabel = venueProductLabel(venue.id, marketSel);
+
+  const applyAgentStartup = useCallback((startup: PublicAgentStartupStatus) => {
+    setAgentStartup(startup);
+    if (!startup.runtime.ready) return;
+    setAgentWakeState("ready");
+    setAgentWakeMessage((message) =>
+      message?.startsWith("Starting secure worker") ? startup.runtime.message : message
+    );
+    setWorkerReady(true);
+    setWorkerLabel("attested");
+  }, []);
   const mid = frameMidNumber(frame);
   const [midFlash, setMidFlash] = useState(false);
   const prevMidRef = useRef<number | null>(null);
   const wakeAttemptedRef = useRef(false);
+  const agentWakeAttemptedRef = useRef(false);
 
   useEffect(() => {
     if (prevMidRef.current != null && mid != null && prevMidRef.current !== mid) {
@@ -367,6 +387,115 @@ export default function TradePage() {
       cancelled = true;
       window.clearInterval(interval);
     };
+  }, []);
+
+  async function refreshAgentStartup() {
+    try {
+      const startup = await getPublicAgentStartupStatus();
+      applyAgentStartup(startup);
+      setAgentStartupFailed(false);
+      return startup;
+    } catch {
+      setAgentStartupFailed(true);
+      return null;
+    }
+  }
+
+  async function handleWakeAgentWorker() {
+    if (agentWakeState === "waking") return;
+    agentWakeAttemptedRef.current = true;
+    setAgentWakeState("waking");
+    setAgentWakeMessage("Starting secure worker. This can take about a minute.");
+    try {
+      const wake = await wakePublicAgentWorker();
+      setAgentWakeMessage(wake.message);
+      setAgentWakeState(wake.ready ? "ready" : wake.status === "warming" ? "waking" : "error");
+      if (wake.ready) {
+        setWorkerReady(true);
+        setWorkerLabel("attested");
+      } else if (wake.status === "warming") {
+        setWorkerLabel("starting");
+      }
+      await refreshAgentStartup();
+    } catch (error) {
+      setAgentWakeState("error");
+      setAgentWakeMessage(error instanceof Error ? error.message : "Worker start failed.");
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadStartup() {
+      try {
+        const startup = await getPublicAgentStartupStatus();
+        if (!cancelled) {
+          applyAgentStartup(startup);
+          setAgentStartupFailed(false);
+        }
+      } catch {
+        if (!cancelled) setAgentStartupFailed(true);
+      }
+    }
+    void loadStartup();
+    const interval = window.setInterval(loadStartup, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [applyAgentStartup, thumperAuth.authenticated]);
+
+  useEffect(() => {
+    if (!thumperAuth.authenticated || !agentStartup || agentWakeAttemptedRef.current) return;
+    if (agentStartup.runtime.status !== "warming") return;
+    if (!agentStartup.venues.some((venue) => venue.can_prepare)) return;
+    agentWakeAttemptedRef.current = true;
+    let cancelled = false;
+    async function wakeForReadyAccess() {
+      setAgentWakeState("waking");
+      setAgentWakeMessage("Starting secure worker. This can take about a minute.");
+      try {
+        const wake = await wakePublicAgentWorker();
+        if (cancelled) return;
+        setAgentWakeMessage(wake.message);
+        setAgentWakeState(wake.ready ? "ready" : wake.status === "warming" ? "waking" : "error");
+        if (wake.ready) {
+          setWorkerReady(true);
+          setWorkerLabel("attested");
+        } else if (wake.status === "warming") {
+          setWorkerLabel("starting");
+        }
+        const startup = await getPublicAgentStartupStatus();
+        if (!cancelled) {
+          applyAgentStartup(startup);
+          setAgentStartupFailed(false);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setAgentWakeState("error");
+          setAgentWakeMessage(error instanceof Error ? error.message : "Worker start failed.");
+        }
+      }
+    }
+    void wakeForReadyAccess();
+    return () => {
+      cancelled = true;
+    };
+  }, [agentStartup, applyAgentStartup, thumperAuth.authenticated]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const flow = params.get("flow");
+    if (flow === "coinbase") {
+      selectVenue("coinbase");
+      return;
+    }
+    if (flow === "phoenix-live") {
+      selectVenue("phoenix");
+      return;
+    }
+    if (flow === "hyperliquid-live" || flow === "trade") {
+      selectVenue("hyperliquid");
+    }
   }, []);
 
   useEffect(() => {
@@ -672,6 +801,14 @@ export default function TradePage() {
     setAuthOpen(true);
   }
 
+  function selectVenue(nextVenueId: VenueId) {
+    const nextVenue = VENUES.find((item) => item.id === nextVenueId) ?? VENUES[0];
+    setVenueId(nextVenue.id);
+    setMarketSel(nextVenue.defaultMarket);
+    setEntryPinned(false);
+    setStopPinned(false);
+  }
+
   return (
     <div className="min-h-screen bg-[#05070b] text-[#eef1f8]">
       <AuthModal
@@ -679,7 +816,7 @@ export default function TradePage() {
         open={authOpen}
         onClose={() => setAuthOpen(false)}
         onModeChange={setAuthMode}
-        redirectTo="/trade"
+        redirectTo={`/account?flow=${venueId === "coinbase" ? "coinbase" : venueId === "phoenix" ? "phoenix-live" : "hyperliquid-live"}`}
       />
       <header className="relative flex h-14 items-center justify-between border-b border-[#182234] bg-gradient-to-b from-[#0a0e16] to-[#070a10] px-4 sm:px-6">
         <span
@@ -698,10 +835,10 @@ export default function TradePage() {
         </div>
         <div className="flex items-center gap-2">
           <Link
-            href="/private-balance"
+            href="/account?flow=trade"
             className="trade-chip hidden rounded-md px-3 py-1.5 text-sm sm:inline-flex"
           >
-            Balance
+            API-key trading
           </Link>
           {thumperAuth.authenticated ? (
             <span className="rounded-md bg-[#101927] px-3 py-1.5 text-sm text-[#a8d8ff]">
@@ -736,12 +873,7 @@ export default function TradePage() {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => {
-                    setVenueId(item.id);
-                    setMarketSel(item.defaultMarket);
-                    setEntryPinned(false);
-                    setStopPinned(false);
-                  }}
+                  onClick={() => selectVenue(item.id)}
                   className={`h-9 rounded-md px-3 text-sm font-medium ${
                     venueId === item.id ? "trade-chip-on" : "trade-chip"
                   }`}
@@ -766,6 +898,22 @@ export default function TradePage() {
               ))}
             </div>
           </div>
+
+          <PublicAgentLaunchPanel
+            startup={agentStartup}
+            failed={agentStartupFailed}
+            selectedVenueId={venueId}
+            wakeState={agentWakeState}
+            wakeMessage={agentWakeMessage}
+            authenticated={thumperAuth.authenticated}
+            onSignIn={() => openAuth("signup")}
+            onWake={handleWakeAgentWorker}
+            onSelectVenue={(nextVenueId) => {
+              if (nextVenueId === "hyperliquid" || nextVenueId === "phoenix" || nextVenueId === "coinbase") {
+                selectVenue(nextVenueId);
+              }
+            }}
+          />
 
           <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_18rem]">
             <div className="min-w-0">
@@ -1206,7 +1354,7 @@ export default function TradePage() {
                   className="trade-action flex h-12 items-center justify-center gap-2 rounded-md text-sm font-semibold"
                 >
                   <KeyRound className="h-4 w-4" />
-                  Sign in to connect venue
+                  Sign in to connect API keys
                 </button>
               ) : (
                 <>
@@ -1926,6 +2074,223 @@ function TradeTape({ frame }: { frame: GholaMarketFrame | null }) {
   );
 }
 
+function PublicAgentLaunchPanel({
+  startup,
+  failed,
+  selectedVenueId,
+  wakeState,
+  wakeMessage,
+  authenticated,
+  onSignIn,
+  onWake,
+  onSelectVenue,
+}: {
+  startup: PublicAgentStartupStatus | null;
+  failed: boolean;
+  selectedVenueId: VenueId;
+  wakeState: WorkerWakeState;
+  wakeMessage: string | null;
+  authenticated: boolean;
+  onSignIn: () => void;
+  onWake: () => void;
+  onSelectVenue: (venueId: PublicAgentStartupVenue["id"]) => void;
+}) {
+  const venues = startup?.venues ?? [];
+  const readyVenue = venues.find((venue) => venue.can_start_live);
+  const preparableVenue = venues.find((venue) => venue.can_prepare);
+  const canWake = authenticated && Boolean(preparableVenue) && startup?.runtime.ready !== true;
+  const runtimeTone = startup?.runtime.status === "ready"
+    ? "good"
+    : startup?.runtime.status === "warming" || wakeState === "waking"
+      ? "warn"
+      : "neutral";
+  const actionLabel = !startup
+    ? "Checking live agents"
+    : !authenticated
+      ? "Sign in to connect API keys"
+      : canWake
+        ? wakeState === "waking" ? "Starting secure worker" : "Start secure worker"
+        : readyVenue
+          ? `Use ${readyVenue.label} agent`
+          : startup.primary_action.label;
+  const actionMessage = wakeMessage || startup?.primary_action.message || "Sign in, connect scoped venue access, then arm a capped agent.";
+  const actionDisabled = !startup || wakeState === "waking" || (authenticated && !canWake && !readyVenue);
+
+  function handlePrimaryAction() {
+    if (!authenticated) {
+      onSignIn();
+      return;
+    }
+    if (canWake) {
+      onWake();
+      return;
+    }
+    if (readyVenue) onSelectVenue(readyVenue.id);
+  }
+
+  return (
+    <div className="border-b border-[#182234] bg-[#070a10] px-4 py-4 sm:px-6">
+      <div className="trade-panel relative overflow-hidden rounded-md p-4">
+        <span aria-hidden className="trade-corners pointer-events-none absolute inset-0" />
+        <div className="relative grid gap-4 xl:grid-cols-[minmax(18rem,0.78fr)_minmax(26rem,1.22fr)]">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-[#8ec7ff]">
+              <ShieldCheck className="h-3.5 w-3.5" />
+              Scoped API-key agent path
+            </div>
+            <h2 className="mt-2 font-display text-2xl font-semibold tracking-tight text-[#f6f8ff]">
+              Bring API keys to trade
+            </h2>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-[#8b95a8]">
+              Sign in, connect a scoped Hyperliquid API wallet, Coinbase key, or Phoenix authority, then approve bounded agent execution.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <span className={`inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium ${launchToneClass(runtimeTone)}`}>
+                <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${launchDotClass(runtimeTone)}`} />
+                {wakeState === "waking" ? "Secure worker starting" : startup?.runtime.label ?? (failed ? "Status unavailable" : "Checking worker")}
+              </span>
+              <span className={`inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium ${
+                startup?.live_trading.byo_live_trading_enabled ? launchToneClass("good") : launchToneClass("warn")
+              }`}>
+                <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
+                  startup?.live_trading.byo_live_trading_enabled ? launchDotClass("good") : launchDotClass("warn")
+                }`} />
+                BYO live {startup?.live_trading.byo_live_trading_enabled ? "enabled" : "locked"}
+              </span>
+            </div>
+          </div>
+
+          <div className="min-w-0">
+            <div className="flex gap-2 overflow-x-auto pb-1 sm:grid sm:grid-cols-2 sm:overflow-visible sm:pb-0 xl:grid-cols-4">
+              {(venues.length ? venues : fallbackStartupVenues()).map((venue) => {
+                const chartBacked = venue.id === "hyperliquid" || venue.id === "phoenix" || venue.id === "coinbase";
+                const selected = chartBacked && venue.id === selectedVenueId;
+                return (
+                  <button
+                    key={venue.id}
+                    type="button"
+                    disabled={!chartBacked}
+                    onClick={() => onSelectVenue(venue.id)}
+                    className={`min-h-[8.5rem] w-[13rem] shrink-0 rounded-md border p-3 text-left transition sm:w-auto ${
+                      selected
+                        ? "border-[#5aa7ff]/80 bg-[#10213a] shadow-[inset_0_1px_0_rgba(220,238,255,0.1),0_0_18px_-8px_rgba(90,167,255,0.8)]"
+                        : "border-[#1e2a3a] bg-[#070b12] hover:border-[#33435d]"
+                    } ${chartBacked ? "" : "cursor-default opacity-80"}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-sm font-semibold text-[#eef1f8]">{venue.label}</span>
+                      <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] ${launchStatusClass(venue.status_tone)}`}>
+                        {venue.can_start_live ? "live" : venue.live_gate === "green" ? "open" : "locked"}
+                      </span>
+                    </div>
+                    <p className="mt-2 min-h-[2rem] text-xs leading-4 text-[#8b95a8]">{venue.headline}</p>
+                    <div className="mt-3 flex items-center justify-between gap-2 border-t border-[#141d2e] pt-2">
+                      <span className="min-w-0 truncate text-[11px] text-[#6f7d9a]">{agentAccessCopy(venue)}</span>
+                      {chartBacked ? (
+                        <ArrowRight className="h-3.5 w-3.5 shrink-0 text-[#566278]" />
+                      ) : (
+                        <Wallet className="h-3.5 w-3.5 shrink-0 text-[#566278]" />
+                      )}
+                    </div>
+                    <p className={`mt-2 text-[11px] leading-4 ${launchTextToneClass(venue.status_tone)}`}>
+                      {venue.status_label}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+              <p className={`text-xs leading-5 ${wakeState === "error" || failed ? "text-rose-300" : "text-[#8b95a8]"}`}>
+                {failed && !startup ? "Live agent status is unavailable right now." : actionMessage}
+              </p>
+              <button
+                type="button"
+                onClick={handlePrimaryAction}
+                disabled={actionDisabled}
+                className="trade-action inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {wakeState === "waking" ? (
+                  <RefreshCcw className="h-4 w-4 animate-spin" />
+                ) : !authenticated ? (
+                  <KeyRound className="h-4 w-4" />
+                ) : (
+                  <ShieldCheck className="h-4 w-4" />
+                )}
+                {actionLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function fallbackStartupVenues(): PublicAgentStartupVenue[] {
+  return [
+    fallbackStartupVenue("hyperliquid", "Hyperliquid", "Scoped API wallet"),
+    fallbackStartupVenue("phoenix", "Phoenix", "Eligible wallet live path"),
+    fallbackStartupVenue("jupiter", "Jupiter", "Sealed Solana swap authority"),
+    fallbackStartupVenue("coinbase", "Coinbase", "Scoped Coinbase key"),
+  ];
+}
+
+function fallbackStartupVenue(
+  id: PublicAgentStartupVenue["id"],
+  label: string,
+  headline: string,
+): PublicAgentStartupVenue {
+  return {
+    id,
+    label,
+    headline,
+    live_gate: "blocked",
+    user_access: "sign_in_required",
+    status_label: "Checking access",
+    status_tone: "neutral",
+    next_action: "Checking",
+    can_prepare: false,
+    can_start_live: false,
+    passport_permission_commitment: null,
+    vault_commitment: null,
+  };
+}
+
+function agentAccessCopy(venue: PublicAgentStartupVenue) {
+  if (venue.can_start_live) return "Agent ready";
+  if (venue.user_access === "ready") return "Access sealed";
+  if (venue.user_access === "wallet_required") return "Wallet needed";
+  if (venue.user_access === "connect_required") return "Connect scoped access";
+  if (venue.live_gate !== "green") return "Live gate locked";
+  return venue.next_action;
+}
+
+function launchToneClass(tone: "good" | "warn" | "neutral") {
+  if (tone === "good") return "border-emerald-400/35 bg-emerald-400/10 text-emerald-200";
+  if (tone === "warn") return "border-[#f8e56b]/35 bg-[#f8e56b]/10 text-[#fff27a]";
+  return "border-[#26344a] bg-[#0a0f18] text-[#8b95a8]";
+}
+
+function launchStatusClass(tone: PublicAgentStartupVenue["status_tone"]) {
+  if (tone === "good") return "bg-emerald-400/12 text-emerald-200";
+  if (tone === "warn") return "bg-[#f8e56b]/12 text-[#fff27a]";
+  if (tone === "primary") return "bg-[#5aa7ff]/12 text-[#a8d8ff]";
+  return "bg-[#1b2535] text-[#8b95a8]";
+}
+
+function launchTextToneClass(tone: PublicAgentStartupVenue["status_tone"]) {
+  if (tone === "good") return "text-emerald-300";
+  if (tone === "warn") return "text-[#fff27a]";
+  if (tone === "primary") return "text-[#a8d8ff]";
+  return "text-[#6f7d9a]";
+}
+
+function launchDotClass(tone: "good" | "warn" | "neutral") {
+  if (tone === "good") return "bg-emerald-300 shadow-[0_0_8px_rgba(110,231,183,0.8)]";
+  if (tone === "warn") return "bg-[#fff27a] shadow-[0_0_8px_rgba(248,229,107,0.8)]";
+  return "bg-[#566278]";
+}
+
 function AgentActivity({
   authenticated,
   onSignIn,
@@ -1983,7 +2348,7 @@ function AgentActivity({
     return (
       <p className="px-4 py-4 text-xs leading-5 text-[#566278]">
         No agent sessions yet. Drag the entry and stop lines on the chart, then preview the plan and
-        execute it live to start an agent.
+        arm an agent.
       </p>
     );
   }
@@ -1992,25 +2357,83 @@ function AgentActivity({
     .slice(0, 5);
   return (
     <div className="grid gap-2 px-4 py-3">
-      {shown.map((session) => (
-        <div key={session.autopilot_session_id} className="rounded-md border border-[#1e2a3a] bg-[#090d14] px-3 py-2 shadow-[inset_0_1px_0_rgba(220,238,255,0.04)]">
-          <div className="flex items-center justify-between gap-2 text-xs">
-            <span className="flex items-center gap-1.5 font-medium capitalize text-[#eef1f8]">
-              <span aria-hidden className={`trade-live-dot h-1.5 w-1.5 rounded-full ${autopilotStatusDot(session.status)}`} />
-              {session.status.replaceAll("_", " ")}
-            </span>
-            <span className="font-mono text-[10px] tabular-nums text-[#566278]">{formatAgo(session.updated_at)}</span>
+      {shown.map((session) => {
+        const copy = autopilotStatusCopy(session);
+        return (
+          <div key={session.autopilot_session_id} className="rounded-md border border-[#1e2a3a] bg-[#090d14] px-3 py-2 shadow-[inset_0_1px_0_rgba(220,238,255,0.04)]">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="flex items-center gap-1.5 font-medium text-[#eef1f8]">
+                <span aria-hidden className={`trade-live-dot h-1.5 w-1.5 rounded-full ${autopilotStatusDot(session.status)}`} />
+                {copy.label}
+              </span>
+              <span className="font-mono text-[10px] tabular-nums text-[#566278]">{formatAgo(session.updated_at)}</span>
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-[#8b95a8]">
+              <span className="shrink-0 font-mono tabular-nums">
+                {session.order_count} order{session.order_count === 1 ? "" : "s"}
+              </span>
+              <span className="truncate text-right">{copy.nextStep}</span>
+            </div>
           </div>
-          <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-[#8b95a8]">
-            <span className="shrink-0 font-mono tabular-nums">
-              {session.order_count} order{session.order_count === 1 ? "" : "s"}
-            </span>
-            <span className="truncate text-right">{session.next_step}</span>
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
+}
+
+function autopilotStatusCopy(session: PrivateAutopilotSession): { label: string; nextStep: string } {
+  if (session.execution_enabled || session.status === "running") {
+    return {
+      label: "Agent live",
+      nextStep: session.next_step || "Watching and allowed to execute inside your plan.",
+    };
+  }
+  if (session.status === "watching") {
+    return {
+      label: "Watching market",
+      nextStep: session.next_step || "Waiting for the trigger before submitting an order.",
+    };
+  }
+  if (session.status === "pending_funding") {
+    return {
+      label: "Funding needed",
+      nextStep: "No order sent. Fund or connect venue funds, then refresh status.",
+    };
+  }
+  if (session.status === "pending_worker") {
+    return {
+      label: "Worker starting",
+      nextStep: session.next_step || "Waiting for the private worker to accept the session.",
+    };
+  }
+  if (session.status === "armed") {
+    return {
+      label: "Agent staged",
+      nextStep: session.next_step || "No order sent until execution is enabled.",
+    };
+  }
+  if (session.status === "paused") {
+    return {
+      label: "Paused",
+      nextStep: session.next_step || "Resume when you want the agent to continue.",
+    };
+  }
+  if (session.status === "blocked") {
+    return {
+      label: "Blocked",
+      nextStep: session.next_step || "Resolve the blocker before this session can execute.",
+    };
+  }
+  if (session.status === "killed") {
+    return {
+      label: "Killed",
+      nextStep: session.next_step || "Create a new plan to continue.",
+    };
+  }
+  return {
+    label: "Expired",
+    nextStep: session.next_step || "Create a new agent session.",
+  };
 }
 
 function autopilotStatusDot(status: PrivateAutopilotStatus) {

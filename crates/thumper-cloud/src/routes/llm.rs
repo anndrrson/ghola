@@ -145,6 +145,7 @@ pub async fn list_providers() -> Json<Vec<ProviderInfo>> {
         LlmProvider::DeepSeek,
         LlmProvider::Cerebras,
         LlmProvider::OpenRouter,
+        LlmProvider::Venice,
         LlmProvider::Community,
     ];
 
@@ -169,6 +170,7 @@ pub async fn list_providers() -> Json<Vec<ProviderInfo>> {
                 LlmProvider::DeepSeek => "DeepSeek",
                 LlmProvider::Cerebras => "Cerebras",
                 LlmProvider::OpenRouter => "OpenRouter",
+                LlmProvider::Venice => "Venice AI",
                 LlmProvider::Community => "Community GPU",
             };
             let requires_api_key = p != LlmProvider::Ollama && p != LlmProvider::Community;

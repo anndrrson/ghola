@@ -1,4 +1,7 @@
-import { submitPublicLivePhoenixOrder } from "@/lib/private-account-public-live";
+import {
+  publicLivePhoenixRevenueGuard,
+  submitPublicLivePhoenixOrder,
+} from "@/lib/private-account-public-live";
 import {
   preparePublicLivePhoenixAccess,
   publicLiveJson,
@@ -14,6 +17,13 @@ export async function POST(request: Request) {
   }
   const owner = await publicLivePhoenixOwnerFromBody(body);
   if (!owner.ok) return owner.response;
+  const revenueGuard = publicLivePhoenixRevenueGuard();
+  if (!revenueGuard.ok) {
+    return publicLiveJson({
+      error: revenueGuard.error,
+      entitlement_required: revenueGuard.entitlement_required,
+    }, revenueGuard.status);
+  }
 
   const prepared = await preparePublicLivePhoenixAccess({
     body: body as Record<string, unknown>,

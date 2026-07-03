@@ -23,10 +23,10 @@ const funnelDisplay = Funnel_Display({
 });
 
 // metadataBase tells Next.js how to resolve relative URLs in the
-// metadata blocks below (opengraph-image.tsx ships its own absolute
-// URL, but openGraph.url and friends need this as a base). If the
-// site ever moves off the apex domain this is the one place to flip.
+// metadata blocks below. If the site ever moves off the apex domain
+// this is the one place to flip.
 const SITE_URL = "https://ghola.xyz";
+const SOCIAL_IMAGE_URL = `${SITE_URL}/og/trade-like-a-ghost-v2`;
 
 const SHARED_TITLE = "ghola — trade like a ghost";
 const SHARED_DESCRIPTION =
@@ -45,10 +45,9 @@ export const metadata: Metadata = {
   other: {
     "mobile-web-app-capable": "yes",
   },
-  // Open Graph block. Image is auto-wired by opengraph-image.tsx at
-  // the app root — no need to set images here. siteName and type
-  // matter for richer unfurls (Slack and LinkedIn use them to
-  // disambiguate the card layout).
+  // Open Graph block. Use an explicit versioned social-image URL so
+  // crawlers that aggressively cache card assets have to fetch the
+  // current "Trade like a ghost" preview.
   openGraph: {
     title: SHARED_TITLE,
     description: SHARED_DESCRIPTION,
@@ -56,14 +55,27 @@ export const metadata: Metadata = {
     siteName: "ghola",
     type: "website",
     locale: "en_US",
+    images: [
+      {
+        url: SOCIAL_IMAGE_URL,
+        width: 1200,
+        height: 630,
+        type: "image/png",
+        alt: SHARED_TITLE,
+      },
+    ],
   },
   // summary_large_image is the wide-card variant Twitter/X uses.
-  // twitter.image falls back to og:image automatically when omitted,
-  // so the dynamic opengraph-image.tsx serves both.
   twitter: {
     card: "summary_large_image",
     title: SHARED_TITLE,
     description: SHARED_DESCRIPTION,
+    images: [
+      {
+        url: SOCIAL_IMAGE_URL,
+        alt: SHARED_TITLE,
+      },
+    ],
   },
 };
 

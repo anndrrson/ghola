@@ -108,6 +108,81 @@ export interface PrivateAccountLiveTradingStatus {
   checked_at: string;
 }
 
+export type PublicAgentStartupVenueId = "coinbase" | "jupiter" | "phoenix" | "hyperliquid";
+
+export interface PublicAgentStartupVenue {
+  id: PublicAgentStartupVenueId;
+  label: string;
+  headline: string;
+  live_gate: "green" | "blocked";
+  user_access: "sign_in_required" | "wallet_required" | "ready" | "connect_required";
+  status_label: string;
+  status_tone: "good" | "warn" | "primary" | "neutral";
+  next_action: string;
+  can_prepare: boolean;
+  can_start_live: boolean;
+  passport_permission_commitment: string | null;
+  vault_commitment: string | null;
+}
+
+export interface PublicAgentStartupStatus {
+  version: 1;
+  checked_at: string;
+  authenticated: boolean;
+  runtime: {
+    status: "ready" | "warming" | "blocked";
+    ready: boolean;
+    selected_provider: string | null;
+    label: string;
+    message: string;
+  };
+  live_trading: {
+    status: "green" | "red" | string;
+    live_submit_mode: "disabled" | "byo_mainnet" | "pooled_and_byo" | string;
+    byo_live_trading_enabled: boolean;
+    pooled_live_trading_enabled: boolean;
+    gate_commitment?: string | null;
+  };
+  agent_passport: {
+    status: "active" | "blocked";
+    passport_commitment: string;
+    ready_venues: string[];
+  } | null;
+  venues: PublicAgentStartupVenue[];
+  primary_action: {
+    label: string;
+    enabled: boolean;
+    message: string;
+  };
+  startup_commitment: string;
+}
+
+export interface PublicAgentWakeResponse {
+  version: 1;
+  status: "ready" | "warming" | "blocked";
+  ready: boolean;
+  message: string;
+  action?: "already_running" | "wake_requested" | "wake_checked";
+  lease_ms?: number;
+  lease_expires_at?: string;
+  provisioning?: {
+    attempted: boolean;
+    ready: boolean;
+    status: string;
+    reason: string | null;
+    cvm_name: string | null;
+  };
+  provider?: {
+    selected_provider: string | null;
+    remote_execution_ready: boolean;
+    available: boolean;
+    attested: boolean;
+    supports_trading_execution: boolean;
+    cvm_status: unknown;
+  };
+  checked_at?: string;
+}
+
 export interface PrivateAutopilotAgentMandate {
   strategy_profile: string;
   entry_trigger: string;
@@ -709,6 +784,19 @@ export async function getPrivateAccountLiveTradingStatus(): Promise<PrivateAccou
   });
 }
 
+export async function getPublicAgentStartupStatus(): Promise<PublicAgentStartupStatus> {
+  return privateAccountFetch("/v1/private-account/agent/startup", {
+    method: "GET",
+  });
+}
+
+export async function wakePublicAgentWorker(): Promise<PublicAgentWakeResponse> {
+  return privateAccountFetch("/v1/private-account/agent/wake", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function getHyperliquidExecutionVaultStatus() {
   return privateAccountFetch("/v1/private-account/hyperliquid/vault", {
     method: "GET",
@@ -957,6 +1045,33 @@ export async function armVenueExecutionAgent(input: {
       max_notional_bucket: input.max_notional_bucket || "25",
       max_order_count: input.max_order_count ?? 10,
       kill_switch: input.kill_switch === true,
+    }),
+  });
+}
+
+export async function linkPrivateAgentPlatform(input: {
+  venue_id?: GholaVenueId | PrivateAutopilotVenueId;
+  platform_class?: GholaPlatformClass;
+  execution_mode?: CoinbaseExecutionMode | GholaVenueExecutionMode;
+  permission_attestation?: {
+    can_read?: boolean;
+    can_trade?: boolean;
+    can_withdraw?: boolean;
+  };
+  encrypted_execution_vault?: unknown;
+  vault_commitment?: string;
+  encrypted_vault_commitment?: string;
+}) {
+  return privateAccountFetch("/v1/private-account/platforms/link", {
+    method: "POST",
+    body: JSON.stringify({
+      permission_attestation: {
+        can_read: true,
+        can_trade: true,
+        can_withdraw: false,
+        ...(input.permission_attestation ?? {}),
+      },
+      ...input,
     }),
   });
 }
@@ -1436,6 +1551,7 @@ const LIVE_GUARDED_MUTATION_PATHS = [
   /^\/v1\/private-account\/hyperliquid\/agent\/session$/,
   /^\/v1\/private-account\/hyperliquid\/vault$/,
   /^\/v1\/private-account\/omnibus\/(?:allocate|reconcile)$/,
+  /^\/v1\/private-account\/platforms\/link$/,
   /^\/v1\/private-account\/venues\/[^/]+\/(?:agent\/session|eligibility|pool\/allocate|preflight|reconcile|secret-handles\/create|stealth-account\/create|vault)$/,
 ];
 

@@ -67,6 +67,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  VERCEL_CLI_VERSION: 54.13.0
   WORKER_IMAGE: ghcr.io/anndrrson/ghola:private-agent-worker-d36f9cc
   WORKER_IMAGE_DIGEST: sha256:f87611da536b4b9ac712829a045d7153e80dc71708739cab95c5b4fefd183eb4
 
@@ -161,7 +162,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           set -euo pipefail
-          npx vercel@latest link --yes --project "${{ inputs.vercel_project }}" --token "$VERCEL_TOKEN"
+          npx "vercel@${VERCEL_CLI_VERSION}" link --yes --project "${{ inputs.vercel_project }}" --token "$VERCEL_TOKEN"
 
       - name: Push production env vars to Vercel
         env:
@@ -176,12 +177,12 @@ jobs:
           set -euo pipefail
           setenv() {
             local name="$1" value="$2"
-            npx vercel@latest env rm "$name" production --yes --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
-            printf '%s' "$value" | npx vercel@latest env add "$name" production --token "$VERCEL_TOKEN" >/dev/null
+            npx "vercel@${VERCEL_CLI_VERSION}" env rm "$name" production --yes --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
+            printf '%s' "$value" | npx "vercel@${VERCEL_CLI_VERSION}" env add "$name" production --token "$VERCEL_TOKEN" >/dev/null
             echo "set $name"
           }
           rmenv() {
-            npx vercel@latest env rm "$1" production --yes --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
+            npx "vercel@${VERCEL_CLI_VERSION}" env rm "$1" production --yes --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
             echo "removed $1"
           }
           setenv GHOLA_PRIVATE_ACCOUNT_DATABASE_URL "$DB_URL"
@@ -192,6 +193,10 @@ jobs:
           setenv PRIVATE_AGENT_FUNDING_SIGNING_KEY "$FUNDING_SIGNING_KEY"
           setenv GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 "$FUNDING_SIGNER_PUBLIC_KEY"
           setenv GHOLA_PRIVATE_AGENT_PROVIDER "phala"
+          setenv GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN "true"
+          setenv GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES "10"
+          setenv GHOLA_PRIVATE_ACCOUNT_LIVE_TRADE_RESERVATION_SECONDS "600"
+          setenv GHOLA_PRIVATE_ACCOUNT_REVENUE_GUARD_MODE "enforce"
           if [ "${{ inputs.arm_phala }}" = "true" ]; then
             # Deliberate re-arm: Phala key present, JIT on, lockdowns off.
             setenv PHALA_CLOUD_API_KEY "$PHALA_KEY"
@@ -224,7 +229,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           set -euo pipefail
-          url=$(npx vercel@latest deploy --prod --yes --archive=tgz --token "$VERCEL_TOKEN")
+          url=$(npx "vercel@${VERCEL_CLI_VERSION}" deploy --prod --yes --archive=tgz --token "$VERCEL_TOKEN")
           echo "deployment_url=$url" >> "$GITHUB_ENV"
           echo "## Web deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "- $url" >> "$GITHUB_STEP_SUMMARY"

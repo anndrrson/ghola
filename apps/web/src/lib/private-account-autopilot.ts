@@ -1176,7 +1176,38 @@ function parseWorkerUrl(value: string | null | undefined): URL | null {
 }
 
 function phalaAutopilotWakeEnabled(env: Record<string, string | undefined>): boolean {
-  return env.GHOLA_PRIVATE_AGENT_JIT_PROVISIONING?.trim().toLowerCase() === "true";
+  if (
+    boolEnvValue(env.GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED) === true ||
+    boolEnvValue(env.GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN) === true
+  ) return false;
+
+  const spendArmed = boolEnvValue(env.GHOLA_PRIVATE_AGENT_SPEND_ARMED);
+  if (spendArmed === false) return false;
+
+  const wakeOnUse = boolEnvValue(env.GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED);
+  if (wakeOnUse !== null) return wakeOnUse;
+
+  if (boolEnvValue(env.GHOLA_PRIVATE_AGENT_JIT_PROVISIONING) === true) return true;
+
+  if (spendArmed === true) return true;
+  return Boolean(phalaApiKeyForEnv(env) && phalaWorkerTokenForEnv(env));
+}
+
+function boolEnvValue(value: string | undefined): boolean | null {
+  const lowered = value?.trim().toLowerCase();
+  if (lowered === "true") return true;
+  if (lowered === "false") return false;
+  return null;
+}
+
+function phalaApiKeyForEnv(env: Record<string, string | undefined>): string | null {
+  return env.PHALA_CLOUD_API_KEY?.trim() || env.PHALA_API_KEY?.trim() || null;
+}
+
+function phalaWorkerTokenForEnv(env: Record<string, string | undefined>): string | null {
+  return env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+    env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
+    null;
 }
 
 function boundedIntEnv(

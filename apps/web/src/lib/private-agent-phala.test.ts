@@ -7,6 +7,8 @@ import {
   phalaIdleShutdownEnabled,
   phalaJitProvisioningConfigIssue,
   phalaJitProvisioningConfigured,
+  phalaJitProvisioningEnabled,
+  phalaWakeOnUseEnabled,
   privateAgentRemoteExecutionDisabled,
   privateAgentSpendArmed,
   phalaWorkerImageConfiguredForRequestedMode,
@@ -26,6 +28,7 @@ const TEST_ENV_KEYS = [
   "GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED",
   "GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN",
   "GHOLA_PRIVATE_AGENT_SPEND_ARMED",
+  "GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED",
   "GHOLA_PRIVATE_AGENT_STATE_STORE",
   "GHOLA_PRIVATE_AGENT_STATE_POSTGRES_URL",
   "GHOLA_PRIVATE_AGENT_FUNDING_SIGNING_KEY",
@@ -237,19 +240,45 @@ describe("private-agent Phala provisioning", () => {
     expect(phalaIdleShutdownEnabled()).toBe(false);
   });
 
-  it("requires an explicit spend arm before production can wake remote execution", () => {
+  it("auto-arms production wake-on-use when Phala credentials are configured", () => {
     setTestEnv({
-      GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "true",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
+      GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "false",
+      PHALA_CLOUD_API_KEY: "phala-key",
       VERCEL_ENV: "production",
     });
 
-    expect(privateAgentSpendArmed()).toBe(false);
-    expect(privateAgentRemoteExecutionDisabled()).toBe(true);
-    expect(phalaIdleShutdownEnabled()).toBe(true);
-
-    process.env.GHOLA_PRIVATE_AGENT_SPEND_ARMED = "true";
     expect(privateAgentSpendArmed()).toBe(true);
     expect(privateAgentRemoteExecutionDisabled()).toBe(false);
+    expect(phalaWakeOnUseEnabled()).toBe(true);
+    expect(phalaJitProvisioningEnabled()).toBe(true);
+    expect(phalaIdleShutdownEnabled()).toBe(true);
+
+    process.env.GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED = "false";
+    expect(privateAgentSpendArmed()).toBe(true);
+    expect(privateAgentRemoteExecutionDisabled()).toBe(false);
+    expect(phalaWakeOnUseEnabled()).toBe(true);
+    expect(phalaJitProvisioningEnabled()).toBe(true);
+
+    process.env.GHOLA_PRIVATE_AGENT_SPEND_ARMED = "false";
+    expect(privateAgentSpendArmed()).toBe(false);
+    expect(privateAgentRemoteExecutionDisabled()).toBe(true);
+    expect(phalaWakeOnUseEnabled()).toBe(false);
+    expect(phalaJitProvisioningEnabled()).toBe(false);
+  });
+
+  it("keeps explicit production spend locks authoritative", () => {
+    setTestEnv({
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
+      PHALA_CLOUD_API_KEY: "phala-key",
+      GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN: "true",
+      VERCEL_ENV: "production",
+    });
+
+    expect(privateAgentSpendArmed()).toBe(true);
+    expect(privateAgentRemoteExecutionDisabled()).toBe(true);
+    expect(phalaWakeOnUseEnabled()).toBe(false);
+    expect(phalaJitProvisioningEnabled()).toBe(false);
   });
 
   it("does not stop Phala while a private-agent lease is active", async () => {

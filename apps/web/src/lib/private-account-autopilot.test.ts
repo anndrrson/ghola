@@ -46,6 +46,10 @@ describe("private account autopilot sessions", () => {
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET;
     delete process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL;
     delete process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN;
+    delete process.env.GHOLA_PRIVATE_AGENT_JIT_PROVISIONING;
+    delete process.env.GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED;
+    delete process.env.PHALA_CLOUD_API_KEY;
+    delete process.env.PHALA_API_KEY;
     delete process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED;
     delete process.env.GHOLA_HYPERLIQUID_LIVE_MODE;
     delete process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS;
@@ -256,7 +260,7 @@ describe("private account autopilot sessions", () => {
     expect(created.events.some((event) => event.event_id === "worker_event_ready")).toBe(true);
   });
 
-  it("wakes Phala on demand before arming a worker autopilot session", async () => {
+  it("wakes Phala on demand from configured credentials before arming a worker autopilot session", async () => {
     const calls: string[] = [];
     const wakeReasons: string[] = [];
     const fetchImpl = async (input: URL | RequestInfo) => {
@@ -323,8 +327,9 @@ describe("private account autopilot sessions", () => {
       owner,
       new Date("2026-06-01T12:00:00.000Z"),
       {
-        GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "true",
         GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+        GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "false",
+        PHALA_CLOUD_API_KEY: "phala-key",
       },
       fetchImpl,
       {

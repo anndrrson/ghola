@@ -1,5 +1,5 @@
-use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
 use std::time::Duration;
 
 pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT,
     phone_number TEXT,
     timezone TEXT DEFAULT 'America/New_York',
-    tier TEXT DEFAULT 'free' CHECK (tier IN ('free', 'pro', 'unlimited')),
+    tier TEXT DEFAULT 'free' CHECK (tier IN ('free', 'pro', 'trial_pack', 'starter', 'private_agent', 'unlimited')),
+    tier_expires_at TIMESTAMPTZ,
     stripe_customer_id TEXT,
     said_identity_id TEXT,
     created_at TIMESTAMPTZ DEFAULT now(),
@@ -310,6 +311,7 @@ ALTER TABLE usage_tracking ADD COLUMN IF NOT EXISTS sms_count INT DEFAULT 0;
 
 -- Ensure tier column exists (may be missing if table was created without it)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS tier TEXT DEFAULT 'free';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS tier_expires_at TIMESTAMPTZ;
 
 -- Fix any existing rows with NULL tier
 UPDATE users SET tier = 'free' WHERE tier IS NULL;
@@ -338,11 +340,15 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_name = 'users' AND column_name = 'username') THEN
+               WHERE table_schema = current_schema()
+                 AND table_name = 'users'
+                 AND column_name = 'username') THEN
         ALTER TABLE users ALTER COLUMN username DROP NOT NULL;
     END IF;
     IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_name = 'users' AND column_name = 'wallet_spending') THEN
+               WHERE table_schema = current_schema()
+                 AND table_name = 'users'
+                 AND column_name = 'wallet_spending') THEN
         ALTER TABLE users ALTER COLUMN wallet_spending DROP NOT NULL;
     END IF;
 END
@@ -351,7 +357,26 @@ $$;
 -- Enterprise tier support
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
 ALTER TABLE users ADD CONSTRAINT users_tier_check
-    CHECK (tier IN ('free', 'pro', 'unlimited', 'enterprise'));
+    CHECK (tier IN ('free', 'pro', 'trial_pack', 'starter', 'private_agent', 'unlimited', 'enterprise'));
+
+CREATE TABLE IF NOT EXISTS private_agent_compute_reservations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL UNIQUE,
+    seconds BIGINT NOT NULL CHECK (seconds > 0),
+    reason TEXT NOT NULL DEFAULT 'private_agent_session'
+        CHECK (reason IN ('private_agent_session', 'live_trade_submit')),
+    status TEXT NOT NULL DEFAULT 'reserved'
+        CHECK (status IN ('reserved', 'completed', 'paused', 'failed')),
+    period_start DATE NOT NULL DEFAULT date_trunc('month', now())::date,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    released_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_private_agent_compute_reservations_user_period
+    ON private_agent_compute_reservations(user_id, period_start);
+CREATE INDEX IF NOT EXISTS idx_private_agent_compute_reservations_status
+    ON private_agent_compute_reservations(status, reason);
 
 -- Crypto wallet support
 CREATE TABLE IF NOT EXISTS user_wallets (

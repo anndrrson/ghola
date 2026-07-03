@@ -5,12 +5,13 @@ set -euo pipefail
 # Creates products, prices, and webhook endpoint via Stripe API
 #
 # Usage: STRIPE_SECRET_KEY=sk_live_xxx ./scripts/setup-stripe.sh <api_url>
-# Example: STRIPE_SECRET_KEY=sk_live_xxx ./scripts/setup-stripe.sh https://ghola-api.onrender.com
+# Example: STRIPE_SECRET_KEY=sk_live_xxx ./scripts/setup-stripe.sh https://api.ghola.xyz
 
 API_URL="${1:-}"
+WEBHOOK_PATH="${STRIPE_WEBHOOK_PATH:-/api/billing/webhook}"
 if [ -z "$API_URL" ]; then
   echo "Usage: STRIPE_SECRET_KEY=sk_live_xxx $0 <api_url>"
-  echo "Example: STRIPE_SECRET_KEY=sk_live_xxx $0 https://ghola-api.onrender.com"
+  echo "Example: STRIPE_SECRET_KEY=sk_live_xxx $0 https://api.ghola.xyz"
   exit 1
 fi
 
@@ -29,7 +30,7 @@ echo ""
 
 # --- Step 1: Create Products ---
 
-echo "1/5 Creating Consumer Pro product..."
+echo "1/10 Creating Consumer Pro product..."
 CONSUMER_PRO_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
   -u "$SK:" \
   -d "name=Ghola Consumer Pro" \
@@ -38,7 +39,7 @@ CONSUMER_PRO_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 echo "   Product: $CONSUMER_PRO_PRODUCT"
 
-echo "2/5 Creating Consumer Pro price ($9/mo)..."
+echo "2/10 Creating Consumer Pro price ($9/mo)..."
 CONSUMER_PRO_PRICE=$(curl -s -X POST "$STRIPE/prices" \
   -u "$SK:" \
   -d "product=$CONSUMER_PRO_PRODUCT" \
@@ -48,7 +49,7 @@ CONSUMER_PRO_PRICE=$(curl -s -X POST "$STRIPE/prices" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 echo "   Price: $CONSUMER_PRO_PRICE"
 
-echo "3/5 Creating Business product..."
+echo "3/10 Creating Business product..."
 BUSINESS_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
   -u "$SK:" \
   -d "name=Ghola Business" \
@@ -57,7 +58,7 @@ BUSINESS_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 echo "   Product: $BUSINESS_PRODUCT"
 
-echo "4/5 Creating Business price ($29/mo)..."
+echo "4/10 Creating Business price ($29/mo)..."
 BUSINESS_PRICE=$(curl -s -X POST "$STRIPE/prices" \
   -u "$SK:" \
   -d "product=$BUSINESS_PRODUCT" \
@@ -67,12 +68,81 @@ BUSINESS_PRICE=$(curl -s -X POST "$STRIPE/prices" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 echo "   Price: $BUSINESS_PRICE"
 
+echo "5/10 Creating Private Agent Trial Pack product..."
+PRIVATE_AGENT_TRIAL_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
+  -u "$SK:" \
+  -d "name=Ghola Private Agent Trial Pack" \
+  -d "description=5 secure private compute hours, valid for 14 days, no profit share" \
+  -d "metadata[ghola_tier]=trial_pack" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "   Product: $PRIVATE_AGENT_TRIAL_PRODUCT"
+
+echo "6/10 Creating Private Agent Trial Pack price ($9 one-time)..."
+PRIVATE_AGENT_TRIAL_PRICE=$(curl -s -X POST "$STRIPE/prices" \
+  -u "$SK:" \
+  -d "product=$PRIVATE_AGENT_TRIAL_PRODUCT" \
+  -d "lookup_key=ghola_private_agent_trial_pack_v1" \
+  -d "unit_amount=900" \
+  -d "currency=usd" \
+  -d "metadata[ghola_plan]=trial_pack" \
+  -d "metadata[tier]=trial_pack" \
+  -d "metadata[included_compute_seconds]=18000" \
+  -d "metadata[expires_days]=14" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "   Price: $PRIVATE_AGENT_TRIAL_PRICE"
+
+echo "7/10 Creating Private Agent Starter product..."
+PRIVATE_AGENT_STARTER_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
+  -u "$SK:" \
+  -d "name=Ghola Starter Agent" \
+  -d "description=Live secure worker, 20 private compute hours/month, 1 active confidential agent, no profit share" \
+  -d "metadata[ghola_tier]=starter" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "   Product: $PRIVATE_AGENT_STARTER_PRODUCT"
+
+echo "8/10 Creating Private Agent Starter price ($19/mo)..."
+PRIVATE_AGENT_STARTER_PRICE=$(curl -s -X POST "$STRIPE/prices" \
+  -u "$SK:" \
+  -d "product=$PRIVATE_AGENT_STARTER_PRODUCT" \
+  -d "lookup_key=ghola_private_agent_starter_v1" \
+  -d "unit_amount=1900" \
+  -d "currency=usd" \
+  -d "recurring[interval]=month" \
+  -d "metadata[ghola_plan]=starter" \
+  -d "metadata[tier]=starter" \
+  -d "metadata[included_compute_seconds]=72000" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "   Price: $PRIVATE_AGENT_STARTER_PRICE"
+
+echo "9/10 Creating Private Agent product..."
+PRIVATE_AGENT_PRODUCT=$(curl -s -X POST "$STRIPE/products" \
+  -u "$SK:" \
+  -d "name=Ghola Private Agent" \
+  -d "description=Live secure worker, 80 private compute hours/month, 1 active confidential agent, no profit share" \
+  -d "metadata[ghola_tier]=private_agent" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "   Product: $PRIVATE_AGENT_PRODUCT"
+
+echo "10/10 Creating Private Agent price ($49/mo)..."
+PRIVATE_AGENT_PRICE=$(curl -s -X POST "$STRIPE/prices" \
+  -u "$SK:" \
+  -d "product=$PRIVATE_AGENT_PRODUCT" \
+  -d "lookup_key=ghola_private_agent_v1" \
+  -d "unit_amount=4900" \
+  -d "currency=usd" \
+  -d "recurring[interval]=month" \
+  -d "metadata[ghola_plan]=private_agent" \
+  -d "metadata[tier]=private_agent" \
+  -d "metadata[included_compute_seconds]=288000" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+echo "   Price: $PRIVATE_AGENT_PRICE"
+
 # --- Step 2: Create Webhook Endpoint ---
 
-echo "5/5 Creating webhook endpoint..."
+echo "Creating webhook endpoint..."
 WEBHOOK_RESULT=$(curl -s -X POST "$STRIPE/webhook_endpoints" \
   -u "$SK:" \
-  -d "url=$API_URL/v1/billing/webhook" \
+  -d "url=$API_URL$WEBHOOK_PATH" \
   -d "enabled_events[]=checkout.session.completed" \
   -d "enabled_events[]=customer.subscription.updated" \
   -d "enabled_events[]=customer.subscription.deleted" \
@@ -96,6 +166,11 @@ echo "Set these environment variables on your API server (Render):"
 echo ""
 echo "  STRIPE_SECRET_KEY=$SK"
 echo "  STRIPE_WEBHOOK_SECRET=$WEBHOOK_SECRET"
+echo "  STRIPE_PRICE_PRO=$CONSUMER_PRO_PRICE"
+echo "  STRIPE_PRICE_PRIVATE_AGENT_TRIAL_PACK=$PRIVATE_AGENT_TRIAL_PRICE"
+echo "  STRIPE_PRICE_PRIVATE_AGENT_STARTER=$PRIVATE_AGENT_STARTER_PRICE"
+echo "  STRIPE_PRICE_PRIVATE_AGENT=$PRIVATE_AGENT_PRICE"
+echo "  STRIPE_PRICE_UNLIMITED=$BUSINESS_PRICE"
 echo "  STRIPE_PRICE_CONSUMER_PRO=$CONSUMER_PRO_PRICE"
 echo "  STRIPE_PRICE_BUSINESS=$BUSINESS_PRICE"
 echo ""
@@ -105,6 +180,6 @@ echo "  Webhooks: https://dashboard.stripe.com/webhooks"
 echo "  API Keys: https://dashboard.stripe.com/apikeys"
 echo ""
 echo "Next steps:"
-echo "  1. Copy the env vars above into Render's environment settings"
+echo "  1. Copy the env vars above into Thumper's production secrets"
 echo "  2. Verify webhook is receiving events in Stripe Dashboard > Webhooks"
-echo "  3. Test with a checkout at $API_URL/v1/billing/create-checkout"
+echo "  3. Test with a checkout at $API_URL/api/billing/checkout"

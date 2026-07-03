@@ -1714,6 +1714,45 @@ describe("private agent worker", () => {
     assert.equal(JSON.stringify(body).includes("wallet_private_key"), false);
   });
 
+  it("rejects submit requests without a platform fee policy when enforcement is enabled", async () => {
+    process.env.PRIVATE_AGENT_PLATFORM_FEE_POLICY_MODE = "enforce";
+    const workOrderCommitment = "connector_work_order_phoenix_fee_policy_required_123";
+    const response = await fetch(`${baseUrl}/venues/solana-perps/orders`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify({
+        version: 1,
+        venue_id: "phoenix",
+        platform_class: "solana_perps_market",
+        execution_mode: "user_stealth",
+        work_order_commitment: workOrderCommitment,
+        encrypted_execution_vault: await encryptedSolanaPerpsVault(baseUrl),
+        policy_commitment: "phoenix_policy_commitment_123",
+        operation_class: "perp_limit_order",
+        encrypted_execution_instruction_bundle: await encryptedInstruction(baseUrl, {
+          venue_id: "phoenix",
+          work_order_commitment: workOrderCommitment,
+          operation_class: "perp_limit_order",
+          order: {
+            market: "SOL-PERP",
+            side: "buy",
+            base_size: "0.1",
+            limit_price: "100",
+            tif: "Gtc",
+          },
+        }),
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.match(body.details.join(" "), /platform_fee_policy is required/);
+  });
+
   it("reconciles Solana perps work orders without exposing raw venue details", async () => {
     const response = await fetch(`${baseUrl}/venues/solana-perps/reconcile`, {
       method: "POST",

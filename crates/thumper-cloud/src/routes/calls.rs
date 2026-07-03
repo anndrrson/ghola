@@ -257,7 +257,9 @@ pub async fn call_webhook(
 
 async fn check_call_limit(state: &AppState, user_id: Uuid, tier: &str) -> Result<(), CloudError> {
     let max_calls = match tier {
-        "pro" => 30,
+        "trial_pack" => 10,
+        "starter" => 20,
+        "pro" | "private_agent" => 30,
         "unlimited" => i64::MAX,
         _ => 5, // free
     };

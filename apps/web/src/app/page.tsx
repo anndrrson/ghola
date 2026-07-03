@@ -62,7 +62,7 @@ export default function Home() {
         open={authOpen}
         onClose={() => setAuthOpen(false)}
         onModeChange={setAuthMode}
-        redirectTo="/trade"
+        redirectTo="/account?flow=trade"
       />
 
       <header className="relative flex h-14 items-center justify-between border-b border-[#182234] bg-gradient-to-b from-[#0a0e16] to-[#070a10] px-4 sm:px-6">
@@ -82,8 +82,8 @@ export default function Home() {
           >
             Sign in
           </button>
-          <Link href="/trade" className="trade-action rounded-md px-3 py-1.5 text-sm font-semibold">
-            Launch terminal
+          <Link href="/account?flow=trade" className="trade-action rounded-md px-3 py-1.5 text-sm font-semibold">
+            API-key trading
           </Link>
         </div>
       </header>
@@ -99,12 +99,15 @@ export default function Home() {
             <h1 className="font-display text-6xl font-semibold leading-[1.02] tracking-tight text-[#f6f8ff] [text-shadow:0_0_80px_rgba(90,167,255,0.25)] sm:text-8xl">
               Trade like a ghost.
             </h1>
+            <p className="max-w-2xl text-sm leading-6 text-[#9aa8bf] sm:text-base">
+              Bring scoped venue keys, seal a capped plan, and let the agent execute only inside your intent.
+            </p>
             <div className="flex flex-wrap items-center justify-center gap-3">
               <Link
-                href="/trade"
+                href="/account?flow=trade"
                 className="trade-action inline-flex h-12 items-center gap-2 rounded-md pl-6 pr-4.5 text-sm font-semibold"
               >
-                Launch terminal
+                Bring API keys to trade
                 <ArrowRight className="h-4 w-4" />
               </Link>
               <button
@@ -153,10 +156,10 @@ export default function Home() {
               The terminal is live.
             </h2>
             <Link
-              href="/trade"
+              href="/account?flow=trade"
               className="trade-action inline-flex h-12 items-center gap-2 rounded-md pl-6 pr-4.5 text-sm font-semibold"
             >
-              Launch terminal
+              Bring API keys to trade
               <ArrowRight className="h-4 w-4" />
             </Link>
           </div>

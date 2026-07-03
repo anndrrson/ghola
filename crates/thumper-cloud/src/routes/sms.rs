@@ -73,8 +73,13 @@ pub async fn send_sms(
                 crate::services::telegram::get_telegram_link(&state.db, claims.sub).await
             {
                 if let Some(ref token) = state.config.telegram_bot_token {
-                    let summary = format!("📱 SMS sent to {} ({}…)", req.to, &req.body.chars().take(40).collect::<String>());
-                    let _ = crate::services::telegram::notify_user(token, tg_link.0, &summary).await;
+                    let summary = format!(
+                        "📱 SMS sent to {} ({}…)",
+                        req.to,
+                        &req.body.chars().take(40).collect::<String>()
+                    );
+                    let _ =
+                        crate::services::telegram::notify_user(token, tg_link.0, &summary).await;
                 }
             }
 
@@ -89,13 +94,11 @@ pub async fn send_sms(
         }
         Err(e) => {
             let err_msg = e.to_string();
-            sqlx::query(
-                "UPDATE sms_actions SET status = 'failed', error = $1 WHERE id = $2",
-            )
-            .bind(&err_msg)
-            .bind(sms_id)
-            .execute(&state.db)
-            .await?;
+            sqlx::query("UPDATE sms_actions SET status = 'failed', error = $1 WHERE id = $2")
+                .bind(&err_msg)
+                .bind(sms_id)
+                .execute(&state.db)
+                .await?;
             Err(e)
         }
     }
@@ -138,7 +141,9 @@ pub async fn sms_webhook(
 
 async fn check_sms_limit(state: &AppState, user_id: Uuid, tier: &str) -> Result<(), CloudError> {
     let max_sms = match tier {
-        "pro" => 50,
+        "trial_pack" => 15,
+        "starter" => 30,
+        "pro" | "private_agent" => 50,
         "unlimited" => i64::MAX,
         _ => 10, // free
     };

@@ -31,6 +31,7 @@ pub enum LlmProvider {
     DeepSeek,
     Cerebras,
     OpenRouter,
+    Venice,
     Community,
 }
 
@@ -50,6 +51,9 @@ impl LlmProvider {
             LlmProvider::DeepSeek => "https://api.deepseek.com",
             LlmProvider::Cerebras => "https://api.cerebras.ai",
             LlmProvider::OpenRouter => "https://openrouter.ai/api",
+            // Base is `…/api`; the OpenAI-compat path appends `/v1/chat/completions`,
+            // yielding Venice's `https://api.venice.ai/api/v1/chat/completions`.
+            LlmProvider::Venice => "https://api.venice.ai/api",
             LlmProvider::Community => "",
         }
     }
@@ -69,6 +73,7 @@ impl LlmProvider {
             LlmProvider::DeepSeek => "deepseek-chat",
             LlmProvider::Cerebras => "llama-3.3-70b",
             LlmProvider::OpenRouter => "meta-llama/llama-3.3-70b-instruct:free",
+            LlmProvider::Venice => "zai-org-glm-5-2",
             LlmProvider::Community => "community",
         }
     }
@@ -88,6 +93,7 @@ impl LlmProvider {
             "deepseek" => LlmProvider::DeepSeek,
             "cerebras" => LlmProvider::Cerebras,
             "openrouter" => LlmProvider::OpenRouter,
+            "venice" => LlmProvider::Venice,
             "community" => LlmProvider::Community,
             _ => LlmProvider::Anthropic,
         }
@@ -108,6 +114,7 @@ impl LlmProvider {
                 | LlmProvider::DeepSeek
                 | LlmProvider::Cerebras
                 | LlmProvider::OpenRouter
+                | LlmProvider::Venice
         )
     }
 
@@ -175,6 +182,16 @@ impl LlmProvider {
                 "meta-llama/llama-3.3-70b-instruct:free",
                 "google/gemma-2-9b-it:free",
                 "mistralai/mistral-7b-instruct:free",
+            ],
+            // Curated from Venice's live catalogue; all advertise function-calling.
+            // The authoritative list is Venice's `/models` endpoint.
+            LlmProvider::Venice => vec![
+                "zai-org-glm-5-2",
+                "qwen-3-7-max",
+                "qwen3-235b-a22b-instruct-2507",
+                "venice-uncensored-1-2",
+                "mistral-small-3-2-24b-instruct",
+                "grok-4-3",
             ],
             LlmProvider::Community => vec![],
         }
@@ -1236,6 +1253,7 @@ pub fn supports_tool_use(provider: &LlmProvider) -> bool {
         LlmProvider::Qwen => true,
         LlmProvider::Glm => true,
         LlmProvider::Cerebras => true,
+        LlmProvider::Venice => true,
         // No tool-use support — these get the regex fallback client-side.
         LlmProvider::Ollama => false,
         LlmProvider::Community => false,
@@ -2024,6 +2042,23 @@ mod tests {
         assert!(supports_tool_use(&LlmProvider::Qwen));
         assert!(supports_tool_use(&LlmProvider::Glm));
         assert!(supports_tool_use(&LlmProvider::Cerebras));
+        assert!(supports_tool_use(&LlmProvider::Venice));
+    }
+
+    #[test]
+    fn venice_is_a_byom_openai_compatible_provider() {
+        // Stored config string must resolve to the Venice variant, not the
+        // Anthropic default — otherwise a Venice user's key is sent to
+        // `/v1/messages` instead of `/v1/chat/completions`.
+        assert_eq!(LlmProvider::from_str_loose("venice"), LlmProvider::Venice);
+        // Base has no `/v1`; the OpenAI-compat path appends it, producing
+        // Venice's real endpoint `https://api.venice.ai/api/v1/chat/completions`.
+        assert_eq!(
+            LlmProvider::Venice.default_base_url(),
+            "https://api.venice.ai/api"
+        );
+        assert!(LlmProvider::Venice.is_openai_compat());
+        assert!(!LlmProvider::Venice.available_models().is_empty());
     }
 
     #[test]
@@ -2061,6 +2096,9 @@ mod tests {
             stripe_secret_key: None,
             stripe_webhook_secret: None,
             stripe_price_pro: None,
+            stripe_price_private_agent_starter: None,
+            stripe_price_private_agent_trial_pack: None,
+            stripe_price_private_agent: None,
             stripe_price_unlimited: None,
             base_url: "http://localhost".into(),
             encryption_key: [0u8; 32],

@@ -28,6 +28,19 @@ import type {
   ThumperTelegramLinkCode,
   ThumperTelegramStatus,
 } from "@/lib/thumper-types";
+import {
+  PRIVATE_AGENT_ACTIVE_AGENT_LIMIT,
+  PRIVATE_AGENT_STARTER_ACTIVE_AGENT_LIMIT,
+  PRIVATE_AGENT_STARTER_INCLUDED_COMPUTE_SECONDS,
+  PRIVATE_AGENT_STARTER_MONTHLY_PRICE_USD,
+  PRIVATE_AGENT_INCLUDED_COMPUTE_SECONDS,
+  PRIVATE_AGENT_MONTHLY_PRICE_USD,
+  PRIVATE_AGENT_TRIAL_PACK_DAYS,
+  PRIVATE_AGENT_TRIAL_PACK_INCLUDED_COMPUTE_SECONDS,
+  PRIVATE_AGENT_TRIAL_PACK_PRICE_USD,
+  privateAgentComputeHours,
+  privateAgentIncludedComputeHours,
+} from "@/lib/private-agent-pricing";
 import { GholaLogo } from "@/components/GholaLogo";
 
 type Tab = "profile" | "model" | "usage" | "accounts" | "telegram" | "plan";
@@ -665,13 +678,22 @@ function PlanTab() {
     }
   };
 
-  const plans = [
+  const plans: Array<{
+    id: "free" | "pro" | "trial_pack" | "starter" | "private_agent" | "unlimited" | "enterprise";
+    name: string;
+    price: string;
+    period: string;
+    features: string[];
+    featured?: boolean;
+    badge?: string;
+    computeSeconds?: number;
+  }> = [
     {
       id: "free",
       name: "Free",
       price: "$0",
       period: "/forever",
-      features: ["5 calls/month", "10 emails/month", "Chat with AI"],
+      features: ["Explore Ghola", "Simulations and read-only flows", "No live secure-worker execution"],
     },
     {
       id: "pro",
@@ -681,11 +703,63 @@ function PlanTab() {
       features: ["30 calls/month", "50 emails/month", "BYOM support", "Priority responses"],
     },
     {
+      id: "trial_pack",
+      name: "Trial Pack",
+      price: `$${PRIVATE_AGENT_TRIAL_PACK_PRICE_USD}`,
+      period: " once",
+      badge: "Proof",
+      computeSeconds: PRIVATE_AGENT_TRIAL_PACK_INCLUDED_COMPUTE_SECONDS,
+      features: [
+        "Try real secure-worker execution",
+        `${privateAgentComputeHours(PRIVATE_AGENT_TRIAL_PACK_INCLUDED_COMPUTE_SECONDS)} private compute hours`,
+        `Expires after ${PRIVATE_AGENT_TRIAL_PACK_DAYS} days`,
+        "No profit share",
+      ],
+    },
+    {
+      id: "starter",
+      name: "Starter Agent",
+      price: `$${PRIVATE_AGENT_STARTER_MONTHLY_PRICE_USD}`,
+      period: "/month",
+      featured: true,
+      badge: "Best start",
+      computeSeconds: PRIVATE_AGENT_STARTER_INCLUDED_COMPUTE_SECONDS,
+      features: [
+        "Live secure worker",
+        `${privateAgentComputeHours(PRIVATE_AGENT_STARTER_INCLUDED_COMPUTE_SECONDS)} private compute hours/month`,
+        `${PRIVATE_AGENT_STARTER_ACTIVE_AGENT_LIMIT} active secure agent`,
+        "Small capped live actions",
+        "No profit share",
+      ],
+    },
+    {
+      id: "private_agent",
+      name: "Private Agent",
+      price: `$${PRIVATE_AGENT_MONTHLY_PRICE_USD}`,
+      period: "/month",
+      badge: "Scale",
+      computeSeconds: PRIVATE_AGENT_INCLUDED_COMPUTE_SECONDS,
+      features: [
+        "Live secure worker",
+        `${privateAgentIncludedComputeHours()} private compute hours/month`,
+        `${PRIVATE_AGENT_ACTIVE_AGENT_LIMIT} active secure agent`,
+        "Higher live trading caps",
+        "Compute stops when allowance runs out",
+        "No profit share",
+      ],
+    },
+    {
       id: "unlimited",
       name: "Unlimited",
       price: "$29.99",
       period: "/month",
-      features: ["Unlimited calls", "Unlimited emails", "BYOM support", "API access (100k/mo)", "Priority support"],
+      features: [
+        "Unlimited calls",
+        "Unlimited emails",
+        "BYOM support",
+        "API access (100k/mo)",
+        "Private-agent compute sold separately",
+      ],
     },
     {
       id: "enterprise",
@@ -698,6 +772,22 @@ function PlanTab() {
 
   return (
     <div className="space-y-4">
+      {billing?.private_agent_compute && (
+        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5">
+          <div className="flex items-baseline justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-medium text-[#eef1f8]">Private compute</h3>
+              <p className="mt-1 text-xs text-[#8b95a8]">
+                {Math.floor(billing.private_agent_compute.remaining_seconds / 3600)} of{" "}
+                {Math.floor(billing.private_agent_compute.included_seconds / 3600)} hours left this period
+              </p>
+            </div>
+            <p className="text-xs text-[#4a5568]">
+              {billing.private_agent_compute.active_agent_count}/{billing.private_agent_compute.active_agent_limit} active
+            </p>
+          </div>
+        </div>
+      )}
       {plans.map((plan) => {
         const isCurrent = billing?.tier === plan.id;
         return (
@@ -706,6 +796,8 @@ function PlanTab() {
             className={`rounded-xl border p-5 ${
               isCurrent
                 ? "border-[#3da8ff] bg-[#3da8ff]/5"
+                : plan.featured
+                  ? "border-[#2f7fd0] bg-[#0f1520]"
                 : "border-[#1e2a3a] bg-[#0f1117]"
             }`}
           >
@@ -713,6 +805,11 @@ function PlanTab() {
               <div>
                 <h3 className="text-sm font-medium text-[#eef1f8]">
                   {plan.name}
+                  {(plan.featured || plan.badge) && !isCurrent && (
+                    <span className="ml-2 text-[10px] font-medium text-[#3da8ff] bg-[#3da8ff]/10 px-2 py-0.5 rounded-full">
+                      {plan.badge ?? "Live"}
+                    </span>
+                  )}
                   {isCurrent && (
                     <span className="ml-2 text-[10px] font-medium text-[#3da8ff] bg-[#3da8ff]/10 px-2 py-0.5 rounded-full">
                       Current
@@ -732,6 +829,12 @@ function PlanTab() {
                   {f}
                 </li>
               ))}
+              {plan.computeSeconds && (
+                <li className="flex items-center gap-2 text-xs text-[#4a5568]">
+                  <Check className="h-3 w-3 text-[#3da8ff] shrink-0" />
+                  Includes {plan.computeSeconds.toLocaleString()} metered agent seconds
+                </li>
+              )}
             </ul>
             {!isCurrent && plan.id !== "free" && plan.id !== "enterprise" && (
               <button
@@ -739,7 +842,11 @@ function PlanTab() {
                 disabled={upgrading === plan.id}
                 className="w-full rounded-lg bg-[#3da8ff] py-2 text-xs font-medium text-[#08090d] hover:bg-[#5bb8ff] disabled:opacity-50 transition-colors cursor-pointer"
               >
-                {upgrading === plan.id ? "Redirecting..." : `Upgrade to ${plan.name}`}
+                {upgrading === plan.id
+                  ? "Redirecting..."
+                  : plan.id === "trial_pack"
+                    ? "Try secure worker"
+                    : `Upgrade to ${plan.name}`}
               </button>
             )}
             {!isCurrent && plan.id === "enterprise" && (

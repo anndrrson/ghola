@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
+  fetchWithTimeout,
   fetchSessionUser,
   SESSION_COOKIE_NAME,
+  THUMPER_API_BASE,
   userFromToken,
   type SessionUser,
 } from "@/app/api/auth/session/_lib";
@@ -70,6 +72,7 @@ import {
 import {
   buildConnectorWorkOrder,
   compilePrivateConnectorIntent,
+  connectorPlatformFeePolicy,
   connectorPreviewContext,
   connectorReadiness,
   connectorSandboxPolicy,
@@ -85,6 +88,7 @@ import {
   type GholaConnectorManifest,
   type GholaConnectorReadiness,
   type GholaConnectorResult,
+  type GholaConnectorPlatformFeePolicy,
   type GholaConnectorWorkOrder,
   type GholaLinkabilityScore,
 } from "@/lib/private-account-connectors";
@@ -308,11 +312,21 @@ import {
   type GholaPreparedAuctionTransaction,
 } from "@/lib/private-account-auction-onchain";
 import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server";
-import { providerReadyForPrivateAgents } from "@/lib/private-agent-runtime";
+import {
+  hasPrivateAgentEntitlement,
+  providerReadyForPrivateAgents,
+} from "@/lib/private-agent-runtime";
+import {
+  DEFAULT_PRIVATE_EXECUTION_FEE_BPS,
+  DEFAULT_PRIVATE_EXECUTION_MIN_FEE_MICRO_USDC,
+} from "@/lib/private-execution";
 import {
   phalaIdleLeaseMs,
   wakePhalaPrivateAgentForUse,
 } from "@/lib/private-agent-phala";
+import {
+  privateAgentLiveTradeReservationSeconds,
+} from "@/lib/private-agent-pricing";
 import { enterpriseGateStatus } from "@/lib/enterprise-gate-status";
 
 export const PRIVATE_ACCOUNT_HEADERS = {
@@ -598,6 +612,7 @@ export function rejectForbiddenFields(body: unknown) {
 
 interface PrivateAccountLiveGuardOptions {
   allowMobileWalletProof?: boolean;
+  requireRevenue?: boolean;
 }
 
 type PrivateAccountLiveGuardResult =
@@ -605,6 +620,24 @@ type PrivateAccountLiveGuardResult =
       ok: true;
       body: unknown;
       owner: PrivateAccountRequestOwner;
+      revenue?: PrivateAccountLiveRevenueReservation;
+    }
+  | {
+      ok: false;
+      response: Response;
+    };
+
+export interface PrivateAccountLiveRevenueReservation {
+  session_id: string;
+  reservation_id: string | null;
+  reserved_seconds: number;
+  authorization: string;
+}
+
+type PrivateAccountLiveRevenueGuardResult =
+  | {
+      ok: true;
+      reservation?: PrivateAccountLiveRevenueReservation;
     }
   | {
       ok: false;
@@ -637,6 +670,12 @@ export async function privateAccountLiveGuard(
 
   const proofRejected = await verifyLiveGuardRequestProof(req, owner, body, options);
   if (proofRejected) return { ok: false, response: proofRejected };
+
+  if (options.requireRevenue) {
+    const revenue = await verifyLiveRevenueGuard(req, owner, body);
+    if (!revenue.ok) return { ok: false, response: revenue.response };
+    return { ok: true, body, owner, revenue: revenue.reservation };
+  }
 
   return { ok: true, body, owner };
 }
@@ -791,6 +830,219 @@ function pruneLiveGuardProofNonces(now = Date.now()) {
 function positiveIntegerEnv(name: string, fallback: number): number {
   const parsed = Number.parseInt(process.env[name] ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function positiveIntegerValue(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function connectorPlatformFeeEnvConfig(env: Record<string, string | undefined> = process.env): {
+  fee_recipient: string;
+  fee_bps: number;
+  min_fee_micro_usdc: number;
+} | null {
+  const feeRecipient = env.GHOLA_PRIVATE_EXECUTION_FEE_RECIPIENT?.trim() ?? "";
+  if (!feeRecipient) return null;
+  return {
+    fee_recipient: feeRecipient,
+    fee_bps: positiveIntegerValue(env.GHOLA_PRIVATE_EXECUTION_FEE_BPS, DEFAULT_PRIVATE_EXECUTION_FEE_BPS),
+    min_fee_micro_usdc: positiveIntegerValue(
+      env.GHOLA_PRIVATE_EXECUTION_MIN_FEE_MICRO_USDC,
+      DEFAULT_PRIVATE_EXECUTION_MIN_FEE_MICRO_USDC,
+    ),
+  };
+}
+
+function privateAccountRevenueGuardMode(): "enforce" | "report_only" {
+  const configured = (
+    process.env.GHOLA_PRIVATE_ACCOUNT_REVENUE_GUARD_MODE ||
+    process.env.GHOLA_PRIVATE_ACCOUNT_BILLING_GUARD_MODE ||
+    ""
+  ).trim().toLowerCase();
+  if (configured === "enforce") return "enforce";
+  if (configured === "report_only" || configured === "off") return "report_only";
+  return productionLikeEnv() ? "enforce" : "report_only";
+}
+
+function billingAuthorizationForRequest(req: Request): string | null {
+  const bearer = bearerToken(req);
+  if (bearer) return `Bearer ${bearer}`;
+  const cookie = sessionCookie(req);
+  return cookie ? `Bearer ${cookie}` : null;
+}
+
+async function verifyLiveRevenueGuard(
+  req: Request,
+  owner: PrivateAccountRequestOwner,
+  body: unknown,
+): Promise<PrivateAccountLiveRevenueGuardResult> {
+  if (privateAccountRevenueGuardMode() !== "enforce") return { ok: true };
+  if (!connectorPlatformFeeEnvConfig()) {
+    return {
+      ok: false,
+      response: json({
+        error: "platform_fee_recipient_unconfigured",
+        entitlement_required: "paid_private_agent_plan",
+      }, 503),
+    };
+  }
+  const authorization = billingAuthorizationForRequest(req);
+  if (!authorization) return { ok: false, response: unauthorized() };
+  const upstream = await fetchWithTimeout(`${THUMPER_API_BASE}/api/billing/status`, {
+    method: "GET",
+    headers: {
+      Authorization: authorization,
+      Accept: "application/json",
+    },
+    cache: "no-store",
+  }).catch(() => null);
+  if (!upstream) {
+    return { ok: false, response: json({ error: "billing_unavailable" }, 503) };
+  }
+  if (!upstream.ok) {
+    return { ok: false, response: json({ error: "billing_rejected_request" }, upstream.status) };
+  }
+  const billing = await upstream.json().catch(() => null) as {
+    tier?: string | null;
+    private_agent_compute?: {
+      remaining_seconds?: number | null;
+      active_agent_limit?: number | null;
+      active_agent_count?: number | null;
+    } | null;
+  } | null;
+  if (!hasPrivateAgentEntitlement(billing?.tier)) {
+    return {
+      ok: false,
+      response: json({
+        error: "private_agent_subscription_required",
+        entitlement_required: "paid_private_agent_plan",
+        tier: billing?.tier ?? "free",
+      }, 402),
+    };
+  }
+  const reservationSeconds = privateAgentLiveTradeReservationSeconds(process.env);
+  const compute = billing?.private_agent_compute ?? null;
+  if (billing?.tier !== "enterprise") {
+    if (!compute) {
+      return {
+        ok: false,
+        response: json({
+          error: "private_agent_compute_allowance_required",
+          entitlement_required: "paid_private_agent_plan",
+          reservation_seconds: reservationSeconds,
+        }, 402),
+      };
+    }
+    const remainingSeconds = Number(compute.remaining_seconds ?? 0);
+    if (!Number.isFinite(remainingSeconds) || remainingSeconds < reservationSeconds) {
+      return {
+        ok: false,
+        response: json({
+          error: "private_agent_compute_exhausted",
+          entitlement_required: "private_agent_compute_balance",
+          reservation_seconds: reservationSeconds,
+          remaining_seconds: Math.max(0, Number.isFinite(remainingSeconds) ? remainingSeconds : 0),
+        }, 402),
+      };
+    }
+    const activeAgentLimit = Number(compute.active_agent_limit ?? 1);
+    const activeAgentCount = Number(compute.active_agent_count ?? 0);
+    if (
+      Number.isFinite(activeAgentLimit) &&
+      Number.isFinite(activeAgentCount) &&
+      activeAgentLimit > 0 &&
+      activeAgentCount >= activeAgentLimit
+    ) {
+      return {
+        ok: false,
+        response: json({
+          error: "private_agent_active_agent_limit_reached",
+          entitlement_required: "private_agent_compute_balance",
+          active_agent_limit: activeAgentLimit,
+          active_agent_count: activeAgentCount,
+        }, 402),
+      };
+    }
+  }
+  const sessionId = liveRevenueSessionId(req, owner, body);
+  const reserved = await fetchWithTimeout(`${THUMPER_API_BASE}/api/billing/private-agent/compute/reserve`, {
+    method: "POST",
+    headers: {
+      Authorization: authorization,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      session_id: sessionId,
+      seconds: reservationSeconds,
+      reason: "live_trade_submit",
+    }),
+    cache: "no-store",
+  }).catch(() => null);
+  if (!reserved) {
+    return { ok: false, response: json({ error: "private_agent_compute_reservation_unavailable" }, 503) };
+  }
+  const reserveBody = await reserved.json().catch(() => null) as {
+    ok?: boolean;
+    reservation_id?: string | null;
+    reserved_seconds?: number | null;
+    error?: string | null;
+  } | null;
+  if (!reserved.ok || reserveBody?.ok === false) {
+    return {
+      ok: false,
+      response: json({
+        error: reserveBody?.error || "private_agent_compute_reservation_failed",
+        reservation_seconds: reservationSeconds,
+      }, reserved.status === 402 ? 402 : reserved.status),
+    };
+  }
+  return {
+    ok: true,
+    reservation: {
+      session_id: sessionId,
+      reservation_id: typeof reserveBody?.reservation_id === "string" ? reserveBody.reservation_id : null,
+      reserved_seconds: Number(reserveBody?.reserved_seconds ?? reservationSeconds) || reservationSeconds,
+      authorization,
+    },
+  };
+}
+
+function liveRevenueSessionId(
+  req: Request,
+  owner: PrivateAccountRequestOwner,
+  body: unknown,
+): string {
+  const nonce = req.headers.get("x-ghola-request-nonce")?.trim() || `${Date.now()}:${Math.random()}`;
+  const digest = createHash("sha256").update(stableJson({
+    method: req.method,
+    pathname: new URL(req.url).pathname,
+    owner_commitment: owner.owner_commitment,
+    nonce,
+    body_hash: createHash("sha256").update(stableJson(body)).digest("hex"),
+  })).digest("hex").slice(0, 40);
+  return `ghola_live_${digest}`;
+}
+
+export async function releasePrivateAccountLiveRevenueReservation(
+  reservation: PrivateAccountLiveRevenueReservation | undefined,
+  status: "paused" | "completed" | "failed" = "failed",
+): Promise<void> {
+  if (!reservation) return;
+  await fetchWithTimeout(`${THUMPER_API_BASE}/api/billing/private-agent/compute/release`, {
+    method: "POST",
+    headers: {
+      Authorization: reservation.authorization,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      session_id: reservation.session_id,
+      status,
+    }),
+    cache: "no-store",
+  }).catch(() => null);
 }
 
 function stableJson(value: unknown): string {
@@ -1433,6 +1685,7 @@ export async function executeStoredActionFromBody(body: unknown, owner: PrivateA
         linkability_score_commitment: previewRecord.preview.connector_context?.linkability_score_commitment ?? null,
         work_order_commitment: connectorSubmission.work_order?.work_order_commitment ?? null,
         connector_result_commitment: connectorSubmission.result?.connector_result_commitment ?? null,
+        platform_fee_policy_commitment: connectorSubmission.work_order?.platform_fee_policy_commitment ?? null,
         runtime_envelope_commitment: previewRecord.preview.sealed_runtime_context?.runtime_envelope_commitment ?? null,
         runtime_attestation_commitment: previewRecord.preview.sealed_runtime_context?.runtime_attestation_commitment ?? null,
         runtime_health_commitment: previewRecord.preview.sealed_runtime_context?.runtime_health_commitment ?? null,
@@ -1463,6 +1716,7 @@ export async function executeStoredActionFromBody(body: unknown, owner: PrivateA
           linkability_score_commitment: previewRecord.preview.connector_context.linkability_score_commitment,
           work_order_commitment: connectorSubmission.work_order?.work_order_commitment ?? null,
           connector_result_commitment: connectorSubmission.result?.connector_result_commitment ?? null,
+          platform_fee_policy_commitment: connectorSubmission.work_order?.platform_fee_policy_commitment ?? null,
           runtime_envelope_commitment: previewRecord.preview.sealed_runtime_context?.runtime_envelope_commitment ?? null,
           runtime_attestation_commitment: previewRecord.preview.sealed_runtime_context?.runtime_attestation_commitment ?? null,
           runtime_health_commitment: previewRecord.preview.sealed_runtime_context?.runtime_health_commitment ?? null,
@@ -1732,6 +1986,14 @@ export async function verifyReceiptFromBody(
   const runtimeRequired = Boolean(preview?.preview.sealed_runtime_context || receipt.runtime_envelope_commitment);
   const context = preview?.preview.connector_context ?? null;
   const runtimeContext = preview?.preview.sealed_runtime_context ?? null;
+  const workOrderFeePolicyCommitment = workOrder?.work_order.platform_fee_policy_commitment ?? null;
+  const connectorResultFeePolicyCommitment = connectorResult?.result.platform_fee_policy_commitment ?? null;
+  const platformFeePolicyRequired = Boolean(
+    receipt.platform_fee_policy_commitment ||
+      receipt.evidence_chain?.platform_fee_policy_commitment ||
+      workOrderFeePolicyCommitment ||
+      connectorResultFeePolicyCommitment
+  );
   const checks: GholaReceiptVerificationResult["checks"] = {
     receipt_found: "pass",
     preview_bound: preview?.preview_commitment === receipt.preview_commitment ? "pass" : "fail",
@@ -1828,6 +2090,15 @@ export async function verifyReceiptFromBody(
       ? connectorResult?.connector_result_commitment === receipt.connector_result_commitment &&
         connectorResult.work_order_commitment === receipt.work_order_commitment &&
         connectorResult.intent_id === record.intent_id
+        ? "pass"
+        : "fail"
+      : "not_required",
+    platform_fee_policy_bound: platformFeePolicyRequired
+      ? receipt.platform_fee_policy_commitment &&
+        receipt.evidence_chain?.platform_fee_policy_commitment === receipt.platform_fee_policy_commitment &&
+        workOrderFeePolicyCommitment === receipt.platform_fee_policy_commitment &&
+        (!connectorResultFeePolicyCommitment ||
+          connectorResultFeePolicyCommitment === receipt.platform_fee_policy_commitment)
         ? "pass"
         : "fail"
       : "not_required",
@@ -7114,6 +7385,7 @@ function publicConnectorWorkOrder(record: GholaConnectorWorkOrder) {
     connector_readiness_commitment: record.connector_readiness_commitment,
     compiler_commitment: record.compiler_commitment,
     linkability_score_commitment: record.linkability_score_commitment,
+    platform_fee_policy_commitment: record.platform_fee_policy_commitment,
     platform_funding_account_commitment: record.platform_funding_account_commitment,
     rotation_commitment: record.rotation_commitment,
     status: record.status,
@@ -7135,6 +7407,7 @@ function publicConnectorResult(record: GholaConnectorResult) {
     status: record.status,
     provider_ref_commitment: record.provider_ref_commitment,
     result_commitment: record.result_commitment,
+    platform_fee_policy_commitment: record.platform_fee_policy_commitment ?? null,
     visibility_summary: record.visibility_summary,
     final_proof: record.final_proof,
     reason: record.reason,
@@ -8006,6 +8279,7 @@ async function connectorForExecution(input: {
         | "connector_submit_failed"
         | "connector_submit_blocked"
         | "connector_submit_in_progress"
+        | "platform_fee_unconfigured"
         | "venue_access_required"
         | "ghola_balance_insufficient"
         | "needs_funds"
@@ -8035,6 +8309,25 @@ async function connectorForExecution(input: {
     runtimeEnvelope.intent_id !== input.intent.intent_id
   ) {
     return { error: "connector_artifact_missing" };
+  }
+  const feeConfig = connectorPlatformFeeEnvConfig();
+  const platformFeePolicy: GholaConnectorPlatformFeePolicy | null = feeConfig
+    ? connectorPlatformFeePolicy({
+        owner_commitment: input.owner.owner_commitment,
+        intent_id: input.intent.intent_id,
+        account_commitment: input.intent.account_commitment,
+        action_commitment: input.intent.action_commitment,
+        manifest_commitment: manifestRecord.manifest.manifest_commitment,
+        compiler_commitment: compiledRecord.compiled_intent.compiler_commitment,
+        amount_bucket: compiledRecord.compiled_intent.amount_bucket,
+        asset_bucket: compiledRecord.compiled_intent.asset_bucket,
+        fee_recipient: feeConfig.fee_recipient,
+        fee_bps: feeConfig.fee_bps,
+        min_fee_micro_usdc: feeConfig.min_fee_micro_usdc,
+      })
+    : null;
+  if (!platformFeePolicy && privateAccountRevenueGuardMode() === "enforce") {
+    return { error: "platform_fee_unconfigured" };
   }
   const hyperliquidVault = manifestRecord.platform_class === "hyperliquid_style_market"
     ? await getHyperliquidExecutionVaultByAccount(input.intent.account_commitment)
@@ -8128,6 +8421,7 @@ async function connectorForExecution(input: {
       manifest: manifestRecord.manifest,
       readiness,
       linkability_score: linkabilityRecord.score,
+      platform_fee_policy: platformFeePolicy,
     });
     workOrderRecord = await putConnectorWorkOrder({
       version: 1,
@@ -8204,6 +8498,7 @@ async function connectorForExecution(input: {
       compiled_intent: compiledRecord.compiled_intent,
       preview: input.preview,
       readiness,
+      platform_fee_policy: platformFeePolicy,
       hyperliquid_execution_vault: hyperliquidAllocation?.status === "allocated"
         ? null
         : hyperliquidVault?.vault ?? null,
