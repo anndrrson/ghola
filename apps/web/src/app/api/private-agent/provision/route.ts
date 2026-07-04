@@ -36,6 +36,7 @@ export async function POST(req: NextRequest) {
         reason: provisioning.reason ?? null,
         cvm_name: provisioning.cvm_name ?? null,
         cvm_id: provisioning.cvm_id ?? null,
+        compose: provisioning.compose ?? null,
       },
       execution_url: executionUrl,
     },

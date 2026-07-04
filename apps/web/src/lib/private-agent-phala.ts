@@ -36,6 +36,7 @@ interface PhalaProvisionResult {
   cvm_name?: string;
   cvm_id?: string;
   execution_url?: string;
+  compose?: PhalaComposeDrift;
 }
 
 interface PhalaIdleStopResult {
@@ -799,6 +800,7 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
         ready: true,
         status: "already_ready",
         cvm_name: name,
+        compose: composeDrift,
       };
     }
   }
@@ -873,6 +875,7 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
           ready: true,
           status: "ready",
           cvm_name: name,
+          compose: composeDrift,
         };
       }
       await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -884,6 +887,7 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
     ready: false,
     status: "provisioning",
     cvm_name: name,
+    compose: composeDrift,
     cvm_id:
       info && typeof info === "object"
         ? String(
