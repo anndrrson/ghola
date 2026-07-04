@@ -267,11 +267,12 @@ export async function ensurePhalaWorkerComposeCurrent(
   } catch {
     return { checked: false, updated: false, reason: "compose_fetch_failed" };
   }
-  const currentText =
-    current && typeof current === "object"
-      ? String((current as Record<string, unknown>).docker_compose_file ?? "")
-      : "";
-  if (!currentText) {
+  const currentCompose =
+    current && typeof current === "object" && !Array.isArray(current)
+      ? (current as Record<string, unknown>)
+      : null;
+  const currentText = String(currentCompose?.docker_compose_file ?? "");
+  if (!currentCompose || !currentText) {
     return { checked: false, updated: false, reason: "compose_file_missing" };
   }
   const desired = buildPhalaWorkerCompose();
@@ -279,10 +280,14 @@ export async function ensurePhalaWorkerComposeCurrent(
     return { checked: true, updated: false, reason: null };
   }
   try {
+    // Send the stored app_compose back with only the compose file and env
+    // allowlist replaced — the API requires the full object, and this keeps
+    // every server-required field at its current value.
     const provision = await client.provisionCvmComposeFileUpdate(
       {
         id: name,
         app_compose: {
+          ...currentCompose,
           docker_compose_file: desired,
           allowed_envs: phalaEncryptedWorkerEnv(token).map((item) => item.key),
         },
