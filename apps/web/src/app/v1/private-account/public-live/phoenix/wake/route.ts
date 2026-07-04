@@ -58,6 +58,7 @@ export async function POST(request: Request) {
       status: provisioning.status,
       reason: provisioning.reason ?? null,
       cvm_name: provisioning.cvm_name ?? null,
+      compose: provisioning.compose ?? null,
     },
     provider: phalaSummary(after),
     checked_at: new Date().toISOString(),
