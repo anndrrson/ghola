@@ -66,6 +66,9 @@ describe("ensurePhalaWorkerComposeCurrent", () => {
   it("provisions and commits a compose update when the stored compose drifted", async () => {
     const client = fakeClient({
       getCvmComposeFile: vi.fn().mockResolvedValue({
+        name: "ghola-private-agent-worker",
+        manifest_version: 2,
+        kms_enabled: true,
         docker_compose_file: 'services:\n  worker:\n    environment:\n      PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD: ""\n',
       }),
       provisionCvmComposeFileUpdate: vi.fn().mockResolvedValue({ compose_hash: "hash123" }),
@@ -78,6 +81,10 @@ describe("ensurePhalaWorkerComposeCurrent", () => {
     expect(provisionArgs.id).toBe("cvm-test");
     expect(provisionArgs.app_compose.docker_compose_file).toBe(buildPhalaWorkerCompose());
     expect(provisionArgs.app_compose.allowed_envs).toContain("PRIVATE_AGENT_EXECUTION_TOKEN");
+    // Server-required fields from the stored compose are passed through.
+    expect(provisionArgs.app_compose.name).toBe("ghola-private-agent-worker");
+    expect(provisionArgs.app_compose.manifest_version).toBe(2);
+    expect(provisionArgs.app_compose.kms_enabled).toBe(true);
 
     const commitArgs = client.commitCvmComposeFileUpdate.mock.calls[0][0];
     expect(commitArgs).toMatchObject({
