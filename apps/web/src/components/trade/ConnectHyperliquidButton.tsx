@@ -5,6 +5,7 @@ import { Check, ClipboardPaste, Link2, Loader2, ShieldCheck, TriangleAlert, Wifi
 import {
   getHyperliquidExecutionVaultStatus,
   sealHyperliquidExecutionVault,
+  wakePublicAgentWorker,
 } from "@/lib/private-account-client";
 import {
   buildHyperliquidExecutionVaultBundle,
@@ -18,7 +19,30 @@ import {
   requiredSolanaProvider,
   walletSignBytes,
 } from "@/lib/wallet-request-proof";
-import type { PrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime";
+import {
+  chooseConfidentialComputeProvider,
+  type PrivateAgentRuntimeStatus,
+} from "@/lib/private-agent-runtime";
+
+// The agent worker sleeps when idle. Fetch the runtime; if no provider is
+// ready to seal, wake it once (bounded lease — the same flow the arm path
+// uses) and refetch before declaring the runtime offline.
+async function sealableRuntimeStatus(): Promise<PrivateAgentRuntimeStatus> {
+  const hasSealableProvider = (runtime: PrivateAgentRuntimeStatus) =>
+    chooseConfidentialComputeProvider(runtime.providers, runtime.preferred_provider) !== null;
+  try {
+    const runtime = await fetchPrivateAgentRuntimeStatus();
+    if (hasSealableProvider(runtime)) return runtime;
+  } catch {
+    // fall through to the wake attempt
+  }
+  await wakePublicAgentWorker();
+  const runtime = await fetchPrivateAgentRuntimeStatus();
+  if (!hasSealableProvider(runtime)) {
+    throw new Error("Agent runtime is offline.");
+  }
+  return runtime;
+}
 
 type VaultStatus = {
   version: 1;
@@ -71,7 +95,7 @@ export function ConnectHyperliquidButton({ ready = false }: { ready?: boolean })
       return;
     }
     try {
-      const runtime = await fetchPrivateAgentRuntimeStatus();
+      const runtime = await sealableRuntimeStatus();
       setState({ status: "form", accountCommitment: vault.account_commitment, runtime });
     } catch {
       setState({ status: "runtime_offline" });
