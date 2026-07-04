@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAutopilotSession, runAutopilotTick } from "../src/execution/autopilot.js";
-import { evaluateEntryTrigger, evaluateExit } from "../src/execution/level-trigger.js";
+import { evaluateEntryTrigger, evaluateExit, instructionForVenue } from "../src/execution/level-trigger.js";
 import { createWorkerState } from "../src/state/private-state.js";
 
 const OLD_ENV = { ...process.env };
@@ -194,6 +194,42 @@ describe("level_trigger_v1 directional strategy", () => {
     const events = (await state.listAutopilotEvents(session.autopilot_session_id)).map((e) => e.type);
     assert.equal(events.includes("live_order_submitted"), false);
     assert.equal(events.includes("receipt"), true);
+  });
+});
+
+describe("level_trigger hyperliquid order mode", () => {
+  const args = {
+    venue: "hyperliquid",
+    product: "BTC-USD",
+    side: "buy",
+    price: 100,
+    notional: 200,
+    policy: { max_slippage_bps: 50, ttl_ms: 60 * 60_000 },
+    now: new Date("2026-06-16T12:00:00Z"),
+  };
+
+  it("marks the order tiny_fill when the worker is not in full_ticket mode", () => {
+    const instruction = instructionForVenue({ ...args, env: {} });
+    assert.equal(instruction.order.live_order_mode, "tiny_fill");
+    assert.equal(instruction.order.tif, "Ioc");
+  });
+
+  it("omits the tiny_fill marker on a full_ticket worker so full-ticket caps govern", () => {
+    const instruction = instructionForVenue({
+      ...args,
+      env: { PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "full_ticket" },
+    });
+    assert.equal("live_order_mode" in instruction.order, false);
+    assert.equal(instruction.order.quote_size, "200");
+  });
+
+  it("keeps tiny_fill on non-hyperliquid perp venues regardless of the hyperliquid mode", () => {
+    const instruction = instructionForVenue({
+      ...args,
+      venue: "drift",
+      env: { PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "full_ticket" },
+    });
+    assert.equal(instruction.order.live_order_mode, "tiny_fill");
   });
 });
 

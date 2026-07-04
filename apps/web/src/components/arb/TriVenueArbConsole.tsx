@@ -29,25 +29,19 @@ import {
   buildPrivateExecutionInstructionBundle,
   type PrivateExecutionOrderDraft,
 } from "@/lib/private-execution-instruction-seal";
+import {
+  publicKeyString,
+  requiredSolanaProvider,
+  solanaProvider,
+  walletSignBytes,
+} from "@/lib/wallet-request-proof";
+
 import type {
   TriVenueMarketBundle,
   TriVenueOpportunity,
   TriVenueStatus,
   TriVenueQuote,
 } from "@/lib/private-account-tri-venue-arb";
-
-type SolanaProvider = {
-  connect?: () => Promise<{ publicKey?: unknown } | unknown>;
-  signMessage?: (
-    message: Uint8Array,
-    encoding?: string,
-  ) => Promise<Uint8Array | { signature?: Uint8Array | number[]; publicKey?: unknown }>;
-  publicKey?: unknown;
-};
-
-type ArbWindow = Window & {
-  solana?: SolanaProvider;
-};
 
 type Challenge = {
   wallet_pubkey: string;
@@ -728,36 +722,6 @@ async function signFreshPublicLiveChallenge(wallet: string) {
     message: challenge.message,
     signature_b64: bytesToBase64(signature),
   };
-}
-
-function requiredSolanaProvider(): SolanaProvider {
-  const provider = solanaProvider();
-  if (!provider?.signMessage) throw new Error("Wallet message signing is required.");
-  return provider;
-}
-
-async function walletSignBytes(provider: SolanaProvider, bytes: Uint8Array): Promise<Uint8Array> {
-  if (!provider.signMessage) throw new Error("Wallet message signing is required.");
-  const signed = await provider.signMessage(bytes, "utf8");
-  if (signed instanceof Uint8Array) return signed;
-  if (signed?.signature instanceof Uint8Array) return signed.signature;
-  if (Array.isArray(signed?.signature)) return Uint8Array.from(signed.signature);
-  throw new Error("Wallet did not return a message signature.");
-}
-
-function solanaProvider(): SolanaProvider | undefined {
-  if (typeof window === "undefined") return undefined;
-  return (window as ArbWindow).solana;
-}
-
-function publicKeyString(value: unknown): string {
-  if (!value) return "";
-  if (typeof value === "string") return value;
-  if (typeof (value as { toBase58?: unknown }).toBase58 === "function") {
-    return String((value as { toBase58: () => string }).toBase58());
-  }
-  if (typeof (value as { toString?: unknown }).toString === "function") return String(value);
-  return "";
 }
 
 async function fetchJson<T>(path: string): Promise<T> {

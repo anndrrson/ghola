@@ -2,9 +2,21 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { Bot, Check, Clock3, Loader2, RefreshCcw, TriangleAlert, Wallet, type LucideIcon } from "lucide-react";
+import {
+  Bot,
+  Check,
+  Clock3,
+  Loader2,
+  OctagonX,
+  RefreshCcw,
+  ShieldAlert,
+  TriangleAlert,
+  Wallet,
+  type LucideIcon,
+} from "lucide-react";
 import {
   armLevelTriggerAgent,
+  controlPrivateAutopilotSession,
   getPrivateAutopilotSession,
   levelTriggerSupportsPlan,
   type LevelTriggerPlanInput,
@@ -14,13 +26,16 @@ import type { PrivateExecutionOrderDraft } from "@/lib/private-execution-instruc
 
 type ArmState =
   | { status: "idle" }
+  | { status: "confirming" }
   | { status: "arming" }
-  | { status: "session"; session: PrivateAutopilotSession; refreshing?: boolean }
+  | { status: "session"; session: PrivateAutopilotSession; refreshing?: boolean; killing?: boolean }
+  | { status: "killed" }
   | { status: "error"; message: string };
 
 // Isolated, additive control: turns the drawn directional plan into a running
-// level_trigger agent. Reads only the existing orderDraft and posts to the
-// autopilot sessions route — it does not touch the hand-coded trade layout.
+// level_trigger agent that trades the user's connected account. Reads only the
+// existing orderDraft and posts to the autopilot sessions route — it does not
+// touch the hand-coded trade layout.
 export function ArmAgentButton({
   orderDraft,
   ready = false,
@@ -50,10 +65,10 @@ export function ArmAgentButton({
     triggerLevel: plan.triggerLevel,
     invalidationLevel: plan.invalidationLevel,
   });
-  const disabled = !ready || !supported || state.status === "arming" || state.status === "session";
+  const blocked = !ready || !supported;
+  const sideLabel = plan.side === "buy" ? "Buy" : "Sell";
 
-  async function handleArm() {
-    if (disabled) return;
+  async function confirmAndArm() {
     setState({ status: "arming" });
     try {
       const response = await armLevelTriggerAgent(plan);
@@ -80,6 +95,20 @@ export function ArmAgentButton({
     }
   }
 
+  async function handleKillSession() {
+    if (state.status !== "session") return;
+    setState({ ...state, killing: true });
+    try {
+      await controlPrivateAutopilotSession(state.session.autopilot_session_id, "kill");
+      setState({ status: "killed" });
+    } catch (error) {
+      setState({
+        status: "error",
+        message: error instanceof Error ? error.message : "Could not stop the agent.",
+      });
+    }
+  }
+
   const hint = !ready
     ? "Sign in and connect scoped venue access to arm an agent."
     : !supported
@@ -99,22 +128,54 @@ export function ArmAgentButton({
         <AgentSessionStatus
           session={state.session}
           refreshing={state.refreshing === true}
+          killing={state.killing === true}
           onRefresh={handleRefreshSession}
+          onKill={handleKillSession}
         />
+      ) : state.status === "killed" ? (
+        <div className="flex items-center gap-2 rounded-md border border-[#1e2a3a] bg-[#090d14] px-3 py-2 text-xs text-[#8b95a8]">
+          <OctagonX className="h-3.5 w-3.5 shrink-0" />
+          Agent stopped. Draw a new plan to arm another.
+        </div>
+      ) : state.status === "confirming" ? (
+        <div className="grid gap-3 rounded-md border border-amber-500/30 bg-amber-500/[0.06] p-3">
+          <div className="flex items-start gap-2 text-xs leading-5 text-amber-100">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+            <span>
+              This arms an agent that places <strong>real orders on your connected account</strong>. It will{" "}
+              <strong>{sideLabel.toLowerCase()} ${plan.notionalUsd}</strong> of {plan.market}
+              {plan.triggerLevel ? <> when the {plan.entryTrigger.replaceAll("_", " ")} at <strong>{plan.triggerLevel}</strong> triggers</> : <> now</>}
+              {plan.invalidationLevel ? <>, and exit if it hits <strong>{plan.invalidationLevel}</strong></> : null}. You can kill it anytime.
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={confirmAndArm}
+              className="trade-action flex h-10 flex-1 items-center justify-center gap-2 rounded-md text-sm font-semibold"
+            >
+              <Bot className="h-4 w-4" />
+              Yes, arm it
+            </button>
+            <button
+              type="button"
+              onClick={() => setState({ status: "idle" })}
+              className="trade-chip flex h-10 items-center justify-center rounded-md px-4 text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       ) : (
         <>
           <button
             type="button"
-            onClick={handleArm}
-            disabled={disabled}
-            aria-disabled={disabled}
+            onClick={() => setState({ status: "confirming" })}
+            disabled={blocked || state.status === "arming"}
+            aria-disabled={blocked || state.status === "arming"}
             className="trade-action flex h-11 w-full items-center justify-center gap-2 rounded-md text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {state.status === "arming" ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Bot className="h-4 w-4" />
-            )}
+            {state.status === "arming" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bot className="h-4 w-4" />}
             {state.status === "arming" ? "Arming agent" : "Arm agent for this plan"}
           </button>
           <p className="mt-2 text-[11px] leading-5 text-[#566278]">{hint}</p>
@@ -133,11 +194,15 @@ export function ArmAgentButton({
 function AgentSessionStatus({
   session,
   refreshing,
+  killing,
   onRefresh,
+  onKill,
 }: {
   session: PrivateAutopilotSession;
   refreshing: boolean;
+  killing: boolean;
   onRefresh: () => void;
+  onKill: () => void;
 }) {
   const view = sessionStatusView(session);
   const Icon = view.icon;
@@ -176,12 +241,23 @@ function AgentSessionStatus({
             <button
               type="button"
               onClick={onRefresh}
-              disabled={refreshing}
+              disabled={refreshing || killing}
               className="trade-chip inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs disabled:cursor-not-allowed disabled:opacity-60"
             >
               <RefreshCcw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
               Refresh status
             </button>
+            {view.terminal ? null : (
+              <button
+                type="button"
+                onClick={onKill}
+                disabled={killing || refreshing}
+                className="trade-chip inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs text-rose-200 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {killing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <OctagonX className="h-3.5 w-3.5" />}
+                {killing ? "Stopping" : "Kill agent"}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -198,6 +274,7 @@ function sessionStatusView(session: PrivateAutopilotSession): {
   titleClass: string;
   icon: LucideIcon;
   showFundingCta: boolean;
+  terminal: boolean;
 } {
   if (session.execution_enabled || session.status === "running" || session.status === "watching") {
     return {
@@ -209,6 +286,7 @@ function sessionStatusView(session: PrivateAutopilotSession): {
       titleClass: "text-emerald-200",
       icon: Check,
       showFundingCta: false,
+      terminal: false,
     };
   }
 
@@ -222,6 +300,7 @@ function sessionStatusView(session: PrivateAutopilotSession): {
       titleClass: "text-amber-100",
       icon: Wallet,
       showFundingCta: true,
+      terminal: false,
     };
   }
 
@@ -235,6 +314,7 @@ function sessionStatusView(session: PrivateAutopilotSession): {
       titleClass: "text-amber-100",
       icon: Clock3,
       showFundingCta: false,
+      terminal: false,
     };
   }
 
@@ -248,6 +328,7 @@ function sessionStatusView(session: PrivateAutopilotSession): {
       titleClass: "text-rose-200",
       icon: TriangleAlert,
       showFundingCta: false,
+      terminal: true,
     };
   }
 
@@ -260,5 +341,6 @@ function sessionStatusView(session: PrivateAutopilotSession): {
     titleClass: "text-[#eef1f8]",
     icon: Bot,
     showFundingCta: false,
+    terminal: false,
   };
 }

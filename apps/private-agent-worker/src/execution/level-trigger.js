@@ -161,7 +161,7 @@ export async function runGuardedLevelTriggerTick({
     return { ok: false, error: "daily_cap_exhausted" };
   }
 
-  const instruction = instructionForVenue({ venue, product, side, price, notional, policy, now });
+  const instruction = instructionForVenue({ venue, product, side, price, notional, policy, now, env });
   const orderMarket = instruction.order?.market || product;
   instruction.mandate = {
     ...mandate,
@@ -318,7 +318,7 @@ async function runExit({ session, state, recipient, now, env, venue, product, si
   const notional = Number(directive.entry_notional) > 0
     ? Number(directive.entry_notional)
     : bucketToUsd(session.session_policy.max_notional_bucket);
-  const instruction = instructionForVenue({ venue, product, side: exitSide, price, notional, policy: session.session_policy, now });
+  const instruction = instructionForVenue({ venue, product, side: exitSide, price, notional, policy: session.session_policy, now, env });
   if (instruction.order) instruction.order.reduce_only = true;
   const orderMarket = instruction.order?.market || product;
   const workOrderCommitment = `level_exit_${digest({
@@ -483,7 +483,9 @@ async function marketPrice({ product, env, fetchImpl, now }) {
   return { product_id: product, price, mid: price, live_status: "live", stale: !(Number(price) > 0) };
 }
 
-function instructionForVenue({ venue, product, side, price, notional, policy, now }) {
+// Pure instruction builder, exported for tests: the hyperliquid order mode
+// must track the worker's configured live mode (see comment below).
+export function instructionForVenue({ venue, product, side, price, notional, policy, now, env = process.env }) {
   const expiresAt = new Date(now.getTime() + Math.min(5 * 60_000, policy.ttl_ms)).toISOString();
   if (venue === "jupiter") {
     const inputMint = side === "buy" ? USDC_MINT : SOL_MINT;
@@ -527,23 +529,30 @@ function instructionForVenue({ venue, product, side, price, notional, policy, no
   const limit = side === "buy"
     ? price * (1 + policy.max_slippage_bps / 10_000)
     : price * (1 - policy.max_slippage_bps / 10_000);
+  const order = {
+    market: venueMarketSymbol(venue, product),
+    side,
+    quote_size: String(notional),
+    limit_price: trim(limit),
+    order_type: "market",
+    size_mode: "quote",
+    live_order_mode: "tiny_fill",
+    max_slippage_bps: String(policy.max_slippage_bps),
+    tif: "Ioc",
+  };
+  // A tiny_fill-marked order is hard-capped at $50/order by policy even on a
+  // full_ticket worker; on full_ticket, omit the marker so the configured
+  // full-ticket caps ($1k/order · $5k/day launch gates) govern instead.
+  if (venue === "hyperliquid" && env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE === "full_ticket") {
+    delete order.live_order_mode;
+  }
   return {
     version: 1,
     kind: "ghola_private_execution_instruction",
     venue_id: venue,
     operation_class: venue === "hyperliquid" ? "limit_order" : "perp_limit_order",
     expires_at: expiresAt,
-    order: {
-      market: venueMarketSymbol(venue, product),
-      side,
-      quote_size: String(notional),
-      limit_price: trim(limit),
-      order_type: "market",
-      size_mode: "quote",
-      live_order_mode: "tiny_fill",
-      max_slippage_bps: String(policy.max_slippage_bps),
-      tif: "Ioc",
-    },
+    order,
   };
 }
 
