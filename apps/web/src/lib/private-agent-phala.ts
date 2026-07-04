@@ -64,10 +64,19 @@ interface PhalaCloudClient {
   getCvmNetwork(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
   getCvmAttestation(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
   getCvmState(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
+  getCvmComposeFile(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
   startCvm(input: { id: string }): Promise<unknown>;
   stopCvm(input: { id: string }): Promise<unknown>;
   provisionCvm(input: Record<string, unknown>): Promise<PhalaProvisionResponse>;
   commitCvmProvision(
+    input: Record<string, unknown>,
+    options?: { schema: boolean },
+  ): Promise<unknown>;
+  provisionCvmComposeFileUpdate(
+    input: Record<string, unknown>,
+    options?: { schema: boolean },
+  ): Promise<unknown>;
+  commitCvmComposeFileUpdate(
     input: Record<string, unknown>,
     options?: { schema: boolean },
   ): Promise<unknown>;
@@ -209,6 +218,103 @@ function secretWorkerEnv(name: string, aliases: string[] = []): string | null {
 function encryptedWorkerSecret(name: string, aliases: string[] = []): Array<{ key: string; value: string }> {
   const value = secretWorkerEnv(name, aliases);
   return value ? [{ key: name, value }] : [];
+}
+
+// The KMS-encrypted env set the worker CVM is provisioned with. Compose-file
+// updates must pass the same key list as allowed_envs or the KMS-held values
+// are dropped on upgrade.
+function phalaEncryptedWorkerEnv(token: string): Array<{ key: string; value: string }> {
+  const statePostgresUrl = phalaWorkerStatePostgresUrl();
+  return [
+    { key: "PRIVATE_AGENT_EXECUTION_TOKEN", value: token },
+    ...(phalaWorkerCapabilitySecret()
+      ? [{ key: "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET", value: phalaWorkerCapabilitySecret() as string }]
+      : []),
+    ...(phalaWorkerFundingSigningKey()
+      ? [{ key: "PRIVATE_AGENT_FUNDING_SIGNING_KEY", value: phalaWorkerFundingSigningKey() as string }]
+      : []),
+    ...(statePostgresUrl
+      ? [{ key: "PRIVATE_AGENT_STATE_POSTGRES_URL", value: statePostgresUrl }]
+      : []),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON"),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON"),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_JUPITER_API_KEY", ["JUPITER_API_KEY", "GHOLA_JUPITER_API_KEY"]),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON"),
+  ];
+}
+
+type PhalaComposeDrift = {
+  checked: boolean;
+  updated: boolean;
+  reason: string | null;
+};
+
+// The CVM's compose (and its plaintext env lines — venue live modes, caps) is
+// baked at provision time; starting a stopped CVM never re-applies it. Detect
+// drift against the compose we would provision today and push a compose-file
+// update so operator env changes actually reach the worker. Fails open: any
+// error leaves the CVM running its existing compose.
+export async function ensurePhalaWorkerComposeCurrent(
+  client: PhalaCloudClient,
+  name: string,
+  token: string,
+): Promise<PhalaComposeDrift> {
+  let current: unknown = null;
+  try {
+    current = await client.getCvmComposeFile({ id: name }, { schema: false });
+  } catch {
+    return { checked: false, updated: false, reason: "compose_fetch_failed" };
+  }
+  const currentText =
+    current && typeof current === "object"
+      ? String((current as Record<string, unknown>).docker_compose_file ?? "")
+      : "";
+  if (!currentText) {
+    return { checked: false, updated: false, reason: "compose_file_missing" };
+  }
+  const desired = buildPhalaWorkerCompose();
+  if (normalizedCompose(currentText) === normalizedCompose(desired)) {
+    return { checked: true, updated: false, reason: null };
+  }
+  try {
+    const provision = await client.provisionCvmComposeFileUpdate(
+      {
+        id: name,
+        app_compose: {
+          docker_compose_file: desired,
+          allowed_envs: phalaEncryptedWorkerEnv(token).map((item) => item.key),
+        },
+      },
+      { schema: false },
+    ) as { compose_hash?: unknown } | null;
+    const composeHash = typeof provision?.compose_hash === "string" ? provision.compose_hash : "";
+    if (!composeHash) {
+      return { checked: true, updated: false, reason: "compose_update_provision_failed" };
+    }
+    // update_env_vars: false — the KMS-encrypted env is unchanged; only the
+    // compose (plaintext env lines) is being refreshed.
+    await client.commitCvmComposeFileUpdate({
+      id: name,
+      compose_hash: composeHash,
+      update_env_vars: false,
+    });
+    return { checked: true, updated: true, reason: null };
+  } catch (error) {
+    return {
+      checked: true,
+      updated: false,
+      reason: error instanceof Error ? error.message : "compose_update_failed",
+    };
+  }
+}
+
+function normalizedCompose(value: string): string {
+  return value
+    .split("\n")
+    .map((line) => line.replace(/\s+$/, ""))
+    .filter((line) => line.length > 0)
+    .join("\n");
 }
 
 function composeEnvLine(name: string, value: string): string {
@@ -673,16 +779,6 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
     };
   }
 
-  const discovered = await discoverPhalaPrivateAgentProvider();
-  if (discovered?.available) {
-    return {
-      attempted: false,
-      ready: true,
-      status: "already_ready",
-      cvm_name: phalaCvmName(),
-    };
-  }
-
   const name = phalaCvmName();
   let info: unknown = null;
   try {
@@ -691,27 +787,26 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
     // Missing CVM is expected before the first paid private-agent request.
   }
 
+  const composeDrift = info
+    ? await ensurePhalaWorkerComposeCurrent(client, name, token)
+    : { checked: false, updated: false, reason: null };
+
+  if (!composeDrift.updated) {
+    const discovered = await discoverPhalaPrivateAgentProvider();
+    if (discovered?.available) {
+      return {
+        attempted: false,
+        ready: true,
+        status: "already_ready",
+        cvm_name: name,
+      };
+    }
+  }
+
   if (!info) {
     try {
       const { encryptEnvVars } = await import("@phala/cloud");
-      const statePostgresUrl = phalaWorkerStatePostgresUrl();
-      const encryptedWorkerEnv = [
-        { key: "PRIVATE_AGENT_EXECUTION_TOKEN", value: token },
-        ...(phalaWorkerCapabilitySecret()
-          ? [{ key: "PRIVATE_AGENT_WORKER_CAPABILITY_SECRET", value: phalaWorkerCapabilitySecret() as string }]
-          : []),
-        ...(phalaWorkerFundingSigningKey()
-          ? [{ key: "PRIVATE_AGENT_FUNDING_SIGNING_KEY", value: phalaWorkerFundingSigningKey() as string }]
-          : []),
-        ...(statePostgresUrl
-          ? [{ key: "PRIVATE_AGENT_STATE_POSTGRES_URL", value: statePostgresUrl }]
-          : []),
-        ...encryptedWorkerSecret("PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"),
-        ...encryptedWorkerSecret("PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON"),
-        ...encryptedWorkerSecret("PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON"),
-        ...encryptedWorkerSecret("PRIVATE_AGENT_JUPITER_API_KEY", ["JUPITER_API_KEY", "GHOLA_JUPITER_API_KEY"]),
-        ...encryptedWorkerSecret("PRIVATE_AGENT_COINBASE_PARTNER_POOL_VAULT_JSON"),
-      ];
+      const encryptedWorkerEnv = phalaEncryptedWorkerEnv(token);
       const encryptedWorkerEnvKeys = encryptedWorkerEnv.map((item) => item.key);
       const provision = await client.provisionCvm({
         name,
