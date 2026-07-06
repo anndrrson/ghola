@@ -1,0 +1,79 @@
+name: HL no-submit verify
+
+# Manual rehearsal for the BYO Hyperliquid path when no compliant operator
+# account is available: runs the worker's own hyperliquid_runner.py in
+# verify_no_submit mode with a throwaway keypair generated inside the run.
+# Nothing is broadcast and no account is created. Expected outcome with an
+# unfunded throwaway key: rejection at the account-value gate, which proves
+# SDK load, wallet load, mainnet reachability, live market data, and the
+# account-state query — everything upstream of real funding.
+on:
+  workflow_dispatch:
+    inputs:
+      market:
+        description: "Coin symbol (e.g. BTC)"
+        default: "BTC"
+      quote_size:
+        description: "Order notional in USD"
+        default: "100"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: apps/private-agent-worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Same SDK pin as apps/private-agent-worker/Dockerfile
+      - run: pip install hyperliquid-python-sdk==0.23.0
+      - name: Run verify_no_submit against HL mainnet with a throwaway key
+        run: |
+          python3 - <<'PYEOF'
+          import json, subprocess
+          from eth_account import Account
+
+          acct = Account.create()
+          key = acct.key.hex()
+          payload = {
+              "credential": {
+                  "network": "mainnet",
+                  "account_address": acct.address.lower(),
+                  "api_wallet_private_key": key if key.startswith("0x") else "0x" + key,
+              },
+              "instruction": {
+                  "operation_class": "limit_order",
+                  "order": {
+                      "market": "${{ inputs.market }}",
+                      "side": "buy",
+                      "quote_size": "${{ inputs.quote_size }}",
+                      "order_type": "market",
+                      "size_mode": "quote",
+                      "max_slippage_bps": "50",
+                      "tif": "Ioc",
+                  },
+              },
+              "cloid": "0x" + "1" * 32,
+              "verify_no_submit": True,
+          }
+          p = subprocess.run(
+              ["python3", "src/venues/hyperliquid_runner.py"],
+              input=json.dumps(payload), capture_output=True, text=True, timeout=60,
+          )
+          print("RUNNER STDOUT:", p.stdout.strip())
+          print("RUNNER STDERR:", p.stderr.strip()[:500])
+          print("RUNNER EXIT:", p.returncode)
+
+          out = (p.stdout or "") + (p.stderr or "")
+          if "insufficient available value" in out:
+              print("VERDICT: PASS — full chain verified up to the funding gate (expected stop for an unfunded throwaway key).")
+          elif '"status": "verified_no_funds"' in out or '"verified_no_funds"' in out:
+              print("VERDICT: PASS — order construction verified end to end.")
+          else:
+              print("VERDICT: FAIL — unexpected result; the chain broke before the funding gate.")
+              raise SystemExit(1)
+          PYEOF
