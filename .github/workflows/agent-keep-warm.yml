@@ -1,0 +1,38 @@
+name: Agent keep-warm
+
+# Vercel Hobby only allows daily crons, so the agent keep-warm tick runs here
+# instead. Every ~10 min it pings the keep-warm endpoint, which wakes the CVM
+# only when an agent is actually armed (no-op / zero cost otherwise). The
+# idle-stop guard prevents shutdown-under-a-live-agent independently of this,
+# so a missed run just delays a resume, it can't strand an agent.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: agent-keep-warm
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping keep-warm endpoint
+        env:
+          CRON_SECRET: ${{ secrets.KEEP_WARM_CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "KEEP_WARM_CRON_SECRET repo secret is not set — skipping."
+            echo "Set it to the web app's CRON_SECRET value to enable keep-warm."
+            exit 0
+          fi
+          code=$(curl -s -o /tmp/body -w "%{http_code}" -X POST \
+            -H "authorization: Bearer $CRON_SECRET" \
+            https://ghola.xyz/api/private-agent/keep-warm)
+          echo "HTTP $code"
+          cat /tmp/body
+          echo
+          # 200 = handled (warmed or no-op). Anything else is a real failure.
+          test "$code" = "200"
