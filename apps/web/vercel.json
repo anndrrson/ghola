@@ -5,6 +5,10 @@
     {
       "path": "/api/private-agent/idle",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/private-agent/keep-warm",
+      "schedule": "*/10 * * * *"
     }
   ]
 }
