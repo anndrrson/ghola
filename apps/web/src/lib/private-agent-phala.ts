@@ -6,6 +6,7 @@ import {
   markPrivateAgentRuntimeStopped,
   privateAgentRuntimeLeaseActive,
 } from "./private-agent-runtime-lease";
+import { countActivePrivateAutopilotSessions } from "./private-account-store";
 
 const DEFAULT_WORKER_IMAGE =
   "ghcr.io/anndrrson/ghola:private-agent-worker-d36f9cc@sha256:f87611da536b4b9ac712829a045d7153e80dc71708739cab95c5b4fefd183eb4";
@@ -46,6 +47,7 @@ interface PhalaIdleStopResult {
     | "disabled"
     | "missing_config"
     | "lease_active"
+    | "sessions_active"
     | "already_stopped"
     | "stopped"
     | "failed";
@@ -930,6 +932,47 @@ export async function wakePhalaPrivateAgentForUse(input: {
   return result;
 }
 
+export interface PhalaKeepWarmResult {
+  attempted: boolean;
+  active_sessions: number;
+  ready: boolean;
+  status: PhalaProvisionResult["status"] | "no_active_sessions" | "remote_execution_disabled";
+  cvm_name?: string;
+}
+
+// Keep the worker warm while any agent session is still armed. Called on a
+// frequent cron: if there are active sessions it renews the runtime lease and
+// wakes the CVM (resuming its persisted sessions on boot), so an armed agent
+// keeps watching the market instead of idling out ~30min after the user left.
+// Costs nothing when no agent is armed.
+export async function keepPrivateAgentWarmForActiveSessions(input: {
+  leaseMs?: number;
+} = {}): Promise<PhalaKeepWarmResult> {
+  const activeSessions = await countActivePrivateAutopilotSessions().catch(() => 0);
+  if (activeSessions <= 0) {
+    return { attempted: false, active_sessions: 0, ready: false, status: "no_active_sessions" };
+  }
+  if (privateAgentRemoteExecutionDisabled()) {
+    return {
+      attempted: false,
+      active_sessions: activeSessions,
+      ready: false,
+      status: "remote_execution_disabled",
+    };
+  }
+  const result = await wakePhalaPrivateAgentForUse({
+    reason: `keep_warm:${activeSessions}_active`,
+    leaseMs: input.leaseMs,
+  });
+  return {
+    attempted: result.attempted,
+    active_sessions: activeSessions,
+    ready: result.ready,
+    status: result.status,
+    cvm_name: result.cvm_name,
+  };
+}
+
 export async function stopIdlePhalaPrivateAgent(input: {
   now?: Date;
   force?: boolean;
@@ -965,6 +1008,22 @@ export async function stopIdlePhalaPrivateAgent(input: {
       cvm_name: name,
       lease_expires_at: lease?.lease_expires_at ?? null,
     };
+  }
+
+  // Never idle-stop the worker out from under a still-armed agent: its watch
+  // loop only ticks while the CVM runs, so stopping here would silently pause
+  // every active session until the next user-triggered wake.
+  if (!input.force) {
+    const activeSessions = await countActivePrivateAutopilotSessions().catch(() => 0);
+    if (activeSessions > 0) {
+      return {
+        attempted: false,
+        stopped: false,
+        status: "sessions_active",
+        reason: `${activeSessions} armed agent session(s) still need the worker running.`,
+        cvm_name: name,
+      };
+    }
   }
 
   const client = await phalaClient();

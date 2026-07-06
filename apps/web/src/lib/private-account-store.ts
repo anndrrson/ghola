@@ -5192,6 +5192,30 @@ export async function listPrivateAutopilotSessions(
   return rows.map(autopilotSessionRow);
 }
 
+// Statuses in which an agent session is done and no longer needs the worker
+// running. Anything else (running/watching/pending_*/staged) is "active" and
+// keeps the worker warm.
+const INACTIVE_AUTOPILOT_STATUSES = ["killed", "expired", "blocked", "done", "failed", "complete"];
+
+// Global (cross-owner) count of agent sessions still expecting the worker to
+// tick. Used by the keep-warm cron and the idle-stop guard so armed agents
+// are not shut down between user visits.
+export async function countActivePrivateAutopilotSessions(): Promise<number> {
+  const sql = await getSql();
+  if (!sql) {
+    return Array.from(autopilotSessions.values()).filter(
+      (record) => !INACTIVE_AUTOPILOT_STATUSES.includes(record.status),
+    ).length;
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT COUNT(*)::int AS count
+    FROM private_account_autopilot_sessions
+    WHERE status <> ALL(${INACTIVE_AUTOPILOT_STATUSES})
+  `) as Array<{ count: number }>;
+  return rows[0]?.count ?? 0;
+}
+
 export async function putPrivateAutopilotEvent(
   record: PrivateAutopilotEventRecordV1,
 ): Promise<PrivateAutopilotEventRecordV1> {
