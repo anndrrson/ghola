@@ -664,8 +664,8 @@ fn is_retryable_relay_error(e: &ErrorData) -> bool {
 #[tool_handler]
 impl ServerHandler for ThumperServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            instructions: Some(
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions(
                 "Thumper device agent -- remotely control an Android phone via accessibility APIs.\n\n\
                  RECOMMENDED WORKFLOW:\n\
                  1. device_status -- verify device is connected\n\
@@ -689,11 +689,8 @@ impl ServerHandler for ThumperServer {
                  - Connection lost -> tools will auto-reconnect, retry after a few seconds\n\n\
                  All tools accept an optional 'device' parameter for multi-device targeting.\n\
                  Every action automatically returns the updated screen state."
-                    .into(),
-            ),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+                    .to_string(),
+            )
     }
 }
 

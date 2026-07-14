@@ -86,7 +86,7 @@ futures = "0.3"
 async-stream = "0.3"
 
 # MCP
-rmcp = { version = "0.15", features = ["server", "transport-io", "transport-streamable-http-server"] }
+rmcp = { version = "1.4", features = ["server", "transport-io", "transport-streamable-http-server"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

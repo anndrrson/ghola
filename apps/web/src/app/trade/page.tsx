@@ -1317,14 +1317,18 @@ export default function TradePage() {
                 </div>
               </div>
               <p className="mt-2 text-[10px] leading-4 text-[#566278]">
-                Max loss assumes the stop fills with the full slippage cap. The agent cannot exceed it.
+                Max loss assumes the stop fills within the slippage cap. Gaps, outages, and venue failures can produce a larger realized loss.
               </p>
             </div>
 
             <div className="mt-5 border-t border-[#141d2e] pt-4">
               <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#6b7997]">Visibility</p>
               <div className="mt-2.5 grid gap-2">
-                <VisibilityRow label="Main wallet" value="never exposed" tone="good" />
+                <VisibilityRow
+                  label="Trading authority"
+                  value={venue.id === "phoenix" ? "explicitly approved" : "scoped venue access"}
+                  tone="good"
+                />
                 <VisibilityRow label="Execution" value="sealed runtime" tone="good" />
                 <VisibilityRow label={`${venue.label} sees`} value="venue account + order" tone="warn" />
               </div>

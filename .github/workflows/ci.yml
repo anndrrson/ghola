@@ -40,7 +40,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
-      - run: npm install --frozen-lockfile || npm install
+      - run: npm ci --ignore-scripts
       - run: npm test
       - name: Block dangerous HTML sinks
         run: ../../scripts/security/check-dangerous-html.sh
