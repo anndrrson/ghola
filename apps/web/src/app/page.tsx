@@ -124,7 +124,7 @@ export default function Home() {
                 live
               </span>
               <span className="tabular-nums">
-                BTC {mid ? formatLandingPrice(mid) : "—"} · Hyperliquid · Phoenix · Coinbase
+                market data · BTC {mid ? formatLandingPrice(mid) : "—"} · Hyperliquid · Phoenix · Coinbase
               </span>
             </div>
           </div>
@@ -134,13 +134,13 @@ export default function Home() {
           <div className="mx-auto grid max-w-6xl gap-4 px-4 py-14 sm:px-6 md:grid-cols-3">
             <PillarCard
               icon={LockKeyhole}
-              title="Never exposed"
-              body="Your main wallet never touches a venue."
+              title="Scoped access"
+              body="Use venue-scoped credentials or an approved trading authority. Never share a seed phrase."
             />
             <PillarCard
               icon={Gauge}
-              title="Hard caps"
-              body="Loss, slippage, and size are sealed in. The agent can't exceed them."
+              title="Bounded plans"
+              body="Size, slippage, and loss estimates are checked before submission. Markets can still move beyond them."
             />
             <PillarCard
               icon={ReceiptText}
@@ -153,7 +153,7 @@ export default function Home() {
         <section className="border-t border-[#141d2e]">
           <div className="mx-auto flex max-w-6xl flex-col items-center gap-5 px-4 py-16 text-center sm:px-6">
             <h2 className="font-display text-2xl font-semibold tracking-tight text-[#f6f8ff] sm:text-3xl">
-              The terminal is live.
+              The terminal is available with gated live access.
             </h2>
             <Link
               href="/account?flow=trade"

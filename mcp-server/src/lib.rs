@@ -2957,15 +2957,12 @@ impl SaidServer {
 #[tool_handler]
 impl ServerHandler for SaidServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            instructions: Some(
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions(
                 "SAID (Sovereign AI Identity) wallet. Access your portable system prompts, \
                  memories, preferences, and knowledge base across any AI provider."
-                    .into(),
-            ),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+                    .to_string(),
+            )
     }
 }
 

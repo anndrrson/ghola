@@ -39,9 +39,21 @@ on:
       live_mode:
         description: "Hyperliquid live mode"
         required: true
-        default: "tiny_fill"
+        default: "read_only"
         type: choice
         options: [read_only, tiny_fill, full_ticket]
+      promote_to_production:
+        description: "Promote the verified preview artifact to ghola.xyz"
+        required: true
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      production_approval:
+        description: "Explicit human approval for production promotion, paid workers, or live orders"
+        required: true
+        default: "not_approved"
+        type: choice
+        options: ["not_approved", "approved"]
       deploy_ref:
         description: "Git ref containing the private trading web app"
         required: true
@@ -110,6 +122,21 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
+          if { [ "${{ inputs.promote_to_production }}" = "true" ] \
+            || [ "${{ inputs.arm_phala }}" = "true" ] \
+            || [ "${{ inputs.pooled_network }}" = "mainnet" ] \
+            || [ "${{ inputs.live_mode }}" != "read_only" ]; } \
+            && [ "${{ inputs.production_approval }}" != "approved" ]; then
+            echo "Production approval is required for promotion, paid workers, mainnet, or order submission." >&2
+            exit 1
+          fi
+
+      - name: Validate Vercel credentials
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx "vercel@${VERCEL_CLI_VERSION}" whoami --token "$VERCEL_TOKEN" >/dev/null
 
       - name: Resolve worker tokens
         id: tokens
@@ -162,7 +189,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           set -euo pipefail
-          npx "vercel@${VERCEL_CLI_VERSION}" link --yes --project "${{ inputs.vercel_project }}" --token "$VERCEL_TOKEN"
+          npx "vercel@${VERCEL_CLI_VERSION}" link --yes --cwd apps/web --project "${{ inputs.vercel_project }}" --token "$VERCEL_TOKEN"
 
       - name: Push production env vars to Vercel
         env:
@@ -177,12 +204,12 @@ jobs:
           set -euo pipefail
           setenv() {
             local name="$1" value="$2"
-            npx "vercel@${VERCEL_CLI_VERSION}" env rm "$name" production --yes --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
-            printf '%s' "$value" | npx "vercel@${VERCEL_CLI_VERSION}" env add "$name" production --token "$VERCEL_TOKEN" >/dev/null
+            npx "vercel@${VERCEL_CLI_VERSION}" env rm "$name" production --yes --cwd apps/web --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
+            printf '%s' "$value" | npx "vercel@${VERCEL_CLI_VERSION}" env add "$name" production --cwd apps/web --token "$VERCEL_TOKEN" >/dev/null
             echo "set $name"
           }
           rmenv() {
-            npx "vercel@${VERCEL_CLI_VERSION}" env rm "$1" production --yes --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
+            npx "vercel@${VERCEL_CLI_VERSION}" env rm "$1" production --yes --cwd apps/web --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
             echo "removed $1"
           }
           setenv GHOLA_PRIVATE_ACCOUNT_DATABASE_URL "$DB_URL"
@@ -218,20 +245,26 @@ jobs:
           setenv GHOLA_V6_HYPERLIQUID_PILOT_ENABLED "true"
           setenv GHOLA_HYPERLIQUID_LIVE_MODE "${{ inputs.live_mode }}"
           setenv GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS "ready"
-          setenv GHOLA_HYPERLIQUID_ALLOW_MAINNET "true"
+          if [ "${{ inputs.pooled_network }}" = "mainnet" ]; then
+            setenv GHOLA_HYPERLIQUID_ALLOW_MAINNET "true"
+          else
+            setenv GHOLA_HYPERLIQUID_ALLOW_MAINNET "false"
+          fi
           setenv PRIVATE_AGENT_HYPERLIQUID_POOLED_NETWORK "${{ inputs.pooled_network }}"
           setenv PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD "100"
           setenv PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD "500"
           setenv PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS "100"
 
-      - name: Deploy production to Vercel
+      - name: Build and deploy immutable preview
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           set -euo pipefail
-          url=$(npx "vercel@${VERCEL_CLI_VERSION}" deploy --prod --yes --archive=tgz --token "$VERCEL_TOKEN")
+          npx "vercel@${VERCEL_CLI_VERSION}" pull --yes --environment=production --cwd apps/web --token "$VERCEL_TOKEN"
+          npx "vercel@${VERCEL_CLI_VERSION}" build --prod --cwd apps/web --token "$VERCEL_TOKEN"
+          url=$(npx "vercel@${VERCEL_CLI_VERSION}" deploy --prebuilt --prod --skip-domain --yes --cwd apps/web --token "$VERCEL_TOKEN")
           echo "deployment_url=$url" >> "$GITHUB_ENV"
-          echo "## Web deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Preview deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "- $url" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Provision worker CVM via app
@@ -240,7 +273,7 @@ jobs:
           PROV_TOKEN: ${{ steps.tokens.outputs.prov_token }}
         run: |
           set -euo pipefail
-          base="${{ inputs.base_url }}"
+          base="$deployment_url"
           echo "Provisioning worker through $base/api/private-agent/provision"
           out=$(curl -sS -m 290 -X POST "$base/api/private-agent/provision" \
             -H "authorization: Bearer $PROV_TOKEN" \
@@ -254,12 +287,11 @@ jobs:
 
       - name: Verify live endpoints
         env:
-          AUTH_SMOKE_BASE_URL: ${{ inputs.base_url }}
           AUTH_SMOKE_EMAIL: ${{ secrets.GHOLA_AUTH_SMOKE_EMAIL }}
           AUTH_SMOKE_PASSWORD: ${{ secrets.GHOLA_AUTH_SMOKE_PASSWORD }}
         run: |
           set -euo pipefail
-          base="${{ inputs.base_url }}"
+          base="$deployment_url"
           fail=0
           check() {
             local name="$1" path="$2"
@@ -277,7 +309,7 @@ jobs:
           launch=$(check "Private trading launch" "/v1/private-account/launch/status")
           platforms=$(check "Platform readiness" "/v1/private-account/platforms/readiness")
           if [ -n "$AUTH_SMOKE_EMAIL" ]; then
-            (cd apps/web && npm install --no-audit --no-fund >/dev/null 2>&1 && node scripts/smoke-auth.mjs) \
+            (cd apps/web && npm ci --ignore-scripts --no-audit --no-fund >/dev/null 2>&1 && AUTH_SMOKE_BASE_URL="$deployment_url" node scripts/smoke-auth.mjs) \
               && echo "- auth smoke: PASS" >> "$GITHUB_STEP_SUMMARY" \
               || { echo "- auth smoke: FAIL" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
           else
@@ -300,6 +332,16 @@ jobs:
             echo "- phala spend: locked down (arm with arm_phala=true when ready)" >> "$GITHUB_STEP_SUMMARY"
           fi
           exit $fail
+
+      - name: Promote verified artifact to production
+        if: ${{ inputs.promote_to_production == 'true' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx "vercel@${VERCEL_CLI_VERSION}" promote "$deployment_url" --yes --cwd apps/web --token "$VERCEL_TOKEN"
+          curl -fsS --retry 5 --retry-delay 2 "${{ inputs.base_url }}/" >/dev/null
+          echo "- production promotion: verified at ${{ inputs.base_url }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Stop Phala after armed launch proof
         if: ${{ always() && inputs.arm_phala == 'true' && inputs.keep_phala_running != 'true' }}

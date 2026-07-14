@@ -6,7 +6,7 @@ export const metadata: Metadata = {
     "The terms governing your use of the Ghola web application, mobile application, and APIs.",
 };
 
-const EFFECTIVE_DATE = "April 29, 2026";
+const EFFECTIVE_DATE = "July 14, 2026";
 
 export default function TermsPage() {
   return (
@@ -39,11 +39,13 @@ export default function TermsPage() {
 
         <Section title="2. Eligibility">
           <p>
-            You must be at least 13 years old (16 in the EEA) to use the
-            Services. By using the Services, you represent that you meet this
-            requirement, that you have the legal capacity to enter into this
-            agreement, and that you are not prohibited from using the Services
-            under the laws of your jurisdiction.
+            You must be at least 18 years old and the age of legal majority in
+            your jurisdiction to use trading, wallet, payment, or digital-asset
+            features. By using the Services, you represent that you meet these
+            requirements, have the legal capacity to enter into this agreement,
+            and are not prohibited from using the Services under the laws of
+            your jurisdiction. We may restrict products or jurisdictions at any
+            time.
           </p>
         </Section>
 
@@ -58,11 +60,12 @@ export default function TermsPage() {
 
         <Section title="4. The Services">
           <p>
-            Ghola provides AI-powered agents that can chat, place voice calls,
-            send and receive emails, control connected applications, query AI
-            models, and transact with USDC on the Solana blockchain on your
-            behalf. The Services include identity tooling (SAID), a model
-            marketplace, a compute marketplace, and a merchant registry.
+            Ghola provides software for configuring bounded agent plans,
+            connecting scoped exchange or wallet authority, submitting approved
+            orders to supported venues, and recording execution receipts. Other
+            Services may include AI chat, connected applications, digital-asset
+            settlement, identity tooling (SAID), and model, compute, or merchant
+            marketplaces.
           </p>
           <p>
             You acknowledge that AI outputs may be inaccurate, incomplete, or
@@ -86,6 +89,23 @@ export default function TermsPage() {
             risks associated with the use of cryptocurrencies, including
             volatility, regulatory uncertainty, smart-contract risk, and total
             loss.
+          </p>
+          <p>
+            Ghola provides software and routing tools, not investment, legal,
+            tax, or accounting advice. Automated controls can check order size,
+            estimated loss, slippage, venue, and approval state before
+            submission, but cannot guarantee an execution price or maximum
+            realized loss. Market gaps, liquidity, latency, outages,
+            liquidations, and third-party failures can cause losses greater than
+            an estimate or configured threshold. You make and approve your own
+            trading decisions and may lose all assets committed to trading.
+          </p>
+          <p>
+            You must use least-privilege venue credentials and must not provide
+            a seed phrase or unrestricted withdrawal credential. You authorize
+            Ghola to transmit approved instructions to the venues and networks
+            you connect. Venue rules, fees, eligibility requirements, and terms
+            also apply.
           </p>
         </Section>
 
@@ -185,10 +205,12 @@ export default function TermsPage() {
         <Section title="11. Third-party services">
           <p>
             The Services integrate with third-party providers (including
-            Anthropic, Together.ai, Bland AI, Google, Stripe, and Solana RPC
-            providers). We are not responsible for the availability, accuracy,
-            or content of third-party services, and your use of them is
-            governed by their terms.
+            Hyperliquid, Coinbase, supported Solana applications and RPC
+            providers, Anthropic, Together.ai, Bland AI, Google, Stripe,
+            Vercel, Neon, and Phala). We are not responsible for the
+            availability, accuracy, execution, custody, or content of
+            third-party services, and your use of them is governed by their
+            terms.
           </p>
         </Section>
 

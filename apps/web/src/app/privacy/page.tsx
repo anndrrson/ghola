@@ -6,7 +6,7 @@ export const metadata: Metadata = {
     "How Ghola collects, uses, stores, and protects information across the Ghola web application, mobile app, and APIs.",
 };
 
-const EFFECTIVE_DATE = "April 29, 2026";
+const EFFECTIVE_DATE = "July 14, 2026";
 
 export default function PrivacyPolicyPage() {
   return (
@@ -60,7 +60,20 @@ export default function PrivacyPolicyPage() {
           </p>
 
           <h3 className="text-[#eef1f8] font-medium mt-6 mb-2">
-            2.3 Connected accounts
+            2.3 Trading accounts and execution data
+          </h3>
+          <p>
+            When you connect a venue or trading authority, we process venue
+            account identifiers, scoped API credentials or delegated signer
+            handles, authorization commitments, trading plans, risk settings,
+            orders, fills, positions, and receipt metadata. Supported venues
+            receive the account and order information needed to execute the
+            action you approved. Do not provide Ghola with a seed phrase or an
+            unrestricted withdrawal credential.
+          </p>
+
+          <h3 className="text-[#eef1f8] font-medium mt-6 mb-2">
+            2.4 Connected accounts
           </h3>
           <p>
             If you connect Gmail, Google Calendar, or other third-party
@@ -71,7 +84,7 @@ export default function PrivacyPolicyPage() {
           </p>
 
           <h3 className="text-[#eef1f8] font-medium mt-6 mb-2">
-            2.4 Conversation and task content
+            2.5 Conversation and task content
           </h3>
           <p>
             When you chat with Ghola or assign it tasks (placing a phone call,
@@ -82,7 +95,7 @@ export default function PrivacyPolicyPage() {
           </p>
 
           <h3 className="text-[#eef1f8] font-medium mt-6 mb-2">
-            2.5 Voice calls
+            2.6 Voice calls
           </h3>
           <p>
             When you ask Ghola to place a phone call on your behalf, the call
@@ -95,7 +108,7 @@ export default function PrivacyPolicyPage() {
           </p>
 
           <h3 className="text-[#eef1f8] font-medium mt-6 mb-2">
-            2.6 Device and usage data
+            2.7 Device and usage data
           </h3>
           <p>
             On mobile we collect device identifiers, operating system version,
@@ -108,7 +121,7 @@ export default function PrivacyPolicyPage() {
           </p>
 
           <h3 className="text-[#eef1f8] font-medium mt-6 mb-2">
-            2.7 Payment information
+            2.8 Payment information
           </h3>
           <p>
             Subscription payments are processed by Stripe. We do not store your
@@ -129,6 +142,10 @@ export default function PrivacyPolicyPage() {
             <li>To authenticate you and secure your account.</li>
             <li>
               To process payments, settle USDC, and bill subscription tiers.
+            </li>
+            <li>
+              To validate, submit, reconcile, and audit trading instructions
+              you approve, including enforcement of configured risk checks.
             </li>
             <li>
               To send you transactional notifications (task completions, call
@@ -153,6 +170,18 @@ export default function PrivacyPolicyPage() {
             <li>
               <strong className="text-[#eef1f8]">Supabase</strong> — managed
               Postgres database hosting.
+            </li>
+            <li>
+              <strong className="text-[#eef1f8]">Neon</strong> — managed
+              Postgres database hosting for supported production services.
+            </li>
+            <li>
+              <strong className="text-[#eef1f8]">Hyperliquid, Coinbase, and supported Solana applications</strong>{" "}
+              — market data and execution when you connect and approve a venue.
+            </li>
+            <li>
+              <strong className="text-[#eef1f8]">Phala Cloud</strong> —
+              confidential worker infrastructure when that execution mode is enabled.
             </li>
             <li>
               <strong className="text-[#eef1f8]">Anthropic</strong> — language
@@ -235,10 +264,11 @@ export default function PrivacyPolicyPage() {
 
         <Section title="8. Children">
           <p>
-            The Services are not directed to children under 13 (or under 16 in
-            the EEA). We do not knowingly collect personal information from
-            children. If you believe a child has provided us with personal
-            information, please contact us and we will delete it.
+            Trading, wallet, payment, and digital-asset features are not
+            directed to anyone under 18 or under the age of legal majority in
+            their jurisdiction. We do not knowingly allow minors to use those
+            features. If you believe a minor has provided us with personal
+            information, please contact us and we will delete it as required.
           </p>
         </Section>
 
