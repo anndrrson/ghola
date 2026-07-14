@@ -346,7 +346,9 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           set -euo pipefail
-          npx "vercel@${VERCEL_CLI_VERSION}" promote "$deployment_url" --yes --cwd apps/web --token "$VERCEL_TOKEN"
+          vercel_scope=$(jq -er '.orgId' apps/web/.vercel/project.json)
+          npx "vercel@${VERCEL_CLI_VERSION}" promote "$deployment_url" --yes \
+            --cwd apps/web --scope "$vercel_scope" --token "$VERCEL_TOKEN"
           curl -fsS --retry 5 --retry-delay 2 "${{ inputs.base_url }}/" >/dev/null
           echo "- production promotion: verified at ${{ inputs.base_url }}" >> "$GITHUB_STEP_SUMMARY"
 
