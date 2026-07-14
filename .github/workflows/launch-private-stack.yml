@@ -270,14 +270,17 @@ jobs:
       - name: Provision worker CVM via app
         if: ${{ inputs.arm_phala == 'true' }}
         env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           PROV_TOKEN: ${{ steps.tokens.outputs.prov_token }}
         run: |
           set -euo pipefail
           base="$deployment_url"
           echo "Provisioning worker through $base/api/private-agent/provision"
-          out=$(curl -sS -m 290 -X POST "$base/api/private-agent/provision" \
-            -H "authorization: Bearer $PROV_TOKEN" \
-            -H "content-type: application/json" -d '{}')
+          out=$(cd apps/web && npx "vercel@${VERCEL_CLI_VERSION}" \
+            curl /api/private-agent/provision --deployment "$base" -- \
+            --fail --silent --show-error --max-time 290 --request POST \
+            --header "authorization: Bearer $PROV_TOKEN" \
+            --header "content-type: application/json" --data '{}')
           echo "$out" | head -c 2000
           echo "## Worker provisioning" >> "$GITHUB_STEP_SUMMARY"
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
@@ -287,6 +290,7 @@ jobs:
 
       - name: Verify live endpoints
         env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           AUTH_SMOKE_EMAIL: ${{ secrets.GHOLA_AUTH_SMOKE_EMAIL }}
           AUTH_SMOKE_PASSWORD: ${{ secrets.GHOLA_AUTH_SMOKE_PASSWORD }}
         run: |
@@ -296,7 +300,10 @@ jobs:
           check() {
             local name="$1" path="$2"
             local body
-            body=$(curl -fsS -m 30 "$base$path" || echo '{"error":"request_failed"}')
+            body=$(cd apps/web && npx "vercel@${VERCEL_CLI_VERSION}" \
+              curl "$path" --deployment "$base" -- \
+              --fail --silent --show-error --max-time 30 \
+              || echo '{"error":"request_failed"}')
             echo "### $name (\`$path\`)" >> "$GITHUB_STEP_SUMMARY"
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
             echo "$body" | head -c 1200 >> "$GITHUB_STEP_SUMMARY"
