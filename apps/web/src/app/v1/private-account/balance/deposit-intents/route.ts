@@ -23,6 +23,15 @@ export async function POST(request: Request) {
   const amount = Number(body?.amount_micro_usdc);
   const rail = fundingRail(body?.rail);
   if (!rail) return json({ error: "supported_funding_rail_required" }, 400);
+  if (process.env.GHOLA_CONSUMER_PREPAID_BALANCE_ENABLED !== "true") {
+    return json({ error: "consumer_prepaid_balance_not_enabled" }, 503);
+  }
+  if (rail === "solana_usdc" && !process.env.GHOLA_CONSUMER_SOLANA_USDC_TREASURY_RECIPIENT?.trim()) {
+    return json({ error: "consumer_public_usdc_configuration_incomplete" }, 503);
+  }
+  if (rail === "solana_shielded_usdcx" && !process.env.GHOLA_CONSUMER_SHIELDED_DEPOSIT_DESTINATION_COMMITMENT?.trim()) {
+    return json({ error: "consumer_shielded_deposit_configuration_incomplete" }, 503);
+  }
   if (!Number.isSafeInteger(amount) || amount < 1_000_000) {
     return json({ error: "deposit_amount_must_be_at_least_one_usdc" }, 400);
   }

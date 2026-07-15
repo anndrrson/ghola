@@ -14,6 +14,9 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  if (process.env.GHOLA_CONSUMER_PREPAID_BALANCE_ENABLED !== "true") {
+    return json({ error: "consumer_prepaid_balance_not_enabled" }, 503);
+  }
   const owner = await privateAccountOwnerFromRequest(request);
   if (!owner) return unauthorized();
   const { id } = await context.params;

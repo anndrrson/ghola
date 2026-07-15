@@ -19,6 +19,7 @@ export type ConsumerLedgerKind =
   | "fee_settlement"
   | "pnl_settlement"
   | "withdrawal_debit"
+  | "withdrawal_release"
   | "operator_adjustment";
 
 export type ConsumerLedgerAccount =

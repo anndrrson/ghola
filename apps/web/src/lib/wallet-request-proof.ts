@@ -8,6 +8,8 @@ export type SolanaProvider = {
     message: Uint8Array,
     encoding?: string,
   ) => Promise<Uint8Array | { signature?: Uint8Array | number[]; publicKey?: unknown }>;
+  signTransaction?: <T>(transaction: T) => Promise<T>;
+  signAndSendTransaction?: <T>(transaction: T) => Promise<{ signature?: string } | string>;
   publicKey?: unknown;
 };
 
