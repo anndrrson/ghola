@@ -80,8 +80,8 @@ concurrency:
 
 env:
   VERCEL_CLI_VERSION: 54.13.0
-  WORKER_IMAGE: ghcr.io/anndrrson/ghola:private-agent-worker-e8fc717
-  WORKER_IMAGE_DIGEST: sha256:8b14d0edcd20514944c5c02fe88a2b0751b9b4edff5d62c2315b796f0ae26e0e
+  WORKER_IMAGE: ghcr.io/anndrrson/ghola:private-agent-worker-b5b9fae
+  WORKER_IMAGE_DIGEST: sha256:db72727cb636c4f50c8ad6d7e91a1a776857854a45b329bf3cc3e76309366b28
 
 jobs:
   launch:
