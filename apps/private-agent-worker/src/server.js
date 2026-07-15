@@ -14,6 +14,7 @@ import {
   runAutopilotTick,
   startAutopilotLoop,
 } from "./execution/autopilot.js";
+import { createCrossVenueCoordinator } from "./execution/cross-venue.js";
 import {
   createHyperliquidManagedAllocation,
   executeCoinbaseOrder,
@@ -1796,6 +1797,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
   const state = options.state || createConfiguredWorkerState(dataDir());
   const consumerRuntime = options.consumerRuntime || createConsumerRuntime();
+  const crossVenueCoordinator = createCrossVenueCoordinator({
+    state,
+    adapter: options.crossVenueAdapter || null,
+    callback: options.crossVenueCallback,
+    schedule: options.crossVenueSchedule,
+  });
   if (options.startConsumerRuntime !== false) consumerRuntime.start();
   if (options.resumeAutopilotLoops !== false) {
     queueMicrotask(() => {
@@ -1847,6 +1854,53 @@ export function createPrivateAgentWorkerServer(options = {}) {
           const code = error?.code || "consumer_reconciliation_failed";
           return json(res, code === "venue_order_not_found" ? 404 : 409, { error: code });
         }
+      }
+
+      const crossVenueCommand = url.pathname.match(/^\/execution\/cross-venue\/(submit|cancel)$/);
+      if (req.method === "POST" && url.pathname === "/execution/cross-venue/ready") {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: "credential:verify",
+          state,
+          expected: () => ({ operation_class: "cross_venue_byo_readiness" }),
+        });
+        if (authorized.rejected) return;
+        const adapterReady = crossVenueCoordinator.ready();
+        return json(res, adapterReady ? 200 : 503, {
+          version: 1,
+          ready: adapterReady,
+          execution_mode: "coordinated_byo",
+          atomic: false,
+          reason_codes: adapterReady ? [] : ["cross_venue_byo_adapter_unavailable"],
+        });
+      }
+      if (req.method === "POST" && crossVenueCommand) {
+        if (req.headers["x-ghola-sealed-execution-required"] !== "true") {
+          return json(res, 400, { error: "sealed execution header is required" });
+        }
+        const action = crossVenueCommand[1];
+        const authorized = await readAuthorizedJson(req, res, {
+          path: url.pathname,
+          scope: action === "submit" ? "order:submit" : "autopilot:control",
+          state,
+          expected: (body) => capabilityExpectedFromBody(body, {
+            operation_class: "cross_venue_byo",
+            owner_commitment: body?.owner_commitment,
+          }),
+        });
+        if (authorized.rejected) return;
+        if (!ready.ready && !boolEnv("PRIVATE_AGENT_ALLOW_UNATTESTED_DEV")) {
+          return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
+        }
+        const result = action === "submit"
+          ? await crossVenueCoordinator.submit(authorized.body)
+          : await crossVenueCoordinator.cancel(authorized.body);
+        return json(res, result.status, result.ok
+          ? { version: 1, accepted: true, replayed: result.replayed, receipt: result.receipt }
+          : { error: result.error, details: result.details });
       }
 
       if (req.method === "POST" && url.pathname === "/consumer/vercel-spend-webhook") {

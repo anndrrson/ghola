@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stopIdlePhalaPrivateAgent } from "@/lib/private-agent-phala";
 import { hasActiveConsumerExposure } from "@/lib/consumer-production-store";
+import { hasActiveCrossVenueExposure } from "@/lib/cross-venue-execution-store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -39,7 +40,11 @@ async function run(req: NextRequest) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  if (!force && await hasActiveConsumerExposure()) {
+  const activeExposure = !force && await Promise.all([
+    hasActiveConsumerExposure(),
+    hasActiveCrossVenueExposure(),
+  ]).then((checks) => checks.some(Boolean));
+  if (activeExposure) {
     return NextResponse.json({
       version: 1,
       provider_id: "phala",

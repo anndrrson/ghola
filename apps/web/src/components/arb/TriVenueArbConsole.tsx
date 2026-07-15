@@ -104,6 +104,23 @@ type WithdrawalResult = {
   transaction_signature?: string;
 };
 
+type CrossVenueReadiness = {
+  enabled: boolean;
+  ready: boolean;
+  execution_mode: "coordinated_byo";
+  atomic: false;
+  reason_codes: string[];
+};
+
+type CrossVenueExecutionResult = {
+  execution: {
+    execution_id: string;
+    status: string;
+    residual_notional_micro_usdc: number;
+    hedge_deadline_at: string | null;
+  };
+};
+
 const VENUES = ["phoenix", "hyperliquid", "backpack"] as const;
 type VenueId = (typeof VENUES)[number];
 
@@ -129,6 +146,8 @@ export function TriVenueArbConsole() {
   const [consumerBalance, setConsumerBalance] = useState<ConsumerBalanceResult["balance"] | null>(null);
   const [withdrawalUsd, setWithdrawalUsd] = useState("5");
   const [withdrawalStatus, setWithdrawalStatus] = useState<WithdrawalResult | null>(null);
+  const [crossVenueReadiness, setCrossVenueReadiness] = useState<CrossVenueReadiness | null>(null);
+  const [crossVenueExecution, setCrossVenueExecution] = useState<CrossVenueExecutionResult["execution"] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,13 +156,15 @@ export function TriVenueArbConsole() {
       : "/v1/private-account/arb/tri-venue/status";
     async function load() {
       try {
-        const [nextStatus, nextBundle] = await Promise.all([
+        const [nextStatus, nextBundle, nextCrossVenue] = await Promise.all([
           fetchJson<TriVenueStatus>(statusPath),
           fetchJson<TriVenueMarketBundle>("/v1/private-account/arb/tri-venue/opportunities?market=SOL-USD&interval=1m"),
+          fetchJson<CrossVenueReadiness>("/v1/private-account/cross-venue/status"),
         ]);
         if (!cancelled) {
           setStatus(nextStatus);
           setBundle(nextBundle);
+          setCrossVenueReadiness(nextCrossVenue);
           setError(null);
         }
       } catch (err) {
@@ -157,6 +178,24 @@ export function TriVenueArbConsole() {
       window.clearInterval(timer);
     };
   }, [workerProbeEnabled]);
+
+  useEffect(() => {
+    if (!crossVenueExecution || ["both_filled", "hedged", "cancelled", "failed", "manual_intervention_required"].includes(crossVenueExecution.status)) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const next = await fetchJson<CrossVenueExecutionResult>(`/v1/private-account/cross-venue/executions/${encodeURIComponent(crossVenueExecution.execution_id)}`);
+        if (!cancelled) setCrossVenueExecution(next.execution);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Could not refresh cross-venue execution.");
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [crossVenueExecution]);
 
   const frames = useMemo(() => {
     if (!bundle) return {} as Record<VenueId, GholaMarketFrame | null>;
@@ -334,6 +373,58 @@ export function TriVenueArbConsole() {
       if (response.error) setError(response.error);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Phoenix live submit failed.");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function runCrossVenueExecution() {
+    if (!canSign) return setError("Connect a wallet and accept the live execution checks.");
+    if (!crossVenueReadiness?.ready) return setError(`Cross-venue execution is gated: ${crossVenueReadiness?.reason_codes.map(formatReason).join(", ") || "not configured"}.`);
+    if (!bestOpportunity || bestOpportunity.status !== "preflight_pass" || !bestOpportunity.leg_plan) {
+      return setError("No fresh cross-venue opportunity currently passes the edge and market-data checks.");
+    }
+    setWorking("cross-venue-submit");
+    setError(null);
+    try {
+      const notional = usdToMicro(orderUsd);
+      const proof = await signFreshChallenge(wallet);
+      const response = await postIdempotentJson<CrossVenueExecutionResult>(
+        "/v1/private-account/cross-venue/executions",
+        `cross:${crypto.randomUUID()}`,
+        {
+          ...proof,
+          opportunity_commitment: bestOpportunity.commitment,
+          matched_notional_micro_usdc: notional,
+          risk_budget: {
+            max_unhedged_notional_micro_usdc: notional,
+            max_hedge_slippage_bps: 25,
+            max_hedge_duration_ms: 5_000,
+            max_unwind_loss_micro_usdc: Math.min(notional, 250_000),
+            max_daily_loss_micro_usdc: notional,
+          },
+        },
+      );
+      setCrossVenueExecution(response.execution);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Cross-venue execution failed.");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function cancelCrossVenueExecution() {
+    if (!crossVenueExecution) return;
+    setWorking("cross-venue-cancel");
+    setError(null);
+    try {
+      const response = await postJson<CrossVenueExecutionResult>(
+        `/v1/private-account/cross-venue/executions/${encodeURIComponent(crossVenueExecution.execution_id)}/cancel`,
+        {},
+      );
+      setCrossVenueExecution(response.execution);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not cancel and unwind the cross-venue execution.");
     } finally {
       setWorking(null);
     }
@@ -659,6 +750,47 @@ export function TriVenueArbConsole() {
                 <CheckRow checked={notProhibited} onChange={setNotProhibited} label="I self-attest that I am legally allowed to use this feature." />
               </div>
 
+              <div className="mt-4 rounded-md border border-cyan-300/20 bg-cyan-300/5 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-white">Coordinated BYO execution</div>
+                    <p className="mt-1 text-xs leading-5 text-[#8ea1bf]">Two opposite IOC legs across user-owned venue accounts. Ghola measures any unmatched fill and automatically hedges or unwinds inside the displayed risk budget.</p>
+                  </div>
+                  <span className={crossVenueReadiness?.ready ? badgeClass("good") : badgeClass("warn")}>
+                    {crossVenueReadiness?.ready ? "ready" : "gated"}
+                  </span>
+                </div>
+                <div className="mt-3 grid gap-2">
+                  <PlanRow label="Execution" value="coordinated, non-atomic" />
+                  <PlanRow label="Temporary exposure" value={`up to $${orderUsd}`} />
+                  <PlanRow label="Hedge window" value="5 seconds" />
+                  <PlanRow label="Hedge slippage" value="25 bps max" />
+                  <PlanRow label="Daily loss stop" value={`$${orderUsd}`} />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void runCrossVenueExecution()}
+                  disabled={!canSign || !crossVenueReadiness?.ready || bestOpportunity?.status !== "preflight_pass" || working !== null}
+                  className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-cyan-300/30 bg-cyan-300/12 px-3 text-sm font-medium text-cyan-50 transition hover:bg-cyan-300/18 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  <Crosshair className="h-4 w-4" />
+                  {working === "cross-venue-submit" ? "Coordinating both legs" : `Execute matched $${orderUsd}`}
+                </button>
+                {crossVenueExecution && (
+                  <p className="mt-2 break-all font-mono text-[11px] text-cyan-100">
+                    {crossVenueExecution.status} · residual ${(crossVenueExecution.residual_notional_micro_usdc / 1_000_000).toFixed(2)} · {crossVenueExecution.execution_id}
+                  </p>
+                )}
+                {crossVenueExecution && !["both_filled", "hedged", "cancelled", "failed", "manual_intervention_required"].includes(crossVenueExecution.status) && (
+                  <button type="button" onClick={() => void cancelCrossVenueExecution()} disabled={working !== null} className="mt-2 h-9 w-full rounded-md border border-rose-300/25 bg-rose-300/10 text-xs text-rose-50 disabled:opacity-45">
+                    {working === "cross-venue-cancel" ? "Cancelling and unwinding" : "Cancel / unwind both legs"}
+                  </button>
+                )}
+                {!crossVenueReadiness?.ready && (
+                  <p className="mt-2 text-[11px] leading-5 text-amber-100">{crossVenueReadiness?.reason_codes.map(formatReason).join(" · ") || "Checking the execution worker."}</p>
+                )}
+              </div>
+
               <div className="mt-4 rounded-md border border-emerald-300/20 bg-emerald-300/5 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
@@ -967,6 +1099,22 @@ async function fetchJson<T>(path: string): Promise<T> {
 
 async function postJson<T = unknown>(path: string, body: unknown): Promise<T> {
   return requestJson(path, "POST", body);
+}
+
+async function postIdempotentJson<T>(path: string, idempotencyKey: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "idempotency-key": idempotencyKey,
+    },
+    body: JSON.stringify(body),
+  });
+  const responseBody = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(errorMessage(responseBody) ?? `${res.status} ${res.statusText}`);
+  return responseBody as T;
 }
 
 async function requestJson<T = unknown>(path: string, method: "POST" | "PUT", body: unknown): Promise<T> {

@@ -82,6 +82,7 @@ export type ConsumerCircuitReason =
   | "execution_failure_rate"
   | "worker_attestation_missing"
   | "venue_unavailable"
+  | "cross_venue_unhedged_exposure"
   | "operator_halt";
 
 export interface ConsumerCircuitState {

@@ -38,6 +38,18 @@ local testing.
 - `POST /autopilot/sessions/:id/pause`
 - `POST /autopilot/sessions/:id/resume`
 - `POST /autopilot/sessions/:id/kill`
+- `POST /execution/cross-venue/submit`
+- `POST /execution/cross-venue/cancel`
+- `POST /execution/cross-venue/ready`
+
+The cross-venue endpoints accept exactly two opposite IOC legs with one durable
+execution id and explicit unhedged-notional, hedge-time, slippage, unwind-loss,
+and daily-loss budgets. The coordinator preflights both legs, submits them
+concurrently, measures residual exposure, then invokes the configured hedge or
+unwind adapter and posts monotonic reports to Ghola. It deliberately returns
+`cross_venue_byo_adapter_unavailable` unless all preflight, submit, hedge,
+unwind, and cancel controls are installed; the presence of the HTTP endpoint
+alone never makes cross-venue live trading ready.
 
 The Hyperliquid endpoints are for the v1 private execution pilot. They accept
 only commitments plus encrypted execution vault/strategy bundles. Plaintext
@@ -141,6 +153,9 @@ orders.
 - `PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON` or
   `PRIVATE_AGENT_JUPITER_POOLED_VAULT_PATH` for Ghola Vault Mode
 - `PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS=12000`
+- `GHOLA_CROSS_VENUE_RECONCILIATION_URL`, pointing to Ghola's authenticated
+  `/api/internal/cross-venue-reconciliation` endpoint
+- `GHOLA_RECONCILIATION_INGEST_TOKEN`, shared only with that callback endpoint
 
 When `PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE=true`, the worker requests a dstack
 quote over `/var/run/dstack.sock` with report data derived from the published
