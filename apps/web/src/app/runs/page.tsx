@@ -20,6 +20,8 @@ import {
   controlPrivateAutopilotSession,
   createPrivateAutopilotSession,
   listPrivateAutopilotSessions,
+  openPrivateAutopilotEventStream,
+  type PrivateAutopilotEvent,
   type PrivateAutopilotSession,
   type PrivateAutopilotSessionPolicy,
 } from "@/lib/private-account-client";
@@ -40,21 +42,21 @@ const MODES: ReadonlyArray<{
     id: "active",
     label: "Active",
     description: "Capped directional trades with deterministic screening.",
-    detail: "25 bps slippage ceiling · 6 orders",
+    detail: "3% stop · 6% target · 25 bps slippage",
     icon: Gauge,
   },
   {
     id: "aggressive",
     label: "Aggressive",
     description: "AI-scored momentum across BTC, ETH, and SOL.",
-    detail: "50 bps slippage ceiling · 12 orders",
+    detail: "5% stop · 10% target · 50 bps slippage",
     icon: Zap,
   },
   {
     id: "unchained",
     label: "Unchained",
     description: "Maximum current engine limits and full market scanning.",
-    detail: "100 bps slippage ceiling · 25 orders",
+    detail: "8% stop · 16% target · 100 bps slippage",
     icon: Skull,
   },
 ] as const;
@@ -72,6 +74,9 @@ export default function RunsPage() {
   const [maxLoss, setMaxLoss] = useState<LossBucket>("10");
   const [creating, setCreating] = useState(false);
   const [controlling, setControlling] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedEvents, setSelectedEvents] = useState<PrivateAutopilotEvent[]>([]);
+  const [streamStatus, setStreamStatus] = useState<"connecting" | "live" | "reconnecting" | "closed">("closed");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -95,6 +100,27 @@ export default function RunsPage() {
       window.clearInterval(interval);
     };
   }, [auth.authenticated]);
+
+  useEffect(() => {
+    if (!auth.authenticated || !selectedRunId) {
+      setSelectedEvents([]);
+      setStreamStatus("closed");
+      return;
+    }
+    setSelectedEvents([]);
+    const stream = openPrivateAutopilotEventStream({
+      autopilotSessionId: selectedRunId,
+      onSession: (session) => setSessions((current) => current.map((item) =>
+        item.autopilot_session_id === session.autopilot_session_id ? session : item)),
+      onEvent: (event) => setSelectedEvents((current) => {
+        if (current.some((item) => item.event_id === event.event_id)) return current;
+        return [...current, event].slice(-40);
+      }),
+      onStatus: setStreamStatus,
+      onError: (streamError) => setError(messageForError(streamError)),
+    });
+    return () => stream.close();
+  }, [auth.authenticated, selectedRunId]);
 
   async function createRun() {
     if (!auth.authenticated) {
@@ -280,12 +306,18 @@ export default function RunsPage() {
             ) : (
               <div className="mt-5 space-y-3">
                 {sessions.map((session) => (
-                  <RunCard
-                    key={session.autopilot_session_id}
-                    session={session}
-                    busy={controlling === session.autopilot_session_id}
-                    onControl={(action) => controlRun(session, action)}
-                  />
+                  <div key={session.autopilot_session_id}>
+                    <RunCard
+                      session={session}
+                      busy={controlling === session.autopilot_session_id}
+                      selected={selectedRunId === session.autopilot_session_id}
+                      onSelect={() => setSelectedRunId((current) => current === session.autopilot_session_id ? null : session.autopilot_session_id)}
+                      onControl={(action) => controlRun(session, action)}
+                    />
+                    {selectedRunId === session.autopilot_session_id && (
+                      <RunActivity events={selectedEvents} streamStatus={streamStatus} />
+                    )}
+                  </div>
                 ))}
               </div>
             )}
@@ -305,9 +337,11 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function RunCard({ session, busy, onControl }: {
+function RunCard({ session, busy, selected, onSelect, onControl }: {
   session: PrivateAutopilotSession;
   busy: boolean;
+  selected: boolean;
+  onSelect: () => void;
   onControl: (action: "pause" | "resume" | "kill") => void;
 }) {
   const active = ["armed", "watching", "running", "pending_worker", "pending_funding"].includes(session.status);
@@ -326,10 +360,11 @@ function RunCard({ session, busy, onControl }: {
         <span className="rounded-full border border-[#25344a] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#8391a8]">{session.status.replaceAll("_", " ")}</span>
       </div>
 
-      <div className="mt-5 grid grid-cols-2 gap-3 border-y border-[#172235] py-4 sm:grid-cols-5">
+      <div className="mt-5 grid grid-cols-2 gap-3 border-y border-[#172235] py-4 sm:grid-cols-3 xl:grid-cols-6">
         <RunMetric label="Per order" value={`$${session.session_policy.max_notional_bucket}`} />
         <RunMetric label="Position cap" value={`$${session.session_policy.max_position_notional_bucket}`} />
         <RunMetric label="Loss circuit" value={`-$${session.session_policy.max_loss_bucket}`} />
+        <RunMetric label="Stop / target" value={`${bpsPercent(session.session_policy.stop_loss_bps)} / ${bpsPercent(session.session_policy.take_profit_bps)}`} />
         <RunMetric label="Marked P&L" value={formatPnl(session.risk_summary?.estimated_total_pnl_usd)} />
         <RunMetric label="Orders" value={`${session.order_count}/${session.session_policy.max_order_count}`} />
       </div>
@@ -339,6 +374,10 @@ function RunCard({ session, busy, onControl }: {
         <span className="ml-auto font-mono text-[10px] text-[#4e5b70]">{shortCommitment(session.autopilot_session_id)}</span>
       </div>
 
+      <button type="button" onClick={onSelect} className="mt-4 text-xs font-medium text-[#8fbfff] hover:text-white">
+        {selected ? "Hide live receipts" : "View live receipts"}
+      </button>
+
       {!(["killed", "expired"].includes(session.status)) && (
         <div className="mt-5 flex gap-2">
           {active && <ControlButton label="Pause" icon={Pause} disabled={busy} onClick={() => onControl("pause")} />}
@@ -347,6 +386,58 @@ function RunCard({ session, busy, onControl }: {
         </div>
       )}
     </article>
+  );
+}
+
+function RunActivity({ events, streamStatus }: {
+  events: PrivateAutopilotEvent[];
+  streamStatus: "connecting" | "live" | "reconnecting" | "closed";
+}) {
+  const visible = events.slice(-10).reverse();
+  return (
+    <div className="mx-2 border-x border-b border-[#1a2639] bg-[#060910] p-4">
+      <div className="flex items-center justify-between">
+        <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#6f7d9a]">Execution journal</p>
+        <span className={`font-mono text-[10px] uppercase ${streamStatus === "live" ? "text-emerald-300" : "text-amber-200"}`}>{streamStatus}</span>
+      </div>
+      {visible.length === 0 ? (
+        <p className="mt-4 text-sm text-[#65738a]">Waiting for the worker journal…</p>
+      ) : (
+        <ol className="mt-3 space-y-2">
+          {visible.map((event) => (
+            <li key={event.event_id} className="rounded-lg border border-[#172235] bg-[#090d14] px-3 py-2.5">
+              <div className="flex gap-3">
+                <span className="mt-0.5 shrink-0 font-mono text-[9px] uppercase text-[#61708a]">{event.type.replaceAll("_", " ")}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs leading-5 text-[#b7c4d8]">{event.message}</p>
+                  <EventFillSummary event={event} />
+                </div>
+                <time className="shrink-0 font-mono text-[9px] text-[#4e5b70]">{new Date(event.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+function EventFillSummary({ event }: { event: PrivateAutopilotEvent }) {
+  const summary = event.data.fill_summary;
+  if (!summary || typeof summary !== "object" || Array.isArray(summary)) return null;
+  const fill = summary as Record<string, unknown>;
+  const count = Number(fill.fill_count || 0);
+  if (!Number.isFinite(count) || count <= 0) return <p className="mt-1 font-mono text-[10px] text-[#65738a]">No fill</p>;
+  const notional = Number(fill.filled_notional_usd || 0);
+  const price = Number(fill.average_fill_price || 0);
+  const fee = Number(fill.fee_usd || 0);
+  const feeText = fill.fee_status === "pending_reconciliation"
+    ? "fee pending reconciliation"
+    : `fee $${fee.toFixed(4)}`;
+  return (
+    <p className="mt-1 font-mono text-[10px] text-emerald-200">
+      {count} fill{count === 1 ? "" : "s"} · ${notional.toFixed(2)} @ {price.toLocaleString(undefined, { maximumFractionDigits: 6 })} · {feeText}
+    </p>
   );
 }
 
@@ -381,10 +472,10 @@ function EmptyState({ title, body, action, actionLabel }: { title: string; body:
 
 function policyForRun(mode: RunMode, capital: CapitalBucket, maxLoss: LossBucket): Partial<PrivateAutopilotSessionPolicy> {
   const config = mode === "active"
-    ? { order: "10", daily: "50", slippage: 25, orders: 6, ai: false, markets: ["SOL-USD"], venues: ["hyperliquid"] }
+    ? { order: "10", daily: "50", slippage: 25, stop: 300, target: 600, orders: 6, ai: false, markets: ["SOL-USD"], venues: ["hyperliquid"] }
     : mode === "aggressive"
-      ? { order: "25", daily: "100", slippage: 50, orders: 12, ai: true, markets: ["BTC-USD", "ETH-USD", "SOL-USD"], venues: ["hyperliquid"] }
-      : { order: "100", daily: "250", slippage: 100, orders: 25, ai: true, markets: ["BTC-USD", "ETH-USD", "SOL-USD"], venues: ["hyperliquid"] };
+      ? { order: "25", daily: "100", slippage: 50, stop: 500, target: 1_000, orders: 12, ai: true, markets: ["BTC-USD", "ETH-USD", "SOL-USD"], venues: ["hyperliquid"] }
+      : { order: "100", daily: "250", slippage: 100, stop: 800, target: 1_600, orders: 25, ai: true, markets: ["BTC-USD", "ETH-USD", "SOL-USD"], venues: ["hyperliquid"] };
   return {
     strategy_id: "momentum_micro_trader",
     decision_model: config.ai ? "ai_direct_order_v1" : "rules_plus_ai_score",
@@ -398,8 +489,14 @@ function policyForRun(mode: RunMode, capital: CapitalBucket, maxLoss: LossBucket
     max_order_count: config.orders,
     ttl_ms: mode === "unchained" ? 30 * 24 * 60 * 60_000 : 7 * 24 * 60 * 60_000,
     max_slippage_bps: config.slippage,
+    stop_loss_bps: config.stop,
+    take_profit_bps: config.target,
     cooldown_ms: mode === "active" ? 5 * 60_000 : 60_000,
   };
+}
+
+function bpsPercent(value: number | undefined) {
+  return `${((Number(value) || 0) / 100).toFixed(1)}%`;
 }
 
 function formatPnl(value: number | undefined) {

@@ -14,6 +14,7 @@ import {
   applyEstimatedFill,
   lossCircuitDecision,
   markRunPositions,
+  protectiveExitDecision,
   projectRunExposure,
   summarizeRunRisk,
 } from "./run-risk.js";
@@ -93,6 +94,8 @@ export async function createAutopilotSession({ body, recipient, state, provider,
     max_position_notional_bucket: policy.max_position_notional_bucket,
     max_daily_notional_bucket: policy.max_daily_notional_bucket,
     max_order_count: policy.max_order_count,
+    stop_loss_bps: policy.stop_loss_bps,
+    take_profit_bps: policy.take_profit_bps,
     cooldown_ms: policy.cooldown_ms,
     data_max_age_ms: policy.data_max_age_ms,
   }, now);
@@ -229,6 +232,21 @@ async function runAutopilotTickUnlocked({
     maxMarkAgeMs: session.session_policy.data_max_age_ms,
   });
   session.risk_summary = riskSummary;
+  const protectiveExit = protectiveExitDecision(positions, {
+    stopLossBps: session.session_policy.stop_loss_bps,
+    takeProfitBps: session.session_policy.take_profit_bps,
+  });
+  if (protectiveExit.exit) {
+    return executeProtectiveHyperliquidExit({
+      session,
+      sessionId,
+      state,
+      recipient,
+      protectiveExit,
+      now,
+      env,
+    });
+  }
   const lossDecision = lossCircuitDecision(
     riskSummary,
     bucketToUsd(session.session_policy.max_loss_bucket),
@@ -338,7 +356,7 @@ async function runAutopilotTickUnlocked({
       }, now);
       return { ok: false, error: decision.error };
     }
-    const built = buildAiDirectProposal(session, market, decision.decision, { now, positions });
+    const built = buildAiDirectProposal(session, market, decision.decision, { now, positions, env });
     if (!built.ok) {
       await appendEvent(state, session, "risk_reject", built.message, {
         ...built.data,
@@ -462,20 +480,16 @@ async function runAutopilotTickUnlocked({
     work_order_commitment: receipt.work_order_commitment,
     provider_ref_commitment: receipt.provider_ref_commitment,
     result_commitment: receipt.result_commitment,
+    fill_summary: receipt.fill_summary || null,
     final_proof: receipt.final_proof || null,
   }, now);
   const currentPositions = await state.listAutopilotPositions(sessionId);
   const existingPosition = currentPositions.find((position) =>
     position.venue_id === proposal.venue_id && normalizeMarket(position.market) === normalizeMarket(proposal.market));
-  const position = await state.putAutopilotPosition(sessionId, applyEstimatedFill(existingPosition, {
-    venue_id: proposal.venue_id,
-    market: proposal.market,
-    side: proposal.side,
-    notional_usd: proposal.notional_usd,
-    price: proposal.price || market.price || market.mid,
-    at: now.toISOString(),
-    work_order_commitment: workOrderCommitment,
-  }));
+  const reconciledFill = fillForExecutionReceipt({ receipt, proposal, market, now, env });
+  const position = reconciledFill
+    ? await state.putAutopilotPosition(sessionId, applyEstimatedFill(existingPosition, reconciledFill))
+    : existingPosition || null;
   const reconciledPositions = (await state.listAutopilotPositions(sessionId));
   updated.risk_summary = summarizeRunRisk(reconciledPositions, {
     now,
@@ -486,9 +500,147 @@ async function runAutopilotTickUnlocked({
     venue_id: proposal.venue_id,
     status: receipt.status,
     work_order_commitment: receipt.work_order_commitment,
-    position: publicPosition(position),
+    position: position ? publicPosition(position) : null,
+    fill_summary: receipt.fill_summary || null,
   }, now);
   return { ok: true, receipt, proposal };
+}
+
+async function executeProtectiveHyperliquidExit({
+  session,
+  sessionId,
+  state,
+  recipient,
+  protectiveExit,
+  now,
+  env,
+}) {
+  session.status = "risk_halted";
+  session.execution_enabled = false;
+  session.updated_at = now.toISOString();
+  session.next_step = "A protective exit was triggered. The run remains halted until you review and resume it.";
+  await state.putAutopilotSession(session);
+  await appendEvent(state, session, "guardrail", "Protective exit triggered for a session-managed Hyperliquid position.", {
+    reason: protectiveExit.reason,
+    market: protectiveExit.market,
+    pnl_bps: protectiveExit.pnl_bps,
+    stop_loss_bps: session.session_policy.stop_loss_bps,
+    take_profit_bps: session.session_policy.take_profit_bps,
+  }, now);
+  if (
+    env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT !== "true" ||
+    env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE !== "full_ticket"
+  ) {
+    await appendEvent(state, session, "risk_reject", "Protective exit could not broadcast because full-ticket live submit is not armed.", {
+      reason: "protective_exit_live_submit_unavailable",
+      reduce_only: true,
+    }, now);
+    return { ok: false, error: "protective_exit_live_submit_unavailable" };
+  }
+  const workOrderCommitment = `autopilot_protective_exit_${digest({
+    session: sessionId,
+    market: protectiveExit.market,
+    reason: protectiveExit.reason,
+    source_order: protectiveExit.last_work_order_commitment,
+    tick: Math.floor(now.getTime() / 30_000),
+  })}`;
+  const instruction = protectiveHyperliquidInstruction({
+    exit: protectiveExit,
+    policy: session.session_policy,
+    now,
+  });
+  let receipt;
+  try {
+    receipt = await executeAutopilotOrder({
+      venue_id: "hyperliquid",
+      operation_class: "limit_order",
+      work_order_commitment: workOrderCommitment,
+      policy_commitment: session.session_policy.policy_commitment,
+      session_policy: workerSessionPolicy(session),
+      instruction,
+      execution: executionForVenue(session, "hyperliquid"),
+      recipient,
+      state,
+    });
+  } catch (error) {
+    await appendEvent(state, session, "risk_reject", "Protective reduce-only order failed closed.", {
+      reason: String(error?.code || error?.message || "protective_exit_failed"),
+      work_order_commitment: workOrderCommitment,
+    }, now);
+    return { ok: false, error: "protective_exit_failed" };
+  }
+  const summary = receipt.fill_summary || {};
+  const filledNotional = Number(summary.filled_notional_usd || 0);
+  const averageFillPrice = Number(summary.average_fill_price || 0);
+  const currentPositions = await state.listAutopilotPositions(sessionId);
+  const existing = currentPositions.find((position) =>
+    position.venue_id === "hyperliquid" && normalizeMarket(position.market) === normalizeMarket(protectiveExit.market));
+  let position = existing || null;
+  if (existing && filledNotional > 0 && averageFillPrice > 0) {
+    position = await state.putAutopilotPosition(sessionId, applyEstimatedFill(existing, {
+      venue_id: "hyperliquid",
+      market: protectiveExit.market,
+      side: protectiveExit.side,
+      notional_usd: filledNotional,
+      price: averageFillPrice,
+      at: now.toISOString(),
+      work_order_commitment: workOrderCommitment,
+      managed_by_session: true,
+      source: "hyperliquid_protective_exit_fill",
+    }));
+  }
+  session.risk_summary = summarizeRunRisk(await state.listAutopilotPositions(sessionId), {
+    now,
+    maxMarkAgeMs: session.session_policy.data_max_age_ms,
+  });
+  await state.putAutopilotSession(session);
+  await appendEvent(state, session, "execution", "Protective reduce-only Hyperliquid order submitted.", {
+    reason: protectiveExit.reason,
+    market: protectiveExit.market,
+    side: protectiveExit.side,
+    reduce_only: true,
+    work_order_commitment: workOrderCommitment,
+  }, now);
+  await appendEvent(state, session, "receipt", "Protective exit receipt recorded.", {
+    status: receipt.status,
+    work_order_commitment: workOrderCommitment,
+    provider_ref_commitment: receipt.provider_ref_commitment,
+    result_commitment: receipt.result_commitment,
+    fill_summary: receipt.fill_summary || null,
+    reduce_only: true,
+  }, now);
+  await appendEvent(state, session, "venue_reconcile", "Protective exit reconciled into session position state.", {
+    work_order_commitment: workOrderCommitment,
+    position: position ? publicPosition(position) : null,
+    fill_summary: receipt.fill_summary || null,
+  }, now);
+  return {
+    ok: Number(summary.fill_count || 0) > 0,
+    error: Number(summary.fill_count || 0) > 0 ? undefined : "protective_exit_unfilled",
+    receipt,
+    protective_exit: protectiveExit,
+  };
+}
+
+function protectiveHyperliquidInstruction({ exit, policy, now }) {
+  return {
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: "hyperliquid",
+    operation_class: "limit_order",
+    expires_at: new Date(now.getTime() + 60_000).toISOString(),
+    order: {
+      market: venueMarketSymbol("hyperliquid", exit.market),
+      side: exit.side,
+      base_size: String(exit.base_size),
+      limit_price: trim(exit.mark_price),
+      order_type: "market",
+      size_mode: "base",
+      max_slippage_bps: String(policy.max_slippage_bps),
+      tif: "Ioc",
+      reduce_only: true,
+    },
+  };
 }
 
 async function verifyAutopilotProposalNoSubmit({
@@ -602,6 +754,8 @@ function normalizeAutopilotPolicy(raw, now) {
     max_order_count: clampInt(raw.max_order_count, 1, 25, 10),
     ttl_ms: ttlMs,
     max_slippage_bps: clampInt(raw.max_slippage_bps, 1, 100, 50),
+    stop_loss_bps: clampInt(raw.stop_loss_bps, 25, 5_000, 500),
+    take_profit_bps: clampInt(raw.take_profit_bps, 25, 10_000, 1_000),
     cooldown_ms: clampInt(raw.cooldown_ms, 60_000, 30 * 60_000, 5 * 60_000),
     data_max_age_ms: clampInt(raw.data_max_age_ms, 5_000, 5 * 60_000, 30_000),
     min_net_edge_bps: clampInt(raw.min_net_edge_bps, 1, 5_000, 25),
@@ -737,7 +891,7 @@ function buildMomentumProposal(session, market, { env, now }) {
       data: { max_daily_notional_bucket: session.session_policy.max_daily_notional_bucket },
     };
   }
-  const instruction = instructionForVenue({ venue, market, side, price, notional, policy: session.session_policy, now });
+  const instruction = instructionForVenue({ venue, market, side, price, notional, policy: session.session_policy, now, env });
   return {
     ok: true,
     proposal_commitment: `autopilot_proposal_${digest({ session: session.autopilot_session_id, venue, market, side, notional, now: now.toISOString() })}`,
@@ -751,7 +905,7 @@ function buildMomentumProposal(session, market, { env, now }) {
   };
 }
 
-function buildAiDirectProposal(session, market, decision, { now, positions = [] }) {
+function buildAiDirectProposal(session, market, decision, { now, positions = [], env = process.env }) {
   if (decision.action !== "trade") {
     return {
       ok: false,
@@ -892,6 +1046,7 @@ function buildAiDirectProposal(session, market, decision, { now, positions = [] 
     notional,
     policy: session.session_policy,
     now,
+    env,
   });
   instruction.operation_class = operationClass;
   if (instruction.order) {
@@ -941,7 +1096,7 @@ function buildAiDirectProposal(session, market, decision, { now, positions = [] 
   };
 }
 
-function instructionForVenue({ venue, market, side, price, notional, policy, now }) {
+function instructionForVenue({ venue, market, side, price, notional, policy, now, env = process.env }) {
   const expiresAt = new Date(now.getTime() + Math.min(5 * 60_000, policy.ttl_ms)).toISOString();
   if (venue === "jupiter") {
     const inputMint = side === "buy" ? USDC_MINT : SOL_MINT;
@@ -998,7 +1153,9 @@ function instructionForVenue({ venue, market, side, price, notional, policy, now
       limit_price: trim(limit),
       order_type: "market",
       size_mode: "quote",
-      live_order_mode: "tiny_fill",
+      ...(venue === "hyperliquid" && env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE === "full_ticket"
+        ? {}
+        : { live_order_mode: "tiny_fill" }),
       max_slippage_bps: String(policy.max_slippage_bps),
       tif: "Ioc",
     },
@@ -1023,13 +1180,31 @@ async function marketSnapshotForSession(session, { fetchImpl, env, now }) {
   const response = await fetchImpl(url, { cache: "no-store", headers: { "cache-control": "no-cache" } });
   if (!response.ok) throw new Error(`market_snapshot_${response.status}`);
   const body = await response.json();
-  const price = numberValue(body.price || body.mid_market_price || body.pricebook?.best_bid);
+  const signalPrice = numberValue(body.price || body.mid_market_price || body.pricebook?.best_bid);
+  let price = signalPrice;
+  let markSource = "coinbase_product";
+  if (readyVenues(session).includes("hyperliquid")) {
+    const midsResponse = await fetchImpl("https://api.hyperliquid.xyz/info", {
+      method: "POST",
+      cache: "no-store",
+      headers: { "content-type": "application/json", "cache-control": "no-cache" },
+      body: JSON.stringify({ type: "allMids" }),
+    });
+    if (!midsResponse.ok) throw new Error(`hyperliquid_market_snapshot_${midsResponse.status}`);
+    const mids = await midsResponse.json();
+    const hyperliquidPrice = numberValue(mids?.[venueMarketSymbol("hyperliquid", productId)]);
+    if (!hyperliquidPrice) throw new Error("hyperliquid_market_snapshot_invalid");
+    price = hyperliquidPrice;
+    markSource = "hyperliquid_all_mids";
+  }
   return {
     product_id: productId,
     price,
     mid: price,
     change_24h: numberValue(body.price_percentage_change_24h),
-    spread_bps: spreadBps(body, price),
+    spread_bps: spreadBps(body, signalPrice),
+    mark_source: markSource,
+    signal_source: "coinbase_product",
     fetched_at: now.toISOString(),
     live_status: "live",
     stale: !price,
@@ -1141,6 +1316,8 @@ function workerSessionPolicy(session) {
     max_daily_notional_bucket: policy.max_daily_notional_bucket,
     max_order_count: policy.max_order_count,
     max_slippage_bps: policy.max_slippage_bps,
+    stop_loss_bps: policy.stop_loss_bps,
+    take_profit_bps: policy.take_profit_bps,
     allowed_order_types: policy.allowed_order_types,
     kill_switch: policy.kill_switch === true || session.status === "killed",
     expires_at: session.expires_at,
@@ -1223,6 +1400,40 @@ function publicPosition(position) {
     last_work_order_commitment: position.last_work_order_commitment || null,
     source: position.source || "native_autopilot_state",
     updated_at: position.updated_at || null,
+  };
+}
+
+function fillForExecutionReceipt({ receipt, proposal, market, now, env }) {
+  const summary = receipt?.fill_summary || {};
+  const fillCount = Number(summary.fill_count || 0);
+  const filledNotional = Number(summary.filled_notional_usd || 0);
+  const averageFillPrice = Number(summary.average_fill_price || 0);
+  if (proposal.venue_id === "hyperliquid" && env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true") {
+    if (!Number.isInteger(fillCount) || fillCount <= 0 || !Number.isFinite(filledNotional) || filledNotional <= 0 || !Number.isFinite(averageFillPrice) || averageFillPrice <= 0) {
+      return null;
+    }
+    return {
+      venue_id: proposal.venue_id,
+      market: proposal.market,
+      side: proposal.side,
+      notional_usd: filledNotional,
+      price: averageFillPrice,
+      at: now.toISOString(),
+      work_order_commitment: receipt.work_order_commitment,
+      managed_by_session: true,
+      source: "hyperliquid_execution_fill",
+    };
+  }
+  return {
+    venue_id: proposal.venue_id,
+    market: proposal.market,
+    side: proposal.side,
+    notional_usd: proposal.notional_usd,
+    price: proposal.price || market.price || market.mid,
+    at: now.toISOString(),
+    work_order_commitment: receipt.work_order_commitment,
+    managed_by_session: true,
+    source: "autopilot_execution_receipt_estimate",
   };
 }
 

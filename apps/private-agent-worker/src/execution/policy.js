@@ -302,7 +302,7 @@ export async function enforceInstructionPolicy({ body, instruction, session, sta
     if (minNotional > 0 && notional < minNotional) {
       throw new ExecutionPolicyError("execution instruction is below min notional");
     }
-    if (maxNotional > 0 && notional > maxNotional) {
+    if (instruction.order.reduce_only !== true && maxNotional > 0 && notional > maxNotional) {
       throw new ExecutionPolicyError("execution instruction exceeds max notional bucket");
     }
     await enforceGlobalSessionDailyNotional({ body, instruction, state, policy, notional });
@@ -320,7 +320,7 @@ export async function enforceInstructionPolicy({ body, instruction, session, sta
   }
   if (state && policy?.policy_commitment && Number.isInteger(policy.max_order_count)) {
     const countedOps = ["limit_order", "spot_limit_order", "spot_market_order", "preview_order", "perp_limit_order", "swap"];
-    if (countedOps.includes(instruction.operation_class)) {
+    if (countedOps.includes(instruction.operation_class) && instruction.order?.reduce_only !== true) {
       const count = await state.incrementPolicyCount(policy.policy_commitment, policy.max_order_count);
       if (!count.ok) throw new ExecutionPolicyError("session policy order count exceeded");
     }
@@ -474,6 +474,7 @@ function agentMandateRequiresConditionProof(mandate) {
 
 async function enforceGlobalSessionDailyNotional({ body, instruction, state, policy, notional }) {
   if (!state || !policy) return;
+  if (instruction.order?.reduce_only === true) return;
   const dailyCap = bucketToUsd(policy.max_daily_notional_bucket);
   if (dailyCap <= 0) return;
   const countedOps = ["limit_order", "spot_limit_order", "spot_market_order", "perp_limit_order", "swap"];
@@ -510,6 +511,7 @@ async function enforceHyperliquidTinyFillPolicy({ body, instruction, state, noti
     return;
   }
   const order = instruction.order;
+  if (order.reduce_only === true) return;
   if (
     process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE === "full_ticket" &&
     order.live_order_mode !== "tiny_fill"
@@ -574,19 +576,6 @@ async function enforceHyperliquidFullTicketPolicy({ body, instruction, state, no
   if (process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE !== "full_ticket") {
     return;
   }
-  const perOrderCap = capUsd(process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD, 0);
-  if (perOrderCap <= 0) {
-    throw new ExecutionPolicyError("hyperliquid full-ticket max notional is not configured");
-  }
-  const launchPerOrderCap = capUsd(
-    process.env.PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD ||
-      process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD,
-    1_000,
-  );
-  const effectivePerOrderCap = Math.min(perOrderCap, launchPerOrderCap);
-  if (notional > effectivePerOrderCap) {
-    throw new ExecutionPolicyError("hyperliquid full-ticket order exceeds live notional cap");
-  }
   const maxSlippageBps = Number.parseInt(instruction.order.max_slippage_bps || "50", 10);
   const allowedSlippageBps = Math.min(
     capBps(
@@ -602,6 +591,20 @@ async function enforceHyperliquidFullTicketPolicy({ body, instruction, state, no
     maxSlippageBps > allowedSlippageBps
   ) {
     throw new ExecutionPolicyError("hyperliquid full-ticket slippage is outside policy");
+  }
+  if (instruction.order.reduce_only === true) return;
+  const perOrderCap = capUsd(process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD, 0);
+  if (perOrderCap <= 0) {
+    throw new ExecutionPolicyError("hyperliquid full-ticket max notional is not configured");
+  }
+  const launchPerOrderCap = capUsd(
+    process.env.PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD ||
+      process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD,
+    1_000,
+  );
+  const effectivePerOrderCap = Math.min(perOrderCap, launchPerOrderCap);
+  if (notional > effectivePerOrderCap) {
+    throw new ExecutionPolicyError("hyperliquid full-ticket order exceeds live notional cap");
   }
   const dailyCap = Math.min(
     capUsd(process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD, 0),

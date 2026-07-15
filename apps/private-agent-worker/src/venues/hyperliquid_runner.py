@@ -82,7 +82,7 @@ def main():
                 reduce_only=bool(order.get("reduce_only")),
                 cloid=Cloid.from_str(cloid),
             )
-            print(json.dumps(redact_result("submitted", result)))
+            print(json.dumps(redact_result("submitted", result, order.get("market"))))
             return
         if op == "cancel":
             cancel = instruction["cancel"]
@@ -194,7 +194,7 @@ def resolve_market_ioc_order(info, order, account_address):
         fail("invalid hyperliquid market order size", "venue_rejected")
 
     notional = quote_size if quote_size > 0 else base_size * mid
-    account_state_checked = check_account_value(info, account_address, notional)
+    account_state_checked = True if order.get("reduce_only") else check_account_value(info, account_address, notional)
     slippage = slippage_bps / Decimal("10000")
     limit = mid * (Decimal("1") + slippage if order.get("side") == "buy" else Decimal("1") - slippage)
     if limit <= 0:
@@ -263,17 +263,34 @@ def decimal_text(value):
     return text or "0"
 
 
-def redact_result(status, result):
+def redact_result(status, result, coin=None):
     oid = None
+    fills = []
+    resolved_status = status
     try:
         statuses = result.get("response", {}).get("data", {}).get("statuses", [])
         if statuses:
             resting = statuses[0].get("resting") or {}
             filled = statuses[0].get("filled") or {}
             oid = resting.get("oid") or filled.get("oid")
+            if filled:
+                total_size = filled.get("totalSz") or filled.get("sz")
+                average_price = filled.get("avgPx") or filled.get("px")
+                if total_size and average_price:
+                    fills.append({
+                        "coin": coin,
+                        "px": str(average_price),
+                        "sz": str(total_size),
+                        "fee": "0",
+                        "time": int(time.time() * 1000),
+                    })
+                    resolved_status = "filled"
+            elif not resting:
+                resolved_status = "unfilled"
     except Exception:
         oid = None
-    return {"status": status, "oid": oid}
+        fills = []
+    return {"status": resolved_status, "oid": oid, "fills": fills}
 
 
 def redact_fill(fill):

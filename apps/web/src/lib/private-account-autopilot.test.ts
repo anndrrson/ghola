@@ -603,6 +603,28 @@ describe("private account autopilot sessions", () => {
     expect(body.venue_readiness.find((venue: { venue_id: string }) => venue.venue_id === "hyperliquid").status)
       .toBe("ready");
   });
+
+  it("reports guarded full-ticket Hyperliquid readiness when both account and worker gates are armed", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
+    process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = "true";
+    process.env.GHOLA_HYPERLIQUID_LIVE_MODE = "full_ticket";
+    process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS = "ready";
+    process.env.GHOLA_HYPERLIQUID_EXECUTION_VAULT_READY = "true";
+    const { wallet } = await bindMobileWallet(ed25519.utils.randomPrivateKey());
+
+    const res = await autopilotReadinessRoute(
+      get(`/v1/private-account/autopilot/readiness?product_id=BTC-USD&wallet_pubkey=${wallet}`),
+    );
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.can_live_submit).toBe(true);
+    expect(body.target_live_mode).toBe("guarded_full_ticket");
+    expect(body.venue_readiness.find((venue: { venue_id: string }) => venue.venue_id === "hyperliquid").status)
+      .toBe("ready");
+  });
 });
 
 function auth(userId: string) {

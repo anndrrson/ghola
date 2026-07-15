@@ -44,7 +44,8 @@ export function applyEstimatedFill(existing, fill) {
     estimated_total_pnl_usd: round(oldRealized + realizedDelta + unrealizedPnl),
     last_order_notional_usd: notional,
     last_work_order_commitment: fill.work_order_commitment,
-    source: "autopilot_execution_receipt_estimate",
+    managed_by_session: fill.managed_by_session === true || existing?.managed_by_session === true,
+    source: fill.source || "autopilot_execution_receipt_estimate",
   };
 }
 
@@ -113,6 +114,37 @@ export function projectRunExposure(positions, fill, options) {
   const projected = applyEstimatedFill(existing, fill);
   const next = positions.filter((position) => `${position.venue_id}:${normalizeMarket(position.market)}` !== key).concat(projected);
   return { position: projected, summary: summarizeRunRisk(next, options) };
+}
+
+export function protectiveExitDecision(positions, {
+  stopLossBps,
+  takeProfitBps,
+} = {}) {
+  const stop = positiveNumber(stopLossBps);
+  const take = positiveNumber(takeProfitBps);
+  if (!stop || !take) return { exit: false, reason: "protective_exit_policy_missing" };
+  for (const position of positions) {
+    if (position.venue_id !== "hyperliquid" || position.managed_by_session !== true) continue;
+    const quantity = signedQuantity(position);
+    const entry = positiveNumber(position.average_entry_price);
+    const mark = positiveNumber(position.last_mark_price);
+    if (Math.abs(quantity) < EPSILON || !entry || !mark) continue;
+    const pnlBps = ((mark - entry) / entry) * 10_000 * Math.sign(quantity);
+    if (pnlBps <= -stop || pnlBps >= take) {
+      return {
+        exit: true,
+        reason: pnlBps <= -stop ? "stop_loss" : "take_profit",
+        venue_id: "hyperliquid",
+        market: position.market,
+        side: quantity > 0 ? "sell" : "buy",
+        base_size: round(Math.abs(quantity)),
+        mark_price: mark,
+        pnl_bps: round(pnlBps),
+        last_work_order_commitment: position.last_work_order_commitment || null,
+      };
+    }
+  }
+  return { exit: false, reason: "protective_exit_not_triggered" };
 }
 
 function signedQuantity(position) {

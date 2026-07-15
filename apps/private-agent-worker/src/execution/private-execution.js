@@ -1327,6 +1327,7 @@ function executionReceipt(input) {
   const fillCommitments = Array.isArray(input.fills)
     ? input.fills.map((fill) => commitment(`${input.venue_id}_fill`, fill))
     : [];
+  const fillSummary = summarizeExecutionFills(input.fills);
   const mandate = input.instruction?.mandate || null;
   return {
     version: 1,
@@ -1359,10 +1360,54 @@ function executionReceipt(input) {
       : null,
     mandate_status: mandate ? "enforced" : undefined,
     fill_commitments: fillCommitments,
+    fill_summary: fillSummary,
     final_proof: input.final_proof || null,
     visibility_summary: input.visibility_summary,
     updated_at: new Date().toISOString(),
   };
+}
+
+function summarizeExecutionFills(fills) {
+  if (!Array.isArray(fills) || fills.length === 0) {
+    return {
+      fill_count: 0,
+      filled_base_size: "0",
+      filled_notional_usd: 0,
+      average_fill_price: null,
+      fee_usd: 0,
+      fee_status: "not_applicable",
+    };
+  }
+  let baseSize = 0;
+  let notional = 0;
+  let fees = 0;
+  let fillCount = 0;
+  for (const fill of fills.slice(0, 25)) {
+    const size = Number(fill?.sz ?? fill?.size ?? fill?.base_size ?? 0);
+    const price = Number(fill?.px ?? fill?.price ?? 0);
+    const fee = Number(fill?.fee ?? fill?.commission ?? 0);
+    if (!Number.isFinite(size) || !Number.isFinite(price) || size <= 0 || price <= 0) continue;
+    baseSize += size;
+    notional += size * price;
+    if (Number.isFinite(fee)) fees += Math.abs(fee);
+    fillCount += 1;
+  }
+  return {
+    fill_count: fillCount,
+    filled_base_size: decimalText(baseSize),
+    filled_notional_usd: roundMoney(notional),
+    average_fill_price: baseSize > 0 ? roundMoney(notional / baseSize) : null,
+    fee_usd: roundMoney(fees),
+    fee_status: fees > 0 ? "reported" : "pending_reconciliation",
+  };
+}
+
+function decimalText(value) {
+  return Number.isFinite(value) && value > 0 ? String(Math.round(value * 1e8) / 1e8) : "0";
+}
+
+function roundMoney(value) {
+  return Number.isFinite(value) ? Math.round(value * 1e8) / 1e8 : 0;
 }
 
 function credentialVerificationResult(input) {

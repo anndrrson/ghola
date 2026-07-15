@@ -98,6 +98,8 @@ export interface AutopilotSessionPolicy {
   max_order_count: number;
   ttl_ms: number;
   max_slippage_bps: number;
+  stop_loss_bps: number;
+  take_profit_bps: number;
   cooldown_ms: number;
   data_max_age_ms: number;
   min_net_edge_bps: number;
@@ -200,7 +202,7 @@ export interface AutopilotReadiness {
   worker_configured: boolean;
   seeker_required: boolean;
   wallet_binding_status: "active" | "missing" | "unknown";
-  target_live_mode: "tiny_live_orders";
+  target_live_mode: "tiny_live_orders" | "guarded_full_ticket";
   blockers: string[];
   venue_readiness: AutopilotVenueReadiness[];
 }
@@ -554,7 +556,7 @@ export function autopilotReadinessForOwner(
   const blockers = [
     ...(workerConfigured ? [] : ["private_worker_not_configured"]),
     ...(walletBound ? [] : ["wallet_binding_required"]),
-    ...(liveVenueReady ? [] : ["tiny_live_order_gate_not_ready"]),
+    ...(liveVenueReady ? [] : ["live_order_gate_not_ready"]),
     ...venueReadiness
       .filter((venue) => venue.status !== "ready")
       .flatMap((venue) => venue.reason_codes.map((reason) => `${venue.venue_id}:${reason}`)),
@@ -567,7 +569,9 @@ export function autopilotReadinessForOwner(
     worker_configured: workerConfigured,
     seeker_required: seekerRequired,
     wallet_binding_status: walletBindingStatus,
-    target_live_mode: "tiny_live_orders",
+    target_live_mode: env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket"
+      ? "guarded_full_ticket"
+      : "tiny_live_orders",
     blockers: unique(blockers).slice(0, 20),
     venue_readiness: venueReadiness,
   };
@@ -1099,6 +1103,10 @@ function publicPolicyPatch(raw: Record<string, unknown>): Partial<AutopilotSessi
   if (ttlMs !== null) patch.ttl_ms = ttlMs;
   const slippage = optionalInteger(raw.max_slippage_bps, 1, 100);
   if (slippage !== null) patch.max_slippage_bps = slippage;
+  const stopLoss = optionalInteger(raw.stop_loss_bps, 25, 5_000);
+  if (stopLoss !== null) patch.stop_loss_bps = stopLoss;
+  const takeProfit = optionalInteger(raw.take_profit_bps, 25, 10_000);
+  if (takeProfit !== null) patch.take_profit_bps = takeProfit;
   const cooldown = optionalInteger(raw.cooldown_ms, 60_000, 30 * 60_000);
   if (cooldown !== null) patch.cooldown_ms = cooldown;
   const dataMaxAge = optionalInteger(raw.data_max_age_ms, 5_000, 5 * 60_000);
@@ -1260,7 +1268,10 @@ function hyperliquidAutopilotReadiness(
   const reasonCodes = [
     ...(workerConfigured ? [] : ["private_worker_not_configured"]),
     ...(env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED === "true" ? [] : ["hyperliquid_pilot_disabled"]),
-    ...(env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ? [] : ["hyperliquid_tiny_fill_disabled"]),
+    ...(env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
+      env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket"
+      ? []
+      : ["hyperliquid_live_orders_disabled"]),
     ...(env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS === "ready" ||
       env.GHOLA_PRIVATE_AGENT_EXECUTION_URL ||
       env.GHOLA_PRIVATE_AGENT_WORKER_URL ||
@@ -1373,6 +1384,8 @@ function normalizePolicy(value: Record<string, unknown>): AutopilotSessionPolicy
     max_order_count: clampInteger(rawPolicy.max_order_count, 1, 25, 10),
     ttl_ms: clampInteger(rawPolicy.ttl_ms, 5 * 60_000, 30 * 24 * 60 * 60_000, 2 * 60 * 60_000),
     max_slippage_bps: clampInteger(rawPolicy.max_slippage_bps, 1, 100, 50),
+    stop_loss_bps: clampInteger(rawPolicy.stop_loss_bps, 25, 5_000, 500),
+    take_profit_bps: clampInteger(rawPolicy.take_profit_bps, 25, 10_000, 1_000),
     cooldown_ms: clampInteger(rawPolicy.cooldown_ms, 60_000, 30 * 60_000, 5 * 60_000),
     data_max_age_ms: clampInteger(rawPolicy.data_max_age_ms, 5_000, 5 * 60_000, 30_000),
     min_net_edge_bps: clampInteger(rawPolicy.min_net_edge_bps, 1, 5_000, 25),
