@@ -222,7 +222,9 @@ jobs:
           setenv GHOLA_PRIVATE_AGENT_PROVIDER "phala"
           setenv GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN "true"
           setenv GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES "30"
-          setenv GHOLA_CONSUMER_PREPAID_BALANCE_ENABLED "true"
+          setenv GHOLA_CONSUMER_PREPAID_BALANCE_ENABLED "false"
+          setenv GHOLA_CONSUMER_LAUNCH_PROFILE "byo_hyperliquid"
+          setenv GHOLA_OBSERVABILITY_PROVIDER "vercel"
           setenv GHOLA_PRIVATE_ACCOUNT_LIVE_TRADE_RESERVATION_SECONDS "600"
           setenv GHOLA_PRIVATE_ACCOUNT_REVENUE_GUARD_MODE "enforce"
           if [ "${{ inputs.arm_phala }}" = "true" ]; then
@@ -324,7 +326,7 @@ jobs:
             echo "- auth smoke: skipped (no smoke secrets)" >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ "${{ inputs.arm_phala }}" = "true" ]; then
-            echo "$launch" | grep -q '"ready_to_accept_users"[: ]*true' \
+            echo "$launch" | jq -e '.ready_to_accept_users == true' >/dev/null \
               && echo "- private trading launch: ready_to_accept_users" >> "$GITHUB_STEP_SUMMARY" \
               || { echo "- private trading launch: NOT ready (see launch status above)" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
           else

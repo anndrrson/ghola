@@ -150,7 +150,7 @@ export default function RunsPage() {
                 Give capital a mandate.
               </h1>
               <p className="mt-5 max-w-2xl text-base leading-7 text-[#9aa8bf]">
-                Create a bounded trading run, cap what the agent can deploy, and kill it whenever you want. Runs cannot grant withdrawal authority.
+                Create a bounded Hyperliquid run on your connected account, cap what the agent can deploy, and kill it whenever you want. Runs cannot grant withdrawal authority.
               </p>
             </div>
             <Link href="/trade" className="inline-flex items-center gap-2 text-sm font-medium text-[#8fbfff] transition hover:text-white">
@@ -258,7 +258,7 @@ export default function RunsPage() {
               <div className="flex gap-3">
                 <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-300" />
                 <p className="text-sm leading-6 text-[#9eb0c7]">
-                  The execution key may place bounded orders. Withdrawals, arbitrary transfers, leverage escalation, and policy expansion remain blocked.
+                  Production runs use sealed, trade-only Hyperliquid API credentials. Pooled deposits and Phoenix trading remain unavailable until their custody and withdrawal rails pass readiness.
                 </p>
               </div>
             </div>
@@ -381,10 +381,10 @@ function EmptyState({ title, body, action, actionLabel }: { title: string; body:
 
 function policyForRun(mode: RunMode, capital: CapitalBucket, maxLoss: LossBucket): Partial<PrivateAutopilotSessionPolicy> {
   const config = mode === "active"
-    ? { order: "10", daily: "50", slippage: 25, orders: 6, ai: false, markets: ["SOL-USD"], venues: ["phoenix", "jupiter"] }
+    ? { order: "10", daily: "50", slippage: 25, orders: 6, ai: false, markets: ["SOL-USD"], venues: ["hyperliquid"] }
     : mode === "aggressive"
-      ? { order: "25", daily: "100", slippage: 50, orders: 12, ai: true, markets: ["BTC-USD", "ETH-USD", "SOL-USD"], venues: ["hyperliquid", "phoenix", "jupiter"] }
-      : { order: "100", daily: "250", slippage: 100, orders: 25, ai: true, markets: ["BTC-USD", "ETH-USD", "SOL-USD"], venues: ["hyperliquid", "phoenix", "backpack", "jupiter"] };
+      ? { order: "25", daily: "100", slippage: 50, orders: 12, ai: true, markets: ["BTC-USD", "ETH-USD", "SOL-USD"], venues: ["hyperliquid"] }
+      : { order: "100", daily: "250", slippage: 100, orders: 25, ai: true, markets: ["BTC-USD", "ETH-USD", "SOL-USD"], venues: ["hyperliquid"] };
   return {
     strategy_id: "momentum_micro_trader",
     decision_model: config.ai ? "ai_direct_order_v1" : "rules_plus_ai_score",
