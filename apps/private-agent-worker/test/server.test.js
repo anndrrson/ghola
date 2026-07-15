@@ -641,6 +641,47 @@ describe("private agent worker", () => {
     assert.equal(JSON.stringify(result).includes("test-backpack-api-key"), false);
   });
 
+  it("keeps the cross-venue endpoint fail-closed without a BYO venue adapter", async () => {
+    process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
+    process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";
+    const body = {
+      version: 1,
+      execution_id: `consumer_cross_venue_execution_${"a".repeat(48)}`,
+      owner_commitment: "owner_cross_venue_server_test",
+      opportunity_commitment: "ghola_opportunity_server_test",
+      market: "SOL-USD",
+      matched_notional_micro_usdc: 5_000_000,
+      risk_budget: {
+        max_unhedged_notional_micro_usdc: 5_000_000,
+        max_hedge_slippage_bps: 25,
+        max_hedge_duration_ms: 5_000,
+        max_unwind_loss_micro_usdc: 250_000,
+        max_daily_loss_micro_usdc: 5_000_000,
+      },
+      legs: [
+        { leg_id: "consumer_cross_leg_buy_server", venue_id: "hyperliquid", side: "buy", symbol: "SOL", limit_price: "150", target_notional_micro_usdc: 5_000_000, order_type: "ioc_limit" },
+        { leg_id: "consumer_cross_leg_sell_server", venue_id: "phoenix", side: "sell", symbol: "SOL-PERP", limit_price: "151", target_notional_micro_usdc: 5_000_000, order_type: "ioc_limit" },
+      ],
+    };
+    const token = capabilityToken({
+      path: "/execution/cross-venue/submit",
+      scope: "order:submit",
+      body,
+      expected: { operation_class: "cross_venue_byo", owner_commitment: body.owner_commitment },
+    });
+    const response = await fetch(`${baseUrl}/execution/cross-venue/submit`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+      },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "cross_venue_byo_adapter_unavailable" });
+  });
+
   it("blocks live pooled readiness when worker state is not shared", async () => {
     process.env.PRIVATE_AGENT_REQUIRE_WORKER_CAPABILITY = "true";
     process.env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET = "capability-secret";

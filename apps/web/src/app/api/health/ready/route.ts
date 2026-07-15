@@ -4,6 +4,8 @@ import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server
 import { customShieldedVerifierHealth } from "@/lib/private-account-verifier";
 import { shieldedPoolHealth } from "@/lib/private-account-shielded-pool";
 import { consumerTreasuryConfigured } from "@/lib/consumer-turnkey-treasury";
+import { getCrossVenueReconciliationHealth } from "@/lib/cross-venue-execution-store";
+import { probeCrossVenueExecutionReadiness } from "@/lib/cross-venue-worker";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -15,10 +17,12 @@ export async function GET() {
     ? "byo_hyperliquid" as const
     : "pooled_consumer" as const;
   const pooledRequired = launchProfile === "pooled_consumer";
-  const [database, circuit, reconciliation, runtime, verifier, shieldedPool, consumerWorker] = await Promise.all([
+  const [database, circuit, reconciliation, crossVenueReconciliation, crossVenue, runtime, verifier, shieldedPool, consumerWorker] = await Promise.all([
     consumerProductionStoreReady().catch(() => false),
     getConsumerCircuitState().catch(() => null),
     getConsumerReconciliationHealth().catch(() => null),
+    getCrossVenueReconciliationHealth().catch(() => null),
+    probeCrossVenueExecutionReadiness().catch(() => null),
     getPrivateAgentRuntimeStatus().catch(() => null),
     customShieldedVerifierHealth().catch(() => null),
     shieldedPoolHealth().catch(() => null),
@@ -59,6 +63,7 @@ export async function GET() {
     sentry: sentryConfigured ? "configured" : vercelObservabilityConfigured ? "not_required" : "blocked",
     observability: observabilityConfigured ? "configured" : "blocked",
     reconciliation: reconciliation?.ready ? "ready" : "blocked",
+    cross_venue_execution: crossVenue?.enabled ? (crossVenue.ready && crossVenueReconciliation?.ready ? "ready" : "blocked") : "not_required",
     funding_verifier: pooledRequired ? (process.env.GHOLA_CONSUMER_SOLANA_RPC_URL ? "configured" : "blocked") : "not_required",
     withdrawal_signer: pooledRequired ? (consumerTreasuryConfigured() ? "configured" : "blocked") : "not_required",
     withdrawal_finalizer: pooledRequired ? (consumerWorker?.withdrawal_loop === "durable" ? "configured" : "blocked") : "not_required",
@@ -73,6 +78,7 @@ export async function GET() {
   const ready = database && circuit?.status === "open" && workerState !== "blocked" && pooledReady &&
     (launchProfile !== "byo_hyperliquid" || checks.byo_hyperliquid === "ready") &&
     checks.observability === "configured" && checks.reconciliation === "ready" &&
+    checks.cross_venue_execution !== "blocked" &&
     checks.venue_connectivity === "configured" && checks.trading_control === "configured";
   console.log(JSON.stringify({ level: "info", message: "production_readiness_checked", ready, launch_profile: launchProfile, checks, checked_at: checkedAt }));
   return NextResponse.json({
@@ -83,6 +89,10 @@ export async function GET() {
     reconciliation: reconciliation ? {
       overdue_order_count: reconciliation.overdue_order_count,
       oldest_unreconciled_age_ms: reconciliation.oldest_unreconciled_age_ms,
+    } : null,
+    cross_venue_reconciliation: crossVenueReconciliation ? {
+      overdue_execution_count: crossVenueReconciliation.overdue_execution_count,
+      oldest_unreconciled_age_ms: crossVenueReconciliation.oldest_unreconciled_age_ms,
     } : null,
     reason_codes: Object.entries(checks).filter(([, value]) => value === "blocked" || value === "halted").map(([key, value]) => `${key}:${value}`),
     checked_at: checkedAt,
