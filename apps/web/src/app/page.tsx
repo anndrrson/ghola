@@ -97,10 +97,10 @@ export default function Home() {
           />
           <div className="relative mx-auto flex min-h-[calc(100vh-3.5rem)] max-w-5xl flex-col items-center justify-center gap-9 px-4 text-center sm:px-6">
             <h1 className="font-display text-6xl font-semibold leading-[1.02] tracking-tight text-[#f6f8ff] [text-shadow:0_0_80px_rgba(90,167,255,0.25)] sm:text-8xl">
-              Give capital a mandate.
+              Trade like a ghost.
             </h1>
             <p className="max-w-2xl text-sm leading-6 text-[#9aa8bf] sm:text-base">
-              Fund an autonomous agent, cap what it can deploy, and let it hunt around the clock.
+              Give your Hyperliquid capital a bounded mandate and let a private agent hunt around the clock.
             </p>
             <div className="flex flex-wrap items-center justify-center gap-3">
               <Link

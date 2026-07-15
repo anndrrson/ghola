@@ -173,10 +173,10 @@ export default function RunsPage() {
             <div>
               <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-[#6f7d9a]">Autonomous capital</p>
               <h1 className="mt-4 max-w-4xl text-5xl font-semibold leading-[0.98] tracking-tight text-[#f6f8ff] sm:text-7xl">
-                Give capital a mandate.
+                Trade like a ghost.
               </h1>
               <p className="mt-5 max-w-2xl text-base leading-7 text-[#9aa8bf]">
-                Create a bounded Hyperliquid run on your connected account, cap what the agent can deploy, and kill it whenever you want. Runs cannot grant withdrawal authority.
+                Give your connected Hyperliquid capital a bounded mandate, cap what the agent can deploy, and kill it whenever you want. Runs cannot grant withdrawal authority.
               </p>
             </div>
             <Link href="/trade" className="inline-flex items-center gap-2 text-sm font-medium text-[#8fbfff] transition hover:text-white">
