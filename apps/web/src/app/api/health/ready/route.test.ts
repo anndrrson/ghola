@@ -26,6 +26,10 @@ vi.mock("@/lib/private-account-shielded-pool", () => ({
   shieldedPoolHealth: vi.fn(async () => ({ status: "red" })),
 }));
 
+vi.mock("@/lib/consumer-turnkey-treasury", () => ({
+  consumerTreasuryConfigured: vi.fn(() => false),
+}));
+
 import { GET } from "./route";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -86,7 +90,8 @@ describe("consumer production readiness", () => {
     expect(body.launch_profile).toBe("byo_hyperliquid");
     expect(body.checks.byo_hyperliquid).toBe("ready");
     expect(body.checks.public_usdc).toBe("not_required");
-    expect(body.checks.withdrawal_dispatch).toBe("not_required");
+    expect(body.checks.withdrawal_signer).toBe("not_required");
+    expect(body.checks.withdrawal_finalizer).toBe("not_required");
   });
 
   it("keeps pooled consumer launch blocked when custody rails are absent", async () => {

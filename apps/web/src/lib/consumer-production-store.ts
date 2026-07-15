@@ -122,8 +122,10 @@ export interface ConsumerWithdrawal {
   idempotency_key: string;
   destination_wallet_commitment: string;
   amount_micro_usdc: number;
-  status: "queued" | "dispatching" | "submitted" | "finalized" | "failed_review";
+  status: "queued" | "prepared" | "dispatching" | "submitted" | "finalized" | "failed_review" | "cancelled";
   transaction_signature: string | null;
+  prepared_message_commitment: string | null;
+  prepared_expires_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -166,6 +168,8 @@ export async function createConsumerWithdrawal(input: {
     amount_micro_usdc: amount,
     status: "queued",
     transaction_signature: null,
+    prepared_message_commitment: null,
+    prepared_expires_at: null,
     created_at: now.toISOString(),
     updated_at: now.toISOString(),
   };
@@ -237,6 +241,126 @@ export async function getConsumerWithdrawal(input: { withdrawal_id: string; owne
   const rows = (input.owner_commitment
     ? await sql`SELECT * FROM consumer_withdrawals WHERE withdrawal_id = ${input.withdrawal_id} AND owner_commitment = ${input.owner_commitment} LIMIT 1`
     : await sql`SELECT * FROM consumer_withdrawals WHERE withdrawal_id = ${input.withdrawal_id} LIMIT 1`) as Array<Record<string, unknown>>;
+  return rows[0] ? withdrawalRow(rows[0]) : null;
+}
+
+export async function prepareConsumerWithdrawal(input: {
+  withdrawal_id: string;
+  owner_commitment: string;
+  message_commitment: string;
+  expires_at: Date;
+  now?: Date;
+}): Promise<ConsumerWithdrawal | null> {
+  const now = (input.now ?? new Date()).toISOString();
+  const expiresAt = input.expires_at.toISOString();
+  const sql = await getSql();
+  if (!sql) {
+    return memoryCritical(async () => {
+      const current = memory.withdrawals.get(input.withdrawal_id);
+      if (!current || current.owner_commitment !== input.owner_commitment || !["queued", "prepared"].includes(current.status)) return null;
+      const updated = { ...current, status: "prepared" as const, prepared_message_commitment: input.message_commitment, prepared_expires_at: expiresAt, updated_at: now };
+      memory.withdrawals.set(input.withdrawal_id, updated);
+      return updated;
+    });
+  }
+  await ensureSchema(sql);
+  const rows = await sql`
+    UPDATE consumer_withdrawals
+    SET status = 'prepared', prepared_message_commitment = ${input.message_commitment}, prepared_expires_at = ${expiresAt}, updated_at = ${now}
+    WHERE withdrawal_id = ${input.withdrawal_id} AND owner_commitment = ${input.owner_commitment} AND status IN ('queued', 'prepared')
+    RETURNING *
+  ` as Array<Record<string, unknown>>;
+  return rows[0] ? withdrawalRow(rows[0]) : null;
+}
+
+export async function submitPreparedConsumerWithdrawal(input: {
+  withdrawal_id: string;
+  owner_commitment: string;
+  message_commitment: string;
+  transaction_signature: string;
+  now?: Date;
+}): Promise<ConsumerWithdrawal | null> {
+  const now = input.now ?? new Date();
+  const sql = await getSql();
+  if (!sql) {
+    return memoryCritical(async () => {
+      const current = memory.withdrawals.get(input.withdrawal_id);
+      if (!current || current.owner_commitment !== input.owner_commitment || current.status !== "prepared" ||
+        current.prepared_message_commitment !== input.message_commitment || !current.prepared_expires_at ||
+        new Date(current.prepared_expires_at).getTime() <= now.getTime()) return null;
+      const updated = { ...current, status: "submitted" as const, transaction_signature: input.transaction_signature, updated_at: now.toISOString() };
+      memory.withdrawals.set(input.withdrawal_id, updated);
+      return updated;
+    });
+  }
+  await ensureSchema(sql);
+  const rows = await sql`
+    UPDATE consumer_withdrawals
+    SET status = 'submitted', transaction_signature = ${input.transaction_signature}, updated_at = ${now.toISOString()}
+    WHERE withdrawal_id = ${input.withdrawal_id}
+      AND owner_commitment = ${input.owner_commitment}
+      AND status = 'prepared'
+      AND prepared_message_commitment = ${input.message_commitment}
+      AND prepared_expires_at > ${now.toISOString()}
+    RETURNING *
+  ` as Array<Record<string, unknown>>;
+  return rows[0] ? withdrawalRow(rows[0]) : null;
+}
+
+export async function cancelConsumerWithdrawal(input: {
+  withdrawal_id: string;
+  owner_commitment: string;
+  now?: Date;
+}): Promise<ConsumerWithdrawal | null> {
+  const now = input.now ?? new Date();
+  const sql = await getSql();
+  if (!sql) {
+    return memoryCritical(async () => {
+      const current = memory.withdrawals.get(input.withdrawal_id);
+      if (!current || current.owner_commitment !== input.owner_commitment || !["queued", "prepared"].includes(current.status)) return null;
+      const balance = memoryBalance(current);
+      memory.balances.set(current.account_commitment, { ...balance, available_micro_usdc: balance.available_micro_usdc + current.amount_micro_usdc, updated_at: now.toISOString() });
+      const updated = { ...current, status: "cancelled" as const, updated_at: now.toISOString() };
+      memory.withdrawals.set(input.withdrawal_id, updated);
+      putMemoryLedger(current, "withdrawal_release", `withdrawal_release:${current.withdrawal_id}`, current.withdrawal_id, balancedPostings([
+        { account: "treasury_usdc", side: "debit", amount_micro_usdc: current.amount_micro_usdc },
+        { account: "consumer_available", side: "credit", amount_micro_usdc: current.amount_micro_usdc },
+      ]), now);
+      return updated;
+    });
+  }
+  await ensureSchema(sql);
+  const rows = await sql`
+    WITH lock_guard AS (
+      SELECT pg_advisory_xact_lock(hashtextextended(${input.withdrawal_id}, 0))
+    ), cancelled AS (
+      UPDATE consumer_withdrawals w
+      SET status = 'cancelled', updated_at = ${now.toISOString()}
+      FROM lock_guard
+      WHERE w.withdrawal_id = ${input.withdrawal_id}
+        AND w.owner_commitment = ${input.owner_commitment}
+        AND w.status IN ('queued', 'prepared')
+      RETURNING w.*
+    ), balance AS (
+      UPDATE consumer_balance_accounts b
+      SET available_micro_usdc = b.available_micro_usdc + c.amount_micro_usdc, updated_at = ${now.toISOString()}
+      FROM cancelled c
+      WHERE b.account_commitment = c.account_commitment AND b.owner_commitment = c.owner_commitment
+      RETURNING b.account_commitment
+    ), ledger AS (
+      INSERT INTO consumer_ledger_transactions (
+        transaction_id, owner_commitment, account_commitment, idempotency_key, kind,
+        reference_commitment, postings, created_at
+      ) SELECT ${consumerCommitment("ledger", { withdrawal: input.withdrawal_id, action: "release" })},
+        c.owner_commitment, c.account_commitment, ${`withdrawal_release:${input.withdrawal_id}`}, 'withdrawal_release',
+        c.withdrawal_id, jsonb_build_array(
+          jsonb_build_object('account', 'treasury_usdc', 'side', 'debit', 'amount_micro_usdc', c.amount_micro_usdc),
+          jsonb_build_object('account', 'consumer_available', 'side', 'credit', 'amount_micro_usdc', c.amount_micro_usdc)
+        ), ${now.toISOString()}
+      FROM cancelled c JOIN balance b USING (account_commitment)
+      RETURNING transaction_id
+    ) SELECT cancelled.* FROM cancelled JOIN balance USING (account_commitment) JOIN ledger ON true
+  ` as Array<Record<string, unknown>>;
   return rows[0] ? withdrawalRow(rows[0]) : null;
 }
 
@@ -369,13 +493,13 @@ export async function hasActiveConsumerExposure(): Promise<boolean> {
   const sql = await getSql();
   if (!sql) {
     return Array.from(memory.reservations.values()).some((item) => item.status === "reserved" || item.status === "submitted") ||
-      Array.from(memory.withdrawals.values()).some((item) => ["queued", "dispatching", "submitted", "failed_review"].includes(item.status));
+      Array.from(memory.withdrawals.values()).some((item) => ["queued", "prepared", "dispatching", "submitted", "failed_review"].includes(item.status));
   }
   await ensureSchema(sql);
   const rows = await sql`
     SELECT (
       EXISTS (SELECT 1 FROM consumer_balance_reservations WHERE status IN ('reserved', 'submitted'))
-      OR EXISTS (SELECT 1 FROM consumer_withdrawals WHERE status IN ('queued', 'dispatching', 'submitted', 'failed_review'))
+      OR EXISTS (SELECT 1 FROM consumer_withdrawals WHERE status IN ('queued', 'prepared', 'dispatching', 'submitted', 'failed_review'))
     ) AS active
   ` as Array<{ active: boolean }>;
   return rows[0]?.active === true;
@@ -1618,10 +1742,14 @@ async function ensureSchema(sql: NeonSql) {
       amount_micro_usdc BIGINT NOT NULL CHECK (amount_micro_usdc > 0),
       status TEXT NOT NULL,
       transaction_signature TEXT UNIQUE,
+      prepared_message_commitment TEXT,
+      prepared_expires_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL
     )
   `;
+  await sql`ALTER TABLE consumer_withdrawals ADD COLUMN IF NOT EXISTS prepared_message_commitment TEXT`;
+  await sql`ALTER TABLE consumer_withdrawals ADD COLUMN IF NOT EXISTS prepared_expires_at TIMESTAMPTZ`;
   await sql`CREATE INDEX IF NOT EXISTS idx_consumer_ledger_account_created ON consumer_ledger_transactions (account_commitment, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_consumer_deposits_owner_created ON consumer_deposit_intents (owner_commitment, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_consumer_nonces_expiry ON consumer_request_nonces (expires_at)`;
@@ -1784,6 +1912,8 @@ function withdrawalRow(row: Record<string, unknown>): ConsumerWithdrawal {
     amount_micro_usdc: Number(row.amount_micro_usdc),
     status: String(row.status) as ConsumerWithdrawal["status"],
     transaction_signature: typeof row.transaction_signature === "string" ? row.transaction_signature : null,
+    prepared_message_commitment: typeof row.prepared_message_commitment === "string" ? row.prepared_message_commitment : null,
+    prepared_expires_at: row.prepared_expires_at ? dateString(row.prepared_expires_at) : null,
     created_at: dateString(row.created_at),
     updated_at: dateString(row.updated_at),
   };

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
+import { Transaction } from "@solana/web3.js";
 import {
   Activity,
   AlertTriangle,
@@ -96,6 +97,13 @@ type ConsumerBalanceResult = {
   balance: { available_micro_usdc: number; reserved_micro_usdc: number };
 };
 
+type WithdrawalResult = {
+  withdrawal_id: string;
+  status: string;
+  transaction_base64?: string;
+  transaction_signature?: string;
+};
+
 const VENUES = ["phoenix", "hyperliquid", "backpack"] as const;
 type VenueId = (typeof VENUES)[number];
 
@@ -119,6 +127,8 @@ export function TriVenueArbConsole() {
   const [depositIntent, setDepositIntent] = useState<DepositIntentResult | null>(null);
   const [depositEvidence, setDepositEvidence] = useState("");
   const [consumerBalance, setConsumerBalance] = useState<ConsumerBalanceResult["balance"] | null>(null);
+  const [withdrawalUsd, setWithdrawalUsd] = useState("5");
+  const [withdrawalStatus, setWithdrawalStatus] = useState<WithdrawalResult | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -288,7 +298,7 @@ export function TriVenueArbConsole() {
         max_daily_notional_micro_usdc: notionalMicroUsdc * 3,
         max_position_micro_usdc: notionalMicroUsdc * 5,
         max_slippage_bps: 25,
-        market_allowlist: ["SOL/USDC"],
+        market_allowlist: ["SOL-PERP"],
       });
       const proof = await signFreshPublicLiveChallenge(wallet);
       const workOrderCommitment = publicLivePhoenixWorkOrderCommitment();
@@ -315,7 +325,7 @@ export function TriVenueArbConsole() {
         work_order_commitment: workOrderCommitment,
         declared_notional_micro_usdc: notionalMicroUsdc,
         declared_max_slippage_bps: 25,
-        declared_market: "SOL/USDC",
+        declared_market: "SOL-PERP",
         declared_side: phoenixSide,
         encrypted_execution_instruction_bundle: sealed.encrypted_execution_instruction_bundle,
       });
@@ -355,19 +365,105 @@ export function TriVenueArbConsole() {
   }
 
   async function confirmFundingIntent() {
-    if (!depositIntent || !depositEvidence.trim()) return setError("Enter the finalized transaction signature or shielded receipt ID.");
+    if (!depositIntent) return setError("Create a deposit intent first.");
+    if (depositIntent.rail === "solana_shielded_usdcx" && !depositEvidence.trim()) return setError("Enter the shielded receipt ID.");
     setWorking("deposit-confirm");
     setError(null);
     try {
-      await postJson(`/v1/private-account/balance/deposit-intents/${encodeURIComponent(depositIntent.deposit_intent_id)}/confirm`,
-        depositIntent.rail === "solana_usdc"
-          ? { transaction_signature: depositEvidence.trim() }
-          : { receipt_id: depositEvidence.trim() });
+      let evidence = depositEvidence.trim();
+      if (depositIntent.rail === "solana_usdc" && !evidence) {
+        const provider = requiredSolanaProvider();
+        if (!provider.signAndSendTransaction) throw new Error("Your Solana wallet must support sign-and-send transactions.");
+        const prepared = await postJson<{ transaction_base64: string }>(`/v1/private-account/balance/deposit-intents/${encodeURIComponent(depositIntent.deposit_intent_id)}/prepare`, {});
+        const transaction = Transaction.from(base64ToBytes(prepared.transaction_base64));
+        const sent = await provider.signAndSendTransaction(transaction);
+        evidence = typeof sent === "string" ? sent : sent?.signature || "";
+        if (!evidence) throw new Error("The wallet did not return a Solana transaction signature.");
+        setDepositEvidence(evidence);
+      }
+      const confirmationBody = depositIntent.rail === "solana_usdc"
+        ? { transaction_signature: evidence }
+        : { receipt_id: evidence };
+      let confirmed = false;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        try {
+          await postJson(`/v1/private-account/balance/deposit-intents/${encodeURIComponent(depositIntent.deposit_intent_id)}/confirm`, confirmationBody);
+          confirmed = true;
+          break;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "";
+          if (depositIntent.rail !== "solana_usdc" || !message.includes("solana_deposit_not_finalized") || attempt === 19) throw err;
+          await delay(2_000);
+        }
+      }
+      if (!confirmed) throw new Error("Deposit did not finalize in time; retry confirmation with the same signature.");
       setDepositIntent({ ...depositIntent, status: "confirmed" });
       const balance = await fetchJson<ConsumerBalanceResult>("/v1/private-account/balance/ledger");
       setConsumerBalance(balance.balance);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Deposit confirmation failed.");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function withdrawPublicUsdc() {
+    if (!canSign) return setError("Connect the bound wallet and accept the consumer terms before withdrawing.");
+    const provider = requiredSolanaProvider();
+    if (!provider.signTransaction) return setError("Your Solana wallet must support transaction signing.");
+    setWorking("withdraw");
+    setError(null);
+    let queuedWithdrawalId = "";
+    let broadcastAttempted = false;
+    try {
+      const proof = await signFreshWithdrawalChallenge(wallet, "create");
+      const queued = await postJson<WithdrawalResult>("/v1/private-account/balance/withdrawals", {
+        ...proof,
+        amount_micro_usdc: usdToMicro(withdrawalUsd),
+      });
+      queuedWithdrawalId = queued.withdrawal_id;
+      setWithdrawalStatus(queued);
+      const prepared = await postJson<WithdrawalResult>(`/v1/private-account/balance/withdrawals/${encodeURIComponent(queued.withdrawal_id)}/prepare`, {});
+      if (!prepared.transaction_base64) throw new Error("Withdrawal transaction was not prepared.");
+      const partial = Transaction.from(base64ToBytes(prepared.transaction_base64));
+      const signed = await provider.signTransaction(partial);
+      const signedBytes = signed.serialize({ requireAllSignatures: true, verifySignatures: true });
+      broadcastAttempted = true;
+      const submitted = await postJson<WithdrawalResult>(`/v1/private-account/balance/withdrawals/${encodeURIComponent(queued.withdrawal_id)}/submit`, {
+        transaction_base64: bytesToBase64(signedBytes),
+      });
+      setWithdrawalStatus(submitted);
+      const balance = await fetchJson<ConsumerBalanceResult>("/v1/private-account/balance/ledger");
+      setConsumerBalance(balance.balance);
+    } catch (err) {
+      if (queuedWithdrawalId && !broadcastAttempted) {
+        try {
+          const proof = await signFreshWithdrawalChallenge(wallet, "cancel", queuedWithdrawalId);
+          const cancelled = await postJson<WithdrawalResult>(`/v1/private-account/balance/withdrawals/${encodeURIComponent(queuedWithdrawalId)}/cancel`, proof);
+          setWithdrawalStatus(cancelled);
+        } catch {
+          // Funds remain held in a visible prepared withdrawal; never guess that
+          // an ambiguous cancellation succeeded.
+        }
+      }
+      setError(err instanceof Error ? err.message : "Withdrawal failed.");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function cancelWithdrawal() {
+    if (!withdrawalStatus || !["queued", "prepared"].includes(withdrawalStatus.status)) return;
+    setWorking("withdraw-cancel");
+    setError(null);
+    try {
+      const proof = await signFreshWithdrawalChallenge(wallet, "cancel", withdrawalStatus.withdrawal_id);
+      const cancelled = await postJson<WithdrawalResult>(`/v1/private-account/balance/withdrawals/${encodeURIComponent(withdrawalStatus.withdrawal_id)}/cancel`, proof);
+      setWithdrawalStatus(cancelled);
+      const balance = await fetchJson<ConsumerBalanceResult>("/v1/private-account/balance/ledger");
+      setConsumerBalance(balance.balance);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Withdrawal cancellation failed.");
     } finally {
       setWorking(null);
     }
@@ -566,7 +662,7 @@ export function TriVenueArbConsole() {
               <div className="mt-4 rounded-md border border-emerald-300/20 bg-emerald-300/5 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <div className="text-sm font-semibold text-white">Phoenix prepaid spot order</div>
+                    <div className="text-sm font-semibold text-white">Phoenix prepaid perpetual order</div>
                     <div className="mt-1 font-mono text-xs text-[#8ea1bf]">
                       {phoenixLimit ? `$${orderUsd} ${phoenixSide} IOC @ ${phoenixLimit}` : "waiting for Phoenix quote"}
                     </div>
@@ -623,12 +719,25 @@ export function TriVenueArbConsole() {
                   <div className="mt-3 border-t border-sky-300/15 pt-3">
                     <p className="break-all font-mono text-[11px] text-[#8ea1bf]">intent {depositIntent.deposit_intent_id} · {depositIntent.status}</p>
                     <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded bg-black/30 p-2 text-[10px] text-[#9fb1ca]">{JSON.stringify(depositIntent.deposit_instructions ?? {}, null, 2)}</pre>
-                    <input value={depositEvidence} onChange={(event) => setDepositEvidence(event.target.value)} placeholder={depositIntent.rail === "solana_usdc" ? "Finalized transaction signature" : "Shielded receipt ID"} className="mt-2 h-10 w-full rounded-md border border-[#24324a] bg-[#070a10] px-3 font-mono text-xs text-white" />
+                    <input value={depositEvidence} onChange={(event) => setDepositEvidence(event.target.value)} placeholder={depositIntent.rail === "solana_usdc" ? "Optional existing transaction signature" : "Shielded receipt ID"} className="mt-2 h-10 w-full rounded-md border border-[#24324a] bg-[#070a10] px-3 font-mono text-xs text-white" />
                     <button type="button" onClick={() => void confirmFundingIntent()} disabled={working !== null || depositIntent.status === "confirmed"} className="mt-2 h-10 w-full rounded-md border border-emerald-300/30 bg-emerald-300/10 text-sm text-emerald-50 disabled:opacity-45">
-                      {working === "deposit-confirm" ? "Verifying finality" : "Confirm deposit"}
+                      {working === "deposit-confirm" ? "Signing / verifying finality" : depositIntent.rail === "solana_usdc" && !depositEvidence ? "Sign and deposit USDC" : "Confirm deposit"}
                     </button>
                   </div>
                 )}
+                <div className="mt-3 border-t border-sky-300/15 pt-3">
+                  <p className="text-xs leading-5 text-[#8ea1bf]">Withdraw unreserved USDC to this same bound wallet. Your wallet co-signs and pays the Solana network fee; Ghola cannot redirect the transfer.</p>
+                  <input value={withdrawalUsd} onChange={(event) => setWithdrawalUsd(event.target.value)} inputMode="decimal" aria-label="Withdrawal amount in USDC" className="mt-2 h-10 w-full rounded-md border border-[#24324a] bg-[#070a10] px-3 font-mono text-sm text-white" />
+                  <button type="button" onClick={() => void withdrawPublicUsdc()} disabled={!canSign || working !== null} className="mt-2 h-10 w-full rounded-md border border-violet-300/30 bg-violet-300/10 text-sm text-violet-50 disabled:opacity-45">
+                    {working === "withdraw" ? "Signing withdrawal" : "Withdraw USDC"}
+                  </button>
+                  {withdrawalStatus && <p className="mt-2 break-all font-mono text-[11px] text-[#aebbd0]">{withdrawalStatus.status} · {withdrawalStatus.transaction_signature || withdrawalStatus.withdrawal_id}</p>}
+                  {withdrawalStatus && ["queued", "prepared"].includes(withdrawalStatus.status) && (
+                    <button type="button" onClick={() => void cancelWithdrawal()} disabled={working !== null} className="mt-2 h-9 w-full rounded-md border border-rose-300/25 bg-rose-300/10 text-xs text-rose-50 disabled:opacity-45">
+                      {working === "withdraw-cancel" ? "Cancelling" : "Cancel and release balance"}
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="mt-4 grid gap-2 sm:grid-cols-2">
@@ -838,6 +947,14 @@ async function signFreshPublicLiveChallenge(wallet: string) {
   };
 }
 
+async function signFreshWithdrawalChallenge(wallet: string, action: "create" | "cancel", withdrawalId?: string) {
+  const params = new URLSearchParams({ action });
+  if (withdrawalId) params.set("withdrawal_id", withdrawalId);
+  const challenge = await fetchJson<Challenge>(`/v1/private-account/balance/withdrawals/challenge?${params.toString()}`);
+  const signature = await walletSignBytes(requiredSolanaProvider(), new TextEncoder().encode(challenge.message));
+  return { message: challenge.message, signature_b64: bytesToBase64(signature) };
+}
+
 async function fetchJson<T>(path: string): Promise<T> {
   const res = await fetch(path, {
     cache: "no-store",
@@ -928,8 +1045,8 @@ function phoenixTinyFillOrder({
 }): PrivateExecutionOrderDraft {
   return {
     venue_id: "phoenix",
-    operation_class: "spot_limit_order",
-    market: "SOL/USDC",
+    operation_class: "perp_limit_order",
+    market: "SOL-PERP",
     side,
     base_size: "",
     quote_size: quoteSize,
@@ -944,7 +1061,7 @@ function phoenixTinyFillOrder({
     agent_exit_rule: "manual_approval",
     agent_time_horizon: "scalp",
     agent_route_priority: "most_private",
-    agent_strategy_note: "Phoenix prepaid consumer spot order from the Ghola live console.",
+    agent_strategy_note: "Phoenix prepaid consumer perpetual order from the Ghola live console.",
   };
 }
 
@@ -984,6 +1101,15 @@ function isPhoenixLiveResult(result: LiveResult): result is PhoenixLiveResult {
 
 function short(value: string) {
   return value.length <= 12 ? value : `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
+function base64ToBytes(value: string) {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 }
 
 function railClass(tone: "good" | "warn" | "accent") {

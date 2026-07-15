@@ -3,6 +3,7 @@ import { consumerProductionStoreReady, getConsumerCircuitState, getConsumerRecon
 import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server";
 import { customShieldedVerifierHealth } from "@/lib/private-account-verifier";
 import { shieldedPoolHealth } from "@/lib/private-account-shielded-pool";
+import { consumerTreasuryConfigured } from "@/lib/consumer-turnkey-treasury";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -52,21 +53,22 @@ export async function GET() {
     worker: workerState,
     byo_hyperliquid: launchProfile === "byo_hyperliquid" ? (byoHyperliquidReady ? "ready" : "blocked") : "not_required",
     consumer_worker_core: pooledRequired ? (consumerWorker?.ready === true ? "ready" : "blocked") : "not_required",
-    public_usdc: pooledRequired ? (process.env.GHOLA_CONSUMER_SOLANA_USDC_TREASURY_RECIPIENT ? "configured" : "blocked") : "not_required",
+    public_usdc: pooledRequired ? (process.env.GHOLA_CONSUMER_PREPAID_BALANCE_ENABLED === "true" && consumerTreasuryConfigured() ? "configured" : "blocked") : "not_required",
     shielded_verifier: pooledRequired ? (verifier?.status === "green" ? "ready" : "blocked") : "not_required",
     shielded_pool: pooledRequired ? (shieldedPool?.status === "green" ? "ready" : "blocked") : "not_required",
     sentry: sentryConfigured ? "configured" : vercelObservabilityConfigured ? "not_required" : "blocked",
     observability: observabilityConfigured ? "configured" : "blocked",
     reconciliation: reconciliation?.ready ? "ready" : "blocked",
     funding_verifier: pooledRequired ? (process.env.GHOLA_CONSUMER_SOLANA_RPC_URL ? "configured" : "blocked") : "not_required",
-    withdrawal_dispatch: pooledRequired ? (consumerWorker?.withdrawal_loop === "durable" ? "configured" : "blocked") : "not_required",
+    withdrawal_signer: pooledRequired ? (consumerTreasuryConfigured() ? "configured" : "blocked") : "not_required",
+    withdrawal_finalizer: pooledRequired ? (consumerWorker?.withdrawal_loop === "durable" ? "configured" : "blocked") : "not_required",
     venue_connectivity: process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL ? "configured" : "blocked",
     trading_control: process.env.GHOLA_TRADING_CONTROL_TOKEN && process.env.GHOLA_RECONCILIATION_INGEST_TOKEN ? "configured" : "blocked",
   } as const;
   const pooledReady = !pooledRequired || (
     checks.consumer_worker_core === "ready" && checks.public_usdc === "configured" &&
     checks.shielded_verifier === "ready" && checks.shielded_pool === "ready" &&
-    checks.funding_verifier === "configured" && checks.withdrawal_dispatch === "configured"
+    checks.funding_verifier === "configured" && checks.withdrawal_signer === "configured" && checks.withdrawal_finalizer === "configured"
   );
   const ready = database && circuit?.status === "open" && workerState !== "blocked" && pooledReady &&
     (launchProfile !== "byo_hyperliquid" || checks.byo_hyperliquid === "ready") &&

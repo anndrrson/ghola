@@ -29,7 +29,7 @@ export type PublicLivePhoenixPreparedAccess = {
   status: "live_ready" | "funding_required";
   account_commitment: string;
   venue_id: "phoenix";
-  platform_class: "solana_spot_orderbook";
+  platform_class: "solana_perps_market";
   execution_mode: "ghola_pooled";
   eligibility: {
     eligibility: {
@@ -52,7 +52,7 @@ export type PublicLivePhoenixPreparedAccess = {
     max_notional_bucket: "5";
     max_order_count: 3;
     allowed_markets: string[];
-    operation_class: "spot_limit_order";
+    operation_class: "perp_limit_order";
   };
   submit_path: "/v1/private-account/public-live/phoenix/submit";
 };
@@ -150,7 +150,7 @@ export async function preparePublicLivePhoenixAccess(input: {
 
   const agent = await armVenueAgentSessionFromBody({
     execution_mode: "ghola_pooled",
-    market_allowlist: ["SOL", "SOL-PERP"],
+    market_allowlist: ["SOL-PERP"],
     max_notional_bucket: "5",
     max_order_count: 3,
     kill_switch: false,
@@ -172,7 +172,7 @@ export async function preparePublicLivePhoenixAccess(input: {
     status: allocation.pooled_allocation?.status === "allocated" ? "live_ready" as const : "funding_required" as const,
     account_commitment: eligible.account_commitment,
     venue_id: "phoenix" as const,
-    platform_class: "solana_spot_orderbook" as const,
+    platform_class: "solana_perps_market" as const,
     execution_mode: "ghola_pooled" as const,
     eligibility: eligible,
     allocation,
@@ -181,8 +181,8 @@ export async function preparePublicLivePhoenixAccess(input: {
     live_limits: {
       max_notional_bucket: "5",
       max_order_count: 3,
-      allowed_markets: ["SOL", "SOL-PERP"],
-      operation_class: "spot_limit_order",
+      allowed_markets: ["SOL-PERP"],
+      operation_class: "perp_limit_order",
     },
     submit_path: "/v1/private-account/public-live/phoenix/submit",
   };
