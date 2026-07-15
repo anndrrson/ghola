@@ -95,6 +95,7 @@ describe("private account autopilot sessions", () => {
     expect(created.session.session_policy.market_allowlist).toEqual(["SOL-USD", "BTC-USD", "ETH-USD"]);
     expect(created.session.session_policy.max_notional_bucket).toBe("50");
     expect(created.session.session_policy.max_position_notional_bucket).toBe("100");
+    expect(created.session.session_policy.max_loss_bucket).toBe("25");
     expect(created.session.session_policy.max_daily_notional_bucket).toBe("250");
     expect(created.session.session_policy.max_order_count).toBe(10);
     expect(created.session.session_policy.max_slippage_bps).toBe(50);
@@ -131,6 +132,7 @@ describe("private account autopilot sessions", () => {
         market_allowlist: ["sol", "doge", "SOL/USDC"],
         max_notional_bucket: "1000",
         max_position_notional_bucket: "500",
+        max_loss_bucket: "1000",
         max_daily_notional_bucket: "250",
         max_order_count: 500,
         ttl_ms: 1,
@@ -144,6 +146,7 @@ describe("private account autopilot sessions", () => {
     expect(created.session.session_policy.market_allowlist).toEqual(["SOL-USD", "SOL/USDC"]);
     expect(created.session.session_policy.max_notional_bucket).toBe("50");
     expect(created.session.session_policy.max_position_notional_bucket).toBe("500");
+    expect(created.session.session_policy.max_loss_bucket).toBe("25");
     expect(created.session.session_policy.max_daily_notional_bucket).toBe("250");
     expect(created.session.session_policy.max_order_count).toBe(25);
     expect(created.session.session_policy.ttl_ms).toBe(5 * 60_000);

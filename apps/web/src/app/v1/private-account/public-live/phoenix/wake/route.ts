@@ -1,82 +1,111 @@
-import { NextResponse } from "next/server";
+import { after } from "next/server";
+import {
+  CONSUMER_WAKE_LIMIT,
+  CONSUMER_WAKE_WINDOW_MS,
+} from "@/lib/consumer-production";
+import {
+  consumeConsumerRateLimit,
+  enqueueConsumerWake,
+  updateConsumerWakeJob,
+} from "@/lib/consumer-production-store";
 import {
   markPhalaPrivateAgentActivity,
   phalaJitProvisioningConfigured,
   wakePhalaPrivateAgentForUse,
 } from "@/lib/private-agent-phala";
 import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server";
+import { json, privateAccountOwnerFromRequest, unauthorized } from "../../../_lib";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
 export async function POST(request: Request) {
-  if (!publicWakeEnabled()) {
-    return json({ error: "public_live_worker_wake_disabled" }, 403);
-  }
-  if (!sameOrigin(request)) {
-    return json({ error: "same_origin_required" }, 403);
+  if (!wakeEnabled()) return json({ error: "consumer_worker_wake_disabled" }, 403);
+  if (!sameOrigin(request)) return json({ error: "same_origin_required" }, 403);
+  const owner = await privateAccountOwnerFromRequest(request);
+  if (!owner) return unauthorized();
+
+  const ipCommitment = requestIpCommitment(request);
+  const [ownerLimit, ipLimit] = await Promise.all([
+    consumeConsumerRateLimit({
+      key: `wake:owner:${owner.owner_commitment}`,
+      limit: CONSUMER_WAKE_LIMIT,
+      window_ms: CONSUMER_WAKE_WINDOW_MS,
+    }),
+    consumeConsumerRateLimit({
+      key: `wake:ip:${ipCommitment}`,
+      limit: CONSUMER_WAKE_LIMIT,
+      window_ms: CONSUMER_WAKE_WINDOW_MS,
+    }),
+  ]);
+  if (!ownerLimit.ok || !ipLimit.ok) {
+    return json({
+      error: "consumer_worker_wake_rate_limited",
+      retry_after_seconds: Math.max(ownerLimit.retry_after_seconds, ipLimit.retry_after_seconds),
+    }, 429);
   }
 
-  const leaseMs = boundedIntegerEnv("GHOLA_PUBLIC_LIVE_WORKER_WAKE_LEASE_MS", 10 * 60_000, 5 * 60_000, 30 * 60_000);
   const before = await getPrivateAgentRuntimeStatus();
+  const leaseMs = 30 * 60_000;
   if (before.remote_execution_ready && before.selected_provider === "phala") {
-    const lease = await markPhalaPrivateAgentActivity({
-      reason: "public_live_phoenix_wake:already_running",
-      leaseMs,
-    });
+    const lease = await markPhalaPrivateAgentActivity({ reason: "consumer_wake:already_running", leaseMs });
     return json({
       version: 1,
       status: "ready",
       ready: true,
-      action: "already_running",
-      lease_ms: leaseMs,
+      wake_job_id: null,
       lease_expires_at: lease.lease_expires_at,
-      provider: phalaSummary(before),
-      checked_at: new Date().toISOString(),
     });
   }
 
-  const waitForReadyMs = boundedIntegerEnv("GHOLA_PUBLIC_LIVE_WORKER_WAKE_WAIT_MS", 75_000, 5_000, 110_000);
-  const provisioning = await wakePhalaPrivateAgentForUse({
-    reason: "public_live_phoenix_wake",
-    leaseMs,
-    waitForReadyMs,
+  const job = await enqueueConsumerWake({ owner_commitment: owner.owner_commitment });
+  after(async () => {
+    await updateConsumerWakeJob({ wake_job_id: job.wake_job_id, status: "waking" });
+    try {
+      const result = await wakePhalaPrivateAgentForUse({
+        reason: `consumer_wake:${job.wake_job_id}`,
+        leaseMs,
+        waitForReadyMs: 90_000,
+      });
+      const status = await getPrivateAgentRuntimeStatus();
+      const ready = result.ready && status.remote_execution_ready && status.selected_provider === "phala";
+      await updateConsumerWakeJob({
+        wake_job_id: job.wake_job_id,
+        status: ready ? "ready" : "failed",
+        error_code: ready ? null : result.reason || "worker_not_attested",
+      });
+      log("consumer_worker_wake_finished", {
+        wake_job_id: job.wake_job_id,
+        owner_commitment: owner.owner_commitment,
+        ready,
+      });
+    } catch (error) {
+      await updateConsumerWakeJob({
+        wake_job_id: job.wake_job_id,
+        status: "failed",
+        error_code: "wake_failed",
+      });
+      log("consumer_worker_wake_failed", {
+        wake_job_id: job.wake_job_id,
+        owner_commitment: owner.owner_commitment,
+        error: error instanceof Error ? error.message : String(error),
+      }, "error");
+    }
   });
-  const after = await getPrivateAgentRuntimeStatus();
-  const ready = after.remote_execution_ready && after.selected_provider === "phala";
 
   return json({
     version: 1,
-    status: ready ? "ready" : provisioning.status === "provisioning" ? "waking" : "blocked",
-    ready,
-    action: provisioning.attempted ? "wake_requested" : "wake_checked",
-    lease_ms: leaseMs,
-    provisioning: {
-      attempted: provisioning.attempted,
-      ready: provisioning.ready,
-      status: provisioning.status,
-      reason: provisioning.reason ?? null,
-      cvm_name: provisioning.cvm_name ?? null,
-      compose: provisioning.compose ?? null,
-    },
-    provider: phalaSummary(after),
-    checked_at: new Date().toISOString(),
-  }, ready ? 200 : 202);
+    status: job.status,
+    ready: false,
+    wake_job_id: job.wake_job_id,
+    poll_url: `/v1/private-account/public-live/phoenix/wake/${job.wake_job_id}`,
+    expires_at: job.expires_at,
+  }, 202);
 }
 
-function json(body: unknown, status = 200) {
-  return NextResponse.json(body, {
-    status,
-    headers: {
-      "cache-control": "no-store",
-    },
-  });
-}
-
-function publicWakeEnabled() {
-  return process.env.GHOLA_PUBLIC_LIVE_WORKER_WAKE_ENABLED === "true" ||
-    phalaJitProvisioningConfigured();
+function wakeEnabled() {
+  return process.env.GHOLA_PUBLIC_LIVE_WORKER_WAKE_ENABLED === "true" || phalaJitProvisioningConfigured();
 }
 
 function sameOrigin(request: Request) {
@@ -92,23 +121,15 @@ function sameOrigin(request: Request) {
   }
 }
 
-function phalaSummary(status: Awaited<ReturnType<typeof getPrivateAgentRuntimeStatus>>) {
-  const provider = status.providers.find((item) => item.id === "phala");
-  return {
-    selected_provider: status.selected_provider,
-    remote_execution_ready: status.remote_execution_ready,
-    blocking_reasons: status.blocking_reasons,
-    available: provider?.available === true,
-    attested: provider?.attested === true,
-    supports_trading_execution: provider?.supports_trading_execution === true,
-    cvm_status: provider?.evidence && typeof provider.evidence === "object"
-      ? (provider.evidence as { cvm_status?: unknown }).cvm_status ?? null
-      : null,
-  };
+function requestIpCommitment(request: Request) {
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  let hash = 2166136261;
+  for (const char of forwarded) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  return `ip_${(hash >>> 0).toString(16)}`;
 }
 
-function boundedIntegerEnv(name: string, fallback: number, min: number, max: number) {
-  const value = Number.parseInt(process.env[name] || "", 10);
-  if (!Number.isInteger(value)) return fallback;
-  return Math.min(max, Math.max(min, value));
+function log(message: string, fields: Record<string, unknown>, level: "info" | "error" = "info") {
+  const output = JSON.stringify({ level, message, route: "/v1/private-account/public-live/phoenix/wake", ...fields });
+  if (level === "error") console.error(output);
+  else console.log(output);
 }

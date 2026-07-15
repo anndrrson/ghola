@@ -16,6 +16,7 @@ export interface SessionUser {
   id: string;
   email: string;
   name?: string;
+  email_verified?: boolean;
 }
 
 interface JwtPayload {
@@ -23,6 +24,7 @@ interface JwtPayload {
   user_id?: string;
   email?: string;
   name?: string;
+  email_verified?: boolean;
   exp?: number;
 }
 
@@ -46,6 +48,7 @@ export function userFromToken(token: string): SessionUser | null {
     id,
     email,
     name: typeof payload.name === "string" && payload.name ? payload.name : undefined,
+    ...(typeof payload.email_verified === "boolean" ? { email_verified: payload.email_verified } : {}),
   };
 }
 
@@ -115,6 +118,9 @@ export function userFromProfile(profile: unknown): SessionUser | null {
     id,
     email,
     name: typeof displayName === "string" && displayName ? displayName : undefined,
+    ...((typeof record.email_verified === "boolean" || typeof record.verified === "boolean")
+      ? { email_verified: record.email_verified === true || record.verified === true }
+      : {}),
   };
 }
 
@@ -169,5 +175,8 @@ export function userFromAuthResponse(body: unknown): SessionUser | null {
     id,
     email,
     name: typeof displayName === "string" && displayName ? displayName : undefined,
+    ...((typeof record.email_verified === "boolean" || typeof record.verified === "boolean")
+      ? { email_verified: record.email_verified === true || record.verified === true }
+      : {}),
   };
 }

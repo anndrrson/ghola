@@ -2,8 +2,10 @@ import type { PrivateAccountRequestOwner } from "../../_lib";
 import {
   allocatePooledVenueFromBody,
   armVenueAgentSessionFromBody,
+  createOrGetStoredPrivateAccount,
   json,
   preflightVenueTradeFromBody,
+  privateAccountOwnerFromRequest,
   verifyVenueEligibilityFromBody,
 } from "../../_lib";
 import {
@@ -12,13 +14,22 @@ import {
   verifyPublicLiveWalletProof,
   type PublicLiveWalletProofInput,
 } from "@/lib/private-account-public-live";
+import {
+  CONSUMER_RISK_VERSION,
+  CONSUMER_TERMS_VERSION,
+} from "@/lib/consumer-production";
+import {
+  consumeConsumerNonce,
+  getConsumerEligibilityAcceptance,
+  getConsumerWalletBinding,
+} from "@/lib/consumer-production-store";
 
 export type PublicLivePhoenixPreparedAccess = {
   version: 1;
   status: "live_ready" | "funding_required";
   account_commitment: string;
   venue_id: "phoenix";
-  platform_class: "solana_perps_market";
+  platform_class: "solana_spot_orderbook";
   execution_mode: "ghola_pooled";
   eligibility: {
     eligibility: {
@@ -41,7 +52,7 @@ export type PublicLivePhoenixPreparedAccess = {
     max_notional_bucket: "5";
     max_order_count: 3;
     allowed_markets: string[];
-    operation_class: "perp_limit_order";
+    operation_class: "spot_limit_order";
   };
   submit_path: "/v1/private-account/public-live/phoenix/submit";
 };
@@ -52,15 +63,20 @@ export function publicLiveJson(body: unknown, status = 200) {
 
 export async function publicLivePhoenixOwnerFromBody(
   body: PublicLiveWalletProofInput,
-  options: { consumeNonce?: boolean } = {},
+  options: { consumeNonce?: boolean; request: Request },
 ):
   Promise<
     | { ok: true; owner: PrivateAccountRequestOwner; proof: ReturnType<typeof publicProofOk> }
     | { ok: false; response: Response }
   > {
-  const verified = verifyPublicLiveWalletProof(body, {
-    consumeNonce: options.consumeNonce,
-  });
+  const authenticated = await privateAccountOwnerFromRequest(options.request);
+  if (!authenticated) {
+    return { ok: false, response: publicLiveJson({ error: "private_account_auth_required" }, 401) };
+  }
+  if (authenticated.user.email_verified !== true && process.env.GHOLA_CONSUMER_EMAIL_VERIFICATION_MODE !== "report_only") {
+    return { ok: false, response: publicLiveJson({ error: "verified_email_required" }, 403) };
+  }
+  const verified = verifyPublicLiveWalletProof(body, { consumeNonce: false });
   if (!verified.ok) {
     return {
       ok: false,
@@ -68,14 +84,38 @@ export async function publicLivePhoenixOwnerFromBody(
     };
   }
   const proof = publicProofOk(verified.proof);
-  const owner: PrivateAccountRequestOwner = {
-    user: {
-      id: `public-live:${proof.wallet_commitment}`,
-      email: `${proof.wallet_commitment.slice(0, 40)}@public-live.ghola.local`,
-      name: "Public Live Wallet",
-    },
-    owner_commitment: proof.owner_commitment,
-  };
+  if (options.consumeNonce !== false) {
+    const accepted = await consumeConsumerNonce({
+      namespace: "phoenix_wallet_proof",
+      owner_commitment: authenticated.owner_commitment,
+      nonce: proof.nonce,
+      expires_at_ms: proof.timestamp_ms + 5 * 60_000,
+    });
+    if (!accepted) {
+      return { ok: false, response: publicLiveJson({ error: "public_live_wallet_proof_replayed" }, 403) };
+    }
+  }
+  const account = await createOrGetStoredPrivateAccount(authenticated);
+  const [binding, acceptance] = await Promise.all([
+    getConsumerWalletBinding(authenticated.owner_commitment),
+    getConsumerEligibilityAcceptance(authenticated.owner_commitment),
+  ]);
+  if (
+    !binding ||
+    binding.account_commitment !== account.account_commitment ||
+    binding.wallet_pubkey !== proof.wallet_pubkey ||
+    binding.wallet_commitment !== proof.wallet_commitment
+  ) {
+    return { ok: false, response: publicLiveJson({ error: "bound_solana_wallet_required" }, 403) };
+  }
+  if (
+    acceptance?.terms_version !== CONSUMER_TERMS_VERSION ||
+    acceptance.risk_version !== CONSUMER_RISK_VERSION ||
+    acceptance.not_prohibited_person !== true
+  ) {
+    return { ok: false, response: publicLiveJson({ error: "current_consumer_acceptance_required" }, 403) };
+  }
+  const owner: PrivateAccountRequestOwner = authenticated;
   return { ok: true, owner, proof };
 }
 
@@ -132,7 +172,7 @@ export async function preparePublicLivePhoenixAccess(input: {
     status: allocation.pooled_allocation?.status === "allocated" ? "live_ready" as const : "funding_required" as const,
     account_commitment: eligible.account_commitment,
     venue_id: "phoenix" as const,
-    platform_class: "solana_perps_market" as const,
+    platform_class: "solana_spot_orderbook" as const,
     execution_mode: "ghola_pooled" as const,
     eligibility: eligible,
     allocation,
@@ -142,7 +182,7 @@ export async function preparePublicLivePhoenixAccess(input: {
       max_notional_bucket: "5",
       max_order_count: 3,
       allowed_markets: ["SOL", "SOL-PERP"],
-      operation_class: "perp_limit_order",
+      operation_class: "spot_limit_order",
     },
     submit_path: "/v1/private-account/public-live/phoenix/submit",
   };

@@ -33,6 +33,7 @@ const baseUrl = normalizeBaseUrl(
 const canaryEmail = process.env.AUTH_SMOKE_EMAIL || "";
 const canaryPassword = process.env.AUTH_SMOKE_PASSWORD || "";
 const createProbe = process.env.AUTH_SMOKE_CREATE_PROBE === "1" || process.argv.includes("--create-probe");
+const protectionBypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET || "";
 
 function log(message) {
   console.log(`[auth-smoke] ${message}`);
@@ -55,6 +56,10 @@ async function request(path, init = {}) {
       ...init,
       signal: controller.signal,
       headers: {
+        ...(protectionBypass ? {
+          "x-vercel-protection-bypass": protectionBypass,
+          "x-vercel-set-bypass-cookie": "true",
+        } : {}),
         ...(init.body ? { "content-type": "application/json", origin: baseUrl } : {}),
         ...(init.headers || {}),
       },

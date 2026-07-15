@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stopIdlePhalaPrivateAgent } from "@/lib/private-agent-phala";
+import { hasActiveConsumerExposure } from "@/lib/consumer-production-store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -38,6 +39,16 @@ async function run(req: NextRequest) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
+  if (!force && await hasActiveConsumerExposure()) {
+    return NextResponse.json({
+      version: 1,
+      provider_id: "phala",
+      idle: {
+        stopped: false,
+        reason: "active_consumer_exposure_or_reconciliation",
+      },
+    }, { headers: { "cache-control": "no-store" } });
+  }
   const result = await stopIdlePhalaPrivateAgent({ force });
   return NextResponse.json(
     {

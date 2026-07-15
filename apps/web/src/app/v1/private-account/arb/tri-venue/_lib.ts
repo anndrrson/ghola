@@ -31,6 +31,7 @@ export async function triVenueLiveGuard(req: Request): Promise<TriVenueGuardResu
   const record = safeRecord(body);
   if (looksLikePublicWalletProof(record)) {
     const publicOwner = await publicLivePhoenixOwnerFromBody(record as unknown as PublicLiveWalletProofInput, {
+      request: req,
       consumeNonce: true,
     });
     if (!publicOwner.ok) return publicOwner;

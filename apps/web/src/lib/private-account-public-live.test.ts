@@ -102,7 +102,7 @@ describe("public private-account live Phoenix access", () => {
     expect(JSON.stringify(calls[0].body)).not.toContain("strategy_note");
   });
 
-  it("blocks public Phoenix live submit in production without a paid private-agent context", async () => {
+  it("blocks public Phoenix live submit until prepaid balances are enabled", async () => {
     const calls: Array<unknown> = [];
     const result = await submitPublicLivePhoenixOrder({
       env: {
@@ -129,14 +129,14 @@ describe("public private-account live Phoenix access", () => {
     });
 
     expect(result).toMatchObject({
-      error: "private_agent_subscription_required",
-      entitlement_required: "paid_private_agent_plan",
-      status: 402,
+      error: "consumer_prepaid_balance_not_enabled",
+      entitlement_required: "confirmed_prepaid_balance",
+      status: 503,
     });
     expect(calls).toHaveLength(0);
   });
 
-  it("blocks the production public Phoenix route before pooled allocation preparation", async () => {
+  it("requires authenticated consumer access before pooled allocation preparation", async () => {
     process.env.VERCEL_ENV = "production";
     const secret = ed25519.utils.randomPrivateKey();
     const wallet = bs58.encode(ed25519.getPublicKey(secret));
@@ -172,10 +172,9 @@ describe("public private-account live Phoenix access", () => {
     }));
     const body = await res.json();
 
-    expect(res.status).toBe(402);
+    expect(res.status).toBe(401);
     expect(body).toMatchObject({
-      error: "private_agent_subscription_required",
-      entitlement_required: "paid_private_agent_plan",
+      error: "private_account_auth_required",
     });
   });
 });

@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import { CROSS_ORIGIN_ISOLATION_HEADERS } from "./src/lib/csp-config";
+import { withSentryConfig } from "@sentry/nextjs";
 
 // Defense-in-depth response headers. Applied to every route except the
 // API/proxy paths so chat/inference requests aren't accidentally
@@ -88,4 +89,14 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withSentryConfig(nextConfig, {
+  silent: true,
+  widenClientFileUpload: true,
+  tunnelRoute: "/monitoring",
+  webpack: {
+    treeshake: { removeDebugLogging: true },
+  },
+  sourcemaps: {
+    deleteSourcemapsAfterUpload: true,
+  },
+});

@@ -49,6 +49,7 @@ export type PrivateAutopilotStatus =
   | "paused"
   | "killed"
   | "blocked"
+  | "risk_halted"
   | "expired";
 export type PrivateAutopilotEventType =
   | "agent_tick"
@@ -209,6 +210,7 @@ export interface PrivateAutopilotSessionPolicy {
   market_allowlist: string[];
   max_notional_bucket: "5" | "10" | "25" | "50" | "100";
   max_position_notional_bucket: "50" | "100" | "250" | "500";
+  max_loss_bucket: "5" | "10" | "25" | "50" | "100" | "250";
   max_daily_notional_bucket: "25" | "50" | "100" | "250";
   max_order_count: number;
   ttl_ms: number;
@@ -260,6 +262,15 @@ export interface PrivateAutopilotSession {
   }>;
   order_count: number;
   daily_notional_used_bucket: string;
+  risk_summary: {
+    complete: boolean;
+    stale_markets: string[];
+    exposure_usd: number;
+    realized_pnl_usd: number;
+    unrealized_pnl_usd: number;
+    estimated_total_pnl_usd: number;
+    checked_at: string;
+  };
   created_at: string;
   updated_at: string;
   expires_at: string;

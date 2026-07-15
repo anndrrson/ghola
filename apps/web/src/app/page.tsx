@@ -21,9 +21,9 @@ export default function Home() {
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [frame, setFrame] = useState<GholaMarketFrame | null>(null);
 
-  // Returning users skip the pitch and land in the terminal.
+  // Returning users skip the pitch and land on their autonomous runs.
   useEffect(() => {
-    if (thumperAuth.authenticated) router.replace("/trade");
+    if (thumperAuth.authenticated) router.replace("/runs");
   }, [thumperAuth.authenticated, router]);
 
   useEffect(() => {
@@ -62,7 +62,7 @@ export default function Home() {
         open={authOpen}
         onClose={() => setAuthOpen(false)}
         onModeChange={setAuthMode}
-        redirectTo="/account?flow=trade"
+        redirectTo="/runs"
       />
 
       <header className="relative flex h-14 items-center justify-between border-b border-[#182234] bg-gradient-to-b from-[#0a0e16] to-[#070a10] px-4 sm:px-6">
@@ -82,8 +82,8 @@ export default function Home() {
           >
             Sign in
           </button>
-          <Link href="/account?flow=trade" className="trade-action rounded-md px-3 py-1.5 text-sm font-semibold">
-            API-key trading
+          <Link href="/runs" className="trade-action rounded-md px-3 py-1.5 text-sm font-semibold">
+            Start a run
           </Link>
         </div>
       </header>
@@ -97,17 +97,17 @@ export default function Home() {
           />
           <div className="relative mx-auto flex min-h-[calc(100vh-3.5rem)] max-w-5xl flex-col items-center justify-center gap-9 px-4 text-center sm:px-6">
             <h1 className="font-display text-6xl font-semibold leading-[1.02] tracking-tight text-[#f6f8ff] [text-shadow:0_0_80px_rgba(90,167,255,0.25)] sm:text-8xl">
-              Trade like a ghost.
+              Give capital a mandate.
             </h1>
             <p className="max-w-2xl text-sm leading-6 text-[#9aa8bf] sm:text-base">
-              Bring scoped venue keys, seal a capped plan, and let the agent execute only inside your intent.
+              Fund an autonomous agent, cap what it can deploy, and let it hunt around the clock.
             </p>
             <div className="flex flex-wrap items-center justify-center gap-3">
               <Link
-                href="/account?flow=trade"
+                href="/runs"
                 className="trade-action inline-flex h-12 items-center gap-2 rounded-md pl-6 pr-4.5 text-sm font-semibold"
               >
-                Bring API keys to trade
+                Start a trading run
                 <ArrowRight className="h-4 w-4" />
               </Link>
               <button
@@ -153,13 +153,13 @@ export default function Home() {
         <section className="border-t border-[#141d2e]">
           <div className="mx-auto flex max-w-6xl flex-col items-center gap-5 px-4 py-16 text-center sm:px-6">
             <h2 className="font-display text-2xl font-semibold tracking-tight text-[#f6f8ff] sm:text-3xl">
-              The terminal is available with gated live access.
+              Aggressive when you want it. Bounded where it matters.
             </h2>
             <Link
-              href="/account?flow=trade"
+              href="/runs"
               className="trade-action inline-flex h-12 items-center gap-2 rounded-md pl-6 pr-4.5 text-sm font-semibold"
             >
-              Bring API keys to trade
+              Start a trading run
               <ArrowRight className="h-4 w-4" />
             </Link>
           </div>

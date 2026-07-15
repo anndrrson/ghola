@@ -283,6 +283,7 @@ export function buildTriVenueAutopilotPolicy(strategy: "arb" | "maker" = "arb"):
     market_allowlist: ["SOL-USD"],
     max_notional_bucket: "5",
     max_position_notional_bucket: "50",
+    max_loss_bucket: "25",
     max_daily_notional_bucket: "25",
     max_order_count: strategy === "maker" ? 2 : 4,
     ttl_ms: strategy === "maker" ? 10 * 60_000 : 60 * 60_000,

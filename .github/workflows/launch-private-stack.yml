@@ -221,7 +221,8 @@ jobs:
           setenv GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 "$FUNDING_SIGNER_PUBLIC_KEY"
           setenv GHOLA_PRIVATE_AGENT_PROVIDER "phala"
           setenv GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN "true"
-          setenv GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES "10"
+          setenv GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES "30"
+          setenv GHOLA_CONSUMER_PREPAID_BALANCE_ENABLED "true"
           setenv GHOLA_PRIVATE_ACCOUNT_LIVE_TRADE_RESERVATION_SECONDS "600"
           setenv GHOLA_PRIVATE_ACCOUNT_REVENUE_GUARD_MODE "enforce"
           if [ "${{ inputs.arm_phala }}" = "true" ]; then

@@ -45,6 +45,10 @@ import {
 import { loadPooledSolanaPerpsCredential } from "./venues/solana_perps.js";
 import { loadPooledJupiterCredential } from "./venues/jupiter.js";
 import { loadPartnerCoinbaseCredential } from "./venues/coinbase.js";
+import {
+  createConsumerRuntime,
+  verifyVercelSpendWebhookSignature,
+} from "./consumer/runtime.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
 const PUBLIC_KEY_HEX_RE = /^[0-9a-f]{64}$/i;
@@ -583,6 +587,10 @@ async function readAuthorizedJson(req, res, { path, scope, state, expected = {} 
 }
 
 async function readJson(req) {
+  return JSON.parse(await readRaw(req) || "{}");
+}
+
+async function readRaw(req) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -592,7 +600,14 @@ async function readJson(req) {
     }
     chunks.push(chunk);
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function constantTimeBearer(header, expectedToken) {
+  if (!expectedToken || expectedToken.length < 32 || typeof header !== "string" || !header.startsWith("Bearer ")) return false;
+  const supplied = Buffer.from(header.slice(7));
+  const expected = Buffer.from(expectedToken);
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
 function isObject(value) {
@@ -1734,6 +1749,7 @@ function triVenueSessionBody(body, strategy = "arb", hyperliquidAllocation = nul
     market_allowlist: ["SOL-USD"],
     max_notional_bucket: "5",
     max_position_notional_bucket: "50",
+    max_loss_bucket: "25",
     max_daily_notional_bucket: "25",
     max_order_count: strategy === "maker" ? 2 : 4,
     ttl_ms: strategy === "maker" ? 10 * 60_000 : 60 * 60_000,
@@ -1779,6 +1795,8 @@ function triVenueSessionBody(body, strategy = "arb", hyperliquidAllocation = nul
 export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
   const state = options.state || createConfiguredWorkerState(dataDir());
+  const consumerRuntime = options.consumerRuntime || createConsumerRuntime();
+  if (options.startConsumerRuntime !== false) consumerRuntime.start();
   if (options.resumeAutopilotLoops !== false) {
     queueMicrotask(() => {
       resumeAutopilotLoops({ state, recipient }).catch((error) => {
@@ -1791,6 +1809,61 @@ export function createPrivateAgentWorkerServer(options = {}) {
     try {
       const url = new URL(req.url || "/", "http://localhost");
       const ready = await readiness(recipient);
+
+      if (req.method === "GET" && url.pathname === "/consumer/ready") {
+        const status = await consumerRuntime.ready();
+        return json(res, status.ready ? 200 : 503, status);
+      }
+
+      if (url.pathname === "/consumer/circuit") {
+        const token = env("PRIVATE_AGENT_TRADING_CONTROL_TOKEN", env("GHOLA_TRADING_CONTROL_TOKEN"));
+        if (!constantTimeBearer(req.headers.authorization, token)) {
+          return json(res, 401, { error: "trading_control_auth_required" });
+        }
+        if (req.method === "GET") return json(res, 200, await consumerRuntime.circuit());
+        if (req.method === "POST") {
+          const body = await readJson(req);
+          if (body.action === "halt") return json(res, 200, await consumerRuntime.halt(["operator_halt"], String(body.acknowledged_by || "operator")));
+          if (body.action === "resume") {
+            try {
+              return json(res, 200, await consumerRuntime.resume(body));
+            } catch (error) {
+              return json(res, 409, { error: error?.code || "circuit_resume_requirements_not_met" });
+            }
+          }
+          return json(res, 400, { error: "supported_action_required" });
+        }
+      }
+
+      if (req.method === "POST" && url.pathname === "/consumer/reconciliation") {
+        const token = env("PRIVATE_AGENT_RECONCILIATION_INGEST_TOKEN", env("GHOLA_RECONCILIATION_INGEST_TOKEN"));
+        if (!constantTimeBearer(req.headers.authorization, token)) {
+          return json(res, 401, { error: "reconciliation_ingest_auth_required" });
+        }
+        const body = await readJson(req);
+        try {
+          return json(res, 200, await consumerRuntime.reconcile(body));
+        } catch (error) {
+          const code = error?.code || "consumer_reconciliation_failed";
+          return json(res, code === "venue_order_not_found" ? 404 : 409, { error: code });
+        }
+      }
+
+      if (req.method === "POST" && url.pathname === "/consumer/vercel-spend-webhook") {
+        const raw = await readRaw(req);
+        const valid = verifyVercelSpendWebhookSignature({
+          body: raw,
+          signature: req.headers["x-vercel-signature"],
+          secret: env("PRIVATE_AGENT_VERCEL_SPEND_WEBHOOK_SECRET"),
+        });
+        if (!valid) return json(res, 401, { error: "spend_webhook_signature_invalid" });
+        const body = JSON.parse(raw || "{}");
+        const threshold = Number(body.thresholdPercent ?? body.threshold_percent ?? body.percent ?? 0);
+        if (threshold >= 100) {
+          await consumerRuntime.halt(["operator_halt"], "system:vercel_spend_threshold");
+        }
+        return json(res, 202, { accepted: true, trading_halted: threshold >= 100 });
+      }
 
       if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/healthz")) {
         return json(res, ready.ready ? 200 : 503, await runtimeHealthEvidence(recipient, ready));
@@ -2091,7 +2164,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           state,
         });
         if (!initial) return json(res, 404, { error: "autopilot_session_not_found" });
-        if (initial.session.status === "running") {
+        if (initial.session.status === "running" || initial.session.status === "risk_halted") {
           startAutopilotLoop({ sessionId: initial.session.autopilot_session_id, state, recipient });
         }
         sseHeaders(res);
@@ -2646,7 +2719,41 @@ export function createPrivateAgentWorkerServer(options = {}) {
             missing: ready.missing,
           });
         }
+        if (body.execution_mode === "ghola_pooled" && body.reconciliation) {
+          const consumerReady = await consumerRuntime.ready();
+          if (!consumerReady.ready) {
+            return json(res, 503, { error: "consumer_reconciliation_unavailable", missing: consumerReady.missing || [] });
+          }
+          try {
+            await consumerRuntime.prepareReconciliation({
+              context: body.reconciliation,
+              work_order_commitment: body.work_order_commitment,
+            });
+          } catch (error) {
+            return json(res, 503, { error: error?.code || "consumer_reconciliation_prepare_failed" });
+          }
+        }
         const receipt = await executeSolanaPerpsOrder({ body, recipient, state });
+        if (body.execution_mode === "ghola_pooled" && body.reconciliation) {
+          const attempt = await state.getExecutionAttempt(body.work_order_commitment);
+          const signature = attempt?.provider_ref_seed?.transaction_signature;
+          try {
+            await consumerRuntime.enqueueReconciliation({
+              context: body.reconciliation,
+              work_order_commitment: body.work_order_commitment,
+              transaction_signature: signature,
+            });
+          } catch (error) {
+            await consumerRuntime.halt(["reconciliation_stale"], "system:reconciliation_job_enqueue_failed");
+            // The live transaction may already exist. Return the receipt so the web tier records
+            // the submitted order and never releases its reservation after an ambiguous result.
+            return json(res, 202, {
+              ...receipt,
+              reconciliation_status: "failed_review",
+              reconciliation_error_code: error?.code || "consumer_reconciliation_enqueue_failed",
+            });
+          }
+        }
         return json(res, 202, receipt);
       }
 
@@ -2942,7 +3049,9 @@ export async function resumeAutopilotLoops({ state, recipient, now = new Date() 
     : [];
   let resumed = 0;
   for (const session of sessions) {
-    if (session?.status !== "running" || session.execution_enabled !== true) continue;
+    const shouldResume = (session?.status === "running" && session.execution_enabled === true) ||
+      session?.status === "risk_halted";
+    if (!shouldResume) continue;
     startAutopilotLoop({
       sessionId: session.autopilot_session_id,
       state,

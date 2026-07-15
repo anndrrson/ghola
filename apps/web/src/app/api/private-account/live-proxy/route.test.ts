@@ -42,7 +42,7 @@ describe("private account live proxy", () => {
 
   it("signs and forwards live guarded autopilot session creation", async () => {
     const upstreamBody = { version: 1, session: { autopilot_session_id: "autopilot_test" } };
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       Response.json(upstreamBody, {
         status: 201,
         headers: { "x-ghola-session-id": "autopilot_test" },

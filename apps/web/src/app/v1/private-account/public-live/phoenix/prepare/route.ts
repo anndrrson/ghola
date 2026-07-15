@@ -11,7 +11,7 @@ export async function POST(request: Request) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return publicLiveJson({ error: "json_body_required" }, 400);
   }
-  const owner = await publicLivePhoenixOwnerFromBody(body);
+  const owner = await publicLivePhoenixOwnerFromBody(body, { request, consumeNonce: true });
   if (!owner.ok) return owner.response;
 
   const prepared = await preparePublicLivePhoenixAccess({

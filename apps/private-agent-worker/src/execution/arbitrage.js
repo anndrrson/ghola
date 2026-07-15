@@ -508,6 +508,7 @@ function workerSessionPolicy(session) {
     market_allowlist: policy.market_allowlist,
     max_notional_bucket: policy.max_notional_bucket,
     max_position_notional_bucket: policy.max_position_notional_bucket,
+    max_loss_bucket: policy.max_loss_bucket,
     max_daily_notional_bucket: policy.max_daily_notional_bucket,
     max_order_count: policy.max_order_count,
     max_slippage_bps: policy.max_slippage_bps,
