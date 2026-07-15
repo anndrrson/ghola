@@ -215,6 +215,8 @@ export interface PrivateAutopilotSessionPolicy {
   max_order_count: number;
   ttl_ms: number;
   max_slippage_bps: number;
+  stop_loss_bps: number;
+  take_profit_bps: number;
   cooldown_ms: number;
   data_max_age_ms: number;
   min_ai_score_bps: number;
@@ -313,7 +315,7 @@ export interface PrivateAutopilotReadiness {
   can_live_submit: boolean;
   worker_configured: boolean;
   seeker_required: boolean;
-  target_live_mode: "tiny_live_orders";
+  target_live_mode: "tiny_live_orders" | "guarded_full_ticket";
   blockers: string[];
   venue_readiness: Array<{
     venue_id: PrivateAutopilotVenueId;

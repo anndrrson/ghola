@@ -288,6 +288,8 @@ export function buildTriVenueAutopilotPolicy(strategy: "arb" | "maker" = "arb"):
     max_order_count: strategy === "maker" ? 2 : 4,
     ttl_ms: strategy === "maker" ? 10 * 60_000 : 60 * 60_000,
     max_slippage_bps: 25,
+    stop_loss_bps: 500,
+    take_profit_bps: 1_000,
     cooldown_ms: 60_000,
     data_max_age_ms: 2_000,
     min_net_edge_bps: 25,

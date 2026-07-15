@@ -49,6 +49,50 @@ describe("full-ticket execution policy", () => {
     );
   });
 
+  it("allows reduce-only exits after opening caps are exhausted", async () => {
+    const instruction = hyperliquidFullTicketOrder({
+      base_size: "1",
+      quote_size: undefined,
+      reduce_only: true,
+      max_slippage_bps: "50",
+    });
+    const state = {
+      async incrementPolicyAmount() {
+        return { ok: false };
+      },
+      async incrementPolicyCount() {
+        return { ok: false };
+      },
+    };
+    await enforceInstructionPolicy({
+      body: {
+        policy_commitment: "policy_test",
+        session_policy: {
+          policy_commitment: "policy_test",
+          max_notional_bucket: "5",
+          max_daily_notional_bucket: "5",
+          max_order_count: 0,
+        },
+      },
+      instruction,
+      session: null,
+      state,
+    });
+  });
+
+  it("still enforces the slippage guard on reduce-only exits", async () => {
+    const instruction = hyperliquidFullTicketOrder({
+      base_size: "1",
+      quote_size: undefined,
+      reduce_only: true,
+      max_slippage_bps: "101",
+    });
+    await assert.rejects(
+      () => enforceInstructionPolicy({ body: { policy_commitment: "policy_test" }, instruction, session: null, state: null }),
+      /slippage/,
+    );
+  });
+
   it("preserves sealed agent mandates during normalization", () => {
     const instruction = hyperliquidFullTicketOrder({}, {
       mandate: {

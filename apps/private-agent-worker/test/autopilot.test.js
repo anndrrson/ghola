@@ -96,6 +96,46 @@ describe("autonomous autopilot engine", () => {
     ]);
   });
 
+  it("builds a guarded full-ticket Hyperliquid order without the tiny-fill marker", async () => {
+    process.env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT = "false";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "full_ticket";
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-autopilot-worker" };
+    const now = new Date(Date.now() + 60_000);
+    const session = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_autopilot_full_ticket",
+        session_policy: {
+          ai_direct_enabled: false,
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+          max_notional_bucket: "50",
+          max_daily_notional_bucket: "250",
+          max_order_count: 10,
+          ttl_ms: 2 * 60 * 60_000,
+          max_slippage_bps: 50,
+        },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+
+    const tick = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+    });
+
+    assert.equal(tick.proposal.venue_id, "hyperliquid");
+    assert.equal(tick.proposal.instruction.order.tif, "Ioc");
+    assert.equal(tick.proposal.instruction.order.live_order_mode, undefined);
+  });
+
   it("blocks a running session before another order when marked loss reaches its circuit", async () => {
     const state = createWorkerState(dir);
     const recipient = { recipient_id: "did:key:test-autopilot-worker" };

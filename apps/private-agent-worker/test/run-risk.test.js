@@ -4,6 +4,7 @@ import {
   applyEstimatedFill,
   lossCircuitDecision,
   markRunPositions,
+  protectiveExitDecision,
   projectRunExposure,
   summarizeRunRisk,
 } from "../src/execution/run-risk.js";
@@ -61,6 +62,40 @@ describe("autopilot run risk", () => {
       market: "BTC-USD",
     }, { now, maxMarkAgeMs: 30_000 });
     assert.equal(projected.summary.exposure_usd, 175);
+  });
+
+  it("triggers stop-loss and take-profit exits only for session-managed Hyperliquid positions", () => {
+    const unmanaged = {
+      ...applyEstimatedFill(null, fill("buy", 100, 100)),
+      venue_id: "hyperliquid",
+      market: "BTC-USD",
+      managed_by_session: false,
+      average_entry_price: 100,
+      last_mark_price: 80,
+    };
+    assert.equal(protectiveExitDecision([unmanaged], { stopLossBps: 500, takeProfitBps: 1_000 }).exit, false);
+
+    const managedLong = { ...unmanaged, managed_by_session: true, last_mark_price: 94 };
+    assert.deepEqual(
+      protectiveExitDecision([managedLong], { stopLossBps: 500, takeProfitBps: 1_000 }),
+      {
+        exit: true,
+        reason: "stop_loss",
+        venue_id: "hyperliquid",
+        market: "BTC-USD",
+        side: "sell",
+        base_size: 1,
+        mark_price: 94,
+        pnl_bps: -600,
+        last_work_order_commitment: "work_buy_100_100",
+      },
+    );
+
+    const managedShort = { ...managedLong, signed_quantity: -1, last_mark_price: 88 };
+    const takeProfit = protectiveExitDecision([managedShort], { stopLossBps: 500, takeProfitBps: 1_000 });
+    assert.equal(takeProfit.exit, true);
+    assert.equal(takeProfit.reason, "take_profit");
+    assert.equal(takeProfit.side, "buy");
   });
 });
 

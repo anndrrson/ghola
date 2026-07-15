@@ -176,7 +176,9 @@ function phalaWorkerImageReference(image: string, imageDigest: string): string {
 function liveHyperliquidEnabled(): boolean {
   return (
     env("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") === "tiny_fill" ||
-    env("GHOLA_HYPERLIQUID_LIVE_MODE") === "tiny_fill"
+    env("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") === "full_ticket" ||
+    env("GHOLA_HYPERLIQUID_LIVE_MODE") === "tiny_fill" ||
+    env("GHOLA_HYPERLIQUID_LIVE_MODE") === "full_ticket"
   );
 }
 
