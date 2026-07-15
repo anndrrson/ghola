@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { applyEstimatedFill } from "./run-risk.js";
 
 // Deterministic directional strategy: watch a user-drawn price level, fire a
 // single bounded entry when the level is broken/retested/swept, then monitor
@@ -294,15 +295,18 @@ export async function runGuardedLevelTriggerTick({
     result_commitment: receipt.result_commitment,
     final_proof: receipt.final_proof || null,
   }, now);
-  const position = await state.putAutopilotPosition(session.autopilot_session_id, {
+  const existingPositions = await state.listAutopilotPositions(session.autopilot_session_id);
+  const existingPosition = existingPositions.find((item) =>
+    item.venue_id === instruction.venue_id && item.market === orderMarket);
+  const position = await state.putAutopilotPosition(session.autopilot_session_id, applyEstimatedFill(existingPosition, {
     venue_id: instruction.venue_id,
     market: orderMarket,
     side,
-    estimated_exposure_notional_usd: notional,
-    last_order_notional_usd: notional,
-    last_work_order_commitment: workOrderCommitment,
-    source: "level_trigger_entry_receipt",
-  });
+    notional_usd: notional,
+    price,
+    at: now.toISOString(),
+    work_order_commitment: workOrderCommitment,
+  }));
   await appendEvent(state, stored, "venue_reconcile", "Level-trigger entry reconciled; monitoring stop and horizon.", {
     venue_id: instruction.venue_id,
     status: receipt.status,
@@ -392,6 +396,20 @@ async function runExit({ session, state, recipient, now, env, venue, product, si
       provider_ref_commitment: receipt.provider_ref_commitment,
       result_commitment: receipt.result_commitment,
     }, now);
+    const existingPositions = await state.listAutopilotPositions(session.autopilot_session_id);
+    const existingPosition = existingPositions.find((item) =>
+      item.venue_id === instruction.venue_id && item.market === orderMarket);
+    if (existingPosition) {
+      await state.putAutopilotPosition(session.autopilot_session_id, applyEstimatedFill(existingPosition, {
+        venue_id: instruction.venue_id,
+        market: orderMarket,
+        side: exitSide,
+        notional_usd: notional,
+        price,
+        at: now.toISOString(),
+        work_order_commitment: workOrderCommitment,
+      }));
+    }
   }
   await appendEvent(state, stored, "session_state", `Level-trigger plan closed (${reason}).`, { reason }, now);
   return { ok: true, phase: "done", reason, receipt };
@@ -583,6 +601,7 @@ function workerSessionPolicy(session) {
     market_allowlist: policy.market_allowlist,
     max_notional_bucket: policy.max_notional_bucket,
     max_position_notional_bucket: policy.max_position_notional_bucket,
+    max_loss_bucket: policy.max_loss_bucket,
     max_daily_notional_bucket: policy.max_daily_notional_bucket,
     max_order_count: policy.max_order_count,
     max_slippage_bps: policy.max_slippage_bps,

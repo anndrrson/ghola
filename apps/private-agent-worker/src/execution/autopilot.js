@@ -10,6 +10,13 @@ import {
 import { decideAiDirectOrder, publicDecisionRecord } from "./ai-direct-order.js";
 import { executeAutopilotOrder, verifyAutopilotOrder } from "./private-execution.js";
 import { normalizeAgentMandate } from "./policy.js";
+import {
+  applyEstimatedFill,
+  lossCircuitDecision,
+  markRunPositions,
+  projectRunExposure,
+  summarizeRunRisk,
+} from "./run-risk.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -19,6 +26,7 @@ const SUPPORTED_MARKETS = new Set(["SOL-USD", "BTC-USD", "ETH-USD", "SOL/USDC", 
 const DEFAULT_VENUES = ["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"];
 const DEFAULT_MARKETS = ["SOL-USD", "BTC-USD", "ETH-USD"];
 const LOOP_TIMERS = new Map();
+const ACTIVE_TICKS = new Set();
 
 export async function createAutopilotSession({ body, recipient, state, provider, startLoop = true, now = new Date() }) {
   const policy = normalizeAutopilotPolicy(body?.session_policy || body || {}, now);
@@ -45,6 +53,7 @@ export async function createAutopilotSession({ body, recipient, state, provider,
     venue_access: venueAccess,
     order_count: 0,
     daily_notional_used_bucket: "0",
+    risk_summary: emptyRiskSummary(now),
     last_tick_at: null,
     last_execution_at: null,
     created_at: now.toISOString(),
@@ -154,7 +163,7 @@ export function startAutopilotLoop({ sessionId, state, recipient }) {
       }).catch(() => null);
     });
     const session = await state.getAutopilotSession(sessionId);
-    if (session?.status === "running") {
+    if (session?.status === "running" || session?.status === "risk_halted") {
       const next = setTimeout(tick, integerEnv("PRIVATE_AGENT_AUTOPILOT_TICK_MS", 30_000));
       next.unref?.();
       LOOP_TIMERS.set(sessionId, next);
@@ -172,7 +181,19 @@ export function stopAutopilotLoop(sessionId) {
   LOOP_TIMERS.delete(sessionId);
 }
 
-export async function runAutopilotTick({
+export async function runAutopilotTick(input) {
+  const sessionId = input?.sessionId;
+  if (!sessionId) return { ok: false, error: "autopilot_session_id_required" };
+  if (ACTIVE_TICKS.has(sessionId)) return { ok: false, error: "autopilot_tick_in_progress" };
+  ACTIVE_TICKS.add(sessionId);
+  try {
+    return await runAutopilotTickUnlocked(input);
+  } finally {
+    ACTIVE_TICKS.delete(sessionId);
+  }
+}
+
+async function runAutopilotTickUnlocked({
   sessionId,
   state,
   recipient,
@@ -183,17 +204,68 @@ export async function runAutopilotTick({
   const stored = await state.getAutopilotSession(sessionId);
   if (!stored) return { ok: false, error: "autopilot_session_not_found" };
   const session = refreshSession(stored, now);
-  if (session.status !== "running" || !session.execution_enabled) {
+  const riskMonitoring = session.status === "risk_halted";
+  if ((!riskMonitoring && session.status !== "running") || (!riskMonitoring && !session.execution_enabled)) {
     await state.putAutopilotSession(session);
     return { ok: false, error: "autopilot_not_running" };
   }
 
-  // Directional level-trigger sessions own their full lifecycle (watch the
-  // level, fire a single entry, monitor the stop/horizon), so dispatch before
-  // the momentum cooldown gate.
-  if (isLevelTriggerSession(session)) {
-    session.last_tick_at = now.toISOString();
+  const market = await marketSnapshotForSession(session, { fetchImpl, env, now });
+  session.last_tick_at = now.toISOString();
+  await state.putAutopilotSession(session);
+  await appendEvent(state, session, "agent_tick", "Autopilot evaluated market data.", {
+    product_id: market.product_id,
+    live_status: market.live_status,
+    price: market.price,
+    change_24h: market.change_24h,
+    spread_bps: market.spread_bps,
+  }, now);
+
+  const storedPositions = await state.listAutopilotPositions(sessionId);
+  const positions = markRunPositions(storedPositions, market, now);
+  for (const position of positions) await state.putAutopilotPosition(sessionId, position);
+  const riskSummary = summarizeRunRisk(positions, {
+    now,
+    maxMarkAgeMs: session.session_policy.data_max_age_ms,
+  });
+  session.risk_summary = riskSummary;
+  const lossDecision = lossCircuitDecision(
+    riskSummary,
+    bucketToUsd(session.session_policy.max_loss_bucket),
+  );
+  if (lossDecision.trip) {
+    session.status = "risk_halted";
+    session.execution_enabled = false;
+    session.updated_at = now.toISOString();
+    session.next_step = lossDecision.reason === "loss_limit_reached"
+      ? "Loss circuit is active. New orders are blocked while the worker continues marking open positions."
+      : "Risk marks are stale. New orders are blocked while the worker continues reconciliation checks.";
     await state.putAutopilotSession(session);
+    await appendEvent(state, session, "risk_reject", "Run loss circuit blocked autonomous execution.", {
+      reason: lossDecision.reason,
+      max_loss_bucket: session.session_policy.max_loss_bucket,
+      risk_summary: riskSummary,
+    }, now);
+    return { ok: false, error: lossDecision.reason };
+  }
+  await state.putAutopilotSession(session);
+  await appendEvent(state, session, "position_update", "Native position state loaded for policy evaluation.", {
+    positions: positions.map(publicPosition),
+    risk_summary: riskSummary,
+  }, now);
+
+  if (riskMonitoring) {
+    session.status = "risk_halted";
+    session.execution_enabled = false;
+    session.next_step = "Risk halt remains latched. Close or reconcile positions, then explicitly resume the run.";
+    await state.putAutopilotSession(session);
+    return { ok: false, error: "risk_halt_recovery_required" };
+  }
+
+  // Every strategy passes through the common mark-to-market circuit above.
+  // Level-trigger sessions then own their entry/exit lifecycle and deliberately
+  // bypass the momentum cooldown.
+  if (isLevelTriggerSession(session)) {
     return runGuardedLevelTriggerTick({
       session,
       state,
@@ -210,8 +282,6 @@ export async function runAutopilotTick({
   if (session.last_execution_at) {
     const elapsed = now.getTime() - new Date(session.last_execution_at).getTime();
     if (elapsed < session.session_policy.cooldown_ms) {
-      session.last_tick_at = now.toISOString();
-      await state.putAutopilotSession(session);
       await appendEvent(state, session, "guardrail", "Cooldown active; no trade attempted.", {
         cooldown_ms: session.session_policy.cooldown_ms,
         elapsed_ms: elapsed,
@@ -221,8 +291,6 @@ export async function runAutopilotTick({
   }
 
   if (isArbitrageSession(session)) {
-    session.last_tick_at = now.toISOString();
-    await state.putAutopilotSession(session);
     return runGuardedArbitrageTick({
       session,
       state,
@@ -235,22 +303,6 @@ export async function runAutopilotTick({
       verifyOrder: verifyAutopilotOrder,
     });
   }
-
-  const market = await marketSnapshotForSession(session, { fetchImpl, env, now });
-  session.last_tick_at = now.toISOString();
-  await state.putAutopilotSession(session);
-  await appendEvent(state, session, "agent_tick", "Autopilot evaluated market data.", {
-    product_id: market.product_id,
-    live_status: market.live_status,
-    price: market.price,
-    change_24h: market.change_24h,
-    spread_bps: market.spread_bps,
-  }, now);
-
-  const positions = await state.listAutopilotPositions(sessionId);
-  await appendEvent(state, session, "position_update", "Native position state loaded for policy evaluation.", {
-    positions: positions.map(publicPosition),
-  }, now);
 
   let proposal;
   if (session.session_policy.ai_direct_enabled) {
@@ -341,6 +393,31 @@ export async function runAutopilotTick({
     });
   }
 
+  const projected = projectRunExposure(positions, {
+    venue_id: proposal.venue_id,
+    market: proposal.market,
+    side: proposal.side,
+    notional_usd: proposal.notional_usd,
+    price: proposal.price || market.price || market.mid,
+    at: now.toISOString(),
+    work_order_commitment: workOrderCommitment,
+  }, {
+    now,
+    maxMarkAgeMs: session.session_policy.data_max_age_ms,
+  });
+  const capitalCeiling = bucketToUsd(session.session_policy.max_position_notional_bucket);
+  if (!projected.summary.complete || projected.summary.exposure_usd > capitalCeiling) {
+    await appendEvent(state, session, "risk_reject", "Run capital budget rejected the proposed order.", {
+      reason: projected.summary.complete ? "aggregate_capital_ceiling_exceeded" : "risk_mark_stale",
+      projected_exposure_usd: projected.summary.exposure_usd,
+      capital_ceiling_usd: capitalCeiling,
+    }, now);
+    return {
+      ok: false,
+      error: projected.summary.complete ? "aggregate_capital_ceiling_exceeded" : "risk_mark_stale",
+    };
+  }
+
   const receipt = await executeAutopilotOrder({
     venue_id: proposal.venue_id,
     operation_class: proposal.operation_class,
@@ -387,15 +464,24 @@ export async function runAutopilotTick({
     result_commitment: receipt.result_commitment,
     final_proof: receipt.final_proof || null,
   }, now);
-  const position = await state.putAutopilotPosition(sessionId, {
+  const currentPositions = await state.listAutopilotPositions(sessionId);
+  const existingPosition = currentPositions.find((position) =>
+    position.venue_id === proposal.venue_id && normalizeMarket(position.market) === normalizeMarket(proposal.market));
+  const position = await state.putAutopilotPosition(sessionId, applyEstimatedFill(existingPosition, {
     venue_id: proposal.venue_id,
     market: proposal.market,
     side: proposal.side,
-    estimated_exposure_notional_usd: proposal.notional_usd,
-    last_order_notional_usd: proposal.notional_usd,
-    last_work_order_commitment: workOrderCommitment,
-    source: "autopilot_execution_receipt",
+    notional_usd: proposal.notional_usd,
+    price: proposal.price || market.price || market.mid,
+    at: now.toISOString(),
+    work_order_commitment: workOrderCommitment,
+  }));
+  const reconciledPositions = (await state.listAutopilotPositions(sessionId));
+  updated.risk_summary = summarizeRunRisk(reconciledPositions, {
+    now,
+    maxMarkAgeMs: updated.session_policy.data_max_age_ms,
   });
+  await state.putAutopilotSession(updated);
   await appendEvent(state, updated, "venue_reconcile", "Venue receipt reconciled into native autopilot state.", {
     venue_id: proposal.venue_id,
     status: receipt.status,
@@ -491,7 +577,7 @@ function normalizeAutopilotPolicy(raw, now) {
   const markets = unique(array(raw.market_allowlist)
     .map(normalizeMarket)
     .filter((market) => SUPPORTED_MARKETS.has(market)));
-  const ttlMs = clampInt(raw.ttl_ms, 5 * 60_000, 4 * 60 * 60_000, 2 * 60 * 60_000);
+  const ttlMs = clampInt(raw.ttl_ms, 5 * 60_000, 30 * 24 * 60 * 60_000, 2 * 60 * 60_000);
   const rawStrategy = stringValue(raw.strategy_id);
   const strategyId = rawStrategy === "hedged_spread_arbitrage_v1"
     ? "hedged_spread_arbitrage_v1"
@@ -511,6 +597,7 @@ function normalizeAutopilotPolicy(raw, now) {
     market_allowlist: markets.length ? markets : DEFAULT_MARKETS,
     max_notional_bucket: bucket(raw.max_notional_bucket, ["5", "10", "25", "50", "100"], "50"),
     max_position_notional_bucket: bucket(raw.max_position_notional_bucket, ["50", "100", "250", "500"], "100"),
+    max_loss_bucket: bucket(raw.max_loss_bucket, ["5", "10", "25", "50", "100", "250"], "25"),
     max_daily_notional_bucket: bucket(raw.max_daily_notional_bucket, ["25", "50", "100", "250"], "250"),
     max_order_count: clampInt(raw.max_order_count, 1, 25, 10),
     ttl_ms: ttlMs,
@@ -1050,6 +1137,7 @@ function workerSessionPolicy(session) {
     market_allowlist: policy.market_allowlist,
     max_notional_bucket: policy.max_notional_bucket,
     max_position_notional_bucket: policy.max_position_notional_bucket,
+    max_loss_bucket: policy.max_loss_bucket,
     max_daily_notional_bucket: policy.max_daily_notional_bucket,
     max_order_count: policy.max_order_count,
     max_slippage_bps: policy.max_slippage_bps,
@@ -1063,6 +1151,7 @@ function refreshSession(session, now) {
   if (
     session.status !== "killed" &&
     session.status !== "blocked" &&
+    session.status !== "risk_halted" &&
     new Date(session.expires_at).getTime() <= now.getTime()
   ) {
     return {
@@ -1125,10 +1214,27 @@ function publicPosition(position) {
     market: position.market || null,
     side: position.side || null,
     estimated_exposure_notional_bucket: String(position.estimated_exposure_notional_usd ?? position.notional_usd ?? "0"),
+    average_entry_price: position.average_entry_price ?? null,
+    last_mark_price: position.last_mark_price ?? null,
+    realized_pnl_bucket: String(position.realized_pnl_usd ?? "0"),
+    unrealized_pnl_bucket: String(position.unrealized_pnl_usd ?? "0"),
+    estimated_total_pnl_bucket: String(position.estimated_total_pnl_usd ?? "0"),
     last_order_notional_bucket: String(position.last_order_notional_usd ?? "0"),
     last_work_order_commitment: position.last_work_order_commitment || null,
     source: position.source || "native_autopilot_state",
     updated_at: position.updated_at || null,
+  };
+}
+
+function emptyRiskSummary(now) {
+  return {
+    complete: true,
+    stale_markets: [],
+    exposure_usd: 0,
+    realized_pnl_usd: 0,
+    unrealized_pnl_usd: 0,
+    estimated_total_pnl_usd: 0,
+    checked_at: now.toISOString(),
   };
 }
 

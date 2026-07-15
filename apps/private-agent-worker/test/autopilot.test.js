@@ -96,6 +96,57 @@ describe("autonomous autopilot engine", () => {
     ]);
   });
 
+  it("blocks a running session before another order when marked loss reaches its circuit", async () => {
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-autopilot-worker" };
+    const now = new Date(Date.now() + 60_000);
+    const session = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_autopilot_loss_circuit",
+        session_policy: {
+          ai_direct_enabled: false,
+          venue_allowlist: ["jupiter"],
+          market_allowlist: ["SOL-USD"],
+          max_notional_bucket: "50",
+          max_position_notional_bucket: "100",
+          max_loss_bucket: "5",
+          max_daily_notional_bucket: "250",
+          max_order_count: 10,
+          ttl_ms: 2 * 60 * 60_000,
+          max_slippage_bps: 50,
+        },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+    const opened = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 60_000),
+      env: process.env,
+    });
+    assert.equal(opened.ok, true);
+
+    process.env.PRIVATE_AGENT_AUTOPILOT_FORCE_PRICE = "80";
+    const stopped = await runAutopilotTick({
+      sessionId: session.autopilot_session_id,
+      state,
+      recipient,
+      now: new Date(now.getTime() + 90_000),
+      env: process.env,
+    });
+    assert.deepEqual(stopped, { ok: false, error: "loss_limit_reached" });
+    const blocked = await state.getAutopilotSession(session.autopilot_session_id);
+    assert.equal(blocked.status, "risk_halted");
+    assert.equal(blocked.execution_enabled, false);
+    assert.equal(blocked.order_count, 1);
+    assert.equal(blocked.risk_summary.estimated_total_pnl_usd, -10);
+  });
+
   it("resumes persisted running autopilot sessions after worker restart", async () => {
     process.env.PRIVATE_AGENT_AUTOPILOT_INITIAL_DELAY_MS = "60000";
     const state = createWorkerState(dir);

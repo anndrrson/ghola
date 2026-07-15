@@ -6,6 +6,8 @@ import { ThumperAuthProvider } from "@/lib/thumper-auth-context";
 import { AppWalletProvider } from "@/lib/wallet-provider";
 import { LayoutShell } from "@/components/LayoutShell";
 import { ServiceWorker } from "@/components/ServiceWorker";
+import { Analytics } from "@vercel/analytics/next";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -136,6 +138,8 @@ export default function RootLayout({
             </AppWalletProvider>
           </ThumperAuthProvider>
         </AuthProvider>
+        <Analytics />
+        <SpeedInsights />
       </body>
     </html>
   );

@@ -80,8 +80,8 @@ concurrency:
 
 env:
   VERCEL_CLI_VERSION: 54.13.0
-  WORKER_IMAGE: ghcr.io/anndrrson/ghola:private-agent-worker-d36f9cc
-  WORKER_IMAGE_DIGEST: sha256:f87611da536b4b9ac712829a045d7153e80dc71708739cab95c5b4fefd183eb4
+  WORKER_IMAGE: ghcr.io/anndrrson/ghola:private-agent-worker-e8fc717
+  WORKER_IMAGE_DIGEST: sha256:8b14d0edcd20514944c5c02fe88a2b0751b9b4edff5d62c2315b796f0ae26e0e
 
 jobs:
   launch:
@@ -221,7 +221,10 @@ jobs:
           setenv GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64 "$FUNDING_SIGNER_PUBLIC_KEY"
           setenv GHOLA_PRIVATE_AGENT_PROVIDER "phala"
           setenv GHOLA_PRIVATE_AGENT_IDLE_SHUTDOWN "true"
-          setenv GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES "10"
+          setenv GHOLA_PRIVATE_AGENT_IDLE_AFTER_MINUTES "30"
+          setenv GHOLA_CONSUMER_PREPAID_BALANCE_ENABLED "false"
+          setenv GHOLA_CONSUMER_LAUNCH_PROFILE "byo_hyperliquid"
+          setenv GHOLA_OBSERVABILITY_PROVIDER "vercel"
           setenv GHOLA_PRIVATE_ACCOUNT_LIVE_TRADE_RESERVATION_SECONDS "600"
           setenv GHOLA_PRIVATE_ACCOUNT_REVENUE_GUARD_MODE "enforce"
           if [ "${{ inputs.arm_phala }}" = "true" ]; then
@@ -244,15 +247,18 @@ jobs:
           setenv GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST "$WORKER_IMAGE_DIGEST"
           setenv GHOLA_V6_HYPERLIQUID_PILOT_ENABLED "true"
           setenv GHOLA_HYPERLIQUID_LIVE_MODE "${{ inputs.live_mode }}"
+          setenv PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE "${{ inputs.live_mode }}"
           setenv GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS "ready"
           if [ "${{ inputs.pooled_network }}" = "mainnet" ]; then
             setenv GHOLA_HYPERLIQUID_ALLOW_MAINNET "true"
+            setenv PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET "true"
           else
             setenv GHOLA_HYPERLIQUID_ALLOW_MAINNET "false"
+            setenv PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET "false"
           fi
           setenv PRIVATE_AGENT_HYPERLIQUID_POOLED_NETWORK "${{ inputs.pooled_network }}"
-          setenv PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD "100"
-          setenv PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD "500"
+          setenv PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD "1000"
+          setenv PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD "5000"
           setenv PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS "100"
 
       - name: Build and deploy immutable preview
@@ -323,7 +329,7 @@ jobs:
             echo "- auth smoke: skipped (no smoke secrets)" >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ "${{ inputs.arm_phala }}" = "true" ]; then
-            echo "$launch" | grep -q '"ready_to_accept_users"[: ]*true' \
+            echo "$launch" | jq -e '.ready_to_accept_users == true' >/dev/null \
               && echo "- private trading launch: ready_to_accept_users" >> "$GITHUB_STEP_SUMMARY" \
               || { echo "- private trading launch: NOT ready (see launch status above)" >> "$GITHUB_STEP_SUMMARY"; fail=1; }
           else

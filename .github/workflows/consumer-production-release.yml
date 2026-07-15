@@ -1,0 +1,185 @@
+name: Consumer production release
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_ref:
+        description: Git ref to release
+        required: true
+        default: main
+      rollout_percent:
+        description: Deterministic live-trading cohort
+        required: true
+        default: "0"
+        type: choice
+        options: ["0", "5", "25", "100"]
+      production_approval:
+        description: Human approval after reviewing funded canary evidence
+        required: true
+        default: not_approved
+        type: choice
+        options: [not_approved, approved]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: consumer-production-release
+  cancel-in-progress: false
+
+jobs:
+  verify-build-promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: Production
+    env:
+      VERCEL_CLI_VERSION: 54.13.0
+      VERCEL_SCOPE: ${{ vars.GHOLA_VERCEL_PRO_TEAM_SLUG }}
+    steps:
+      - uses: actions/checkout@v6.0.3
+        with:
+          ref: ${{ inputs.deploy_ref }}
+
+      - uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Enforce release intent
+        env:
+          APPROVAL: ${{ inputs.production_approval }}
+          ROLLOUT: ${{ inputs.rollout_percent }}
+        run: |
+          set -euo pipefail
+          if [ "$ROLLOUT" != "0" ] && [ "$APPROVAL" != "approved" ]; then
+            echo "A protected human approval is required for live consumer rollout." >&2
+            exit 1
+          fi
+          if [ "${{ inputs.deploy_ref }}" != "main" ]; then
+            echo "Production releases must use main." >&2
+            exit 1
+          fi
+
+      - name: Preflight production secrets
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_SCOPE: ${{ vars.GHOLA_VERCEL_PRO_TEAM_SLUG }}
+          DB_URL: ${{ secrets.GHOLA_PRIVATE_ACCOUNT_DATABASE_URL }}
+          AUTH_EMAIL: ${{ secrets.GHOLA_AUTH_SMOKE_EMAIL }}
+          AUTH_PASSWORD: ${{ secrets.GHOLA_AUTH_SMOKE_PASSWORD }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          TREASURY: ${{ secrets.GHOLA_CONSUMER_SOLANA_USDC_TREASURY_RECIPIENT }}
+          SOLANA_RPC: ${{ secrets.GHOLA_CONSUMER_SOLANA_RPC_URL }}
+          CONTROL_TOKEN: ${{ secrets.GHOLA_TRADING_CONTROL_TOKEN }}
+          RECONCILIATION_TOKEN: ${{ secrets.GHOLA_RECONCILIATION_INGEST_TOKEN }}
+          STEP_UP_URL: ${{ secrets.GHOLA_CONSUMER_STEP_UP_VERIFY_URL }}
+          WITHDRAWAL_URL: ${{ secrets.GHOLA_CONSUMER_WITHDRAWAL_DISPATCH_URL }}
+          WITHDRAWAL_TOKEN: ${{ secrets.GHOLA_CONSUMER_WITHDRAWAL_DISPATCH_TOKEN }}
+          SHIELDED_DEST: ${{ secrets.GHOLA_CONSUMER_SHIELDED_DEPOSIT_DESTINATION_COMMITMENT }}
+          CANARY_EVIDENCE: ${{ secrets.GHOLA_CONSUMER_FUNDED_CANARY_EVIDENCE }}
+          WORKER_URL: ${{ secrets.GHOLA_PRIVATE_AGENT_WORKER_URL }}
+          SPEND_CAP: ${{ vars.GHOLA_VERCEL_EXTRA_SPEND_CAP_USD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in VERCEL_TOKEN VERCEL_SCOPE DB_URL AUTH_EMAIL AUTH_PASSWORD SENTRY_DSN TREASURY SOLANA_RPC CONTROL_TOKEN RECONCILIATION_TOKEN STEP_UP_URL WITHDRAWAL_URL WITHDRAWAL_TOKEN SHIELDED_DEST WORKER_URL SPEND_CAP; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${{ inputs.rollout_percent }}" != "0" ] && [ -z "$CANARY_EVIDENCE" ]; then
+            missing+=("GHOLA_CONSUMER_FUNDED_CANARY_EVIDENCE")
+          fi
+          if ! [[ "$SPEND_CAP" =~ ^[0-9]+$ ]] || [ "$SPEND_CAP" -gt 5 ]; then
+            echo "GHOLA_VERCEL_EXTRA_SPEND_CAP_USD must be an integer from 0 through 5." >&2
+            exit 1
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Missing production prerequisites: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+          if [ "${{ inputs.rollout_percent }}" != "0" ]; then
+            node - <<'NODE'
+          const evidence = JSON.parse(process.env.CANARY_EVIDENCE || "null");
+          const required = [
+            evidence?.public_usdc?.deposit,
+            evidence?.public_usdc?.withdrawal,
+            evidence?.shielded_usdcx?.deposit,
+            evidence?.shielded_usdcx?.withdrawal,
+            evidence?.hyperliquid?.order,
+            evidence?.hyperliquid?.reconciliation,
+            evidence?.phoenix?.order,
+            evidence?.phoenix?.reconciliation,
+          ];
+          if (required.some((value) => value !== "passed")) throw new Error("all eight funded canary checks must be passed");
+          const completed = Date.parse(evidence?.completed_at || "");
+          if (!Number.isFinite(completed) || Date.now() - completed > 24 * 60 * 60 * 1000 || completed > Date.now() + 60_000) {
+            throw new Error("funded canary evidence must be fresh within 24 hours");
+          }
+          if (typeof evidence?.reviewed_by !== "string" || evidence.reviewed_by.length < 3) throw new Error("funded canary reviewer is required");
+          NODE
+          fi
+
+      - name: Install and verify
+        run: |
+          (cd apps/private-agent-worker && npm ci && npm test)
+          (cd apps/web && npm ci && npm test && npm run lint && npm run build)
+
+      - name: Verify durable consumer worker core
+        env:
+          WORKER_URL: ${{ secrets.GHOLA_PRIVATE_AGENT_WORKER_URL }}
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 3 --retry-delay 2 "$WORKER_URL/consumer/ready" \
+            | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const v=JSON.parse(s);if(v.ready!==true||v.reconciliation_loop!=="durable"||v.withdrawal_loop!=="durable")process.exit(1)})'
+
+      - name: Link and build immutable Vercel artifact
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx "vercel@${VERCEL_CLI_VERSION}" link --yes --cwd apps/web --project web --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
+          npx "vercel@${VERCEL_CLI_VERSION}" pull --yes --environment=production --cwd apps/web --token "$VERCEL_TOKEN"
+          npx "vercel@${VERCEL_CLI_VERSION}" build --prod --cwd apps/web --token "$VERCEL_TOKEN"
+
+      - name: Deploy protected candidate
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          ROLLOUT: ${{ inputs.rollout_percent }}
+        run: |
+          set -euo pipefail
+          url=$(npx "vercel@${VERCEL_CLI_VERSION}" deploy --prebuilt --cwd apps/web --token "$VERCEL_TOKEN" --env "GHOLA_CONSUMER_ROLLOUT_PERCENT=$ROLLOUT")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Verify candidate auth and public liveness
+        env:
+          AUTH_SMOKE_BASE_URL: ${{ steps.deploy.outputs.url }}
+          AUTH_SMOKE_EMAIL: ${{ secrets.GHOLA_AUTH_SMOKE_EMAIL }}
+          AUTH_SMOKE_PASSWORD: ${{ secrets.GHOLA_AUTH_SMOKE_PASSWORD }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        working-directory: apps/web
+        run: |
+          set -euo pipefail
+          npm run smoke:auth
+          curl -fsS -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" "$AUTH_SMOKE_BASE_URL/api/health/live" >/dev/null
+
+      - name: Promote verified artifact
+        if: inputs.production_approval == 'approved'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx "vercel@${VERCEL_CLI_VERSION}" promote "${{ steps.deploy.outputs.url }}" --yes --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
+
+      - name: Verify production after promotion
+        if: inputs.production_approval == 'approved'
+        env:
+          AUTH_SMOKE_BASE_URL: https://ghola.xyz
+          AUTH_SMOKE_EMAIL: ${{ secrets.GHOLA_AUTH_SMOKE_EMAIL }}
+          AUTH_SMOKE_PASSWORD: ${{ secrets.GHOLA_AUTH_SMOKE_PASSWORD }}
+        working-directory: apps/web
+        run: |
+          set -euo pipefail
+          npm run smoke:auth
+          curl -fsS https://ghola.xyz/api/health/live >/dev/null
+          curl -fsS https://ghola.xyz/v1/private-account/trading/status >/dev/null

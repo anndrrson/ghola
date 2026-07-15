@@ -16,6 +16,10 @@ import {
   mobileWalletCommitment,
 } from "@/lib/private-account-wallet-binding";
 import {
+  consumeConsumerNonce,
+  consumeConsumerRateLimit,
+} from "@/lib/consumer-production-store";
+import {
   approvePrivateAccountAction,
   buildPrivateAccountReceipt,
   canApprovePreview,
@@ -644,9 +648,6 @@ type PrivateAccountLiveRevenueGuardResult =
       response: Response;
     };
 
-const liveGuardRateBuckets = new Map<string, { count: number; resetAt: number }>();
-const liveGuardProofNonces = new Map<string, number>();
-
 export async function privateAccountLiveGuard(
   req: Request,
   options: PrivateAccountLiveGuardOptions = {},
@@ -665,7 +666,7 @@ export async function privateAccountLiveGuard(
   const owner = await privateAccountOwnerFromRequest(req);
   if (!owner) return { ok: false, response: unauthorized() };
 
-  const rateLimited = consumeLiveGuardRateLimit(req, owner);
+  const rateLimited = await consumeLiveGuardRateLimit(req, owner);
   if (rateLimited) return { ok: false, response: rateLimited };
 
   const proofRejected = await verifyLiveGuardRequestProof(req, owner, body, options);
@@ -685,25 +686,19 @@ function isJsonContentType(req: Request): boolean {
   return contentType.split(";").some((part) => part.trim() === "application/json");
 }
 
-function consumeLiveGuardRateLimit(
+async function consumeLiveGuardRateLimit(
   req: Request,
   owner: PrivateAccountRequestOwner,
-): Response | null {
+): Promise<Response | null> {
   const max = positiveIntegerEnv("GHOLA_PRIVATE_ACCOUNT_LIVE_RATE_LIMIT_MAX", 30);
   const windowMs = positiveIntegerEnv("GHOLA_PRIVATE_ACCOUNT_LIVE_RATE_LIMIT_WINDOW_MS", 60_000);
-  const now = Date.now();
   const pathname = new URL(req.url).pathname;
   const key = `${owner.owner_commitment}:${req.method}:${pathname}`;
-  const existing = liveGuardRateBuckets.get(key);
-  if (!existing || existing.resetAt <= now) {
-    liveGuardRateBuckets.set(key, { count: 1, resetAt: now + windowMs });
-    return null;
-  }
-  existing.count += 1;
-  if (existing.count > max) {
+  const result = await consumeConsumerRateLimit({ key, limit: max, window_ms: windowMs });
+  if (!result.ok) {
     return json({
       error: "private_account_rate_limited",
-      retry_after_seconds: Math.max(1, Math.ceil((existing.resetAt - now) / 1000)),
+      retry_after_seconds: result.retry_after_seconds,
     }, 429);
   }
   return null;
@@ -730,15 +725,18 @@ async function verifyLiveGuardRequestProof(
       wallet_commitment: mobileWalletCommitment(mobile.wallet),
     });
     if (!binding) return json({ error: "mobile_wallet_not_bound" }, 403);
-    const nonceKey = `${owner.owner_commitment}:mobile:${mobile.nonce}`;
-    pruneLiveGuardProofNonces();
-    if (liveGuardProofNonces.has(nonceKey)) {
+    const consumed = await consumeConsumerNonce({
+      namespace: "private_mobile_proof",
+      owner_commitment: owner.owner_commitment,
+      nonce: mobile.nonce,
+      expires_at_ms: mobile.timestampMs + positiveIntegerEnv(
+        "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MAX_SKEW_MS",
+        5 * 60_000,
+      ),
+    });
+    if (!consumed) {
       return json({ error: "mobile_proof_replayed" }, 403);
     }
-    liveGuardProofNonces.set(nonceKey, mobile.timestampMs + positiveIntegerEnv(
-      "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MAX_SKEW_MS",
-      5 * 60_000,
-    ));
     return null;
   }
 
@@ -760,12 +758,6 @@ async function verifyLiveGuardRequestProof(
   if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > maxSkewMs) {
     return json({ error: "request_proof_stale" }, 403);
   }
-  const nonceKey = `${owner.owner_commitment}:${nonce}`;
-  pruneLiveGuardProofNonces();
-  if (liveGuardProofNonces.has(nonceKey)) {
-    return json({ error: "request_proof_replayed" }, 403);
-  }
-
   const pathname = new URL(req.url).pathname;
   const canonicalBody = stableJson(body);
   const bodyHash = createHash("sha256").update(canonicalBody).digest("hex");
@@ -781,7 +773,13 @@ async function verifyLiveGuardRequestProof(
   if (!timingSafeHexEqual(proof, expected)) {
     return json({ error: "request_proof_invalid" }, 403);
   }
-  liveGuardProofNonces.set(nonceKey, timestampMs + maxSkewMs);
+  const consumed = await consumeConsumerNonce({
+    namespace: "private_request_proof",
+    owner_commitment: owner.owner_commitment,
+    nonce,
+    expires_at_ms: timestampMs + maxSkewMs,
+  });
+  if (!consumed) return json({ error: "request_proof_replayed" }, 403);
   return null;
 }
 
@@ -818,13 +816,6 @@ function timingSafeHexEqual(actual: string, expected: string): boolean {
   const expectedBuffer = Buffer.from(expected, "hex");
   return actualBuffer.length === expectedBuffer.length &&
     timingSafeEqual(actualBuffer, expectedBuffer);
-}
-
-function pruneLiveGuardProofNonces(now = Date.now()) {
-  if (liveGuardProofNonces.size < 1_000) return;
-  for (const [key, expiresAt] of liveGuardProofNonces) {
-    if (expiresAt <= now) liveGuardProofNonces.delete(key);
-  }
 }
 
 function positiveIntegerEnv(name: string, fallback: number): number {
@@ -3276,6 +3267,7 @@ export async function sealHyperliquidVaultFromBody(
 ) {
   const value = objectBody(body);
   const account = await createOrGetStoredPrivateAccount(owner);
+  const previousVault = await getHyperliquidExecutionVaultByAccount(account.account_commitment);
   const bundleInput = objectBody(value.encrypted_execution_vault);
   const ciphertext = stringValue(bundleInput.ciphertext);
   const recipient = stringValue(bundleInput.recipient);
@@ -3315,6 +3307,14 @@ export async function sealHyperliquidVaultFromBody(
     },
   });
   if (!created.ok) return { error: created.error };
+  if (previousVault?.status === "sealed" && previousVault.vault_commitment !== created.vault.vault_commitment) {
+    await putHyperliquidExecutionVault({
+      ...previousVault,
+      status: "revoked",
+      vault: { ...previousVault.vault, status: "revoked", updated_at: new Date().toISOString() },
+      updated_at: new Date().toISOString(),
+    });
+  }
   const stored = await putHyperliquidExecutionVault({
     version: 1,
     owner_commitment: owner.owner_commitment,
@@ -3333,6 +3333,25 @@ export async function sealHyperliquidVaultFromBody(
     account_commitment: account.account_commitment,
     hyperliquid_execution_vault: publicHyperliquidVault(stored),
     ready: stored.status === "sealed",
+  };
+}
+
+export async function revokeHyperliquidVaultForOwner(owner: PrivateAccountRequestOwner) {
+  const account = await createOrGetStoredPrivateAccount(owner);
+  const vault = await getHyperliquidExecutionVaultByAccount(account.account_commitment);
+  if (!vault || vault.status === "revoked") return { error: "hyperliquid_execution_vault_not_found" as const };
+  const now = new Date().toISOString();
+  const stored = await putHyperliquidExecutionVault({
+    ...vault,
+    status: "revoked",
+    vault: { ...vault.vault, status: "revoked", updated_at: now },
+    updated_at: now,
+  });
+  return {
+    version: 1,
+    account_commitment: account.account_commitment,
+    hyperliquid_execution_vault: publicHyperliquidVault(stored),
+    ready: false,
   };
 }
 

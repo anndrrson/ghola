@@ -32,6 +32,7 @@ export type AutopilotStatus =
   | "paused"
   | "killed"
   | "blocked"
+  | "risk_halted"
   | "expired";
 export type AutopilotEventType =
   | "agent_tick"
@@ -92,6 +93,7 @@ export interface AutopilotSessionPolicy {
   market_allowlist: string[];
   max_notional_bucket: "5" | "10" | "25" | "50" | "100";
   max_position_notional_bucket: "50" | "100" | "250" | "500";
+  max_loss_bucket: "5" | "10" | "25" | "50" | "100" | "250";
   max_daily_notional_bucket: "25" | "50" | "100" | "250";
   max_order_count: number;
   ttl_ms: number;
@@ -143,6 +145,7 @@ export interface AutopilotSession {
   }>;
   order_count: number;
   daily_notional_used_bucket: string;
+  risk_summary: AutopilotRiskSummary;
   created_at: string;
   updated_at: string;
   expires_at: string;
@@ -154,6 +157,16 @@ export interface AutopilotSession {
     execution_boundary: "bounded_session_policy" | "bounded_delegated_worker_policy";
     user_can_kill_anytime: true;
   };
+}
+
+export interface AutopilotRiskSummary {
+  complete: boolean;
+  stale_markets: string[];
+  exposure_usd: number;
+  realized_pnl_usd: number;
+  unrealized_pnl_usd: number;
+  estimated_total_pnl_usd: number;
+  checked_at: string;
 }
 
 export interface AutopilotEvent {
@@ -226,6 +239,7 @@ const AUTOPILOT_STATUSES = new Set<AutopilotStatus>([
   "paused",
   "killed",
   "blocked",
+  "risk_halted",
   "expired",
 ]);
 const AUTOPILOT_EVENT_TYPES = new Set<AutopilotEventType>([
@@ -280,6 +294,7 @@ export async function createAutopilotSessionFromBody(
     venue_access: defaultVenueAccess(policy),
     order_count: 0,
     daily_notional_used_bucket: "0",
+    risk_summary: emptyRiskSummary(now),
     created_at: createdAt,
     updated_at: createdAt,
     expires_at: expiresAt,
@@ -308,6 +323,8 @@ export async function createAutopilotSessionFromBody(
     }, now),
     makeEvent(session, "guardrail", "Moderate APAC retail defaults are active.", {
       max_notional_bucket: policy.max_notional_bucket,
+      max_position_notional_bucket: policy.max_position_notional_bucket,
+      max_loss_bucket: policy.max_loss_bucket,
       max_daily_notional_bucket: policy.max_daily_notional_bucket,
       max_order_count: policy.max_order_count,
       max_slippage_bps: policy.max_slippage_bps,
@@ -895,6 +912,7 @@ async function mergeWorkerSession(
     venue_access: venueAccessValue(workerSession.venue_access) ?? local.venue_access,
     order_count: numberValue(workerSession.order_count) ?? local.order_count,
     daily_notional_used_bucket: stringValue(workerSession.daily_notional_used_bucket) ?? local.daily_notional_used_bucket,
+    risk_summary: riskSummaryValue(workerSession.risk_summary) ?? local.risk_summary,
     updated_at: stringValue(workerSession.updated_at) ?? now.toISOString(),
     expires_at: stringValue(workerSession.expires_at) ?? local.expires_at,
     next_step: stringValue(workerSession.next_step) ?? local.next_step,
@@ -1065,6 +1083,11 @@ function publicPolicyPatch(raw: Record<string, unknown>): Partial<AutopilotSessi
     ["50", "100", "250", "500"],
   );
   if (maxPositionNotional) patch.max_position_notional_bucket = maxPositionNotional;
+  const maxLoss = optionalBucket<AutopilotSessionPolicy["max_loss_bucket"]>(
+    raw.max_loss_bucket,
+    ["5", "10", "25", "50", "100", "250"],
+  );
+  if (maxLoss) patch.max_loss_bucket = maxLoss;
   const dailyNotional = optionalBucket<AutopilotSessionPolicy["max_daily_notional_bucket"]>(
     raw.max_daily_notional_bucket,
     ["25", "50", "100", "250"],
@@ -1345,9 +1368,10 @@ function normalizePolicy(value: Record<string, unknown>): AutopilotSessionPolicy
     market_allowlist: unique(markets.length ? markets : DEFAULT_MARKETS),
     max_notional_bucket: notionalBucket(rawPolicy.max_notional_bucket, ["5", "10", "25", "50", "100"], "50"),
     max_position_notional_bucket: notionalBucket(rawPolicy.max_position_notional_bucket, ["50", "100", "250", "500"], "100"),
+    max_loss_bucket: notionalBucket(rawPolicy.max_loss_bucket, ["5", "10", "25", "50", "100", "250"], "25"),
     max_daily_notional_bucket: notionalBucket(rawPolicy.max_daily_notional_bucket, ["25", "50", "100", "250"], "250"),
     max_order_count: clampInteger(rawPolicy.max_order_count, 1, 25, 10),
-    ttl_ms: clampInteger(rawPolicy.ttl_ms, 5 * 60_000, 4 * 60 * 60_000, 2 * 60 * 60_000),
+    ttl_ms: clampInteger(rawPolicy.ttl_ms, 5 * 60_000, 30 * 24 * 60 * 60_000, 2 * 60 * 60_000),
     max_slippage_bps: clampInteger(rawPolicy.max_slippage_bps, 1, 100, 50),
     cooldown_ms: clampInteger(rawPolicy.cooldown_ms, 60_000, 30 * 60_000, 5 * 60_000),
     data_max_age_ms: clampInteger(rawPolicy.data_max_age_ms, 5_000, 5 * 60_000, 30_000),
@@ -1410,6 +1434,7 @@ function refreshExpiry(session: AutopilotSession, now: Date): AutopilotSession {
   if (
     session.status !== "killed" &&
     session.status !== "blocked" &&
+    session.status !== "risk_halted" &&
     new Date(session.expires_at).getTime() <= now.getTime()
   ) {
     session.status = "expired";
@@ -1512,6 +1537,7 @@ function sessionFromRecord(stored: PrivateAutopilotSessionRecordV1): AutopilotSe
     venue_access: venueAccessValue(raw.venue_access) ?? defaultVenueAccess(policy),
     order_count: numberValue(raw.order_count) ?? 0,
     daily_notional_used_bucket: stringValue(raw.daily_notional_used_bucket) ?? "0",
+    risk_summary: riskSummaryValue(raw.risk_summary) ?? emptyRiskSummary(new Date(stringValue(raw.updated_at) ?? stored.updated_at)),
     created_at: stringValue(raw.created_at) ?? stored.created_at,
     updated_at: stringValue(raw.updated_at) ?? stored.updated_at,
     expires_at: stringValue(raw.expires_at) ?? stored.expires_at,
@@ -1523,6 +1549,34 @@ function sessionFromRecord(stored: PrivateAutopilotSessionRecordV1): AutopilotSe
       execution_boundary: "bounded_delegated_worker_policy",
       user_can_kill_anytime: true,
     },
+  };
+}
+
+function riskSummaryValue(value: unknown): AutopilotRiskSummary | null {
+  const raw = optionalRecord(value);
+  if (!raw) return null;
+  const checkedAt = stringValue(raw.checked_at);
+  if (!checkedAt) return null;
+  return {
+    complete: raw.complete === true,
+    stale_markets: stringArray(raw.stale_markets).slice(0, 20),
+    exposure_usd: numberValue(raw.exposure_usd) ?? 0,
+    realized_pnl_usd: numberValue(raw.realized_pnl_usd) ?? 0,
+    unrealized_pnl_usd: numberValue(raw.unrealized_pnl_usd) ?? 0,
+    estimated_total_pnl_usd: numberValue(raw.estimated_total_pnl_usd) ?? 0,
+    checked_at: checkedAt,
+  };
+}
+
+function emptyRiskSummary(now: Date): AutopilotRiskSummary {
+  return {
+    complete: true,
+    stale_markets: [],
+    exposure_usd: 0,
+    realized_pnl_usd: 0,
+    unrealized_pnl_usd: 0,
+    estimated_total_pnl_usd: 0,
+    checked_at: now.toISOString(),
   };
 }
 

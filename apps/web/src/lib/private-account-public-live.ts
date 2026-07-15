@@ -207,6 +207,11 @@ export async function submitPublicLivePhoenixOrder(input: {
   policy_commitment?: string | null;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
+  reconciliation_context?: {
+    venue_order_id: string;
+    reservation_id: string;
+    deadline_ms: number;
+  };
 }) {
   const value = input.body;
   if (value.ack_live_order !== true) return { error: "live_order_ack_required" as const, status: 400 };
@@ -239,6 +244,7 @@ export async function submitPublicLivePhoenixOrder(input: {
     allocation_commitment: input.allocation_commitment,
     encrypted_execution_instruction_bundle: encryptedInstruction,
     session_policy: sessionPolicy,
+    reconciliation: input.reconciliation_context ?? null,
   };
   const authorization = workerAuthorizationHeader({
     env: input.env ?? process.env,
@@ -360,17 +366,13 @@ export function publicLivePhoenixRevenueGuard(env: Record<string, string | undef
   | { ok: true }
   | {
       ok: false;
-      error: "private_agent_subscription_required";
-      entitlement_required: "paid_private_agent_plan";
-      status: 402;
+      error: "consumer_prepaid_balance_not_enabled";
+      entitlement_required: "confirmed_prepaid_balance";
+      status: 503;
     } {
   if (publicLivePhoenixRevenueGuardMode(env) !== "enforce") return { ok: true };
-  return {
-    ok: false,
-    error: "private_agent_subscription_required",
-    entitlement_required: "paid_private_agent_plan",
-    status: 402,
-  };
+  if (env.GHOLA_CONSUMER_PREPAID_BALANCE_ENABLED === "true") return { ok: true };
+  return { ok: false, error: "consumer_prepaid_balance_not_enabled", entitlement_required: "confirmed_prepaid_balance", status: 503 };
 }
 
 function publicLivePhoenixRevenueGuardMode(env: Record<string, string | undefined>): "enforce" | "report_only" {

@@ -99,7 +99,7 @@ export function Navbar() {
         open={authOpen}
         onClose={() => setAuthOpen(false)}
         onModeChange={setAuthMode}
-        redirectTo="/trade"
+        redirectTo="/runs"
       />
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex h-16 items-center justify-between">
@@ -145,15 +145,15 @@ export function Navbar() {
             {isAuthed && (
               <>
                 <Link
-                  href="/trade"
+                  href="/runs"
                   className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                    pathname.startsWith("/trade")
+                    pathname.startsWith("/runs")
                       ? "bg-[#3da8ff]/10 text-[#3da8ff]"
                       : "text-[#8b95a8] hover:text-[#eef1f8]"
                   }`}
                 >
                   <ShieldCheck className="h-3.5 w-3.5" />
-                  Trade
+                  Runs
                 </Link>
                 <Link
                   href="/vault"
@@ -192,11 +192,11 @@ export function Navbar() {
                     {thumperAuth.authenticated && (
                       <>
                         <Link
-                          href="/trade"
+                          href="/runs"
                           onClick={() => setAccountOpen(false)}
                           className="block px-3 py-2 text-sm text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#161822]"
                         >
-                          Trade
+                          Runs
                         </Link>
                         <Link
                           href="/settings"
@@ -307,11 +307,11 @@ export function Navbar() {
               {thumperAuth.authenticated && (
                 <>
                   <Link
-                    href="/trade"
+                    href="/runs"
                     onClick={() => setMobileOpen(false)}
                     className="block rounded-md px-3 py-2 text-sm font-medium text-[#8b95a8] hover:text-[#eef1f8] hover:bg-[#0f1117]"
                   >
-                    Trade
+                    Runs
                   </Link>
                   <Link
                     href="/settings"

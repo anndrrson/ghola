@@ -84,6 +84,18 @@ type PhoenixLiveResult = {
 
 type LiveResult = TriVenueLiveResult | PhoenixLiveResult;
 
+type DepositIntentResult = {
+  deposit_intent_id: string;
+  rail: "solana_usdc" | "solana_shielded_usdcx";
+  amount_micro_usdc: number;
+  status: string;
+  deposit_instructions?: Record<string, unknown>;
+};
+
+type ConsumerBalanceResult = {
+  balance: { available_micro_usdc: number; reserved_micro_usdc: number };
+};
+
 const VENUES = ["phoenix", "hyperliquid", "backpack"] as const;
 type VenueId = (typeof VENUES)[number];
 
@@ -101,6 +113,12 @@ export function TriVenueArbConsole() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<LiveResult | null>(null);
   const [workerProbeEnabled, setWorkerProbeEnabled] = useState(false);
+  const [orderUsd, setOrderUsd] = useState("5");
+  const [fundingRail, setFundingRail] = useState<"solana_usdc" | "solana_shielded_usdcx">("solana_usdc");
+  const [fundingUsd, setFundingUsd] = useState("5");
+  const [depositIntent, setDepositIntent] = useState<DepositIntentResult | null>(null);
+  const [depositEvidence, setDepositEvidence] = useState("");
+  const [consumerBalance, setConsumerBalance] = useState<ConsumerBalanceResult["balance"] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,7 +181,7 @@ export function TriVenueArbConsole() {
   const venueCredentialGateCount = [hyperliquidGate, backpackGate].filter((gate) => gate?.status === "red").length;
   const launchTone = ready ? "good" : marketLive && (workerOnline || phoenixConfigured) ? "accent" : "warn";
   const launchTitle = ready
-    ? "Tri-venue tiny-live enabled"
+    ? "Tri-venue consumer live enabled"
     : phoenixConfigured
       ? "Live scanner plus Phoenix path online"
       : "Live scanner online; execution fail-closed";
@@ -173,7 +191,7 @@ export function TriVenueArbConsole() {
       ? "public live path"
       : "credential gated";
   const launchCopy = ready
-    ? "The agent can sign, arm, submit one bounded arb, start maker quotes, and kill resting orders under the public $5 cap."
+    ? "The agent can sign, arm, submit bounded consumer orders, start maker quotes, and kill resting orders under the consumer's prepaid balance and risk policy."
     : "Ghola is reading live Phoenix, Hyperliquid, and Backpack books, building arb and market-maker plans, and keeping multi-venue submit fail-closed until real venue credentials are sealed into the worker.";
   const acknowledgementsReady = acceptedTerms && acceptedRisk && notProhibited;
   const canSign = Boolean(wallet && acknowledgementsReady);
@@ -256,12 +274,28 @@ export function TriVenueArbConsole() {
     setWorking("phoenix-submit");
     setError(null);
     try {
+      const notionalMicroUsdc = usdToMicro(orderUsd);
       await postJson("/v1/private-account/public-live/phoenix/wake", { reason: "arb_phoenix_tiny_fill" });
+      const accessProof = await signFreshPublicLiveChallenge(wallet);
+      await postJson("/v1/private-account/consumer/access", {
+        ...accessProof,
+        accepted_terms: acceptedTerms,
+        accepted_risk: acceptedRisk,
+        not_prohibited_person: notProhibited,
+      });
+      await requestJson("/v1/private-account/risk-policy", "PUT", {
+        max_order_micro_usdc: notionalMicroUsdc,
+        max_daily_notional_micro_usdc: notionalMicroUsdc * 3,
+        max_position_micro_usdc: notionalMicroUsdc * 5,
+        max_slippage_bps: 25,
+        market_allowlist: ["SOL/USDC"],
+      });
       const proof = await signFreshPublicLiveChallenge(wallet);
       const workOrderCommitment = publicLivePhoenixWorkOrderCommitment();
       const order = phoenixTinyFillOrder({
         side: phoenixSide,
         limitPrice: phoenixLimit,
+        quoteSize: orderUsd,
       });
       const sealed = await buildPrivateExecutionInstructionBundle({
         ownerWalletAddress: wallet,
@@ -276,9 +310,13 @@ export function TriVenueArbConsole() {
         accepted_risk: acceptedRisk,
         not_prohibited_person: notProhibited,
         jurisdiction_assertion: "self_attested_eligible",
-        utilization_bucket: "5",
+        utilization_bucket: orderUsd,
         ack_live_order: true,
         work_order_commitment: workOrderCommitment,
+        declared_notional_micro_usdc: notionalMicroUsdc,
+        declared_max_slippage_bps: 25,
+        declared_market: "SOL/USDC",
+        declared_side: phoenixSide,
         encrypted_execution_instruction_bundle: sealed.encrypted_execution_instruction_bundle,
       });
       setWorkerProbeEnabled(true);
@@ -286,6 +324,50 @@ export function TriVenueArbConsole() {
       if (response.error) setError(response.error);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Phoenix live submit failed.");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function createFundingIntent() {
+    if (!canSign) return setError("Connect a wallet and accept the consumer terms before funding.");
+    setWorking("deposit-intent");
+    setError(null);
+    try {
+      const proof = await signFreshPublicLiveChallenge(wallet);
+      await postJson("/v1/private-account/consumer/access", {
+        ...proof,
+        accepted_terms: acceptedTerms,
+        accepted_risk: acceptedRisk,
+        not_prohibited_person: notProhibited,
+      });
+      const intent = await postJson<DepositIntentResult>("/v1/private-account/balance/deposit-intents", {
+        rail: fundingRail,
+        amount_micro_usdc: usdToMicro(fundingUsd),
+      });
+      setDepositIntent(intent);
+      setDepositEvidence("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create a deposit intent.");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function confirmFundingIntent() {
+    if (!depositIntent || !depositEvidence.trim()) return setError("Enter the finalized transaction signature or shielded receipt ID.");
+    setWorking("deposit-confirm");
+    setError(null);
+    try {
+      await postJson(`/v1/private-account/balance/deposit-intents/${encodeURIComponent(depositIntent.deposit_intent_id)}/confirm`,
+        depositIntent.rail === "solana_usdc"
+          ? { transaction_signature: depositEvidence.trim() }
+          : { receipt_id: depositEvidence.trim() });
+      setDepositIntent({ ...depositIntent, status: "confirmed" });
+      const balance = await fetchJson<ConsumerBalanceResult>("/v1/private-account/balance/ledger");
+      setConsumerBalance(balance.balance);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Deposit confirmation failed.");
     } finally {
       setWorking(null);
     }
@@ -360,7 +442,7 @@ export function TriVenueArbConsole() {
             <GateMetric label="Phoenix path" value={phoenixConfigured ? "available" : "checking"} tone={phoenixConfigured ? "good" : "warn"} />
             <GateMetric label="Worker" value={workerReady ? "attested" : workerStandby ? "standby" : "sleeping"} tone={workerReady ? "good" : workerStandby ? "accent" : "warn"} />
             <GateMetric label="Multi-venue" value={ready ? "submit live" : `${venueCredentialGateCount || 2} gates`} tone={ready ? "good" : "warn"} />
-            <GateMetric label="Public cap" value="$5 / leg" tone="good" />
+            <GateMetric label="Risk policy" value="user capped" tone="good" />
           </div>
 
           {!ready && gateReasons.length > 0 && (
@@ -443,7 +525,7 @@ export function TriVenueArbConsole() {
                   <p className="mt-1 text-sm text-[#9fb1ca]">Delta-neutral arb first; maker quotes stay post-only and capped.</p>
                 </div>
                 <span className="rounded border border-emerald-300/20 bg-emerald-300/10 px-2 py-1 text-xs font-medium text-emerald-100">
-                  $5 cap
+                  prepaid
                 </span>
               </div>
 
@@ -451,7 +533,7 @@ export function TriVenueArbConsole() {
                 <PlanRow label="Market" value="SOL-USD" />
                 <PlanRow label="Venues" value="Phoenix + Hype + Backpack" />
                 <PlanRow label="Live submit" value={ready ? "tri-venue enabled" : "Phoenix path; multi-venue gated"} />
-                <PlanRow label="Phoenix ticket" value={`${phoenixSide} $5${phoenixLimit ? ` @ ${phoenixLimit}` : ""}`} />
+                <PlanRow label="Phoenix ticket" value={`${phoenixSide} $${orderUsd}${phoenixLimit ? ` @ ${phoenixLimit}` : ""}`} />
                 <PlanRow label="Edge filter" value="25 bps net" />
                 <PlanRow label="Hedge state" value="zero net SOL target" />
                 <PlanRow label="Maker loop" value="2 orders, 10s TTL" />
@@ -476,7 +558,7 @@ export function TriVenueArbConsole() {
               </div>
 
               <div className="mt-4 grid gap-2">
-                <CheckRow checked={acceptedTerms} onChange={setAcceptedTerms} label="I accept Ghola public beta terms for live execution." />
+                <CheckRow checked={acceptedTerms} onChange={setAcceptedTerms} label="I accept Ghola consumer terms for real-money execution." />
                 <CheckRow checked={acceptedRisk} onChange={setAcceptedRisk} label="I understand this can submit real orders through supported venues." />
                 <CheckRow checked={notProhibited} onChange={setNotProhibited} label="I self-attest that I am legally allowed to use this feature." />
               </div>
@@ -484,9 +566,9 @@ export function TriVenueArbConsole() {
               <div className="mt-4 rounded-md border border-emerald-300/20 bg-emerald-300/5 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <div className="text-sm font-semibold text-white">Phoenix tiny fill</div>
+                    <div className="text-sm font-semibold text-white">Phoenix prepaid spot order</div>
                     <div className="mt-1 font-mono text-xs text-[#8ea1bf]">
-                      {phoenixLimit ? `$5 ${phoenixSide} IOC @ ${phoenixLimit}` : "waiting for Phoenix quote"}
+                      {phoenixLimit ? `$${orderUsd} ${phoenixSide} IOC @ ${phoenixLimit}` : "waiting for Phoenix quote"}
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-1">
@@ -500,12 +582,18 @@ export function TriVenueArbConsole() {
                     <button
                       type="button"
                       onClick={() => setPhoenixSide("sell")}
+                      disabled
+                      title="Pooled sells remain disabled until the asset-position subledger is enabled."
                       className={phoenixSide === "sell" ? sideButtonClass("active") : sideButtonClass("idle")}
                     >
                       Sell
                     </button>
                   </div>
                 </div>
+                <label className="mt-3 block text-xs text-[#9fb1ca]">
+                  Order notional (USDC)
+                  <input value={orderUsd} onChange={(event) => setOrderUsd(event.target.value)} inputMode="decimal" className="mt-1 h-10 w-full rounded-md border border-[#24324a] bg-[#070a10] px-3 font-mono text-sm text-white" />
+                </label>
                 <button
                   type="button"
                   onClick={() => void runPhoenixTinyFill()}
@@ -513,8 +601,34 @@ export function TriVenueArbConsole() {
                   className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-emerald-300/30 bg-emerald-300/12 px-3 text-sm font-medium text-emerald-50 transition hover:bg-emerald-300/18 disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   <Send className="h-4 w-4" />
-                  {working === "phoenix-submit" ? "Submitting Phoenix" : "Submit Phoenix $5"}
+                  {working === "phoenix-submit" ? "Submitting Phoenix" : `Submit Phoenix $${orderUsd}`}
                 </button>
+              </div>
+
+              <div className="mt-4 rounded-md border border-sky-300/20 bg-sky-300/5 p-3">
+                <div className="text-sm font-semibold text-white">Prepaid consumer balance</div>
+                <p className="mt-1 text-xs leading-5 text-[#8ea1bf]">Create a single-use deposit intent, transfer from the bound wallet, then confirm finalized public USDC or the shielded receipt. Rails never fall back into one another.</p>
+                {consumerBalance && <p className="mt-2 font-mono text-xs text-sky-100">available ${(consumerBalance.available_micro_usdc / 1_000_000).toFixed(2)} · reserved ${(consumerBalance.reserved_micro_usdc / 1_000_000).toFixed(2)}</p>}
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <select value={fundingRail} onChange={(event) => setFundingRail(event.target.value as typeof fundingRail)} className="h-10 rounded-md border border-[#24324a] bg-[#070a10] px-2 text-sm text-white">
+                    <option value="solana_usdc">Public USDC</option>
+                    <option value="solana_shielded_usdcx">Shielded USDCx</option>
+                  </select>
+                  <input value={fundingUsd} onChange={(event) => setFundingUsd(event.target.value)} inputMode="decimal" aria-label="Deposit amount in USDC" className="h-10 rounded-md border border-[#24324a] bg-[#070a10] px-3 font-mono text-sm text-white" />
+                </div>
+                <button type="button" onClick={() => void createFundingIntent()} disabled={!canSign || working !== null} className="mt-2 h-10 w-full rounded-md border border-sky-300/30 bg-sky-300/10 text-sm text-sky-50 disabled:opacity-45">
+                  {working === "deposit-intent" ? "Creating intent" : "Create deposit intent"}
+                </button>
+                {depositIntent && (
+                  <div className="mt-3 border-t border-sky-300/15 pt-3">
+                    <p className="break-all font-mono text-[11px] text-[#8ea1bf]">intent {depositIntent.deposit_intent_id} · {depositIntent.status}</p>
+                    <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded bg-black/30 p-2 text-[10px] text-[#9fb1ca]">{JSON.stringify(depositIntent.deposit_instructions ?? {}, null, 2)}</pre>
+                    <input value={depositEvidence} onChange={(event) => setDepositEvidence(event.target.value)} placeholder={depositIntent.rail === "solana_usdc" ? "Finalized transaction signature" : "Shielded receipt ID"} className="mt-2 h-10 w-full rounded-md border border-[#24324a] bg-[#070a10] px-3 font-mono text-xs text-white" />
+                    <button type="button" onClick={() => void confirmFundingIntent()} disabled={working !== null || depositIntent.status === "confirmed"} className="mt-2 h-10 w-full rounded-md border border-emerald-300/30 bg-emerald-300/10 text-sm text-emerald-50 disabled:opacity-45">
+                      {working === "deposit-confirm" ? "Verifying finality" : "Confirm deposit"}
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="mt-4 grid gap-2 sm:grid-cols-2">
@@ -735,8 +849,12 @@ async function fetchJson<T>(path: string): Promise<T> {
 }
 
 async function postJson<T = unknown>(path: string, body: unknown): Promise<T> {
+  return requestJson(path, "POST", body);
+}
+
+async function requestJson<T = unknown>(path: string, method: "POST" | "PUT", body: unknown): Promise<T> {
   const res = await fetch(path, {
-    method: "POST",
+    method,
     cache: "no-store",
     headers: {
       accept: "application/json",
@@ -753,6 +871,13 @@ function errorMessage(value: unknown): string | null {
   return value && typeof value === "object" && !Array.isArray(value) && typeof (value as { error?: unknown }).error === "string"
     ? String((value as { error: string }).error)
     : null;
+}
+
+function usdToMicro(value: string): number {
+  const dollars = Number(value);
+  const micro = Math.round(dollars * 1_000_000);
+  if (!Number.isFinite(dollars) || dollars < 1 || !Number.isSafeInteger(micro)) throw new Error("Amount must be at least 1 USDC.");
+  return micro;
 }
 
 function bytesToBase64(bytes: Uint8Array) {
@@ -795,17 +920,19 @@ function formatPhoenixPrice(value: number): string {
 function phoenixTinyFillOrder({
   side,
   limitPrice,
+  quoteSize,
 }: {
   side: "buy" | "sell";
   limitPrice: string;
+  quoteSize: string;
 }): PrivateExecutionOrderDraft {
   return {
     venue_id: "phoenix",
-    operation_class: "perp_limit_order",
-    market: "SOL-PERP",
+    operation_class: "spot_limit_order",
+    market: "SOL/USDC",
     side,
     base_size: "",
-    quote_size: "5",
+    quote_size: quoteSize,
     limit_price: limitPrice,
     max_slippage_bps: "25",
     live_order_mode: "tiny_fill",
@@ -817,7 +944,7 @@ function phoenixTinyFillOrder({
     agent_exit_rule: "manual_approval",
     agent_time_horizon: "scalp",
     agent_route_priority: "most_private",
-    agent_strategy_note: "Phoenix capped public tiny fill from the Ghola arb console.",
+    agent_strategy_note: "Phoenix prepaid consumer spot order from the Ghola live console.",
   };
 }
 
@@ -837,7 +964,7 @@ function sideButtonClass(state: "active" | "idle") {
 function liveResultMessage(result: LiveResult | null): string {
   if (!result) return "Command accepted.";
   if (isPhoenixLiveResult(result)) {
-    if (result.status === "submitted") return "Phoenix tiny fill submitted.";
+    if (result.status === "submitted") return "Phoenix order submitted and pending reconciliation.";
     return `Phoenix ${String(result.status || "accepted").replace(/_/g, " ")}.`;
   }
   return result.session?.next_step || result.session?.status || "Command accepted.";

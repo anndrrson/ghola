@@ -422,7 +422,11 @@ export async function buildPrivateExecutionInstructionBundle(
     version: 1,
     kind: "ghola_private_execution_instruction",
     venue_id: options.order.venue_id,
-    operation_class: options.order.operation_class,
+    // Phoenix is a spot orderbook. The worker still accepts the historical
+    // solana-perps alias while its internal connector contract migrates.
+    operation_class: options.order.venue_id === "phoenix" && options.order.operation_class === "spot_limit_order"
+      ? "perp_limit_order"
+      : options.order.operation_class,
     expires_at: expiresAt.toISOString(),
     order,
     ...(mandate ? { mandate } : {}),

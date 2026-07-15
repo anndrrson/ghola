@@ -237,8 +237,19 @@ function phalaEncryptedWorkerEnv(token: string): Array<{ key: string; value: str
       ? [{ key: "PRIVATE_AGENT_FUNDING_SIGNING_KEY", value: phalaWorkerFundingSigningKey() as string }]
       : []),
     ...(statePostgresUrl
-      ? [{ key: "PRIVATE_AGENT_STATE_POSTGRES_URL", value: statePostgresUrl }]
+      ? [
+          { key: "PRIVATE_AGENT_STATE_POSTGRES_URL", value: statePostgresUrl },
+          { key: "PRIVATE_AGENT_CONSUMER_DATABASE_URL", value: statePostgresUrl },
+        ]
       : []),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_TRADING_CONTROL_TOKEN", ["GHOLA_TRADING_CONTROL_TOKEN"]),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_RECONCILIATION_INGEST_TOKEN", ["GHOLA_RECONCILIATION_INGEST_TOKEN"]),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_CONSUMER_WITHDRAWAL_DISPATCH_URL", ["GHOLA_CONSUMER_WITHDRAWAL_DISPATCH_URL"]),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_CONSUMER_WITHDRAWAL_DISPATCH_TOKEN", ["GHOLA_CONSUMER_WITHDRAWAL_DISPATCH_TOKEN"]),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_CONSUMER_SOLANA_RPC_URL", ["GHOLA_CONSUMER_SOLANA_RPC_URL", "GHOLA_SOLANA_RPC_URL", "SOLANA_RPC_URL"]),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_CONSUMER_SOLANA_USDC_TREASURY_RECIPIENT", ["GHOLA_CONSUMER_SOLANA_USDC_TREASURY_RECIPIENT"]),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_CONSUMER_SOLANA_USDC_MINT", ["GHOLA_CONSUMER_SOLANA_USDC_MINT"]),
+    ...encryptedWorkerSecret("PRIVATE_AGENT_VERCEL_SPEND_WEBHOOK_SECRET", ["GHOLA_VERCEL_SPEND_WEBHOOK_SECRET"]),
     ...encryptedWorkerSecret("PRIVATE_AGENT_HYPERLIQUID_MANAGED_ACCOUNTS_JSON"),
     ...encryptedWorkerSecret("PRIVATE_AGENT_SOLANA_PERPS_POOLED_VAULT_JSON"),
     ...encryptedWorkerSecret("PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON"),
@@ -489,6 +500,15 @@ export function buildPhalaWorkerCompose(input: {
     composeEnvLine("PRIVATE_AGENT_STATE_STORE", phalaWorkerStateStore()),
     composeEnvLine("PRIVATE_AGENT_STATE_SINGLE_CVM_OK", workerEnv("PRIVATE_AGENT_STATE_SINGLE_CVM_OK", "false", ["GHOLA_PRIVATE_AGENT_STATE_SINGLE_CVM_OK"])),
     '      PRIVATE_AGENT_STATE_POSTGRES_URL: "${PRIVATE_AGENT_STATE_POSTGRES_URL:-}"',
+    composeEncryptedEnvLine("PRIVATE_AGENT_CONSUMER_DATABASE_URL"),
+    composeEncryptedEnvLine("PRIVATE_AGENT_TRADING_CONTROL_TOKEN"),
+    composeEncryptedEnvLine("PRIVATE_AGENT_RECONCILIATION_INGEST_TOKEN"),
+    composeEncryptedEnvLine("PRIVATE_AGENT_CONSUMER_WITHDRAWAL_DISPATCH_URL"),
+    composeEncryptedEnvLine("PRIVATE_AGENT_CONSUMER_WITHDRAWAL_DISPATCH_TOKEN"),
+    composeEncryptedEnvLine("PRIVATE_AGENT_CONSUMER_SOLANA_RPC_URL"),
+    composeEncryptedEnvLine("PRIVATE_AGENT_CONSUMER_SOLANA_USDC_TREASURY_RECIPIENT"),
+    composeEncryptedEnvLine("PRIVATE_AGENT_CONSUMER_SOLANA_USDC_MINT"),
+    composeEncryptedEnvLine("PRIVATE_AGENT_VERCEL_SPEND_WEBHOOK_SECRET"),
     '      PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE: "true"',
     `      PHALA_CVM_IMAGE_DIGEST: "${imageDigest}"`,
     composeEnvLine("PRIVATE_AGENT_VENUE_DRY_RUN", workerEnv("PRIVATE_AGENT_VENUE_DRY_RUN", "false")),
