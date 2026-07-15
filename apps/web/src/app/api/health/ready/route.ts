@@ -38,6 +38,11 @@ export async function GET() {
   const observabilityConfigured = sentryConfigured || vercelObservabilityConfigured;
   const byoHyperliquidReady = process.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket" &&
     process.env.GHOLA_HYPERLIQUID_ALLOW_MAINNET === "true" &&
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE === "full_ticket" &&
+    process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET === "true" &&
+    Number(process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD) === 1_000 &&
+    Number(process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD) === 5_000 &&
+    Number(process.env.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS) <= 100 &&
     Boolean(process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL) &&
     Boolean(process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN) &&
     workerState !== "blocked";

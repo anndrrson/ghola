@@ -247,15 +247,18 @@ jobs:
           setenv GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST "$WORKER_IMAGE_DIGEST"
           setenv GHOLA_V6_HYPERLIQUID_PILOT_ENABLED "true"
           setenv GHOLA_HYPERLIQUID_LIVE_MODE "${{ inputs.live_mode }}"
+          setenv PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE "${{ inputs.live_mode }}"
           setenv GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS "ready"
           if [ "${{ inputs.pooled_network }}" = "mainnet" ]; then
             setenv GHOLA_HYPERLIQUID_ALLOW_MAINNET "true"
+            setenv PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET "true"
           else
             setenv GHOLA_HYPERLIQUID_ALLOW_MAINNET "false"
+            setenv PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET "false"
           fi
           setenv PRIVATE_AGENT_HYPERLIQUID_POOLED_NETWORK "${{ inputs.pooled_network }}"
-          setenv PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD "100"
-          setenv PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD "500"
+          setenv PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD "1000"
+          setenv PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD "5000"
           setenv PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS "100"
 
       - name: Build and deploy immutable preview
