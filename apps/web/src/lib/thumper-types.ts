@@ -189,6 +189,23 @@ export interface ThumperBillingStatusResponse {
     period_end: string;
     metering_unit: "agent_second";
   };
+  private_agent_trading?: {
+    included_notional_micro_usd: number;
+    filled_notional_micro_usd: number;
+    remaining_included_notional_micro_usd: number;
+    overage_notional_micro_usd: number;
+    overage_fee_bps: number;
+    accrued_fee_micro_usd: number;
+    queued_fee_cents: number;
+    invoiced_fee_cents: number;
+    monthly_fee_cap_micro_usd: number;
+    cap_reached: boolean;
+    live_trading_allowed: boolean;
+    period_start: string;
+    period_end: string;
+    metering_unit: "filled_notional_micro_usd";
+    billing_state: "current" | "invoice_pending";
+  };
 }
 
 export interface ThumperTelegramLinkCode {

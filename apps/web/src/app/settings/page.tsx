@@ -13,6 +13,7 @@ import {
   listProviders,
   createThumperCheckout,
   getThumperBillingStatus,
+  updatePrivateAgentTradingFeeCap,
   createTelegramLinkCode,
   getTelegramLinkStatus,
   unlinkTelegram,
@@ -33,8 +34,12 @@ import {
   PRIVATE_AGENT_STARTER_ACTIVE_AGENT_LIMIT,
   PRIVATE_AGENT_STARTER_INCLUDED_COMPUTE_SECONDS,
   PRIVATE_AGENT_STARTER_MONTHLY_PRICE_USD,
+  PRIVATE_AGENT_STARTER_INCLUDED_NOTIONAL_USD,
+  PRIVATE_AGENT_STARTER_OVERAGE_FEE_BPS,
   PRIVATE_AGENT_INCLUDED_COMPUTE_SECONDS,
   PRIVATE_AGENT_MONTHLY_PRICE_USD,
+  PRIVATE_AGENT_INCLUDED_NOTIONAL_USD,
+  PRIVATE_AGENT_OVERAGE_FEE_BPS,
   PRIVATE_AGENT_TRIAL_PACK_DAYS,
   PRIVATE_AGENT_TRIAL_PACK_INCLUDED_COMPUTE_SECONDS,
   PRIVATE_AGENT_TRIAL_PACK_PRICE_USD,
@@ -661,12 +666,31 @@ function TelegramTab() {
 function PlanTab() {
   const [billing, setBilling] = useState<ThumperBillingStatusResponse | null>(null);
   const [upgrading, setUpgrading] = useState<string | null>(null);
+  const [savingCap, setSavingCap] = useState(false);
+  const [capUsd, setCapUsd] = useState("");
 
   useEffect(() => {
     getThumperBillingStatus()
-      .then(setBilling)
+      .then((status) => {
+        setBilling(status);
+        if (status.private_agent_trading) {
+          setCapUsd(String(status.private_agent_trading.monthly_fee_cap_micro_usd / 1_000_000));
+        }
+      })
       .catch(() => {});
   }, []);
+
+  const handleSaveCap = async () => {
+    const nextUsd = Number(capUsd);
+    if (!Number.isFinite(nextUsd) || nextUsd < 0 || nextUsd > 10_000) return;
+    setSavingCap(true);
+    try {
+      const private_agent_trading = await updatePrivateAgentTradingFeeCap(Math.round(nextUsd * 1_000_000));
+      setBilling((current) => current ? { ...current, private_agent_trading } : current);
+    } finally {
+      setSavingCap(false);
+    }
+  };
 
   const handleUpgrade = async (tier: string) => {
     setUpgrading(tier);
@@ -729,7 +753,9 @@ function PlanTab() {
         `${privateAgentComputeHours(PRIVATE_AGENT_STARTER_INCLUDED_COMPUTE_SECONDS)} private compute hours/month`,
         `${PRIVATE_AGENT_STARTER_ACTIVE_AGENT_LIMIT} active secure agent`,
         "Small capped live actions",
-        "No profit share",
+        `$${PRIVATE_AGENT_STARTER_INCLUDED_NOTIONAL_USD.toLocaleString()} filled notional/month included`,
+        `${PRIVATE_AGENT_STARTER_OVERAGE_FEE_BPS} bps overage after included volume`,
+        "No charge for rejected or unfilled orders",
       ],
     },
     {
@@ -744,8 +770,10 @@ function PlanTab() {
         `${privateAgentIncludedComputeHours()} private compute hours/month`,
         `${PRIVATE_AGENT_ACTIVE_AGENT_LIMIT} active secure agent`,
         "Higher live trading caps",
+        `$${PRIVATE_AGENT_INCLUDED_NOTIONAL_USD.toLocaleString()} filled notional/month included`,
+        `${PRIVATE_AGENT_OVERAGE_FEE_BPS} bps overage after included volume`,
         "Compute stops when allowance runs out",
-        "No profit share",
+        "No charge for rejected or unfilled orders",
       ],
     },
     {
@@ -786,6 +814,59 @@ function PlanTab() {
               {billing.private_agent_compute.active_agent_count}/{billing.private_agent_compute.active_agent_limit} active
             </p>
           </div>
+        </div>
+      )}
+      {billing?.private_agent_trading && (
+        <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-medium text-[#eef1f8]">Live trading usage</h3>
+              <p className="mt-1 text-xs text-[#8b95a8]">
+                ${(billing.private_agent_trading.filled_notional_micro_usd / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                {" of $"}
+                {(billing.private_agent_trading.included_notional_micro_usd / 1_000_000).toLocaleString()}
+                {" included filled notional"}
+              </p>
+              <p className="mt-1 text-xs text-[#4a5568]">
+                {(billing.private_agent_trading.overage_fee_bps / 100).toFixed(2)}% overage · ${(billing.private_agent_trading.accrued_fee_micro_usd / 1_000_000).toFixed(2)} accrued
+              </p>
+            </div>
+            <span className={`rounded-full px-2 py-1 text-[10px] ${
+              billing.private_agent_trading.live_trading_allowed
+                ? "bg-emerald-500/10 text-emerald-400"
+                : "bg-amber-500/10 text-amber-300"
+            }`}>
+              {billing.private_agent_trading.live_trading_allowed ? "Live enabled" : "Limit reached"}
+            </span>
+          </div>
+          {billing.private_agent_trading.overage_fee_bps > 0 && (
+            <div className="mt-4 flex items-end gap-2">
+              <label className="flex-1 text-xs text-[#8b95a8]">
+                Monthly overage ceiling
+                <div className="mt-1 flex items-center rounded-lg border border-[#1e2a3a] bg-[#08090d] px-3">
+                  <span className="text-[#4a5568]">$</span>
+                  <input
+                    value={capUsd}
+                    onChange={(event) => setCapUsd(event.target.value)}
+                    inputMode="decimal"
+                    className="w-full bg-transparent px-2 py-2 text-[#eef1f8] outline-none"
+                    aria-label="Monthly trading overage ceiling in dollars"
+                  />
+                </div>
+              </label>
+              <button
+                onClick={handleSaveCap}
+                disabled={savingCap}
+                className="rounded-lg border border-[#2a3a50] px-4 py-2 text-xs text-[#eef1f8] disabled:opacity-50"
+              >
+                {savingCap ? "Saving…" : "Save ceiling"}
+              </button>
+            </div>
+          )}
+          <p className="mt-3 text-[11px] text-[#4a5568]">
+            Only venue-confirmed fills count. Rejected, cancelled, and completely unfilled orders cost $0 in usage fees.
+            {billing.private_agent_trading.overage_fee_bps > 0 ? " Set the ceiling to $0 to disable overages after the included allowance." : ""}
+          </p>
         </div>
       )}
       {plans.map((plan) => {

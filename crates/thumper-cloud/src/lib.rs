@@ -279,6 +279,14 @@ pub fn build_router(state: AppState) -> Router {
             post(routes::billing::release_private_agent_compute),
         )
         .route(
+            "/api/billing/private-agent/trading/meter",
+            post(routes::billing::meter_private_agent_trading),
+        )
+        .route(
+            "/api/billing/private-agent/trading/cap",
+            axum::routing::patch(routes::billing::update_private_agent_trading_cap),
+        )
+        .route(
             "/api/billing/webhook",
             post(routes::billing::billing_webhook),
         )
