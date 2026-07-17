@@ -1,6 +1,8 @@
 import {
   connectorReconcileFromBody,
   json,
+  meterPrivateAccountTradingFills,
+  privateAccountBillingAuthorization,
   privateAccountLiveGuard,
 } from "../../_lib";
 
@@ -11,5 +13,9 @@ export async function POST(req: Request) {
   if (!guarded.ok) return guarded.response;
   const reconciled = await connectorReconcileFromBody(guarded.body, guarded.owner);
   if ("error" in reconciled) return json({ error: reconciled.error }, 400);
-  return json(reconciled);
+  const billingMetering = await meterPrivateAccountTradingFills({
+    authorization: privateAccountBillingAuthorization(req),
+    result: reconciled.connector_result ?? null,
+  });
+  return json({ ...reconciled, billing_metering: billingMetering });
 }

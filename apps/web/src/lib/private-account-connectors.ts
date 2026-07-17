@@ -190,6 +190,8 @@ export interface GholaConnectorResult {
   provider_ref_commitment: string | null;
   result_commitment: string;
   final_proof: GholaConnectorFinalProof | null;
+  fill_commitments: string[];
+  fill_summary: GholaConnectorFillSummary;
   visibility_summary: {
     main_wallet_exposed: boolean;
     venue_saw_order_class: boolean;
@@ -208,6 +210,15 @@ export interface GholaConnectorResult {
   platform_fee_policy_commitment?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface GholaConnectorFillSummary {
+  fill_count: number;
+  filled_base_size: string;
+  filled_notional_usd: number;
+  average_fill_price: number | null;
+  fee_usd: number;
+  fee_status: string;
 }
 
 export interface GholaConnectorFinalProof {
@@ -855,6 +866,8 @@ export async function submitConnectorWorkOrder(input: {
           stringValue(body.result_commitment) ||
           input.work_order.work_order_commitment,
         final_proof: connectorFinalProof(body.final_proof),
+        fill_commitments: stringArray(body.fill_commitments),
+        fill_summary: connectorFillSummary(body.fill_summary),
         reason: null,
         now,
       }),
@@ -1054,6 +1067,8 @@ export async function reconcileConnectorResult(input: {
         input.existing_result?.provider_ref_commitment ||
         input.work_order.work_order_commitment,
       final_proof: connectorFinalProof(body.final_proof),
+      fill_commitments: stringArray(body.fill_commitments),
+      fill_summary: connectorFillSummary(body.fill_summary),
       reason: res.ok ? null : "connector_reconcile_failed",
       now,
     });
@@ -1198,6 +1213,8 @@ function connectorResult(input: {
   status: GholaConnectorResult["status"];
   provider_ref_seed: string;
   final_proof?: GholaConnectorFinalProof | null;
+  fill_commitments?: string[];
+  fill_summary?: GholaConnectorFillSummary;
   reason: string | null;
   now: Date;
 }): GholaConnectorResult {
@@ -1210,6 +1227,7 @@ function connectorResult(input: {
     provider_ref_commitment: providerRefCommitment,
     platform_fee_policy_commitment: input.work_order.platform_fee_policy_commitment ?? null,
     reason: input.reason,
+    fill_commitments: input.fill_commitments ?? [],
   };
   return {
     version: 1,
@@ -1220,6 +1238,8 @@ function connectorResult(input: {
     provider_ref_commitment: providerRefCommitment,
     result_commitment: gholaCommitment("connector_result_body", resultSeed),
     final_proof: input.final_proof ?? null,
+    fill_commitments: input.fill_commitments ?? [],
+    fill_summary: input.fill_summary ?? connectorFillSummary(null),
     visibility_summary: {
       main_wallet_exposed: !input.manifest.source_wallet_hidden,
       venue_saw_order_class: input.manifest.order_details_visible,
@@ -2164,6 +2184,32 @@ function connectorFinalProof(value: unknown): GholaConnectorFinalProof | null {
     signature_commitment: stringValue(body.signature_commitment) || null,
     request_commitment: stringValue(body.request_commitment) || null,
     checked_at: checkedAt,
+  };
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map(stringValue).filter(Boolean).slice(0, 25)
+    : [];
+}
+
+function connectorFillSummary(value: unknown): GholaConnectorFillSummary {
+  const body = asRecord(value);
+  const fillCount = Number(body.fill_count ?? 0);
+  const filledNotionalUsd = Number(body.filled_notional_usd ?? 0);
+  const averageFillPrice = Number(body.average_fill_price);
+  const feeUsd = Number(body.fee_usd ?? 0);
+  return {
+    fill_count: Number.isInteger(fillCount) && fillCount > 0 ? Math.min(fillCount, 25) : 0,
+    filled_base_size: stringValue(body.filled_base_size) || "0",
+    filled_notional_usd: Number.isFinite(filledNotionalUsd) && filledNotionalUsd > 0
+      ? filledNotionalUsd
+      : 0,
+    average_fill_price: Number.isFinite(averageFillPrice) && averageFillPrice > 0
+      ? averageFillPrice
+      : null,
+    fee_usd: Number.isFinite(feeUsd) && feeUsd > 0 ? feeUsd : 0,
+    fee_status: stringValue(body.fee_status) || "not_applicable",
   };
 }
 

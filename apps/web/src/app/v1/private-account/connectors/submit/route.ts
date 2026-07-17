@@ -1,6 +1,7 @@
 import {
   connectorSubmitFromBody,
   json,
+  meterPrivateAccountTradingFills,
   privateAccountLiveGuard,
   releasePrivateAccountLiveRevenueReservation,
 } from "../../_lib";
@@ -16,7 +17,12 @@ export async function POST(req: Request) {
       await releasePrivateAccountLiveRevenueReservation(guarded.revenue, "failed");
       return json({ error: submitted.error }, 400);
     }
-    return json(submitted, 201);
+    const billingMetering = await meterPrivateAccountTradingFills({
+      authorization: guarded.revenue?.authorization ?? null,
+      result: submitted.connector_result ?? null,
+    });
+    await releasePrivateAccountLiveRevenueReservation(guarded.revenue, "completed");
+    return json({ ...submitted, billing_metering: billingMetering }, 201);
   } catch (error) {
     await releasePrivateAccountLiveRevenueReservation(guarded.revenue, "failed");
     throw error;

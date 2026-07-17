@@ -440,6 +440,18 @@ export async function getThumperBillingStatus(): Promise<ThumperBillingStatusRes
   return thumperFetch<ThumperBillingStatusResponse>("/api/billing/status");
 }
 
+export async function updatePrivateAgentTradingFeeCap(
+  monthlyFeeCapMicroUsd: number,
+): Promise<NonNullable<ThumperBillingStatusResponse["private_agent_trading"]>> {
+  return thumperFetch<NonNullable<ThumperBillingStatusResponse["private_agent_trading"]>>(
+    "/api/billing/private-agent/trading/cap",
+    {
+      method: "PATCH",
+      body: JSON.stringify({ monthly_fee_cap_micro_usd: monthlyFeeCapMicroUsd }),
+    },
+  );
+}
+
 export async function reservePrivateAgentCompute(input: {
   session_id: string;
   seconds: number;

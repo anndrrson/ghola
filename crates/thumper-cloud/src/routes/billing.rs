@@ -58,6 +58,7 @@ pub struct BillingStatusResponse {
     pub portal_url: Option<String>,
     pub limits: BillingLimits,
     pub private_agent_compute: Option<PrivateAgentComputeStatus>,
+    pub private_agent_trading: Option<PrivateAgentTradingStatus>,
 }
 
 #[derive(Serialize)]
@@ -79,6 +80,54 @@ pub struct PrivateAgentComputeStatus {
     pub period_start: String,
     pub period_end: String,
     pub metering_unit: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct PrivateAgentTradingPlan {
+    included_notional_micro_usd: i64,
+    overage_fee_bps: i32,
+    default_monthly_fee_cap_micro_usd: i64,
+}
+
+#[derive(Serialize)]
+pub struct PrivateAgentTradingStatus {
+    pub included_notional_micro_usd: i64,
+    pub filled_notional_micro_usd: i64,
+    pub remaining_included_notional_micro_usd: i64,
+    pub overage_notional_micro_usd: i64,
+    pub overage_fee_bps: i32,
+    pub accrued_fee_micro_usd: i64,
+    pub queued_fee_cents: i64,
+    pub invoiced_fee_cents: i64,
+    pub monthly_fee_cap_micro_usd: i64,
+    pub cap_reached: bool,
+    pub live_trading_allowed: bool,
+    pub period_start: String,
+    pub period_end: String,
+    pub metering_unit: &'static str,
+    pub billing_state: &'static str,
+}
+
+#[derive(Deserialize)]
+pub struct MeterPrivateAgentTradingRequest {
+    pub event_id: String,
+    pub work_order_commitment: String,
+    pub connector_result_commitment: String,
+    pub platform_class: String,
+    pub fill_count: i32,
+    pub filled_notional_micro_usd: i64,
+}
+
+#[derive(Serialize)]
+pub struct MeterPrivateAgentTradingResponse {
+    pub ok: bool,
+    pub duplicate: bool,
+    pub status: PrivateAgentTradingStatus,
+}
+
+#[derive(Deserialize)]
+pub struct UpdatePrivateAgentTradingCapRequest {
+    pub monthly_fee_cap_micro_usd: i64,
 }
 
 #[derive(Deserialize)]
@@ -115,6 +164,14 @@ const PRIVATE_AGENT_INCLUDED_COMPUTE_SECONDS: i64 = 80 * 60 * 60;
 const PRIVATE_AGENT_ACTIVE_AGENT_LIMIT: i64 = 1;
 const ENTERPRISE_INCLUDED_COMPUTE_SECONDS: i64 = 31 * 24 * 60 * 60;
 const ENTERPRISE_ACTIVE_AGENT_LIMIT: i64 = 10;
+const PRIVATE_AGENT_TRIAL_INCLUDED_NOTIONAL_MICRO_USD: i64 = 10_000_000_000;
+const PRIVATE_AGENT_STARTER_INCLUDED_NOTIONAL_MICRO_USD: i64 = 100_000_000_000;
+const PRIVATE_AGENT_INCLUDED_NOTIONAL_MICRO_USD: i64 = 1_000_000_000_000;
+const PRIVATE_AGENT_STARTER_OVERAGE_FEE_BPS: i32 = 3;
+const PRIVATE_AGENT_OVERAGE_FEE_BPS: i32 = 2;
+const PRIVATE_AGENT_STARTER_DEFAULT_FEE_CAP_MICRO_USD: i64 = 50_000_000;
+const PRIVATE_AGENT_DEFAULT_FEE_CAP_MICRO_USD: i64 = 500_000_000;
+const PRIVATE_AGENT_MAX_FEE_CAP_MICRO_USD: i64 = 10_000_000_000;
 
 /// POST /api/billing/checkout
 pub async fn create_checkout(
@@ -457,9 +514,9 @@ fn verify_stripe_signature(
     // A non-numeric timestamp must be REJECTED rather than silently skipping
     // the replay window (L1) — otherwise a malformed `t=` value would strip
     // replay protection while a valid signature still passes.
-    let ts = timestamp.parse::<i64>().map_err(|_| {
-        CloudError::BadRequest("invalid timestamp in Stripe signature".to_string())
-    })?;
+    let ts = timestamp
+        .parse::<i64>()
+        .map_err(|_| CloudError::BadRequest("invalid timestamp in Stripe signature".to_string()))?;
     let now = chrono::Utc::now().timestamp();
     if (now - ts).abs() > 300 {
         return Err(CloudError::BadRequest(
@@ -579,12 +636,12 @@ fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static s
     let amount = event["data"]["object"]["amount_total"]
         .as_i64()
         .unwrap_or(0);
-    if amount >= 4900 {
+    if amount >= 12900 {
         "private_agent"
+    } else if amount >= 3900 {
+        "starter"
     } else if amount >= 2999 {
         "unlimited"
-    } else if amount >= 1900 {
-        "starter"
     } else if amount >= 999 {
         "pro"
     } else if amount >= 900 {
@@ -625,6 +682,89 @@ fn private_agent_allowance_for_tier(tier: &str) -> Option<(i64, i64)> {
             ENTERPRISE_ACTIVE_AGENT_LIMIT,
         )),
         _ => None,
+    }
+}
+
+fn private_agent_trading_plan_for_tier(tier: &str) -> Option<PrivateAgentTradingPlan> {
+    match tier {
+        "trial_pack" => Some(PrivateAgentTradingPlan {
+            included_notional_micro_usd: PRIVATE_AGENT_TRIAL_INCLUDED_NOTIONAL_MICRO_USD,
+            overage_fee_bps: 0,
+            default_monthly_fee_cap_micro_usd: 0,
+        }),
+        "starter" => Some(PrivateAgentTradingPlan {
+            included_notional_micro_usd: PRIVATE_AGENT_STARTER_INCLUDED_NOTIONAL_MICRO_USD,
+            overage_fee_bps: PRIVATE_AGENT_STARTER_OVERAGE_FEE_BPS,
+            default_monthly_fee_cap_micro_usd: PRIVATE_AGENT_STARTER_DEFAULT_FEE_CAP_MICRO_USD,
+        }),
+        "private_agent" => Some(PrivateAgentTradingPlan {
+            included_notional_micro_usd: PRIVATE_AGENT_INCLUDED_NOTIONAL_MICRO_USD,
+            overage_fee_bps: PRIVATE_AGENT_OVERAGE_FEE_BPS,
+            default_monthly_fee_cap_micro_usd: PRIVATE_AGENT_DEFAULT_FEE_CAP_MICRO_USD,
+        }),
+        "enterprise" => Some(PrivateAgentTradingPlan {
+            included_notional_micro_usd: i64::MAX / 4,
+            overage_fee_bps: 0,
+            default_monthly_fee_cap_micro_usd: 0,
+        }),
+        _ => None,
+    }
+}
+
+fn fee_for_overage_micro_usd(notional_micro_usd: i64, fee_bps: i32) -> i64 {
+    if notional_micro_usd <= 0 || fee_bps <= 0 {
+        return 0;
+    }
+    let numerator = i128::from(notional_micro_usd) * i128::from(fee_bps);
+    ((numerator + 9_999) / 10_000).min(i128::from(i64::MAX)) as i64
+}
+
+fn valid_trading_meter_identifier(value: &str) -> bool {
+    (8..=200).contains(&value.len())
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':'))
+}
+
+fn private_agent_trading_status_from_values(
+    plan: PrivateAgentTradingPlan,
+    filled_notional_micro_usd: i64,
+    accrued_fee_micro_usd: i64,
+    queued_fee_cents: i64,
+    invoiced_fee_cents: i64,
+    monthly_fee_cap_micro_usd: i64,
+    period_start: chrono::DateTime<chrono::Utc>,
+    period_end: chrono::DateTime<chrono::Utc>,
+) -> PrivateAgentTradingStatus {
+    let remaining = (plan.included_notional_micro_usd - filled_notional_micro_usd).max(0);
+    let overage = (filled_notional_micro_usd - plan.included_notional_micro_usd).max(0);
+    let hard_allowance_exhausted = plan.overage_fee_bps == 0 && remaining == 0;
+    let cap_reached = plan.overage_fee_bps > 0
+        && if monthly_fee_cap_micro_usd == 0 {
+            remaining == 0
+        } else {
+            accrued_fee_micro_usd >= monthly_fee_cap_micro_usd
+        };
+    PrivateAgentTradingStatus {
+        included_notional_micro_usd: plan.included_notional_micro_usd,
+        filled_notional_micro_usd,
+        remaining_included_notional_micro_usd: remaining,
+        overage_notional_micro_usd: overage,
+        overage_fee_bps: plan.overage_fee_bps,
+        accrued_fee_micro_usd,
+        queued_fee_cents,
+        invoiced_fee_cents,
+        monthly_fee_cap_micro_usd,
+        cap_reached,
+        live_trading_allowed: !hard_allowance_exhausted && !cap_reached,
+        period_start: period_start.to_rfc3339(),
+        period_end: period_end.to_rfc3339(),
+        metering_unit: "filled_notional_micro_usd",
+        billing_state: if queued_fee_cents > invoiced_fee_cents {
+            "invoice_pending"
+        } else {
+            "current"
+        },
     }
 }
 
@@ -763,6 +903,67 @@ async fn private_agent_compute_status_for_user(
     }))
 }
 
+async fn private_agent_trading_status_for_user(
+    state: &AppState,
+    user_id: uuid::Uuid,
+    tier: &str,
+) -> Result<Option<PrivateAgentTradingStatus>, CloudError> {
+    let Some(plan) = private_agent_trading_plan_for_tier(tier) else {
+        return Ok(None);
+    };
+    let (period_start, period_start_dt, period_end_dt) = current_private_agent_period()?;
+    sqlx::query(
+        r#"
+        INSERT INTO private_agent_trading_usage_periods
+            (user_id, period_start, tier, included_notional_micro_usd, overage_fee_bps,
+             monthly_fee_cap_micro_usd)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (user_id, period_start) DO NOTHING
+        "#,
+    )
+    .bind(user_id)
+    .bind(period_start)
+    .bind(tier)
+    .bind(plan.included_notional_micro_usd)
+    .bind(plan.overage_fee_bps)
+    .bind(plan.default_monthly_fee_cap_micro_usd)
+    .execute(&state.db)
+    .await?;
+    let row = sqlx::query_as::<_, (i64, i32, i64, i64, i64, i64)>(
+        r#"
+        SELECT included_notional_micro_usd, overage_fee_bps, filled_notional_micro_usd,
+               accrued_fee_micro_usd, queued_fee_cents, invoiced_fee_cents
+        FROM private_agent_trading_usage_periods
+        WHERE user_id = $1 AND period_start = $2
+        "#,
+    )
+    .bind(user_id)
+    .bind(period_start)
+    .fetch_one(&state.db)
+    .await?;
+    let monthly_fee_cap_micro_usd: i64 = sqlx::query_scalar(
+        "SELECT monthly_fee_cap_micro_usd FROM private_agent_trading_usage_periods WHERE user_id = $1 AND period_start = $2",
+    )
+    .bind(user_id)
+    .bind(period_start)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Some(private_agent_trading_status_from_values(
+        PrivateAgentTradingPlan {
+            included_notional_micro_usd: row.0,
+            overage_fee_bps: row.1,
+            default_monthly_fee_cap_micro_usd: monthly_fee_cap_micro_usd,
+        },
+        row.2,
+        row.3,
+        row.4,
+        row.5,
+        monthly_fee_cap_micro_usd,
+        period_start_dt,
+        period_end_dt,
+    )))
+}
+
 async fn mark_private_balance_top_up_paid(
     event: &serde_json::Value,
     state: &AppState,
@@ -893,6 +1094,9 @@ pub async fn billing_webhook(
                 .as_str()
                 .unwrap_or("");
             let customer_id = event["data"]["object"]["customer"].as_str().unwrap_or("");
+            let subscription_id = event["data"]["object"]["subscription"]
+                .as_str()
+                .unwrap_or("");
 
             if let Ok(user_id) = user_id_str.parse::<uuid::Uuid>() {
                 // Determine tier from the checkout session's price ID
@@ -909,13 +1113,15 @@ pub async fn billing_webhook(
                     SET tier = $1,
                         tier_expires_at = $2,
                         stripe_customer_id = COALESCE(NULLIF($3, ''), stripe_customer_id),
+                        stripe_subscription_id = COALESCE(NULLIF($4, ''), stripe_subscription_id),
                         updated_at = now()
-                    WHERE id = $4
+                    WHERE id = $5
                     "#,
                 )
                 .bind(tier)
                 .bind(expires_at)
                 .bind(customer_id)
+                .bind(subscription_id)
                 .bind(user_id)
                 .execute(&state.db)
                 .await?;
@@ -927,7 +1133,7 @@ pub async fn billing_webhook(
             let customer_id = event["data"]["object"]["customer"].as_str().unwrap_or("");
 
             sqlx::query(
-                "UPDATE users SET tier = 'free', tier_expires_at = NULL, updated_at = now() WHERE stripe_customer_id = $1",
+                "UPDATE users SET tier = 'free', tier_expires_at = NULL, stripe_subscription_id = NULL, updated_at = now() WHERE stripe_customer_id = $1",
             )
             .bind(customer_id)
             .execute(&state.db)
@@ -937,13 +1143,15 @@ pub async fn billing_webhook(
         }
         "customer.subscription.updated" => {
             let customer_id = event["data"]["object"]["customer"].as_str().unwrap_or("");
+            let subscription_id = event["data"]["object"]["id"].as_str().unwrap_or("");
             let status = event["data"]["object"]["status"].as_str().unwrap_or("");
             if matches!(status, "active" | "trialing") {
                 let tier = tier_from_price_id(&event, &state);
                 sqlx::query(
-                    "UPDATE users SET tier = $1, tier_expires_at = NULL, updated_at = now() WHERE stripe_customer_id = $2",
+                    "UPDATE users SET tier = $1, tier_expires_at = NULL, stripe_subscription_id = COALESCE(NULLIF($2, ''), stripe_subscription_id), updated_at = now() WHERE stripe_customer_id = $3",
                 )
                 .bind(tier)
+                .bind(subscription_id)
                 .bind(customer_id)
                 .execute(&state.db)
                 .await?;
@@ -957,6 +1165,27 @@ pub async fn billing_webhook(
                 .await?;
                 tracing::info!(customer_id, status, "subscription no longer active");
             }
+        }
+        "invoice.paid" => {
+            let customer_id = event["data"]["object"]["customer"].as_str().unwrap_or("");
+            sqlx::query(
+                r#"
+                UPDATE private_agent_trading_usage_periods p
+                SET active_stripe_invoice_item_id = NULL,
+                    active_stripe_invoice_item_base_cents = 0,
+                    updated_at = now()
+                FROM users u
+                WHERE p.user_id = u.id AND u.stripe_customer_id = $1
+                "#,
+            )
+            .bind(customer_id)
+            .execute(&state.db)
+            .await?;
+            tracing::info!(customer_id, "trading overage invoice paid");
+        }
+        "invoice.payment_failed" => {
+            let customer_id = event["data"]["object"]["customer"].as_str().unwrap_or("");
+            tracing::warn!(customer_id, "trading overage invoice payment failed");
         }
         _ => {
             tracing::debug!(event_type, "unhandled Stripe event");
@@ -1187,6 +1416,409 @@ pub async fn release_private_agent_compute(
     Ok(Json(ReleasePrivateAgentComputeResponse { ok: true }))
 }
 
+async fn process_private_agent_trading_invoice_outbox(
+    state: &AppState,
+    user_id: uuid::Uuid,
+) -> Result<(), CloudError> {
+    let Some(stripe_key) = state.config.stripe_secret_key.as_deref() else {
+        return Ok(());
+    };
+    let customer = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT stripe_customer_id, stripe_subscription_id FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((Some(customer_id), subscription_id)) = customer else {
+        return Ok(());
+    };
+    let rows = sqlx::query_as::<_, (uuid::Uuid, chrono::NaiveDate, i64, i64)>(
+        r#"
+        SELECT id, period_start, amount_cents, target_queued_fee_cents
+        FROM private_agent_trading_invoice_outbox
+        WHERE user_id = $1
+          AND (status IN ('pending', 'failed') OR (status = 'processing' AND updated_at < now() - interval '5 minutes'))
+          AND attempts < 10
+        ORDER BY created_at
+        LIMIT 20
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(&state.db)
+    .await?;
+    let client = reqwest::Client::new();
+    for (id, period_start, _amount_cents, target_queued_fee_cents) in rows {
+        let claimed = sqlx::query(
+            r#"
+            UPDATE private_agent_trading_invoice_outbox
+            SET status = 'processing', attempts = attempts + 1, updated_at = now()
+            WHERE id = $1
+              AND (status IN ('pending', 'failed') OR (status = 'processing' AND updated_at < now() - interval '5 minutes'))
+            "#,
+        )
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+        if claimed.rows_affected() != 1 {
+            continue;
+        }
+        let active = sqlx::query_as::<_, (Option<String>, i64, i64)>(
+            r#"
+            SELECT active_stripe_invoice_item_id, active_stripe_invoice_item_base_cents,
+                   invoiced_fee_cents
+            FROM private_agent_trading_usage_periods
+            WHERE user_id = $1 AND period_start = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(period_start)
+        .fetch_one(&state.db)
+        .await?;
+        let active_base_cents = if active.0.is_some() {
+            active.1
+        } else {
+            active.2
+        };
+        let invoice_item_amount_cents = (target_queued_fee_cents - active_base_cents).max(0);
+        if invoice_item_amount_cents <= 0 {
+            sqlx::query(
+                "UPDATE private_agent_trading_invoice_outbox SET status = 'succeeded', last_error = NULL, updated_at = now() WHERE id = $1",
+            )
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+            continue;
+        }
+        let updating_existing = active.0.is_some();
+        let endpoint = active
+            .0
+            .as_ref()
+            .map(|item_id| format!("https://api.stripe.com/v1/invoiceitems/{item_id}"))
+            .unwrap_or_else(|| "https://api.stripe.com/v1/invoiceitems".to_string());
+        let mut form = vec![("amount", invoice_item_amount_cents.to_string())];
+        if !updating_existing {
+            form.extend([
+                ("customer", customer_id.clone()),
+                ("currency", "usd".to_string()),
+                (
+                    "description",
+                    format!("Ghola filled-notional overage for {period_start}"),
+                ),
+                (
+                    "metadata[ghola_kind]",
+                    "private_agent_trading_overage".to_string(),
+                ),
+                ("metadata[usage_period_start]", period_start.to_string()),
+                ("metadata[outbox_id]", id.to_string()),
+            ]);
+            if let Some(ref subscription_id) = subscription_id {
+                form.push(("subscription", subscription_id.clone()));
+            }
+        }
+        let response = client
+            .post(endpoint)
+            .header("Authorization", format!("Bearer {stripe_key}"))
+            .header("Idempotency-Key", format!("ghola-trading-overage-{id}"))
+            .form(&form)
+            .send()
+            .await;
+        match response {
+            Ok(response) if response.status().is_success() => {
+                let body: serde_json::Value = response.json().await.unwrap_or_default();
+                let invoice_item_id = body["id"].as_str().map(str::to_string).or(active.0.clone());
+                let mut tx = state.db.begin().await?;
+                sqlx::query(
+                    r#"
+                    UPDATE private_agent_trading_invoice_outbox
+                    SET status = 'succeeded', stripe_invoice_item_id = $2, last_error = NULL, updated_at = now()
+                    WHERE id = $1
+                    "#,
+                )
+                .bind(id)
+                .bind(invoice_item_id.as_deref())
+                .execute(&mut *tx)
+                .await?;
+                sqlx::query(
+                    r#"
+                    UPDATE private_agent_trading_usage_periods
+                    SET invoiced_fee_cents = GREATEST(invoiced_fee_cents, $3),
+                        active_stripe_invoice_item_id = COALESCE($4, active_stripe_invoice_item_id),
+                        active_stripe_invoice_item_base_cents = $5,
+                        updated_at = now()
+                    WHERE user_id = $1 AND period_start = $2
+                    "#,
+                )
+                .bind(user_id)
+                .bind(period_start)
+                .bind(target_queued_fee_cents)
+                .bind(invoice_item_id.as_deref())
+                .bind(active_base_cents)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+            }
+            Ok(response) => {
+                let status = response.status().as_u16();
+                sqlx::query(
+                    "UPDATE private_agent_trading_invoice_outbox SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1",
+                )
+                .bind(id)
+                .bind(format!("stripe_http_{status}"))
+                .execute(&state.db)
+                .await?;
+            }
+            Err(_) => {
+                sqlx::query(
+                    "UPDATE private_agent_trading_invoice_outbox SET status = 'failed', last_error = 'stripe_unavailable', updated_at = now() WHERE id = $1",
+                )
+                .bind(id)
+                .execute(&state.db)
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// POST /api/billing/private-agent/trading/meter
+pub async fn meter_private_agent_trading(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<MeterPrivateAgentTradingRequest>,
+) -> Result<Json<MeterPrivateAgentTradingResponse>, CloudError> {
+    if !valid_trading_meter_identifier(&req.event_id)
+        || !valid_trading_meter_identifier(&req.work_order_commitment)
+        || !valid_trading_meter_identifier(&req.connector_result_commitment)
+    {
+        return Err(CloudError::BadRequest(
+            "trading meter identifiers must be 8-200 URL-safe characters".to_string(),
+        ));
+    }
+    if !(1..=25).contains(&req.fill_count) || req.filled_notional_micro_usd <= 0 {
+        return Err(CloudError::BadRequest(
+            "positive reconciled fill_count and filled_notional_micro_usd are required".to_string(),
+        ));
+    }
+    if req.platform_class.len() > 80
+        || !req
+            .platform_class
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return Err(CloudError::BadRequest("invalid platform_class".to_string()));
+    }
+    let (period_start, period_start_dt, period_end_dt) = current_private_agent_period()?;
+    let mut tx = state.db.begin().await?;
+    let user = sqlx::query_as::<_, (String, Option<chrono::DateTime<chrono::Utc>>)>(
+        "SELECT tier, tier_expires_at FROM users WHERE id = $1 FOR UPDATE",
+    )
+    .bind(claims.sub)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(CloudError::NotFound("user not found".to_string()))?;
+    let tier = effective_tier(user.0, user.1);
+    let Some(plan) = private_agent_trading_plan_for_tier(&tier) else {
+        return Err(CloudError::PaymentRequired(
+            "live trading plan required".to_string(),
+        ));
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO private_agent_trading_usage_periods
+            (user_id, period_start, tier, included_notional_micro_usd, overage_fee_bps,
+             monthly_fee_cap_micro_usd)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (user_id, period_start) DO NOTHING
+        "#,
+    )
+    .bind(claims.sub)
+    .bind(period_start)
+    .bind(&tier)
+    .bind(plan.included_notional_micro_usd)
+    .bind(plan.overage_fee_bps)
+    .bind(plan.default_monthly_fee_cap_micro_usd)
+    .execute(&mut *tx)
+    .await?;
+    let row = sqlx::query_as::<_, (i64, i32, i64, i64, i64, i64, i64)>(
+        r#"
+        SELECT included_notional_micro_usd, overage_fee_bps, filled_notional_micro_usd,
+               accrued_fee_micro_usd, queued_fee_cents, invoiced_fee_cents,
+               monthly_fee_cap_micro_usd
+        FROM private_agent_trading_usage_periods
+        WHERE user_id = $1 AND period_start = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(claims.sub)
+    .bind(period_start)
+    .fetch_one(&mut *tx)
+    .await?;
+    let stored_plan = PrivateAgentTradingPlan {
+        included_notional_micro_usd: row.0,
+        overage_fee_bps: row.1,
+        default_monthly_fee_cap_micro_usd: row.6,
+    };
+    let duplicate: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM private_agent_trading_usage_events WHERE user_id = $1 AND event_id = $2)",
+    )
+    .bind(claims.sub)
+    .bind(&req.event_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let (filled_notional, accrued_fee, queued_fee_cents) = if duplicate {
+        (row.2, row.3, row.4)
+    } else {
+        let new_filled = row
+            .2
+            .checked_add(req.filled_notional_micro_usd)
+            .ok_or_else(|| CloudError::BadRequest("filled notional overflow".to_string()))?;
+        let old_overage = (row.2 - stored_plan.included_notional_micro_usd).max(0);
+        let new_overage = (new_filled - stored_plan.included_notional_micro_usd).max(0);
+        let theoretical_old_fee =
+            fee_for_overage_micro_usd(old_overage, stored_plan.overage_fee_bps);
+        let theoretical_new_fee =
+            fee_for_overage_micro_usd(new_overage, stored_plan.overage_fee_bps);
+        let capped_new_fee = theoretical_new_fee.min(row.6);
+        let incremental_fee = (capped_new_fee - theoretical_old_fee.min(row.3)).max(0);
+        let target_fee_cents = capped_new_fee / 10_000;
+        let queue_delta_cents = (target_fee_cents - row.4).max(0);
+        sqlx::query(
+            r#"
+            INSERT INTO private_agent_trading_usage_events
+                (event_id, user_id, period_start, work_order_commitment,
+                 connector_result_commitment, platform_class, fill_count,
+                 filled_notional_micro_usd, incremental_fee_micro_usd)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            "#,
+        )
+        .bind(&req.event_id)
+        .bind(claims.sub)
+        .bind(period_start)
+        .bind(&req.work_order_commitment)
+        .bind(&req.connector_result_commitment)
+        .bind(&req.platform_class)
+        .bind(req.fill_count)
+        .bind(req.filled_notional_micro_usd)
+        .bind(incremental_fee)
+        .execute(&mut *tx)
+        .await?;
+        if queue_delta_cents > 0 {
+            sqlx::query(
+                r#"
+                INSERT INTO private_agent_trading_invoice_outbox
+                    (user_id, period_start, amount_cents, target_queued_fee_cents)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (user_id, period_start, target_queued_fee_cents) DO NOTHING
+                "#,
+            )
+            .bind(claims.sub)
+            .bind(period_start)
+            .bind(queue_delta_cents)
+            .bind(target_fee_cents)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query(
+            r#"
+            UPDATE private_agent_trading_usage_periods
+            SET filled_notional_micro_usd = $3,
+                accrued_fee_micro_usd = $4,
+                queued_fee_cents = GREATEST(queued_fee_cents, $5),
+                updated_at = now()
+            WHERE user_id = $1 AND period_start = $2
+            "#,
+        )
+        .bind(claims.sub)
+        .bind(period_start)
+        .bind(new_filled)
+        .bind(capped_new_fee)
+        .bind(target_fee_cents)
+        .execute(&mut *tx)
+        .await?;
+        (new_filled, capped_new_fee, target_fee_cents.max(row.4))
+    };
+    tx.commit().await?;
+    process_private_agent_trading_invoice_outbox(&state, claims.sub).await?;
+    let invoiced_fee_cents: i64 = sqlx::query_scalar(
+        "SELECT invoiced_fee_cents FROM private_agent_trading_usage_periods WHERE user_id = $1 AND period_start = $2",
+    )
+    .bind(claims.sub)
+    .bind(period_start)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(MeterPrivateAgentTradingResponse {
+        ok: true,
+        duplicate,
+        status: private_agent_trading_status_from_values(
+            stored_plan,
+            filled_notional,
+            accrued_fee,
+            queued_fee_cents,
+            invoiced_fee_cents,
+            row.6,
+            period_start_dt,
+            period_end_dt,
+        ),
+    }))
+}
+
+/// PATCH /api/billing/private-agent/trading/cap
+pub async fn update_private_agent_trading_cap(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<UpdatePrivateAgentTradingCapRequest>,
+) -> Result<Json<PrivateAgentTradingStatus>, CloudError> {
+    if !(0..=PRIVATE_AGENT_MAX_FEE_CAP_MICRO_USD).contains(&req.monthly_fee_cap_micro_usd) {
+        return Err(CloudError::BadRequest(
+            "monthly fee cap must be between $0 and $10,000".to_string(),
+        ));
+    }
+    let tier_row = sqlx::query_as::<_, (String, Option<chrono::DateTime<chrono::Utc>>)>(
+        "SELECT tier, tier_expires_at FROM users WHERE id = $1",
+    )
+    .bind(claims.sub)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(CloudError::NotFound("user not found".to_string()))?;
+    let tier = effective_tier(tier_row.0, tier_row.1);
+    let Some(plan) = private_agent_trading_plan_for_tier(&tier) else {
+        return Err(CloudError::PaymentRequired(
+            "live trading plan required".to_string(),
+        ));
+    };
+    if plan.overage_fee_bps == 0 && req.monthly_fee_cap_micro_usd != 0 {
+        return Err(CloudError::BadRequest(
+            "this plan has no overage billing".to_string(),
+        ));
+    }
+    let (period_start, _, _) = current_private_agent_period()?;
+    private_agent_trading_status_for_user(&state, claims.sub, &tier).await?;
+    let accrued: i64 = sqlx::query_scalar(
+        "SELECT accrued_fee_micro_usd FROM private_agent_trading_usage_periods WHERE user_id = $1 AND period_start = $2",
+    )
+    .bind(claims.sub)
+    .bind(period_start)
+    .fetch_one(&state.db)
+    .await?;
+    if req.monthly_fee_cap_micro_usd < accrued {
+        return Err(CloudError::BadRequest(
+            "monthly fee cap cannot be lower than already accrued fees".to_string(),
+        ));
+    }
+    sqlx::query(
+        "UPDATE private_agent_trading_usage_periods SET monthly_fee_cap_micro_usd = $3, updated_at = now() WHERE user_id = $1 AND period_start = $2",
+    )
+    .bind(claims.sub)
+    .bind(period_start)
+    .bind(req.monthly_fee_cap_micro_usd)
+    .execute(&state.db)
+    .await?;
+    private_agent_trading_status_for_user(&state, claims.sub, &tier)
+        .await?
+        .ok_or_else(|| CloudError::Internal("trading status unavailable".to_string()))
+        .map(Json)
+}
+
 /// GET /api/billing/status
 pub async fn billing_status(
     State(state): State<AppState>,
@@ -1207,6 +1839,7 @@ pub async fn billing_status(
 
     let (raw_tier, tier_expires_at, stripe_customer_id) = row;
     let tier = effective_tier(raw_tier, tier_expires_at);
+    process_private_agent_trading_invoice_outbox(&state, claims.sub).await?;
     let expires_at = if tier == "trial_pack" {
         tier_expires_at.map(|expiry| expiry.to_rfc3339())
     } else {
@@ -1244,9 +1877,115 @@ pub async fn billing_status(
         limits: billing_limits_for_tier(&tier),
         private_agent_compute: private_agent_compute_status_for_user(&state, claims.sub, &tier)
             .await?,
+        private_agent_trading: private_agent_trading_status_for_user(&state, claims.sub, &tier)
+            .await?,
         tier,
         expires_at,
         stripe_customer_id,
         portal_url,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overage_fee_rounds_once_at_cumulative_precision() {
+        let first = fee_for_overage_micro_usd(16_667, 3);
+        let second_total = fee_for_overage_micro_usd(33_334, 3);
+        assert_eq!(first, 6);
+        assert_eq!(second_total, 11);
+        assert_eq!(second_total - first, 5);
+    }
+
+    #[test]
+    fn starter_and_private_agent_have_distinct_value_allowances() {
+        let starter = private_agent_trading_plan_for_tier("starter").unwrap();
+        let private_agent = private_agent_trading_plan_for_tier("private_agent").unwrap();
+        assert_eq!(starter.included_notional_micro_usd, 100_000_000_000);
+        assert_eq!(starter.overage_fee_bps, 3);
+        assert_eq!(private_agent.included_notional_micro_usd, 1_000_000_000_000);
+        assert_eq!(private_agent.overage_fee_bps, 2);
+        assert!(
+            private_agent.default_monthly_fee_cap_micro_usd
+                > starter.default_monthly_fee_cap_micro_usd
+        );
+    }
+
+    #[test]
+    fn trial_pack_stops_at_included_notional_without_creating_overage() {
+        let plan = private_agent_trading_plan_for_tier("trial_pack").unwrap();
+        let start = chrono::Utc
+            .with_ymd_and_hms(2026, 7, 1, 0, 0, 0)
+            .single()
+            .unwrap();
+        let end = chrono::Utc
+            .with_ymd_and_hms(2026, 8, 1, 0, 0, 0)
+            .single()
+            .unwrap();
+        let status = private_agent_trading_status_from_values(
+            plan,
+            plan.included_notional_micro_usd,
+            0,
+            0,
+            0,
+            0,
+            start,
+            end,
+        );
+        assert!(!status.live_trading_allowed);
+        assert!(!status.cap_reached);
+        assert_eq!(status.accrued_fee_micro_usd, 0);
+    }
+
+    #[test]
+    fn paid_plan_stops_when_user_fee_ceiling_is_reached() {
+        let plan = private_agent_trading_plan_for_tier("starter").unwrap();
+        let start = chrono::Utc
+            .with_ymd_and_hms(2026, 7, 1, 0, 0, 0)
+            .single()
+            .unwrap();
+        let end = chrono::Utc
+            .with_ymd_and_hms(2026, 8, 1, 0, 0, 0)
+            .single()
+            .unwrap();
+        let status = private_agent_trading_status_from_values(
+            plan,
+            plan.included_notional_micro_usd + 200_000_000_000,
+            plan.default_monthly_fee_cap_micro_usd,
+            5_000,
+            5_000,
+            plan.default_monthly_fee_cap_micro_usd,
+            start,
+            end,
+        );
+        assert!(status.cap_reached);
+        assert!(!status.live_trading_allowed);
+    }
+
+    #[test]
+    fn zero_fee_ceiling_means_no_overage_not_unlimited_overage() {
+        let plan = private_agent_trading_plan_for_tier("starter").unwrap();
+        let start = chrono::Utc
+            .with_ymd_and_hms(2026, 7, 1, 0, 0, 0)
+            .single()
+            .unwrap();
+        let end = chrono::Utc
+            .with_ymd_and_hms(2026, 8, 1, 0, 0, 0)
+            .single()
+            .unwrap();
+        let status = private_agent_trading_status_from_values(
+            plan,
+            plan.included_notional_micro_usd,
+            0,
+            0,
+            0,
+            0,
+            start,
+            end,
+        );
+        assert!(status.cap_reached);
+        assert!(!status.live_trading_allowed);
+    }
 }

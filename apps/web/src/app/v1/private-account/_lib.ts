@@ -12,6 +12,7 @@ import {
   hasPrivateAccountMobileProofHeaders,
   verifyPrivateAccountMobileProof,
 } from "@/lib/private-account-mobile-proof";
+import { privateAgentTradingMeterEvent } from "@/lib/private-agent-trading-billing";
 import {
   mobileWalletCommitment,
 } from "@/lib/private-account-wallet-binding";
@@ -901,6 +902,12 @@ async function verifyLiveRevenueGuard(
       active_agent_limit?: number | null;
       active_agent_count?: number | null;
     } | null;
+    private_agent_trading?: {
+      live_trading_allowed?: boolean;
+      cap_reached?: boolean;
+      remaining_included_notional_micro_usd?: number;
+      monthly_fee_cap_micro_usd?: number;
+    } | null;
   } | null;
   if (!hasPrivateAgentEntitlement(billing?.tier)) {
     return {
@@ -909,6 +916,19 @@ async function verifyLiveRevenueGuard(
         error: "private_agent_subscription_required",
         entitlement_required: "paid_private_agent_plan",
         tier: billing?.tier ?? "free",
+      }, 402),
+    };
+  }
+  if (billing?.private_agent_trading?.live_trading_allowed === false) {
+    return {
+      ok: false,
+      response: json({
+        error: billing.private_agent_trading.cap_reached
+          ? "private_agent_trading_fee_cap_reached"
+          : "private_agent_filled_notional_allowance_exhausted",
+        entitlement_required: billing.private_agent_trading.cap_reached
+          ? "increase_trading_fee_cap"
+          : "upgrade_private_agent_plan",
       }, 402),
     };
   }
@@ -1034,6 +1054,38 @@ export async function releasePrivateAccountLiveRevenueReservation(
     }),
     cache: "no-store",
   }).catch(() => null);
+}
+
+export async function meterPrivateAccountTradingFills(input: {
+  authorization: string | null;
+  result: Pick<GholaConnectorResult,
+    "fill_summary" | "fill_commitments" | "work_order_commitment" |
+    "connector_result_commitment" | "platform_class"
+  > | null | undefined;
+}): Promise<{ status: "not_applicable" | "metered" | "pending"; duplicate?: boolean }> {
+  const result = input.result;
+  const event = privateAgentTradingMeterEvent(result);
+  if (!input.authorization || !event) {
+    return { status: "not_applicable" };
+  }
+  const response = await fetchWithTimeout(`${THUMPER_API_BASE}/api/billing/private-agent/trading/meter`, {
+    method: "POST",
+    headers: {
+      Authorization: input.authorization,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(event),
+    cache: "no-store",
+    signal: AbortSignal.timeout(positiveIntegerEnv("GHOLA_TRADING_METER_TIMEOUT_MS", 1_000)),
+  }).catch(() => null);
+  if (!response?.ok) return { status: "pending" };
+  const body = await response.json().catch(() => null) as { duplicate?: boolean } | null;
+  return { status: "metered", duplicate: body?.duplicate === true };
+}
+
+export function privateAccountBillingAuthorization(req: Request): string | null {
+  return billingAuthorizationForRequest(req);
 }
 
 function stableJson(value: unknown): string {
@@ -7429,6 +7481,15 @@ function publicConnectorResult(record: GholaConnectorResult) {
     platform_fee_policy_commitment: record.platform_fee_policy_commitment ?? null,
     visibility_summary: record.visibility_summary,
     final_proof: record.final_proof,
+    fill_commitments: record.fill_commitments ?? [],
+    fill_summary: record.fill_summary ?? {
+      fill_count: 0,
+      filled_base_size: "0",
+      filled_notional_usd: 0,
+      average_fill_price: null,
+      fee_usd: 0,
+      fee_status: "not_applicable",
+    },
     reason: record.reason,
     created_at: record.created_at,
     updated_at: record.updated_at,
