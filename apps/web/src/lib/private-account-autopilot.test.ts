@@ -23,7 +23,9 @@ import {
   listAutopilotEventsForOwner,
   listAutopilotSessionsForOwner,
   resetAutopilotSessionsForTests,
+  syncWorkerAutopilotSession,
 } from "./private-account-autopilot";
+import { probeConfiguredAutopilotWorkerReadiness } from "./private-agent-worker-readiness";
 import { privateAccountMobileProofMessage } from "./private-account-mobile-proof";
 
 const owner = { owner_commitment: "owner_a" };
@@ -177,6 +179,9 @@ describe("private account autopilot sessions", () => {
     const calls: string[] = [];
     const fetchImpl = async (input: URL | RequestInfo) => {
       calls.push(String(input));
+      if (String(input).endsWith("/ready")) {
+        return new Response(JSON.stringify({ ready: true, missing: [] }), { status: 200 });
+      }
       return new Response(JSON.stringify({
         version: 1,
         session: {
@@ -253,7 +258,10 @@ describe("private account autopilot sessions", () => {
       fetchImpl,
     );
 
-    expect(calls).toEqual(["https://worker.example/autopilot/sessions"]);
+    expect(calls).toEqual([
+      "https://worker.example/ready",
+      "https://worker.example/autopilot/sessions",
+    ]);
     expect(created.session.status).toBe("running");
     expect(created.session.control_plane).toBe("worker");
     expect(created.session.worker_autopilot_session_id).toBe("worker_autopilot_123");
@@ -268,6 +276,9 @@ describe("private account autopilot sessions", () => {
     const wakeReasons: string[] = [];
     const fetchImpl = async (input: URL | RequestInfo) => {
       calls.push(String(input));
+      if (String(input).endsWith("/ready")) {
+        return new Response(JSON.stringify({ ready: true, missing: [] }), { status: 200 });
+      }
       return new Response(JSON.stringify({
         version: 1,
         session: {
@@ -350,7 +361,10 @@ describe("private account autopilot sessions", () => {
     );
 
     expect(wakeReasons).toEqual(["autopilot_session_create"]);
-    expect(calls).toEqual(["https://worker.example/autopilot/sessions"]);
+    expect(calls).toEqual([
+      "https://worker.example/ready",
+      "https://worker.example/autopilot/sessions",
+    ]);
     expect(created.session.status).toBe("running");
     expect(created.session.worker_autopilot_session_id).toBe("worker_autopilot_jit");
     expect(created.session.venue_access.hyperliquid.status).toBe("ready");
@@ -384,7 +398,10 @@ describe("private account autopilot sessions", () => {
     });
 
     let workerPayload: Record<string, unknown> | null = null;
-    const fetchImpl = async (_input: URL | RequestInfo, init?: RequestInit) => {
+    const fetchImpl = async (input: URL | RequestInfo, init?: RequestInit) => {
+      if (String(input).endsWith("/ready")) {
+        return new Response(JSON.stringify({ ready: true, missing: [] }), { status: 200 });
+      }
       workerPayload = JSON.parse(String(init?.body)) as Record<string, unknown>;
       return new Response(JSON.stringify({
         version: 1,
@@ -442,6 +459,132 @@ describe("private account autopilot sessions", () => {
     expect(JSON.stringify(workerPayload)).not.toContain("api_wallet_private_key");
     expect(created.session.status).toBe("running");
     expect(created.session.venue_access.hyperliquid.status).toBe("ready");
+  });
+
+  it("refuses to arm an autopilot session when the configured worker is not attested-ready", async () => {
+    const calls: string[] = [];
+    const fetchImpl = async (input: URL | RequestInfo) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({
+        ready: false,
+        missing: ["attestation", "measurement", "attestation_hash"],
+      }), { status: 503 });
+    };
+
+    const readiness = await probeConfiguredAutopilotWorkerReadiness({
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+    }, fetchImpl);
+    expect(readiness).toEqual({
+      ok: false,
+      error: "worker_not_ready:attestation,measurement,attestation_hash",
+      missing: ["attestation", "measurement", "attestation_hash"],
+      status: 503,
+    });
+
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+        },
+      },
+      owner,
+      new Date("2026-06-01T12:00:00.000Z"),
+      {
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      },
+      fetchImpl,
+    );
+
+    expect(calls).toEqual([
+      "https://worker.example/ready",
+      "https://worker.example/ready",
+    ]);
+    expect(created.session.status).toBe("pending_worker");
+    expect(created.session.execution_enabled).toBe(false);
+    expect(created.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "Autonomous worker is not armed: the worker is not ready (attestation, measurement, attestation_hash).",
+        data: expect.objectContaining({
+          error: "worker_not_ready:attestation,measurement,attestation_hash",
+        }),
+      }),
+    ]));
+  });
+
+  it("blocks a lost worker session and records one actionable sync failure", async () => {
+    const createFetch = async (input: URL | RequestInfo) => {
+      if (String(input).endsWith("/ready")) {
+        return new Response(JSON.stringify({ ready: true, missing: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        session: {
+          autopilot_session_id: "worker_autopilot_lost",
+          status: "running",
+          session_policy: {
+            venue_allowlist: ["hyperliquid"],
+            market_allowlist: ["BTC-USD"],
+          },
+          venue_access: {
+            hyperliquid: {
+              status: "ready",
+              execution_mode: "byo_api_key",
+              reason: "scoped_api_wallet_ready",
+            },
+          },
+          execution_enabled: true,
+        },
+        events: [],
+      }), { status: 201 });
+    };
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+        },
+      },
+      owner,
+      new Date("2026-06-01T12:00:00.000Z"),
+      {
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      },
+      createFetch,
+    );
+
+    const missingFetch = async () => new Response(JSON.stringify({
+      error: "autopilot_session_not_found",
+    }), { status: 404 });
+    const first = await syncWorkerAutopilotSession(
+      created.session.autopilot_session_id,
+      owner,
+      {
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      },
+      missingFetch,
+      new Date("2026-06-01T12:01:00.000Z"),
+    );
+    const second = await syncWorkerAutopilotSession(
+      created.session.autopilot_session_id,
+      owner,
+      {
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      },
+      missingFetch,
+      new Date("2026-06-01T12:02:00.000Z"),
+    );
+
+    expect("session" in first && first.session.status).toBe("blocked");
+    expect("session" in first && first.session.execution_enabled).toBe(false);
+    expect("session" in first && first.session.next_step).toContain("worker no longer has this run");
+    expect("events" in second && second.events.filter((event) =>
+      event.data.error === "autopilot_session_not_found"
+    )).toHaveLength(1);
   });
 
   it("expires sessions without exposing them to other owners", async () => {
