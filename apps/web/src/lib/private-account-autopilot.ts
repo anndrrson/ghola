@@ -807,7 +807,7 @@ async function fetchWorkerAutopilotSession(
   | { ok: true; session: Record<string, unknown>; events: Record<string, unknown>[] }
   | { ok: false; error: string }
 > {
-  const cfg = autopilotWorkerConfig(env);
+  const cfg = await resolveAutopilotWorkerConfig(env);
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}`;
   const authorization = workerAuthorizationHeader({
@@ -838,6 +838,15 @@ async function fetchWorkerAutopilotSession(
     session,
     events: Array.isArray(body.events) ? body.events.map(optionalRecord).filter(Boolean) as Record<string, unknown>[] : [],
   };
+}
+
+async function resolveAutopilotWorkerConfig(
+  env: Record<string, string | undefined>,
+): Promise<ReturnType<typeof autopilotWorkerConfig>> {
+  const cfg = autopilotWorkerConfig(env);
+  if (env.GHOLA_PRIVATE_AGENT_PROVIDER?.trim().toLowerCase() !== "phala") return cfg;
+  const discovered = parseWorkerUrl(await discoverPhalaPrivateAgentExecutionUrl());
+  return discovered ? { ...cfg, url: discovered } : cfg;
 }
 
 async function fetchWorkerAutopilotOpportunities(
