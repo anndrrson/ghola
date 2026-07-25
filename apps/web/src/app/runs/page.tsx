@@ -315,7 +315,11 @@ export default function RunsPage() {
                       onControl={(action) => controlRun(session, action)}
                     />
                     {selectedRunId === session.autopilot_session_id && (
-                      <RunActivity events={selectedEvents} streamStatus={streamStatus} />
+                      <RunActivity
+                        events={selectedEvents}
+                        streamStatus={streamStatus}
+                        sessionStatus={session.status}
+                      />
                     )}
                   </div>
                 ))}
@@ -389,19 +393,26 @@ function RunCard({ session, busy, selected, onSelect, onControl }: {
   );
 }
 
-function RunActivity({ events, streamStatus }: {
+function RunActivity({ events, streamStatus, sessionStatus }: {
   events: PrivateAutopilotEvent[];
   streamStatus: "connecting" | "live" | "reconnecting" | "closed";
+  sessionStatus: PrivateAutopilotSession["status"];
 }) {
   const visible = events.slice(-10).reverse();
+  const waitingForFunding = sessionStatus === "pending_funding";
+  const statusLabel = waitingForFunding ? "waiting for funding" : streamStatus;
   return (
     <div className="mx-2 border-x border-b border-[#1a2639] bg-[#060910] p-4">
       <div className="flex items-center justify-between">
         <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#6f7d9a]">Execution journal</p>
-        <span className={`font-mono text-[10px] uppercase ${streamStatus === "live" ? "text-emerald-300" : "text-amber-200"}`}>{streamStatus}</span>
+        <span className={`font-mono text-[10px] uppercase ${streamStatus === "live" && !waitingForFunding ? "text-emerald-300" : "text-amber-200"}`}>{statusLabel}</span>
       </div>
       {visible.length === 0 ? (
-        <p className="mt-4 text-sm text-[#65738a]">Waiting for the worker journal…</p>
+        <p className="mt-4 text-sm text-[#65738a]">
+          {waitingForFunding
+            ? "Connect a trade-only venue vault or fund the isolated venue vault to begin execution."
+            : "Waiting for the worker journal…"}
+        </p>
       ) : (
         <ol className="mt-3 space-y-2">
           {visible.map((event) => (
