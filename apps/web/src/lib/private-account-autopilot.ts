@@ -7,6 +7,10 @@ import {
   wakePhalaPrivateAgentForUse,
 } from "./private-agent-phala";
 import {
+  autopilotWorkerConfig,
+  probeAutopilotWorkerReadiness,
+} from "./private-agent-worker-readiness";
+import {
   agentPassportVenueAccessForWorker,
   storedVenueAccessForWorker,
 } from "./private-agent-passport";
@@ -365,14 +369,15 @@ export async function createAutonomousAutopilotSessionFromBody(
   }
   const local = await loadSession(created.session.autopilot_session_id);
   if (local) {
+    const workerMessage = workerErrorMessage(worker.error);
     local.status = "pending_worker";
     local.execution_enabled = false;
     local.next_step = worker.error === "worker_not_configured"
       ? "Private worker is not configured. Set GHOLA_PRIVATE_AGENT_EXECUTION_URL and execution token."
-      : "Private worker rejected or could not arm the autonomous session.";
+      : `Private worker could not arm this run: ${workerMessage}`;
     local.updated_at = now.toISOString();
     await persistSession(local);
-    await appendEvent(makeEvent(local, "guardrail", "Autonomous worker is not armed.", {
+    await appendEvent(makeEvent(local, "guardrail", `Autonomous worker is not armed: ${workerMessage}`, {
       error: worker.error,
     }, now), local.owner_commitment);
     return {
@@ -541,8 +546,8 @@ export function autopilotReadinessForOwner(
   walletBindingStatus: "active" | "missing" | "unknown" = "unknown",
 ): AutopilotReadiness {
   const product = normalizeMarket(productId || "BTC-USD");
-  const worker = workerConfig(env);
-  const workerConfigured = Boolean(worker.url && workerAuthConfigured(env, worker.token));
+  const worker = autopilotWorkerConfig(env);
+  const workerConfigured = Boolean(worker.url && worker.authConfigured);
   const seekerRequired = env.GHOLA_SEEKER_AUTOPILOT_REQUIRED !== "false";
   const walletBound = !seekerRequired || walletBindingStatus === "active";
   const venueReadiness: AutopilotVenueReadiness[] = [
@@ -614,12 +619,40 @@ export async function syncWorkerAutopilotSession(
       events: await eventsForSession(owner.owner_commitment, sessionId, 100),
     };
   }
-  await appendEvent(makeEvent(session, "guardrail", "Worker event sync failed.", {
-    error: worker.error,
-  }, now), session.owner_commitment);
-  const before = `${session.status}:${session.updated_at}`;
+  const workerMessage = workerErrorMessage(worker.error);
+  const existingEvents = await eventsForSession(owner.owner_commitment, sessionId, 200);
+  const duplicateFailure = existingEvents.some((event) =>
+    event.type === "guardrail" &&
+    event.data.error === worker.error &&
+    event.data.worker_autopilot_session_id === session.worker_autopilot_session_id
+  );
+  if (!duplicateFailure) {
+    await appendEvent(makeEvent(session, "guardrail", `Worker sync failed: ${workerMessage}`, {
+      error: worker.error,
+      worker_autopilot_session_id: session.worker_autopilot_session_id,
+    }, now), session.owner_commitment);
+    console.error(JSON.stringify({
+      level: "error",
+      message: "autopilot_worker_sync_failed",
+      autopilot_session_id: session.autopilot_session_id,
+      worker_autopilot_session_id: session.worker_autopilot_session_id,
+      error: worker.error,
+      checked_at: now.toISOString(),
+    }));
+  }
+  const before = `${session.status}:${session.execution_enabled}:${session.next_step}:${session.updated_at}`;
+  if (!["paused", "killed", "expired", "blocked", "risk_halted"].includes(session.status)) {
+    session.status = worker.error === "autopilot_session_not_found" ? "blocked" : "pending_worker";
+    session.execution_enabled = false;
+    session.next_step = worker.error === "autopilot_session_not_found"
+      ? "The worker no longer has this run. Create a new run after worker readiness is restored."
+      : `Worker connection failed: ${workerMessage}`;
+    session.updated_at = now.toISOString();
+  }
   const refreshed = refreshExpiry(session, now);
-  if (`${refreshed.status}:${refreshed.updated_at}` !== before) await persistSession(refreshed);
+  if (`${refreshed.status}:${refreshed.execution_enabled}:${refreshed.next_step}:${refreshed.updated_at}` !== before) {
+    await persistSession(refreshed);
+  }
   return {
     session: publicSession(refreshed),
     events: await eventsForSession(owner.owner_commitment, sessionId, 100),
@@ -637,7 +670,7 @@ async function armWorkerAutopilotSession(input: {
   | { ok: true; session: Record<string, unknown>; events: Record<string, unknown>[] }
   | { ok: false; error: string }
 > {
-  let cfg = workerConfig(input.env);
+  let cfg = autopilotWorkerConfig(input.env);
   let wakeAttempted = false;
   if (phalaAutopilotWakeEnabled(input.env)) {
     const resolved = await wakeAndResolvePhalaWorker({
@@ -649,6 +682,13 @@ async function armWorkerAutopilotSession(input: {
     wakeAttempted = resolved.attempted;
   }
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
+  const readiness = await probeAutopilotWorkerReadiness(cfg.url, input.fetchImpl);
+  if (!readiness.ok) {
+    return {
+      ok: false,
+      error: readiness.error ?? "worker_not_ready",
+    };
+  }
   const raw = record(input.body);
   const providedVenueAccess = optionalRecord(raw.venue_access) ?? optionalRecord(raw.venue_vaults);
   const venueAccess = hasRecordEntries(providedVenueAccess)
@@ -718,10 +758,10 @@ async function armWorkerAutopilotSession(input: {
 }
 
 async function wakeAndResolvePhalaWorker(input: {
-  cfg: ReturnType<typeof workerConfig>;
+  cfg: ReturnType<typeof autopilotWorkerConfig>;
   env: Record<string, string | undefined>;
   runtime?: AutopilotWorkerRuntime;
-}): Promise<{ cfg: ReturnType<typeof workerConfig>; attempted: boolean }> {
+}): Promise<{ cfg: ReturnType<typeof autopilotWorkerConfig>; attempted: boolean }> {
   const wake = input.runtime?.wakePhalaForUse ?? wakePhalaPrivateAgentForUse;
   const discover = input.runtime?.discoverPhalaExecutionUrl ?? discoverPhalaPrivateAgentExecutionUrl;
   const result = await wake({
@@ -767,7 +807,7 @@ async function fetchWorkerAutopilotSession(
   | { ok: true; session: Record<string, unknown>; events: Record<string, unknown>[] }
   | { ok: false; error: string }
 > {
-  const cfg = workerConfig(env);
+  const cfg = autopilotWorkerConfig(env);
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}`;
   const authorization = workerAuthorizationHeader({
@@ -808,7 +848,7 @@ async function fetchWorkerAutopilotOpportunities(
   | { ok: true; session: Record<string, unknown>; opportunities: Record<string, unknown>[] }
   | { ok: false; error: "worker_not_configured" | "worker_unavailable" | string }
 > {
-  const cfg = workerConfig(env);
+  const cfg = autopilotWorkerConfig(env);
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}/opportunities`;
   const authorization = workerAuthorizationHeader({
@@ -852,7 +892,7 @@ async function controlWorkerAutopilotSession(
   | { ok: true; session: Record<string, unknown>; events: Record<string, unknown>[] }
   | { ok: false; error: string }
 > {
-  const cfg = workerConfig(env);
+  const cfg = autopilotWorkerConfig(env);
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
   const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}/${action}`;
   const authorization = workerAuthorizationHeader({
@@ -1173,27 +1213,20 @@ function defaultVenueAccess(policy: AutopilotSessionPolicy): AutopilotSession["v
   ])) as AutopilotSession["venue_access"];
 }
 
-function workerConfig(env: Record<string, string | undefined>) {
-  const url = env.GHOLA_PRIVATE_AGENT_EXECUTION_URL?.trim() ||
-    env.GHOLA_PRIVATE_AGENT_WORKER_URL?.trim() ||
-    env.PHALA_AGENT_ENDPOINT?.trim() ||
-    "";
-  const token = env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
-    env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
-    env.PHALA_CLOUD_API_KEY?.trim() ||
-    "";
-  let parsedUrl: URL | null = null;
-  if (url) {
-    try {
-      parsedUrl = new URL(url);
-    } catch {
-      parsedUrl = null;
-    }
+function workerErrorMessage(error: string): string {
+  if (error === "worker_not_configured") return "the worker endpoint or authorization is not configured.";
+  if (error === "worker_unavailable") return "the worker endpoint is unavailable.";
+  if (error === "autopilot_session_not_found") return "the worker no longer has this run.";
+  if (error === "worker_session_missing") return "the worker returned an invalid run record.";
+  if (error.startsWith("worker_not_ready:")) {
+    const details = error.slice("worker_not_ready:".length).split(",").filter(Boolean).join(", ");
+    return details
+      ? `the worker is not ready (${details}).`
+      : "the worker is not ready.";
   }
-  return {
-    url: parsedUrl,
-    token,
-  };
+  if (error === "worker_capability_invalid") return "worker authorization does not match.";
+  if (error === "worker_capability_unconfigured") return "worker authorization is not configured.";
+  return `the worker returned ${error}.`;
 }
 
 function parseWorkerUrl(value: string | null | undefined): URL | null {
@@ -1251,14 +1284,6 @@ function boundedIntEnv(
   const parsed = Number.parseInt(env[key]?.trim() ?? "", 10);
   if (!Number.isInteger(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
-}
-
-function workerAuthConfigured(env: Record<string, string | undefined>, fallbackToken: string): boolean {
-  return Boolean(
-    fallbackToken ||
-    env.PRIVATE_AGENT_WORKER_CAPABILITY_SECRET?.trim() ||
-    env.GHOLA_WORKER_CAPABILITY_SECRET?.trim(),
-  );
 }
 
 function hyperliquidAutopilotReadiness(

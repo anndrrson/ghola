@@ -6,6 +6,7 @@ import { shieldedPoolHealth } from "@/lib/private-account-shielded-pool";
 import { consumerTreasuryConfigured } from "@/lib/consumer-turnkey-treasury";
 import { getCrossVenueReconciliationHealth } from "@/lib/cross-venue-execution-store";
 import { probeCrossVenueExecutionReadiness } from "@/lib/cross-venue-worker";
+import { probeConfiguredAutopilotWorkerReadiness } from "@/lib/private-agent-worker-readiness";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,7 +18,7 @@ export async function GET() {
     ? "byo_hyperliquid" as const
     : "pooled_consumer" as const;
   const pooledRequired = launchProfile === "pooled_consumer";
-  const [database, circuit, reconciliation, crossVenueReconciliation, crossVenue, runtime, verifier, shieldedPool, consumerWorker] = await Promise.all([
+  const [database, circuit, reconciliation, crossVenueReconciliation, crossVenue, runtime, verifier, shieldedPool, consumerWorker, autopilotWorker] = await Promise.all([
     consumerProductionStoreReady().catch(() => false),
     getConsumerCircuitState().catch(() => null),
     getConsumerReconciliationHealth().catch(() => null),
@@ -27,6 +28,12 @@ export async function GET() {
     customShieldedVerifierHealth().catch(() => null),
     shieldedPoolHealth().catch(() => null),
     consumerWorkerReadiness().catch(() => null),
+    probeConfiguredAutopilotWorkerReadiness().catch(() => ({
+      ok: false,
+      error: "worker_unavailable",
+      missing: [],
+      status: null,
+    })),
   ]);
   const phala = runtime?.providers.find((provider) => provider.id === "phala");
   const cvmStatus = phala?.evidence && typeof phala.evidence === "object"
@@ -55,6 +62,7 @@ export async function GET() {
     database: database ? "ready" : "blocked",
     trading_circuit: circuit?.status === "open" ? "ready" : "halted",
     worker: workerState,
+    autopilot_worker: autopilotWorker.ok ? "ready" : "blocked",
     byo_hyperliquid: launchProfile === "byo_hyperliquid" ? (byoHyperliquidReady ? "ready" : "blocked") : "not_required",
     consumer_worker_core: pooledRequired ? (consumerWorker?.ready === true ? "ready" : "blocked") : "not_required",
     public_usdc: pooledRequired ? (process.env.GHOLA_CONSUMER_PREPAID_BALANCE_ENABLED === "true" && consumerTreasuryConfigured() ? "configured" : "blocked") : "not_required",
@@ -75,7 +83,7 @@ export async function GET() {
     checks.shielded_verifier === "ready" && checks.shielded_pool === "ready" &&
     checks.funding_verifier === "configured" && checks.withdrawal_signer === "configured" && checks.withdrawal_finalizer === "configured"
   );
-  const ready = database && circuit?.status === "open" && workerState !== "blocked" && pooledReady &&
+  const ready = database && circuit?.status === "open" && workerState !== "blocked" && autopilotWorker.ok && pooledReady &&
     (launchProfile !== "byo_hyperliquid" || checks.byo_hyperliquid === "ready") &&
     checks.observability === "configured" && checks.reconciliation === "ready" &&
     checks.cross_venue_execution !== "blocked" &&
@@ -94,6 +102,11 @@ export async function GET() {
       overdue_execution_count: crossVenueReconciliation.overdue_execution_count,
       oldest_unreconciled_age_ms: crossVenueReconciliation.oldest_unreconciled_age_ms,
     } : null,
+    autopilot_worker: {
+      status: autopilotWorker.status,
+      error: autopilotWorker.error,
+      missing: autopilotWorker.missing,
+    },
     reason_codes: Object.entries(checks).filter(([, value]) => value === "blocked" || value === "halted").map(([key, value]) => `${key}:${value}`),
     checked_at: checkedAt,
   }, {
