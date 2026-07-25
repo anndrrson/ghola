@@ -205,7 +205,7 @@ jobs:
           setenv() {
             local name="$1" value="$2"
             npx "vercel@${VERCEL_CLI_VERSION}" env rm "$name" production --yes --cwd apps/web --token "$VERCEL_TOKEN" >/dev/null 2>&1 || true
-            printf '%s' "$value" | npx "vercel@${VERCEL_CLI_VERSION}" env add "$name" production --cwd apps/web --token "$VERCEL_TOKEN" >/dev/null
+            printf '%s\n' "$value" | npx "vercel@${VERCEL_CLI_VERSION}" env add "$name" production --cwd apps/web --token "$VERCEL_TOKEN" >/dev/null
             echo "set $name"
           }
           rmenv() {
