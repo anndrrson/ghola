@@ -2104,6 +2104,10 @@ function PublicAgentLaunchPanel({
   const venues = startup?.venues ?? [];
   const readyVenue = venues.find((venue) => venue.can_start_live);
   const preparableVenue = venues.find((venue) => venue.can_prepare);
+  const connectableVenue = venues.find((venue) => venue.live_gate === "green");
+  const visibleVenues = venues.length
+    ? venues.filter((venue) => venue.live_gate === "green")
+    : fallbackStartupVenues();
   const canWake = authenticated && Boolean(preparableVenue) && startup?.runtime.ready !== true;
   const runtimeTone = startup?.runtime.status === "ready"
     ? "good"
@@ -2118,9 +2122,11 @@ function PublicAgentLaunchPanel({
         ? wakeState === "waking" ? "Starting secure worker" : "Start secure worker"
         : readyVenue
           ? `Use ${readyVenue.label} agent`
-          : startup.primary_action.label;
+          : connectableVenue
+            ? `Connect ${connectableVenue.label}`
+            : startup.primary_action.label;
   const actionMessage = wakeMessage || startup?.primary_action.message || "Sign in, connect scoped venue access, then arm a capped agent.";
-  const actionDisabled = !startup || wakeState === "waking" || (authenticated && !canWake && !readyVenue);
+  const actionDisabled = !startup || wakeState === "waking" || (authenticated && !canWake && !readyVenue && !connectableVenue);
 
   function handlePrimaryAction() {
     if (!authenticated) {
@@ -2131,7 +2137,11 @@ function PublicAgentLaunchPanel({
       onWake();
       return;
     }
-    if (readyVenue) onSelectVenue(readyVenue.id);
+    if (readyVenue) {
+      onSelectVenue(readyVenue.id);
+      return;
+    }
+    if (connectableVenue) onSelectVenue(connectableVenue.id);
   }
 
   return (
@@ -2148,7 +2158,7 @@ function PublicAgentLaunchPanel({
               Bring API keys to trade
             </h2>
             <p className="mt-2 max-w-xl text-sm leading-6 text-[#8b95a8]">
-              Sign in, connect a scoped Hyperliquid API wallet, Coinbase key, or Phoenix authority, then approve bounded agent execution.
+              Connect a trade-only Hyperliquid API wallet, then approve bounded agent execution. Withdrawal permission is never required.
             </p>
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <span className={`inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium ${launchToneClass(runtimeTone)}`}>
@@ -2167,8 +2177,8 @@ function PublicAgentLaunchPanel({
           </div>
 
           <div className="min-w-0">
-            <div className="flex gap-2 overflow-x-auto pb-1 sm:grid sm:grid-cols-2 sm:overflow-visible sm:pb-0 xl:grid-cols-4">
-              {(venues.length ? venues : fallbackStartupVenues()).map((venue) => {
+            <div className="flex gap-2 overflow-x-auto pb-1 sm:grid sm:grid-cols-2 sm:overflow-visible sm:pb-0">
+              {visibleVenues.map((venue) => {
                 const chartBacked = venue.id === "hyperliquid" || venue.id === "phoenix" || venue.id === "coinbase";
                 const selected = chartBacked && venue.id === selectedVenueId;
                 return (
@@ -2235,9 +2245,6 @@ function PublicAgentLaunchPanel({
 function fallbackStartupVenues(): PublicAgentStartupVenue[] {
   return [
     fallbackStartupVenue("hyperliquid", "Hyperliquid", "Scoped API wallet"),
-    fallbackStartupVenue("phoenix", "Phoenix", "Eligible wallet live path"),
-    fallbackStartupVenue("jupiter", "Jupiter", "Sealed Solana swap authority"),
-    fallbackStartupVenue("coinbase", "Coinbase", "Scoped Coinbase key"),
   ];
 }
 
