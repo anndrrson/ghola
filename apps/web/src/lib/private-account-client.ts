@@ -906,6 +906,12 @@ export async function sealHyperliquidExecutionVault(input: {
   });
 }
 
+export async function revokeHyperliquidExecutionVault() {
+  return privateAccountFetch("/v1/private-account/hyperliquid/vault", {
+    method: "DELETE",
+  });
+}
+
 export async function armHyperliquidExecutionAgent(input: {
   execution_mode?: "byo_api_key" | "managed_testnet" | "ghola_pooled" | "hyperliquid_native_vault";
   market_allowlist?: string[];
