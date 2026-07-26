@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   GET as vaultStatus,
   POST as sealVault,
+  isTestnetVaultBundle,
 } from "./vault/route";
 import { POST as armAgent } from "./agent/session/route";
 import { POST as accountSnapshot } from "./account-snapshot/route";
@@ -76,6 +77,22 @@ function vaultAad(accountCommitment: string, recipient = "mock_attested:dev") {
 }
 
 describe("Hyperliquid private-account routes", () => {
+  it("recognizes only explicitly testnet-scoped sealed vault bundles", () => {
+    expect(isTestnetVaultBundle({
+      encrypted_execution_vault: {
+        aad: "ghola/hyperliquid-execution-vault-v1|account:owner|recipient:worker|network:testnet",
+      },
+    })).toBe(true);
+    expect(isTestnetVaultBundle({
+      encrypted_execution_vault: {
+        aad: "ghola/hyperliquid-execution-vault-v1|account:owner|recipient:worker|network:mainnet",
+      },
+    })).toBe(false);
+    expect(isTestnetVaultBundle({
+      encrypted_execution_vault: { aad: "network:testnet" },
+    })).toBe(false);
+  });
+
   beforeEach(() => {
     process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER = "true";
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";

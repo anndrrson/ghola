@@ -21,7 +21,9 @@ export async function POST(req: Request) {
   const guarded = await privateAccountLiveGuard(req);
   if (!guarded.ok) return guarded.response;
   if (!verifiedEmail(guarded.owner.user.email_verified)) return json({ error: "verified_email_required" }, 403);
-  if (!await verifyConsumerStepUp(req)) return json({ error: "step_up_authentication_required" }, 403);
+  if (!isTestnetVaultBundle(guarded.body) && !await verifyConsumerStepUp(req)) {
+    return json({ error: "step_up_authentication_required" }, 403);
+  }
   const sealed = await sealHyperliquidVaultFromBody(guarded.body, guarded.owner);
   if ("error" in sealed) return json({ error: sealed.error }, 400);
   return json(sealed, 201);
@@ -39,4 +41,14 @@ export async function DELETE(req: Request) {
 
 function verifiedEmail(value: boolean | undefined) {
   return value === true || (process.env.NODE_ENV === "test" && process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS === "true");
+}
+
+export function isTestnetVaultBundle(body: unknown) {
+  if (!body || typeof body !== "object") return false;
+  const encrypted = (body as Record<string, unknown>).encrypted_execution_vault;
+  if (!encrypted || typeof encrypted !== "object") return false;
+  const aad = (encrypted as Record<string, unknown>).aad;
+  return typeof aad === "string" &&
+    aad.startsWith("ghola/hyperliquid-execution-vault-v1|") &&
+    aad.endsWith("|network:testnet");
 }
