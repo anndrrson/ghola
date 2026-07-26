@@ -12,6 +12,7 @@ use crate::state::AppState;
 pub struct UserProfile {
     pub id: Uuid,
     pub email: Option<String>,
+    pub email_verified: bool,
     pub display_name: Option<String>,
     pub phone_number: Option<String>,
     pub timezone: String,
@@ -43,8 +44,8 @@ pub async fn get_profile(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
 ) -> Result<Json<UserProfile>, CloudError> {
-    let row = sqlx::query_as::<_, (Uuid, Option<String>, Option<String>, Option<String>, String, String, DateTime<Utc>)>(
-        "SELECT id, email, display_name, phone_number, timezone, tier, created_at FROM users WHERE id = $1",
+    let row = sqlx::query_as::<_, (Uuid, Option<String>, bool, Option<String>, Option<String>, String, String, DateTime<Utc>)>(
+        "SELECT id, email, (google_id IS NOT NULL OR apple_id IS NOT NULL) AS email_verified, display_name, phone_number, timezone, tier, created_at FROM users WHERE id = $1",
     )
     .bind(claims.sub)
     .fetch_optional(&state.db)
@@ -54,11 +55,12 @@ pub async fn get_profile(
     Ok(Json(UserProfile {
         id: row.0,
         email: row.1,
-        display_name: row.2,
-        phone_number: row.3,
-        timezone: row.4,
-        tier: row.5,
-        created_at: row.6,
+        email_verified: row.2,
+        display_name: row.3,
+        phone_number: row.4,
+        timezone: row.5,
+        tier: row.6,
+        created_at: row.7,
     }))
 }
 
@@ -73,6 +75,7 @@ pub async fn update_profile(
         (
             Uuid,
             Option<String>,
+            bool,
             Option<String>,
             Option<String>,
             String,
@@ -87,7 +90,7 @@ pub async fn update_profile(
             timezone = COALESCE($4, timezone),
             updated_at = now()
         WHERE id = $1
-        RETURNING id, email, display_name, phone_number, timezone, tier, created_at
+        RETURNING id, email, (google_id IS NOT NULL OR apple_id IS NOT NULL) AS email_verified, display_name, phone_number, timezone, tier, created_at
         "#,
     )
     .bind(claims.sub)
@@ -100,11 +103,12 @@ pub async fn update_profile(
     Ok(Json(UserProfile {
         id: row.0,
         email: row.1,
-        display_name: row.2,
-        phone_number: row.3,
-        timezone: row.4,
-        tier: row.5,
-        created_at: row.6,
+        email_verified: row.2,
+        display_name: row.3,
+        phone_number: row.4,
+        timezone: row.5,
+        tier: row.6,
+        created_at: row.7,
     }))
 }
 
