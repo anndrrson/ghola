@@ -16,10 +16,9 @@ import {
   type HyperliquidExecutionCredentialDraft,
 } from "@/lib/hyperliquid-vault-seal";
 import {
-  connectSolanaWallet,
-  requiredSolanaProvider,
-  walletSignBytes,
-} from "@/lib/wallet-request-proof";
+  createBrowserEd25519Wallet,
+  signBrowserEd25519Bytes,
+} from "@/lib/browser-ed25519-wallet";
 import {
   chooseConfidentialComputeProvider,
   type PrivateAgentRuntimeStatus,
@@ -136,13 +135,17 @@ export function ConnectHyperliquidButton({
     setFormError(null);
     setState({ status: "sealing", accountCommitment: state.accountCommitment, runtime: state.runtime });
     try {
-      const ownerWalletAddress = await connectSolanaWallet();
+      // Hyperliquid users authenticate with an EVM wallet. The sealed-envelope
+      // format itself uses an Ed25519 sender DID, so create a short-lived local
+      // signing identity for the envelope instead of incorrectly requiring the
+      // user's injected wallet to expose Solana signMessage.
+      const envelopeSigner = createBrowserEd25519Wallet("ghola-hyperliquid-seal");
       const bundle = await buildHyperliquidExecutionVaultBundle({
         accountCommitment: state.accountCommitment,
-        ownerWalletAddress,
+        ownerWalletAddress: envelopeSigner.walletAddress,
         credential: draft,
         runtimeStatus: state.runtime,
-        signBytes: (bytes) => walletSignBytes(requiredSolanaProvider(), bytes),
+        signBytes: async (bytes) => signBrowserEd25519Bytes(envelopeSigner.secretKeyHex, bytes),
       });
       await sealHyperliquidExecutionVault({
         encrypted_execution_vault: bundle.encrypted_execution_vault,
