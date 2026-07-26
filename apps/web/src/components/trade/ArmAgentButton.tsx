@@ -39,9 +39,11 @@ type ArmState =
 export function ArmAgentButton({
   orderDraft,
   ready = false,
+  network = "mainnet",
 }: {
   orderDraft: PrivateExecutionOrderDraft;
   ready?: boolean;
+  network?: "mainnet" | "testnet";
 }) {
   const [state, setState] = useState<ArmState>({ status: "idle" });
 
@@ -142,7 +144,7 @@ export function ArmAgentButton({
           <div className="flex items-start gap-2 text-xs leading-5 text-amber-100">
             <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
             <span>
-              This arms an agent that places <strong>real orders on your connected account</strong>. It will{" "}
+              This arms an agent that places <strong>{network === "testnet" ? "testnet orders with no real funds" : "real orders on your connected account"}</strong>. It will{" "}
               <strong>{sideLabel.toLowerCase()} ${plan.notionalUsd}</strong> of {plan.market}
               {plan.triggerLevel ? <> when the {plan.entryTrigger.replaceAll("_", " ")} at <strong>{plan.triggerLevel}</strong> triggers</> : <> now</>}
               {plan.invalidationLevel ? <>, and exit if it hits <strong>{plan.invalidationLevel}</strong></> : null}. You can kill it anytime.

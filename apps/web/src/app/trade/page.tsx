@@ -122,9 +122,9 @@ function venueProductLabel(venueId: VenueId, market: string) {
   return venueId === "coinbase" ? `${market}-USD` : `${market}-PERP`;
 }
 
-function venueSnapshotUrl(venueId: VenueId, market: string, interval: ChartInterval) {
+function venueSnapshotUrl(venueId: VenueId, market: string, interval: ChartInterval, network: "mainnet" | "testnet" = "mainnet") {
   if (venueId === "hyperliquid") {
-    return `/v1/private-account/hyperliquid/market-snapshot?coin=${market}&interval=${interval}`;
+    return `/v1/private-account/hyperliquid/market-snapshot?coin=${market}&interval=${interval}&network=${network}`;
   }
   if (venueId === "phoenix") {
     return `/v1/private-account/phoenix/market-snapshot?symbol=${market}&interval=${interval}`;
@@ -220,6 +220,7 @@ export default function TradePage() {
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [venueId, setVenueId] = useState<VenueId>("hyperliquid");
+  const [hyperliquidNetwork, setHyperliquidNetwork] = useState<"mainnet" | "testnet">("mainnet");
   const [marketSel, setMarketSel] = useState("BTC");
   const [chartInterval, setChartInterval] = useState<ChartInterval>("5m");
   const [frame, setFrame] = useState<GholaMarketFrame | null>(null);
@@ -293,7 +294,7 @@ export default function TradePage() {
       setLoadingMarket(true);
       setMarketError(null);
       try {
-        const res = await fetch(venueSnapshotUrl(venue.id, marketSel, chartInterval), { cache: "no-store" });
+        const res = await fetch(venueSnapshotUrl(venue.id, marketSel, chartInterval, hyperliquidNetwork), { cache: "no-store" });
         if (!res.ok) throw new Error(`market_${res.status}`);
         const body = await res.json();
         const next =
@@ -318,7 +319,7 @@ export default function TradePage() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [venue, marketSel, chartInterval]);
+  }, [venue, marketSel, chartInterval, hyperliquidNetwork]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1429,8 +1430,14 @@ export default function TradePage() {
                 Refresh market
               </button>
             </div>
-            {venue.id === "hyperliquid" ? <ConnectHyperliquidButton ready={thumperAuth.authenticated} /> : null}
-            <ArmAgentButton orderDraft={orderDraft} ready={readyToPreview} />
+            {venue.id === "hyperliquid" ? (
+              <ConnectHyperliquidButton
+                ready={thumperAuth.authenticated}
+                network={hyperliquidNetwork}
+                onNetworkChange={setHyperliquidNetwork}
+              />
+            ) : null}
+            <ArmAgentButton orderDraft={orderDraft} ready={readyToPreview} network={hyperliquidNetwork} />
           </div>
         </aside>
       </main>

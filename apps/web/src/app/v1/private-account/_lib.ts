@@ -6494,6 +6494,7 @@ function publicVaultSummary(record: PrivateVaultStateRecordV1) {
 }
 
 function publicHyperliquidVault(record: PrivateHyperliquidVaultRecordV1) {
+  const aadContext = parseHyperliquidVaultAad(record.vault.encrypted_execution_vault.aad);
   return {
     version: 1,
     platform_class: "hyperliquid_style_market" as const,
@@ -6502,6 +6503,7 @@ function publicHyperliquidVault(record: PrivateHyperliquidVaultRecordV1) {
     encrypted_vault_commitment: record.encrypted_vault_commitment,
     recipient_commitment: record.recipient_commitment,
     policy_commitment: record.policy_commitment,
+    network: aadContext?.network ?? null,
     supported_operations: record.vault.supported_operations,
     blocked_operations: record.vault.blocked_operations,
     status: record.status,
