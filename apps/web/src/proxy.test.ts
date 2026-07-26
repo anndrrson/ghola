@@ -40,4 +40,22 @@ describe("middleware security hardening", () => {
     expect(res.headers.get("Cache-Control")).toBe("no-store, max-age=0");
     expect(res.headers.get("Pragma")).toBe("no-cache");
   });
+
+  it("allows Google OAuth popups only on sign-in and sign-up pages", () => {
+    const requestFor = (pathname: string) =>
+      ({
+        headers: new Headers({ "user-agent": "Mozilla/5.0" }),
+        nextUrl: { pathname, protocol: "https:" },
+      }) as never;
+
+    expect(
+      proxy(requestFor("/signin")).headers.get("Cross-Origin-Opener-Policy"),
+    ).toBe("same-origin-allow-popups");
+    expect(
+      proxy(requestFor("/signup")).headers.get("Cross-Origin-Opener-Policy"),
+    ).toBe("same-origin-allow-popups");
+    expect(
+      proxy(requestFor("/trade")).headers.get("Cross-Origin-Opener-Policy"),
+    ).toBe("same-origin");
+  });
 });

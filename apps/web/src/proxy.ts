@@ -43,6 +43,10 @@ function isNoIndexPath(pathname: string): boolean {
   return NO_INDEX_PATHS.some((p) => pathname.startsWith(p));
 }
 
+function isOAuthPopupPath(pathname: string): boolean {
+  return pathname === "/signin" || pathname === "/signup";
+}
+
 export function buildContentSecurityPolicy(isDev: boolean): string {
   return (
     [
@@ -150,6 +154,17 @@ export function proxy(request: NextRequest) {
 
   const response = NextResponse.next();
   applySecurityHeaders(response.headers, { isDev, isHttps });
+
+  // Google Identity Services returns the credential from its popup with
+  // window.opener/postMessage. Full `same-origin` opener isolation severs
+  // that relationship and leaves the popup stranded on /gsi/transform.
+  // Keep the exception limited to the two pages that initiate OAuth.
+  if (isOAuthPopupPath(pathname)) {
+    response.headers.set(
+      "Cross-Origin-Opener-Policy",
+      "same-origin-allow-popups",
+    );
+  }
 
   // Sensitive pages: noindex + nofollow
   if (isNoIndexPath(pathname)) {

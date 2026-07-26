@@ -19,6 +19,13 @@ const LOCKED_PERMISSIONS_POLICY =
 const INTENT_PERMISSIONS_POLICY =
   "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(self), payment=(), usb=()";
 
+const OAUTH_POPUP_HEADERS = [
+  {
+    key: "Cross-Origin-Opener-Policy",
+    value: "same-origin-allow-popups",
+  },
+];
+
 export const SECURITY_HEADERS = [
   { key: "X-Frame-Options", value: "DENY" },
   { key: "X-Content-Type-Options", value: "nosniff" },
@@ -84,6 +91,16 @@ const nextConfig: NextConfig = {
         // routes are server-to-server and don't benefit from these.
         source: "/((?!api/|intent$).*)",
         headers: SECURITY_HEADERS,
+      },
+      {
+        // Google Identity Services needs to post the credential from its
+        // popup back to the opener. Keep this exception scoped to auth pages.
+        source: "/signin",
+        headers: OAUTH_POPUP_HEADERS,
+      },
+      {
+        source: "/signup",
+        headers: OAUTH_POPUP_HEADERS,
       },
     ];
   },
