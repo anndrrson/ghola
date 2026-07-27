@@ -33,7 +33,11 @@ export async function DELETE(req: Request) {
   const owner = await privateAccountOwnerFromRequest(req);
   if (!owner) return unauthorized();
   if (!verifiedEmail(owner.user.email_verified)) return json({ error: "verified_email_required" }, 403);
-  if (!await verifyConsumerStepUp(req)) return json({ error: "step_up_authentication_required" }, 403);
+  const current = await hyperliquidVaultStatusForOwner(owner);
+  const replacingTestnetVault = current.hyperliquid_execution_vault?.network === "testnet";
+  if (!replacingTestnetVault && !await verifyConsumerStepUp(req)) {
+    return json({ error: "step_up_authentication_required" }, 403);
+  }
   const revoked = await revokeHyperliquidVaultForOwner(owner);
   if ("error" in revoked) return json({ error: revoked.error }, 404);
   return json(revoked);
