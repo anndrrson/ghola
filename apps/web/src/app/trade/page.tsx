@@ -913,6 +913,14 @@ export default function TradePage() {
             onSelectVenue={(nextVenueId) => {
               if (nextVenueId === "hyperliquid" || nextVenueId === "phoenix" || nextVenueId === "coinbase") {
                 selectVenue(nextVenueId);
+                if (nextVenueId === "hyperliquid") {
+                  requestAnimationFrame(() => {
+                    document.getElementById("hyperliquid-connection")?.scrollIntoView({
+                      behavior: "smooth",
+                      block: "center",
+                    });
+                  });
+                }
               }
             }}
           />
@@ -1431,11 +1439,13 @@ export default function TradePage() {
               </button>
             </div>
             {venue.id === "hyperliquid" ? (
-              <ConnectHyperliquidButton
-                ready={thumperAuth.authenticated}
-                network={hyperliquidNetwork}
-                onNetworkChange={setHyperliquidNetwork}
-              />
+              <div id="hyperliquid-connection" className="scroll-mt-4">
+                <ConnectHyperliquidButton
+                  ready={thumperAuth.authenticated}
+                  network={hyperliquidNetwork}
+                  onNetworkChange={setHyperliquidNetwork}
+                />
+              </div>
             ) : null}
             <ArmAgentButton orderDraft={orderDraft} ready={readyToPreview} network={hyperliquidNetwork} />
           </div>
