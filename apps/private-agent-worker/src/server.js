@@ -1975,6 +1975,11 @@ export function createPrivateAgentWorkerServer(options = {}) {
         const { body } = authorized;
         const errors = validateAutopilotSessionRequest(body, recipient);
         if (errors.length > 0) {
+          console.error(JSON.stringify({
+            level: "error",
+            message: "autopilot_session_validation_failed",
+            errors,
+          }));
           return json(res, 400, {
             error: "invalid autopilot session request",
             details: errors,
