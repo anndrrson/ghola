@@ -27,15 +27,15 @@ export function isLevelTriggerSession(session) {
 // carries forward multi-tick flags (broke/swept) so retest/sweep work across
 // the 30s polling loop and survive a worker restart.
 export function evaluateEntryTrigger({ price, mandate, side, directive }) {
+  const trigger = mandate.entry_trigger;
+  if (trigger === "preview_now") {
+    return { triggered: true, directive: { ...directive }, reason: "immediate entry" };
+  }
   const L = Number(mandate.trigger_level);
   const band = bandFraction(mandate);
   const d = { ...directive };
-  const trigger = mandate.entry_trigger;
   if (!Number.isFinite(L) || L <= 0) {
     return { triggered: false, directive: d, reason: "trigger level unavailable" };
-  }
-  if (trigger === "preview_now") {
-    return { triggered: true, directive: d, reason: "immediate entry" };
   }
   if (trigger === "break_level") {
     const triggered = side === "buy" ? price >= L : price <= L;
@@ -97,7 +97,7 @@ export async function runGuardedLevelTriggerTick({
   if (directive.phase === "done") {
     return { ok: false, error: "level_trigger_complete" };
   }
-  if (!mandate || !mandate.trigger_level) {
+  if (!mandate || (mandate.entry_trigger !== "preview_now" && !mandate.trigger_level)) {
     await appendEvent(state, session, "guardrail", "Level-trigger session is missing a mandate trigger level.", {
       strategy_id: policy.strategy_id,
     }, now);

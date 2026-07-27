@@ -118,6 +118,19 @@ describe("level_trigger_v1 directional strategy", () => {
     assert.equal(events.includes("venue_reconcile"), true);
   });
 
+  it("enters immediately for preview_now without requiring a trigger level", async () => {
+    const state = createWorkerState(dir);
+    const now = new Date(Date.now() + 60_000);
+    const mandate = levelMandate({ entry_trigger: "preview_now" });
+    delete mandate.trigger_level;
+    const session = await armLevelSession(state, recipient, now, { mandate });
+
+    const entry = await tickAt(state, recipient, session, new Date(now.getTime() + 60_000), 101);
+    assert.equal(entry.ok, true);
+    assert.equal(entry.phase, "in_position");
+    assert.equal((await state.getAutopilotSession(session.autopilot_session_id)).order_count, 1);
+  });
+
   it("is idempotent: a second tick after entry does not open another position", async () => {
     const state = createWorkerState(dir);
     const now = new Date(Date.now() + 60_000);
