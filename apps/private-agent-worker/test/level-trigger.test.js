@@ -4,7 +4,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAutopilotSession, runAutopilotTick } from "../src/execution/autopilot.js";
-import { evaluateEntryTrigger, evaluateExit, instructionForVenue } from "../src/execution/level-trigger.js";
+import {
+  evaluateEntryTrigger,
+  evaluateExit,
+  instructionForVenue,
+  levelTriggerLiveSubmitEnabled,
+} from "../src/execution/level-trigger.js";
 import { createWorkerState } from "../src/state/private-state.js";
 
 const OLD_ENV = { ...process.env };
@@ -247,6 +252,19 @@ describe("level_trigger hyperliquid order mode", () => {
 });
 
 describe("level_trigger entry/exit evaluators", () => {
+  it("allows the Hyperliquid testnet pilot without weakening mainnet or other venues", () => {
+    assert.equal(levelTriggerLiveSubmitEnabled({ env: {}, venue: "hyperliquid" }), true);
+    assert.equal(levelTriggerLiveSubmitEnabled({
+      env: { PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET: "true" },
+      venue: "hyperliquid",
+    }), false);
+    assert.equal(levelTriggerLiveSubmitEnabled({ env: {}, venue: "jupiter" }), false);
+    assert.equal(levelTriggerLiveSubmitEnabled({
+      env: { PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT: " true " },
+      venue: "jupiter",
+    }), true);
+  });
+
   it("break_level fires on the correct side", () => {
     const mandate = { entry_trigger: "break_level", trigger_level: "100" };
     assert.equal(evaluateEntryTrigger({ price: 101, mandate, side: "buy", directive: {} }).triggered, true);

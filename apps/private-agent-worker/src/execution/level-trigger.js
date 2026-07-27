@@ -188,7 +188,7 @@ export async function runGuardedLevelTriggerTick({
   }, now);
 
   // ---- Live submit gate (shared with the autopilot live flag) ----
-  if (env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT !== "true") {
+  if (!levelTriggerLiveSubmitEnabled({ env, venue })) {
     if (directive.proved_once) {
       await persistDirective(state, session, directive, now);
       return { ok: false, error: "awaiting_live_submit", phase: "watching" };
@@ -333,7 +333,7 @@ async function runExit({ session, state, recipient, now, env, venue, product, si
     now: now.toISOString(),
   })}`;
 
-  const liveSubmit = env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT === "true";
+  const liveSubmit = levelTriggerLiveSubmitEnabled({ env, venue });
   let receipt = null;
   if (liveSubmit) {
     try {
@@ -657,6 +657,14 @@ function venueMarketSymbol(venue, productId) {
 function defaultExecutionMode(venue) {
   if (venue === "coinbase_advanced") return "partner_omnibus";
   return "ghola_pooled";
+}
+
+export function levelTriggerLiveSubmitEnabled({ env, venue }) {
+  if (String(env.PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT || "").trim().toLowerCase() === "true") {
+    return true;
+  }
+  return venue === "hyperliquid" &&
+    String(env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET || "").trim().toLowerCase() !== "true";
 }
 
 function remainingDailyNotional(session) {
