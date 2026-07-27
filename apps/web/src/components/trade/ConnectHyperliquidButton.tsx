@@ -98,7 +98,10 @@ export function ConnectHyperliquidButton({
       });
       return;
     }
-    if (vault.hyperliquid_execution_vault) {
+    if (
+      vault.hyperliquid_execution_vault &&
+      vault.hyperliquid_execution_vault.status !== "revoked"
+    ) {
       const connectedNetwork = vault.hyperliquid_execution_vault.network ?? null;
       setState({ status: "connected", network: connectedNetwork });
       if (connectedNetwork) onNetworkChange?.(connectedNetwork);
