@@ -682,7 +682,10 @@ async function armWorkerAutopilotSession(input: {
     wakeAttempted = resolved.attempted;
   }
   if (!cfg.url) return { ok: false, error: "worker_not_configured" };
-  const readiness = await probeAutopilotWorkerReadiness(cfg.url, input.fetchImpl);
+  const readiness = await probeAutopilotWorkerReadiness(cfg.url, input.fetchImpl, {
+    allowUnattestedDevelopmentWorker:
+      input.env.GHOLA_PRIVATE_AGENT_ALLOW_UNATTESTED_DEV?.trim().toLowerCase() === "true",
+  });
   if (!readiness.ok) {
     return {
       ok: false,

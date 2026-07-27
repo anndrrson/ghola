@@ -50,6 +50,7 @@ describe("private account autopilot sessions", () => {
     delete process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN;
     delete process.env.GHOLA_PRIVATE_AGENT_JIT_PROVISIONING;
     delete process.env.GHOLA_PRIVATE_AGENT_WAKE_ON_USE_ENABLED;
+    delete process.env.GHOLA_PRIVATE_AGENT_ALLOW_UNATTESTED_DEV;
     delete process.env.PHALA_CLOUD_API_KEY;
     delete process.env.PHALA_API_KEY;
     delete process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED;
@@ -512,6 +513,51 @@ describe("private account autopilot sessions", () => {
         }),
       }),
     ]));
+  });
+
+  it("arms an explicitly allowed unattested development worker", async () => {
+    const calls: string[] = [];
+    const fetchImpl = async (input: URL | RequestInfo) => {
+      calls.push(String(input));
+      if (String(input).endsWith("/ready")) {
+        return new Response(JSON.stringify({
+          ready: false,
+          missing: ["attestation", "measurement", "attestation_hash"],
+        }), { status: 503 });
+      }
+      return new Response(JSON.stringify({
+        session: {
+          autopilot_session_id: "worker_autopilot_dev",
+          status: "running",
+          execution_enabled: true,
+        },
+        events: [],
+      }), { status: 201 });
+    };
+
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+        },
+      },
+      owner,
+      new Date("2026-06-01T12:00:00.000Z"),
+      {
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+        GHOLA_PRIVATE_AGENT_ALLOW_UNATTESTED_DEV: "true",
+      },
+      fetchImpl,
+    );
+
+    expect(calls).toEqual([
+      "https://worker.example/ready",
+      "https://worker.example/autopilot/sessions",
+    ]);
+    expect(created.session.status).toBe("running");
+    expect(created.session.execution_enabled).toBe(true);
   });
 
   it("blocks a lost worker session and records one actionable sync failure", async () => {

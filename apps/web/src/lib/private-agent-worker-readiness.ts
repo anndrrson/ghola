@@ -11,6 +11,12 @@ export interface AutopilotWorkerReadiness {
   status: number | null;
 }
 
+function allowUnattestedDevelopmentWorker(
+  env: Record<string, string | undefined>,
+): boolean {
+  return env.GHOLA_PRIVATE_AGENT_ALLOW_UNATTESTED_DEV?.trim().toLowerCase() === "true";
+}
+
 export function autopilotWorkerConfig(
   env: Record<string, string | undefined> = process.env,
 ): AutopilotWorkerConfig {
@@ -54,12 +60,15 @@ export async function probeConfiguredAutopilotWorkerReadiness(
       status: null,
     };
   }
-  return probeAutopilotWorkerReadiness(config.url, fetchImpl);
+  return probeAutopilotWorkerReadiness(config.url, fetchImpl, {
+    allowUnattestedDevelopmentWorker: allowUnattestedDevelopmentWorker(env),
+  });
 }
 
 export async function probeAutopilotWorkerReadiness(
   workerUrl: URL,
   fetchImpl: typeof fetch = fetch,
+  options: { allowUnattestedDevelopmentWorker?: boolean } = {},
 ): Promise<AutopilotWorkerReadiness> {
   const response = await fetchImpl(new URL("/ready", workerUrl), {
     method: "GET",
@@ -76,6 +85,19 @@ export async function probeAutopilotWorkerReadiness(
   }
   const body = asRecord(await response.json().catch(() => null));
   const missing = stringArray(body.missing).slice(0, 20);
+  const expectedUnattestedMissing = ["attestation", "measurement", "attestation_hash"];
+  const isExpectedUnattestedDevelopmentWorker =
+    options.allowUnattestedDevelopmentWorker === true &&
+    missing.length === expectedUnattestedMissing.length &&
+    expectedUnattestedMissing.every((field) => missing.includes(field));
+  if (isExpectedUnattestedDevelopmentWorker) {
+    return {
+      ok: true,
+      error: null,
+      missing,
+      status: response.status,
+    };
+  }
   if (!response.ok || body.ready !== true) {
     return {
       ok: false,
