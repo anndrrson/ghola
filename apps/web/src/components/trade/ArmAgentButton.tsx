@@ -32,6 +32,27 @@ type ArmState =
   | { status: "killed" }
   | { status: "error"; message: string };
 
+export function levelTriggerPlanFromOrderDraft(
+  orderDraft: PrivateExecutionOrderDraft,
+): LevelTriggerPlanInput {
+  const entryTrigger = orderDraft.agent_entry_trigger ?? "break_level";
+  return {
+    side: orderDraft.side,
+    venueId: orderDraft.venue_id,
+    market: orderDraft.market,
+    notionalUsd: Number(orderDraft.quote_size) || 0,
+    maxSlippageBps: Number(orderDraft.max_slippage_bps) || 50,
+    strategyProfile: orderDraft.agent_strategy_profile ?? "custom",
+    entryTrigger,
+    exitRule: orderDraft.agent_exit_rule ?? "exit_on_invalidation",
+    timeHorizon: orderDraft.agent_time_horizon ?? "until_invalidated",
+    triggerLevel: orderDraft.agent_trigger_level ??
+      (entryTrigger === "preview_now" ? orderDraft.limit_price : undefined),
+    invalidationLevel: orderDraft.agent_invalidation_level,
+    strategyNote: orderDraft.agent_strategy_note,
+  };
+}
+
 // Isolated, additive control: turns the drawn directional plan into a running
 // level_trigger agent that trades the user's connected account. Reads only the
 // existing orderDraft and posts to the autopilot sessions route — it does not
@@ -47,20 +68,7 @@ export function ArmAgentButton({
 }) {
   const [state, setState] = useState<ArmState>({ status: "idle" });
 
-  const plan: LevelTriggerPlanInput = {
-    side: orderDraft.side,
-    venueId: orderDraft.venue_id,
-    market: orderDraft.market,
-    notionalUsd: Number(orderDraft.quote_size) || 0,
-    maxSlippageBps: Number(orderDraft.max_slippage_bps) || 50,
-    strategyProfile: orderDraft.agent_strategy_profile ?? "custom",
-    entryTrigger: orderDraft.agent_entry_trigger ?? "break_level",
-    exitRule: orderDraft.agent_exit_rule ?? "exit_on_invalidation",
-    timeHorizon: orderDraft.agent_time_horizon ?? "until_invalidated",
-    triggerLevel: orderDraft.agent_trigger_level,
-    invalidationLevel: orderDraft.agent_invalidation_level,
-    strategyNote: orderDraft.agent_strategy_note,
-  };
+  const plan = levelTriggerPlanFromOrderDraft(orderDraft);
 
   const supported = levelTriggerSupportsPlan({
     entryTrigger: plan.entryTrigger,
