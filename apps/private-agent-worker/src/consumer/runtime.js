@@ -444,5 +444,12 @@ function stableJson(value) {
 function stringValue(value) { return typeof value === "string" ? value.trim() : ""; }
 function safeInteger(value) { const number = Number(value); return Number.isSafeInteger(number) ? number : 0; }
 function nonnegativeInteger(value) { const number = Number(value); return Number.isSafeInteger(number) && number >= 0 ? number : null; }
-function safeError(error) { return String(error?.code || error?.message || "consumer_runtime_error").slice(0, 160); }
+function safeError(error) {
+  const primary = String(error?.code || error?.message || "consumer_runtime_error");
+  const cause = error?.cause;
+  const nested = cause
+    ? String(cause?.code || cause?.message || cause)
+    : "";
+  return `${primary}${nested && nested !== primary ? `; cause=${nested}` : ""}`.slice(0, 240);
+}
 function codeError(code) { return Object.assign(new Error(code), { code }); }
