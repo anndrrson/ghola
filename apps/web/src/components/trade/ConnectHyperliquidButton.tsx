@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ClipboardEvent } from "react";
 import { Check, ClipboardPaste, Link2, Loader2, ShieldCheck, TriangleAlert, WifiOff } from "lucide-react";
 import {
   getHyperliquidExecutionVaultStatus,
@@ -123,9 +123,12 @@ export function ConnectHyperliquidButton({
     setDraft((current) => ({ ...current, network }));
   }, [network]);
 
-  function handlePaste(value: string) {
-    const imported = parseHyperliquidCredentialImport(value, draft);
-    if (imported.fields.length > 0) setDraft(imported.draft);
+  function handlePaste(event: ClipboardEvent<HTMLInputElement>) {
+    const imported = parseHyperliquidCredentialImport(event.clipboardData.getData("text"), draft);
+    if (imported.fields.length > 0) {
+      event.preventDefault();
+      setDraft(imported.draft);
+    }
   }
 
   async function connectAndSeal() {
@@ -253,7 +256,7 @@ export function ConnectHyperliquidButton({
               type="text"
               value={draft.hyperliquid_account_address}
               onChange={(event) => setDraft({ ...draft, hyperliquid_account_address: event.target.value })}
-              onPaste={(event) => handlePaste(event.clipboardData.getData("text"))}
+              onPaste={handlePaste}
               placeholder="0x…"
               autoComplete="off"
               spellCheck={false}
@@ -266,7 +269,7 @@ export function ConnectHyperliquidButton({
               type="password"
               value={draft.api_wallet_private_key}
               onChange={(event) => setDraft({ ...draft, api_wallet_private_key: event.target.value })}
-              onPaste={(event) => handlePaste(event.clipboardData.getData("text"))}
+              onPaste={handlePaste}
               placeholder="0x…"
               autoComplete="off"
               spellCheck={false}
