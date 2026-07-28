@@ -22,6 +22,7 @@ export function verifyVercelSpendWebhookSignature({ body, signature, secret }) {
 export function createConsumerRuntime(options = {}) {
   const databaseUrl = options.databaseUrl || consumerDatabaseUrl();
   const sql = options.sql || (databaseUrl ? neon(databaseUrl) : null);
+  const databaseHost = safeDatabaseHost(databaseUrl);
   const fetchImpl = options.fetchImpl || fetch;
   const connection = options.connection || (consumerSolanaRpcUrl() ? new Connection(consumerSolanaRpcUrl(), "finalized") : null);
   const now = options.now || (() => new Date());
@@ -366,7 +367,14 @@ export function createConsumerRuntime(options = {}) {
       await processReconciliationDeadlines();
       await processWithdrawals();
     } catch (error) {
-      console.error(JSON.stringify({ level: "error", message: "consumer_runtime_tick_failed", error_code: safeError(error) }));
+      const connectivity = await probeDatabaseHost(databaseHost, fetchImpl);
+      console.error(JSON.stringify({
+        level: "error",
+        message: "consumer_runtime_tick_failed",
+        error_code: safeError(error),
+        database_host: databaseHost || null,
+        database_https: connectivity,
+      }));
     } finally {
       running = false;
     }
@@ -451,5 +459,27 @@ function safeError(error) {
     ? String(cause?.code || cause?.message || cause)
     : "";
   return `${primary}${nested && nested !== primary ? `; cause=${nested}` : ""}`.slice(0, 240);
+}
+
+function safeDatabaseHost(databaseUrl) {
+  try {
+    const hostname = new URL(String(databaseUrl || "")).hostname;
+    return /^[a-z0-9.-]+$/i.test(hostname) ? hostname : "";
+  } catch {
+    return "";
+  }
+}
+
+async function probeDatabaseHost(hostname, fetchImpl) {
+  if (!hostname) return "invalid_url";
+  try {
+    const response = await fetchImpl(`https://${hostname}/sql`, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(5_000),
+    });
+    return `http_${response.status}`;
+  } catch (error) {
+    return safeError(error);
+  }
 }
 function codeError(code) { return Object.assign(new Error(code), { code }); }
