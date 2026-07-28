@@ -20,8 +20,11 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const guarded = await privateAccountLiveGuard(req);
   if (!guarded.ok) return guarded.response;
-  if (!verifiedEmail(guarded.owner.user.email_verified)) return json({ error: "verified_email_required" }, 403);
-  if (!isTestnetVaultBundle(guarded.body) && !await verifyConsumerStepUp(req)) {
+  const testnetVault = isTestnetVaultBundle(guarded.body);
+  if (!testnetVault && !verifiedEmail(guarded.owner.user.email_verified)) {
+    return json({ error: "verified_email_required" }, 403);
+  }
+  if (!testnetVault && !await verifyConsumerStepUp(req)) {
     return json({ error: "step_up_authentication_required" }, 403);
   }
   const sealed = await sealHyperliquidVaultFromBody(guarded.body, guarded.owner);
@@ -32,9 +35,11 @@ export async function POST(req: Request) {
 export async function DELETE(req: Request) {
   const owner = await privateAccountOwnerFromRequest(req);
   if (!owner) return unauthorized();
-  if (!verifiedEmail(owner.user.email_verified)) return json({ error: "verified_email_required" }, 403);
   const current = await hyperliquidVaultStatusForOwner(owner);
   const replacingTestnetVault = current.hyperliquid_execution_vault?.network === "testnet";
+  if (!replacingTestnetVault && !verifiedEmail(owner.user.email_verified)) {
+    return json({ error: "verified_email_required" }, 403);
+  }
   if (!replacingTestnetVault && !await verifyConsumerStepUp(req)) {
     return json({ error: "step_up_authentication_required" }, 403);
   }

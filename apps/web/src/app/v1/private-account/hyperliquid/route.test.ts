@@ -103,7 +103,7 @@ describe("Hyperliquid private-account routes", () => {
     })).toBe(false);
   });
 
-  it("lets a verified user replace an existing testnet vault without step-up", async () => {
+  it("lets an authenticated user replace an existing testnet vault without production gates", async () => {
     const preflightRes = await vaultStatus(request("/v1/private-account/hyperliquid/vault"));
     const preflight = await preflightRes.json();
     const sealRes = await sealVault(
