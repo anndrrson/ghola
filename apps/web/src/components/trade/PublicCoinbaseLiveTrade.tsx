@@ -817,7 +817,7 @@ function AlternateProductWorkspace({
     : null;
   const initialPerpMarket = requestedPerpMarket || "SOL";
   const [side, setSide] = useState<"buy" | "sell">("buy");
-  const [amount, setAmount] = useState("25");
+  const [amount, setAmount] = useState("10");
   const [limitPrice, setLimitPrice] = useState("");
   const [stopLoss, setStopLoss] = useState("");
   const [takeProfit, setTakeProfit] = useState("");
@@ -1027,7 +1027,7 @@ function AlternateProductWorkspace({
     void armHyperliquidExecutionAgent({
       execution_mode: "byo_api_key",
       market_allowlist: perpMarkets.map((item) => item.coin),
-      max_notional_bucket: "1000",
+      max_notional_bucket: "10",
       max_order_count: 100,
       kill_switch: false,
     }).catch((error) => {
@@ -1081,7 +1081,7 @@ function AlternateProductWorkspace({
       await armHyperliquidExecutionAgent({
         execution_mode: "byo_api_key",
         market_allowlist: perpMarkets.map((item) => item.coin),
-        max_notional_bucket: "1000",
+        max_notional_bucket: "10",
         max_order_count: 100,
         kill_switch: false,
       });
@@ -1699,7 +1699,7 @@ function ReviewDatum({ label, value }: { label: string; value: string }) {
   );
 }
 
-function validatePerpTicket(
+export function validatePerpTicket(
   order: PrivateExecutionOrderDraft,
   referencePrice: string | null | undefined,
   maxLeverage: number | null,
@@ -1712,7 +1712,7 @@ function validatePerpTicket(
   const takeProfit = Number(order.protective_orders?.take_profit);
   const slippage = Number(order.max_slippage_bps);
   if (Number.isFinite(notional) && notional < 10) errors.unshift("Hyperliquid orders must be at least $10.");
-  if (Number.isFinite(notional) && notional > 1_000) errors.unshift("Orders are capped at $1,000 during the bounded mainnet launch.");
+  if (Number.isFinite(notional) && notional > 10) errors.unshift("Orders are capped at $10 during the bounded mainnet launch.");
   if (maxLeverage != null && Number(order.leverage) > maxLeverage) errors.unshift(`This market supports at most ${maxLeverage}× leverage.`);
   if (Number.isFinite(slippage) && slippage > maxSlippagePolicyBps) {
     errors.unshift(`Max slippage is capped at ${maxSlippagePolicyBps} bps for this environment.`);
