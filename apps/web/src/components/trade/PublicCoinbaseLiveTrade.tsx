@@ -55,6 +55,7 @@ import {
   type PrivateAccountSafeInput,
 } from "@/lib/private-account-client";
 import { useMarketData } from "@/lib/market-data-store";
+import { hyperliquidPerpsReadiness, spotVenueReadiness } from "@/lib/trade-readiness";
 
 type LiveStep = "idle" | "prepared" | "submitted";
 
@@ -108,6 +109,7 @@ type LiveTradingStatus = {
   no_key_live_trading_enabled?: boolean;
   no_key_primary_venue?: string;
   coinbase_public_live_ready?: boolean;
+  phoenix_public_live_ready?: boolean;
   no_key_blocking_reason_codes?: string[];
 };
 
@@ -227,8 +229,9 @@ export function PublicCoinbaseLiveTrade({
   }), [product, quoteSize, side, stopLoss, takeProfit]);
   const orderErrors = validatePrivateExecutionOrderDraft(order);
   const acknowledgementsReady = acceptedTerms && acceptedRisk && notProhibited;
-  const liveReady = liveStatus?.coinbase_public_live_ready === true ||
-    (liveStatus?.no_key_primary_venue === "coinbase" && liveStatus.no_key_live_trading_enabled === true);
+  const venueStatus = useMemo(() => spotVenueReadiness("coinbase", liveStatus), [liveStatus]);
+  const liveReady = venueStatus.ready;
+  const orderStatus = submitted?.status || (step === "prepared" ? "ready to submit" : "not started");
   const balanceReady = prepared?.can_submit_live === true;
   const canSubmit = Boolean(auth.authenticated && acknowledgementsReady && liveReady && balanceReady && orderErrors.length === 0);
   const priceSelection = selectCoinbaseDisplayPrice(market);
@@ -323,7 +326,7 @@ export function PublicCoinbaseLiveTrade({
       return;
     }
     if (!liveReady) {
-      setError("Secure Coinbase execution is still preparing. Market data remains available.");
+      setError("Coinbase execution is not ready. Market data remains available.");
       return;
     }
     setWorking("prepare");
@@ -424,10 +427,10 @@ export function PublicCoinbaseLiveTrade({
               value={auth.loading ? "checking" : auth.authenticated ? "signed in" : "sign in"}
               ready={auth.authenticated}
             />
-            <CommandStatus label="Venue" value={liveReady ? "ready" : "preparing"} ready={liveReady} />
+            <CommandStatus label="Venue" value={venueStatus.label} ready={venueStatus.ready} />
             <CommandStatus
               label="Order"
-              value={submitted?.status || (step === "prepared" ? "prepared" : "pending")}
+              value={orderStatus}
               ready={Boolean(submitted)}
             />
             <Link
@@ -576,7 +579,7 @@ export function PublicCoinbaseLiveTrade({
                 <ReviewMetric label="Est. quantity" value={`${formatAssetQuantity(estimatedBase)} ${baseSymbol}`} />
               </div>
               <ReadinessRow label="Account" ready={Boolean(auth.authenticated)} value={auth.authenticated ? "signed in" : "required"} />
-              <ReadinessRow label="Secure venue" ready={liveReady} value={liveReady ? "ready" : "preparing"} />
+              <ReadinessRow label="Secure venue" ready={venueStatus.ready} value={venueStatus.label} title={venueStatus.detail} />
               <ReadinessRow label="Balance" ready={balanceReady} value={prepared?.balance?.available_usd ? `$${prepared.balance.available_usd}` : "checked at review"} />
               <Ack
                 checked={acknowledgementsReady}
@@ -832,6 +835,7 @@ function AlternateProductWorkspace({
   const [perpMarkets, setPerpMarkets] = useState<Array<{ coin: string; max_leverage: number | null }>>([
     { coin: initialPerpMarket, max_leverage: null },
   ]);
+  const [perpMarketCatalogState, setPerpMarketCatalogState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [hyperliquidAccount, setHyperliquidAccount] = useState<HyperliquidAccountSnapshot | null>(null);
   const [hyperliquidConnectionReady, setHyperliquidConnectionReady] = useState(false);
   const [accountState, setAccountState] = useState<"loading" | "ready" | "unavailable">("loading");
@@ -875,6 +879,15 @@ function AlternateProductWorkspace({
     : referenceMarketProduct ? referenceRecord.frame : null;
   const displayedMarketStatus = useHyperliquidMarket ? hyperliquidStatus : referenceRecord.status;
   const selectedMarketCapability = perpMarkets.find((item) => item.coin === perpMarket);
+  const hyperliquidReadiness = useMemo(() => hyperliquidPerpsReadiness({
+    authenticated,
+    network: hyperliquidNetwork,
+    credentialsReady: hyperliquidConnectionReady,
+    accountState,
+    account: hyperliquidAccount,
+    marketCatalogState: perpMarketCatalogState,
+    selectedMarketAvailable: Boolean(selectedMarketCapability),
+  }), [accountState, authenticated, hyperliquidAccount, hyperliquidConnectionReady, hyperliquidNetwork, perpMarketCatalogState, selectedMarketCapability]);
   const maxLeverage = hyperliquidMarket?.max_leverage ?? selectedMarketCapability?.max_leverage ?? null;
   const perpOrder = useMemo<PrivateExecutionOrderDraft>(() => ({
     venue_id: "hyperliquid",
@@ -926,9 +939,10 @@ function AlternateProductWorkspace({
             item.coin ? [{ coin: item.coin, max_leverage: item.max_leverage ?? null }] : []
           );
           if (next.length > 0) startTransition(() => setPerpMarkets(next));
+          if (!cancelled) setPerpMarketCatalogState("ready");
         })
         .catch(() => {
-          // Keep the current market available if the public universe endpoint is temporarily unavailable.
+          if (!cancelled) setPerpMarketCatalogState("unavailable");
         });
     });
     return () => {
@@ -936,6 +950,10 @@ function AlternateProductWorkspace({
       cancelSchedule();
     };
   }, [useHyperliquidMarket]);
+
+  useEffect(() => {
+    if (useHyperliquidMarket) setPerpMarketCatalogState("loading");
+  }, [perpMarket, useHyperliquidMarket]);
 
   useEffect(() => {
     if (!authenticated) {
@@ -1179,6 +1197,12 @@ function AlternateProductWorkspace({
               <span className={displayedMarketStatus === "live" ? "h-1.5 w-1.5 rounded-full bg-[#62d6a5]" : "h-1.5 w-1.5 rounded-full bg-[#d9b96e]"} />
               {formatStatus(displayedMarketStatus, Boolean(displayedFrame))}
             </span>
+            {product === "perps" && (
+              <span className="inline-flex h-9 items-center gap-2 rounded-md border border-[#26313f] bg-[#0b0e13] px-3 text-xs text-[#a8b2c1]" title={hyperliquidReadiness.detail}>
+                <span className={hyperliquidReadiness.ready ? "h-1.5 w-1.5 rounded-full bg-[#62d6a5]" : "h-1.5 w-1.5 rounded-full bg-[#d9b96e]"} />
+                {hyperliquidReadiness.label}
+              </span>
+            )}
             <button
               type="button"
               onClick={() => setSetupOpen(true)}
@@ -1436,8 +1460,8 @@ function AlternateProductWorkspace({
                   ? perpWorking === "preview" ? "Checking live order…" : "Review order"
                   : authenticated && product === "perps" ? `Connect Hyperliquid ${hyperliquidNetwork}` : authenticated ? `Set up ${selectedVenue?.label}` : "Sign in to continue"}
               </button>
-              {product === "perps" && hyperliquidConnectionReady && (
-                <p className="mt-3 text-center text-[11px] leading-4 text-[#68be98]">Hyperliquid connected · final submission always requires review</p>
+              {product === "perps" && (
+                <p className={hyperliquidReadiness.ready ? "mt-3 text-center text-[11px] leading-4 text-[#68be98]" : "mt-3 text-center text-[11px] leading-4 text-[#aab4c2]"}>{hyperliquidReadiness.detail}</p>
               )}
               {perpError && <p role="alert" className="mt-3 rounded-md border border-[#5d3036] bg-[#2a1115] px-3 py-2 text-xs leading-5 text-[#ffb7bd]">{perpError}</p>}
               {perpNotice && <p role="status" className="mt-3 rounded-md border border-[#285c49] bg-[#0d251c] px-3 py-2 text-xs leading-5 text-[#92e1bd]">{perpNotice}</p>}
@@ -2097,14 +2121,14 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ReadinessRow({ label, ready, value }: { label: string; ready: boolean; value: string }) {
+function ReadinessRow({ label, ready, value, title }: { label: string; ready: boolean; value: string; title?: string }) {
   return (
     <div className={`flex min-h-10 items-center justify-between gap-3 rounded-md px-3 py-2 text-sm ${SURFACE_SUNKEN}`}>
       <span className="flex min-w-0 items-center gap-2 text-[#cbd7e8]">
         <span className={ready ? "h-2 w-2 rounded-full bg-emerald-300 shadow-[0_0_12px_rgba(124,245,198,0.45)]" : "h-2 w-2 rounded-full bg-[#47546a]"} />
         {label}
       </span>
-      <span className={ready ? "max-w-[170px] truncate text-sm font-medium text-emerald-100" : "max-w-[170px] truncate text-sm text-[#8ea0ba]"}>
+      <span className={ready ? "max-w-[170px] truncate text-sm font-medium text-emerald-100" : "max-w-[170px] truncate text-sm text-[#8ea0ba]"} title={title ?? value}>
         {value}
       </span>
     </div>
@@ -2113,10 +2137,10 @@ function ReadinessRow({ label, ready, value }: { label: string; ready: boolean; 
 
 function CommandStatus({ label, value, ready }: { label: string; value: string; ready: boolean }) {
   return (
-    <div className="inline-flex h-9 min-w-0 items-center gap-2 rounded-md border border-[#24324a] bg-[#090e16] px-2.5">
+    <div className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-[#24324a] bg-[#090e16] px-2.5">
       <span className={ready ? "h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300 shadow-[0_0_8px_rgba(124,245,198,0.5)]" : "h-1.5 w-1.5 shrink-0 rounded-full bg-[#526078]"} />
-      <span className="hidden text-[10px] font-medium uppercase tracking-[0.1em] text-[#71829d] sm:inline">{label}</span>
-      <span className={ready ? "truncate text-xs font-medium text-emerald-100" : "truncate text-xs font-medium text-[#aebbd0]"} title={value}>
+      <span className="hidden text-[10px] font-medium uppercase tracking-[0.1em] text-[#71829d] lg:inline">{label}</span>
+      <span className={ready ? "whitespace-nowrap text-xs font-medium text-emerald-100" : "whitespace-nowrap text-xs font-medium text-[#aebbd0]"} title={value}>
         {value}
       </span>
     </div>

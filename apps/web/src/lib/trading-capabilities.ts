@@ -35,7 +35,7 @@ export const TRADING_CAPABILITIES: TradingCapabilities = {
     {
       id: "phoenix",
       label: "Phoenix",
-      products: ["spot", "perps", "automate"],
+      products: ["spot", "automate"],
       order_types: ["market", "limit", "mandate"],
       protective_orders: "unsupported",
       status: "setup_required",
