@@ -9329,6 +9329,15 @@ function friendlyPrivateAccountError(err: unknown, fallback: string) {
   if (message === "invalid_authority_or_access") {
     return "The venue could not use that trading authority or API wallet. Check the credential and venue access.";
   }
+  if (message === "api_wallet_private_key_invalid") {
+    return "The worker opened the sealed credential, but its API-wallet key loader rejected the key.";
+  }
+  if (message === "sealed_credential_payload_invalid") {
+    return "The worker opened the sealed vault, but the Hyperliquid credential fields were missing or invalid.";
+  }
+  if (message === "sealed_credential_request_invalid") {
+    return "The worker rejected the sealed verification request before checking Hyperliquid.";
+  }
   if (message === "rpc_unreachable") {
     return "Ghola could not reach Solana RPC for the Phoenix check.";
   }

@@ -1968,11 +1968,21 @@ function provenNoSubmitClaims(platformClass: GholaPlatformClass): string[] {
   ];
 }
 
-function noFundsReason(body: Record<string, unknown>, status: number): string {
+export function noFundsReason(body: Record<string, unknown>, status: number): string {
   const code = stringValue(body.error_code) || stringValue(body.code) || stringValue(body.error);
-  const text = `${code} ${stringValue(body.error)}`.toLowerCase();
+  const error = stringValue(body.error);
+  const text = `${code} ${error}`.toLowerCase();
   if (/insufficient|needs funds|not enough|collateral|account value|margin/.test(text)) return "needs_funds";
-  if (code.includes("access") || code === "venue_access_required") return "invalid_authority_or_access";
+  if (code.includes("access") || code === "venue_access_required") {
+    if (/credentials are invalid/.test(text)) return "api_wallet_private_key_invalid";
+    if (/credentials are missing|vault kind is invalid|execution vault is invalid/.test(text)) {
+      return "sealed_credential_payload_invalid";
+    }
+    if (/invalid hyperliquid private verification request/.test(text)) {
+      return "sealed_credential_request_invalid";
+    }
+    return "invalid_authority_or_access";
+  }
   if (code === "venue_rejected") return "venue_rejected";
   if (code.includes("rpc")) return "rpc_unreachable";
   if (code.includes("live submit is disabled")) return "live_gate_disabled";
