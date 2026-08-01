@@ -220,11 +220,19 @@ export async function readHyperliquidAccountSnapshot({
       next_step: "Preview trade",
     };
   }
-  const [state, openOrders, userFills] = await Promise.all([
+  const [state, spotState, accountAbstraction, openOrders, userFills] = await Promise.all([
     postHyperliquidInfo(fetchImpl, credential.base_url, {
       type: "clearinghouseState",
       user: credential.account_address,
     }),
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "spotClearinghouseState",
+      user: credential.account_address,
+    }),
+    postHyperliquidInfo(fetchImpl, credential.base_url, {
+      type: "userAbstraction",
+      user: credential.account_address,
+    }).catch(() => "default"),
     postHyperliquidInfo(fetchImpl, credential.base_url, {
       type: "openOrders",
       user: credential.account_address,
@@ -235,13 +243,23 @@ export async function readHyperliquidAccountSnapshot({
       aggregateByTime: true,
     }).catch(() => []),
   ]);
-  return hyperliquidAccountStateFromParts({
+  const snapshot = hyperliquidAccountStateFromParts({
     state,
+    spotState,
+    accountAbstraction,
     openOrders,
     userFills,
     accountSource,
     streamStatus: "snapshot",
   });
+  console.info("[hyperliquid/account-snapshot] collateral readiness", {
+    network: credential.network,
+    account_abstraction: normalizeHyperliquidAccountAbstraction(accountAbstraction),
+    collateral_source: hyperliquidCollateralSource(accountAbstraction),
+    status: snapshot.status,
+    equity_bucket: snapshot.equity_bucket,
+  });
+  return snapshot;
 }
 
 export async function createHyperliquidAccountStateStream({
@@ -291,16 +309,26 @@ export async function createHyperliquidAccountStateStream({
   let heartbeatTimer = null;
   let reconnectAttempts = 0;
   let currentState = null;
+  let currentSpotState = null;
+  let currentAccountAbstraction = "default";
   let currentOpenOrders = [];
   let currentFills = [];
 
   async function backfill(status = "backfilling") {
     onEvent({ event: "stream_status", data: accountStreamStatus(status) });
-    const [state, openOrders, userFills] = await Promise.all([
+    const [state, spotState, accountAbstraction, openOrders, userFills] = await Promise.all([
       postHyperliquidInfo(fetchImpl, credential.base_url, {
         type: "clearinghouseState",
         user: credential.account_address,
       }),
+      postHyperliquidInfo(fetchImpl, credential.base_url, {
+        type: "spotClearinghouseState",
+        user: credential.account_address,
+      }),
+      postHyperliquidInfo(fetchImpl, credential.base_url, {
+        type: "userAbstraction",
+        user: credential.account_address,
+      }).catch(() => "default"),
       postHyperliquidInfo(fetchImpl, credential.base_url, {
         type: "openOrders",
         user: credential.account_address,
@@ -312,6 +340,8 @@ export async function createHyperliquidAccountStateStream({
       }).catch(() => []),
     ]);
     currentState = state;
+    currentSpotState = spotState;
+    currentAccountAbstraction = accountAbstraction;
     currentOpenOrders = Array.isArray(openOrders) ? openOrders : [];
     currentFills = Array.isArray(userFills) ? userFills : [];
     emitAccountState("backfilling");
@@ -322,6 +352,8 @@ export async function createHyperliquidAccountStateStream({
       event: "account_state",
       data: hyperliquidAccountStateFromParts({
         state: currentState,
+        spotState: currentSpotState,
+        accountAbstraction: currentAccountAbstraction,
         openOrders: currentOpenOrders,
         userFills: currentFills,
         accountSource,
@@ -447,16 +479,14 @@ export async function createHyperliquidAccountStateStream({
 
 function hyperliquidAccountStateFromParts({
   state,
+  spotState,
+  accountAbstraction,
   openOrders,
   userFills,
   accountSource,
   streamStatus = "snapshot",
 }) {
-  const accountValue = decimalNumber(
-    state?.marginSummary?.accountValue ??
-      state?.crossMarginSummary?.accountValue ??
-      "0",
-  );
+  const accountValue = hyperliquidCollateralValue({ state, spotState, accountAbstraction });
   const positions = sanitizePositions(state?.assetPositions);
   const sanitizedOpenOrders = sanitizeOpenOrders(openOrders);
   const recentFills = sanitizeFills(userFills);
@@ -486,6 +516,33 @@ function hyperliquidAccountStateFromParts({
       ? "Preview trade"
       : "Add collateral on Hyperliquid, then check again.",
   };
+}
+
+export function hyperliquidCollateralValue({ state, spotState, accountAbstraction }) {
+  if (hyperliquidCollateralSource(accountAbstraction) === "spot") {
+    const availableAfterMaintenance = Array.isArray(spotState?.tokenToAvailableAfterMaintenance)
+      ? spotState.tokenToAvailableAfterMaintenance.find((item) => Array.isArray(item) && Number(item[0]) === 0)?.[1]
+      : null;
+    if (availableAfterMaintenance != null) return decimalNumber(availableAfterMaintenance);
+    const usdc = Array.isArray(spotState?.balances)
+      ? spotState.balances.find((balance) => balance?.coin === "USDC" || Number(balance?.token) === 0)
+      : null;
+    return Math.max(0, decimalNumber(usdc?.total) - decimalNumber(usdc?.hold));
+  }
+  return decimalNumber(
+    state?.marginSummary?.accountValue ??
+      state?.crossMarginSummary?.accountValue ??
+      "0",
+  );
+}
+
+function hyperliquidCollateralSource(accountAbstraction) {
+  const normalized = normalizeHyperliquidAccountAbstraction(accountAbstraction);
+  return normalized === "unifiedAccount" || normalized === "portfolioMargin" ? "spot" : "perps";
+}
+
+function normalizeHyperliquidAccountAbstraction(value) {
+  return typeof value === "string" ? value : "default";
 }
 
 function sanitizePositions(assetPositions) {
