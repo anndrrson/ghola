@@ -5,6 +5,8 @@ import {
 } from "./private-execution-instruction-seal";
 import {
   deriveLiveReadinessDisplay,
+  deriveAutopilotExecutionDisplay,
+  deriveLiveTradingExecutionDisplay,
   deriveMarketFeedFreshness,
   deriveOrderTicketDisplayState,
   deriveTradingNextAction,
@@ -287,7 +289,7 @@ describe("private account trading UI derivation", () => {
       liveSubmitEnabled: false,
     })).toMatchObject({
       status: "live_submit_locked",
-      nextActionLabel: "Live submit locked",
+      nextActionLabel: "Preview mode",
     });
     expect(deriveLiveReadinessDisplay({
       venue: "phoenix",
@@ -313,11 +315,78 @@ describe("private account trading UI derivation", () => {
     expect(steps.map((step) => [step.id, step.status])).toEqual([
       ["venue", "done"],
       ["access", "done"],
-      ["guardrails", "done"],
+      ["limits", "done"],
       ["privacy", "done"],
       ["submit", "current"],
     ]);
     expect(steps.find((step) => step.id === "privacy")?.value).toBe("Checked");
+  });
+
+  it("derives confident execution display without leaking internal flags", () => {
+    const display = deriveAutopilotExecutionDisplay({
+      product_id: "BTC-USD",
+      can_arm: true,
+      can_live_submit: false,
+      blockers: ["private_worker_not_configured", "tiny_live_order_gate_not_ready", "PRIVATE_AGENT_AUTOPILOT_LIVE_SUBMIT=false"],
+      venue_readiness: [{
+        venue_id: "hyperliquid",
+        status: "blocked",
+        reason_codes: ["hyperliquid_tiny_fill_disabled"],
+      }],
+    });
+    expect(display).toMatchObject({
+      mode: "needs_setup",
+      label: "Needs setup",
+      can_trade: false,
+      next_action_label: "Finish setup",
+    });
+    const customerCopy = [display.label, display.detail, display.plain_reason].join(" ");
+    expect(customerCopy).not.toMatch(/tiny|gate|PRIVATE_AGENT|live_submit|dry_run|kill_switch/i);
+
+    const live = deriveAutopilotExecutionDisplay({
+      session: {
+        status: "running",
+        execution_enabled: true,
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+          max_notional_bucket: "50",
+          max_daily_notional_bucket: "250",
+          max_slippage_bps: 50,
+        },
+      },
+    });
+    expect(live).toMatchObject({
+      mode: "live_capped",
+      label: "Live Capped",
+      can_trade: true,
+      limits: {
+        venues: ["Hyperliquid"],
+        markets: ["BTC"],
+        max_order_usd: "$50",
+        daily_cap_usd: "$250",
+        slippage_bps: 50,
+      },
+    });
+  });
+
+  it("derives live trading display from launch status", () => {
+    expect(deriveLiveTradingExecutionDisplay({
+      live_trading_enabled: true,
+      pooled_live_trading_enabled: true,
+      required_venues: [{ id: "hyperliquid", label: "Hyperliquid", status: "green", reason_codes: [] }],
+    })).toMatchObject({
+      mode: "live_capped",
+      label: "Live Capped available",
+      can_trade: true,
+      limits: { venues: ["Hyperliquid"] },
+    });
+    const blocked = deriveLiveTradingExecutionDisplay({
+      live_trading_enabled: false,
+      reason_codes: ["venue_dry_run_enabled", "hyperliquid:hyperliquid_live_mode_disabled"],
+    });
+    expect(blocked.mode).toBe("needs_setup");
+    expect([blocked.label, blocked.detail, blocked.plain_reason].join(" ")).not.toMatch(/dry_run|live_mode|hyperliquid:/i);
   });
 
   it("uses conventional Phoenix book click sides", () => {

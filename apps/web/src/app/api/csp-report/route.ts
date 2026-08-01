@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
  * Content-Security-Policy violation report sink.
  *
  * Browsers POST here whenever a script, style, or fetch violates the
- * CSP we declared in next.config.ts. The `report-uri` directive in
+ * CSP emitted by src/proxy.ts. The `report-uri` directive in
  * the CSP header points at this endpoint.
  *
  * What we DO with reports:

@@ -36,6 +36,8 @@ describe("Hyperliquid vault sealing", () => {
       checked_at: "2026-05-27T12:00:00.000Z",
       sealed_execution_required: true,
       entitlement_required: "paid_private_agent_plan",
+      bounded_beta_enabled: true,
+      operator_spend_lock: false,
       preferred_provider: "phala",
       selected_provider: "phala",
       remote_execution_ready: true,

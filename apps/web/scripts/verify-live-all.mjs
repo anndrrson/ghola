@@ -28,13 +28,13 @@ const VENUES = [
   {
     id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
-    page: "/app/account?flow=hyperliquid-live",
+    page: "/account?flow=hyperliquid-live",
     market: "/v1/private-account/hyperliquid/market-snapshot?coin=BTC&interval=1m",
   },
   {
     id: "phoenix",
     platform_class: "solana_perps_market",
-    page: "/app/account?flow=phoenix-live",
+    page: "/account?flow=phoenix-live",
     market: "/v1/private-account/phoenix/market-snapshot?market=SOL&interval=1m",
   },
   {
@@ -46,14 +46,14 @@ const VENUES = [
   {
     id: "coinbase",
     platform_class: "coinbase_style_provider",
-    page: "/app/account?flow=coinbase",
+    page: "/account?flow=coinbase",
     market: "/v1/private-account/coinbase/market-snapshot?product_id=BTC-USD&interval=1m",
   },
 ];
 
 try {
   await checkHead("landing", "/");
-  await checkHead("trade_terminal", "/app/account?flow=trade");
+  await checkHead("trade_terminal", "/account?flow=trade");
   const liveTradingGate = await safeGetJson("/v1/private-account/live-trading/status");
   report.live_trading_gate = summarizeLiveTradingGate(liveTradingGate);
   record(
@@ -66,9 +66,13 @@ try {
     liveTradingGate.ok &&
       (
         liveTradingGate.body?.pooled_live_trading_enabled !== true ||
-        liveTradingGate.body?.pooled_worker_readiness?.ready === true
+        liveTradingGate.body?.pooled_worker_readiness?.ready === true ||
+        (Array.isArray(liveTradingGate.body?.pooled_live_venues) && liveTradingGate.body.pooled_live_venues.length > 0)
       ),
-    liveTradingGate.body?.pooled_worker_readiness || { status: "not_reported" },
+    {
+      ...(liveTradingGate.body?.pooled_worker_readiness || { status: "not_reported" }),
+      pooled_live_venues: liveTradingGate.body?.pooled_live_venues || [],
+    },
   );
   if (requirePublicLive && liveTradingGate.body?.live_trading_enabled !== true) {
     throw new Error("Public live trading gate is not green.");

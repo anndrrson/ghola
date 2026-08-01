@@ -144,7 +144,12 @@ export function pooledWorkerVenueGateFromReadiness(
 }
 
 function pooledWorkerConfig(env: Record<string, string | undefined>) {
-  const url = firstEnv(env, [
+  const coinbasePrimary = env.GHOLA_PUBLIC_LIVE_PRIMARY_VENUE === "coinbase";
+  const url = firstEnv(env, coinbasePrimary ? [
+    "GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_URL",
+    "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
+    "GHOLA_PRIVATE_AGENT_WORKER_URL",
+  ] : [
     "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
     "GHOLA_PRIVATE_AGENT_WORKER_URL",
     "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL",
@@ -152,7 +157,11 @@ function pooledWorkerConfig(env: Record<string, string | undefined>) {
     "GHOLA_CONNECTOR_SOLANA_SWAP_AGGREGATOR_URL",
     "GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_URL",
   ]);
-  const token = firstEnv(env, [
+  const token = firstEnv(env, coinbasePrimary ? [
+    "GHOLA_CONNECTOR_COINBASE_STYLE_PROVIDER_TOKEN",
+    "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN",
+    "PRIVATE_AGENT_EXECUTION_TOKEN",
+  ] : [
     "GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN",
     "PRIVATE_AGENT_EXECUTION_TOKEN",
     "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN",

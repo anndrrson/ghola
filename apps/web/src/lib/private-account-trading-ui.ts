@@ -31,6 +31,7 @@ export type TradingActionKind =
 
 export type TradingActionTone = "primary" | "success" | "warn" | "danger" | "neutral";
 export type TradingStatusTone = "good" | "warn" | "bad" | "neutral";
+export type CustomerExecutionMode = "needs_setup" | "preview" | "live_capped" | "waiting" | "paused" | "stopped";
 
 export interface TradingNextAction {
   kind: TradingActionKind;
@@ -44,7 +45,7 @@ export interface TradingNextAction {
 export type VenueStepStatus = "done" | "current" | "pending" | "warn" | "blocked";
 
 export interface VenueReadinessStep {
-  id: "venue" | "access" | "guardrails" | "privacy" | "submit";
+  id: "venue" | "access" | "limits" | "privacy" | "submit";
   label: string;
   value: string;
   status: VenueStepStatus;
@@ -104,6 +105,23 @@ export interface LiveReadinessDisplayState {
   };
 }
 
+export interface CustomerExecutionDisplay {
+  mode: CustomerExecutionMode;
+  label: string;
+  detail: string;
+  can_trade: boolean;
+  next_action_label: string;
+  plain_reason: string | null;
+  limits: {
+    venues: string[];
+    markets: string[];
+    max_order_usd: string | null;
+    daily_cap_usd: string | null;
+    slippage_bps: number | null;
+  };
+  debug_reason_codes: string[];
+}
+
 export interface TradingVenueStateInput {
   connected: boolean;
   armed: boolean;
@@ -132,11 +150,158 @@ export interface TradingUiStateInput {
   coinbase: TradingVenueStateInput;
 }
 
+export interface AutopilotExecutionDisplayInput {
+  can_arm?: boolean;
+  can_live_submit?: boolean;
+  product_id?: string | null;
+  blockers?: string[] | null;
+  venue_readiness?: Array<{
+    venue_id: string;
+    status: "ready" | "needs_funds" | "blocked" | string;
+    reason_codes?: string[] | null;
+  }> | null;
+  billing?: { ok?: boolean; blocking_reasons?: string[] | null } | null;
+  session?: {
+    status?: string | null;
+    execution_enabled?: boolean | null;
+    next_step?: string | null;
+    session_policy?: {
+      venue_allowlist?: string[] | null;
+      market_allowlist?: string[] | null;
+      max_notional_bucket?: string | null;
+      max_daily_notional_bucket?: string | null;
+      max_slippage_bps?: number | null;
+    } | null;
+  } | null;
+}
+
+export interface LiveTradingExecutionDisplayInput {
+  live_trading_enabled?: boolean | null;
+  live_submit_mode?: string | null;
+  pooled_live_trading_enabled?: boolean | null;
+  byo_live_trading_enabled?: boolean | null;
+  reason_codes?: string[] | null;
+  required_venues?: Array<{ id: string; label?: string; status: string; reason_codes?: string[] | null }> | null;
+  byo_live_venues?: Array<{ id: string; label?: string; status: string; reason_codes?: string[] | null }> | null;
+}
+
 export function isTradingPlatform(platformClass: string): platformClass is TradingPlatformClass {
   return platformClass === "hyperliquid_style_market" ||
     platformClass === "solana_perps_market" ||
     platformClass === "solana_swap_aggregator" ||
     platformClass === "coinbase_style_provider";
+}
+
+export function deriveAutopilotExecutionDisplay(input: AutopilotExecutionDisplayInput): CustomerExecutionDisplay {
+  const session = input.session ?? null;
+  const policy = session?.session_policy ?? null;
+  const venues = policy?.venue_allowlist?.length
+    ? policy.venue_allowlist.map(executionVenueLabel)
+    : readyVenueLabels(input.venue_readiness);
+  const markets = policy?.market_allowlist?.length
+    ? policy.market_allowlist.map(normalizeExecutionMarket)
+    : input.product_id
+      ? [normalizeExecutionMarket(input.product_id)]
+      : [];
+  const debugReasonCodes = uniqueStrings([
+    ...(input.blockers ?? []),
+    ...(input.billing?.blocking_reasons ?? []),
+    ...(input.venue_readiness ?? []).flatMap((venue) =>
+      (venue.reason_codes ?? []).map((reason) => `${venue.venue_id}:${reason}`)
+    ),
+  ]);
+  const limits = {
+    venues,
+    markets,
+    max_order_usd: moneyBucket(policy?.max_notional_bucket),
+    daily_cap_usd: moneyBucket(policy?.max_daily_notional_bucket),
+    slippage_bps: Number.isFinite(policy?.max_slippage_bps ?? NaN) ? Number(policy?.max_slippage_bps) : null,
+  };
+
+  if (session?.status === "paused") {
+    return executionDisplay("paused", "Agent is paused", "The saved limits are intact. Resume when you want the agent watching again.", false, "Resume", null, limits, debugReasonCodes);
+  }
+  if (session?.status === "killed" || session?.status === "expired" || session?.status === "blocked") {
+    return executionDisplay("stopped", "Agent stopped", "Create a new Live Capped agent when you are ready.", false, "Start new agent", plainExecutionReason(debugReasonCodes), limits, debugReasonCodes);
+  }
+  if (session?.execution_enabled === true) {
+    return executionDisplay("live_capped", "Live Capped", liveCappedDetail(limits), true, "Pause", null, limits, debugReasonCodes);
+  }
+  if (session) {
+    const needsSetup = input.can_live_submit === false || session.status === "pending_worker" || session.status === "pending_funding";
+    return executionDisplay(
+      needsSetup ? "needs_setup" : "waiting",
+      needsSetup ? "Needs setup" : "Waiting for entry",
+      needsSetup ? plainExecutionReason(debugReasonCodes) ?? "Finish setup and the agent can trade inside your limits." : "The agent is watching for a strong setup inside your limits.",
+      false,
+      needsSetup ? "Finish setup" : "Review",
+      needsSetup ? plainExecutionReason(debugReasonCodes) : null,
+      limits,
+      debugReasonCodes,
+    );
+  }
+  if (input.can_arm === false) {
+    const reason = plainExecutionReason(debugReasonCodes) ?? "Connect trading access to start a Live Capped agent.";
+    return executionDisplay("needs_setup", "Needs setup", reason, false, "Finish setup", reason, limits, debugReasonCodes);
+  }
+  if (input.can_live_submit === false && debugReasonCodes.length > 0) {
+    const reason = plainExecutionReason(debugReasonCodes) ?? "Finish setup before Live Capped trading is available.";
+    return executionDisplay("needs_setup", "Needs setup", reason, false, "Finish setup", reason, limits, debugReasonCodes);
+  }
+  if (input.can_live_submit === true) {
+    return executionDisplay("live_capped", "Live Capped", "Start an agent and it can trade inside your saved limits.", true, "Start Live Capped", null, limits, debugReasonCodes);
+  }
+  return executionDisplay("preview", "Ready to start", "Set markets and limits, then start a Live Capped agent.", false, "Start Live Capped", null, limits, debugReasonCodes);
+}
+
+export function deriveLiveTradingExecutionDisplay(input: LiveTradingExecutionDisplayInput): CustomerExecutionDisplay {
+  const venues = (input.pooled_live_trading_enabled ? input.required_venues : input.byo_live_venues)
+    ?.filter((venue) => venue.status === "green")
+    .map((venue) => venue.label || executionVenueLabel(venue.id)) ?? [];
+  const debugReasonCodes = uniqueStrings([
+    ...(input.reason_codes ?? []),
+    ...(input.required_venues ?? []).flatMap((venue) => (venue.reason_codes ?? []).map((reason) => `${venue.id}:${reason}`)),
+    ...(input.byo_live_venues ?? []).flatMap((venue) => (venue.reason_codes ?? []).map((reason) => `${venue.id}:${reason}`)),
+  ]);
+  const limits = {
+    venues,
+    markets: [],
+    max_order_usd: null,
+    daily_cap_usd: null,
+    slippage_bps: null,
+  };
+  if (input.live_trading_enabled) {
+    return executionDisplay("live_capped", "Live Capped available", "Live agents can trade on ready venues within their saved limits.", true, "Start agent", null, limits, debugReasonCodes);
+  }
+  const reason = plainExecutionReason(debugReasonCodes) ?? "Finish setup before Live Capped trading is available.";
+  return executionDisplay("needs_setup", "Needs setup", reason, false, "Finish setup", reason, limits, debugReasonCodes);
+}
+
+export function customerAutopilotEventCopy(event: { type?: string | null; message?: string | null }): {
+  title: string;
+  detail: string;
+} {
+  const type = String(event.type || "");
+  const message = String(event.message || "");
+  if (type === "live_order_submitted" || type === "execution") {
+    return { title: "Order submitted", detail: "The agent sent a capped order." };
+  }
+  if (type === "proposal") {
+    return { title: "Trade setup found", detail: cleanEventDetail(message, "A setup matched the saved limits.") };
+  }
+  if (type === "risk_reject") {
+    return { title: "Skipped trade", detail: "The setup did not meet the saved limits." };
+  }
+  if (type === "agent_tick" || type === "ai_score" || type === "ai_decision") {
+    return { title: "Signal checked", detail: cleanEventDetail(message, "The agent checked the market.") };
+  }
+  if (type === "funding_required") {
+    return { title: "Add trading funds", detail: "The agent needs venue funds before live orders." };
+  }
+  if (type === "guardrail") {
+    return { title: "Waiting", detail: cleanEventDetail(message, "The agent is waiting for a stronger setup.") };
+  }
+  return { title: formatEventTitle(type), detail: cleanEventDetail(message, "Activity updated.") };
 }
 
 export function deriveLiveReadinessDisplay(input: {
@@ -327,9 +492,9 @@ export function deriveVenueReadinessSteps(input: TradingUiStateInput): VenueRead
       status: venue.connected ? "done" : "current",
     },
     {
-      id: "guardrails",
-      label: "Guardrails",
-      value: !input.authenticated ? "Sign in first" : venue.armed ? "Armed" : venue.connected ? "Create agent" : "Waiting for access",
+      id: "limits",
+      label: "Limits",
+      value: !input.authenticated ? "Sign in first" : venue.armed ? "Saved" : venue.connected ? "Create agent" : "Waiting for access",
       status: !venue.connected ? "pending" : venue.armed ? "done" : "current",
     },
     {
@@ -538,7 +703,7 @@ function liveStatusLabel(status: LiveReadinessStatus): string {
   if (status === "check_connection") return "Check connection";
   if (status === "ready_to_preview") return "Ready to preview";
   if (status === "ready_to_place_capped_trade") return "Ready to place capped trade";
-  if (status === "live_submit_locked") return "Live submit locked";
+  if (status === "live_submit_locked") return "Preview mode";
   return "Blocked";
 }
 
@@ -565,12 +730,12 @@ function blockerCodeForStatus(status: LiveReadinessStatus): string | null {
 function blockerLabelForStatus(status: LiveReadinessStatus, venueLabel: string): string {
   if (status === "signed_out") return "Sign in before connecting a live venue.";
   if (status === "connect_account") return `Connect ${venueLabel} access before preview.`;
-  if (status === "use_with_ghola") return `Bind ${venueLabel} access to Ghola guardrails.`;
+  if (status === "use_with_ghola") return `Save ${venueLabel} limits before Live Capped trading.`;
   if (status === "market_stale") return "Wait for a fresh market snapshot before preview.";
   if (status === "worker_unavailable") return "Worker unavailable. Retry the no-submit check.";
   if (status === "needs_funds") return "Add funds, then check the live path again.";
   if (status === "check_connection") return "Run the no-submit readiness check before approval.";
-  if (status === "live_submit_locked") return "Live submit remains locked until every gate passes.";
+  if (status === "live_submit_locked") return "Live Capped trading is not enabled for this agent yet.";
   return "This path is blocked before submit.";
 }
 
@@ -582,7 +747,7 @@ function liveNextActionLabel(status: LiveReadinessStatus): string {
   if (status === "ready_to_preview") return "Preview intent";
   if (status === "ready_to_place_capped_trade") return "Place capped trade";
   if (status === "market_stale") return "Wait for market data";
-  return "Live submit locked";
+  return "Preview mode";
 }
 
 function liveReceiptSummary(status: LiveReadinessStatus, venueLabel: string): string {
@@ -630,4 +795,96 @@ function orderTicketFieldForError(error: string): OrderTicketField | null {
 
 function pushUnique(target: string[], value: string) {
   if (!target.includes(value)) target.push(value);
+}
+
+function executionDisplay(
+  mode: CustomerExecutionMode,
+  label: string,
+  detail: string,
+  canTrade: boolean,
+  nextActionLabel: string,
+  plainReason: string | null,
+  limits: CustomerExecutionDisplay["limits"],
+  debugReasonCodes: string[],
+): CustomerExecutionDisplay {
+  return {
+    mode,
+    label,
+    detail,
+    can_trade: canTrade,
+    next_action_label: nextActionLabel,
+    plain_reason: plainReason,
+    limits,
+    debug_reason_codes: debugReasonCodes,
+  };
+}
+
+function readyVenueLabels(venues: AutopilotExecutionDisplayInput["venue_readiness"]): string[] {
+  return (venues ?? [])
+    .filter((venue) => venue.status === "ready")
+    .map((venue) => executionVenueLabel(venue.venue_id));
+}
+
+function executionVenueLabel(value: string): string {
+  if (value === "hyperliquid") return "Hyperliquid";
+  if (value === "phoenix") return "Phoenix";
+  if (value === "backpack") return "Backpack";
+  if (value === "jupiter") return "Jupiter";
+  if (value === "coinbase" || value === "coinbase_advanced") return "Coinbase";
+  return value.split(/[_-]/).filter(Boolean).map(capitalize).join(" ") || "Venue";
+}
+
+function normalizeExecutionMarket(value: string): string {
+  return value.replace("-USD", "").replace("/USDC", "").toUpperCase();
+}
+
+function moneyBucket(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  return /^\d+(\.\d+)?$/.test(trimmed) ? `$${trimmed}` : trimmed;
+}
+
+function liveCappedDetail(limits: CustomerExecutionDisplay["limits"]): string {
+  const venueText = limits.venues.length ? limits.venues.join(" + ") : "ready venues";
+  const marketText = limits.markets.length ? limits.markets.join(" / ") : "selected markets";
+  const capText = limits.max_order_usd ? ` up to ${limits.max_order_usd} per order` : "";
+  return `The agent can trade ${marketText} on ${venueText}${capText}.`;
+}
+
+function plainExecutionReason(codes: string[]): string | null {
+  if (codes.length === 0) return null;
+  if (codes.some((code) => code.includes("billing"))) return "Private agent billing needs attention.";
+  if (codes.some((code) => code.includes("wallet_binding"))) return "Connect your wallet to this private agent.";
+  if (codes.some((code) => code.includes("worker") || code.includes("connector"))) return "Private execution setup is finishing.";
+  if (codes.some((code) => code.includes("fund") || code.includes("balance"))) return "Add trading funds.";
+  if (codes.some((code) => code.includes("venue_access") || code.includes("vault") || code.includes("credential"))) {
+    return "Connect trading access.";
+  }
+  if (codes.some((code) => code.includes("market") || code.includes("stale"))) return "Wait for fresh market data.";
+  if (codes.some((code) => code.includes("canary") || code.includes("proof"))) return "Final live check is still pending.";
+  return "Finish setup before live trading.";
+}
+
+function cleanEventDetail(message: string, fallback: string): string {
+  const normalized = message.trim();
+  if (!normalized) return fallback;
+  if (/[A-Z0-9_]{8,}=/.test(normalized) || normalized.includes("required_env")) return fallback;
+  if (normalized.toLowerCase().includes("guardrail")) return fallback;
+  if (normalized.toLowerCase().includes("gate")) return fallback;
+  if (normalized.toLowerCase().includes("kill switch")) return "The agent is stopped.";
+  if (normalized.length > 120) return `${normalized.slice(0, 117)}...`;
+  return normalized;
+}
+
+function formatEventTitle(type: string): string {
+  if (!type) return "Activity";
+  return type.split("_").filter(Boolean).map(capitalize).join(" ");
+}
+
+function capitalize(value: string): string {
+  return value ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return values.filter((value, index) => value.length > 0 && values.indexOf(value) === index);
 }

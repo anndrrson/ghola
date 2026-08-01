@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import bs58 from "bs58";
 import { ed25519 } from "@noble/curves/ed25519";
 import { GET as autopilotReadinessRoute } from "@/app/v1/private-account/autopilot/readiness/route";
+import { GET as autopilotReplayRoute } from "@/app/v1/private-account/autopilot/sessions/[session_id]/replay/route";
 import { POST as createAutopilotRoute } from "@/app/v1/private-account/autopilot/sessions/route";
 import { GET as walletBindingChallengeRoute } from "@/app/v1/private-account/wallet-bindings/challenge/route";
 import { POST as walletBindingRoute } from "@/app/v1/private-account/wallet-bindings/route";
@@ -13,6 +14,7 @@ import {
   createAutopilotSessionFromBody,
   getAutopilotSessionForOwner,
   listAutopilotEventsForOwner,
+  listAutopilotReplayForOwner,
   listAutopilotSessionsForOwner,
   resetAutopilotSessionsForTests,
 } from "./private-account-autopilot";
@@ -26,6 +28,7 @@ describe("private account autopilot sessions", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET;
@@ -43,17 +46,26 @@ describe("private account autopilot sessions", () => {
 
     expect(created.session.status).toBe("pending_worker");
     expect(created.session.execution_enabled).toBe(false);
-    expect(created.session.session_policy.venue_allowlist).toEqual(["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"]);
+    expect(created.session.session_policy.venue_allowlist).toEqual([
+      "jupiter",
+      "phoenix",
+      "backpack",
+      "hyperliquid",
+      "coinbase_advanced",
+    ]);
     expect(created.session.session_policy.market_allowlist).toEqual(["SOL-USD", "BTC-USD", "ETH-USD"]);
     expect(created.session.session_policy.max_notional_bucket).toBe("50");
     expect(created.session.session_policy.max_position_notional_bucket).toBe("100");
     expect(created.session.session_policy.max_daily_notional_bucket).toBe("250");
     expect(created.session.session_policy.max_order_count).toBe(10);
     expect(created.session.session_policy.max_slippage_bps).toBe(50);
+    expect(created.session.session_policy.strategy_id).toBe("bounded_intent_executor_v1");
     expect(created.session.session_policy.cooldown_ms).toBe(5 * 60_000);
     expect(created.session.session_policy.data_max_age_ms).toBe(30_000);
     expect(created.session.session_policy.ai_direct_enabled).toBe(true);
     expect(created.session.session_policy.decision_model).toBe("ai_direct_order_v1");
+    expect(created.session.strategy.strategy_id).toBe("bounded_intent_executor_v1");
+    expect(created.session.strategy.executable_order_source).toBe("ai_structured_decision_validated_by_policy");
     expect(created.session.strategy.ai_can_execute_directly).toBe(true);
     expect(created.events.map((event) => event.type)).toEqual([
       "session_created",
@@ -94,7 +106,7 @@ describe("private account autopilot sessions", () => {
 
     expect(created.session.session_policy.venue_allowlist).toEqual(["jupiter", "coinbase_advanced"]);
     expect(created.session.session_policy.market_allowlist).toEqual(["SOL-USD", "SOL/USDC"]);
-    expect(created.session.session_policy.max_notional_bucket).toBe("50");
+    expect(created.session.session_policy.max_notional_bucket).toBe("1000");
     expect(created.session.session_policy.max_position_notional_bucket).toBe("500");
     expect(created.session.session_policy.max_daily_notional_bucket).toBe("250");
     expect(created.session.session_policy.max_order_count).toBe(25);
@@ -124,8 +136,10 @@ describe("private account autopilot sessions", () => {
 
   it("arms the private worker and mirrors worker events into the local session", async () => {
     const calls: string[] = [];
-    const fetchImpl = async (input: URL | RequestInfo) => {
+    const payloads: unknown[] = [];
+    const fetchImpl = async (input: URL | RequestInfo, init?: RequestInit) => {
       calls.push(String(input));
+      if (typeof init?.body === "string") payloads.push(JSON.parse(init.body));
       return new Response(JSON.stringify({
         version: 1,
         session: {
@@ -171,7 +185,7 @@ describe("private account autopilot sessions", () => {
           daily_notional_used_bucket: "0",
           updated_at: "2026-06-01T12:00:00.000Z",
           expires_at: "2026-06-01T14:00:00.000Z",
-          next_step: "Autonomous worker is running.",
+          next_step: "Bounded intent executor is running.",
           execution_enabled: true,
         },
         events: [{
@@ -200,16 +214,209 @@ describe("private account autopilot sessions", () => {
         GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
       },
       fetchImpl,
+      {
+        version: 1,
+        reservation_id: "autopilot_meter_test",
+        metering_mode: "sparse_metered_v1",
+        reserved_seconds: 300,
+        lease_started_at: "2026-06-01T12:00:00.000Z",
+        lease_expires_at: "2026-06-01T12:05:00.000Z",
+      },
     );
 
     expect(calls).toEqual(["https://worker.example/autopilot/sessions"]);
+    expect(payloads).toHaveLength(1);
+    expect((payloads[0] as { session_policy: { strategy_id: string } }).session_policy.strategy_id).toBe("bounded_intent_executor_v1");
+    expect((payloads[0] as { billing_metering: { reservation_id: string; reserved_seconds: number } }).billing_metering).toMatchObject({
+      reservation_id: "autopilot_meter_test",
+      reserved_seconds: 300,
+    });
+    expect(created.session.billing_metering?.reservation_id).toBe("autopilot_meter_test");
     expect(created.session.status).toBe("running");
     expect(created.session.control_plane).toBe("worker");
     expect(created.session.worker_autopilot_session_id).toBe("worker_autopilot_123");
+    expect(created.session.strategy.strategy_id).toBe("bounded_intent_executor_v1");
+    expect(created.session.session_policy.strategy_id).toBe("bounded_intent_executor_v1");
     expect(created.session.strategy.ai_can_execute_directly).toBe(true);
     expect(created.session.session_policy.decision_model).toBe("ai_direct_order_v1");
     expect(created.session.venue_access.jupiter.status).toBe("ready");
     expect(created.events.some((event) => event.event_id === "worker_event_ready")).toBe(true);
+  });
+
+  it("returns a local replay bundle from the authenticated replay route", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
+    const createRes = await createAutopilotRoute(new Request("https://ghola.test/v1/private-account/autopilot/sessions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: auth("autopilot_route_user"),
+      },
+      body: JSON.stringify({
+        session_policy: {
+          venue_allowlist: ["jupiter"],
+          market_allowlist: ["SOL-USD"],
+        },
+      }),
+    }));
+    const created = await createRes.json();
+
+    const replayRes = await autopilotReplayRoute(
+      get(`/v1/private-account/autopilot/sessions/${created.session.autopilot_session_id}/replay`),
+      { params: Promise.resolve({ session_id: created.session.autopilot_session_id }) },
+    );
+    const replay = await replayRes.json();
+
+    expect(replayRes.status).toBe(200);
+    expect(replay.session.autopilot_session_id).toBe(created.session.autopilot_session_id);
+    expect(replay.metrics.executor_count).toBe(0);
+    expect(replay.executors).toEqual([]);
+    expect(replay.events.map((event: { type: string }) => event.type)).toContain("session_created");
+  });
+
+  it("fetches worker replay records and merges replay events into the local session", async () => {
+    const calls: string[] = [];
+    const workerSession = {
+      version: 2,
+      autopilot_session_id: "worker_replay_123",
+      agent_controller_id: "agentctl_worker_replay",
+      worker_session_commitment: "worker_commitment_replay",
+      status: "running",
+      strategy: {
+        version: 1,
+        strategy_id: "tri_venue_market_maker_v1",
+        decision_model: "rules_plus_ai_score",
+        executable_order_source: "deterministic_guarded_market_maker",
+        ai_can_execute_directly: true,
+      },
+      session_policy: {
+        strategy_id: "tri_venue_market_maker_v1",
+        decision_model: "rules_plus_ai_score",
+        ai_direct_enabled: false,
+        venue_allowlist: ["phoenix"],
+        market_allowlist: ["SOL-USD"],
+        max_notional_bucket: "50",
+        max_position_notional_bucket: "100",
+        max_daily_notional_bucket: "250",
+        max_order_count: 10,
+        ttl_ms: 2 * 60 * 60_000,
+        max_slippage_bps: 25,
+        cooldown_ms: 5 * 60_000,
+        data_max_age_ms: 30_000,
+        min_ai_score_bps: 6_500,
+        ai_min_confidence_bps: 6_500,
+        min_signal_bps: 25,
+        max_spread_bps: 100,
+        kill_switch: false,
+        reduce_only_on_reconcile_failure: true,
+        locale_hint: "en",
+        timezone: "Asia/Singapore",
+        policy_commitment: "autopilot_policy_worker_replay",
+      },
+      venue_access: {
+        phoenix: { status: "ready", execution_mode: "ghola_pooled", reason: "dry_run_ready" },
+      },
+      order_count: 0,
+      daily_notional_used_bucket: "0",
+      updated_at: "2026-06-01T12:00:00.000Z",
+      expires_at: "2026-06-01T14:00:00.000Z",
+      next_step: "Private liquidity replay is available.",
+      execution_enabled: true,
+    };
+    const fetchImpl = async (input: URL | RequestInfo) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith("/autopilot/sessions")) {
+        return new Response(JSON.stringify({
+          version: 1,
+          session: workerSession,
+          events: [{
+            version: 1,
+            event_id: "worker_replay_ready",
+            type: "venue_readiness",
+            status: "running",
+            message: "Worker ready.",
+            data: {},
+            created_at: "2026-06-01T12:00:00.000Z",
+          }],
+        }), { status: 201 });
+      }
+      if (url.endsWith("/autopilot/sessions/worker_replay_123/replay")) {
+        return new Response(JSON.stringify({
+          version: 1,
+          session: workerSession,
+          metrics: {
+            version: 1,
+            agent_controller_id: "agentctl_worker_replay",
+            executor_count: 2,
+            submitted_executor_count: 0,
+          },
+          executors: [{
+            version: 1,
+            executor_id: "executor_quote_buy",
+            status: "simulated",
+            kind: "quote",
+            venue_id: "phoenix",
+            market: "SOL-USD",
+            side: "buy",
+            notional_bucket: "25",
+          }],
+          tick_snapshots: [{
+            version: 1,
+            tick_id: "tick_replay",
+            status: "simulated",
+            executor_ids: ["executor_quote_buy"],
+            created_at: "2026-06-01T12:00:01.000Z",
+          }],
+          positions: [],
+          events: [{
+            version: 1,
+            event_id: "worker_executor_created",
+            type: "executor_created",
+            status: "running",
+            message: "No-submit executor recorded.",
+            data: { executor_ids: ["executor_quote_buy"] },
+            created_at: "2026-06-01T12:00:01.000Z",
+          }],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: "not_found" }), { status: 404 });
+    };
+
+    const created = await createAutonomousAutopilotSessionFromBody(
+      {
+        session_policy: {
+          strategy_id: "tri_venue_market_maker_v1",
+          venue_allowlist: ["phoenix"],
+          market_allowlist: ["SOL-USD"],
+        },
+      },
+      owner,
+      new Date("2026-06-01T12:00:00.000Z"),
+      {
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      },
+      fetchImpl,
+    );
+
+    const replay = await listAutopilotReplayForOwner(
+      created.session.autopilot_session_id,
+      owner,
+      {
+        GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+        GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "token",
+      },
+      fetchImpl,
+      new Date("2026-06-01T12:00:02.000Z"),
+    );
+
+    expect(calls).toContain("https://worker.example/autopilot/sessions/worker_replay_123/replay");
+    expect("error" in replay).toBe(false);
+    if ("error" in replay) return;
+    expect(replay.metrics.executor_count).toBe(2);
+    expect(replay.executors[0].executor_id).toBe("executor_quote_buy");
+    expect(replay.tick_snapshots[0].status).toBe("simulated");
+    expect(replay.events.map((event) => event.event_id)).toContain("worker_executor_created");
   });
 
   it("expires sessions without exposing them to other owners", async () => {
@@ -247,6 +454,159 @@ describe("private account autopilot sessions", () => {
     expect(res.status).toBe(201);
     expect(json.session.status).toBe("pending_worker");
     expect(json.session.session_policy.max_notional_bucket).toBe("5");
+  });
+
+  it("rejects Android autopilot session creation before worker arming when billing is unpaid", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
+    const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
+      const url = String(input);
+      if (url.endsWith("/api/user/profile")) {
+        return new Response(JSON.stringify({
+          id: "autopilot_route_user",
+          email: "autopilot_route_user@example.com",
+        }), { status: 200 });
+      }
+      if (url.endsWith("/api/billing/status")) {
+        return new Response(JSON.stringify({
+          tier: "free",
+          private_agent_compute: {
+            included_seconds: 0,
+            reserved_seconds: 0,
+            used_seconds: 0,
+            remaining_seconds: 0,
+            active_agent_limit: 0,
+            active_agent_count: 0,
+            period_start: "2026-06-01",
+            period_end: "2026-07-01",
+            metering_unit: "agent_second",
+          },
+        }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await createAutopilotRoute(new Request("https://ghola.test/v1/private-account/autopilot/sessions", {
+      method: "POST",
+      headers: {
+        authorization: auth("autopilot_route_user"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        session_policy: {
+          venue_allowlist: ["hyperliquid"],
+          market_allowlist: ["BTC-USD"],
+          max_notional_bucket: "5",
+        },
+      }),
+    }));
+    const body = await res.json();
+
+    expect(res.status).toBe(402);
+    expect(body.error).toBe("private_agent_billing_required");
+    expect(body.blocking_reasons).toContain("subscription_required");
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "https://worker.example/autopilot/sessions",
+      expect.anything(),
+    );
+  });
+
+  it("reserves a short sparse compute lease before arming the worker", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE = "report_only";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_URL = "https://worker.example";
+    process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN = "worker-token";
+    const reserveBodies: unknown[] = [];
+    const workerBodies: unknown[] = [];
+    const fetchMock = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/user/profile")) {
+        return new Response(JSON.stringify({
+          id: "autopilot_route_user",
+          email: "autopilot_route_user@example.com",
+        }), { status: 200 });
+      }
+      if (url.endsWith("/api/billing/status")) {
+        return new Response(JSON.stringify({
+          tier: "private_agent",
+          private_agent_compute: {
+            included_seconds: 108000,
+            reserved_seconds: 0,
+            used_seconds: 0,
+            remaining_seconds: 108000,
+            active_agent_limit: 1,
+            active_agent_count: 0,
+            period_start: "2026-06-01",
+            period_end: "2026-07-01",
+            metering_unit: "agent_second",
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith("/api/billing/private-agent/compute/reserve")) {
+        reserveBodies.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url === "https://worker.example/autopilot/sessions") {
+        const body = JSON.parse(String(init?.body));
+        workerBodies.push(body);
+        return new Response(JSON.stringify({
+          session: {
+            version: 2,
+            autopilot_session_id: "worker_sparse_meter_123",
+            worker_session_commitment: "worker_commitment",
+            owner_commitment: body.owner_commitment,
+            status: "running",
+            strategy: {
+              version: 1,
+              strategy_id: "bounded_intent_executor_v1",
+              decision_model: "ai_direct_order_v1",
+              executable_order_source: "ai_structured_decision_validated_by_policy",
+              ai_can_execute_directly: true,
+            },
+            session_policy: body.session_policy,
+            venue_access: {
+              jupiter: { status: "ready", execution_mode: "ghola_pooled", reason: "dry_run_ready" },
+            },
+            order_count: 0,
+            daily_notional_used_bucket: "0",
+            updated_at: "2026-06-01T12:00:00.000Z",
+            expires_at: "2026-06-01T14:00:00.000Z",
+            next_step: "Bounded intent executor is running.",
+            execution_enabled: true,
+          },
+          events: [],
+        }), { status: 201 });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await createAutopilotRoute(new Request("https://ghola.test/v1/private-account/autopilot/sessions", {
+      method: "POST",
+      headers: {
+        authorization: auth("autopilot_route_user"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        session_policy: {
+          venue_allowlist: ["jupiter"],
+          market_allowlist: ["SOL-USD"],
+        },
+      }),
+    }));
+    const body = await res.json();
+
+    expect(res.status).toBe(201);
+    expect(reserveBodies[0]).toMatchObject({
+      seconds: 300,
+      metering_mode: "sparse_metered_v1",
+    });
+    expect((workerBodies[0] as { billing_metering: { reservation_id: string; reserved_seconds: number } }).billing_metering)
+      .toMatchObject({
+        reservation_id: (reserveBodies[0] as { session_id: string }).session_id,
+        reserved_seconds: 300,
+      });
+    expect(body.billing.metering_mode).toBe("sparse_metered_v1");
+    expect(body.billing.reserved_seconds).toBe(300);
   });
 
   it("rejects invalid and replayed mobile live proofs", async () => {
@@ -368,6 +728,11 @@ describe("private account autopilot sessions", () => {
     expect(body.can_arm).toBe(true);
     expect(body.can_live_submit).toBe(true);
     expect(body.wallet_binding_status).toBe("active");
+    expect(body.execution_display).toMatchObject({
+      mode: "live_capped",
+      label: "Live Capped",
+      can_trade: true,
+    });
     expect(body.venue_readiness.find((venue: { venue_id: string }) => venue.venue_id === "hyperliquid").status)
       .toBe("ready");
   });

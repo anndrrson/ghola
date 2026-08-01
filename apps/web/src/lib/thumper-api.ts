@@ -443,6 +443,7 @@ export async function getThumperBillingStatus(): Promise<ThumperBillingStatusRes
 export async function reservePrivateAgentCompute(input: {
   session_id: string;
   seconds: number;
+  metering_mode?: "reserved_upfront" | "sparse_metered_v1";
 }): Promise<{ ok: boolean; reservation_id: string; reserved_seconds: number }> {
   return thumperFetch<{ ok: boolean; reservation_id: string; reserved_seconds: number }>(
     "/api/billing/private-agent/compute/reserve",
@@ -456,6 +457,7 @@ export async function reservePrivateAgentCompute(input: {
 export async function releasePrivateAgentCompute(input: {
   session_id: string;
   status: "paused" | "completed" | "failed";
+  seconds_used?: number;
 }): Promise<{ ok: boolean }> {
   return thumperFetch<{ ok: boolean }>(
     "/api/billing/private-agent/compute/release",

@@ -148,3 +148,200 @@ body {
     transform: translateY(0);
   }
 }
+
+/* ---------- Trade landing surfaces ---------- */
+.trade-chip {
+  background-image: linear-gradient(180deg, #101723 0%, #0a0f18 55%, #070b12 100%);
+  border: 1px solid #1e2a3a;
+  color: #8b95a8;
+  box-shadow:
+    inset 0 1px 0 rgba(220, 238, 255, 0.07),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45),
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 4px 10px -6px rgba(0, 0, 0, 0.6);
+  transition: border-color 140ms ease, color 140ms ease, box-shadow 140ms ease,
+    transform 120ms ease, filter 120ms ease;
+}
+.trade-chip:hover:not(:disabled) {
+  border-color: #34506f;
+  color: #eef1f8;
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(220, 238, 255, 0.1),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45),
+    0 2px 4px rgba(0, 0, 0, 0.45),
+    0 8px 18px -8px rgba(90, 167, 255, 0.35);
+}
+.trade-chip:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.5),
+    0 1px 0 rgba(220, 238, 255, 0.03);
+}
+.trade-action {
+  background-image: linear-gradient(180deg, #8cc4ff 0%, #5aa7ff 55%, #3d8ef0 100%);
+  color: #07101c;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(8, 25, 50, 0.4),
+    0 8px 22px -8px rgba(90, 167, 255, 0.6),
+    0 2px 4px rgba(0, 0, 0, 0.5);
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+}
+.trade-action:hover:not(:disabled) {
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -1px 0 rgba(8, 25, 50, 0.4),
+    0 12px 28px -8px rgba(90, 167, 255, 0.7),
+    0 2px 6px rgba(0, 0, 0, 0.55);
+}
+.trade-action:active:not(:disabled) {
+  filter: none;
+  transform: translateY(0);
+  box-shadow:
+    inset 0 2px 4px rgba(8, 25, 50, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+@keyframes trade-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.trade-live-dot {
+  animation: trade-dot-pulse 2.4s ease-in-out infinite;
+}
+
+/* ---------- Pro terminal surfaces ----------
+   Machined-panel language for the trading terminal: every surface is a
+   shallow vertical gradient with an inset top hairline so panels read as
+   physical plates instead of flat fills. Square corners throughout. */
+.term-panel {
+  background-image:
+    linear-gradient(180deg, rgba(168, 216, 255, 0.045) 0%, rgba(168, 216, 255, 0) 18%),
+    linear-gradient(180deg, #0a0e16 0%, #05070b 100%);
+  border: 1px solid #1c2940;
+  box-shadow:
+    inset 0 1px 0 rgba(220, 238, 255, 0.05),
+    0 14px 32px -22px rgba(0, 0, 0, 0.9);
+}
+
+.term-subpanel {
+  background-image: linear-gradient(180deg, #080c13 0%, #05070b 100%);
+  border: 1px solid #152238;
+  box-shadow: inset 0 1px 0 rgba(220, 238, 255, 0.035);
+}
+
+/* Inputs and selects: sunken wells with a focus glow. */
+.term-field {
+  background-image: linear-gradient(180deg, #060a11 0%, #090e17 100%);
+  border: 1px solid #1e2a3a;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.4),
+    inset 0 -1px 0 rgba(220, 238, 255, 0.03);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.term-field:hover {
+  border-color: #2c3d56;
+}
+.term-field:focus,
+.term-field:focus-within {
+  border-color: #a8d8ff;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(168, 216, 255, 0.22),
+    0 0 18px -6px rgba(168, 216, 255, 0.5);
+}
+
+/* Selection chips: raised when idle, lit ice-blue when active. */
+.term-chip {
+  background-image: linear-gradient(180deg, #0c1119 0%, #060910 100%);
+  border: 1px solid #1e2a3a;
+  border-radius: 0.375rem;
+  color: #aab5c8;
+  box-shadow:
+    inset 0 1px 0 rgba(220, 238, 255, 0.055),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.34),
+    0 4px 12px -8px rgba(0, 0, 0, 0.75);
+  transition: border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+.term-chip:hover:not(:disabled) {
+  border-color: rgba(215, 219, 226, 0.42);
+  color: #eceef2;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 14px -7px rgba(215, 219, 226, 0.3);
+}
+.term-chip-on {
+  background-image: linear-gradient(180deg, #f0f1f3 0%, #d8dbe0 55%, #c5c9d0 100%);
+  border: 1px solid #e4e6e9;
+  border-radius: 0.375rem;
+  color: #101114;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.65),
+    inset 0 -1px 0 rgba(24, 26, 30, 0.24),
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 4px 16px -7px rgba(215, 219, 226, 0.38);
+}
+
+/* Primary action: dimensional ice-blue chip with hover lift and press sink. */
+.term-action {
+  background-image: linear-gradient(180deg, #f2f8ff 0%, #cfe8ff 50%, #a8d8ff 100%);
+  color: #07101c;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    inset 0 -1px 0 rgba(20, 60, 100, 0.3),
+    0 8px 22px -8px rgba(126, 196, 255, 0.6),
+    0 2px 4px rgba(0, 0, 0, 0.5);
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+}
+.term-action:hover:not(:disabled) {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -1px 0 rgba(20, 60, 100, 0.3),
+    0 12px 28px -8px rgba(126, 196, 255, 0.7),
+    0 2px 6px rgba(0, 0, 0, 0.55);
+}
+.term-action:active:not(:disabled) {
+  filter: none;
+  transform: translateY(0);
+  box-shadow:
+    inset 0 2px 4px rgba(8, 25, 50, 0.35),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* HUD corner ticks for the chart frame. */
+.term-corners {
+  --tick-color: rgba(190, 195, 204, 0.42);
+  background-image:
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color)),
+    linear-gradient(var(--tick-color), var(--tick-color));
+  background-position: 0 0, 0 0, 100% 0, 100% 0, 0 100%, 0 100%, 100% 100%, 100% 100%;
+  background-size: 14px 1px, 1px 14px, 14px 1px, 1px 14px, 14px 1px, 1px 14px, 14px 1px, 1px 14px;
+  background-repeat: no-repeat;
+}
+
+@keyframes term-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.term-live-dot {
+  animation: term-dot-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes term-price-flash {
+  0% { color: #ffffff; text-shadow: 0 0 20px rgba(168, 216, 255, 0.9); }
+  100% { text-shadow: 0 0 0 rgba(168, 216, 255, 0); }
+}
+.term-price-flash {
+  animation: term-price-flash 480ms ease-out;
+}

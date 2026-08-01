@@ -1,10 +1,11 @@
 import type { HyperliquidMarketSnapshot } from "./private-account-client";
-import type { CoinbaseMarketSnapshot } from "./coinbase-market-data";
+import type { BackpackMarketSnapshot } from "./backpack-market-data";
+import { selectCoinbaseDisplayPrice, type CoinbaseMarketSnapshot } from "./coinbase-market-data";
 import type { PhoenixMarketSnapshot } from "./phoenix-market-data";
 import type { MobileMarketJupiter } from "./mobile-market-data";
 import type { PrivateExecutionOrderDraft } from "./private-execution-instruction-seal";
 
-export type GholaChartVenue = "hyperliquid" | "phoenix" | "coinbase" | "jupiter";
+export type GholaChartVenue = "hyperliquid" | "phoenix" | "backpack" | "coinbase" | "jupiter";
 export type GholaChartMode = "candles" | "line" | "depth" | "compare" | "route" | "slippage" | "quote";
 export type GholaChartTone = "good" | "bad" | "warn" | "accent" | "neutral";
 
@@ -235,20 +236,52 @@ export function gholaFrameFromPhoenix(snapshot: PhoenixMarketSnapshot | null): G
   };
 }
 
+export function gholaFrameFromBackpack(snapshot: BackpackMarketSnapshot | null): GholaMarketFrame | null {
+  if (!snapshot) return null;
+  return {
+    version: 1,
+    venue: "backpack",
+    product: snapshot.symbol,
+    interval: snapshot.interval,
+    fetchedAt: snapshot.fetched_at,
+    stale: snapshot.stale,
+    mid: snapshot.mid,
+    bestBid: snapshot.best_bid,
+    bestAsk: snapshot.best_ask,
+    spreadBps: snapshot.spread_bps,
+    markPrice: snapshot.mark_price ?? snapshot.last_price,
+    oraclePrice: snapshot.index_price,
+    fundingRate: snapshot.funding_rate,
+    openInterest: snapshot.open_interest,
+    dayVolume: snapshot.day_notional_volume,
+    candles: snapshot.candles.map(normalizeCandle),
+    bids: snapshot.bids.map(normalizeBookLevel),
+    asks: snapshot.asks.map(normalizeBookLevel),
+    trades: snapshot.recent_trades.map((trade) => ({
+      side: trade.side,
+      px: trade.px,
+      sz: trade.sz,
+      time: trade.time,
+    })),
+    routeQuotes: [],
+  };
+}
+
 export function gholaFrameFromCoinbase(snapshot: CoinbaseMarketSnapshot | null): GholaMarketFrame | null {
   if (!snapshot) return null;
+  const selectedPrice = selectCoinbaseDisplayPrice(snapshot);
   return {
     version: 1,
     venue: "coinbase",
     product: snapshot.product_id,
     interval: snapshot.interval,
     fetchedAt: snapshot.fetched_at,
-    stale: snapshot.stale,
-    mid: snapshot.mid || snapshot.price,
+    stale: snapshot.stale || selectedPrice.stale,
+    mid: selectedPrice.value,
     bestBid: snapshot.best_bid,
     bestAsk: snapshot.best_ask,
     spreadBps: snapshot.spread_bps,
-    markPrice: snapshot.price,
+    markPrice: snapshot.last_trade_price ?? snapshot.price,
     oraclePrice: null,
     fundingRate: null,
     openInterest: null,
@@ -331,7 +364,7 @@ export function buildGholaAgentChartOverlays(input: GholaAgentOverlayInput): Gho
     {
       id: "agent-guard",
       kind: "price_line",
-      label: `Slippage cap ${slippageBps} bps`,
+      label: `Max slippage · ${slippageBps} bps`,
       tone: "warn",
       price: guardPrice,
       side,

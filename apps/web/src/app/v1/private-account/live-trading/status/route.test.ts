@@ -10,6 +10,15 @@ import {
 
 const ENV_KEYS = [
   "GHOLA_LIVE_TRADING_PUBLIC_ENABLED",
+  "GHOLA_PRODUCT_ENVIRONMENT",
+  "GHOLA_HYPERLIQUID_PILOT_NETWORK",
+  "GHOLA_NO_KEY_LIVE_ENABLED",
+  "GHOLA_PUBLIC_LIVE_PRIMARY_VENUE",
+  "GHOLA_PUBLIC_LIVE_REQUIRE_AUTH",
+  "GHOLA_PUBLIC_LIVE_REQUIRE_BALANCE",
+  "GHOLA_PUBLIC_LIVE_REQUIRE_ALLOWLIST",
+  "GHOLA_PUBLIC_LIVE_ALLOWED_USERS",
+  "GHOLA_PUBLIC_LIVE_ALLOWED_WALLETS",
   "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED",
   "GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN",
   "GHOLA_PRIVATE_AGENT_REMOTE_EXECUTION_DISABLED",
@@ -88,7 +97,9 @@ const ENV_KEYS = [
   "GHOLA_COINBASE_PARTNER_OMNIBUS_POOL_READY",
   "GHOLA_COINBASE_LIVE_MODE",
   "PRIVATE_AGENT_COINBASE_LIVE_MODE",
+  "GHOLA_COINBASE_ALLOWED_PRODUCTS",
   "PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS",
+  "GHOLA_COINBASE_LIVE_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD",
 ] as const;
 
@@ -129,8 +140,34 @@ describe("private account live trading launch gate", () => {
       default_access_mode: "ghola_auto_access",
     });
     expect(body.reason_codes).toContain("live_trading_public_flag_disabled");
+    expect(body.execution_display).toMatchObject({
+      mode: "needs_setup",
+      label: "Needs setup",
+      can_trade: false,
+    });
+    expect([
+      body.execution_display.label,
+      body.execution_display.detail,
+      body.execution_display.plain_reason,
+    ].join(" ")).not.toMatch(/dry_run|live_submit|PRIVATE_AGENT|tiny_fill|gate/i);
     expect(body.required_venues).toHaveLength(5);
     expect(body.required_venues.every((venue: { status: string }) => venue.status === "red")).toBe(true);
+  });
+
+  it("identifies the dedicated testnet product without changing mainnet gates", async () => {
+    const res = await liveTradingStatusResponse({
+      env: {
+        ...process.env,
+        GHOLA_PRODUCT_ENVIRONMENT: "testnet",
+        GHOLA_HYPERLIQUID_PILOT_NETWORK: "mainnet",
+      },
+    });
+    const body = await res.json();
+    expect(body).toMatchObject({
+      product_environment: "testnet",
+      hyperliquid_network: "testnet",
+      testnet_funds_have_no_value: true,
+    });
   });
 
   it("enables BYO mainnet live submit with ready env before pooled pools are configured", async () => {
@@ -142,6 +179,11 @@ describe("private account live trading launch gate", () => {
     expect(body.status).toBe("green");
     expect(body.live_trading_enabled).toBe(true);
     expect(body.live_submit_mode).toBe("byo_mainnet");
+    expect(body.execution_display).toMatchObject({
+      mode: "live_capped",
+      label: "Live Capped available",
+      can_trade: true,
+    });
     expect(body.fresh_user_live_ready).toBe(false);
     expect(body.launch_mode).toBe("public_byo_mainnet");
     expect(body.byo_live_trading_enabled).toBe(true);
@@ -291,6 +333,73 @@ describe("private account live trading launch gate", () => {
       { id: "jupiter", status: "green", canary_status: "missing", canary_required: false },
       { id: "coinbase", status: "green", canary_status: "missing", canary_required: false },
     ]);
+  });
+
+  it("keeps no-key live disabled until a public live allowlist is configured", async () => {
+    enableGreenGateEnv();
+    enablePooledPoolEnv();
+    enablePooledWorkerEnv();
+    process.env.GHOLA_NO_KEY_LIVE_ENABLED = "true";
+    const fetchSpy = mockPooledWorkerReady();
+
+    const blockedRes = await GET();
+    expect(blockedRes.status).toBe(200);
+    const blockedBody = await blockedRes.json();
+    expect(blockedBody.no_key_live_trading_enabled).toBe(false);
+    expect(blockedBody.phoenix_public_live_ready).toBe(false);
+    expect(blockedBody.no_key_requires_allowlist).toBe(true);
+    expect(blockedBody.no_key_blocking_reason_codes).toContain("public_live_allowlist_missing");
+
+    process.env.GHOLA_PUBLIC_LIVE_ALLOWED_USERS = "user_live_beta";
+    const readyRes = await GET();
+    expect(readyRes.status).toBe(200);
+    const readyBody = await readyRes.json();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(readyBody.no_key_live_trading_enabled).toBe(true);
+    expect(readyBody.phoenix_public_live_ready).toBe(true);
+    expect(readyBody.no_key_blocking_reason_codes).toEqual([]);
+  });
+
+  it("enables Coinbase as the public US no-key venue without Hyperliquid readiness", async () => {
+    enableGreenGateEnv();
+    enablePooledWorkerEnv();
+    process.env.GHOLA_PUBLIC_LIVE_PRIMARY_VENUE = "coinbase";
+    process.env.GHOLA_NO_KEY_LIVE_ENABLED = "true";
+    process.env.GHOLA_PUBLIC_LIVE_REQUIRE_AUTH = "true";
+    process.env.GHOLA_PUBLIC_LIVE_REQUIRE_ALLOWLIST = "true";
+    process.env.GHOLA_PUBLIC_LIVE_ALLOWED_USERS = "coinbase_public_user";
+    process.env.GHOLA_COINBASE_PARTNER_OMNIBUS_POOL_READY = "true";
+    process.env.PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD = "5";
+    delete process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET;
+    delete process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE;
+    delete process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD;
+    delete process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD;
+    delete process.env.PRIVATE_AGENT_SOLANA_PERPS_ALLOW_MAINNET;
+    delete process.env.GHOLA_SOLANA_PERPS_LIVE_MODE;
+    delete process.env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE;
+    delete process.env.GHOLA_BACKPACK_LIVE_MODE;
+    delete process.env.PRIVATE_AGENT_BACKPACK_LIVE_MODE;
+    delete process.env.GHOLA_JUPITER_LIVE_MODE;
+    delete process.env.PRIVATE_AGENT_JUPITER_LIVE_MODE;
+    const fetchSpy = mockPooledWorkerReady();
+
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(body.status).toBe("green");
+    expect(body.live_trading_enabled).toBe(true);
+    expect(body.live_submit_mode).toBe("pooled_account");
+    expect(body.fresh_user_live_ready).toBe(true);
+    expect(body.launch_mode).toBe("public_pooled_account");
+    expect(body.no_key_primary_venue).toBe("coinbase");
+    expect(body.no_key_live_trading_enabled).toBe(true);
+    expect(body.coinbase_public_live_ready).toBe(true);
+    expect(body.hyperliquid_byo.status).toBe("red");
+    expect(body.no_key_blocking_reason_codes).toEqual([]);
+    expect(body.pooled_live_venues).toEqual(["coinbase"]);
+    expect(body.proof_model.pooled_live_venues).toEqual(["coinbase"]);
   });
 
   it("turns the fresh-user launch gate green from live venue gates and records canary evidence when present", async () => {
@@ -511,7 +620,7 @@ function enablePooledWorkerEnv() {
 }
 
 function mockPooledWorkerReady() {
-  return vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
     version: 1,
     status: "ready",
     ready: true,
@@ -533,7 +642,7 @@ function mockPooledWorkerReady() {
 }
 
 function mockPooledWorkerPartiallyReady() {
-  return vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
     version: 1,
     status: "blocked",
     ready: false,

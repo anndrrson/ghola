@@ -236,7 +236,7 @@ function PrivacySecurityTab() {
       status: "Private preferred",
       desc: "Private actions use the private rail when available; public settlement requires an explicit choice.",
       href: "/private-balance",
-      cta: "Manage balance",
+      cta: "Manage funding",
     },
     {
       icon: Link2,

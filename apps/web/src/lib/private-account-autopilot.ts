@@ -5,6 +5,11 @@ import {
 import { agentPassportVenueAccessForWorker } from "./private-agent-passport";
 import type { PrivateAccountRequestOwner } from "@/app/v1/private-account/_lib";
 import {
+  GHOLA_FUNDING_AMOUNT_BUCKETS,
+  type GholaFundingAmountBucket,
+} from "./private-account";
+import type { CustomerExecutionDisplay } from "./private-account-trading-ui";
+import {
   getPrivateAutopilotSession,
   listPrivateAutopilotEvents,
   listPrivateAutopilotSessions,
@@ -15,7 +20,13 @@ import {
   type PrivateAutopilotSessionRecordV1,
 } from "./private-account-store";
 
-export type AutopilotVenueId = "jupiter" | "phoenix" | "hyperliquid" | "coinbase_advanced";
+export type AutopilotVenueId = "jupiter" | "phoenix" | "backpack" | "hyperliquid" | "coinbase_advanced";
+export type AutopilotStrategyId =
+  | "bounded_intent_executor_v1"
+  | "momentum_micro_trader"
+  | "hedged_spread_arbitrage_v1"
+  | "tri_venue_market_maker_v1";
+export type CanonicalAutopilotStrategyId = Exclude<AutopilotStrategyId, "momentum_micro_trader">;
 export type AutopilotStatus =
   | "armed"
   | "watching"
@@ -35,6 +46,8 @@ export type AutopilotEventType =
   | "session_state"
   | "venue_readiness"
   | "proposal"
+  | "executor_created"
+  | "tick_snapshot"
   | "execution"
   | "live_order_submitted"
   | "position_update"
@@ -56,15 +69,25 @@ export interface AutopilotOwner {
   user?: PrivateAccountRequestOwner["user"];
 }
 
+export interface AutopilotAgentMandate {
+  version: 1;
+  side: "buy" | "sell" | "auto";
+  strategy_profile: string;
+  entry_trigger: string;
+  exit_rule: string;
+  time_horizon: string;
+  strategy_note?: string;
+}
+
 export interface AutopilotSessionPolicy {
-  strategy_id: "momentum_micro_trader" | "hedged_spread_arbitrage_v1";
+  strategy_id: CanonicalAutopilotStrategyId;
   decision_model: "rules_plus_ai_score" | "ai_direct_order_v1";
   ai_direct_enabled: boolean;
   venue_allowlist: AutopilotVenueId[];
   market_allowlist: string[];
-  max_notional_bucket: "5" | "10" | "25" | "50" | "100";
+  max_notional_bucket: GholaFundingAmountBucket;
   max_position_notional_bucket: "50" | "100" | "250" | "500";
-  max_daily_notional_bucket: "25" | "50" | "100" | "250";
+  max_daily_notional_bucket: "25" | "50" | "100" | "250" | "500" | "1000" | "2500" | "5000";
   max_order_count: number;
   ttl_ms: number;
   max_slippage_bps: number;
@@ -83,21 +106,28 @@ export interface AutopilotSessionPolicy {
   reduce_only_on_reconcile_failure: boolean;
   locale_hint: "en" | "zh-CN" | "id";
   timezone: string | null;
+  agent_mandate?: AutopilotAgentMandate;
   policy_commitment: string;
 }
 
 export interface AutopilotSession {
   version: 2;
   autopilot_session_id: string;
+  agent_controller_id?: string | null;
   worker_autopilot_session_id: string | null;
   worker_session_commitment: string | null;
   owner_commitment: string;
   status: AutopilotStatus;
   strategy: {
     version: 1;
-    strategy_id: "momentum_micro_trader" | "hedged_spread_arbitrage_v1";
+    strategy_id: CanonicalAutopilotStrategyId;
     decision_model: "rules_plus_ai_score" | "ai_direct_order_v1";
-    executable_order_source: "deterministic_guarded_strategy" | "ai_structured_decision_validated_by_policy" | "deterministic_guarded_arb_planner";
+    executable_order_source:
+      | "deterministic_guarded_strategy"
+      | "deterministic_bounded_intent_executor"
+      | "ai_structured_decision_validated_by_policy"
+      | "deterministic_guarded_arb_planner"
+      | "deterministic_guarded_market_maker";
     ai_can_execute_directly: boolean;
   };
   session_policy: AutopilotSessionPolicy;
@@ -108,6 +138,14 @@ export interface AutopilotSession {
   }>;
   order_count: number;
   daily_notional_used_bucket: string;
+  billing_metering?: {
+    version: 1;
+    reservation_id: string;
+    metering_mode: "sparse_metered_v1";
+    reserved_seconds: number;
+    lease_started_at: string;
+    lease_expires_at: string;
+  } | null;
   created_at: string;
   updated_at: string;
   expires_at: string;
@@ -132,6 +170,16 @@ export interface AutopilotEvent {
   created_at: string;
 }
 
+export interface AutopilotReplayBundle {
+  version: 1;
+  session: AutopilotSession;
+  metrics: Record<string, unknown>;
+  executors: Record<string, unknown>[];
+  tick_snapshots: Record<string, unknown>[];
+  positions: Record<string, unknown>[];
+  events: AutopilotEvent[];
+}
+
 export interface AutopilotCreateResult {
   session: AutopilotSession;
   events: AutopilotEvent[];
@@ -154,13 +202,15 @@ export interface AutopilotReadiness {
   wallet_binding_status: "active" | "missing" | "unknown";
   target_live_mode: "tiny_live_orders";
   blockers: string[];
+  execution_display?: CustomerExecutionDisplay;
   venue_readiness: AutopilotVenueReadiness[];
 }
 
-const DEFAULT_VENUES: AutopilotVenueId[] = ["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"];
+const DEFAULT_VENUES: AutopilotVenueId[] = ["jupiter", "phoenix", "backpack", "hyperliquid", "coinbase_advanced"];
 const SUPPORTED_VENUES = new Set<AutopilotVenueId>([
   "jupiter",
   "phoenix",
+  "backpack",
   "hyperliquid",
   "coinbase_advanced",
 ]);
@@ -195,6 +245,8 @@ const AUTOPILOT_EVENT_TYPES = new Set<AutopilotEventType>([
   "session_state",
   "venue_readiness",
   "proposal",
+  "executor_created",
+  "tick_snapshot",
   "execution",
   "live_order_submitted",
   "position_update",
@@ -229,6 +281,10 @@ export async function createAutopilotSessionFromBody(
   const session: AutopilotSession = {
     version: 2,
     autopilot_session_id: id,
+    agent_controller_id: `agentctl_${digest({
+      owner_commitment: owner.owner_commitment,
+      policy_commitment: policy.policy_commitment,
+    }).slice(0, 32)}`,
     worker_autopilot_session_id: null,
     worker_session_commitment: null,
     owner_commitment: owner.owner_commitment,
@@ -281,8 +337,17 @@ export async function createAutonomousAutopilotSessionFromBody(
   now: Date = new Date(),
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
+  billingMetering: AutopilotSession["billing_metering"] = null,
 ): Promise<AutopilotCreateResult> {
   const created = await createAutopilotSessionFromBody(body, owner, now);
+  if (billingMetering) {
+    const local = await loadSession(created.session.autopilot_session_id);
+    if (local) {
+      local.billing_metering = billingMetering;
+      local.updated_at = now.toISOString();
+      created.session = publicSession(await persistSession(local));
+    }
+  }
   const worker = await armWorkerAutopilotSession({
     body,
     owner,
@@ -382,7 +447,7 @@ export async function controlAutopilotSessionFromBody(
     active.status = ready ? "running" : active.worker_autopilot_session_id ? "pending_funding" : "pending_worker";
     active.execution_enabled = ready;
     active.next_step = ready
-      ? "Autonomous worker is running."
+      ? "Bounded intent executor is running."
       : active.worker_autopilot_session_id
         ? "Fund an isolated venue vault before live execution."
         : "Private worker is not armed.";
@@ -468,6 +533,49 @@ export async function listAutopilotOpportunitiesForOwner(
   };
 }
 
+export async function listAutopilotReplayForOwner(
+  sessionId: string,
+  owner: AutopilotOwner,
+  env: Record<string, string | undefined> = process.env,
+  fetchImpl: typeof fetch = fetch,
+  now: Date = new Date(),
+): Promise<AutopilotReplayBundle | { error: "autopilot_session_not_found" | "worker_not_configured" | "worker_unavailable" | string }> {
+  const session = await getAutopilotSessionForOwner(sessionId, owner, now);
+  if (!session) return { error: "autopilot_session_not_found" };
+  if (!session.worker_autopilot_session_id) {
+    return {
+      version: 1,
+      session,
+      metrics: localReplayMetrics(session),
+      executors: [],
+      tick_snapshots: [],
+      positions: [],
+      events: await eventsForSession(owner.owner_commitment, sessionId, 100),
+    };
+  }
+  const worker = await fetchWorkerAutopilotReplay(session.worker_autopilot_session_id, env, fetchImpl);
+  if (!worker.ok) return { error: worker.error };
+  const merged = await mergeWorkerSession(sessionId, worker.session, now);
+  const existingIds = new Set(
+    (await eventsForSession(owner.owner_commitment, sessionId, 200)).map((event) => event.event_id),
+  );
+  for (const event of worker.events) {
+    const eventId = stringValue(event.event_id);
+    if (eventId && existingIds.has(eventId)) continue;
+    await appendEvent(workerEventToLocal(merged, event, now), merged.owner_commitment);
+    if (eventId) existingIds.add(eventId);
+  }
+  return {
+    version: 1,
+    session: publicSession(merged),
+    metrics: worker.metrics,
+    executors: worker.executors,
+    tick_snapshots: worker.tick_snapshots,
+    positions: worker.positions,
+    events: await eventsForSession(owner.owner_commitment, sessionId, 100),
+  };
+}
+
 export function resetAutopilotSessionsForTests() {
   resetPrivateAutopilotStoreForTests();
 }
@@ -485,6 +593,7 @@ export function autopilotReadinessForOwner(
   const venueReadiness: AutopilotVenueReadiness[] = [
     hyperliquidAutopilotReadiness(env, workerConfigured),
     phoenixAutopilotReadiness(env, workerConfigured),
+    backpackAutopilotReadiness(env, workerConfigured),
     jupiterAutopilotReadiness(env, workerConfigured),
     coinbaseAutopilotReadiness(env, workerConfigured),
   ];
@@ -576,7 +685,8 @@ async function armWorkerAutopilotSession(input: {
   const raw = record(input.body);
   const providedVenueAccess = optionalRecord(raw.venue_access) ?? optionalRecord(raw.venue_vaults);
   const venueAccess = providedVenueAccess ??
-    (input.session.session_policy.strategy_id === "hedged_spread_arbitrage_v1" && isPrivateAccountRequestOwner(input.owner)
+    ((input.session.session_policy.strategy_id === "hedged_spread_arbitrage_v1" ||
+      input.session.session_policy.strategy_id === "tri_venue_market_maker_v1") && isPrivateAccountRequestOwner(input.owner)
       ? await agentPassportVenueAccessForWorker(input.owner)
       : {});
   const workerPath = "/autopilot/sessions";
@@ -586,6 +696,7 @@ async function armWorkerAutopilotSession(input: {
     local_autopilot_session_id: input.session.autopilot_session_id,
     session_policy: input.session.session_policy,
     venue_access: venueAccess,
+    billing_metering: input.session.billing_metering ?? null,
   };
   const authorization = workerAuthorizationHeader({
     env: input.env,
@@ -705,7 +816,60 @@ async function fetchWorkerAutopilotOpportunities(
     session,
     opportunities: Array.isArray(body.opportunities)
       ? body.opportunities.map(optionalRecord).filter(Boolean) as Record<string, unknown>[]
-      : [],
+    : [],
+  };
+}
+
+async function fetchWorkerAutopilotReplay(
+  workerSessionId: string,
+  env: Record<string, string | undefined>,
+  fetchImpl: typeof fetch,
+): Promise<
+  | {
+    ok: true;
+    session: Record<string, unknown>;
+    metrics: Record<string, unknown>;
+    executors: Record<string, unknown>[];
+    tick_snapshots: Record<string, unknown>[];
+    positions: Record<string, unknown>[];
+    events: Record<string, unknown>[];
+  }
+  | { ok: false; error: "worker_not_configured" | "worker_unavailable" | string }
+> {
+  const cfg = workerConfig(env);
+  if (!cfg.url) return { ok: false, error: "worker_not_configured" };
+  const workerPath = `/autopilot/sessions/${encodeURIComponent(workerSessionId)}/replay`;
+  const authorization = workerAuthorizationHeader({
+    env,
+    fallbackToken: cfg.token,
+    method: "GET",
+    path: workerPath,
+    scope: "autopilot:read",
+    body: {},
+    expected: { autopilot_session_id: workerSessionId },
+  });
+  if (!authorization) return { ok: false, error: "worker_not_configured" };
+  const response = await fetchImpl(new URL(workerPath, cfg.url), {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      authorization,
+      "cache-control": "no-cache",
+    },
+  }).catch(() => null);
+  if (!response) return { ok: false, error: "worker_unavailable" };
+  const body = record(await response.json().catch(() => null));
+  if (!response.ok) return { ok: false, error: stringValue(body.error) ?? `worker_${response.status}` };
+  const session = record(body.session);
+  if (!session.autopilot_session_id) return { ok: false, error: "worker_session_missing" };
+  return {
+    ok: true,
+    session,
+    metrics: record(body.metrics),
+    executors: recordArray(body.executors),
+    tick_snapshots: recordArray(body.tick_snapshots),
+    positions: recordArray(body.positions),
+    events: recordArray(body.events),
   };
 }
 
@@ -782,6 +946,7 @@ async function mergeWorkerSession(
     venue_access: venueAccessValue(workerSession.venue_access) ?? local.venue_access,
     order_count: numberValue(workerSession.order_count) ?? local.order_count,
     daily_notional_used_bucket: stringValue(workerSession.daily_notional_used_bucket) ?? local.daily_notional_used_bucket,
+    billing_metering: local.billing_metering ?? billingMeteringValue(workerSession.billing_metering),
     updated_at: stringValue(workerSession.updated_at) ?? now.toISOString(),
     expires_at: stringValue(workerSession.expires_at) ?? local.expires_at,
     next_step: stringValue(workerSession.next_step) ?? local.next_step,
@@ -818,8 +983,12 @@ function eventTypeValue(value: unknown): AutopilotEventType | null {
 function strategyValue(value: unknown): AutopilotSession["strategy"] | null {
   const raw = optionalRecord(value);
   if (!raw) return null;
-  const strategyId = stringValue(raw.strategy_id);
-  if (strategyId && strategyId !== "momentum_micro_trader" && strategyId !== "hedged_spread_arbitrage_v1") return null;
+  const strategyId = normalizeStrategyId(raw.strategy_id);
+  if (
+    strategyId !== "bounded_intent_executor_v1" &&
+    strategyId !== "hedged_spread_arbitrage_v1" &&
+    strategyId !== "tri_venue_market_maker_v1"
+  ) return null;
   if (strategyId === "hedged_spread_arbitrage_v1") {
     return {
       version: 1,
@@ -829,17 +998,26 @@ function strategyValue(value: unknown): AutopilotSession["strategy"] | null {
       ai_can_execute_directly: true,
     };
   }
+  if (strategyId === "tri_venue_market_maker_v1") {
+    return {
+      version: 1,
+      strategy_id: "tri_venue_market_maker_v1",
+      decision_model: "rules_plus_ai_score",
+      executable_order_source: "deterministic_guarded_market_maker",
+      ai_can_execute_directly: true,
+    };
+  }
   const decisionModel = stringValue(raw.decision_model) === "ai_direct_order_v1"
     ? "ai_direct_order_v1"
     : "rules_plus_ai_score";
   const aiCanExecuteDirectly = raw.ai_can_execute_directly === true || decisionModel === "ai_direct_order_v1";
   return {
     version: 1,
-    strategy_id: "momentum_micro_trader",
+    strategy_id: "bounded_intent_executor_v1",
     decision_model: decisionModel,
     executable_order_source: aiCanExecuteDirectly
       ? "ai_structured_decision_validated_by_policy"
-      : "deterministic_guarded_strategy",
+      : "deterministic_bounded_intent_executor",
     ai_can_execute_directly: aiCanExecuteDirectly,
   };
 }
@@ -854,10 +1032,19 @@ function strategyForPolicy(policy: AutopilotSessionPolicy): AutopilotSession["st
       ai_can_execute_directly: true,
     };
   }
+  if (policy.strategy_id === "tri_venue_market_maker_v1") {
+    return {
+      version: 1,
+      strategy_id: "tri_venue_market_maker_v1",
+      decision_model: "rules_plus_ai_score",
+      executable_order_source: "deterministic_guarded_market_maker",
+      ai_can_execute_directly: true,
+    };
+  }
   if (policy.ai_direct_enabled) {
     return {
       version: 1,
-      strategy_id: "momentum_micro_trader",
+      strategy_id: "bounded_intent_executor_v1",
       decision_model: "ai_direct_order_v1",
       executable_order_source: "ai_structured_decision_validated_by_policy",
       ai_can_execute_directly: true,
@@ -865,22 +1052,31 @@ function strategyForPolicy(policy: AutopilotSessionPolicy): AutopilotSession["st
   }
   return {
     version: 1,
-    strategy_id: "momentum_micro_trader",
+    strategy_id: "bounded_intent_executor_v1",
     decision_model: "rules_plus_ai_score",
-    executable_order_source: "deterministic_guarded_strategy",
+    executable_order_source: "deterministic_bounded_intent_executor",
     ai_can_execute_directly: false,
   };
 }
 
 function publicPolicyPatch(raw: Record<string, unknown>): Partial<AutopilotSessionPolicy> {
   const patch: Partial<AutopilotSessionPolicy> = {};
-  if (stringValue(raw.strategy_id) === "hedged_spread_arbitrage_v1") {
-    patch.strategy_id = "hedged_spread_arbitrage_v1";
+  const rawStrategy = normalizeStrategyId(raw.strategy_id);
+  if (
+    rawStrategy === "bounded_intent_executor_v1" ||
+    rawStrategy === "hedged_spread_arbitrage_v1" ||
+    rawStrategy === "tri_venue_market_maker_v1"
+  ) {
+    patch.strategy_id = rawStrategy;
     patch.decision_model = "rules_plus_ai_score";
     patch.ai_direct_enabled = false;
   }
   const decisionModel = stringValue(raw.decision_model);
-  if (patch.strategy_id !== "hedged_spread_arbitrage_v1" && (decisionModel === "ai_direct_order_v1" || raw.ai_direct_enabled === true)) {
+  if (
+    patch.strategy_id !== "hedged_spread_arbitrage_v1" &&
+    patch.strategy_id !== "tri_venue_market_maker_v1" &&
+    (decisionModel === "ai_direct_order_v1" || raw.ai_direct_enabled === true)
+  ) {
     patch.decision_model = "ai_direct_order_v1";
     patch.ai_direct_enabled = true;
   } else if (decisionModel === "rules_plus_ai_score" || raw.ai_direct_enabled === false) {
@@ -897,7 +1093,7 @@ function publicPolicyPatch(raw: Record<string, unknown>): Partial<AutopilotSessi
   if (markets.length) patch.market_allowlist = unique(markets);
   const maxNotional = optionalBucket<AutopilotSessionPolicy["max_notional_bucket"]>(
     raw.max_notional_bucket,
-    ["5", "10", "25", "50", "100"],
+    GHOLA_FUNDING_AMOUNT_BUCKETS,
   );
   if (maxNotional) patch.max_notional_bucket = maxNotional;
   const maxPositionNotional = optionalBucket<AutopilotSessionPolicy["max_position_notional_bucket"]>(
@@ -907,7 +1103,7 @@ function publicPolicyPatch(raw: Record<string, unknown>): Partial<AutopilotSessi
   if (maxPositionNotional) patch.max_position_notional_bucket = maxPositionNotional;
   const dailyNotional = optionalBucket<AutopilotSessionPolicy["max_daily_notional_bucket"]>(
     raw.max_daily_notional_bucket,
-    ["25", "50", "100", "250"],
+    ["25", "50", "100", "250", "500", "1000", "2500", "5000"],
   );
   if (dailyNotional) patch.max_daily_notional_bucket = dailyNotional;
   const maxOrderCount = optionalInteger(raw.max_order_count, 1, 25);
@@ -918,7 +1114,7 @@ function publicPolicyPatch(raw: Record<string, unknown>): Partial<AutopilotSessi
   if (slippage !== null) patch.max_slippage_bps = slippage;
   const cooldown = optionalInteger(raw.cooldown_ms, 60_000, 30 * 60_000);
   if (cooldown !== null) patch.cooldown_ms = cooldown;
-  const dataMaxAge = optionalInteger(raw.data_max_age_ms, 5_000, 5 * 60_000);
+  const dataMaxAge = optionalInteger(raw.data_max_age_ms, 1_000, 5 * 60_000);
   if (dataMaxAge !== null) patch.data_max_age_ms = dataMaxAge;
   const minAiScore = optionalInteger(raw.min_ai_score_bps, 5_000, 9_900);
   if (minAiScore !== null) patch.min_ai_score_bps = minAiScore;
@@ -956,6 +1152,24 @@ function venueAccessValue(value: unknown): AutopilotSession["venue_access"] | nu
     }]);
   }
   return entries.length ? Object.fromEntries(entries) as AutopilotSession["venue_access"] : null;
+}
+
+function billingMeteringValue(value: unknown): AutopilotSession["billing_metering"] {
+  const raw = optionalRecord(value);
+  if (!raw) return null;
+  const reservationId = stringValue(raw.reservation_id);
+  const reservedSeconds = numberValue(raw.reserved_seconds);
+  const leaseStartedAt = stringValue(raw.lease_started_at);
+  const leaseExpiresAt = stringValue(raw.lease_expires_at);
+  if (!reservationId || !reservedSeconds || !leaseStartedAt || !leaseExpiresAt) return null;
+  return {
+    version: 1,
+    reservation_id: reservationId,
+    metering_mode: "sparse_metered_v1",
+    reserved_seconds: Math.max(60, Math.floor(reservedSeconds)),
+    lease_started_at: leaseStartedAt,
+    lease_expires_at: leaseExpiresAt,
+  };
 }
 
 function venueAccessStatusValue(value: unknown): AutopilotSession["venue_access"][AutopilotVenueId]["status"] | null {
@@ -1060,6 +1274,35 @@ function phoenixAutopilotReadiness(
   };
 }
 
+function backpackAutopilotReadiness(
+  env: Record<string, string | undefined>,
+  workerConfigured: boolean,
+): AutopilotVenueReadiness {
+  const liveMode = env.GHOLA_BACKPACK_LIVE_MODE || env.PRIVATE_AGENT_BACKPACK_LIVE_MODE || null;
+  const allowedSymbols = `${env.GHOLA_BACKPACK_ALLOWED_SYMBOLS || ""},${env.PRIVATE_AGENT_BACKPACK_ALLOWED_SYMBOLS || ""}`;
+  const reasonCodes = [
+    ...(workerConfigured ? [] : ["private_worker_not_configured"]),
+    ...(env.GHOLA_VENUE_BACKPACK_PILOT_ENABLED === "true" ? [] : ["backpack_pilot_disabled"]),
+    ...(env.GHOLA_BACKPACK_POOLED_ENABLED === "true" ? [] : ["backpack_pooled_disabled"]),
+    ...(liveMode === "tiny_live" || liveMode === "full_ticket" ? [] : ["backpack_live_mode_disabled"]),
+    ...(allowedSymbols.toUpperCase().includes("SOL_USDC_PERP") ? [] : ["backpack_symbol_allowlist_missing"]),
+    ...(env.GHOLA_BACKPACK_API_KEY?.trim() || env.PRIVATE_AGENT_BACKPACK_API_KEY?.trim()
+      ? []
+      : ["backpack_api_key_missing"]),
+    ...(env.GHOLA_BACKPACK_API_SECRET?.trim() ||
+      env.GHOLA_BACKPACK_API_PRIVATE_KEY_B64?.trim() ||
+      env.PRIVATE_AGENT_BACKPACK_API_SECRET?.trim()
+      ? []
+      : ["backpack_private_key_missing"]),
+  ];
+  return {
+    venue_id: "backpack",
+    status: reasonCodes.length ? "blocked" : "ready",
+    live_mode: liveMode,
+    reason_codes: reasonCodes,
+  };
+}
+
 function jupiterAutopilotReadiness(
   env: Record<string, string | undefined>,
   workerConfigured: boolean,
@@ -1101,11 +1344,10 @@ function coinbaseAutopilotReadiness(
 
 function normalizePolicy(value: Record<string, unknown>): AutopilotSessionPolicy {
   const rawPolicy = optionalRecord(value.session_policy) ?? value;
-  const strategyId = stringValue(rawPolicy.strategy_id) === "hedged_spread_arbitrage_v1"
-    ? "hedged_spread_arbitrage_v1"
-    : "momentum_micro_trader";
+  const strategyId = normalizeStrategyId(rawPolicy.strategy_id);
   const aiDirectEnabled = rawPolicy.ai_direct_enabled !== false &&
     strategyId !== "hedged_spread_arbitrage_v1" &&
+    strategyId !== "tri_venue_market_maker_v1" &&
     stringValue(rawPolicy.decision_model) !== "rules_plus_ai_score";
   const venues = stringArray(rawPolicy.venue_allowlist)
     .map((venue) => venue.toLowerCase())
@@ -1113,20 +1355,21 @@ function normalizePolicy(value: Record<string, unknown>): AutopilotSessionPolicy
   const markets = stringArray(rawPolicy.market_allowlist)
     .map(normalizeMarket)
     .filter((market) => SUPPORTED_MARKETS.has(market));
+  const agentMandate = agentMandateValue(rawPolicy.agent_mandate);
   const policy: Omit<AutopilotSessionPolicy, "policy_commitment"> = {
     strategy_id: strategyId,
     decision_model: aiDirectEnabled ? "ai_direct_order_v1" : "rules_plus_ai_score",
     ai_direct_enabled: aiDirectEnabled,
     venue_allowlist: unique(venues.length ? venues : DEFAULT_VENUES),
     market_allowlist: unique(markets.length ? markets : DEFAULT_MARKETS),
-    max_notional_bucket: notionalBucket(rawPolicy.max_notional_bucket, ["5", "10", "25", "50", "100"], "50"),
+    max_notional_bucket: notionalBucket(rawPolicy.max_notional_bucket, GHOLA_FUNDING_AMOUNT_BUCKETS, "50"),
     max_position_notional_bucket: notionalBucket(rawPolicy.max_position_notional_bucket, ["50", "100", "250", "500"], "100"),
-    max_daily_notional_bucket: notionalBucket(rawPolicy.max_daily_notional_bucket, ["25", "50", "100", "250"], "250"),
+    max_daily_notional_bucket: notionalBucket(rawPolicy.max_daily_notional_bucket, ["25", "50", "100", "250", "500", "1000", "2500", "5000"], "250"),
     max_order_count: clampInteger(rawPolicy.max_order_count, 1, 25, 10),
     ttl_ms: clampInteger(rawPolicy.ttl_ms, 5 * 60_000, 4 * 60 * 60_000, 2 * 60 * 60_000),
     max_slippage_bps: clampInteger(rawPolicy.max_slippage_bps, 1, 100, 50),
     cooldown_ms: clampInteger(rawPolicy.cooldown_ms, 60_000, 30 * 60_000, 5 * 60_000),
-    data_max_age_ms: clampInteger(rawPolicy.data_max_age_ms, 5_000, 5 * 60_000, 30_000),
+    data_max_age_ms: clampInteger(rawPolicy.data_max_age_ms, 1_000, 5 * 60_000, 30_000),
     min_net_edge_bps: clampInteger(rawPolicy.min_net_edge_bps, 1, 5_000, 25),
     max_execution_skew_ms: clampInteger(rawPolicy.max_execution_skew_ms, 50, 60_000, 2_000),
     min_ai_score_bps: clampInteger(rawPolicy.min_ai_score_bps, 5_000, 9_900, 6_500),
@@ -1145,11 +1388,38 @@ function normalizePolicy(value: Record<string, unknown>): AutopilotSessionPolicy
     reduce_only_on_reconcile_failure: rawPolicy.reduce_only_on_reconcile_failure !== false,
     locale_hint: localeHint(rawPolicy.locale_hint),
     timezone: stringValue(rawPolicy.timezone)?.slice(0, 64) ?? null,
+    ...(agentMandate ? { agent_mandate: agentMandate } : {}),
   };
   return {
     ...policy,
     policy_commitment: `autopilot_policy_${digest(policy)}`,
   };
+}
+
+// The user-authored trade plan carried alongside the bounded session policy.
+// Forwarded to the worker, which enforces a buy/sell side deterministically and
+// steers the AI decision with the rest. "auto" / absent ⇒ fully AI-direct.
+function agentMandateValue(value: unknown): AutopilotAgentMandate | undefined {
+  const raw = optionalRecord(value);
+  if (!raw) return undefined;
+  const side = stringValue(raw.side)?.toLowerCase() ?? "auto";
+  const mandate: AutopilotAgentMandate = {
+    version: 1,
+    side: side === "buy" || side === "sell" ? side : "auto",
+    strategy_profile: stringValue(raw.strategy_profile) || "momentum_continuation",
+    entry_trigger: stringValue(raw.entry_trigger) || "preview_now",
+    exit_rule: stringValue(raw.exit_rule) || "manual_approval",
+    time_horizon: stringValue(raw.time_horizon) || "scalp",
+  };
+  const note = stringValue(raw.strategy_note);
+  if (note) mandate.strategy_note = note.slice(0, 240);
+  return mandate;
+}
+
+function normalizeStrategyId(value: unknown): CanonicalAutopilotStrategyId {
+  const raw = stringValue(value);
+  if (raw === "hedged_spread_arbitrage_v1" || raw === "tri_venue_market_maker_v1") return raw;
+  return "bounded_intent_executor_v1";
 }
 
 function refreshExpiry(session: AutopilotSession, now: Date): AutopilotSession {
@@ -1250,6 +1520,7 @@ function sessionFromRecord(stored: PrivateAutopilotSessionRecordV1): AutopilotSe
     version: 2,
     autopilot_session_id: id,
     worker_autopilot_session_id: stringValue(raw.worker_autopilot_session_id),
+    agent_controller_id: stringValue(raw.agent_controller_id),
     worker_session_commitment: stringValue(raw.worker_session_commitment),
     owner_commitment: owner,
     status: statusValue(raw.status) ?? statusValue(stored.status) ?? "blocked",
@@ -1258,6 +1529,7 @@ function sessionFromRecord(stored: PrivateAutopilotSessionRecordV1): AutopilotSe
     venue_access: venueAccessValue(raw.venue_access) ?? defaultVenueAccess(policy),
     order_count: numberValue(raw.order_count) ?? 0,
     daily_notional_used_bucket: stringValue(raw.daily_notional_used_bucket) ?? "0",
+    billing_metering: billingMeteringValue(raw.billing_metering),
     created_at: stringValue(raw.created_at) ?? stored.created_at,
     updated_at: stringValue(raw.updated_at) ?? stored.updated_at,
     expires_at: stringValue(raw.expires_at) ?? stored.expires_at,
@@ -1302,6 +1574,26 @@ function eventFromRecord(stored: PrivateAutopilotEventRecordV1): AutopilotEvent 
   };
 }
 
+function localReplayMetrics(session: AutopilotSession): Record<string, unknown> {
+  return {
+    version: 1,
+    agent_controller_id: session.agent_controller_id || null,
+    autopilot_session_id: session.autopilot_session_id,
+    executor_count: 0,
+    tick_count: 0,
+    open_executor_count: 0,
+    submitted_executor_count: 0,
+    failed_executor_count: 0,
+    rejected_tick_count: 0,
+    notional_submitted_bucket: "0",
+    gross_exposure_bucket: "0",
+    realized_pnl_bucket: "0",
+    fee_bucket: "0",
+    last_tick_at: null,
+    updated_at: session.updated_at,
+  };
+}
+
 function digest(value: unknown): string {
   return createHash("sha256")
     .update(JSON.stringify(value))
@@ -1319,6 +1611,12 @@ function optionalRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function recordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.map(optionalRecord).filter((item): item is Record<string, unknown> => Boolean(item))
+    : [];
 }
 
 function stringArray(value: unknown): string[] {
@@ -1350,12 +1648,12 @@ function normalizeMarket(value: string): string {
   return upper;
 }
 
-function notionalBucket<T extends string>(value: unknown, allowed: T[], fallback: T): T {
+function notionalBucket<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
   const raw = stringValue(value)?.replace(/[^0-9.]/g, "") ?? "";
   return allowed.includes(raw as T) ? raw as T : fallback;
 }
 
-function optionalBucket<T extends string>(value: unknown, allowed: T[]): T | null {
+function optionalBucket<T extends string>(value: unknown, allowed: readonly T[]): T | null {
   const raw = stringValue(value)?.replace(/[^0-9.]/g, "") ?? "";
   return allowed.includes(raw as T) ? raw as T : null;
 }

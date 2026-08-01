@@ -6,7 +6,7 @@ export const metadata: Metadata = {
     "How Ghola collects, uses, stores, and protects information across the Ghola web application, mobile app, and APIs.",
 };
 
-const EFFECTIVE_DATE = "April 29, 2026";
+const EFFECTIVE_DATE = "July 29, 2026";
 
 export default function PrivacyPolicyPage() {
   return (
@@ -54,9 +54,9 @@ export default function PrivacyPolicyPage() {
             2.2 Wallet and on-chain data
           </h3>
           <p>
-            Ghola integrates with Solana wallets, including the Solana Seeker
-            Seed Vault and Mobile Wallet Adapter. We collect your public wallet
-            address and on-chain transaction signatures. We do not collect or
+            Ghola integrates with Solana wallets through Mobile Wallet Adapter.
+            We collect your public wallet address and on-chain transaction
+            signatures. We do not collect or
             store your private keys, seed phrase, or recovery material — those
             remain on your device.
           </p>
@@ -201,10 +201,12 @@ export default function PrivacyPolicyPage() {
         <Section title="5. Data retention">
           <p>
             We retain account data for as long as your account is active. You
-            may delete your account at any time from the in-app settings; when
-            you do so we delete or anonymise associated personal data within 30
-            days, except where retention is required for legal, accounting, or
-            fraud-prevention purposes.
+            may request account deletion at any time by emailing
+            privacy@ghola.xyz from an address you can use to complete our
+            ownership-verification process. We delete or anonymise associated
+            personal data within 30 days after verification, except where
+            retention is required for legal, accounting, or fraud-prevention
+            purposes.
           </p>
           <p>
             On-chain transactions cannot be deleted or modified due to the

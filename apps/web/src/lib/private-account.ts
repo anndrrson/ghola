@@ -68,7 +68,7 @@ export type GholaPrivateAccountActionClass =
   | "maintain_allocation"
   | "withdraw";
 
-export const GHOLA_FUNDING_AMOUNT_BUCKETS = ["5", "10", "25", "50", "100"] as const;
+export const GHOLA_FUNDING_AMOUNT_BUCKETS = ["5", "10", "25", "50", "100", "250", "500", "1000"] as const;
 
 export type GholaFundingAmountBucket = (typeof GHOLA_FUNDING_AMOUNT_BUCKETS)[number];
 
@@ -375,7 +375,7 @@ export interface GholaVenueManifest {
   venue_sees: "none" | "stealth_account_and_order" | "pooled_account_and_order" | "user_account_and_order";
   public_chain_sees: "hidden" | "bucketed" | "visible" | "blocked";
   minimum_anonymity_set: number;
-  pilot_max_notional_bucket: "5" | "10" | "25" | "50" | "100";
+  pilot_max_notional_bucket: GholaFundingAmountBucket;
   blocked_operations: GholaVenueBlockedOperation[];
   manifest_commitment: string;
   expires_at: string;
@@ -429,7 +429,7 @@ export interface GholaPooledVenueAllocation {
   eligibility_commitment: string | null;
   funding_evidence_commitment: string | null;
   settlement_evidence_commitment: string | null;
-  utilization_bucket: "0" | "5" | "10" | "25" | "50" | "100";
+  utilization_bucket: "0" | GholaFundingAmountBucket;
   main_wallet_exposed: false;
   venue_account_visible_to_venue: false;
   status: "allocated" | "pending_funding" | "paused" | "revoked";
@@ -446,6 +446,15 @@ export interface GholaVenueEligibilityCredential {
   platform_class: GholaPlatformClass;
   credential_type: "self_attested_eligible_user" | "partner_verified_eligible_user";
   credential_scope: "eligible_venue_access_only";
+  launch_scope?: "hyperliquid_pooled_non_us_beta" | null;
+  terms_version?: string | null;
+  risk_disclosure_version?: string | null;
+  jurisdiction_assertion?: "non_us" | "us" | "unknown" | null;
+  country_code?: string | null;
+  region_code?: string | null;
+  geofence_status?: "allowed" | "blocked" | "unknown_self_attested" | null;
+  accepted_terms_at?: string | null;
+  accepted_risk_at?: string | null;
   status: "verified" | "revoked" | "expired";
   expires_at: string;
   created_at: string;
@@ -458,7 +467,7 @@ export interface GholaVenueSessionPolicy {
   execution_mode: GholaVenueExecutionMode;
   policy_commitment: string;
   market_allowlist: string[];
-  max_notional_bucket: "5" | "10" | "25" | "50" | "100";
+  max_notional_bucket: GholaFundingAmountBucket;
   max_order_count: number;
   expires_at: string;
   kill_switch: boolean;
@@ -480,7 +489,7 @@ export interface GholaOmnibusAllocation {
   subledger_account_commitment: string;
   allocation_commitment: string;
   settlement_funding_commitment: string | null;
-  utilization_bucket: "0" | "5" | "10" | "25" | "50" | "100";
+  utilization_bucket: "0" | GholaFundingAmountBucket;
   status: "allocated" | "pending_funding" | "paused" | "revoked";
   supported_operations: GholaVenueOperationClass[];
   blocked_operations: GholaVenueBlockedOperation[];
@@ -506,6 +515,7 @@ export interface GholaHyperliquidManagedAllocation {
   session_policy: GholaHyperliquidSessionPolicy;
   allowed_operations: GholaHyperliquidOperationClass[];
   blocked_operations: GholaHyperliquidBlockedOperation[];
+  connection_proof?: GholaHyperliquidConnectionProof | null;
   visibility_summary: {
     main_wallet_exposed: boolean;
     ghola_operator_sees: "commitment_and_ciphertext_only";
@@ -527,6 +537,20 @@ export type GholaHyperliquidBlockedOperation =
   | "vault_transfer"
   | "leverage_escalation";
 
+export interface GholaHyperliquidConnectionProof {
+  version: 1;
+  status: "verified_no_funds";
+  verification_commitment: string;
+  work_order_commitment: string;
+  network: "testnet" | "mainnet";
+  credential_opened: true;
+  signer_binding_verified: true;
+  account_read_verified: true;
+  order_request_built: true;
+  verified_at: string;
+  expires_at: string;
+}
+
 export interface GholaHyperliquidExecutionVault {
   version: 1;
   platform_class: "hyperliquid_style_market";
@@ -539,6 +563,7 @@ export interface GholaHyperliquidExecutionVault {
   supported_operations: GholaHyperliquidOperationClass[];
   blocked_operations: GholaHyperliquidBlockedOperation[];
   status: "sealed" | "stale" | "revoked";
+  connection_proof?: GholaHyperliquidConnectionProof | null;
   created_at: string;
   updated_at: string;
 }
@@ -547,7 +572,7 @@ export interface GholaHyperliquidSessionPolicy {
   version: 1;
   policy_commitment: string;
   market_allowlist: string[];
-  max_notional_bucket: "5" | "10" | "25" | "50" | "100";
+  max_notional_bucket: GholaFundingAmountBucket;
   max_order_count: number;
   expires_at: string;
   kill_switch: boolean;
@@ -982,6 +1007,7 @@ export interface GholaPrivateAccountPreviewInput {
   front_run_mode?: FrontRunMode;
   require_private_mode_evidence?: boolean;
   degraded_accepted?: boolean;
+  explicit_testnet_venue_canary?: boolean;
   now?: Date;
 }
 
@@ -1010,7 +1036,16 @@ export const DEFAULT_ANONYMITY_SET_POLICY: GholaAnonymitySetPolicy = {
   consumer_min_effective_set: 50,
   institutional_min_effective_set: 100,
   rfq_min_solver_count: 5,
-  amount_bucket_micro_usd: [5_000_000, 10_000_000, 25_000_000, 50_000_000, 100_000_000],
+  amount_bucket_micro_usd: [
+    5_000_000,
+    10_000_000,
+    25_000_000,
+    50_000_000,
+    100_000_000,
+    250_000_000,
+    500_000_000,
+    1_000_000_000,
+  ],
   min_delay_seconds: 600,
 };
 
@@ -1355,7 +1390,7 @@ export function createHyperliquidExecutionVault(input: {
       policy_commitment: policyCommitment,
       encrypted_execution_vault: encrypted.bundle,
       supported_operations: ["read", "limit_order", "cancel", "reconcile"],
-      blocked_operations: ["withdraw", "vault_transfer", "leverage_escalation"],
+      blocked_operations: ["withdraw", "vault_transfer"],
       status: "sealed",
       created_at: now.toISOString(),
       updated_at: now.toISOString(),
@@ -1468,7 +1503,7 @@ export function createHyperliquidSessionPolicy(input: {
     expires_at: expiresAt,
     kill_switch: input.kill_switch === true,
     allowed_operations: allowed,
-    blocked_operations: ["withdraw", "vault_transfer", "leverage_escalation"],
+    blocked_operations: ["withdraw", "vault_transfer"],
     strategy_commitment: strategyCommitment,
     prompt_commitment: promptCommitment,
     created_at: now.toISOString(),
@@ -1665,6 +1700,10 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
   };
   const selectedRail = selectRail(profile, input.requested_rail);
   const fullRail = MAX_FULL_ANONYMITY_RAILS.includes(selectedRail);
+  const explicitTestnetVenueCanary = input.explicit_testnet_venue_canary === true &&
+    input.platform_class === "hyperliquid_style_market" &&
+    input.action.action_class === "trade_on_platform" &&
+    selectedRail === "direct_public_fallback";
   const degradedReasons: string[] = [];
   const blockedReasons: string[] =
     profile.platform_class === "partner_tokenized_assets"
@@ -1697,11 +1736,17 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
       blockedReasons.push("rfq solver set is below minimum");
     }
   }
-  if (anonymitySet.effective < anonymitySet.required) {
-    waitReasons.push("effective anonymity set is below required minimum");
+  // Anonymity-set and delay requirements apply only to rails that can make an
+  // anonymity claim. A direct BYO venue route can never acquire that property
+  // by waiting; it must be surfaced as degraded visibility and explicitly
+  // accepted instead of being queued forever.
+  if (fullRail) {
+    if (anonymitySet.effective < anonymitySet.required) {
+      waitReasons.push("effective anonymity set is below required minimum");
+    }
+    if (!anonymitySet.amount_bucketed) waitReasons.push("amount is not in an approved anonymity bucket");
+    if (!anonymitySet.timing_window_met) waitReasons.push("minimum delay window has not elapsed");
   }
-  if (!anonymitySet.amount_bucketed) waitReasons.push("amount is not in an approved anonymity bucket");
-  if (!anonymitySet.timing_window_met) waitReasons.push("minimum delay window has not elapsed");
   const evidenceStatus = input.evidence_status ?? "none";
   const connectorContext = input.connector_context ?? null;
   const sealedRuntimeContext = input.sealed_runtime_context ?? null;
@@ -1770,7 +1815,7 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
       else waitReasons.push(reason);
     }
   }
-  if (rotation) {
+  if (rotation && !explicitTestnetVenueCanary) {
     if (rotation.status === "rotate_required") waitReasons.push("platform funding account rotation is required");
     if (rotation.status === "blocked") blockedReasons.push("platform funding account rotation is blocked");
     for (const reason of rotation.reason_codes) {
@@ -1778,7 +1823,9 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
       else waitReasons.push(reason);
     }
   }
-  if (linkabilitySimulation) {
+  if (explicitTestnetVenueCanary) {
+    degradedReasons.push("explicit testnet venue canary exposes the execution account and order");
+  } else if (linkabilitySimulation) {
     if (linkabilitySimulation.decision === "blocked") blockedReasons.push("adversarial linkability simulator blocked execution");
     if (linkabilitySimulation.decision === "rotate") waitReasons.push("adversarial simulator requires platform account rotation");
     if (linkabilitySimulation.decision === "wait_for_batch") waitReasons.push("adversarial simulator requires more batching");
@@ -1795,25 +1842,29 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
     if (connectorContext.connector_status !== "ready") {
       blockedReasons.push(`connector is ${connectorContext.connector_status}`);
     }
-    if (connectorContext.linkability_decision === "blocked") {
-      blockedReasons.push("cross-platform linkability score blocks execution");
-    }
-    if (connectorContext.linkability_decision === "rotate_or_block") {
-      blockedReasons.push("platform funding account rotation is required");
-    }
-    if (connectorContext.linkability_decision === "wait_for_batch") {
-      waitReasons.push("connector linkability score requires batching");
-    }
-    if (connectorContext.linkability_decision === "degraded_acceptance_required") {
-      degradedReasons.push("cross-platform linkability score requires degraded acceptance");
+    if (explicitTestnetVenueCanary) {
+      degradedReasons.push("testnet canary explicitly accepts venue linkability");
+    } else {
+      if (connectorContext.linkability_decision === "blocked") {
+        blockedReasons.push("cross-platform linkability score blocks execution");
+      }
+      if (connectorContext.linkability_decision === "rotate_or_block") {
+        blockedReasons.push("platform funding account rotation is required");
+      }
+      if (connectorContext.linkability_decision === "wait_for_batch") {
+        waitReasons.push("connector linkability score requires batching");
+      }
+      if (connectorContext.linkability_decision === "degraded_acceptance_required") {
+        degradedReasons.push("cross-platform linkability score requires degraded acceptance");
+      }
+      for (const reason of connectorContext.reason_codes) {
+        if (reason.includes("blocked")) blockedReasons.push(reason);
+        else if (reason.includes("missing") || reason.includes("stale")) waitReasons.push(reason);
+        else if (reason.includes("degraded") || reason.includes("visible")) degradedReasons.push(reason);
+      }
     }
     if (connectorContext.main_wallet_exposed) {
       degradedReasons.push("your main wallet would be exposed");
-    }
-    for (const reason of connectorContext.reason_codes) {
-      if (reason.includes("blocked")) blockedReasons.push(reason);
-      else if (reason.includes("missing") || reason.includes("stale")) waitReasons.push(reason);
-      else if (reason.includes("degraded") || reason.includes("visible")) degradedReasons.push(reason);
     }
   }
 
@@ -2625,6 +2676,15 @@ export function createVenueEligibilityCredential(input: {
   account_commitment: string;
   venue_id: GholaVenueId;
   credential_type?: GholaVenueEligibilityCredential["credential_type"];
+  launch_scope?: GholaVenueEligibilityCredential["launch_scope"];
+  terms_version?: string | null;
+  risk_disclosure_version?: string | null;
+  jurisdiction_assertion?: GholaVenueEligibilityCredential["jurisdiction_assertion"];
+  country_code?: string | null;
+  region_code?: string | null;
+  geofence_status?: GholaVenueEligibilityCredential["geofence_status"];
+  accepted_terms_at?: string | null;
+  accepted_risk_at?: string | null;
   ttl_ms?: number;
   now?: Date;
 }): GholaVenueEligibilityCredential {
@@ -2638,6 +2698,15 @@ export function createVenueEligibilityCredential(input: {
     platform_class: platformClass,
     credential_type: input.credential_type ?? "self_attested_eligible_user",
     credential_scope: "eligible_venue_access_only",
+    launch_scope: input.launch_scope ?? null,
+    terms_version: input.terms_version ?? null,
+    risk_disclosure_version: input.risk_disclosure_version ?? null,
+    jurisdiction_assertion: input.jurisdiction_assertion ?? null,
+    country_code: input.country_code ?? null,
+    region_code: input.region_code ?? null,
+    geofence_status: input.geofence_status ?? null,
+    accepted_terms_at: input.accepted_terms_at ?? null,
+    accepted_risk_at: input.accepted_risk_at ?? null,
     expires_at: expiresAt,
   };
   return {
@@ -2649,6 +2718,15 @@ export function createVenueEligibilityCredential(input: {
     platform_class: platformClass,
     credential_type: input.credential_type ?? "self_attested_eligible_user",
     credential_scope: "eligible_venue_access_only",
+    launch_scope: input.launch_scope ?? null,
+    terms_version: input.terms_version ?? null,
+    risk_disclosure_version: input.risk_disclosure_version ?? null,
+    jurisdiction_assertion: input.jurisdiction_assertion ?? null,
+    country_code: input.country_code ?? null,
+    region_code: input.region_code ?? null,
+    geofence_status: input.geofence_status ?? null,
+    accepted_terms_at: input.accepted_terms_at ?? null,
+    accepted_risk_at: input.accepted_risk_at ?? null,
     status: "verified",
     expires_at: expiresAt,
     created_at: now.toISOString(),
@@ -2711,7 +2789,7 @@ function profile(
 }
 
 function bucketRank(value: string): number {
-  const ordered = ["5", "10", "25", "50", "100"];
+  const ordered = GHOLA_FUNDING_AMOUNT_BUCKETS as readonly string[];
   const index = ordered.indexOf(value);
   return index >= 0 ? index : Number.MAX_SAFE_INTEGER;
 }

@@ -91,7 +91,7 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
   const [selectedAmount, setSelectedAmount] =
     useState<(typeof TOP_UP_AMOUNTS)[number]>(10);
   const [notice, setNotice] = useState<string | null>(null);
-  const [topUpMode, setTopUpMode] = useState<TopUpMode>("easy");
+  const [topUpMode, setTopUpMode] = useState<TopUpMode>("advanced");
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [easyState, setEasyState] = useState<"idle" | "working" | "ready" | "failed">(
@@ -152,9 +152,9 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
   useEffect(() => {
     const topUpResult = new URLSearchParams(window.location.search).get("topup");
     if (topUpResult === "success") {
-      setNotice("Top up complete. Stripe is finalizing the receipt now.");
+      setNotice("Payment complete. The receipt is finalizing now.");
     } else if (topUpResult === "cancelled") {
-      setNotice("Top up cancelled.");
+      setNotice("Payment cancelled.");
     }
   }, []);
 
@@ -239,7 +239,7 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
   function handleTopUp() {
     if (!summary.privateSpendReady) {
       setNotice(
-        "Private top up is waiting on shielded verifier cutover. Public USDC stays available, but Private Balance will not downgrade to it.",
+        "Private top up is waiting on shielded verifier cutover. Public USDC stays available, but private funding will not downgrade to it.",
       );
       return;
     }
@@ -253,7 +253,7 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
     setNotice(null);
     if (!summary.privateSpendReady) {
       setNotice(
-        "Private routing is still coming online. Top up is paused so Ghola does not silently fall back to a public rail.",
+        "Private routing is still coming online. Funding is paused so Ghola does not silently fall back to a public rail.",
       );
       return;
     }
@@ -289,9 +289,9 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
     setNotice(null);
     try {
       await refreshPrivateBalance();
-      setNotice("Private Balance refreshed.");
+      setNotice("Private funding refreshed.");
     } catch {
-      setNotice("Could not refresh Private Balance.");
+      setNotice("Could not refresh private funding.");
     }
   }
 
@@ -299,7 +299,7 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
     if (!summary.privateSpendReady) return "Private rail pending";
     if (!thumperAuth.authenticated) return "Create private account";
     if (!turnkeyWallet.walletAddress) return "Create wallet and top up";
-    return `Top up ${formatMicroUsd(selectedAmount * 1_000_000)}`;
+    return `Card top up ${formatMicroUsd(selectedAmount * 1_000_000)}`;
   }
 
   async function copyText(value: string | null | undefined, label: string) {
@@ -358,7 +358,7 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
       if (result.settled) {
         setVerifyState("settled");
         setVerifyMessage(
-          `Private Balance credited ${formatMicroUsd(result.amount ?? selectedAmount * 1_000_000)}.`,
+          `Private funding credited ${formatMicroUsd(result.amount ?? selectedAmount * 1_000_000)}.`,
         );
         return;
       }
@@ -400,17 +400,17 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
                 : "text-2xl font-medium text-[#eef1f8] sm:text-3xl"
             }
           >
-            Private Balance
+            Private funding
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[#8b95a8]">
-            One balance. Private Mode spends through ready shielded rails
+            One funding vault. Private Mode spends through ready shielded rails
             ({summary.railLabel}). No mandatory Aleo-only path, no silent
             public fallback.
           </p>
         </div>
         <div className="sm:text-right">
           <p className="font-mono text-xs uppercase tracking-[0.18em] text-[#5f6c81]">
-            Balance
+            Available
           </p>
           <p className="mt-1 text-3xl font-medium text-[#eef1f8]">
             {formatMicroUsd(displayedBalance)}
@@ -468,9 +468,9 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
 
         <div className="rounded-lg border border-[#151b26] bg-[#08090d] p-4">
           <div className="flex items-center justify-between gap-3">
-            <h3 className="text-sm font-medium text-[#eef1f8]">Top up</h3>
+            <h3 className="text-sm font-medium text-[#eef1f8]">Fund</h3>
             <span className="text-xs text-[#5f6c81]">
-              {summary.privateSpendReady ? "Private rail ready" : "Public USDC live"}
+              {summary.privateSpendReady ? "Onchain private rail ready" : "Public USDC live"}
             </span>
           </div>
 
@@ -486,7 +486,7 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
                     : "text-[#8b95a8] hover:bg-[#10131a] hover:text-[#eef1f8]"
                 }`}
               >
-                {mode === "easy" ? "Easy mode" : "Advanced"}
+                {mode === "easy" ? "Card" : "Onchain"}
               </button>
             ))}
           </div>
@@ -605,7 +605,7 @@ export function PrivateBalancePanel({ compact = false }: PrivateBalancePanelProp
                 className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md bg-[#eef1f8] px-4 py-2.5 text-sm font-medium text-[#08090d] transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Wallet className="h-4 w-4" />
-                Open Shield deposit
+                Open onchain deposit
               </button>
             </>
           )}

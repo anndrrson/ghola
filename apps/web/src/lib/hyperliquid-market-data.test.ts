@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  getHyperliquidMarketUniverse,
   getHyperliquidMarketSnapshot,
   resetHyperliquidMarketSnapshotCacheForTests,
 } from "./hyperliquid-market-data";
@@ -133,6 +134,48 @@ describe("Hyperliquid market data", () => {
     expect(snapshot.candles).toEqual([]);
     expect(snapshot.recent_trades).toEqual([]);
   });
+
+  it("serves cached data immediately and deduplicates a slow background refresh", async () => {
+    const firstAt = new Date("2026-05-29T00:00:00Z");
+    const initial = await getHyperliquidMarketSnapshot({
+      network: "mainnet",
+      coin: "BTC",
+      interval: "1m",
+      now: firstAt,
+      fetchImpl: compactHyperliquidFetch as never,
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const slowFetch = vi.fn(async (url: string, init?: RequestInit) => {
+      await gate;
+      return compactHyperliquidFetch(url, init);
+    });
+    const staleAt = new Date(firstAt.getTime() + 5_000);
+    const first = await getHyperliquidMarketSnapshot({ network: "mainnet", coin: "BTC", interval: "1m", now: staleAt, fetchImpl: slowFetch as never });
+    const second = await getHyperliquidMarketSnapshot({ network: "mainnet", coin: "BTC", interval: "1m", now: staleAt, fetchImpl: slowFetch as never });
+
+    expect(first).toMatchObject({ mid: initial.mid, stale: true });
+    expect(second).toMatchObject({ mid: initial.mid, stale: true });
+    expect(slowFetch).toHaveBeenCalledTimes(5);
+    release();
+    await getHyperliquidMarketSnapshot({ network: "mainnet", coin: "BTC", interval: "1m", now: staleAt, fetchImpl: slowFetch as never, cacheMode: "refresh" });
+  });
+
+  it("keeps mainnet and testnet market-universe caches isolated", async () => {
+    const fetchImpl = vi.fn(async (url: string) => json({
+      universe: [{
+        name: String(url).includes("testnet") ? "TEST" : "MAIN",
+        maxLeverage: 5,
+        szDecimals: 2,
+      }],
+    }));
+    const now = new Date("2026-05-29T00:00:00Z");
+    const mainnet = await getHyperliquidMarketUniverse({ network: "mainnet", now, fetchImpl: fetchImpl as never });
+    const testnet = await getHyperliquidMarketUniverse({ network: "testnet", now, fetchImpl: fetchImpl as never });
+    expect(mainnet.map((market) => market.coin)).toEqual(["MAIN"]);
+    expect(testnet.map((market) => market.coin)).toEqual(["TEST"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });
 
 function json(body: unknown) {
@@ -141,4 +184,13 @@ function json(body: unknown) {
     status: 200,
     json: async () => body,
   } as Response;
+}
+
+async function compactHyperliquidFetch(_url: string, init?: RequestInit) {
+  const body = JSON.parse(String(init?.body || "{}"));
+  if (body.type === "allMids") return json({ BTC: "68000.5" });
+  if (body.type === "l2Book") return json({ time: 1710000000000, levels: [[{ px: "68000", sz: "1", n: 1 }], [{ px: "68001", sz: "1", n: 1 }]] });
+  if (body.type === "candleSnapshot") return json([{ t: 1710000000000, T: 1710000059999, o: "68000", h: "68002", l: "67999", c: "68001", v: "2", n: 3 }]);
+  if (body.type === "metaAndAssetCtxs") return json([{ universe: [{ name: "BTC", maxLeverage: 40 }] }, [{ markPx: "68001", oraclePx: "68000" }]]);
+  return json([]);
 }

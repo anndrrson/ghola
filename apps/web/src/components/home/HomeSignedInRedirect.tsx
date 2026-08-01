@@ -15,7 +15,7 @@ export function HomeSignedInRedirect() {
 
   useEffect(() => {
     if (!loading && authenticated) {
-      router.replace("/app/account?flow=trade");
+      router.replace("/trade");
     }
   }, [authenticated, loading, router]);
 

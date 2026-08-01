@@ -64,17 +64,29 @@ describe("mobile market data fusion", () => {
 
   it("does not attach Solana DEX panels to BTC", async () => {
     const getPhoenixSnapshot = vi.fn(async () => phoenixSnapshot());
+    const getHyperliquidSnapshot = vi.fn(async () => ({
+      platform: "hyperliquid",
+      stale: false,
+      mark_price: "71301",
+      mid: "71300",
+      best_bid: "71299",
+      best_ask: "71301",
+      spread_bps: 0.28,
+      funding_rate: "0.0001",
+    })) as never;
     const fetchImpl = vi.fn(async () => json({}));
     const snapshot = await getMobileMarketSnapshot({
       productId: "BTC-USD",
       interval: "5m",
       getCoinbaseSnapshot: vi.fn(async () => coinbaseSnapshot("BTC-USD")),
       getPhoenixSnapshot,
+      getHyperliquidSnapshot,
       fetchImpl: fetchImpl as never,
     });
 
     expect(snapshot.solana_dex).toBeNull();
     expect(getPhoenixSnapshot).not.toHaveBeenCalled();
+    expect(getHyperliquidSnapshot).toHaveBeenCalledOnce();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
@@ -89,9 +101,17 @@ function coinbaseSnapshot(productId: "BTC-USD" | "ETH-USD" | "SOL-USD"): Coinbas
     quote_currency_id: "USD",
     interval: "5m",
     fetched_at: "2026-06-01T12:00:00.000Z",
+    request_completed_at: "2026-06-01T12:00:00.000Z",
     source: "http",
     source_timestamp: 1780315200000,
     stale: false,
+    last_error_at: null,
+    last_trade_price: productId === "BTC-USD" ? "71300" : "151.2",
+    book_mid: productId === "BTC-USD" ? "71300" : "151.2",
+    last_trade_updated_at: 1780315200000,
+    book_updated_at: 1780315200000,
+    candle_updated_at: 1780315200000,
+    last_heartbeat_at: null,
     price: productId === "BTC-USD" ? "71300" : "151.2",
     mid: productId === "BTC-USD" ? "71300" : "151.2",
     best_bid: productId === "BTC-USD" ? "71299" : "151.19",

@@ -58,6 +58,10 @@ function envSet(...keys: string[]): boolean {
   });
 }
 
+function envTrue(key: string): boolean {
+  return process.env[key]?.trim() === "true";
+}
+
 function preferredProvider(): ConfidentialComputeProviderId | null {
   const raw = process.env.GHOLA_PRIVATE_AGENT_PROVIDER;
   if (
@@ -333,6 +337,8 @@ function gensynProvider(): ConfidentialComputeProviderStatus {
 
 function mockAttestedProvider(): ConfidentialComputeProviderStatus | null {
   if (process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER !== "true") return null;
+  const recipientId = process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_KEY_ID?.trim() || "mock_attested:dev";
+  const recipientX25519 = process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_X25519_PUB_HEX?.trim() || "11".repeat(32);
   return {
     id: "mock_attested",
     label: "Mock attested provider",
@@ -344,8 +350,8 @@ function mockAttestedProvider(): ConfidentialComputeProviderStatus | null {
     supports_trading_execution: true,
     reason: null,
     sealed_recipient: {
-      recipient_id: "mock_attested:dev",
-      x25519_pub_hex: "11".repeat(32),
+      recipient_id: recipientId,
+      x25519_pub_hex: recipientX25519,
       tee_kind: "none",
       measurement_hex: "00".repeat(32),
       attestation_hash: "mock",
@@ -355,7 +361,9 @@ function mockAttestedProvider(): ConfidentialComputeProviderStatus | null {
 }
 
 export async function getPrivateAgentRuntimeStatus(): Promise<PrivateAgentRuntimeStatus> {
-  if (privateAgentRemoteExecutionDisabled()) {
+  const boundedBetaEnabled = envTrue("GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED");
+  const operatorSpendLock = privateAgentRemoteExecutionDisabled();
+  if (operatorSpendLock) {
     const status = buildPrivateAgentRuntimeStatus({
       providers: [
         localProvider(),
@@ -377,6 +385,8 @@ export async function getPrivateAgentRuntimeStatus(): Promise<PrivateAgentRuntim
       ],
       preferredProvider: preferredProvider(),
       shieldedRailReady: true,
+      boundedBetaEnabled,
+      operatorSpendLock,
     });
     return {
       ...status,
@@ -407,5 +417,7 @@ export async function getPrivateAgentRuntimeStatus(): Promise<PrivateAgentRuntim
     providers,
     preferredProvider: preferredProvider(),
     shieldedRailReady: summarizePrivateBalance(paymentHealth).privateSpendReady,
+    boundedBetaEnabled,
+    operatorSpendLock,
   });
 }

@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Copy, ShieldCheck, UploadCloud } from "lucide-react";
+import { Copy, KeyRound, ShieldCheck, UploadCloud, Wallet } from "lucide-react";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
+import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import {
   createPrivateAccountFundingInstruction,
   getPrivateAccountFundingStatus,
@@ -31,18 +32,122 @@ interface FundingStatusSummary {
   batches?: FundingBatchSummary[];
 }
 
+type FundingSourceKind =
+  | "embedded"
+  | "solana"
+  | "evm"
+  | "bitcoin"
+  | "coinbase"
+  | "exchange"
+  | "other";
+
+interface FundingSourceOption {
+  kind: FundingSourceKind;
+  title: string;
+  detail: string;
+  defaultAsset: PrivateAccountSafeInput["asset_bucket"];
+  requiresConnection: boolean;
+}
+
+interface EthereumFundingProvider {
+  isCoinbaseWallet?: boolean;
+  request?: (input: { method: string; params?: unknown[] }) => Promise<unknown>;
+}
+
+type FundingBrowserWindow = Window & {
+  solana?: {
+    connect?: () => Promise<{ publicKey?: unknown } | unknown>;
+  };
+  ethereum?: EthereumFundingProvider & {
+    providers?: EthereumFundingProvider[];
+  };
+  coinbaseWalletExtension?: EthereumFundingProvider;
+  unisat?: {
+    requestAccounts?: () => Promise<unknown>;
+  };
+  XverseProviders?: {
+    Bitcoin?: {
+      request?: (method: string, params?: unknown) => Promise<unknown>;
+    };
+  };
+};
+
+const FUNDING_SOURCE_OPTIONS: FundingSourceOption[] = [
+  {
+    kind: "solana",
+    title: "Solana wallet",
+    detail: "Phantom / Backpack",
+    defaultAsset: "SOL",
+    requiresConnection: true,
+  },
+  {
+    kind: "evm",
+    title: "EVM wallet",
+    detail: "MetaMask / Rabby",
+    defaultAsset: "ETH",
+    requiresConnection: true,
+  },
+  {
+    kind: "bitcoin",
+    title: "Bitcoin wallet",
+    detail: "Unisat / Xverse",
+    defaultAsset: "BTC",
+    requiresConnection: true,
+  },
+  {
+    kind: "coinbase",
+    title: "Coinbase Wallet",
+    detail: "Injected wallet",
+    defaultAsset: "stablecoin",
+    requiresConnection: true,
+  },
+  {
+    kind: "exchange",
+    title: "Exchange / venue",
+    detail: "Receipt import",
+    defaultAsset: "stablecoin",
+    requiresConnection: false,
+  },
+  {
+    kind: "other",
+    title: "Other wallet",
+    detail: "Paste address",
+    defaultAsset: "stablecoin",
+    requiresConnection: true,
+  },
+  {
+    kind: "embedded",
+    title: "Ghola signer",
+    detail: "Embedded Turnkey wallet",
+    defaultAsset: "stablecoin",
+    requiresConnection: true,
+  },
+] as const;
+
 export function PrivateAccountFundingPanel({
+  anchorId,
+  amountBucket: preferredAmountBucket,
   queueId,
   onChanged,
 }: {
+  anchorId?: string;
+  amountBucket?: PrivateAccountSafeInput["amount_bucket"];
   queueId?: string;
   onChanged?: () => void | Promise<void>;
 }) {
   const auth = useThumperAuth();
+  const turnkeyWallet = useTurnkeyWallet();
   const [amountBucket, setAmountBucket] =
-    useState<PrivateAccountSafeInput["amount_bucket"]>("25");
+    useState<PrivateAccountSafeInput["amount_bucket"]>(preferredAmountBucket || "25");
   const [assetBucket, setAssetBucket] =
     useState<PrivateAccountSafeInput["asset_bucket"]>("stablecoin");
+  const [selectedSource, setSelectedSource] =
+    useState<FundingSourceKind>("solana");
+  const [connectedSources, setConnectedSources] =
+    useState<Partial<Record<FundingSourceKind, string>>>({});
+  const [manualWallet, setManualWallet] = useState("");
+  const [connectingSource, setConnectingSource] =
+    useState<FundingSourceKind | null>(null);
   const [receiptId, setReceiptId] = useState("");
   const [status, setStatus] = useState<FundingStatusSummary | null>(null);
   const [instruction, setInstruction] = useState<FundingInstructionSummary | null>(null);
@@ -58,6 +163,22 @@ export function PrivateAccountFundingPanel({
     void refreshStatus();
   }, [auth.authenticated]);
 
+  useEffect(() => {
+    if (preferredAmountBucket) {
+      setAmountBucket(preferredAmountBucket);
+    }
+  }, [preferredAmountBucket]);
+
+  useEffect(() => {
+    const embeddedAddress = turnkeyWallet.walletAddress;
+    if (embeddedAddress) {
+      setConnectedSources((current) => ({
+        ...current,
+        embedded: embeddedAddress,
+      }));
+    }
+  }, [turnkeyWallet.walletAddress]);
+
   async function refreshStatus() {
     try {
       setStatus(await getPrivateAccountFundingStatus());
@@ -67,6 +188,21 @@ export function PrivateAccountFundingPanel({
   }
 
   async function createInstruction() {
+    const source = fundingSourceOption(selectedSource);
+    const sourceAddress = fundingSourceAddress(
+      selectedSource,
+      connectedSources,
+      manualWallet,
+      turnkeyWallet.walletAddress,
+    );
+    if (source.requiresConnection && !sourceAddress) {
+      setMessage(
+        selectedSource === "other"
+          ? "Enter the wallet or exchange account that will fund this proof."
+          : `Connect ${source.title} before creating the funding instruction.`,
+      );
+      return;
+    }
     setWorking(true);
     setMessage(null);
     try {
@@ -75,13 +211,47 @@ export function PrivateAccountFundingPanel({
         asset_bucket: assetBucket,
       });
       setInstruction(body.instruction as FundingInstructionSummary);
-      setMessage("Funding instruction created.");
+      setMessage(`Onchain funding instruction created for ${source.title}. Send from that source, then import the receipt.`);
       await refreshStatus();
       await onChanged?.();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Could not create funding instruction.");
     } finally {
       setWorking(false);
+    }
+  }
+
+  async function connectFundingSource(kind: FundingSourceKind) {
+    const source = fundingSourceOption(kind);
+    setSelectedSource(kind);
+    setAssetBucket(source.defaultAsset);
+    setMessage(null);
+
+    if (kind === "exchange") {
+      setMessage("Use this source when funding comes from a venue or exchange onchain receipt.");
+      return;
+    }
+
+    if (kind === "other") {
+      setMessage("Paste any wallet or exchange account that will fund this proof.");
+      return;
+    }
+
+    setConnectingSource(kind);
+    try {
+      const address = await resolveFundingSourceAddress(kind, {
+        turnkeyWallet,
+        email: auth.user?.email,
+      });
+      setConnectedSources((current) => ({
+        ...current,
+        [kind]: address,
+      }));
+      setMessage(`${source.title} connected.`);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : `Could not connect ${source.title}.`);
+    } finally {
+      setConnectingSource(null);
     }
   }
 
@@ -142,13 +312,92 @@ export function PrivateAccountFundingPanel({
   }
 
   const latestBatch = status?.batches?.[0];
+  const selectedSourceMeta = fundingSourceOption(selectedSource);
+  const selectedSourceAddress = fundingSourceAddress(
+    selectedSource,
+    connectedSources,
+    manualWallet,
+    turnkeyWallet.walletAddress,
+  );
 
   return (
-    <div className="border border-[#1e2a3a] bg-[#0f1117] p-5">
-      <div className="flex items-center gap-2">
-        <ShieldCheck className="h-4 w-4 text-[#a8d8ff]" />
-        <h2 className="text-lg font-medium">Private funding</h2>
+    <div id={anchorId} className="scroll-mt-24 border border-[#1e2a3a] bg-[#0f1117] p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="h-4 w-4 text-[#a8d8ff]" />
+          <h2 className="text-lg font-medium">Private funding</h2>
+        </div>
+        <span className="border border-[#344155] px-2 py-1 text-[11px] font-medium uppercase tracking-[0.12em] text-[#a8d8ff]">
+          Onchain first
+        </span>
       </div>
+      <p className="mt-2 text-xs leading-5 text-[#8b95a8]">
+        Sign-in uses the embedded Ghola signer; funding can come from a connected onchain wallet or venue receipt.
+      </p>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {FUNDING_SOURCE_OPTIONS.map((source) => {
+          const sourceAddress = fundingSourceAddress(
+            source.kind,
+            connectedSources,
+            manualWallet,
+            turnkeyWallet.walletAddress,
+          );
+          const selected = selectedSource === source.kind;
+          const connected = Boolean(sourceAddress) || !source.requiresConnection;
+          return (
+            <button
+              key={source.kind}
+              type="button"
+              onClick={() => void connectFundingSource(source.kind)}
+              aria-pressed={selected}
+              disabled={connectingSource === source.kind || (source.kind === "embedded" && turnkeyWallet.loading)}
+              className={
+                selected
+                  ? "min-h-20 border border-[#a8d8ff] bg-[#16202b] p-3 text-left text-[#eef1f8] disabled:opacity-60"
+                  : "min-h-20 border border-[#1e2a3a] bg-[#08090d] p-3 text-left text-[#8b95a8] hover:border-[#344155] hover:text-[#eef1f8] disabled:opacity-60"
+              }
+            >
+              <span className="flex items-center justify-between gap-3">
+                <span className="inline-flex items-center gap-2 text-sm font-medium">
+                  {source.kind === "embedded" ? <KeyRound className="h-3.5 w-3.5" /> : <Wallet className="h-3.5 w-3.5" />}
+                  {source.title}
+                </span>
+                <span className={connected ? "text-[11px] text-emerald-200" : "text-[11px] text-amber-200"}>
+                  {connected ? "ready" : connectingSource === source.kind ? "opening" : "connect"}
+                </span>
+              </span>
+              <span className="mt-2 block text-[10px] uppercase tracking-[0.1em] text-[#6f7d9a]">
+                {fundingSourceRailLabel(source.kind)}
+              </span>
+              <span className="mt-2 block truncate text-xs text-[#6f7d9a]">
+                {sourceAddress ? shortFundingAddress(sourceAddress) : source.detail}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {selectedSource === "other" && (
+        <label className="mt-3 grid gap-1.5">
+          <span className="text-xs text-[#8b95a8]">Funding source</span>
+          <input
+            value={manualWallet}
+            onChange={(event) => setManualWallet(event.target.value)}
+            placeholder="wallet address, exchange account, or venue reference"
+            className="h-10 border border-[#1e2a3a] bg-[#08090d] px-3 font-mono text-sm text-[#eef1f8] outline-none"
+          />
+        </label>
+      )}
+
+      <div className="mt-3 grid gap-2 text-xs text-[#8b95a8] sm:grid-cols-2">
+        <Metric label="Source" value={selectedSourceMeta.title} />
+        <Metric
+          label="Connected"
+          value={selectedSourceAddress ? shortFundingAddress(selectedSourceAddress) : selectedSourceMeta.requiresConnection ? "not connected" : "receipt import"}
+        />
+      </div>
+
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <Select
           label="Amount bucket"
@@ -168,7 +417,7 @@ export function PrivateAccountFundingPanel({
         disabled={working || !auth.authenticated}
         className="mt-4 h-10 w-full bg-[#eef1f8] px-4 text-sm font-medium text-[#08090d] disabled:cursor-not-allowed disabled:opacity-50"
       >
-        Create Shielded Funding Instruction
+        Create onchain funding instruction
       </button>
       {instruction?.shielded_destination && (
         <div className="mt-3 border border-[#1e2a3a] bg-[#08090d] p-3">
@@ -221,6 +470,126 @@ export function PrivateAccountFundingPanel({
       {message && <p className="mt-3 text-sm text-[#aab5c8]">{message}</p>}
     </div>
   );
+}
+
+async function resolveFundingSourceAddress(
+  kind: Exclude<FundingSourceKind, "exchange" | "other">,
+  options: {
+    turnkeyWallet: ReturnType<typeof useTurnkeyWallet>;
+    email?: string;
+  },
+) {
+  if (kind === "embedded") {
+    if (options.turnkeyWallet.walletAddress) return options.turnkeyWallet.walletAddress;
+    await options.turnkeyWallet.createWallet(options.email || "ghola-user");
+    return storedEmbeddedWalletAddress() || "embedded_wallet_created";
+  }
+
+  const walletWindow = window as FundingBrowserWindow;
+  if (kind === "solana") {
+    const response = await walletWindow.solana?.connect?.();
+    const address = publicKeyString(response) || publicKeyString((response as { publicKey?: unknown } | undefined)?.publicKey);
+    if (!address) throw new Error("No Solana wallet was detected.");
+    return address;
+  }
+
+  if (kind === "evm") {
+    const address = await requestEvmAddress(walletWindow.ethereum);
+    if (!address) throw new Error("No EVM wallet was detected.");
+    return address;
+  }
+
+  if (kind === "coinbase") {
+    const provider =
+      walletWindow.coinbaseWalletExtension ||
+      walletWindow.ethereum?.providers?.find((item) => item.isCoinbaseWallet) ||
+      (walletWindow.ethereum?.isCoinbaseWallet ? walletWindow.ethereum : undefined);
+    const address = await requestEvmAddress(provider);
+    if (!address) throw new Error("Coinbase Wallet was not detected.");
+    return address;
+  }
+
+  const unisatAddress = firstAddress(await walletWindow.unisat?.requestAccounts?.());
+  if (unisatAddress) return unisatAddress;
+
+  const xverse = walletWindow.XverseProviders?.Bitcoin;
+  const xverseAccounts = await xverse?.request?.("getAccounts").catch(() => null);
+  const xverseAddress = firstAddress(xverseAccounts);
+  if (xverseAddress) return xverseAddress;
+
+  throw new Error("No Bitcoin wallet was detected.");
+}
+
+async function requestEvmAddress(provider: EthereumFundingProvider | undefined) {
+  const accounts = await provider?.request?.({ method: "eth_requestAccounts" });
+  return firstAddress(accounts);
+}
+
+function fundingSourceOption(kind: FundingSourceKind) {
+  return FUNDING_SOURCE_OPTIONS.find((source) => source.kind === kind) || FUNDING_SOURCE_OPTIONS[0];
+}
+
+function fundingSourceAddress(
+  kind: FundingSourceKind,
+  connectedSources: Partial<Record<FundingSourceKind, string>>,
+  manualWallet: string,
+  embeddedWallet: string | null,
+) {
+  if (kind === "embedded") return embeddedWallet || connectedSources.embedded || null;
+  if (kind === "other") return manualWallet.trim() || null;
+  if (kind === "exchange") return "receipt_import";
+  return connectedSources[kind] || null;
+}
+
+function firstAddress(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const address = firstAddress(item);
+      if (address) return address;
+    }
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return firstAddress(record.address) ||
+      firstAddress(record.publicKey) ||
+      firstAddress(record.accounts) ||
+      firstAddress(record.addresses) ||
+      null;
+  }
+  return null;
+}
+
+function publicKeyString(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "object" && "toString" in value && typeof value.toString === "function") {
+    const text = value.toString();
+    return text === "[object Object]" ? null : text;
+  }
+  return null;
+}
+
+function shortFundingAddress(value: string) {
+  if (value === "receipt_import") return "receipt import";
+  if (value === "embedded_wallet_created") return "created";
+  if (value.length <= 18) return value;
+  return `${value.slice(0, 8)}...${value.slice(-6)}`;
+}
+
+function fundingSourceRailLabel(kind: FundingSourceKind) {
+  if (kind === "embedded") return "account signer";
+  if (kind === "exchange") return "onchain receipt";
+  return "onchain wallet";
+}
+
+function storedEmbeddedWalletAddress() {
+  try {
+    return window.localStorage.getItem("turnkey_wallet_address") ||
+      window.localStorage.getItem("ghola_browser_wallet_address");
+  } catch {
+    return null;
+  }
 }
 
 function Select({ label, value, options, onChange }: {

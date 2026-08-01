@@ -28,8 +28,8 @@ import {
 } from "@/app/v1/private-account/_lib";
 import { workerAuthorizationHeader } from "./private-agent-capability";
 
-const AGENT_VENUES: PrivateAgentVenueId[] = ["hyperliquid", "coinbase_advanced", "jupiter"];
-const ARB_MARKETS = ["BTC-USD", "ETH-USD", "SOL-USD"];
+const AGENT_VENUES: PrivateAgentVenueId[] = ["hyperliquid", "phoenix", "backpack", "coinbase_advanced", "jupiter"];
+const ARB_MARKETS = ["SOL-USD"];
 
 export interface AgentPassportCapability {
   version: 1;
@@ -381,20 +381,22 @@ function latestCapabilities(records: PrivateVenueCapabilityRecordV1[]) {
 function readinessBlockers(readyVenues: PrivateAgentVenueId[]): string[] {
   const blockers: string[] = [];
   if (!readyVenues.includes("hyperliquid")) blockers.push("hyperliquid_required");
-  if (!readyVenues.includes("coinbase_advanced") && !readyVenues.includes("jupiter")) {
-    blockers.push("second_spot_or_swap_venue_required");
-  }
+  if (!readyVenues.includes("phoenix")) blockers.push("phoenix_required");
+  if (!readyVenues.includes("backpack")) blockers.push("backpack_required");
   return blockers;
 }
 
 function liveConfigBlockers(env: Record<string, string | undefined>): string[] {
   const blockers: string[] = [];
-  if (env.PRIVATE_AGENT_ARB_LIVE_SUBMIT !== "true") blockers.push("arb_live_submit_disabled");
+  if (env.PRIVATE_AGENT_TRI_VENUE_ARB_LIVE_SUBMIT !== "true" && env.PRIVATE_AGENT_ARB_LIVE_SUBMIT !== "true") {
+    blockers.push("tri_venue_arb_live_submit_disabled");
+  }
   for (const name of [
     "PRIVATE_AGENT_ARB_MAX_LEG_NOTIONAL_USD",
     "PRIVATE_AGENT_ARB_DAILY_NOTIONAL_CAP_USD",
     "PRIVATE_AGENT_ARB_MIN_NET_EDGE_BPS",
     "PRIVATE_AGENT_ARB_MAX_EXECUTION_SKEW_MS",
+    "PRIVATE_AGENT_ARB_MAX_MARKET_DATA_SKEW_MS",
   ]) {
     if (!positiveNumber(env[name])) blockers.push(`${name.toLowerCase()}_required`);
   }
@@ -551,16 +553,24 @@ function workerConfig(env: Record<string, string | undefined>) {
 function agentVenueForPlatform(value: unknown): PrivateAgentVenueId | null {
   if (value === "hyperliquid_style_market") return "hyperliquid";
   if (value === "coinbase_style_provider") return "coinbase_advanced";
+  if (value === "solana_perps_market") return "phoenix";
   if (value === "solana_swap_aggregator") return "jupiter";
   return null;
 }
 
 function agentVenueId(value: unknown): PrivateAgentVenueId | null {
-  return value === "hyperliquid" || value === "coinbase_advanced" || value === "jupiter" ? value : null;
+  return value === "hyperliquid" ||
+    value === "phoenix" ||
+    value === "backpack" ||
+    value === "coinbase_advanced" ||
+    value === "jupiter"
+    ? value
+    : null;
 }
 
 function executionModeForVenue(venueId: GholaVenueId, value: unknown): GholaVenueExecutionMode {
   const raw = stringValue(value);
+  if (raw === "ghola_pooled") return "ghola_pooled";
   if (venueId === "jupiter") return raw === "user_stealth" ? "user_stealth" : "byo_api_key";
   return "byo_api_key";
 }

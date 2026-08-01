@@ -796,7 +796,7 @@ export default function StrategiesPage() {
                 href="/private-balance"
                 className="mt-3 inline-flex text-xs font-medium text-[#3da8ff] hover:text-[#7cc8ff]"
               >
-                Private balance status
+                Private funding status
               </Link>
             </section>
           </aside>

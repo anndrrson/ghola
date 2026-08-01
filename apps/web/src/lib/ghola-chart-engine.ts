@@ -290,14 +290,14 @@ function chartValueRange(
     if (mode === "depth") {
       for (const level of [...active.bids, ...active.asks]) {
         const px = Number(level.px);
-        if (Number.isFinite(px)) values.push(px);
+        if (isPositiveFinite(px)) values.push(px);
       }
       return;
     }
     if (mode === "route" || mode === "slippage" || mode === "quote") {
       for (const quote of active.routeQuotes) {
         const px = Number(quote.price);
-        if (Number.isFinite(px)) values.push(px);
+        if (isPositiveFinite(px)) values.push(px);
       }
       const mid = frameMidNumber(active);
       if (mid != null) values.push(mid);
@@ -306,19 +306,30 @@ function chartValueRange(
     for (const candle of active.candles) {
       const high = Number(candle.h);
       const low = Number(candle.l);
-      if (Number.isFinite(high)) values.push(high);
-      if (Number.isFinite(low)) values.push(low);
+      if (isPositiveFinite(high)) values.push(high);
+      if (isPositiveFinite(low)) values.push(low);
     }
     for (const value of [active.mid, active.bestBid, active.bestAsk, active.markPrice, active.oraclePrice]) {
       const number = Number(value);
-      if (Number.isFinite(number)) values.push(number);
+      if (isPositiveFinite(number)) values.push(number);
     }
   };
   collect(frame);
   for (const compare of compareFrames) collect(compare);
+  const marketMin = values.length > 0 ? Math.min(...values) : null;
+  const marketMax = values.length > 0 ? Math.max(...values) : null;
   for (const overlay of overlays) {
     for (const value of [overlay.price, overlay.priceEnd]) {
-      if (Number.isFinite(value)) values.push(Number(value));
+      const number = Number(value);
+      if (!isPositiveFinite(number)) continue;
+      if (
+        mode !== "candles" ||
+        marketMin == null ||
+        marketMax == null ||
+        shouldIncludeOverlayInCandleRange(number, marketMin, marketMax)
+      ) {
+        values.push(number);
+      }
     }
   }
   if (values.length === 0) return { min: 0, max: 1 };
@@ -334,6 +345,17 @@ function chartValueRange(
     max += pad;
   }
   return { min, max };
+}
+
+function isPositiveFinite(value: number) {
+  return Number.isFinite(value) && value > 0;
+}
+
+function shouldIncludeOverlayInCandleRange(value: number, marketMin: number, marketMax: number) {
+  const mid = (marketMin + marketMax) / 2;
+  const marketRange = Math.max(marketMax - marketMin, Math.abs(mid) * 0.002, Number.EPSILON);
+  const margin = Math.max(marketRange * 2, Math.abs(mid) * 0.12);
+  return value >= marketMin - margin && value <= marketMax + margin;
 }
 
 function finitePositiveOrNull(value: number | null) {

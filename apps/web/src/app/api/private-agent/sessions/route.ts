@@ -41,7 +41,7 @@ interface BillingStatus {
 }
 
 const PRIVATE_AGENT_SESSION_RESERVATION_SECONDS = Number.parseInt(
-  process.env.GHOLA_PRIVATE_AGENT_SESSION_RESERVATION_SECONDS || "3600",
+  process.env.GHOLA_PRIVATE_AGENT_SESSION_RESERVATION_SECONDS || "300",
   10,
 );
 
@@ -137,6 +137,7 @@ async function reservePrivateAgentCompute(input: {
       body: JSON.stringify({
         session_id: input.reservationId,
         seconds: input.seconds,
+        metering_mode: "sparse_metered_v1",
       }),
       cache: "no-store",
     },
@@ -157,6 +158,7 @@ async function releasePrivateAgentCompute(input: {
   bearer: string;
   reservationId: string;
   status: "failed" | "paused" | "completed";
+  secondsUsed?: number;
 }) {
   await fetchWithTimeout(
     `${THUMPER_API_BASE}/api/billing/private-agent/compute/release`,
@@ -170,6 +172,7 @@ async function releasePrivateAgentCompute(input: {
       body: JSON.stringify({
         session_id: input.reservationId,
         status: input.status,
+        ...(Number.isFinite(input.secondsUsed) ? { seconds_used: Math.max(0, Math.floor(input.secondsUsed!)) } : {}),
       }),
       cache: "no-store",
     },
@@ -365,6 +368,7 @@ export async function POST(req: NextRequest) {
       bearer: billing.bearer,
       reservationId,
       status: "failed",
+      secondsUsed: 0,
     });
     return json({ error: "private-agent execution provider unavailable" }, 503);
   }
@@ -374,6 +378,7 @@ export async function POST(req: NextRequest) {
       bearer: billing.bearer,
       reservationId,
       status: "failed",
+      secondsUsed: 0,
     });
     return json(
       {

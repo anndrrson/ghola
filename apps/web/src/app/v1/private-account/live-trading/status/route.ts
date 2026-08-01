@@ -9,7 +9,11 @@ import {
   getPooledWorkerReadiness,
   type PooledWorkerReadiness,
 } from "@/lib/private-account-pooled-readiness";
+import { deriveLiveTradingExecutionDisplay } from "@/lib/private-account-trading-ui";
 import { json } from "../../_lib";
+import { publicLivePhoenixNoKeyConfig } from "../../public-live/phoenix/_lib";
+import { publicLiveCoinbaseConfig } from "../../public-live/coinbase/_lib";
+import { resolveGholaProductEnvironment } from "@/lib/product-environment";
 
 export const dynamic = "force-dynamic";
 
@@ -24,11 +28,14 @@ const VENUES = [
 type LaunchMode =
   | "disabled"
   | "public_byo_mainnet"
+  | "public_byo_testnet"
   | "public_pooled_account"
   | "public_pooled_and_byo";
 
-export async function GET() {
-  return liveTradingStatusResponse();
+export async function GET(request?: Request) {
+  return liveTradingStatusResponse({
+    host: request?.headers.get("x-forwarded-host") ?? request?.headers.get("host") ?? null,
+  });
 }
 
 type LiveTradingCanaryReader = typeof getLatestLiveTradingCanaryReport;
@@ -37,8 +44,15 @@ export async function liveTradingStatusResponse(input: {
   env?: Record<string, string | undefined>;
   getCanaryReport?: LiveTradingCanaryReader;
   workerReadiness?: PooledWorkerReadiness;
+  host?: string | null;
 } = {}) {
   const env = input.env ?? process.env;
+  const productEnvironment = resolveGholaProductEnvironment({
+    host: input.host,
+    configuredEnvironment: env.GHOLA_PRODUCT_ENVIRONMENT,
+    configuredHyperliquidNetwork: env.GHOLA_HYPERLIQUID_PILOT_NETWORK,
+  });
+  const isTestnet = productEnvironment.environment === "testnet";
   const getCanaryReport = input.getCanaryReport ?? getLatestLiveTradingCanaryReport;
   const [reports, capitalFreeProofs, workerReadiness] = await Promise.all([
     Promise.all(VENUES.map((venue) => getCanaryReport(venue.id))),
@@ -52,10 +66,11 @@ export async function liveTradingStatusResponse(input: {
       evaluateCanary(venue.id, reports[index]),
       evaluateCapitalFreeProof(venue.id, capitalFreeProofs[index]),
       workerReadiness,
+      isTestnet,
     )
   );
-  const pooledGlobalFailures = pooledLiveGateFailures(env, workerReadiness);
-  const byoGlobalFailures = byoLiveGateFailures(env);
+  const pooledGlobalFailures = pooledLiveGateFailures(env, workerReadiness, isTestnet);
+  const byoGlobalFailures = byoLiveGateFailures(env, isTestnet);
   const pooledUnavailableReasons = pooledGlobalFailures.concat(
     venues.flatMap((venue) => venue.reason_codes.map((reason) => `${venue.id}:${reason}`)),
   );
@@ -67,21 +82,50 @@ export async function liveTradingStatusResponse(input: {
     .map((venue) => venue.id);
   const pooledGreen = pooledGlobalFailures.length === 0 && pooledReadyVenueIds.length > 0;
   const publicLiveCopyAllowed = env.GHOLA_LIVE_TRADING_PUBLIC_ENABLED === "true";
-  const byoVenues = VENUES.map((venue) => venueByoLiveGate(venue.id, env));
+  const byoVenues = VENUES.map((venue) => venueByoLiveGate(venue.id, env, isTestnet));
   const byoGreen = byoGlobalFailures.length === 0 && byoVenues.some((venue) => venue.status === "green");
-  const liveTradingEnabled = pooledGreen || byoGreen;
+  const freshUserGlobalFailures = freshUserLaunchGateFailures(env);
+  const noKeyConfig = publicLivePhoenixNoKeyConfig(env);
+  const coinbaseNoKeyConfig = publicLiveCoinbaseConfig(env);
+  const publicPrimaryVenue = env.GHOLA_PUBLIC_LIVE_PRIMARY_VENUE === "coinbase" ? "coinbase" : "phoenix";
+  const phoenixNoKeyConfigFailures = [
+    ...(noKeyConfig.require_allowlist &&
+    noKeyConfig.allowed_users.size === 0 &&
+    noKeyConfig.allowed_wallets.size === 0
+      ? ["public_live_allowlist_missing"]
+      : []),
+  ];
+  const coinbaseNoKeyConfigFailures = [
+    ...(coinbaseNoKeyConfig.require_allowlist && coinbaseNoKeyConfig.allowed_users.size === 0
+      ? ["public_live_allowlist_missing"]
+      : []),
+  ];
+  const noKeyConfigFailures = publicPrimaryVenue === "coinbase"
+    ? coinbaseNoKeyConfigFailures
+    : phoenixNoKeyConfigFailures;
+  const coinbasePublicReadinessFailures = coinbasePublicLiveFailures(env, workerReadiness);
+  const coinbasePublicLiveReady = coinbaseNoKeyConfig.enabled &&
+    freshUserGlobalFailures.length === 0 &&
+    noKeyConfigFailures.length === 0 &&
+    coinbasePublicReadinessFailures.length === 0;
+  const effectivePooledLiveVenueIds = coinbasePublicLiveReady && !pooledReadyVenueIds.includes("coinbase")
+    ? [...pooledReadyVenueIds, "coinbase" as const]
+    : pooledReadyVenueIds;
+  const liveTradingEnabled = pooledGreen || byoGreen || coinbasePublicLiveReady;
   const liveSubmitMode = pooledGreen && byoGreen
     ? "pooled_and_byo"
     : pooledGreen
       ? "pooled_account"
-      : byoGreen
-        ? "byo_mainnet"
+      : coinbasePublicLiveReady
+        ? "pooled_account"
+        : byoGreen
+        ? isTestnet ? "byo_testnet" : "byo_mainnet"
         : "disabled";
   const reasonCodes = liveTradingEnabled
     ? []
     : byoGlobalFailures.concat(byoVenues.flatMap((venue) => venue.reason_codes.map((reason) => `${venue.id}:${reason}`)));
   const hyperliquidByoVenue = byoVenues.find((venue) => venue.id === "hyperliquid") ??
-    venueByoLiveGate("hyperliquid", env);
+    venueByoLiveGate("hyperliquid", env, isTestnet);
   const hyperliquidPooledVenue = venues.find((venue) => venue.id === "hyperliquid") ??
     venuePooledLiveGate(
       "hyperliquid",
@@ -89,8 +133,17 @@ export async function liveTradingStatusResponse(input: {
       { status: "missing", reason_codes: ["funded_full_ticket_canary_missing"], report: null },
       { status: "missing", reason_codes: ["capital_free_no_submit_proof_missing"], report: null },
       workerReadiness,
+      isTestnet,
     );
-  const freshUserGlobalFailures = freshUserLaunchGateFailures(env);
+  const phoenixPooledVenue = venues.find((venue) => venue.id === "phoenix") ??
+    venuePooledLiveGate(
+      "phoenix",
+      env,
+      { status: "missing", reason_codes: ["funded_full_ticket_canary_missing"], report: null },
+      { status: "missing", reason_codes: ["capital_free_no_submit_proof_missing"], report: null },
+      workerReadiness,
+      isTestnet,
+    );
   const hyperliquidCanaryAdvisoryReasonCodes = strictCanaryReasonCodes(
     hyperliquidPooledVenue.canary_status,
     hyperliquidPooledVenue.canary_reason_codes,
@@ -108,23 +161,48 @@ export async function liveTradingStatusResponse(input: {
   const hyperliquidByoLaunchReady = hyperliquidByoReasonCodes.length === 0;
   const hyperliquidPooledLaunchReady = hyperliquidPooledReasonCodes.length === 0;
   const publicLaunchReady = liveTradingEnabled && freshUserGlobalFailures.length === 0;
-  const freshUserLiveReady = pooledGreen && freshUserGlobalFailures.length === 0;
-  const launchMode = publicLaunchReady && pooledGreen && byoGreen
+  const freshUserLiveReady = (pooledGreen || coinbasePublicLiveReady) && freshUserGlobalFailures.length === 0;
+  const publicPooledReady = pooledGreen || coinbasePublicLiveReady;
+  const launchMode = publicLaunchReady && publicPooledReady && byoGreen
     ? "public_pooled_and_byo"
-    : publicLaunchReady && pooledGreen
+    : publicLaunchReady && publicPooledReady
       ? "public_pooled_account"
       : publicLaunchReady && byoGreen
-        ? "public_byo_mainnet"
+        ? isTestnet ? "public_byo_testnet" : "public_byo_mainnet"
         : "disabled";
   const proofModel = publicLiveProofModel({
     launchMode,
     liveSubmitMode,
-    pooledLiveVenues: pooledReadyVenueIds,
+    pooledLiveVenues: effectivePooledLiveVenueIds,
     byoLiveVenues: byoVenues.filter((venue) => venue.status === "green").map((venue) => venue.id),
     hyperliquidCanaryAdvisoryReasonCodes,
   });
-  return json({
+  const phoenixPublicLiveReady = noKeyConfig.enabled &&
+    freshUserGlobalFailures.length === 0 &&
+    phoenixNoKeyConfigFailures.length === 0 &&
+    pooledGlobalFailures.length === 0 &&
+    phoenixPooledVenue.status === "green";
+  const noKeyBlockingReasonCodes = uniqueStrings([
+    ...(publicPrimaryVenue === "coinbase"
+      ? coinbaseNoKeyConfig.enabled ? [] : ["no_key_live_disabled"]
+      : noKeyConfig.enabled ? [] : ["no_key_live_disabled"]),
+    ...noKeyConfigFailures,
+    ...freshUserGlobalFailures,
+    ...(publicPrimaryVenue === "coinbase"
+      ? coinbasePublicReadinessFailures
+      : [
+          ...pooledGlobalFailures,
+          ...(phoenixPooledVenue.status === "green" ? [] : phoenixPooledVenue.reason_codes),
+        ]),
+  ]);
+  const noKeyLiveTradingEnabled = publicPrimaryVenue === "coinbase"
+    ? coinbasePublicLiveReady
+    : phoenixPublicLiveReady;
+  const response = {
     version: 1,
+    product_environment: productEnvironment.environment,
+    hyperliquid_network: productEnvironment.hyperliquidNetwork,
+    testnet_funds_have_no_value: productEnvironment.environment === "testnet",
     status: liveTradingEnabled ? "green" : "red",
     live_trading_enabled: liveTradingEnabled,
     live_submit_mode: liveSubmitMode,
@@ -135,8 +213,8 @@ export async function liveTradingStatusResponse(input: {
     pooled_live_trading_enabled: pooledGreen,
     launch_terms_gate: {
       required: true,
-      launch_scope: "hyperliquid_pooled_non_us_beta",
-      jurisdiction_scope: "non_us_beta",
+      launch_scope: isTestnet ? "hyperliquid_testnet_beta" : "hyperliquid_pooled_non_us_beta",
+      jurisdiction_scope: isTestnet ? "testnet" : "non_us_beta",
       terms_version: "ghola-public-beta-2026-06-13",
       risk_disclosure_version: "ghola-risk-disclosure-2026-06-13",
     },
@@ -171,11 +249,19 @@ export async function liveTradingStatusResponse(input: {
         import_credit_path: "/v1/private-account/balance/import-credit",
       },
     },
-    pooled_live_venues: pooledReadyVenueIds,
+    pooled_live_venues: effectivePooledLiveVenueIds,
     pooled_capital_free_proven_venues: pooledCapitalFreeProvenVenueIds,
     public_live_copy_allowed: publicLiveCopyAllowed,
     public_market_data_enabled: publicLiveCopyAllowed,
     default_access_mode: "ghola_auto_access",
+    no_key_live_trading_enabled: noKeyLiveTradingEnabled,
+    no_key_primary_venue: publicPrimaryVenue,
+    no_key_requires_auth: publicPrimaryVenue === "coinbase" ? coinbaseNoKeyConfig.require_auth : noKeyConfig.require_auth,
+    no_key_requires_allowlist: publicPrimaryVenue === "coinbase" ? coinbaseNoKeyConfig.require_allowlist : noKeyConfig.require_allowlist,
+    no_key_requires_balance: publicPrimaryVenue === "coinbase" ? coinbaseNoKeyConfig.require_balance : noKeyConfig.require_balance,
+    no_key_blocking_reason_codes: noKeyBlockingReasonCodes,
+    phoenix_public_live_ready: phoenixPublicLiveReady,
+    coinbase_public_live_ready: coinbasePublicLiveReady,
     proof_model: proofModel,
     pooled_worker_readiness: {
       status: workerReadiness.status,
@@ -207,7 +293,7 @@ export async function liveTradingStatusResponse(input: {
         worker_readiness_status: workerReadiness.status,
         worker_hyperliquid_ready: workerReadiness.venues.hyperliquid.ready,
       },
-      pooled_live_venues: pooledReadyVenueIds,
+      pooled_live_venues: effectivePooledLiveVenueIds,
       byo_venues: byoVenues.map((venue) => ({
         id: venue.id,
         status: venue.status,
@@ -227,6 +313,10 @@ export async function liveTradingStatusResponse(input: {
       pooled_unavailable_reasons: pooledUnavailableReasons,
     }),
     checked_at: new Date().toISOString(),
+  };
+  return json({
+    ...response,
+    execution_display: deriveLiveTradingExecutionDisplay(response),
   });
 }
 
@@ -286,15 +376,20 @@ function publicLiveProofModel(input: {
   };
 }
 
-function byoLiveGateFailures(env: Record<string, string | undefined>) {
+function byoLiveGateFailures(
+  env: Record<string, string | undefined>,
+  isTestnet = false,
+) {
   const failures: string[] = [];
+  const maxOrderNotionalUsd = isTestnet ? 25 : 1_000;
+  const dailyCapUsd = isTestnet ? 100 : 5_000;
   if (!envIs(env, "GHOLA_LIVE_TRADING_PUBLIC_ENABLED", "true")) failures.push("live_trading_public_flag_disabled");
   if (envIs(env, "PRIVATE_AGENT_VENUE_DRY_RUN", "true")) failures.push("venue_dry_run_enabled");
   if (!validRequestProofSecret(env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET || "")) failures.push("request_proof_secret_missing");
-  if (!capEnvEquals(env, ["GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD"], 1_000)) {
+  if (!capEnvEquals(env, ["GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD"], maxOrderNotionalUsd)) {
     failures.push("launch_max_order_cap_missing");
   }
-  if (!capEnvEquals(env, ["GHOLA_LIVE_TRADING_DAILY_CAP_USD"], 5_000)) {
+  if (!capEnvEquals(env, ["GHOLA_LIVE_TRADING_DAILY_CAP_USD"], dailyCapUsd)) {
     failures.push("launch_daily_cap_missing");
   }
   if (!capEnvAtMost(env, ["GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS"], 100)) {
@@ -306,25 +401,51 @@ function byoLiveGateFailures(env: Record<string, string | undefined>) {
 function pooledLiveGateFailures(
   env: Record<string, string | undefined>,
   workerReadiness: PooledWorkerReadiness,
+  isTestnet = false,
 ) {
-  return [...new Set(byoLiveGateFailures(env).concat(workerReadiness.reason_codes))];
+  return [...new Set(byoLiveGateFailures(env, isTestnet).concat(workerReadiness.reason_codes))];
+}
+
+function coinbasePublicLiveFailures(
+  env: Record<string, string | undefined>,
+  workerReadiness: PooledWorkerReadiness,
+) {
+  const reasonCodes: string[] = [];
+  const coinbaseVenue = workerReadiness.venues.coinbase;
+  if (!envIs(env, "GHOLA_V6_COINBASE_PILOT_ENABLED", "true")) reasonCodes.push("coinbase_pilot_disabled");
+  if (!envIs(env, "GHOLA_COINBASE_PARTNER_OMNIBUS_ENABLED", "true")) reasonCodes.push("coinbase_omnibus_disabled");
+  if (!envIs(env, "GHOLA_COINBASE_PARTNER_OMNIBUS_POOL_READY", "true")) reasonCodes.push("coinbase_omnibus_pool_not_ready");
+  if (!envIs(env, "GHOLA_COINBASE_LIVE_MODE", "full") && !envIs(env, "PRIVATE_AGENT_COINBASE_LIVE_MODE", "full")) {
+    reasonCodes.push("coinbase_live_mode_disabled");
+  }
+  if (!env.PRIVATE_AGENT_COINBASE_ALLOWED_PRODUCTS?.trim() && !env.GHOLA_COINBASE_ALLOWED_PRODUCTS?.trim()) {
+    reasonCodes.push("coinbase_product_allowlist_missing");
+  }
+  if (!capEnvAtMost(env, ["PRIVATE_AGENT_COINBASE_LIVE_MAX_NOTIONAL_USD", "GHOLA_COINBASE_LIVE_MAX_NOTIONAL_USD"], 5)) {
+    reasonCodes.push("coinbase_public_max_order_cap_missing");
+  }
+  if (!coinbaseVenue?.ready) {
+    reasonCodes.push(...(coinbaseVenue?.reason_codes ?? ["coinbase_worker_not_ready"]));
+  }
+  return uniqueStrings(reasonCodes);
 }
 
 function venueByoLiveGate(
   id: (typeof VENUES)[number]["id"],
   env: Record<string, string | undefined>,
+  isTestnet = false,
 ) {
   const reasonCodes: string[] = [];
   if (id === "hyperliquid") {
     if (!envIs(env, "GHOLA_V6_HYPERLIQUID_PILOT_ENABLED", "true")) reasonCodes.push("hyperliquid_pilot_disabled");
-    if (!envIs(env, "PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", "true")) reasonCodes.push("hyperliquid_mainnet_worker_disabled");
+    if (!isTestnet && !envIs(env, "PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", "true")) reasonCodes.push("hyperliquid_mainnet_worker_disabled");
     if (!envIs(env, "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", "full_ticket")) {
       reasonCodes.push("hyperliquid_worker_full_ticket_disabled");
     }
-    if (!capEnvEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD"], 1_000)) {
+    if (!capEnvEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD"], isTestnet ? 25 : 1_000)) {
       reasonCodes.push("hyperliquid_max_order_cap_missing");
     }
-    if (!capEnvEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD"], 5_000)) {
+    if (!capEnvEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD"], isTestnet ? 100 : 5_000)) {
       reasonCodes.push("hyperliquid_daily_cap_missing");
     }
     if (!capEnvAtMost(env, ["PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS"], 100)) {
@@ -406,6 +527,7 @@ function venuePooledLiveGate(
   canary: ReturnType<typeof evaluateCanary>,
   capitalFreeProof: ReturnType<typeof evaluateCapitalFreeProof>,
   workerReadiness: PooledWorkerReadiness,
+  isTestnet = false,
 ) {
   const reasonCodes: string[] = [];
   const workerVenue = workerReadiness.venues[id];
@@ -414,11 +536,11 @@ function venuePooledLiveGate(
     if (!envIs(env, "GHOLA_HYPERLIQUID_LIVE_MODE", "full_ticket")) {
       reasonCodes.push("hyperliquid_live_mode_disabled");
     }
-    if (!envIs(env, "PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", "true")) reasonCodes.push("hyperliquid_mainnet_worker_disabled");
-    if (!capEnvEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD"], 1_000)) {
+    if (!isTestnet && !envIs(env, "PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", "true")) reasonCodes.push("hyperliquid_mainnet_worker_disabled");
+    if (!capEnvEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD"], isTestnet ? 25 : 1_000)) {
       reasonCodes.push("hyperliquid_max_order_cap_missing");
     }
-    if (!capEnvEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD"], 5_000)) {
+    if (!capEnvEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD"], isTestnet ? 100 : 5_000)) {
       reasonCodes.push("hyperliquid_daily_cap_missing");
     }
     if (!capEnvAtMost(env, ["PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS"], 100)) {

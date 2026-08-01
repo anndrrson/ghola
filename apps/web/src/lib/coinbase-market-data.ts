@@ -34,11 +34,23 @@ export interface CoinbaseMarketSnapshot {
   base_currency_id: "BTC" | "ETH" | "SOL";
   quote_currency_id: "USD";
   interval: CoinbaseCandleInterval;
+  /** Time the most recent trustworthy price-bearing source was received. */
   fetched_at: string;
+  /** Time the HTTP/WebSocket processing attempt completed; never used as market-data age. */
+  request_completed_at: string;
   source: CoinbaseMarketSource;
   source_timestamp: number | null;
   stale: boolean;
+  last_error_at: string | null;
+  last_trade_price: string | null;
+  book_mid: string | null;
+  last_trade_updated_at: number | null;
+  book_updated_at: number | null;
+  candle_updated_at: number | null;
+  last_heartbeat_at: number | null;
+  /** Compatibility alias for last_trade_price. */
   price: string | null;
+  /** Compatibility alias for book_mid, falling back to last_trade_price. */
   mid: string | null;
   best_bid: string | null;
   best_ask: string | null;
@@ -62,6 +74,7 @@ export interface CoinbaseMarketSnapshotInput {
   interval?: string | null;
   now?: Date;
   fetchImpl?: typeof fetch;
+  cacheMode?: "swr" | "refresh";
 }
 
 const COINBASE_API_URL = "https://api.coinbase.com/api/v3/brokerage/market";
@@ -83,8 +96,11 @@ const INTERVAL_SECONDS: Record<CoinbaseCandleInterval, number> = {
 export const COINBASE_CANDLE_WINDOW = 240;
 export const COINBASE_BOOK_LEVEL_WINDOW = 20;
 export const COINBASE_RECENT_TRADE_WINDOW = 20;
+export const COINBASE_BOOK_STALE_MS = 10_000;
+export const COINBASE_TRADE_STALE_MS = 15_000;
 
 const MARKET_CACHE_TTL_MS = 4_000;
+const MARKET_MAX_STALE_MS = 5 * 60_000;
 
 type CacheRecord = {
   fetchedAtMs: number;
@@ -126,9 +142,17 @@ export function emptyCoinbaseMarketSnapshot(input: {
     quote_currency_id: "USD",
     interval: input.interval,
     fetched_at: (input.now ?? new Date()).toISOString(),
+    request_completed_at: (input.now ?? new Date()).toISOString(),
     source: null,
     source_timestamp: null,
     stale: input.stale ?? true,
+    last_error_at: null,
+    last_trade_price: null,
+    book_mid: null,
+    last_trade_updated_at: null,
+    book_updated_at: null,
+    candle_updated_at: null,
+    last_heartbeat_at: null,
     price: null,
     mid: null,
     best_bid: null,
@@ -159,22 +183,52 @@ export async function getCoinbaseMarketSnapshot(
   const cached = snapshotCache.get(key);
   if (cached && nowMs - cached.fetchedAtMs <= MARKET_CACHE_TTL_MS) return cached.snapshot;
   const active = inflight.get(key);
+
+  if (cached && input.cacheMode !== "refresh" && nowMs - cached.fetchedAtMs <= MARKET_MAX_STALE_MS) {
+    if (!active) {
+      void refreshCoinbaseSnapshot({
+        ...normalized,
+        now,
+        fetchImpl: input.fetchImpl ?? fetch,
+        previous: cached.snapshot,
+        key,
+        cacheTimestamp: nowMs,
+      });
+    }
+    return { ...cached.snapshot, stale: true };
+  }
   if (active) return active;
 
-  const promise = fetchFreshCoinbaseMarketSnapshot({
+  return refreshCoinbaseSnapshot({
     ...normalized,
     now,
     fetchImpl: input.fetchImpl ?? fetch,
     previous: cached?.snapshot ?? null,
-  })
+    key,
+    cacheTimestamp: nowMs,
+  });
+}
+
+function refreshCoinbaseSnapshot(input: {
+  productId: CoinbaseProductId;
+  interval: CoinbaseCandleInterval;
+  now: Date;
+  fetchImpl: typeof fetch;
+  previous: CoinbaseMarketSnapshot | null;
+  key: string;
+  cacheTimestamp: number;
+}) {
+  const active = inflight.get(input.key);
+  if (active) return active;
+  const promise = fetchFreshCoinbaseMarketSnapshot(input)
     .then((snapshot) => {
-      snapshotCache.set(key, { fetchedAtMs: nowMs, snapshot });
+      snapshotCache.set(input.key, { fetchedAtMs: input.cacheTimestamp, snapshot });
       return snapshot;
     })
     .finally(() => {
-      inflight.delete(key);
+      inflight.delete(input.key);
     });
-  inflight.set(key, promise);
+  inflight.set(input.key, promise);
   return promise;
 }
 
@@ -192,37 +246,71 @@ async function fetchFreshCoinbaseMarketSnapshot(input: {
 }): Promise<CoinbaseMarketSnapshot> {
   const end = Math.floor(input.now.getTime() / 1000);
   const start = end - INTERVAL_SECONDS[input.interval] * COINBASE_CANDLE_WINDOW;
-  try {
-    const [product, book, candles, trades] = await Promise.all([
-      fetchCoinbaseJson(input.fetchImpl, `/products/${input.productId}`),
-      fetchCoinbaseJson(input.fetchImpl, `/product_book?product_id=${input.productId}&limit=${COINBASE_BOOK_LEVEL_WINDOW}`),
-      fetchCoinbaseJson(
-        input.fetchImpl,
-        `/products/${input.productId}/candles?start=${start}&end=${end}&granularity=${INTERVAL_GRANULARITY[input.interval]}&limit=${COINBASE_CANDLE_WINDOW}`,
-      ),
-      fetchCoinbaseJson(input.fetchImpl, `/products/${input.productId}/ticker?limit=${COINBASE_RECENT_TRADE_WINDOW}`).catch(() => null),
-    ]);
-    return buildCoinbaseSnapshot({
-      productId: input.productId,
-      interval: input.interval,
-      fetchedAt: input.now,
-      source: "http",
-      product,
-      book,
-      candles,
-      trades,
-    });
-  } catch {
-    if (input.previous) {
-      return { ...input.previous, fetched_at: input.now.toISOString(), stale: true };
-    }
-    return emptyCoinbaseMarketSnapshot({
-      productId: input.productId,
-      interval: input.interval,
-      now: input.now,
-      stale: true,
-    });
+  const [productResult, bookResult, candleResult, tradeResult] = await Promise.allSettled([
+    fetchCoinbaseJson(input.fetchImpl, `/products/${input.productId}`),
+    fetchCoinbaseJson(input.fetchImpl, `/product_book?product_id=${input.productId}&limit=${COINBASE_BOOK_LEVEL_WINDOW}`),
+    fetchCoinbaseJson(
+      input.fetchImpl,
+      `/products/${input.productId}/candles?start=${start}&end=${end}&granularity=${INTERVAL_GRANULARITY[input.interval]}&limit=${COINBASE_CANDLE_WINDOW}`,
+    ),
+    fetchCoinbaseJson(input.fetchImpl, `/products/${input.productId}/ticker?limit=${COINBASE_RECENT_TRADE_WINDOW}`),
+  ]);
+  const value = (result: PromiseSettledResult<unknown>) => result.status === "fulfilled" ? result.value : null;
+  const fresh = buildCoinbaseSnapshot({
+    productId: input.productId,
+    interval: input.interval,
+    fetchedAt: input.now,
+    source: "http",
+    product: value(productResult),
+    book: value(bookResult),
+    candles: value(candleResult),
+    trades: value(tradeResult),
+  });
+  const previous = input.previous;
+  const productOk = productResult.status === "fulfilled";
+  const bookOk = bookResult.status === "fulfilled";
+  const candlesOk = candleResult.status === "fulfilled";
+  const tradesOk = tradeResult.status === "fulfilled";
+  const marketPriceOk = (bookOk && fresh.book_mid != null) || ((productOk || tradesOk) && fresh.last_trade_price != null);
+  if (!previous) {
+    return {
+      ...fresh,
+      stale: !marketPriceOk,
+      last_error_at: [productOk, bookOk, candlesOk, tradesOk].every(Boolean) ? null : input.now.toISOString(),
+    };
   }
+  const lastTradePrice = (productOk || tradesOk) ? fresh.last_trade_price ?? previous.last_trade_price : previous.last_trade_price;
+  const bookMid = bookOk ? fresh.book_mid : previous.book_mid;
+  return {
+    ...previous,
+    ...fresh,
+    fetched_at: marketPriceOk ? input.now.toISOString() : previous.fetched_at,
+    request_completed_at: input.now.toISOString(),
+    stale: !marketPriceOk,
+    last_error_at: [productOk, bookOk, candlesOk, tradesOk].every(Boolean) ? null : input.now.toISOString(),
+    last_trade_price: lastTradePrice,
+    price: lastTradePrice,
+    last_trade_updated_at: (productOk || tradesOk) && fresh.last_trade_price ? fresh.last_trade_updated_at : previous.last_trade_updated_at,
+    book_mid: bookMid,
+    mid: bookMid ?? lastTradePrice,
+    book_updated_at: bookOk && fresh.book_mid ? fresh.book_updated_at : previous.book_updated_at,
+    best_bid: bookOk ? fresh.best_bid : previous.best_bid,
+    best_ask: bookOk ? fresh.best_ask : previous.best_ask,
+    spread_bps: bookOk ? fresh.spread_bps : previous.spread_bps,
+    bids: bookOk ? fresh.bids : previous.bids,
+    asks: bookOk ? fresh.asks : previous.asks,
+    candles: candlesOk ? fresh.candles : previous.candles,
+    candle_updated_at: candlesOk && fresh.candles.length > 0 ? fresh.candle_updated_at : previous.candle_updated_at,
+    recent_trades: tradesOk ? fresh.recent_trades : previous.recent_trades,
+    price_percentage_change_24h: productOk ? fresh.price_percentage_change_24h : previous.price_percentage_change_24h,
+    volume_24h: productOk ? fresh.volume_24h : previous.volume_24h,
+    approximate_quote_24h_volume: productOk ? fresh.approximate_quote_24h_volume : previous.approximate_quote_24h_volume,
+    base_increment: productOk ? fresh.base_increment : previous.base_increment,
+    quote_increment: productOk ? fresh.quote_increment : previous.quote_increment,
+    quote_min_size: productOk ? fresh.quote_min_size : previous.quote_min_size,
+    trading_disabled: productOk ? fresh.trading_disabled : previous.trading_disabled,
+    product_type: productOk ? fresh.product_type : previous.product_type,
+  };
 }
 
 async function fetchCoinbaseJson(fetchImpl: typeof fetch, path: string) {
@@ -251,12 +339,11 @@ function buildCoinbaseSnapshot(input: {
   const asks = normalizeCoinbaseBookLevels(pricebook?.asks);
   const bestBid = bids[0]?.px ?? safeDecimalString(product?.best_bid_price);
   const bestAsk = asks[0]?.px ?? safeDecimalString(product?.best_ask_price);
-  const price = safeDecimalString(product?.price) ?? safeDecimalString(book?.last);
-  const mid =
-    safeDecimalString(book?.mid_market) ??
-    safeDecimalString(product?.mid_market_price) ??
-    midFromBook(bestBid, bestAsk) ??
-    price;
+  const recentTrades = normalizeCoinbaseTrades(readRecord(input.trades)?.trades);
+  const lastTradePrice = safeDecimalString(product?.price) ?? recentTrades[0]?.px ?? safeDecimalString(book?.last);
+  const bookMid = validatedBookMid(bestBid, bestAsk);
+  const bookTimestamp = timeValue(pricebook?.time);
+  const lastTradeTimestamp = recentTrades[0]?.time ?? (lastTradePrice ? input.fetchedAt.getTime() : null);
   return {
     version: 1,
     platform: "coinbase",
@@ -265,11 +352,19 @@ function buildCoinbaseSnapshot(input: {
     quote_currency_id: "USD",
     interval: input.interval,
     fetched_at: input.fetchedAt.toISOString(),
+    request_completed_at: input.fetchedAt.toISOString(),
     source: input.source,
-    source_timestamp: timeValue(pricebook?.time) ?? input.fetchedAt.getTime(),
+    source_timestamp: bookTimestamp ?? lastTradeTimestamp,
     stale: false,
-    price,
-    mid,
+    last_error_at: null,
+    last_trade_price: lastTradePrice,
+    book_mid: bookMid,
+    last_trade_updated_at: lastTradeTimestamp,
+    book_updated_at: bookMid ? bookTimestamp ?? input.fetchedAt.getTime() : null,
+    candle_updated_at: normalizeCoinbaseCandles(readRecord(input.candles)?.candles).at(-1)?.t ?? null,
+    last_heartbeat_at: null,
+    price: lastTradePrice,
+    mid: bookMid ?? lastTradePrice,
     best_bid: bestBid,
     best_ask: bestAsk,
     spread_bps: safeNumber(book?.spread_bps) ?? spreadBps(bestBid, bestAsk),
@@ -284,8 +379,41 @@ function buildCoinbaseSnapshot(input: {
     candles: normalizeCoinbaseCandles(readRecord(input.candles)?.candles),
     bids,
     asks,
-    recent_trades: normalizeCoinbaseTrades(readRecord(input.trades)?.trades),
+    recent_trades: recentTrades,
   };
+}
+
+export interface CoinbaseDisplayPrice {
+  value: string | null;
+  kind: "book_mid" | "last_trade" | "unavailable";
+  age_ms: number | null;
+  stale: boolean;
+}
+
+export function selectCoinbaseDisplayPrice(
+  snapshot: CoinbaseMarketSnapshot | null | undefined,
+  nowMs = Date.now(),
+): CoinbaseDisplayPrice {
+  if (!snapshot) return { value: null, kind: "unavailable", age_ms: null, stale: true };
+  const bookAge = ageMs(snapshot.book_updated_at, nowMs);
+  if (snapshot.book_mid && bookAge != null && bookAge <= COINBASE_BOOK_STALE_MS) {
+    return { value: snapshot.book_mid, kind: "book_mid", age_ms: bookAge, stale: false };
+  }
+  const tradeAge = ageMs(snapshot.last_trade_updated_at, nowMs);
+  if (snapshot.last_trade_price && tradeAge != null) {
+    return {
+      value: snapshot.last_trade_price,
+      kind: "last_trade",
+      age_ms: tradeAge,
+      stale: tradeAge > COINBASE_TRADE_STALE_MS,
+    };
+  }
+  return { value: null, kind: "unavailable", age_ms: null, stale: true };
+}
+
+function ageMs(timestamp: number | null, nowMs: number) {
+  if (timestamp == null || !Number.isFinite(timestamp)) return null;
+  return Math.max(0, nowMs - timestamp);
 }
 
 export function normalizeCoinbaseBookLevels(value: unknown): CoinbaseBookLevel[] {
@@ -314,7 +442,9 @@ export function normalizeCoinbaseCandles(value: unknown): CoinbaseCandle[] {
       const l = safeDecimalString(row.low ?? row.l);
       const c = safeDecimalString(row.close ?? row.c);
       const v = safeDecimalString(row.volume ?? row.v) ?? "0";
-      return t && o && h && l && c ? { t, T: null, o, h, l, c, v, n: null } : null;
+      return t && positiveDecimalString(o) && positiveDecimalString(h) && positiveDecimalString(l) && positiveDecimalString(c)
+        ? { t, T: null, o, h, l, c, v, n: null }
+        : null;
     })
     .filter(Boolean) as CoinbaseCandle[];
   return candles
@@ -352,6 +482,10 @@ export function safeDecimalString(value: unknown): string | null {
   const trimmed = value.trim();
   if (!/^\d+(?:\.\d+)?$/.test(trimmed)) return null;
   return trimmed;
+}
+
+function positiveDecimalString(value: string | null): value is string {
+  return value != null && Number(value) > 0;
 }
 
 export function safeSignedDecimalString(value: unknown): string | null {
@@ -404,18 +538,45 @@ export function spreadBps(bestBid: string | null, bestAsk: string | null): numbe
   if (!bestBid || !bestAsk) return null;
   const bid = Number(bestBid);
   const ask = Number(bestAsk);
-  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) return null;
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || bid > ask) return null;
   const mid = (bid + ask) / 2;
   if (mid <= 0) return null;
-  return Math.max(0, Math.round(((ask - bid) / mid) * 10_000 * 100) / 100);
+  return Math.round(((ask - bid) / mid) * 10_000 * 100) / 100;
 }
 
-function midFromBook(bestBid: string | null, bestAsk: string | null): string | null {
+export function validatedBookMid(bestBid: string | null, bestAsk: string | null): string | null {
   if (!bestBid || !bestAsk) return null;
   const bid = Number(bestBid);
   const ask = Number(bestAsk);
-  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) return null;
-  return trimNumber((bid + ask) / 2);
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || bid > ask) return null;
+  const decimals = Math.max(decimalPlaces(bestBid), decimalPlaces(bestAsk));
+  const scaledBid = decimalToScaledInteger(bestBid, decimals);
+  const scaledAsk = decimalToScaledInteger(bestAsk, decimals);
+  if (scaledBid == null || scaledAsk == null) return null;
+  const sum = scaledBid + scaledAsk;
+  const midpointDecimals = sum % BigInt(2) === BigInt(0) ? decimals : decimals + 1;
+  const midpointScaled = sum % BigInt(2) === BigInt(0) ? sum / BigInt(2) : sum * BigInt(5);
+  return scaledIntegerToDecimal(midpointScaled, midpointDecimals);
+}
+
+function decimalPlaces(value: string) {
+  return value.includes(".") ? value.length - value.indexOf(".") - 1 : 0;
+}
+
+function decimalToScaledInteger(value: string, decimals: number) {
+  const [whole, fraction = ""] = value.split(".");
+  try {
+    return BigInt(`${whole}${fraction.padEnd(decimals, "0")}`);
+  } catch {
+    return null;
+  }
+}
+
+function scaledIntegerToDecimal(value: bigint, decimals: number) {
+  if (decimals === 0) return value.toString();
+  const raw = value.toString().padStart(decimals + 1, "0");
+  const result = `${raw.slice(0, -decimals)}.${raw.slice(-decimals)}`.replace(/\.?0+$/, "");
+  return result || "0";
 }
 
 function safeNumber(value: unknown): number | null {

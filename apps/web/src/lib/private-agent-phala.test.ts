@@ -66,6 +66,11 @@ describe("private-agent Phala provisioning", () => {
     expect(compose).toContain("/var/run/dstack.sock:/var/run/dstack.sock");
     expect(compose).toContain('PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE: "true"');
     expect(compose).toContain(
+      'PRIVATE_AGENT_WORKER_CAPABILITY_SECRET: "${PRIVATE_AGENT_WORKER_CAPABILITY_SECRET}"',
+    );
+    expect(compose).toContain('NODE_ENV: "production"');
+    expect(compose).toContain('PRIVATE_AGENT_ALLOW_UNATTESTED_DEV: "false"');
+    expect(compose).toContain(
       'PRIVATE_AGENT_EXECUTION_TOKEN: "${PRIVATE_AGENT_EXECUTION_TOKEN}"',
     );
     expect(compose).toContain('PRIVATE_AGENT_VENUE_DRY_RUN: "false"');

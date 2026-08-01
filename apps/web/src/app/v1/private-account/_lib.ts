@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import {
+  fetchWithTimeout,
   fetchSessionUser,
   SESSION_COOKIE_NAME,
+  THUMPER_API_BASE,
   userFromToken,
   type SessionUser,
 } from "@/app/api/auth/session/_lib";
@@ -39,6 +41,7 @@ import {
   assertPublicSafePrivateAccountArtifact,
   listPlatformPrivacyProfiles,
   listVenueManifests,
+  GHOLA_FUNDING_AMOUNT_BUCKETS,
   PRIVATE_ACCOUNT_INTENT_TTL_MS,
   previewPrivateAccountAction,
   requiresPrivateSettlementBinding,
@@ -52,6 +55,7 @@ import {
   type GholaConnectorPreviewContext,
   type GholaAdversarialLinkabilitySimulation,
   type GholaAuctionOrderSide,
+  type GholaFundingAmountBucket,
   type GholaPlatformClass,
   type GholaPlatformFundingRotation,
   type GholaPrivateAccountActionClass,
@@ -62,6 +66,7 @@ import {
   type GholaHyperliquidSessionPolicy,
   type GholaHyperliquidManagedAllocation,
   type GholaOmnibusAllocation,
+  type GholaPooledVenueAllocation,
   type GholaVenueAccountMode,
   type GholaVenueExecutionMode,
   type GholaVenueId,
@@ -110,6 +115,7 @@ import {
 } from "@/lib/private-agent-capability";
 import {
   getPooledWorkerReadiness,
+  pooledWorkerVenueGateFromReadiness,
   pooledWorkerVenueId,
 } from "@/lib/private-account-pooled-readiness";
 import {
@@ -180,6 +186,7 @@ import {
   getPrivateFundingBatchByEvidence,
   getPrivacyBudget,
   getQueuedAction,
+  getGholaBalanceSnapshot,
   getPrivateFundingImportByNullifier,
   getPrivateFundingInstruction,
   listAllPrivateFundingImports,
@@ -197,6 +204,7 @@ import {
   listLinkabilityScores,
   listPlatformRotations,
   listQueuedActions,
+  listGholaBalanceLedgerEntries,
   listPrivateAccountReceipts,
   putPrivateAccountRecord,
   putPrivateAccountApproval,
@@ -237,6 +245,7 @@ import {
   putPrivateAuctionOrder,
   putPrivateAuctionPreparedTransaction,
   putQueuedAction,
+  putGholaBalanceLedgerEntry,
   recordPrivacyBudgetEvent,
   updatePrivateAccountIntentStatus,
   updateQueuedActionStatus,
@@ -264,6 +273,9 @@ import {
   type PrivateLinkabilityScoreRecordV1,
   type PrivateQueuedActionRecordV1,
   type PrivateVaultStateRecordV1,
+  type PrivateGholaBalanceLedgerEntryRecordV1,
+  type PrivateGholaBalanceSnapshotV1,
+  type PrivateVenueEligibilityRecordV1,
 } from "@/lib/private-account-store";
 import {
   evidenceChainFromBatch,
@@ -302,7 +314,10 @@ import {
   type GholaPreparedAuctionTransaction,
 } from "@/lib/private-account-auction-onchain";
 import { getPrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime-server";
-import { providerReadyForPrivateAgents } from "@/lib/private-agent-runtime";
+import {
+  hasPrivateAgentEntitlement,
+  providerReadyForPrivateAgents,
+} from "@/lib/private-agent-runtime";
 import {
   phalaIdleLeaseMs,
   wakePhalaPrivateAgentForUse,
@@ -327,6 +342,166 @@ export function json(body: unknown, status = 200) {
     status,
     headers: PRIVATE_ACCOUNT_HEADERS,
   });
+}
+
+const MICRO_USDC_PER_USD = 1_000_000;
+const HYPERLIQUID_POOLED_LAUNCH_SCOPE = "hyperliquid_pooled_non_us_beta" as const;
+const GHOLA_LAUNCH_TERMS_VERSION = "ghola-public-beta-2026-06-13";
+const GHOLA_LAUNCH_RISK_DISCLOSURE_VERSION = "ghola-risk-disclosure-2026-06-13";
+
+export function amountBucketMicroUsdc(bucket: string): number {
+  if (!isFundingAmountBucket(bucket)) return 0;
+  return Number.parseInt(bucket, 10) * MICRO_USDC_PER_USD;
+}
+
+function microUsdcToUsdString(value: number): string {
+  const rounded = Math.trunc(value);
+  const sign = rounded < 0 ? "-" : "";
+  const abs = Math.abs(rounded);
+  const dollars = Math.floor(abs / MICRO_USDC_PER_USD);
+  const cents = Math.floor((abs % MICRO_USDC_PER_USD) / 10_000);
+  return `${sign}${dollars}.${String(cents).padStart(2, "0")}`;
+}
+
+function publicGholaBalanceSnapshot(snapshot: PrivateGholaBalanceSnapshotV1) {
+  return {
+    version: 1,
+    owner_commitment: snapshot.owner_commitment,
+    account_commitment: snapshot.account_commitment,
+    available_micro_usdc: snapshot.available_micro_usdc,
+    reserved_margin_micro_usdc: snapshot.reserved_margin_micro_usdc,
+    open_notional_micro_usdc: snapshot.open_notional_micro_usdc,
+    realized_pnl_micro_usdc: snapshot.realized_pnl_micro_usdc,
+    unrealized_pnl_micro_usdc: snapshot.unrealized_pnl_micro_usdc,
+    equity_micro_usdc: snapshot.equity_micro_usdc,
+    withdrawable_micro_usdc: snapshot.withdrawable_micro_usdc,
+    available_usd: microUsdcToUsdString(snapshot.available_micro_usdc),
+    reserved_margin_usd: microUsdcToUsdString(snapshot.reserved_margin_micro_usdc),
+    open_notional_usd: microUsdcToUsdString(snapshot.open_notional_micro_usdc),
+    realized_pnl_usd: microUsdcToUsdString(snapshot.realized_pnl_micro_usdc),
+    unrealized_pnl_usd: microUsdcToUsdString(snapshot.unrealized_pnl_micro_usdc),
+    equity_usd: microUsdcToUsdString(snapshot.equity_micro_usdc),
+    withdrawable_usd: microUsdcToUsdString(snapshot.withdrawable_micro_usdc),
+    ledger_entry_count: snapshot.ledger_entry_count,
+    updated_at: snapshot.updated_at,
+  };
+}
+
+function publicGholaBalanceLedgerEntry(record: PrivateGholaBalanceLedgerEntryRecordV1) {
+  return {
+    version: 1,
+    ledger_entry_id: record.ledger_entry_id,
+    account_commitment: record.account_commitment,
+    idempotency_key: record.idempotency_key,
+    entry_kind: record.entry_kind,
+    venue_id: record.venue_id,
+    available_delta_micro_usdc: record.available_delta_micro_usdc,
+    reserved_margin_delta_micro_usdc: record.reserved_margin_delta_micro_usdc,
+    open_notional_delta_micro_usdc: record.open_notional_delta_micro_usdc,
+    realized_pnl_delta_micro_usdc: record.realized_pnl_delta_micro_usdc,
+    unrealized_pnl_delta_micro_usdc: record.unrealized_pnl_delta_micro_usdc,
+    available_delta_usd: microUsdcToUsdString(record.available_delta_micro_usdc),
+    reserved_margin_delta_usd: microUsdcToUsdString(record.reserved_margin_delta_micro_usdc),
+    open_notional_delta_usd: microUsdcToUsdString(record.open_notional_delta_micro_usdc),
+    realized_pnl_delta_usd: microUsdcToUsdString(record.realized_pnl_delta_micro_usdc),
+    unrealized_pnl_delta_usd: microUsdcToUsdString(record.unrealized_pnl_delta_micro_usdc),
+    reference_commitment: record.reference_commitment,
+    reason: record.reason,
+    created_at: record.created_at,
+  };
+}
+
+async function appendGholaBalanceLedgerEntry(input: {
+  owner_commitment: string;
+  account_commitment: string;
+  idempotency_key: string;
+  entry_kind: PrivateGholaBalanceLedgerEntryRecordV1["entry_kind"];
+  venue_id?: PrivateGholaBalanceLedgerEntryRecordV1["venue_id"];
+  available_delta_micro_usdc?: number;
+  reserved_margin_delta_micro_usdc?: number;
+  open_notional_delta_micro_usdc?: number;
+  realized_pnl_delta_micro_usdc?: number;
+  unrealized_pnl_delta_micro_usdc?: number;
+  reference_commitment?: string | null;
+  reason?: string | null;
+  created_at?: string;
+}): Promise<PrivateGholaBalanceLedgerEntryRecordV1> {
+  const record: PrivateGholaBalanceLedgerEntryRecordV1 = {
+    version: 1,
+    ledger_entry_id: gholaCommitment("ghola_balance_ledger_entry", {
+      account_commitment: input.account_commitment,
+      idempotency_key: input.idempotency_key,
+    }),
+    owner_commitment: input.owner_commitment,
+    account_commitment: input.account_commitment,
+    idempotency_key: input.idempotency_key,
+    entry_kind: input.entry_kind,
+    venue_id: input.venue_id ?? "ghola",
+    available_delta_micro_usdc: Math.trunc(input.available_delta_micro_usdc ?? 0),
+    reserved_margin_delta_micro_usdc: Math.trunc(input.reserved_margin_delta_micro_usdc ?? 0),
+    open_notional_delta_micro_usdc: Math.trunc(input.open_notional_delta_micro_usdc ?? 0),
+    realized_pnl_delta_micro_usdc: Math.trunc(input.realized_pnl_delta_micro_usdc ?? 0),
+    unrealized_pnl_delta_micro_usdc: Math.trunc(input.unrealized_pnl_delta_micro_usdc ?? 0),
+    reference_commitment: input.reference_commitment ?? null,
+    reason: input.reason ?? null,
+    created_at: input.created_at ?? new Date().toISOString(),
+  };
+  return putGholaBalanceLedgerEntry(record);
+}
+
+async function getActiveVenueEligibility(input: {
+  owner: PrivateAccountRequestOwner;
+  account: PrivateAccountRecordV1;
+  venue_id: GholaVenueId;
+}): Promise<PrivateVenueEligibilityRecordV1 | null> {
+  const existing = await getLatestVenueEligibilityByAccount({
+    account_commitment: input.account.account_commitment,
+    venue_id: input.venue_id,
+  });
+  const existingReady = Boolean(
+    existing?.owner_commitment === input.owner.owner_commitment &&
+      existing.status === "verified" &&
+      new Date(existing.expires_at).getTime() > Date.now(),
+  );
+  if (existing && existingReady) return existing;
+  return null;
+}
+
+function hasHyperliquidPooledLaunchAcceptance(record: PrivateVenueEligibilityRecordV1 | null): boolean {
+  const credential = record?.credential;
+  return Boolean(
+    credential &&
+      credential.launch_scope === HYPERLIQUID_POOLED_LAUNCH_SCOPE &&
+      credential.terms_version === GHOLA_LAUNCH_TERMS_VERSION &&
+      credential.risk_disclosure_version === GHOLA_LAUNCH_RISK_DISCLOSURE_VERSION &&
+      credential.jurisdiction_assertion === "non_us" &&
+      credential.geofence_status === "allowed" &&
+      credential.accepted_terms_at &&
+      credential.accepted_risk_at,
+  );
+}
+
+async function requireHyperliquidPooledLaunchEligibility(input: {
+  owner: PrivateAccountRequestOwner;
+  account: PrivateAccountRecordV1;
+}): Promise<PrivateVenueEligibilityRecordV1 | { error: "venue_eligibility_required" | "terms_acceptance_required" | "restricted_jurisdiction" }> {
+  const eligibility = await getActiveVenueEligibility({
+    owner: input.owner,
+    account: input.account,
+    venue_id: "hyperliquid",
+  });
+  if (!eligibility) return { error: "venue_eligibility_required" };
+  if (
+    eligibility.credential.jurisdiction_assertion === "us" ||
+    eligibility.credential.country_code === "US" ||
+    eligibility.credential.geofence_status === "blocked"
+  ) {
+    return { error: "restricted_jurisdiction" };
+  }
+  if (!hasHyperliquidPooledLaunchAcceptance(eligibility)) {
+    return { error: "terms_acceptance_required" };
+  }
+  return eligibility;
 }
 
 function sseEncode(event: string, data: unknown) {
@@ -495,6 +670,256 @@ export async function privateAccountLiveGuard(
   if (proofRejected) return { ok: false, response: proofRejected };
 
   return { ok: true, body, owner };
+}
+
+export interface PrivateAccountAgentBillingGate {
+  ok: boolean;
+  tier: string | null;
+  private_agent_compute: {
+    remaining_seconds?: number;
+    active_agent_count?: number;
+    active_agent_limit?: number;
+  } | null;
+  required_seconds: number;
+  blocking_reasons: string[];
+  error?: string;
+  status?: number;
+  response?: Response;
+}
+
+export interface PrivateAccountComputeReservation {
+  ok: true;
+  reservation_id: string;
+  reserved_seconds: number;
+  billing: PrivateAccountAgentBillingGate;
+}
+
+function privateAccountAutopilotReservationSeconds(): number {
+  return positiveIntegerEnv("GHOLA_PRIVATE_ACCOUNT_AUTOPILOT_RESERVATION_SECONDS", 300);
+}
+
+function billingBearerToken(req: Request): string | null {
+  const token = bearerToken(req) || sessionCookie(req);
+  return token ? `Bearer ${token}` : null;
+}
+
+function billingFailure(input: {
+  error: string;
+  status: number;
+  tier?: string | null;
+  privateAgentCompute?: PrivateAccountAgentBillingGate["private_agent_compute"];
+  requiredSeconds?: number;
+  blockingReasons?: string[];
+}): PrivateAccountAgentBillingGate {
+  const requiredSeconds = input.requiredSeconds ?? privateAccountAutopilotReservationSeconds();
+  const blockingReasons = input.blockingReasons?.length ? input.blockingReasons : [input.error];
+  return {
+    ok: false,
+    tier: input.tier ?? null,
+    private_agent_compute: input.privateAgentCompute ?? null,
+    required_seconds: requiredSeconds,
+    blocking_reasons: blockingReasons,
+    error: input.error,
+    status: input.status,
+    response: json({
+      error: input.error,
+      entitlement_required: "paid_private_agent_plan",
+      required_seconds: requiredSeconds,
+      blocking_reasons: blockingReasons,
+      private_agent_compute: input.privateAgentCompute ?? null,
+    }, input.status),
+  };
+}
+
+export async function privateAccountAgentBillingGate(
+  req: Request,
+): Promise<PrivateAccountAgentBillingGate> {
+  const requiredSeconds = privateAccountAutopilotReservationSeconds();
+  if (localPrivateAccountAuthBypassAllowed()) {
+    return {
+      ok: true,
+      tier: "local_dev",
+      private_agent_compute: {
+        remaining_seconds: Number.MAX_SAFE_INTEGER,
+        active_agent_count: 0,
+        active_agent_limit: Number.MAX_SAFE_INTEGER,
+      },
+      required_seconds: requiredSeconds,
+      blocking_reasons: [],
+    };
+  }
+
+  const bearer = billingBearerToken(req);
+  if (!bearer) {
+    return billingFailure({
+      error: "private_account_auth_required",
+      status: 401,
+      requiredSeconds,
+      blockingReasons: ["auth_required"],
+    });
+  }
+
+  const upstream = await fetchWithTimeout(`${THUMPER_API_BASE}/api/billing/status`, {
+    method: "GET",
+    headers: {
+      Authorization: bearer,
+      Accept: "application/json",
+    },
+    cache: "no-store",
+  }).catch(() => null);
+  if (!upstream) {
+    return billingFailure({
+      error: "billing_unavailable",
+      status: 503,
+      requiredSeconds,
+      blockingReasons: ["billing_unavailable"],
+    });
+  }
+  if (!upstream.ok) {
+    return billingFailure({
+      error: "billing_rejected_request",
+      status: upstream.status,
+      requiredSeconds,
+      blockingReasons: ["billing_rejected_request"],
+    });
+  }
+
+  const body = await upstream.json().catch(() => null) as {
+    tier?: string | null;
+    private_agent_compute?: PrivateAccountAgentBillingGate["private_agent_compute"];
+  } | null;
+  const tier = body?.tier ?? "free";
+  const compute = body?.private_agent_compute ?? null;
+  const remainingSeconds = compute?.remaining_seconds ?? 0;
+  const activeAgentCount = compute?.active_agent_count ?? 0;
+  const activeAgentLimit = compute?.active_agent_limit ?? 0;
+  const blockingReasons = [
+    ...(hasPrivateAgentEntitlement(tier) ? [] : ["subscription_required"]),
+    ...(remainingSeconds >= requiredSeconds ? [] : ["private_agent_compute_allowance_exhausted"]),
+    ...(activeAgentLimit > 0 && activeAgentCount >= activeAgentLimit ? ["active_private_agent_limit_reached"] : []),
+  ];
+
+  if (blockingReasons.length) {
+    return billingFailure({
+      error: "private_agent_billing_required",
+      status: 402,
+      tier,
+      privateAgentCompute: compute,
+      requiredSeconds,
+      blockingReasons,
+    });
+  }
+
+  return {
+    ok: true,
+    tier,
+    private_agent_compute: compute,
+    required_seconds: requiredSeconds,
+    blocking_reasons: [],
+  };
+}
+
+export async function reservePrivateAccountAutopilotCompute(
+  req: Request,
+): Promise<PrivateAccountComputeReservation | { ok: false; response: Response; billing: PrivateAccountAgentBillingGate }> {
+  const billing = await privateAccountAgentBillingGate(req);
+  if (!billing.ok) {
+    return {
+      ok: false,
+      response: billing.response ?? json({ error: billing.error ?? "private_agent_billing_required" }, billing.status ?? 402),
+      billing,
+    };
+  }
+  if (localPrivateAccountAuthBypassAllowed()) {
+    return {
+      ok: true,
+      reservation_id: `local_autopilot_${randomUUID()}`,
+      reserved_seconds: billing.required_seconds,
+      billing,
+    };
+  }
+
+  const bearer = billingBearerToken(req);
+  if (!bearer) {
+    const failure = billingFailure({
+      error: "private_account_auth_required",
+      status: 401,
+      requiredSeconds: billing.required_seconds,
+      blockingReasons: ["auth_required"],
+    });
+    return { ok: false, response: failure.response!, billing: failure };
+  }
+
+  const reservationId = `autopilot_${randomUUID()}`;
+  const upstream = await fetchWithTimeout(`${THUMPER_API_BASE}/api/billing/private-agent/compute/reserve`, {
+    method: "POST",
+    headers: {
+      Authorization: bearer,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      session_id: reservationId,
+      seconds: billing.required_seconds,
+      metering_mode: "sparse_metered_v1",
+    }),
+    cache: "no-store",
+  }).catch(() => null);
+  if (!upstream) {
+    const failure = billingFailure({
+      error: "billing_unavailable",
+      status: 503,
+      tier: billing.tier,
+      privateAgentCompute: billing.private_agent_compute,
+      requiredSeconds: billing.required_seconds,
+      blockingReasons: ["billing_unavailable"],
+    });
+    return { ok: false, response: failure.response!, billing: failure };
+  }
+  if (!upstream.ok) {
+    const body = await upstream.json().catch(() => null) as { error?: string } | null;
+    const failure = billingFailure({
+      error: body?.error ?? "private_agent_compute_reservation_failed",
+      status: upstream.status,
+      tier: billing.tier,
+      privateAgentCompute: billing.private_agent_compute,
+      requiredSeconds: billing.required_seconds,
+      blockingReasons: ["private_agent_compute_reservation_failed"],
+    });
+    return { ok: false, response: failure.response!, billing: failure };
+  }
+
+  return {
+    ok: true,
+    reservation_id: reservationId,
+    reserved_seconds: billing.required_seconds,
+    billing,
+  };
+}
+
+export async function releasePrivateAccountAutopilotCompute(
+  req: Request,
+  reservationId: string,
+  status: "failed" | "paused" | "completed" = "failed",
+  secondsUsed?: number,
+) {
+  if (!reservationId || localPrivateAccountAuthBypassAllowed()) return;
+  const bearer = billingBearerToken(req);
+  if (!bearer) return;
+  await fetchWithTimeout(`${THUMPER_API_BASE}/api/billing/private-agent/compute/release`, {
+    method: "POST",
+    headers: {
+      Authorization: bearer,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      session_id: reservationId,
+      status,
+      ...(Number.isFinite(secondsUsed) ? { seconds_used: Math.max(0, Math.floor(secondsUsed!)) } : {}),
+    }),
+    cache: "no-store",
+  }).catch(() => null);
 }
 
 function isJsonContentType(req: Request): boolean {
@@ -1008,6 +1433,10 @@ export async function createStoredPreviewFromBody(body: unknown, owner: PrivateA
     linkability_simulation: connectorContext.linkability_simulation,
     front_run_mode: value.front_run_mode === "zero_front_run" ? "zero_front_run" : "pre_submit_private",
     require_private_mode_evidence: true,
+    explicit_testnet_venue_canary:
+      process.env.GHOLA_HYPERLIQUID_PILOT_NETWORK === "testnet" &&
+      platformClass === "hyperliquid_style_market" &&
+      rail === "direct_public_fallback",
   });
   if (preview.evidence_chain) {
     preview.evidence_chain.preview_commitment = preview.preview_commitment;
@@ -2109,13 +2538,16 @@ export async function hyperliquidVaultStatusForOwner(owner: PrivateAccountReques
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
   ]);
+  const proof = currentHyperliquidConnectionProof(vault, allocation);
   return {
     version: 1,
     account_commitment: account.account_commitment,
     hyperliquid_execution_vault: vault ? publicHyperliquidVault(vault) : null,
     managed_allocation: allocation ? publicHyperliquidManagedAllocation(allocation) : null,
     execution_mode: allocation?.status === "allocated" ? allocation.allocation.execution_mode : "byo_api_key" as const,
-    ready: vault?.status === "sealed" || allocation?.status === "allocated",
+    ready: Boolean(proof),
+    credentials_sealed: vault?.status === "sealed" || allocation?.status === "allocated",
+    connection_proof: publicHyperliquidConnectionProof(proof),
     venue_access: {
       source: vault?.status === "sealed"
         ? "user_provided_credentials" as const
@@ -2134,14 +2566,24 @@ export async function hyperliquidVaultStatusForOwner(owner: PrivateAccountReques
 
 export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwner) {
   const account = await createOrGetStoredPrivateAccount(owner);
-  const [vault, allocation, runtime, evidence] = await Promise.all([
+  const [vault, allocation, runtime, evidence, balanceSnapshot] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
     getPrivateAgentRuntimeStatus().catch(() => null),
     getLatestAnonymityEvidence({ account_commitment: account.account_commitment }),
+    getGholaBalanceSnapshot({
+      owner_commitment: owner.owner_commitment,
+      account_commitment: account.account_commitment,
+    }),
   ]);
   const hasConnection = vault?.status === "sealed" || allocation?.status === "allocated";
+  const connectionProof = currentHyperliquidConnectionProof(vault, allocation);
   const allocationMode = allocation?.status === "allocated" ? allocation.allocation.execution_mode : null;
+  const pooledBalanceRequiredMicroUsdc = allocationMode === "ghola_pooled"
+    ? amountBucketMicroUsdc(allocation?.allocation.session_policy.max_notional_bucket ?? "25")
+    : 0;
+  const pooledBalanceReady = allocationMode !== "ghola_pooled" ||
+    balanceSnapshot.available_micro_usdc >= pooledBalanceRequiredMicroUsdc;
   const workerConfigured = Boolean(hyperliquidWorkerConfig().url) || localHyperliquidPilotEnabled();
   const workerReady = Boolean(runtime?.selected_provider) || localHyperliquidPilotEnabled();
   const liveTinyFill =
@@ -2155,25 +2597,29 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
   );
   const canConnect = workerConfigured && workerReady;
   const canRead = canConnect && hasConnection;
-  const canTrade = canRead && (privateFundingReady || liveTinyFill);
+  const canTrade = canRead && Boolean(connectionProof) && pooledBalanceReady && (privateFundingReady || liveTinyFill);
   const hyperliquidConnectionStatus = !hasConnection
     ? "connect_account" as const
     : !canConnect
       ? "worker_unavailable" as const
-      : canRead
+      : connectionProof
         ? "connected" as const
         : "check_connection" as const;
   const nextStep = !hasConnection
     ? "Use Ghola Vault Mode or bring an API wallet."
     : !canConnect
       ? "Wait for the private execution worker."
+      : !connectionProof
+        ? "Run the no-submit connection check."
+      : !pooledBalanceReady
+        ? "Add Ghola balance for the pooled Hyperliquid notional bucket."
       : "Run the no-submit connection check.";
   const reasonCodes = [
     ...(workerConfigured ? [] : ["connector_endpoint_missing"]),
     ...(workerReady ? [] : runtime?.blocking_reasons ?? ["private_worker_unavailable"]),
     ...(hasConnection ? ["venue_credentials_sealed"] : ["venue_access_required", "hyperliquid_connection_required"]),
-    ...(canRead ? ["venue_ready"] : []),
-    ...(canRead && liveTinyFill ? ["no_submit_verification_required"] : []),
+    ...(pooledBalanceReady ? [] : ["ghola_balance_insufficient"]),
+    ...(connectionProof ? ["venue_ready", "no_submit_verification_passed"] : ["no_submit_verification_required"]),
     ...(privateFundingReady || liveTinyFill ? [] : ["private_funding_or_degraded_acceptance_required"]),
   ];
   return {
@@ -2191,13 +2637,15 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
       blocking_reasons: runtime?.blocking_reasons ?? [],
     },
     hyperliquid_connection_status: hyperliquidConnectionStatus,
-    no_submit_verification_status: "not_run" as const,
-    ready_to_attempt_broadcast: false,
+    no_submit_verification_status: connectionProof ? "verified_no_funds" as const : "not_run" as const,
+    ready_to_attempt_broadcast: canTrade,
     final_venue_execution_proven: false,
     final_fill_proven: false,
     next_step: nextStep,
     connection: {
-      ready: hasConnection,
+      ready: Boolean(connectionProof),
+      credentials_sealed: hasConnection,
+      proof: publicHyperliquidConnectionProof(connectionProof),
       mode: allocation?.status === "allocated"
         ? allocation.allocation.execution_mode
         : vault?.status === "sealed"
@@ -2211,8 +2659,11 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
       can_read: canRead,
       can_trade: canTrade,
       private_funding_ready: privateFundingReady,
+      ghola_balance_ready: pooledBalanceReady,
+      ghola_balance_required_micro_usdc: pooledBalanceRequiredMicroUsdc,
       reason_codes: Array.from(new Set(reasonCodes)),
     },
+    ghola_balance: publicGholaBalanceSnapshot(balanceSnapshot),
     visibility: {
       main_wallet_exposed: false,
       hyperliquid_sees: "execution account and order",
@@ -2242,6 +2693,7 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
   ]);
   const hasVault = vault?.status === "sealed";
   const hasManaged = allocation?.status === "allocated";
+  const connectionProof = currentHyperliquidConnectionProof(vault, allocation);
   const accountSource = hasManaged
     ? allocation.allocation.execution_mode === "ghola_pooled" ? "ghola_pooled" as const : "ghola_managed" as const
     : hasVault ? "sealed_byo" as const : "none" as const;
@@ -2255,10 +2707,10 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
   }
   if (localHyperliquidPilotEnabled()) {
     return localHyperliquidAccountSnapshot({
-      status: "ready_to_trade",
+      status: "worker_unavailable",
       account_source: accountSource,
-      trading_enabled: true,
-      next_step: "Preview trade.",
+      trading_enabled: false,
+      next_step: "Start the private worker and run the no-submit connection check.",
     });
   }
   const cfg = hyperliquidWorkerConfig();
@@ -2311,15 +2763,6 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
     });
     const raw = objectBody(await res.json().catch(() => null));
     if (!res.ok) {
-      if (res.status === 404 && (hasVault || hasManaged)) {
-        return localHyperliquidAccountSnapshot({
-          status: "ready_to_trade",
-          account_source: accountSource,
-          trading_enabled: true,
-          next_step: "Preview trade.",
-          stream_status: "worker_unavailable",
-        });
-      }
       return localHyperliquidAccountSnapshot({
         status: hyperliquidSnapshotStatusFromError(stringValue(raw.error_code) || stringValue(raw.error)),
         account_source: accountSource,
@@ -2335,7 +2778,14 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
         next_step: "Worker returned unsafe account data.",
       });
     }
-    return normalizeHyperliquidAccountSnapshot(raw, accountSource);
+    const snapshot = normalizeHyperliquidAccountSnapshot(raw, accountSource);
+    return {
+      ...snapshot,
+      trading_enabled: snapshot.trading_enabled && Boolean(connectionProof),
+      connection_verified: Boolean(connectionProof),
+      connection_proof: publicHyperliquidConnectionProof(connectionProof),
+      next_step: connectionProof ? snapshot.next_step : "Run the no-submit connection check.",
+    };
   } catch {
     return localHyperliquidAccountSnapshot({
       status: "worker_unavailable",
@@ -2362,6 +2812,7 @@ export async function hyperliquidAccountStreamForOwner(
     ? allocation.allocation.execution_mode === "ghola_pooled" ? "ghola_pooled" as const : "ghola_managed" as const
     : hasVault ? "sealed_byo" as const : "none" as const;
   const coin = hyperliquidStreamCoin(new URL(req.url).searchParams.get("coin"));
+  const connectionProof = currentHyperliquidConnectionProof(vault, allocation);
 
   if (!hasVault && !hasManaged) {
     return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
@@ -2372,13 +2823,22 @@ export async function hyperliquidAccountStreamForOwner(
       stream_status: "venue_access_required",
     }));
   }
+  if (!connectionProof) {
+    return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
+      status: "private_mode_waiting",
+      account_source: accountSource,
+      trading_enabled: false,
+      next_step: "Run the no-submit connection check.",
+      stream_status: "connecting",
+    }));
+  }
   if (localHyperliquidPilotEnabled()) {
     return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
-      status: "ready_to_trade",
+      status: "worker_unavailable",
       account_source: accountSource,
-      trading_enabled: true,
-      next_step: "Preview trade.",
-      stream_status: "live",
+      trading_enabled: false,
+      next_step: "Start the private worker and run the no-submit connection check.",
+      stream_status: "worker_unavailable",
     }));
   }
 
@@ -2435,15 +2895,6 @@ export async function hyperliquidAccountStreamForOwner(
       body: JSON.stringify(body),
     });
     if (!res.ok || !res.body) {
-      if (res.status === 404) {
-        return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
-          status: "ready_to_trade",
-          account_source: accountSource,
-          trading_enabled: true,
-          next_step: "Preview trade.",
-          stream_status: "worker_unavailable",
-        }));
-      }
       return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
         status: "worker_unavailable",
         account_source: accountSource,
@@ -2479,30 +2930,31 @@ export async function allocateHyperliquidManagedFromBody(
     ? null
     : await getHyperliquidManagedAllocationByAccount(account.account_commitment);
   if (existing?.status === "allocated" && existing.allocation.execution_mode === requestedMode) {
+    const eligibility = requestedMode === "ghola_pooled"
+      ? await requireHyperliquidPooledLaunchEligibility({ owner, account })
+      : null;
+    if (eligibility && "error" in eligibility) return { error: eligibility.error };
+    const snapshot = await getGholaBalanceSnapshot({
+      owner_commitment: owner.owner_commitment,
+      account_commitment: account.account_commitment,
+    });
+    const requiredBalanceMicroUsdc = requestedMode === "ghola_pooled"
+      ? amountBucketMicroUsdc(existing.allocation.session_policy.max_notional_bucket)
+      : 0;
+    if (requestedMode === "ghola_pooled" && snapshot.available_micro_usdc < requiredBalanceMicroUsdc) {
+      return {
+        error: "ghola_balance_insufficient" as const,
+        required_micro_usdc: requiredBalanceMicroUsdc,
+        available_micro_usdc: snapshot.available_micro_usdc,
+      };
+    }
     return {
       version: 1,
       account_commitment: account.account_commitment,
       managed_allocation: publicHyperliquidManagedAllocation(existing),
+      ghola_balance: publicGholaBalanceSnapshot(snapshot),
       ready: true,
     };
-  }
-  if (requestedMode === "ghola_pooled") {
-    const workerGate = await pooledWorkerVenueGate("hyperliquid");
-    if (!workerGate.ok) return { error: workerGate.error };
-  }
-  const eligibility = requestedMode === "ghola_pooled"
-    ? await getLatestVenueEligibilityByAccount({
-        account_commitment: account.account_commitment,
-        venue_id: "hyperliquid",
-      })
-    : null;
-  const eligibilityReady = Boolean(
-    eligibility?.owner_commitment === owner.owner_commitment &&
-      eligibility.status === "verified" &&
-      new Date(eligibility.expires_at).getTime() > Date.now(),
-  );
-  if (requestedMode === "ghola_pooled" && !eligibilityReady) {
-    return { error: "venue_eligibility_required" as const };
   }
   const policy = createHyperliquidSessionPolicy({
     market_allowlist: arrayOfStrings(value.market_allowlist),
@@ -2515,18 +2967,52 @@ export async function allocateHyperliquidManagedFromBody(
     strategy_seed: requestedMode,
     prompt_seed: requestedMode,
   });
+  const eligibility = requestedMode === "ghola_pooled"
+    ? await requireHyperliquidPooledLaunchEligibility({ owner, account })
+    : null;
+  if (eligibility && "error" in eligibility) return { error: eligibility.error };
+  const balanceSnapshot = await getGholaBalanceSnapshot({
+    owner_commitment: owner.owner_commitment,
+    account_commitment: account.account_commitment,
+  });
+  const requiredBalanceMicroUsdc = requestedMode === "ghola_pooled"
+    ? amountBucketMicroUsdc(policy.max_notional_bucket)
+    : 0;
+  if (requestedMode === "ghola_pooled" && balanceSnapshot.available_micro_usdc < requiredBalanceMicroUsdc) {
+    return {
+      error: "ghola_balance_insufficient" as const,
+      required_micro_usdc: requiredBalanceMicroUsdc,
+      available_micro_usdc: balanceSnapshot.available_micro_usdc,
+    };
+  }
+  if (requestedMode === "ghola_pooled") {
+    const workerGate = await pooledWorkerVenueGate("hyperliquid");
+    if (!workerGate.ok) return { error: workerGate.error };
+  }
   const fundingEvidence = verifySignedFundingEvidenceFromBody(value, {
     required: false,
     expectedAmountBucket: policy.max_notional_bucket,
   });
   if ("error" in fundingEvidence) return { error: fundingEvidence.error };
+  const balanceFundingEvidenceCommitment = requestedMode === "ghola_pooled"
+    ? gholaCommitment("ghola_balance_funding_evidence", {
+        account_commitment: account.account_commitment,
+        venue_id: "hyperliquid",
+        max_notional_bucket: policy.max_notional_bucket,
+        available_micro_usdc: balanceSnapshot.available_micro_usdc,
+        required_micro_usdc: requiredBalanceMicroUsdc,
+        balance_updated_at: balanceSnapshot.updated_at,
+      })
+    : null;
+  const fundingEvidenceCommitment = balanceFundingEvidenceCommitment ||
+    fundingEvidence.funding_evidence_commitment;
   const localAllocation = createHyperliquidManagedAllocation({
     account_commitment: account.account_commitment,
     policy,
     execution_mode: requestedMode,
     network: requestedNetwork,
-    eligibility_commitment: eligibilityReady ? eligibility?.eligibility_commitment ?? null : null,
-    funding_evidence_commitment: fundingEvidence.funding_evidence_commitment,
+    eligibility_commitment: eligibility?.eligibility_commitment ?? null,
+    funding_evidence_commitment: fundingEvidenceCommitment,
     allocation_seed: owner.owner_commitment,
   });
   const workerAllocation = await requestHyperliquidManagedAllocation({
@@ -2534,8 +3020,8 @@ export async function allocateHyperliquidManagedFromBody(
     policy,
     execution_mode: requestedMode,
     network: requestedNetwork,
-    eligibility_commitment: eligibilityReady ? eligibility?.eligibility_commitment ?? null : null,
-    funding_evidence_commitment: fundingEvidence.funding_evidence_commitment,
+    eligibility_commitment: eligibility?.eligibility_commitment ?? null,
+    funding_evidence_commitment: fundingEvidenceCommitment,
     fallback: localAllocation,
   });
   if ("error" in workerAllocation) return workerAllocation;
@@ -2556,6 +3042,7 @@ export async function allocateHyperliquidManagedFromBody(
     version: 1,
     account_commitment: account.account_commitment,
     managed_allocation: publicHyperliquidManagedAllocation(stored),
+    ghola_balance: publicGholaBalanceSnapshot(balanceSnapshot),
     ready: stored.status === "allocated",
   };
 }
@@ -2622,7 +3109,9 @@ export async function sealHyperliquidVaultFromBody(
     version: 1,
     account_commitment: account.account_commitment,
     hyperliquid_execution_vault: publicHyperliquidVault(stored),
-    ready: stored.status === "sealed",
+    ready: false,
+    credentials_sealed: stored.status === "sealed",
+    next_step: "Run the no-submit connection check.",
   };
 }
 
@@ -2896,7 +3385,8 @@ export async function venueEligibilityStatusForOwner(
     eligibility &&
       eligibility.owner_commitment === owner.owner_commitment &&
       eligibility.status === "verified" &&
-      new Date(eligibility.expires_at).getTime() > nowMs,
+      new Date(eligibility.expires_at).getTime() > nowMs &&
+      (venueId !== "hyperliquid" || hasHyperliquidPooledLaunchAcceptance(eligibility)),
   );
   return {
     version: 1,
@@ -2909,21 +3399,58 @@ export async function venueEligibilityStatusForOwner(
   };
 }
 
+function normalizeCountryCode(value: unknown): string | null {
+  const code = stringValue(value).toUpperCase();
+  return /^[A-Z]{2}$/.test(code) ? code : null;
+}
+
+function requestCountryCode(req?: Request): string | null {
+  if (!req) return null;
+  return normalizeCountryCode(
+    req.headers.get("x-vercel-ip-country") ||
+      req.headers.get("x-country-code") ||
+      req.headers.get("cf-ipcountry") ||
+      (process.env.NODE_ENV !== "production" ? req.headers.get("x-ghola-test-country") : null),
+  );
+}
+
 export async function verifyVenueEligibilityFromBody(
   body: unknown,
   owner: PrivateAccountRequestOwner,
   venueId: GholaVenueId,
+  req?: Request,
 ) {
   const value = objectBody(body);
   const account = await createOrGetStoredPrivateAccount(owner);
   const credentialType = stringValue(value.credential_type) === "partner_verified_eligible_user"
     ? "partner_verified_eligible_user" as const
     : "self_attested_eligible_user" as const;
+  const acceptedTerms = value.accepted_terms === true || value.terms_accepted === true;
+  const acceptedRisk = value.accepted_risk === true || value.risk_accepted === true;
+  const jurisdictionAssertion = stringValue(value.jurisdiction_assertion || value.jurisdiction).toLowerCase();
+  const countryCode = requestCountryCode(req) || normalizeCountryCode(value.country_code);
+  const regionCode = stringValue(value.region_code).toUpperCase() || null;
+  if (venueId === "hyperliquid") {
+    if (!acceptedTerms || !acceptedRisk) return { error: "terms_acceptance_required" as const };
+    if (jurisdictionAssertion !== "non_us" || countryCode === "US") {
+      return { error: "restricted_jurisdiction" as const };
+    }
+  }
+  const now = new Date().toISOString();
   const credential = createVenueEligibilityCredential({
     owner_commitment: owner.owner_commitment,
     account_commitment: account.account_commitment,
     venue_id: venueId,
     credential_type: credentialType,
+    launch_scope: venueId === "hyperliquid" ? HYPERLIQUID_POOLED_LAUNCH_SCOPE : null,
+    terms_version: venueId === "hyperliquid" ? GHOLA_LAUNCH_TERMS_VERSION : null,
+    risk_disclosure_version: venueId === "hyperliquid" ? GHOLA_LAUNCH_RISK_DISCLOSURE_VERSION : null,
+    jurisdiction_assertion: venueId === "hyperliquid" ? "non_us" : null,
+    country_code: venueId === "hyperliquid" ? countryCode : null,
+    region_code: venueId === "hyperliquid" ? regionCode : null,
+    geofence_status: venueId === "hyperliquid" ? "allowed" : null,
+    accepted_terms_at: venueId === "hyperliquid" ? now : null,
+    accepted_risk_at: venueId === "hyperliquid" ? now : null,
     ttl_ms: numberValue(value.ttl_ms) || undefined,
   });
   const stored = await putVenueEligibilityCredential({
@@ -2962,7 +3489,7 @@ function verifySignedFundingEvidenceFromBody(
   value: Record<string, unknown>,
   options: {
     required: boolean;
-    expectedAmountBucket?: "5" | "10" | "25" | "50" | "100";
+    expectedAmountBucket?: GholaFundingAmountBucket;
   },
 ): { funding_evidence_commitment: string | null } | { error: string } {
   const rawFundingEvidence = stringValue(value.funding_evidence_commitment);
@@ -3263,7 +3790,7 @@ export async function allocatePooledVenueFromBody(
     return { error: "venue_eligibility_required" as const };
   }
   const utilizationBucket = isFundingAmountBucket(stringValue(value.utilization_bucket))
-    ? stringValue(value.utilization_bucket) as "5" | "10" | "25" | "50" | "100"
+    ? stringValue(value.utilization_bucket) as GholaPooledVenueAllocation["utilization_bucket"]
     : "0";
   const fundingEvidence = verifySignedFundingEvidenceFromBody(value, {
     required: false,
@@ -3550,7 +4077,9 @@ function parseVenueVaultAad(value: string): {
 async function currentPrivateAgentRecipientIds(): Promise<Set<string>> {
   const recipients = new Set<string>();
   if (process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER === "true") {
-    recipients.add("mock_attested:dev");
+    recipients.add(
+      process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_KEY_ID?.trim() || "mock_attested:dev",
+    );
   }
   if (process.env.GHOLA_PRIVATE_AGENT_ATTESTED_READY === "true") {
     for (const value of [
@@ -3762,6 +4291,79 @@ export async function fundingImportFromBody(
     version: 1,
     import: publicFundingImport(importRecord),
     vault_ready: true,
+  };
+}
+
+export async function gholaBalanceForOwner(owner: PrivateAccountRequestOwner) {
+  const account = await createOrGetStoredPrivateAccount(owner);
+  const [snapshot, entries] = await Promise.all([
+    getGholaBalanceSnapshot({
+      owner_commitment: owner.owner_commitment,
+      account_commitment: account.account_commitment,
+    }),
+    listGholaBalanceLedgerEntries(account.account_commitment, 50),
+  ]);
+  return {
+    version: 1,
+    account_commitment: account.account_commitment,
+    balance: publicGholaBalanceSnapshot(snapshot),
+    recent_ledger_entries: entries
+      .slice()
+      .reverse()
+      .map(publicGholaBalanceLedgerEntry),
+  };
+}
+
+export async function gholaBalanceFundingIntentFromBody(
+  body: unknown,
+  owner: PrivateAccountRequestOwner,
+) {
+  const instruction = await fundingInstructionFromBody(body, owner);
+  if ("error" in instruction) return instruction;
+  const snapshot = await getGholaBalanceSnapshot({
+    owner_commitment: owner.owner_commitment,
+    account_commitment: instruction.instruction.account_commitment,
+  });
+  return {
+    ...instruction,
+    balance: publicGholaBalanceSnapshot(snapshot),
+    credit_after_import: true,
+  };
+}
+
+export async function gholaBalanceImportCreditFromBody(
+  body: unknown,
+  owner: PrivateAccountRequestOwner,
+) {
+  const imported = await fundingImportFromBody(body, owner);
+  if ("error" in imported) return imported;
+  const importRecord = imported.import;
+  if (importRecord.asset_bucket !== "stablecoin") {
+    return { error: "stablecoin_balance_required" as const };
+  }
+  const amountMicroUsdc = amountBucketMicroUsdc(importRecord.amount_bucket);
+  if (amountMicroUsdc <= 0) {
+    return { error: "valid amount_bucket is required" as const };
+  }
+  const ledgerEntry = await appendGholaBalanceLedgerEntry({
+    owner_commitment: owner.owner_commitment,
+    account_commitment: importRecord.account_commitment,
+    idempotency_key: `funding_import:${importRecord.import_commitment}`,
+    entry_kind: "deposit_credit",
+    venue_id: "ghola",
+    available_delta_micro_usdc: amountMicroUsdc,
+    reference_commitment: importRecord.import_commitment,
+    reason: "shielded_funding_import_verified",
+    created_at: importRecord.imported_at,
+  });
+  const snapshot = await getGholaBalanceSnapshot({
+    owner_commitment: owner.owner_commitment,
+    account_commitment: importRecord.account_commitment,
+  });
+  return {
+    ...imported,
+    balance_ledger_entry: publicGholaBalanceLedgerEntry(ledgerEntry),
+    balance: publicGholaBalanceSnapshot(snapshot),
   };
 }
 
@@ -5425,6 +6027,52 @@ export async function connectorVerifyNoSubmitFromBody(
     site_origin: context.site_origin ?? null,
     env: connectorEnv,
   });
+  if (platformClass === "hyperliquid_style_market" &&
+      verification.status === "verified_no_funds" &&
+      verification.checks.sealed_vault_opened &&
+      verification.checks.authority_derived &&
+      verification.checks.api_wallet_loaded &&
+      verification.checks.hyperliquid_api_reachable &&
+      verification.checks.account_read_checked &&
+      verification.checks.order_request_built &&
+      verification.checks.live_venue_checked === true &&
+      process.env.GHOLA_CONNECTOR_MODE !== "local_test" &&
+      process.env.GHOLA_SHIELDED_POOL_MODE !== "local_test") {
+    const verifiedAt = new Date().toISOString();
+    const proof = {
+      version: 1 as const,
+      status: "verified_no_funds" as const,
+      verification_commitment: verification.verification_commitment,
+      work_order_commitment: verification.work_order_commitment,
+      network: (process.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
+        process.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket" ? "mainnet" : "testnet") as "mainnet" | "testnet",
+      credential_opened: true as const,
+      signer_binding_verified: true as const,
+      account_read_verified: true as const,
+      order_request_built: true as const,
+      verified_at: verifiedAt,
+      expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+    };
+    if (executionMode === "byo_api_key") {
+      const storedVault = await getHyperliquidExecutionVaultByAccount(account.account_commitment);
+      if (storedVault?.status === "sealed") {
+        await putHyperliquidExecutionVault({
+          ...storedVault,
+          vault: { ...storedVault.vault, connection_proof: proof, updated_at: verifiedAt },
+          updated_at: verifiedAt,
+        });
+      }
+    } else {
+      const storedAllocation = await getHyperliquidManagedAllocationByAccount(account.account_commitment);
+      if (storedAllocation?.status === "allocated") {
+        await putHyperliquidManagedAllocation({
+          ...storedAllocation,
+          allocation: { ...storedAllocation.allocation, connection_proof: proof, updated_at: verifiedAt },
+          updated_at: verifiedAt,
+        });
+      }
+    }
+  }
   return {
     version: 1,
     account_commitment: account.account_commitment,
@@ -5624,6 +6272,38 @@ function publicVaultSummary(record: PrivateVaultStateRecordV1) {
   };
 }
 
+function currentHyperliquidConnectionProof(
+  vault: PrivateHyperliquidVaultRecordV1 | null,
+  allocation: PrivateHyperliquidManagedAllocationRecordV1 | null,
+) {
+  const proof = allocation?.status === "allocated"
+    ? allocation.allocation.connection_proof
+    : vault?.status === "sealed"
+      ? vault.vault.connection_proof
+      : null;
+  if (!proof || proof.status !== "verified_no_funds") return null;
+  if (!Number.isFinite(Date.parse(proof.expires_at)) || Date.parse(proof.expires_at) <= Date.now()) return null;
+  return proof;
+}
+
+function publicHyperliquidConnectionProof(
+  proof: ReturnType<typeof currentHyperliquidConnectionProof>,
+) {
+  if (!proof) return null;
+  return {
+    version: 1 as const,
+    status: proof.status,
+    verification_commitment: proof.verification_commitment,
+    network: proof.network,
+    credential_opened: proof.credential_opened,
+    signer_binding_verified: proof.signer_binding_verified,
+    account_read_verified: proof.account_read_verified,
+    order_request_built: proof.order_request_built,
+    verified_at: proof.verified_at,
+    expires_at: proof.expires_at,
+  };
+}
+
 function publicHyperliquidVault(record: PrivateHyperliquidVaultRecordV1) {
   return {
     version: 1,
@@ -5636,6 +6316,7 @@ function publicHyperliquidVault(record: PrivateHyperliquidVaultRecordV1) {
     supported_operations: record.vault.supported_operations,
     blocked_operations: record.vault.blocked_operations,
     status: record.status,
+    connection_proof: publicHyperliquidConnectionProof(record.vault.connection_proof ?? null),
     updated_at: record.updated_at,
   };
 }
@@ -5656,6 +6337,7 @@ function publicHyperliquidManagedAllocation(record: PrivateHyperliquidManagedAll
     eligibility_commitment: record.allocation.eligibility_commitment ?? null,
     funding_evidence_commitment: record.allocation.funding_evidence_commitment ?? null,
     status: record.status,
+    connection_proof: publicHyperliquidConnectionProof(record.allocation.connection_proof ?? null),
     session_policy: publicHyperliquidSessionPolicy(record.allocation.session_policy),
     allowed_operations: record.allocation.allowed_operations,
     blocked_operations: record.allocation.blocked_operations,
@@ -5919,12 +6601,12 @@ async function pooledWorkerVenueGate(venueId: GholaVenueId) {
   }
   await wakePooledWorkerForUse(`pooled_${workerVenueId}_access_request`);
   const readiness = await getPooledWorkerReadiness(process.env);
-  const venue = readiness.venues[workerVenueId];
-  if (!readiness.ready || !venue?.ready) {
+  const gate = pooledWorkerVenueGateFromReadiness(venueId, readiness);
+  if (!gate.ok) {
     return {
       ok: false as const,
-      error: "pooled_worker_not_ready" as const,
-      reason_codes: [...new Set(readiness.reason_codes.concat(venue?.reason_codes ?? []))],
+      error: gate.error,
+      reason_codes: gate.reason_codes,
     };
   }
   return { ok: true as const, reason_codes: [] as string[] };
@@ -6049,6 +6731,15 @@ function publicVenueEligibility(record: {
   credential: {
     credential_type: "self_attested_eligible_user" | "partner_verified_eligible_user";
     credential_scope: "eligible_venue_access_only";
+    launch_scope?: "hyperliquid_pooled_non_us_beta" | null;
+    terms_version?: string | null;
+    risk_disclosure_version?: string | null;
+    jurisdiction_assertion?: "non_us" | "us" | "unknown" | null;
+    country_code?: string | null;
+    region_code?: string | null;
+    geofence_status?: "allowed" | "blocked" | "unknown_self_attested" | null;
+    accepted_terms_at?: string | null;
+    accepted_risk_at?: string | null;
     expires_at: string;
     created_at: string;
     updated_at: string;
@@ -6063,6 +6754,15 @@ function publicVenueEligibility(record: {
     platform_class: record.platform_class,
     credential_type: record.credential.credential_type,
     credential_scope: record.credential.credential_scope,
+    launch_scope: record.credential.launch_scope ?? null,
+    terms_version: record.credential.terms_version ?? null,
+    risk_disclosure_version: record.credential.risk_disclosure_version ?? null,
+    jurisdiction_assertion: record.credential.jurisdiction_assertion ?? null,
+    country_code: record.credential.country_code ?? null,
+    region_code: record.credential.region_code ?? null,
+    geofence_status: record.credential.geofence_status ?? null,
+    accepted_terms_at: record.credential.accepted_terms_at ?? null,
+    accepted_risk_at: record.credential.accepted_risk_at ?? null,
     status: record.status,
     expires_at: record.credential.expires_at,
     updated_at: record.updated_at,
@@ -7200,6 +7900,393 @@ async function connectorContextForIntent(input: {
   };
 }
 
+async function reserveGholaBalanceForPooledHyperliquidSubmit(input: {
+  owner: PrivateAccountRequestOwner;
+  account_commitment: string;
+  work_order_commitment: string;
+  amount_bucket: string;
+  policy_max_notional_bucket: string;
+}): Promise<
+  | { ok: true; reservation: PrivateGholaBalanceLedgerEntryRecordV1 }
+  | { ok: false; error: "connector_submit_blocked" | "connector_submit_in_progress" | "ghola_balance_insufficient" }
+> {
+  const requestedMicroUsdc = amountBucketMicroUsdc(input.amount_bucket || "25");
+  const policyMaxMicroUsdc = amountBucketMicroUsdc(input.policy_max_notional_bucket || "25");
+  if (requestedMicroUsdc <= 0 || policyMaxMicroUsdc <= 0 || requestedMicroUsdc > policyMaxMicroUsdc) {
+    return { ok: false, error: "connector_submit_blocked" };
+  }
+  const idempotencyKey = `connector_submit_reserve:${input.work_order_commitment}`;
+  const existingEntries = await listGholaBalanceLedgerEntries(input.account_commitment, 250);
+  const existingReservation = existingEntries.find((entry) => entry.idempotency_key === idempotencyKey);
+  if (existingReservation) return { ok: true, reservation: existingReservation };
+
+  const lockRunCommitment = gholaCommitment("ghola_balance_reserve_lock_run", {
+    account_commitment: input.account_commitment,
+    work_order_commitment: input.work_order_commitment,
+  });
+  const lock = await acquirePrivateCoordinatorLock({
+    lock_id: `ghola_balance:${input.account_commitment}`,
+    run_window_commitment: lockRunCommitment,
+    now: new Date(),
+    ttl_ms: positiveIntegerEnv("GHOLA_PRIVATE_ACCOUNT_BALANCE_LOCK_TTL_MS", 30_000),
+  });
+  if (!lock.acquired) return { ok: false, error: "connector_submit_in_progress" };
+  try {
+    const snapshot = await getGholaBalanceSnapshot({
+      owner_commitment: input.owner.owner_commitment,
+      account_commitment: input.account_commitment,
+    });
+    if (snapshot.available_micro_usdc < requestedMicroUsdc) {
+      return { ok: false, error: "ghola_balance_insufficient" };
+    }
+    const reservation = await appendGholaBalanceLedgerEntry({
+      owner_commitment: input.owner.owner_commitment,
+      account_commitment: input.account_commitment,
+      idempotency_key: idempotencyKey,
+      entry_kind: "margin_reserved",
+      venue_id: "hyperliquid",
+      available_delta_micro_usdc: -requestedMicroUsdc,
+      reserved_margin_delta_micro_usdc: requestedMicroUsdc,
+      reference_commitment: input.work_order_commitment,
+      reason: "pooled_hyperliquid_submit_reserved",
+    });
+    return { ok: true, reservation };
+  } finally {
+    await releasePrivateCoordinatorLock(
+      `ghola_balance:${input.account_commitment}`,
+      lockRunCommitment,
+    );
+  }
+}
+
+async function releaseGholaBalanceReservationAfterFailedSubmit(input: {
+  owner: PrivateAccountRequestOwner;
+  account_commitment: string;
+  work_order_commitment: string;
+  reservation: PrivateGholaBalanceLedgerEntryRecordV1;
+  reason: string;
+}) {
+  const reservedMicroUsdc = Math.max(0, input.reservation.reserved_margin_delta_micro_usdc);
+  if (reservedMicroUsdc <= 0) return null;
+  return appendGholaBalanceLedgerEntry({
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.account_commitment,
+    idempotency_key: `connector_submit_release:${input.work_order_commitment}`,
+    entry_kind: "margin_released",
+    venue_id: "hyperliquid",
+    available_delta_micro_usdc: reservedMicroUsdc,
+    reserved_margin_delta_micro_usdc: -reservedMicroUsdc,
+    reference_commitment: input.reservation.ledger_entry_id,
+    reason: input.reason,
+  });
+}
+
+async function markGholaBalanceOrderSubmitted(input: {
+  owner: PrivateAccountRequestOwner;
+  account_commitment: string;
+  work_order_commitment: string;
+  reservation: PrivateGholaBalanceLedgerEntryRecordV1;
+}) {
+  const reservedMicroUsdc = Math.max(0, input.reservation.reserved_margin_delta_micro_usdc);
+  return appendGholaBalanceLedgerEntry({
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.account_commitment,
+    idempotency_key: `connector_submit_submitted:${input.work_order_commitment}`,
+    entry_kind: "order_submitted",
+    venue_id: "hyperliquid",
+    open_notional_delta_micro_usdc: reservedMicroUsdc,
+    reference_commitment: input.reservation.ledger_entry_id,
+    reason: "pooled_hyperliquid_order_submitted",
+  });
+}
+
+export async function reserveGholaBalanceForPublicPhoenixSubmit(input: {
+  owner: PrivateAccountRequestOwner;
+  account_commitment: string;
+  work_order_commitment: string;
+  amount_bucket?: string;
+}): Promise<
+  | { ok: true; reservation: PrivateGholaBalanceLedgerEntryRecordV1; required_margin_micro_usdc: number }
+  | {
+      ok: false;
+      error:
+        | "public_live_submit_blocked"
+        | "public_live_submit_duplicate"
+        | "public_live_submit_in_progress"
+        | "ghola_balance_insufficient";
+      required_margin_micro_usdc: number;
+    }
+> {
+  const requiredMarginMicroUsdc = amountBucketMicroUsdc(input.amount_bucket || "5");
+  if (requiredMarginMicroUsdc <= 0) {
+    return {
+      ok: false,
+      error: "public_live_submit_blocked",
+      required_margin_micro_usdc: requiredMarginMicroUsdc,
+    };
+  }
+  const reserveIdempotencyKey = `public_live_phoenix_reserve:${input.work_order_commitment}`;
+  const entries = await listGholaBalanceLedgerEntries(input.account_commitment, 250);
+  const alreadyTerminal = entries.some((entry) =>
+    entry.idempotency_key === `public_live_phoenix_submitted:${input.work_order_commitment}` ||
+    entry.idempotency_key === `public_live_phoenix_release:${input.work_order_commitment}`
+  );
+  if (alreadyTerminal) {
+    return {
+      ok: false,
+      error: "public_live_submit_duplicate",
+      required_margin_micro_usdc: requiredMarginMicroUsdc,
+    };
+  }
+  const existingReservation = entries.find((entry) => entry.idempotency_key === reserveIdempotencyKey);
+  if (existingReservation) {
+    return {
+      ok: true,
+      reservation: existingReservation,
+      required_margin_micro_usdc: requiredMarginMicroUsdc,
+    };
+  }
+
+  const lockRunCommitment = gholaCommitment("public_live_phoenix_balance_lock_run", {
+    account_commitment: input.account_commitment,
+    work_order_commitment: input.work_order_commitment,
+  });
+  const lock = await acquirePrivateCoordinatorLock({
+    lock_id: `ghola_balance:${input.account_commitment}`,
+    run_window_commitment: lockRunCommitment,
+    now: new Date(),
+    ttl_ms: positiveIntegerEnv("GHOLA_PRIVATE_ACCOUNT_BALANCE_LOCK_TTL_MS", 30_000),
+  });
+  if (!lock.acquired) {
+    return {
+      ok: false,
+      error: "public_live_submit_in_progress",
+      required_margin_micro_usdc: requiredMarginMicroUsdc,
+    };
+  }
+  try {
+    const snapshot = await getGholaBalanceSnapshot({
+      owner_commitment: input.owner.owner_commitment,
+      account_commitment: input.account_commitment,
+    });
+    if (snapshot.available_micro_usdc < requiredMarginMicroUsdc) {
+      return {
+        ok: false,
+        error: "ghola_balance_insufficient",
+        required_margin_micro_usdc: requiredMarginMicroUsdc,
+      };
+    }
+    const reservation = await appendGholaBalanceLedgerEntry({
+      owner_commitment: input.owner.owner_commitment,
+      account_commitment: input.account_commitment,
+      idempotency_key: reserveIdempotencyKey,
+      entry_kind: "margin_reserved",
+      venue_id: "phoenix",
+      available_delta_micro_usdc: -requiredMarginMicroUsdc,
+      reserved_margin_delta_micro_usdc: requiredMarginMicroUsdc,
+      reference_commitment: input.work_order_commitment,
+      reason: "public_live_phoenix_submit_reserved",
+    });
+    return {
+      ok: true,
+      reservation,
+      required_margin_micro_usdc: requiredMarginMicroUsdc,
+    };
+  } finally {
+    await releasePrivateCoordinatorLock(
+      `ghola_balance:${input.account_commitment}`,
+      lockRunCommitment,
+    );
+  }
+}
+
+export async function releaseGholaBalanceReservationAfterFailedPublicPhoenixSubmit(input: {
+  owner: PrivateAccountRequestOwner;
+  account_commitment: string;
+  work_order_commitment: string;
+  reservation: PrivateGholaBalanceLedgerEntryRecordV1;
+  reason: string;
+}) {
+  const reservedMicroUsdc = Math.max(0, input.reservation.reserved_margin_delta_micro_usdc);
+  if (reservedMicroUsdc <= 0) return null;
+  return appendGholaBalanceLedgerEntry({
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.account_commitment,
+    idempotency_key: `public_live_phoenix_release:${input.work_order_commitment}`,
+    entry_kind: "margin_released",
+    venue_id: "phoenix",
+    available_delta_micro_usdc: reservedMicroUsdc,
+    reserved_margin_delta_micro_usdc: -reservedMicroUsdc,
+    reference_commitment: input.reservation.ledger_entry_id,
+    reason: input.reason,
+  });
+}
+
+export async function markGholaBalancePublicPhoenixOrderSubmitted(input: {
+  owner: PrivateAccountRequestOwner;
+  account_commitment: string;
+  work_order_commitment: string;
+  reservation: PrivateGholaBalanceLedgerEntryRecordV1;
+}) {
+  const reservedMicroUsdc = Math.max(0, input.reservation.reserved_margin_delta_micro_usdc);
+  return appendGholaBalanceLedgerEntry({
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.account_commitment,
+    idempotency_key: `public_live_phoenix_submitted:${input.work_order_commitment}`,
+    entry_kind: "order_submitted",
+    venue_id: "phoenix",
+    open_notional_delta_micro_usdc: reservedMicroUsdc,
+    reference_commitment: input.reservation.ledger_entry_id,
+    reason: "public_live_phoenix_order_submitted",
+  });
+}
+
+export async function reserveGholaBalanceForPublicVenueSubmit(input: {
+  owner: PrivateAccountRequestOwner;
+  account_commitment: string;
+  work_order_commitment: string;
+  venue_id: PrivateGholaBalanceLedgerEntryRecordV1["venue_id"];
+  amount_bucket?: string;
+}): Promise<
+  | { ok: true; reservation: PrivateGholaBalanceLedgerEntryRecordV1; required_margin_micro_usdc: number }
+  | {
+      ok: false;
+      error:
+        | "public_live_submit_blocked"
+        | "public_live_submit_duplicate"
+        | "public_live_submit_in_progress"
+        | "ghola_balance_insufficient";
+      required_margin_micro_usdc: number;
+    }
+> {
+  const requiredMarginMicroUsdc = amountBucketMicroUsdc(input.amount_bucket || "5");
+  if (requiredMarginMicroUsdc <= 0) {
+    return {
+      ok: false,
+      error: "public_live_submit_blocked",
+      required_margin_micro_usdc: requiredMarginMicroUsdc,
+    };
+  }
+  const keyPrefix = `public_live_${input.venue_id}_`;
+  const reserveIdempotencyKey = `${keyPrefix}reserve:${input.work_order_commitment}`;
+  const entries = await listGholaBalanceLedgerEntries(input.account_commitment, 250);
+  const alreadyTerminal = entries.some((entry) =>
+    entry.idempotency_key === `${keyPrefix}submitted:${input.work_order_commitment}` ||
+    entry.idempotency_key === `${keyPrefix}release:${input.work_order_commitment}`
+  );
+  if (alreadyTerminal) {
+    return {
+      ok: false,
+      error: "public_live_submit_duplicate",
+      required_margin_micro_usdc: requiredMarginMicroUsdc,
+    };
+  }
+  const existingReservation = entries.find((entry) => entry.idempotency_key === reserveIdempotencyKey);
+  if (existingReservation) {
+    return {
+      ok: true,
+      reservation: existingReservation,
+      required_margin_micro_usdc: requiredMarginMicroUsdc,
+    };
+  }
+
+  const lockRunCommitment = gholaCommitment("public_live_venue_balance_lock_run", {
+    account_commitment: input.account_commitment,
+    work_order_commitment: input.work_order_commitment,
+    venue_id: input.venue_id,
+  });
+  const lock = await acquirePrivateCoordinatorLock({
+    lock_id: `ghola_balance:${input.account_commitment}`,
+    run_window_commitment: lockRunCommitment,
+    now: new Date(),
+    ttl_ms: positiveIntegerEnv("GHOLA_PRIVATE_ACCOUNT_BALANCE_LOCK_TTL_MS", 30_000),
+  });
+  if (!lock.acquired) {
+    return {
+      ok: false,
+      error: "public_live_submit_in_progress",
+      required_margin_micro_usdc: requiredMarginMicroUsdc,
+    };
+  }
+  try {
+    const snapshot = await getGholaBalanceSnapshot({
+      owner_commitment: input.owner.owner_commitment,
+      account_commitment: input.account_commitment,
+    });
+    if (snapshot.available_micro_usdc < requiredMarginMicroUsdc) {
+      return {
+        ok: false,
+        error: "ghola_balance_insufficient",
+        required_margin_micro_usdc: requiredMarginMicroUsdc,
+      };
+    }
+    const reservation = await appendGholaBalanceLedgerEntry({
+      owner_commitment: input.owner.owner_commitment,
+      account_commitment: input.account_commitment,
+      idempotency_key: reserveIdempotencyKey,
+      entry_kind: "margin_reserved",
+      venue_id: input.venue_id,
+      available_delta_micro_usdc: -requiredMarginMicroUsdc,
+      reserved_margin_delta_micro_usdc: requiredMarginMicroUsdc,
+      reference_commitment: input.work_order_commitment,
+      reason: `public_live_${input.venue_id}_submit_reserved`,
+    });
+    return {
+      ok: true,
+      reservation,
+      required_margin_micro_usdc: requiredMarginMicroUsdc,
+    };
+  } finally {
+    await releasePrivateCoordinatorLock(
+      `ghola_balance:${input.account_commitment}`,
+      lockRunCommitment,
+    );
+  }
+}
+
+export async function releaseGholaBalanceReservationAfterFailedPublicVenueSubmit(input: {
+  owner: PrivateAccountRequestOwner;
+  account_commitment: string;
+  work_order_commitment: string;
+  venue_id: PrivateGholaBalanceLedgerEntryRecordV1["venue_id"];
+  reservation: PrivateGholaBalanceLedgerEntryRecordV1;
+  reason: string;
+}) {
+  const reservedMicroUsdc = Math.max(0, input.reservation.reserved_margin_delta_micro_usdc);
+  if (reservedMicroUsdc <= 0) return null;
+  return appendGholaBalanceLedgerEntry({
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.account_commitment,
+    idempotency_key: `public_live_${input.venue_id}_release:${input.work_order_commitment}`,
+    entry_kind: "margin_released",
+    venue_id: input.venue_id,
+    available_delta_micro_usdc: reservedMicroUsdc,
+    reserved_margin_delta_micro_usdc: -reservedMicroUsdc,
+    reference_commitment: input.reservation.ledger_entry_id,
+    reason: input.reason,
+  });
+}
+
+export async function markGholaBalancePublicVenueOrderSubmitted(input: {
+  owner: PrivateAccountRequestOwner;
+  account_commitment: string;
+  work_order_commitment: string;
+  venue_id: PrivateGholaBalanceLedgerEntryRecordV1["venue_id"];
+  reservation: PrivateGholaBalanceLedgerEntryRecordV1;
+}) {
+  const reservedMicroUsdc = Math.max(0, input.reservation.reserved_margin_delta_micro_usdc);
+  return appendGholaBalanceLedgerEntry({
+    owner_commitment: input.owner.owner_commitment,
+    account_commitment: input.account_commitment,
+    idempotency_key: `public_live_${input.venue_id}_submitted:${input.work_order_commitment}`,
+    entry_kind: "order_submitted",
+    venue_id: input.venue_id,
+    open_notional_delta_micro_usdc: reservedMicroUsdc,
+    reference_commitment: input.reservation.ledger_entry_id,
+    reason: `public_live_${input.venue_id}_order_submitted`,
+  });
+}
+
 async function connectorForExecution(input: {
   owner: PrivateAccountRequestOwner;
   intent: PrivateAccountIntentRecordV1;
@@ -7217,6 +8304,7 @@ async function connectorForExecution(input: {
         | "connector_submit_blocked"
         | "connector_submit_in_progress"
         | "venue_access_required"
+        | "ghola_balance_insufficient"
         | "needs_funds"
         | "venue_rejected";
     }
@@ -7391,6 +8479,22 @@ async function connectorForExecution(input: {
         result: repeatedResult.result,
       };
     }
+    let balanceReservation: PrivateGholaBalanceLedgerEntryRecordV1 | null = null;
+    const shouldReserveGholaBalance =
+      manifestRecord.platform_class === "hyperliquid_style_market" &&
+      hyperliquidAllocation?.status === "allocated" &&
+      hyperliquidAllocation.allocation.execution_mode === "ghola_pooled";
+    if (shouldReserveGholaBalance) {
+      const reserved = await reserveGholaBalanceForPooledHyperliquidSubmit({
+        owner: input.owner,
+        account_commitment: input.intent.account_commitment,
+        work_order_commitment: workOrderRecord.work_order_commitment,
+        amount_bucket: compiledRecord.compiled_intent.amount_bucket,
+        policy_max_notional_bucket: hyperliquidAllocation.allocation.session_policy.max_notional_bucket,
+      });
+      if (!reserved.ok) return { error: reserved.error };
+      balanceReservation = reserved.reservation;
+    }
     const submitted = await submitConnectorWorkOrder({
       work_order: workOrderRecord.work_order,
       manifest: manifestRecord.manifest,
@@ -7407,7 +8511,26 @@ async function connectorForExecution(input: {
       encrypted_execution_instruction_bundle: input.encrypted_execution_instruction_bundle,
       env: connectorEnv,
     });
-    if (!submitted.ok) return { error: submitted.error };
+    if (!submitted.ok) {
+      if (balanceReservation) {
+        await releaseGholaBalanceReservationAfterFailedSubmit({
+          owner: input.owner,
+          account_commitment: input.intent.account_commitment,
+          work_order_commitment: workOrderRecord.work_order_commitment,
+          reservation: balanceReservation,
+          reason: submitted.error,
+        });
+      }
+      return { error: submitted.error };
+    }
+    if (balanceReservation) {
+      await markGholaBalanceOrderSubmitted({
+        owner: input.owner,
+        account_commitment: input.intent.account_commitment,
+        work_order_commitment: workOrderRecord.work_order_commitment,
+        reservation: balanceReservation,
+      });
+    }
     const now = new Date().toISOString();
     await putConnectorWorkOrder({
       ...workOrderRecord,
@@ -7564,7 +8687,7 @@ function isEvidenceSource(value: string): value is PrivateAnonymityEvidenceRecor
 }
 
 function isFundingAmountBucket(value: string): boolean {
-  return ["5", "10", "25", "50", "100"].includes(value);
+  return (GHOLA_FUNDING_AMOUNT_BUCKETS as readonly string[]).includes(value);
 }
 
 function isFundingAssetBucket(value: string): boolean {

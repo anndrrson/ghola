@@ -233,6 +233,7 @@ export interface GholaConnectorNoFundsVerification {
     hyperliquid_sdk_ready: boolean;
     account_read_checked: boolean;
     order_request_built: boolean;
+    live_venue_checked?: boolean;
     jupiter_api_reachable?: boolean;
     jupiter_token_allowlist_passed?: boolean;
     jupiter_order_built?: boolean;
@@ -762,6 +763,15 @@ export async function submitConnectorWorkOrder(input: {
     });
     const body = asRecord(await res.json().catch(() => null));
     if (!res.ok || body.ok === false) {
+      console.warn("[private-account] connector submit rejected", {
+        platform_class: input.manifest.platform_class,
+        status: res.status,
+        error_code: stringValue(body.error_code) || stringValue(body.code) || null,
+        error: stringValue(body.error) || null,
+        details: Array.isArray(body.details)
+          ? body.details.filter((detail): detail is string => typeof detail === "string").slice(0, 8)
+          : [],
+      });
       return { ok: false, error: connectorSubmitError(body, res.status) };
     }
     return {
@@ -1868,6 +1878,7 @@ function defaultNoFundsChecks(ok: boolean): GholaConnectorNoFundsVerification["c
     hyperliquid_sdk_ready: ok,
     account_read_checked: ok,
     order_request_built: ok,
+    live_venue_checked: false,
     jupiter_api_reachable: ok,
     jupiter_token_allowlist_passed: ok,
     jupiter_order_built: ok,
@@ -1894,6 +1905,7 @@ function noFundsChecks(value: unknown): GholaConnectorNoFundsVerification["check
     hyperliquid_sdk_ready: body.hyperliquid_sdk_ready === true,
     account_read_checked: body.account_read_checked === true,
     order_request_built: body.order_request_built === true || body.order_packet_built === true,
+    live_venue_checked: body.live_venue_checked === true,
     jupiter_api_reachable: body.jupiter_api_reachable === true,
     jupiter_token_allowlist_passed: body.jupiter_token_allowlist_passed === true,
     jupiter_order_built: body.jupiter_order_built === true,

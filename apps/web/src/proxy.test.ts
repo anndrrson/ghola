@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   applySecurityHeaders,
+  buildApiContentSecurityPolicy,
   buildContentSecurityPolicy,
   proxy,
 } from "./proxy";
@@ -9,41 +10,31 @@ import {
 describe("middleware security hardening", () => {
   it("adds unsafe-eval only in development CSP", () => {
     const devCsp = buildContentSecurityPolicy(true);
-    const prodCsp = buildContentSecurityPolicy(false);
+    const prodCsp = buildContentSecurityPolicy(false, "test-nonce");
 
     expect(devCsp).toContain("'unsafe-eval'");
     expect(prodCsp).not.toContain("'unsafe-eval'");
     expect(prodCsp).toContain("frame-ancestors 'none'");
   });
 
-  it("never emits 'unsafe-inline' in the production script-src (matches build-time hashed CSP)", () => {
-    const prodCsp = buildContentSecurityPolicy(false);
+  it("allows production inline bootstrap scripts for statically prerendered pages", () => {
+    const prodCsp = buildContentSecurityPolicy(false, "test-nonce");
     const scriptSrc = prodCsp
       .split(";")
       .map((d) => d.trim())
       .find((d) => d.startsWith("script-src "));
     expect(scriptSrc).toBeDefined();
-    // 'unsafe-inline' would defeat the hash-based CSP that next.config.ts
-    // emits; the middleware must not reintroduce it in production.
-    expect(scriptSrc).not.toContain("'unsafe-inline'");
+    expect(scriptSrc).toContain("'unsafe-inline'");
+    expect(scriptSrc).not.toContain("'nonce-test-nonce'");
+    expect(scriptSrc).not.toContain("'strict-dynamic'");
     // WASM step for WebLLM is still allowed.
     expect(scriptSrc).toContain("'wasm-unsafe-eval'");
   });
 
-  it("splices build-time inline-script hashes into the production script-src", () => {
-    const hashes = [
-      "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-      "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
-    ];
-    const prodCsp = buildContentSecurityPolicy(false, hashes);
-    const scriptSrc = prodCsp
-      .split(";")
-      .map((d) => d.trim())
-      .find((d) => d.startsWith("script-src "));
-    expect(scriptSrc).toBeDefined();
-    expect(scriptSrc).not.toContain("'unsafe-inline'");
-    expect(scriptSrc).toContain(`'${hashes[0]}'`);
-    expect(scriptSrc).toContain(`'${hashes[1]}'`);
+  it("uses a compact CSP instead of build-time inline-script hashes", () => {
+    const prodCsp = buildContentSecurityPolicy(false, "test-nonce");
+    expect(prodCsp.length).toBeLessThan(2_000);
+    expect(prodCsp).not.toContain("sha256-");
   });
 
   it("keeps 'unsafe-inline' in development so HMR/React-refresh works", () => {
@@ -53,10 +44,12 @@ describe("middleware security hardening", () => {
       .map((d) => d.trim())
       .find((d) => d.startsWith("script-src "));
     expect(scriptSrc).toContain("'unsafe-inline'");
+    expect(devCsp).not.toContain("upgrade-insecure-requests");
+    expect(devCsp).not.toContain("block-all-mixed-content");
   });
 
   it("allows exact WebLLM model download hosts without wildcarding GitHub", () => {
-    const prodCsp = buildContentSecurityPolicy(false);
+    const prodCsp = buildContentSecurityPolicy(false, "test-nonce");
 
     expect(prodCsp).toContain("https://huggingface.co");
     expect(prodCsp).toContain("https://hf.co");
@@ -68,12 +61,25 @@ describe("middleware security hardening", () => {
 
   it("sets HSTS only for https requests", () => {
     const httpsHeaders = new Headers();
-    applySecurityHeaders(httpsHeaders, { isDev: false, isHttps: true });
+    applySecurityHeaders(httpsHeaders, { isDev: false, isHttps: true, nonce: "test-nonce" });
     expect(httpsHeaders.get("Strict-Transport-Security")).toContain("max-age=63072000");
+    expect(httpsHeaders.get("x-nonce")).toBe("test-nonce");
 
     const httpHeaders = new Headers();
-    applySecurityHeaders(httpHeaders, { isDev: false, isHttps: false });
+    applySecurityHeaders(httpHeaders, { isDev: false, isHttps: false, nonce: "test-nonce" });
     expect(httpHeaders.get("Strict-Transport-Security")).toBeNull();
+  });
+
+  it("uses compact API CSP with no nonce or browser-only directives", () => {
+    const csp = buildApiContentSecurityPolicy();
+    const headers = new Headers();
+    applySecurityHeaders(headers, { isDev: false, isHttps: true, api: true });
+
+    expect(headers.get("Content-Security-Policy")).toBe(csp);
+    expect(csp.length).toBeLessThan(200);
+    expect(csp).not.toContain("script-src");
+    expect(csp).not.toContain("nonce-");
+    expect(csp).not.toContain("unsafe-inline");
   });
 
   it("disables caching on auth API endpoints", () => {
@@ -89,5 +95,6 @@ describe("middleware security hardening", () => {
 
     expect(res.headers.get("Cache-Control")).toBe("no-store, max-age=0");
     expect(res.headers.get("Pragma")).toBe("no-cache");
+    expect(res.headers.get("Content-Security-Policy")).toBe(buildApiContentSecurityPolicy());
   });
 });

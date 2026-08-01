@@ -52,6 +52,8 @@ export interface PrivateAgentRuntimeStatus {
   checked_at: string;
   sealed_execution_required: true;
   entitlement_required: "paid_private_agent_plan";
+  bounded_beta_enabled: boolean;
+  operator_spend_lock: boolean;
   preferred_provider: ConfidentialComputeProviderId | null;
   selected_provider: ConfidentialComputeProviderId | null;
   remote_execution_ready: boolean;
@@ -128,6 +130,8 @@ export function buildPrivateAgentRuntimeStatus(input: {
   providers: ConfidentialComputeProviderStatus[];
   preferredProvider?: ConfidentialComputeProviderId | null;
   shieldedRailReady: boolean;
+  boundedBetaEnabled?: boolean;
+  operatorSpendLock?: boolean;
 }): PrivateAgentRuntimeStatus {
   const selected = chooseConfidentialComputeProvider(
     input.providers,
@@ -148,6 +152,8 @@ export function buildPrivateAgentRuntimeStatus(input: {
     checked_at: input.checkedAt ?? new Date().toISOString(),
     sealed_execution_required: true,
     entitlement_required: "paid_private_agent_plan",
+    bounded_beta_enabled: input.boundedBetaEnabled === true,
+    operator_spend_lock: input.operatorSpendLock === true,
     preferred_provider: input.preferredProvider ?? null,
     selected_provider: selected?.id ?? null,
     remote_execution_ready: remoteReady,

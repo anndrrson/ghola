@@ -9,7 +9,7 @@ import {
 import type { GholaChartCandle, GholaChartOverlay, GholaMarketFrame, GholaRouteQuotePoint } from "./ghola-market-chart";
 
 describe("ghola chart engine", () => {
-  it("returns decimated visible candles and includes agent overlay prices in the range", () => {
+  it("returns decimated visible candles without letting distant overlays flatten the range", () => {
     const engine = new GholaChartEngineState();
     const overlay: GholaChartOverlay = {
       id: "agent-entry",
@@ -25,8 +25,26 @@ describe("ghola chart engine", () => {
 
     expect(visible.frame?.candles).toHaveLength(500);
     expect(visible.candles.length).toBeLessThanOrEqual(120);
-    expect(visible.range.max).toBeGreaterThan(150);
+    expect(visible.range.max).toBeLessThan(125);
     expect(visible.overlays[0]).toMatchObject({ id: "agent-entry", price: 150 });
+  });
+
+  it("ignores zero candle prices when computing a positive market range", () => {
+    const engine = new GholaChartEngineState();
+    engine.ingestFrame({
+      ...marketFrame("coinbase", [
+      candle(1, 76.2, 76.4, 76.1, 76.3),
+      candle(2, 76.3, 76.5, 0, 76.28),
+      candle(3, 76.28, 76.34, 76.12, 76.22),
+      ]),
+      bestBid: "76.21",
+      bestAsk: "76.29",
+    });
+
+    const visible = engine.visibleData({ width: 600, height: 360, mode: "candles" });
+
+    expect(visible.range.min).toBeGreaterThan(70);
+    expect(visible.range.max).toBeLessThan(80);
   });
 
   it("zooms and pans without relying on React state", () => {

@@ -10,7 +10,13 @@ export type WorkerCapabilityScope =
   | "session:create"
   | "order:submit"
   | "order:verify"
-  | "reconcile:read";
+  | "reconcile:read"
+  | "kraken:connection"
+  | "kraken:mandate"
+  | "kraken:intent"
+  | "kraken:execute"
+  | "kraken:control"
+  | "kraken:read";
 
 export interface WorkerAuthorizationInput {
   fallbackToken?: string | null;
