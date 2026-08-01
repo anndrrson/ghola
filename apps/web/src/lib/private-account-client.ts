@@ -12,6 +12,7 @@ import type {
 import type { PrivateAccountReadinessResponse } from "./private-account-readiness";
 import type { CustomerExecutionDisplay } from "./private-account-trading-ui";
 import type { HyperliquidEncryptedExecutionVaultBundle } from "./hyperliquid-vault-seal";
+import type { HyperliquidFundingPreflightResult } from "./hyperliquid-funding-preflight";
 import type { CoinbaseEncryptedExecutionVaultBundle, CoinbaseExecutionMode } from "./coinbase-vault-seal";
 import type { SolanaPerpsEncryptedExecutionVaultBundle } from "./solana-perps-vault-seal";
 import type { SolanaSwapEncryptedExecutionVaultBundle } from "./solana-swap-vault-seal";
@@ -656,6 +657,18 @@ export async function getHyperliquidPilotStatus() {
   return privateAccountFetch("/v1/private-account/hyperliquid/status", {
     method: "GET",
   });
+}
+
+export async function getHyperliquidFundingPreflight(input: {
+  network: "mainnet" | "testnet";
+  master_account_address: string;
+  connected_wallet_address: string;
+  api_wallet_address: string;
+}): Promise<HyperliquidFundingPreflightResult> {
+  return privateAccountFetch("/v1/private-account/hyperliquid/funding-preflight", {
+    method: "POST",
+    body: JSON.stringify(input),
+  }) as Promise<HyperliquidFundingPreflightResult>;
 }
 
 export async function allocateHyperliquidManagedTestnet(input: {

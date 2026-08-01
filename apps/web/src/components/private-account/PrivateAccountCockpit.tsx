@@ -28,6 +28,7 @@ import {
   getPrivateAccountLiveTradingStatus,
   getHyperliquidAccountSnapshot,
   getHyperliquidExecutionVaultStatus,
+  getHyperliquidFundingPreflight,
   getVenueExecutionVaultStatus,
   openHyperliquidAccountStream,
   getPrivateAccountPlatformReadiness,
@@ -65,7 +66,8 @@ import {
   validateHyperliquidExecutionCredentialDraft,
   type HyperliquidExecutionCredentialDraft,
 } from "@/lib/hyperliquid-vault-seal";
-import { generateHyperliquidApiWallet } from "@/lib/hyperliquid-api-wallet";
+import { generateHyperliquidApiWallet, hyperliquidApiWalletAddressFromPrivateKey } from "@/lib/hyperliquid-api-wallet";
+import type { HyperliquidFundingPreflightResult } from "@/lib/hyperliquid-funding-preflight";
 import {
   buildCoinbaseExecutionVaultBundle,
   parseCoinbaseCredentialImport,
@@ -5519,6 +5521,9 @@ function HyperliquidConnectModal({
   });
   const [confirmedAgentKey, setConfirmedAgentKey] = useState(false);
   const [generatedAgentAddress, setGeneratedAgentAddress] = useState("");
+  const [connectedWalletAddress, setConnectedWalletAddress] = useState("");
+  const [fundingPreflight, setFundingPreflight] = useState<HyperliquidFundingPreflightResult | null>(null);
+  const [preflightWorking, setPreflightWorking] = useState(false);
   const [quickImport, setQuickImport] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -5531,6 +5536,8 @@ function HyperliquidConnectModal({
       agent_name: "",
     });
     setGeneratedAgentAddress("");
+    setConnectedWalletAddress("");
+    setFundingPreflight(null);
     setQuickImport("");
     setConfirmedAgentKey(false);
   }, [hyperliquidNetwork]);
@@ -5558,6 +5565,13 @@ function HyperliquidConnectModal({
 
   if (!open) return null;
   const iosHandoff = Boolean(iosReturnTo);
+  const apiWalletPublicAddress = generatedAgentAddress || (() => {
+    try {
+      return draft.api_wallet_private_key ? hyperliquidApiWalletAddressFromPrivateKey(draft.api_wallet_private_key) : "";
+    } catch {
+      return "";
+    }
+  })();
 
   function closeConnection() {
     clearCredentialDraft();
@@ -5575,6 +5589,7 @@ function HyperliquidConnectModal({
     accountCommitment &&
       walletAddress &&
       confirmedAgentKey &&
+      (hyperliquidNetwork === "testnet" || fundingPreflight?.ready_for_no_submit_verification === true) &&
       validationErrors.length === 0 &&
       !submitting,
   );
@@ -5588,6 +5603,8 @@ function HyperliquidConnectModal({
           ? "Enter API wallet key"
         : !confirmedAgentKey
           ? generatedAgentAddress ? "Confirm authorization" : "Confirm key type"
+          : hyperliquidNetwork === "mainnet" && !fundingPreflight?.ready_for_no_submit_verification
+            ? "Run mainnet preflight"
             : validationErrors.length > 0
               ? "Check connection details"
               : "Secure & verify";
@@ -5613,6 +5630,7 @@ function HyperliquidConnectModal({
         agent_name: current.agent_name?.trim() || "ghola",
       }));
       setGeneratedAgentAddress(generated.address);
+      setFundingPreflight(null);
       setConfirmedAgentKey(false);
       setQuickImport("");
       setError(null);
@@ -5627,8 +5645,31 @@ function HyperliquidConnectModal({
       api_wallet_private_key: "",
     }));
     setGeneratedAgentAddress("");
+    setFundingPreflight(null);
     setConfirmedAgentKey(false);
     setError(null);
+  }
+
+  async function runFundingPreflight() {
+    setError(null);
+    if (!draft.hyperliquid_account_address.trim() || !connectedWalletAddress.trim() || !apiWalletPublicAddress) {
+      setError("Enter the master address, the address shown in your connected wallet, and a valid dedicated API wallet.");
+      return;
+    }
+    setPreflightWorking(true);
+    setFundingPreflight(null);
+    try {
+      setFundingPreflight(await getHyperliquidFundingPreflight({
+        network: draft.network,
+        master_account_address: draft.hyperliquid_account_address,
+        connected_wallet_address: connectedWalletAddress,
+        api_wallet_address: apiWalletPublicAddress,
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not run the read-only funding preflight.");
+    } finally {
+      setPreflightWorking(false);
+    }
   }
 
   async function copyGeneratedAddress() {
@@ -5765,7 +5806,10 @@ function HyperliquidConnectModal({
                 <span className="text-xs font-medium text-[#96a2b7]">Hyperliquid account address</span>
                 <input
                   value={draft.hyperliquid_account_address}
-                  onChange={(event) => setDraft({ ...draft, hyperliquid_account_address: event.target.value })}
+                  onChange={(event) => {
+                    setDraft({ ...draft, hyperliquid_account_address: event.target.value });
+                    setFundingPreflight(null);
+                  }}
                   placeholder="0x…"
                   autoCapitalize="none"
                   autoCorrect="off"
@@ -5849,6 +5893,7 @@ function HyperliquidConnectModal({
                       onChange={(event) => {
                         setDraft({ ...draft, api_wallet_private_key: event.target.value });
                         setConfirmedAgentKey(false);
+                        setFundingPreflight(null);
                       }}
                       placeholder="0x + 64 hexadecimal characters"
                       autoComplete="off"
@@ -5864,6 +5909,58 @@ function HyperliquidConnectModal({
                 <span className="text-[#778398]">Network</span>
                 <span className="font-medium capitalize text-[#8fe0bd]">{draft.network}</span>
               </div>
+              {draft.network === "mainnet" && (
+                <div className="grid gap-3 rounded-lg border border-[#3a4a5e] bg-[#0a0f17] p-3">
+                  <div>
+                    <p className="text-sm font-medium text-[#eef1f8]">Mainnet funding preflight</p>
+                    <p className="mt-1 text-[11px] leading-4 text-[#8b98ad]">
+                      Read-only checks only. This does not deposit, transfer, preview, sign, or place an order.
+                    </p>
+                  </div>
+                  <label className="grid gap-1.5">
+                    <span className="text-xs font-medium text-[#96a2b7]">Address shown in your connected wallet and official Hyperliquid</span>
+                    <input
+                      value={connectedWalletAddress}
+                      onChange={(event) => {
+                        setConnectedWalletAddress(event.target.value);
+                        setFundingPreflight(null);
+                      }}
+                      placeholder="0x…"
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className="h-11 rounded-md border border-[#253044] bg-[#07090c] px-3 font-mono text-xs text-[#eef1f8] outline-none placeholder:text-[#536076] focus:border-[#62b7ff]"
+                    />
+                  </label>
+                  <div className="rounded-md border border-[#253044] bg-[#07090c] px-3 py-2 text-[11px] leading-4 text-[#8b98ad]">
+                    API signer: <span className="break-all font-mono text-[#c5d6eb]">{apiWalletPublicAddress || "Enter or generate a valid API wallet first"}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={runFundingPreflight}
+                    disabled={preflightWorking || !apiWalletPublicAddress}
+                    className="h-10 border border-[#4778a6] bg-[#10243a] px-3 text-xs font-semibold text-[#bfe0ff] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {preflightWorking ? "Checking mainnet…" : "Run read-only mainnet preflight"}
+                  </button>
+                  {fundingPreflight && (
+                    <div className="grid gap-2" data-testid="hyperliquid-funding-preflight-result">
+                      {fundingPreflight.checks.map((check) => (
+                        <div key={check.id} className={`border px-3 py-2 text-xs ${check.status === "pass" ? "border-emerald-900/70 bg-emerald-950/20" : "border-amber-900/70 bg-amber-950/20"}`}>
+                          <p className={check.status === "pass" ? "text-emerald-200" : "text-amber-200"}>
+                            {check.status === "pass" ? "✓" : "!"} {check.label}
+                          </p>
+                          <p className="mt-1 leading-4 text-[#8995a8]">{check.detail}</p>
+                        </div>
+                      ))}
+                      <p className="text-[11px] leading-4 text-[#9aa8bb]">
+                        Route: native USDC on Arbitrum → your master wallet → official Hyperliquid Deposit. Never send funds to the API signer.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
               <details className="rounded-lg border border-[#253044] bg-[#080b10] p-3">
                 <summary className="cursor-pointer text-xs font-medium text-[#8290a5]">Import JSON or add an agent name</summary>
                 <div className="mt-4 grid gap-4">

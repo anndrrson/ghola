@@ -25,6 +25,16 @@ export function generateHyperliquidApiWallet(
   };
 }
 
+export function hyperliquidApiWalletAddressFromPrivateKey(privateKey: string): string {
+  const normalized = privateKey.trim().replace(/^0x/i, "");
+  if (!/^[0-9a-f]{64}$/i.test(normalized)) {
+    throw new Error("Hyperliquid API wallet key must be 32 bytes.");
+  }
+  return hyperliquidApiWalletAddress(
+    Uint8Array.from(normalized.match(/.{2}/g) || [], (pair) => Number.parseInt(pair, 16)),
+  );
+}
+
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
