@@ -55,7 +55,11 @@ import {
   type PrivateAccountSafeInput,
 } from "@/lib/private-account-client";
 import { useMarketData } from "@/lib/market-data-store";
-import { hyperliquidPerpsReadiness, spotVenueReadiness } from "@/lib/trade-readiness";
+import {
+  hyperliquidCredentialsSealed,
+  hyperliquidPerpsReadiness,
+  spotVenueReadiness,
+} from "@/lib/trade-readiness";
 
 type LiveStep = "idle" | "prepared" | "submitted";
 
@@ -1013,10 +1017,10 @@ function AlternateProductWorkspace({
     void fetch("/v1/private-account/hyperliquid/vault", { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) throw new Error("connection status unavailable");
-        return response.json() as Promise<{ ready?: boolean }>;
+        return response.json() as Promise<{ credentials_sealed?: boolean }>;
       })
       .then((status) => {
-        if (!cancelled) setHyperliquidConnectionReady(status.ready === true);
+        if (!cancelled) setHyperliquidConnectionReady(hyperliquidCredentialsSealed(status));
       })
       .catch(() => {
         if (!cancelled) setHyperliquidConnectionReady(false);
