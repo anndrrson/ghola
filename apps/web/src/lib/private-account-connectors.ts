@@ -900,6 +900,13 @@ export async function verifyConnectorNoSubmit(input: {
     });
     const body = asRecord(await res.json().catch(() => null));
     if (!res.ok || body.status !== "verified_no_funds") {
+      console.warn("[private-account] connector no-submit verification failed", {
+        platform_class: input.platform_class,
+        venue_id: payload.venue_id,
+        http_status: res.status,
+        error_code: stringValue(body.error_code) || stringValue(body.code) || null,
+        error: stringValue(body.error) || null,
+      });
       return failedNoFundsVerification(base, noFundsReason(body, res.status), "failed", input.site_origin);
     }
     return verifiedNoFundsVerification(base, {
