@@ -3070,13 +3070,22 @@ export function PrivateAccountCockpit({
               </div>
             )}
             {error && hyperliquidVault && (
-              <button
-                type="button"
-                onClick={() => void verifyHyperliquidNoSubmit(hyperliquidVault)}
-                className="mt-6 h-11 w-full rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb]"
-              >
-                Retry verification
-              </button>
+              <div className="mt-6 grid gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => void verifyHyperliquidNoSubmit(hyperliquidVault)}
+                  className="h-11 w-full rounded-lg bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] hover:bg-[#70c0fb]"
+                >
+                  Retry verification
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHyperliquidConnectOpen(true)}
+                  className="h-11 w-full rounded-lg border border-[#3d5772] bg-[#101b29] px-4 text-sm font-semibold text-[#b9dcfa] hover:border-[#5b84aa] hover:bg-[#16263a]"
+                >
+                  Replace API wallet
+                </button>
+              </div>
             )}
             <p className="mt-5 text-xs leading-5 text-[#67758a]">No order is sent during this check.</p>
           </section>
