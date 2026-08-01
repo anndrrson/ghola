@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { HyperliquidAccountSnapshot } from "@/lib/private-account-client";
 import {
   hyperliquidCredentialsSealed,
   hyperliquidPerpsReadiness,
+  mergeHyperliquidAccountSnapshot,
   spotVenueReadiness,
 } from "@/lib/trade-readiness";
 
@@ -25,5 +27,12 @@ describe("trade readiness", () => {
     expect(hyperliquidCredentialsSealed({ credentials_sealed: false })).toBe(false);
     expect(hyperliquidCredentialsSealed({})).toBe(false);
     expect(hyperliquidCredentialsSealed(null)).toBe(false);
+  });
+
+  it("preserves a confirmed collateral blocker over a temporary verification stream state", () => {
+    const current = { status: "needs_funds", next_step: "Add collateral." } as HyperliquidAccountSnapshot;
+    const incoming = { status: "private_mode_waiting", next_step: "Run the no-submit connection check." } as HyperliquidAccountSnapshot;
+    expect(mergeHyperliquidAccountSnapshot(current, incoming)).toBe(current);
+    expect(mergeHyperliquidAccountSnapshot(null, incoming)).toBe(incoming);
   });
 });

@@ -58,6 +58,7 @@ import { useMarketData } from "@/lib/market-data-store";
 import {
   hyperliquidCredentialsSealed,
   hyperliquidPerpsReadiness,
+  mergeHyperliquidAccountSnapshot,
   spotVenueReadiness,
 } from "@/lib/trade-readiness";
 
@@ -996,7 +997,7 @@ function AlternateProductWorkspace({
       coin: perpMarket,
       onState(snapshot) {
         if (!cancelled) {
-          setHyperliquidAccount(snapshot);
+          setHyperliquidAccount((current) => mergeHyperliquidAccountSnapshot(current, snapshot));
           setAccountState("ready");
         }
       },

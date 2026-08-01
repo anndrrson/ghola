@@ -18,6 +18,16 @@ export function hyperliquidCredentialsSealed(status: {
   return status?.credentials_sealed === true;
 }
 
+export function mergeHyperliquidAccountSnapshot(
+  current: HyperliquidAccountSnapshot | null,
+  incoming: HyperliquidAccountSnapshot,
+): HyperliquidAccountSnapshot {
+  if (current?.status === "needs_funds" && incoming.status === "private_mode_waiting") {
+    return current;
+  }
+  return incoming;
+}
+
 export function spotVenueReadiness(venue: "coinbase" | "phoenix", status: SpotReadinessStatus | null): TradeReadiness {
   if (!status) return { label: "checking", ready: false, detail: "Checking secure venue availability." };
   const ready = venue === "coinbase" ? status.coinbase_public_live_ready : status.phoenix_public_live_ready;
