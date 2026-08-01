@@ -65,6 +65,7 @@ import {
   validateHyperliquidExecutionCredentialDraft,
   type HyperliquidExecutionCredentialDraft,
 } from "@/lib/hyperliquid-vault-seal";
+import { generateHyperliquidApiWallet } from "@/lib/hyperliquid-api-wallet";
 import {
   buildCoinbaseExecutionVaultBundle,
   parseCoinbaseCredentialImport,
@@ -5517,6 +5518,7 @@ function HyperliquidConnectModal({
     agent_name: "",
   });
   const [confirmedAgentKey, setConfirmedAgentKey] = useState(false);
+  const [generatedAgentAddress, setGeneratedAgentAddress] = useState("");
   const [quickImport, setQuickImport] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -5528,6 +5530,7 @@ function HyperliquidConnectModal({
       api_wallet_private_key: "",
       agent_name: "",
     });
+    setGeneratedAgentAddress("");
     setQuickImport("");
     setConfirmedAgentKey(false);
   }, [hyperliquidNetwork]);
@@ -5583,8 +5586,8 @@ function HyperliquidConnectModal({
         ? "Enter account address"
         : !hasKey
           ? "Enter API wallet key"
-          : !confirmedAgentKey
-            ? "Confirm key type"
+        : !confirmedAgentKey
+          ? generatedAgentAddress ? "Confirm authorization" : "Confirm key type"
             : validationErrors.length > 0
               ? "Check connection details"
               : "Secure & verify";
@@ -5595,7 +5598,45 @@ function HyperliquidConnectModal({
     const imported = parseHyperliquidCredentialImport(value, draft);
     if (imported.fields.length > 0) {
       setDraft(imported.draft);
+      setGeneratedAgentAddress("");
+      setConfirmedAgentKey(false);
       setError(null);
+    }
+  }
+
+  function generateDedicatedWallet() {
+    try {
+      const generated = generateHyperliquidApiWallet();
+      setDraft((current) => ({
+        ...current,
+        api_wallet_private_key: generated.privateKey,
+        agent_name: current.agent_name?.trim() || "ghola",
+      }));
+      setGeneratedAgentAddress(generated.address);
+      setConfirmedAgentKey(false);
+      setQuickImport("");
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not generate a dedicated API wallet.");
+    }
+  }
+
+  function clearGeneratedWallet() {
+    setDraft((current) => ({
+      ...current,
+      api_wallet_private_key: "",
+    }));
+    setGeneratedAgentAddress("");
+    setConfirmedAgentKey(false);
+    setError(null);
+  }
+
+  async function copyGeneratedAddress() {
+    if (!generatedAgentAddress) return;
+    try {
+      await navigator.clipboard.writeText(generatedAgentAddress);
+    } catch {
+      setError("Could not copy the public API wallet address. Select and copy it manually.");
     }
   }
 
@@ -5732,20 +5773,93 @@ function HyperliquidConnectModal({
                   className="h-12 rounded-lg border border-[#253044] bg-[#080b10] px-4 font-mono text-sm text-[#eef1f8] outline-none placeholder:text-[#536076] focus:border-[#62b7ff]"
                 />
               </label>
-              <label className="grid gap-1.5">
-                <span className="text-xs font-medium text-[#96a2b7]">Dedicated API wallet key</span>
-                <input
-                  type="password"
-                  value={draft.api_wallet_private_key}
-                  onChange={(event) => setDraft({ ...draft, api_wallet_private_key: event.target.value })}
-                  placeholder="0x…"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  className="h-12 rounded-lg border border-[#253044] bg-[#080b10] px-4 font-mono text-sm text-[#eef1f8] outline-none placeholder:text-[#536076] focus:border-[#62b7ff]"
-                />
-                <span className="text-[11px] leading-4 text-[#6f7b8e]">Use an API wallet created in Hyperliquid—not your main wallet key.</span>
-              </label>
+              <div className="grid gap-3 rounded-lg border border-[#29405b] bg-[#0a1420] p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-[#dcecff]">Dedicated API wallet</p>
+                    <p className="mt-1 text-[11px] leading-4 text-[#8197b2]">
+                      Generated locally. The private key stays in memory and is encrypted before upload.
+                    </p>
+                  </div>
+                  {!generatedAgentAddress && (
+                    <button
+                      type="button"
+                      onClick={generateDedicatedWallet}
+                      className="shrink-0 border border-[#4778a6] bg-[#10243a] px-3 py-2 text-xs font-semibold text-[#bfe0ff] hover:bg-[#16304d]"
+                    >
+                      Generate in Ghola
+                    </button>
+                  )}
+                </div>
+                {generatedAgentAddress && (
+                  <div className="grid gap-3">
+                    <div className="rounded-md border border-[#315374] bg-[#070d14] p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-[#6f8ba7]">
+                          Public authorization address
+                        </span>
+                        <button
+                          type="button"
+                          onClick={copyGeneratedAddress}
+                          className="inline-flex items-center gap-1 text-xs text-[#9bcfff] hover:text-white"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                          Copy
+                        </button>
+                      </div>
+                      <p className="mt-2 break-all font-mono text-xs text-[#dcecff]">
+                        {generatedAgentAddress}
+                      </p>
+                    </div>
+                    <ol className="grid gap-1.5 pl-4 text-xs leading-5 text-[#94a8bf]">
+                      <li className="list-decimal">Open Hyperliquid API wallets for the {draft.network} account.</li>
+                      <li className="list-decimal">Paste this public address and authorize it with your account wallet.</li>
+                      <li className="list-decimal">Return here, confirm authorization, then secure and verify.</li>
+                    </ol>
+                    <div className="flex flex-wrap gap-2">
+                      <a
+                        href={draft.network === "testnet"
+                          ? "https://app.hyperliquid-testnet.xyz/API"
+                          : "https://app.hyperliquid.xyz/API"}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex h-9 items-center border border-[#4778a6] px-3 text-xs font-semibold text-[#bfe0ff] hover:bg-[#10243a]"
+                      >
+                        Open Hyperliquid API wallets
+                      </a>
+                      <button
+                        type="button"
+                        onClick={clearGeneratedWallet}
+                        className="h-9 px-2 text-xs text-[#718399] hover:text-[#dcecff]"
+                      >
+                        Use a different wallet
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {!generatedAgentAddress && (
+                <details className="rounded-lg border border-[#253044] bg-[#080b10] p-3">
+                  <summary className="cursor-pointer text-xs font-medium text-[#8290a5]">Bring an existing API wallet instead</summary>
+                  <label className="mt-4 grid gap-1.5">
+                    <span className="text-xs font-medium text-[#96a2b7]">Dedicated API wallet private key</span>
+                    <input
+                      type="password"
+                      value={draft.api_wallet_private_key}
+                      onChange={(event) => {
+                        setDraft({ ...draft, api_wallet_private_key: event.target.value });
+                        setConfirmedAgentKey(false);
+                      }}
+                      placeholder="0x + 64 hexadecimal characters"
+                      autoComplete="off"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className="h-12 rounded-lg border border-[#253044] bg-[#07090c] px-4 font-mono text-sm text-[#eef1f8] outline-none placeholder:text-[#536076] focus:border-[#62b7ff]"
+                    />
+                  </label>
+                </details>
+              )}
               <div className="flex items-center justify-between rounded-lg border border-[#253044] bg-[#080b10] px-3 py-2.5 text-xs">
                 <span className="text-[#778398]">Network</span>
                 <span className="font-medium capitalize text-[#8fe0bd]">{draft.network}</span>
@@ -5779,7 +5893,9 @@ function HyperliquidConnectModal({
                   onChange={(event) => setConfirmedAgentKey(event.target.checked)}
                   className="mt-1 h-4 w-4 accent-[#a8d8ff]"
                 />
-                <span>I’m using a dedicated Hyperliquid API wallet key—not my main wallet seed.</span>
+                <span>{generatedAgentAddress
+                  ? "I authorized this public API wallet address in Hyperliquid."
+                  : "I’m using a dedicated Hyperliquid API wallet key—not my main wallet seed."}</span>
               </label>
             </div>
             <div className="mt-5 rounded-lg border border-[#203349] bg-[#0a1420] px-3 py-2.5 text-xs leading-5 text-[#8ea7c3]">
