@@ -1971,9 +1971,23 @@ function provenNoSubmitClaims(platformClass: GholaPlatformClass): string[] {
 export function noFundsReason(body: Record<string, unknown>, status: number): string {
   const code = stringValue(body.error_code) || stringValue(body.code) || stringValue(body.error);
   const error = stringValue(body.error);
-  const text = `${code} ${error}`.toLowerCase();
+  const details = Array.isArray(body.details)
+    ? body.details.filter((detail): detail is string => typeof detail === "string").join(" ")
+    : "";
+  const text = `${code} ${error} ${details}`.toLowerCase();
   if (/insufficient|needs funds|not enough|collateral|account value|margin/.test(text)) return "needs_funds";
   if (code.includes("access") || code === "venue_access_required") {
+    if (/encrypted_execution_vault\.recipient must match worker recipient/.test(text)) {
+      return "sealed_vault_recipient_mismatch";
+    }
+    if (/encrypted_execution_instruction_bundle\.recipient must match worker recipient/.test(text)) {
+      return "sealed_instruction_recipient_mismatch";
+    }
+    if (/\.alg is unsupported/.test(text)) return "sealed_bundle_algorithm_unsupported";
+    if (/vault_commitment is required/.test(text)) return "sealed_vault_commitment_missing";
+    if (/request must not contain plaintext hyperliquid credentials/.test(text)) {
+      return "sealed_request_plaintext_guard_failed";
+    }
     if (/credentials are invalid/.test(text)) return "api_wallet_private_key_invalid";
     if (/credentials are missing|vault kind is invalid|execution vault is invalid/.test(text)) {
       return "sealed_credential_payload_invalid";

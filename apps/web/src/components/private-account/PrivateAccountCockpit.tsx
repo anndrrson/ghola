@@ -9338,6 +9338,21 @@ function friendlyPrivateAccountError(err: unknown, fallback: string) {
   if (message === "sealed_credential_request_invalid") {
     return "The worker rejected the sealed verification request before checking Hyperliquid.";
   }
+  if (message === "sealed_vault_recipient_mismatch") {
+    return "The saved Hyperliquid credential targets an older worker encryption recipient.";
+  }
+  if (message === "sealed_instruction_recipient_mismatch") {
+    return "The verification instruction targets a different worker encryption recipient.";
+  }
+  if (message === "sealed_bundle_algorithm_unsupported") {
+    return "The worker does not support the sealed credential envelope format.";
+  }
+  if (message === "sealed_vault_commitment_missing") {
+    return "The verification request is missing the saved Hyperliquid vault commitment.";
+  }
+  if (message === "sealed_request_plaintext_guard_failed") {
+    return "The worker's plaintext-safety guard rejected the verification request shape.";
+  }
   if (message === "rpc_unreachable") {
     return "Ghola could not reach Solana RPC for the Phoenix check.";
   }

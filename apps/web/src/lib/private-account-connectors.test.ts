@@ -16,6 +16,18 @@ describe("noFundsReason", () => {
     expect(noFundsReason({
       error_code: "venue_access_required",
       error: "invalid hyperliquid private verification request",
+      details: ["encrypted_execution_instruction_bundle.recipient must match worker recipient"],
+    }, 400)).toBe("sealed_instruction_recipient_mismatch");
+
+    expect(noFundsReason({
+      error_code: "venue_access_required",
+      error: "invalid hyperliquid private verification request",
+      details: ["encrypted_execution_vault.recipient must match worker recipient"],
+    }, 400)).toBe("sealed_vault_recipient_mismatch");
+
+    expect(noFundsReason({
+      error_code: "venue_access_required",
+      error: "invalid hyperliquid private verification request",
     }, 400)).toBe("sealed_credential_request_invalid");
   });
 
