@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
+
+const privateBlobRecords = new Map<string, string>();
+
 import {
   consumePrivateAccountApproval,
   consumePrivateAccountPreview,
   getPrivateAccountByOwner,
+  getHyperliquidExecutionVaultByAccount,
   getPrivateAccountApproval,
   getPrivateAccountIntent,
   getPrivateAccountPreview,
@@ -12,6 +16,7 @@ import {
   getQueuedAction,
   putPrivateAccountApproval,
   putPrivateAccountRecord,
+  putHyperliquidExecutionVault,
   putPrivateAccountIntent,
   putPrivateAccountPreview,
   putPrivateVaultState,
@@ -20,9 +25,11 @@ import {
   putQueuedAction,
   recordPrivacyBudgetEvent,
   resetPrivateAccountStoreForTests,
+  setPrivateBlobRecordAdapterForTests,
 } from "./private-account-store";
 import {
   approvePrivateAccountAction,
+  createHyperliquidExecutionVault,
   createPrivateAccountAction,
   createPrivateExecutionAccount,
   gholaCommitment,
@@ -32,6 +39,123 @@ import {
 describe("private account store", () => {
   afterEach(async () => {
     await resetPrivateAccountStoreForTests();
+    privateBlobRecords.clear();
+    setPrivateBlobRecordAdapterForTests(null);
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_STORE;
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS;
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+  });
+
+  it("restores a verified Hyperliquid credential after process memory is cleared", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_STORE = "blob";
+    process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS = "private";
+    process.env.BLOB_READ_WRITE_TOKEN = "private-test-token";
+    setPrivateBlobRecordAdapterForTests({
+      async put(pathname, value) {
+        privateBlobRecords.set(pathname, value);
+      },
+      async get(pathname) {
+        return privateBlobRecords.get(pathname) ?? null;
+      },
+    });
+    const ownerCommitment = "owner_verified_reload";
+    const account = createPrivateExecutionAccount({
+      sessionId: ownerCommitment,
+      turnkeyWalletId: `turnkey:${ownerCommitment}`,
+      vaultSeed: `vault:${ownerCommitment}`,
+      policySeed: "private-mode-default",
+      platformSeed: `platforms:${ownerCommitment}`,
+      vaultReady: false,
+    });
+    const now = "2026-08-01T00:00:00.000Z";
+    await putPrivateAccountRecord({
+      version: 1,
+      owner_commitment: ownerCommitment,
+      account_commitment: account.account_commitment,
+      session_commitment: account.session_commitment,
+      turnkey_wallet_commitment: account.turnkey_wallet_commitment,
+      vault_root_commitment: account.vault_root_commitment,
+      note_root_commitment: gholaCommitment("note_root", account.vault_root_commitment),
+      nullifier_root_commitment: gholaCommitment("nullifier_root", account.vault_root_commitment),
+      platform_link_root: account.platform_link_root,
+      policy_commitment: account.policy_commitment,
+      privacy_mode: "private_mode",
+      claim_boundary: "engine_gated_full_anonymity",
+      vault_ready: false,
+      account,
+      created_at: now,
+      updated_at: now,
+    });
+    const created = createHyperliquidExecutionVault({
+      account_commitment: account.account_commitment,
+      encrypted_execution_vault: {
+        alg: "sealed-provider-v1",
+        ciphertext: "encrypted-test-ciphertext",
+        recipient: "phala:cvm:testnet-worker",
+        aad: [
+          "ghola/hyperliquid-execution-vault-v1",
+          `account:${account.account_commitment}`,
+          "recipient:phala:cvm:testnet-worker",
+          "network:testnet",
+        ].join("|"),
+      },
+      now: new Date(now),
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.error);
+    const verifiedAt = "2026-08-01T00:01:00.000Z";
+    await putHyperliquidExecutionVault({
+      version: 1,
+      owner_commitment: ownerCommitment,
+      account_commitment: account.account_commitment,
+      vault_commitment: created.vault.vault_commitment,
+      encrypted_vault_commitment: created.vault.encrypted_vault_commitment,
+      recipient_commitment: created.vault.recipient_commitment,
+      policy_commitment: created.vault.policy_commitment,
+      status: "sealed",
+      vault: {
+        ...created.vault,
+        connection_proof: {
+          version: 1,
+          status: "verified_no_funds",
+          verification_commitment: "verification_reload_test",
+          work_order_commitment: "work_order_reload_test",
+          network: "testnet",
+          credential_opened: true,
+          signer_binding_verified: true,
+          account_read_verified: true,
+          order_request_built: true,
+          verified_at: verifiedAt,
+          expires_at: "2099-08-01T00:16:00.000Z",
+        },
+        updated_at: verifiedAt,
+      },
+      created_at: now,
+      updated_at: verifiedAt,
+    });
+
+    await resetPrivateAccountStoreForTests();
+
+    const reloadedAccount = await getPrivateAccountByOwner(ownerCommitment);
+    const reloadedVault = await getHyperliquidExecutionVaultByAccount(account.account_commitment);
+    expect(reloadedAccount?.account_commitment).toBe(account.account_commitment);
+    expect(reloadedVault).toMatchObject({
+      owner_commitment: ownerCommitment,
+      account_commitment: account.account_commitment,
+      status: "sealed",
+      vault: {
+        encrypted_execution_vault: {
+          alg: "sealed-provider-v1",
+          recipient: "phala:cvm:testnet-worker",
+        },
+        connection_proof: {
+          status: "verified_no_funds",
+          network: "testnet",
+          credential_opened: true,
+        },
+      },
+    });
+    expect(JSON.stringify(reloadedVault)).not.toContain("api_wallet_private_key");
   });
 
   it("persists intent, preview, and approval records in memory during tests", async () => {

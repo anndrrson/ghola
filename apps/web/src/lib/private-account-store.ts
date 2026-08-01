@@ -1051,6 +1051,17 @@ const receiptExportRevocations = new Map<string, PrivateReceiptExportRevocationR
 
 let sqlClient: NeonSql | null = null;
 let schemaReady = false;
+let privateBlobRecordAdapterForTests: {
+  put(pathname: string, value: string): Promise<void>;
+  get(pathname: string): Promise<string | null>;
+} | null = null;
+
+export function setPrivateBlobRecordAdapterForTests(adapter: typeof privateBlobRecordAdapterForTests) {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("private_blob_test_adapter_forbidden");
+  }
+  privateBlobRecordAdapterForTests = adapter;
+}
 
 export async function putPrivateAccountRecord(
   record: PrivateAccountRecordV1,
@@ -1058,6 +1069,12 @@ export async function putPrivateAccountRecord(
   const sql = await getSql();
   if (!sql) {
     accounts.set(record.account_commitment, record);
+    if (shouldUsePrivateBlobRecordStore()) {
+      await Promise.all([
+        putPrivateBlobRecord(privateAccountByOwnerBlobPath(record.owner_commitment), record),
+        putPrivateBlobRecord(privateAccountByCommitmentBlobPath(record.account_commitment), record),
+      ]);
+    }
     return record;
   }
   await ensureSchema(sql);
@@ -1108,9 +1125,16 @@ export async function getPrivateAccountByOwner(
 ): Promise<PrivateAccountRecordV1 | null> {
   const sql = await getSql();
   if (!sql) {
-    return Array.from(accounts.values()).find(
+    const inMemory = Array.from(accounts.values()).find(
       (record) => record.owner_commitment === ownerCommitment,
     ) ?? null;
+    if (inMemory || !shouldUsePrivateBlobRecordStore()) return inMemory;
+    const persisted = await readPrivateBlobRecord<PrivateAccountRecordV1>(
+      privateAccountByOwnerBlobPath(ownerCommitment),
+    );
+    if (!persisted || persisted.owner_commitment !== ownerCommitment) return null;
+    accounts.set(persisted.account_commitment, persisted);
+    return persisted;
   }
   await ensureSchema(sql);
   const rows = (await sql`
@@ -1126,7 +1150,16 @@ export async function getPrivateAccountByCommitment(
   accountCommitment: string,
 ): Promise<PrivateAccountRecordV1 | null> {
   const sql = await getSql();
-  if (!sql) return accounts.get(accountCommitment) ?? null;
+  if (!sql) {
+    const inMemory = accounts.get(accountCommitment) ?? null;
+    if (inMemory || !shouldUsePrivateBlobRecordStore()) return inMemory;
+    const persisted = await readPrivateBlobRecord<PrivateAccountRecordV1>(
+      privateAccountByCommitmentBlobPath(accountCommitment),
+    );
+    if (!persisted || persisted.account_commitment !== accountCommitment) return null;
+    accounts.set(persisted.account_commitment, persisted);
+    return persisted;
+  }
   await ensureSchema(sql);
   const rows = (await sql`
     SELECT * FROM private_account_accounts
@@ -1381,6 +1414,12 @@ export async function putHyperliquidExecutionVault(
   const sql = await getSql();
   if (!sql) {
     hyperliquidVaults.set(record.vault_commitment, record);
+    if (shouldUsePrivateBlobRecordStore()) {
+      await Promise.all([
+        putPrivateBlobRecord(hyperliquidVaultByAccountBlobPath(record.account_commitment), record),
+        putPrivateBlobRecord(hyperliquidVaultByCommitmentBlobPath(record.vault_commitment), record),
+      ]);
+    }
     return record;
   }
   await ensureSchema(sql);
@@ -1420,7 +1459,16 @@ export async function getHyperliquidExecutionVault(
   vaultCommitment: string,
 ): Promise<PrivateHyperliquidVaultRecordV1 | null> {
   const sql = await getSql();
-  if (!sql) return hyperliquidVaults.get(vaultCommitment) ?? null;
+  if (!sql) {
+    const inMemory = hyperliquidVaults.get(vaultCommitment) ?? null;
+    if (inMemory || !shouldUsePrivateBlobRecordStore()) return inMemory;
+    const persisted = await readPrivateBlobRecord<PrivateHyperliquidVaultRecordV1>(
+      hyperliquidVaultByCommitmentBlobPath(vaultCommitment),
+    );
+    if (!persisted || persisted.vault_commitment !== vaultCommitment) return null;
+    hyperliquidVaults.set(persisted.vault_commitment, persisted);
+    return persisted;
+  }
   await ensureSchema(sql);
   const rows = (await sql`
     SELECT * FROM private_account_hyperliquid_vaults
@@ -1435,9 +1483,16 @@ export async function getHyperliquidExecutionVaultByAccount(
 ): Promise<PrivateHyperliquidVaultRecordV1 | null> {
   const sql = await getSql();
   if (!sql) {
-    return Array.from(hyperliquidVaults.values())
+    const inMemory = Array.from(hyperliquidVaults.values())
       .filter((record) => record.account_commitment === accountCommitment)
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0] ?? null;
+    if (inMemory || !shouldUsePrivateBlobRecordStore()) return inMemory;
+    const persisted = await readPrivateBlobRecord<PrivateHyperliquidVaultRecordV1>(
+      hyperliquidVaultByAccountBlobPath(accountCommitment),
+    );
+    if (!persisted || persisted.account_commitment !== accountCommitment) return null;
+    hyperliquidVaults.set(persisted.vault_commitment, persisted);
+    return persisted;
   }
   await ensureSchema(sql);
   const rows = (await sql`
@@ -5147,8 +5202,16 @@ const PRIVATE_ACCOUNT_BLOB_STATE_PREFIX = "private-account-state/v1";
 
 function shouldUseBlobStateStore(): boolean {
   if (process.env.GHOLA_PRIVATE_ACCOUNT_STORE === "memory") return false;
-  if (process.env.NODE_ENV === "test") return false;
+  if (process.env.NODE_ENV === "test" && process.env.GHOLA_PRIVATE_ACCOUNT_STORE !== "blob") return false;
   return Boolean(blobReadWriteToken() || process.env.BLOB_STORE_ID);
+}
+
+function shouldUsePrivateBlobRecordStore(): boolean {
+  return process.env.GHOLA_PRIVATE_ACCOUNT_STORE === "blob";
+}
+
+function privateAccountBlobAccess(): "public" | "private" {
+  return process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS === "private" ? "private" : "public";
 }
 
 function blobReadWriteToken(): string {
@@ -5166,8 +5229,9 @@ async function putBlobJson(pathname: string, value: unknown): Promise<boolean> {
   if (!shouldUseBlobStateStore()) return false;
   try {
     const { put } = await import("@vercel/blob");
+    const access = privateAccountBlobAccess();
     await put(pathname, JSON.stringify(value), {
-      access: "public",
+      access,
       addRandomSuffix: false,
       allowOverwrite: true,
       contentType: "application/json",
@@ -5180,10 +5244,67 @@ async function putBlobJson(pathname: string, value: unknown): Promise<boolean> {
   }
 }
 
+async function putPrivateBlobRecord(pathname: string, value: unknown): Promise<void> {
+  if (privateAccountBlobAccess() !== "private") {
+    throw new Error("private_account_private_blob_required");
+  }
+  const serialized = JSON.stringify(value);
+  if (privateBlobRecordAdapterForTests) {
+    await privateBlobRecordAdapterForTests.put(pathname, serialized);
+    return;
+  }
+  try {
+    const { put } = await import("@vercel/blob");
+    await put(pathname, serialized, {
+      access: "private",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      cacheControlMaxAge: 60,
+      contentType: "application/json",
+      ...blobOptions(),
+    });
+  } catch {
+    throw new Error("private_account_persistence_unavailable");
+  }
+}
+
+async function readPrivateBlobRecord<T>(pathname: string): Promise<T | null> {
+  if (privateAccountBlobAccess() !== "private") {
+    throw new Error("private_account_private_blob_required");
+  }
+  if (privateBlobRecordAdapterForTests) {
+    const serialized = await privateBlobRecordAdapterForTests.get(pathname);
+    return serialized === null ? null : JSON.parse(serialized) as T;
+  }
+  try {
+    const { get } = await import("@vercel/blob");
+    const result = await get(pathname, {
+      access: "private",
+      useCache: false,
+      ...blobOptions(),
+    });
+    if (!result || result.statusCode !== 200 || !result.stream) return null;
+    return JSON.parse(await new Response(result.stream).text()) as T;
+  } catch (error) {
+    if (error instanceof Error && error.name === "BlobNotFoundError") return null;
+    throw new Error("private_account_persistence_unavailable");
+  }
+}
+
 async function readBlobJson<T>(pathname: string): Promise<T | null> {
   if (!shouldUseBlobStateStore()) return null;
   try {
-    const { list } = await import("@vercel/blob");
+    const { get, list } = await import("@vercel/blob");
+    const access = privateAccountBlobAccess();
+    if (access === "private") {
+      const result = await get(pathname, {
+        access,
+        useCache: false,
+        ...blobOptions(),
+      });
+      if (!result || result.statusCode !== 200 || !result.stream) return null;
+      return JSON.parse(await new Response(result.stream).text()) as T;
+    }
     const listed = await list({
       prefix: pathname,
       limit: 1,
@@ -5288,6 +5409,22 @@ function privateFundingBatchRunArchivePath(record: PrivateFundingBatchRunRecordV
 
 function safeBlobSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, "_");
+}
+
+function privateAccountByOwnerBlobPath(ownerCommitment: string): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/accounts/by-owner/${safeBlobSegment(ownerCommitment)}.json`;
+}
+
+function privateAccountByCommitmentBlobPath(accountCommitment: string): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/accounts/by-commitment/${safeBlobSegment(accountCommitment)}.json`;
+}
+
+function hyperliquidVaultByAccountBlobPath(accountCommitment: string): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/hyperliquid-vaults/by-account/${safeBlobSegment(accountCommitment)}.json`;
+}
+
+function hyperliquidVaultByCommitmentBlobPath(vaultCommitment: string): string {
+  return `${PRIVATE_ACCOUNT_BLOB_STATE_PREFIX}/hyperliquid-vaults/by-commitment/${safeBlobSegment(vaultCommitment)}.json`;
 }
 
 async function ensureSchema(sql: NeonSql): Promise<void> {
