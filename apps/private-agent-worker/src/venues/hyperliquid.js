@@ -708,6 +708,9 @@ function hyperliquidNoSubmitResult({ instruction, cloid, executionMode, runnerRe
     account_read_checked: runnerResult.account_state_checked === true,
     order_packet_built: runnerResult.order_request_checked === true,
     order_request_built: runnerResult.order_request_checked === true,
+    live_venue_checked:
+      runnerResult.market_data_checked === true &&
+      runnerResult.account_state_checked === true,
     transaction_broadcast: false,
   };
   return {

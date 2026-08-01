@@ -1941,6 +1941,7 @@ describe("private agent worker", () => {
     assert.equal(body.checks.hyperliquid_api_reachable, true);
     assert.equal(body.checks.account_read_checked, true);
     assert.equal(body.checks.order_request_built, true);
+    assert.equal(body.checks.live_venue_checked, true);
     assert.equal(body.visibility_summary.public_chain_sees, "no_transaction_sent");
     assert.equal(body.visibility_summary.venue_gate, "not_tested_without_submit");
     assert.equal(JSON.stringify(body).includes("api_wallet_private_key"), false);
