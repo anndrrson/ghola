@@ -59,6 +59,10 @@ interface PhalaProvisionResponse {
   app_env_encrypt_pubkey: string;
 }
 
+interface PhalaComposeUpdateResponse {
+  compose_hash: string;
+}
+
 interface PhalaCloudClient {
   getCvmInfo(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
   getCvmNetwork(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
@@ -66,11 +70,16 @@ interface PhalaCloudClient {
   getCvmState(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
   startCvm(input: { id: string }): Promise<unknown>;
   stopCvm(input: { id: string }): Promise<unknown>;
+  getCvmComposeFile(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
   provisionCvm(input: Record<string, unknown>): Promise<PhalaProvisionResponse>;
   commitCvmProvision(
     input: Record<string, unknown>,
     options?: { schema: boolean },
   ): Promise<unknown>;
+  provisionCvmComposeFileUpdate(
+    input: Record<string, unknown>,
+  ): Promise<PhalaComposeUpdateResponse>;
+  commitCvmComposeFileUpdate(input: Record<string, unknown>): Promise<unknown>;
 }
 
 function env(name: string): string | null {
@@ -315,6 +324,65 @@ export function buildPhalaWorkerCompose(input: {
     "  private-agent-data:",
     "",
   ].join("\n");
+}
+
+export function phalaWorkerComposeUsesImage(input: {
+  currentCompose: unknown;
+  image: string;
+  imageDigest: string;
+}): boolean {
+  if (typeof input.currentCompose !== "string") return false;
+  const imageLine = `    image: ${input.image}`;
+  const digestLine = `      PHALA_CVM_IMAGE_DIGEST: ${JSON.stringify(input.imageDigest)}`;
+  return (
+    input.currentCompose.split("\n").includes(imageLine) &&
+    input.currentCompose.split("\n").includes(digestLine)
+  );
+}
+
+async function reconcilePhalaWorkerImage(input: {
+  client: PhalaCloudClient;
+  name: string;
+}): Promise<"current" | "updated" | "unknown"> {
+  let composeFile: unknown;
+  try {
+    composeFile = await input.client.getCvmComposeFile(
+      { id: input.name },
+      { schema: false },
+    );
+  } catch {
+    return "unknown";
+  }
+  const record =
+    composeFile && typeof composeFile === "object"
+      ? (composeFile as Record<string, unknown>)
+      : null;
+  const currentCompose = record?.docker_compose_file;
+  if (
+    phalaWorkerComposeUsesImage({
+      currentCompose,
+      image: phalaWorkerImage(),
+      imageDigest: phalaWorkerImageDigest(),
+    })
+  ) {
+    return "current";
+  }
+
+  const desiredCompose = buildPhalaWorkerCompose();
+  const provision = await input.client.provisionCvmComposeFileUpdate({
+    id: input.name,
+    app_compose: {
+      ...(record ?? {}),
+      docker_compose_file: desiredCompose,
+    },
+    update_env_vars: false,
+  });
+  await input.client.commitCvmComposeFileUpdate({
+    id: input.name,
+    compose_hash: provision.compose_hash,
+    update_env_vars: false,
+  });
+  return "updated";
 }
 
 async function phalaClient(): Promise<PhalaCloudClient | null> {
@@ -566,14 +634,6 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
   }
 
   const discovered = await discoverPhalaPrivateAgentProvider();
-  if (discovered?.available) {
-    return {
-      attempted: false,
-      ready: true,
-      status: "already_ready",
-      cvm_name: phalaCvmName(),
-    };
-  }
 
   const name = phalaCvmName();
   let info: unknown = null;
@@ -581,6 +641,38 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
     info = await client.getCvmInfo({ id: name }, { schema: false });
   } catch {
     // Missing CVM is expected before the first paid private-agent request.
+  }
+
+  if (info) {
+    try {
+      const imageState = await reconcilePhalaWorkerImage({ client, name });
+      if (imageState === "updated") {
+        return {
+          attempted: true,
+          ready: false,
+          status: "provisioning",
+          reason: "Updating the existing Phala worker to the configured image.",
+          cvm_name: name,
+        };
+      }
+    } catch (error) {
+      return {
+        attempted: true,
+        ready: false,
+        status: "failed",
+        reason: error instanceof Error ? error.message : "Phala worker image update failed.",
+        cvm_name: name,
+      };
+    }
+
+    if (discovered?.available) {
+      return {
+        attempted: false,
+        ready: true,
+        status: "already_ready",
+        cvm_name: name,
+      };
+    }
   }
 
   if (!info) {

@@ -8,6 +8,7 @@ import {
   phalaJitProvisioningConfigIssue,
   phalaJitProvisioningConfigured,
   phalaWorkerImageConfiguredForRequestedMode,
+  phalaWorkerComposeUsesImage,
   stopIdlePhalaPrivateAgent,
 } from "./private-agent-phala";
 import { resetPrivateAgentRuntimeLeaseStoreForTests } from "./private-agent-runtime-lease";
@@ -88,6 +89,35 @@ describe("private-agent Phala provisioning", () => {
     );
     expect(compose).not.toMatch(/PHALA_CLOUD_API_KEY|PHALA_API_KEY/);
     expect(compose).not.toMatch(/prompt|strategy_text|messages|policy:/i);
+  });
+
+  it("detects whether an existing CVM compose uses the configured worker image", () => {
+    const currentCompose = buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker@sha256:fresh",
+      imageDigest: "sha256:fresh",
+    });
+
+    expect(
+      phalaWorkerComposeUsesImage({
+        currentCompose,
+        image: "ghcr.io/example/worker@sha256:fresh",
+        imageDigest: "sha256:fresh",
+      }),
+    ).toBe(true);
+    expect(
+      phalaWorkerComposeUsesImage({
+        currentCompose,
+        image: "ghcr.io/example/worker@sha256:new",
+        imageDigest: "sha256:new",
+      }),
+    ).toBe(false);
+    expect(
+      phalaWorkerComposeUsesImage({
+        currentCompose,
+        image: "ghcr.io/example/worker@sha256:fresh",
+        imageDigest: "sha256:different",
+      }),
+    ).toBe(false);
   });
 
   it("passes live tiny-fill controls into the worker compose", () => {
