@@ -18,6 +18,7 @@ describe("trade readiness", () => {
     const base = { authenticated: true, network: "testnet" as const, credentialsReady: true, accountState: "ready" as const, account, marketCatalogState: "ready" as const, selectedMarketAvailable: true };
     expect(hyperliquidPerpsReadiness({ ...base, credentialsReady: false }).label).toBe("credentials required");
     expect(hyperliquidPerpsReadiness({ ...base, account: { ...account, status: "needs_funds" } }).label).toBe("collateral required");
+    expect(hyperliquidPerpsReadiness({ ...base, account: { ...account, status: "private_mode_waiting" } }).label).toBe("verification required");
     expect(hyperliquidPerpsReadiness({ ...base, selectedMarketAvailable: false }).label).toBe("selected market unavailable");
     expect(hyperliquidPerpsReadiness(base).label).toBe("ready");
   });

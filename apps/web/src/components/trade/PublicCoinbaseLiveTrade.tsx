@@ -49,6 +49,8 @@ import {
   createPrivateAccountIntent,
   createPrivateAccountRuntimeEnvelope,
   executePrivateAccountAction,
+  getHyperliquidAccountSnapshot,
+  getHyperliquidExecutionVaultStatus,
   openHyperliquidAccountStream,
   previewPrivateAccountAction,
   type HyperliquidAccountSnapshot,
@@ -974,13 +976,7 @@ function AlternateProductWorkspace({
     let cancelled = false;
     const load = async () => {
       try {
-        const response = await fetch("/v1/private-account/hyperliquid/account-snapshot", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        if (!response.ok) throw new Error("account unavailable");
-        const snapshot = await response.json() as HyperliquidAccountSnapshot;
+        const snapshot = await getHyperliquidAccountSnapshot();
         if (!cancelled) {
           setHyperliquidAccount(snapshot);
           setAccountState("ready");
@@ -1015,11 +1011,7 @@ function AlternateProductWorkspace({
   useEffect(() => {
     if (!authenticated || !useHyperliquidMarket) return;
     let cancelled = false;
-    void fetch("/v1/private-account/hyperliquid/vault", { cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("connection status unavailable");
-        return response.json() as Promise<{ credentials_sealed?: boolean }>;
-      })
+    void getHyperliquidExecutionVaultStatus()
       .then((status) => {
         if (!cancelled) setHyperliquidConnectionReady(hyperliquidCredentialsSealed(status));
       })
