@@ -147,10 +147,10 @@ function phalaWorkerImageDigest(): string {
 }
 
 function liveHyperliquidEnabled(): boolean {
-  return (
-    env("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") === "tiny_fill" ||
-    env("GHOLA_HYPERLIQUID_LIVE_MODE") === "tiny_fill"
-  );
+  const mode =
+    env("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") ??
+    env("GHOLA_HYPERLIQUID_LIVE_MODE");
+  return mode === "tiny_fill" || mode === "full_ticket";
 }
 
 function liveSolanaPerpsEnabled(): boolean {

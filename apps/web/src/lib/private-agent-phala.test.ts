@@ -188,6 +188,21 @@ describe("private-agent Phala provisioning", () => {
     );
   });
 
+  it("requires an explicit worker image for full-ticket Hyperliquid mode", () => {
+    setTestEnv({
+      GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN: "worker-token",
+      GHOLA_PRIVATE_AGENT_JIT_PROVISIONING: "true",
+      GHOLA_HYPERLIQUID_LIVE_MODE: "full_ticket",
+      PHALA_CLOUD_API_KEY: "phala-key",
+    });
+
+    expect(phalaJitProvisioningConfigured()).toBe(false);
+    expect(phalaWorkerImageConfiguredForRequestedMode()).toBe(false);
+    expect(phalaJitProvisioningConfigIssue()).toContain(
+      "GHOLA_PRIVATE_AGENT_WORKER_IMAGE",
+    );
+  });
+
   it("binds recipient evidence to recipient id and public key", () => {
     const first = expectedRecipientReportDataHex({
       recipientId: "phala:cvm:one",
