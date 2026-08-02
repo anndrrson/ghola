@@ -8312,6 +8312,7 @@ async function connectorForExecution(input: {
         | "connector_not_ready"
         | "connector_submit_failed"
         | "connector_submit_blocked"
+        | "max_notional_exceeded"
         | "connector_submit_in_progress"
         | "venue_access_required"
         | "ghola_balance_insufficient"

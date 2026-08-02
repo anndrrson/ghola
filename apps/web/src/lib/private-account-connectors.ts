@@ -31,6 +31,7 @@ export type GholaConnectorSubmitError =
   | "connector_not_ready"
   | "connector_submit_failed"
   | "connector_submit_blocked"
+  | "max_notional_exceeded"
   | "venue_access_required"
   | "needs_funds"
   | "venue_rejected";
@@ -1272,6 +1273,9 @@ function connectorSubmitError(body: Record<string, unknown>, status: number): Gh
   const text = `${code} ${stringValue(body.error)}`;
   if (code === "needs_funds" || /needs funds|insufficient|not enough|balance/i.test(text)) {
     return "needs_funds";
+  }
+  if (/notional cap|max notional|exceeds live notional/i.test(text)) {
+    return "max_notional_exceeded";
   }
   if (code === "venue_access_required" || code === "hyperliquid_execution_vault_not_ready") {
     return "venue_access_required";

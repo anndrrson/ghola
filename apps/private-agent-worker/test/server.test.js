@@ -759,7 +759,7 @@ describe("private agent worker", () => {
     assert.deepEqual(readiness.proof_model.funded_operator_canary_advisory_reason_codes, ["live_canary_missing"]);
     assert.equal(readiness.proof_model.per_session_requirements.scoped_worker_capability, true);
     assert.equal(readiness.proof_model.per_session_requirements.receipt_commitment, true);
-    assert.equal(readiness.proof_model.first_order_policy.max_notional_usd, 5);
+    assert.equal(readiness.proof_model.first_order_policy.max_notional_usd, 10);
     assert.equal(readiness.proof_model.evidence_endpoints.revenue, "/revenue/evidence");
     assert.equal(readiness.first_available_path.mode, "live_autopilot");
     assert.equal(readiness.first_available_path.venue_id, "jupiter");

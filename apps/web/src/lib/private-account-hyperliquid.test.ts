@@ -448,12 +448,13 @@ describe("Hyperliquid private execution layer", () => {
       GHOLA_PRIVATE_RUNTIME_URL: "https://runtime.ghola.test",
       GHOLA_PRIVATE_RUNTIME_MEASUREMENT: "measurement-test",
     };
-    vi.stubGlobal("fetch", vi.fn(async () =>
+    const fetchMock = vi.fn(async () =>
       Response.json({
         error: "hyperliquid request failed",
         error_code: "venue_rejected",
       }, { status: 422 }),
-    ));
+    );
+    vi.stubGlobal("fetch", fetchMock);
 
     const account = createPrivateExecutionAccount({ vaultReady: true });
     const action = createPrivateAccountAction({ action_class: "trade_on_platform", product_bucket: "perps", now: NOW });
@@ -527,5 +528,25 @@ describe("Hyperliquid private execution layer", () => {
     });
 
     expect(submitted).toEqual({ ok: false, error: "venue_rejected" });
+
+    fetchMock.mockResolvedValueOnce(Response.json({
+      error: "hyperliquid tiny fill exceeds live notional cap",
+    }, { status: 400 }));
+    const capped = await submitConnectorWorkOrder({
+      work_order: workOrder,
+      manifest,
+      compiled_intent: compiled.compiled_intent,
+      preview,
+      readiness,
+      hyperliquid_execution_vault: {
+        vault_commitment: "hyperliquid_vault_test",
+        encrypted_vault_commitment: "hyperliquid_encrypted_vault_test",
+        policy_commitment: "hyperliquid_policy_test",
+        encrypted_execution_vault: { ciphertext: "sealed" },
+      },
+      env,
+      now: NOW,
+    });
+    expect(capped).toEqual({ ok: false, error: "max_notional_exceeded" });
   });
 });

@@ -311,7 +311,7 @@ describe("private account live trading launch gate", () => {
       launch_mode: "public_pooled_and_byo",
       funded_operator_canary_required: false,
       first_order_policy: {
-        cap_usd: 5,
+        cap_usd: 10,
         graduate_after_reconciled_receipt: true,
       },
     });

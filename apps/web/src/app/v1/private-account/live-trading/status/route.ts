@@ -361,7 +361,7 @@ function publicLiveProofModel(input: {
       revenue_evidence: true,
     },
     first_order_policy: {
-      cap_usd: 5,
+      cap_usd: 10,
       graduate_after_reconciled_receipt: true,
       max_slippage_bps: 100,
     },

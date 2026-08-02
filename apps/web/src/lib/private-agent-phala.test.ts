@@ -8,6 +8,7 @@ import {
   phalaJitProvisioningConfigIssue,
   phalaJitProvisioningConfigured,
   phalaWorkerImageConfiguredForRequestedMode,
+  phalaWorkerComposeMatchesDesired,
   phalaWorkerComposeUsesImage,
   stopIdlePhalaPrivateAgent,
 } from "./private-agent-phala";
@@ -79,7 +80,7 @@ describe("private-agent Phala provisioning", () => {
       'PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "disabled"',
     );
     expect(compose).toContain(
-      'PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD: "5"',
+      'PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD: "10"',
     );
     expect(compose).toContain(
       'PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD: "25"',
@@ -118,6 +119,27 @@ describe("private-agent Phala provisioning", () => {
         imageDigest: "sha256:different",
       }),
     ).toBe(false);
+  });
+
+  it("reconciles worker policy changes even when the image is unchanged", () => {
+    setTestEnv({ PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD: "5" });
+    const oldCompose = buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker@sha256:fresh",
+      imageDigest: "sha256:fresh",
+    });
+    setTestEnv({ PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD: "10" });
+    const desiredCompose = buildPhalaWorkerCompose({
+      image: "ghcr.io/example/worker@sha256:fresh",
+      imageDigest: "sha256:fresh",
+    });
+
+    expect(phalaWorkerComposeUsesImage({
+      currentCompose: oldCompose,
+      image: "ghcr.io/example/worker@sha256:fresh",
+      imageDigest: "sha256:fresh",
+    })).toBe(true);
+    expect(phalaWorkerComposeMatchesDesired({ currentCompose: oldCompose, desiredCompose })).toBe(false);
+    expect(phalaWorkerComposeMatchesDesired({ currentCompose: desiredCompose, desiredCompose })).toBe(true);
   });
 
   it("passes live tiny-fill controls into the worker compose", () => {

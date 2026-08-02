@@ -305,7 +305,10 @@ export function buildPhalaWorkerCompose(input: {
     composeEnvLine("PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD", "0")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", workerEnv("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", "false", ["GHOLA_HYPERLIQUID_ALLOW_MAINNET"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", "disabled")),
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", "5")),
+    // Hyperliquid rejects perp orders below $10, so a lower worker cap makes
+    // every opening order impossible. Keep the bounded launch at that venue
+    // minimum; reduce-only exits remain exempt in worker policy.
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", "10")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", "25", ["GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD", "")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD", "")),
@@ -340,6 +343,14 @@ export function phalaWorkerComposeUsesImage(input: {
   );
 }
 
+export function phalaWorkerComposeMatchesDesired(input: {
+  currentCompose: unknown;
+  desiredCompose: string;
+}): boolean {
+  return typeof input.currentCompose === "string" &&
+    input.currentCompose.trim() === input.desiredCompose.trim();
+}
+
 async function reconcilePhalaWorkerImage(input: {
   client: PhalaCloudClient;
   name: string;
@@ -358,17 +369,11 @@ async function reconcilePhalaWorkerImage(input: {
       ? (composeFile as Record<string, unknown>)
       : null;
   const currentCompose = record?.docker_compose_file;
-  if (
-    phalaWorkerComposeUsesImage({
-      currentCompose,
-      image: phalaWorkerImage(),
-      imageDigest: phalaWorkerImageDigest(),
-    })
-  ) {
+  const desiredCompose = buildPhalaWorkerCompose();
+  if (phalaWorkerComposeMatchesDesired({ currentCompose, desiredCompose })) {
     return "current";
   }
 
-  const desiredCompose = buildPhalaWorkerCompose();
   const provision = await input.client.provisionCvmComposeFileUpdate({
     id: input.name,
     app_compose: {

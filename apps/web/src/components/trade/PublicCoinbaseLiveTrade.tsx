@@ -1769,7 +1769,7 @@ function friendlyPerpError(error: unknown): string {
   const normalized = raw.toLowerCase();
   if (normalized.includes("insufficient") || normalized.includes("needs_funds")) return "This Hyperliquid account needs enough perp collateral for the order and fees.";
   if (normalized.includes("preview_expired") || normalized.includes("intent_expired")) return "The live review expired. Review the order again.";
-  if (normalized.includes("max notional") || normalized.includes("notional cap")) return "This order exceeds the account’s configured trading limit.";
+  if (normalized.includes("max notional") || normalized.includes("max_notional") || normalized.includes("notional cap")) return "This order exceeds the account’s configured trading limit.";
   if (normalized.includes("worker") || normalized.includes("connector")) return "The private execution worker is reconnecting. Your order was not blindly resubmitted.";
   if (normalized.includes("venue_rejected")) return "Hyperliquid rejected the order. Recheck collateral, price, size, and leverage.";
   return raw.replaceAll("_", " ");

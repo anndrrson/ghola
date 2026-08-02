@@ -1044,7 +1044,10 @@ async function autopilotExecutionReadinessResponse({ body, runtimeReady, now = n
         revenue_evidence: true,
       },
       first_order_policy: {
-        max_notional_usd: 5,
+        // Hyperliquid's venue minimum is $10; a lower cap cannot produce a
+        // valid opening order. The live worker still enforces this cap and the
+        // separate daily notional and slippage limits.
+        max_notional_usd: 10,
         max_slippage_bps: 100,
         require_reconciled_receipt_before_graduation: true,
       },
