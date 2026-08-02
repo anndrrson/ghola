@@ -8,6 +8,9 @@ import {
 } from "@/app/v1/private-account/_lib";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
+const DEFAULT_LIVE_PROXY_TIMEOUT_MS = 55_000;
 
 type ProxyBody = {
   path?: unknown;
@@ -105,8 +108,13 @@ export async function POST(req: Request) {
 }
 
 function liveProxyTimeoutMs() {
-  const configured = Number.parseInt(process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_PROXY_TIMEOUT_MS || "20000", 10);
-  return Number.isFinite(configured) && configured >= 1_000 ? configured : 20_000;
+  const configured = Number.parseInt(
+    process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_PROXY_TIMEOUT_MS || String(DEFAULT_LIVE_PROXY_TIMEOUT_MS),
+    10,
+  );
+  return Number.isFinite(configured) && configured >= 1_000
+    ? Math.min(configured, DEFAULT_LIVE_PROXY_TIMEOUT_MS)
+    : DEFAULT_LIVE_PROXY_TIMEOUT_MS;
 }
 
 function readProxyBody(value: unknown): ProxyBody | null {

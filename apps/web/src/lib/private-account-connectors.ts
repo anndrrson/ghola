@@ -738,6 +738,7 @@ export async function submitConnectorWorkOrder(input: {
   }
   const cfg = connectorEnvConfig(input.manifest.platform_class, input.env ?? process.env);
   if (!cfg.url) return { ok: false, error: "connector_not_ready" };
+  const startedAt = Date.now();
   try {
     const submitPath = connectorSubmitPath(input.manifest.platform_class);
     const payload = redactedConnectorPayload(input);
@@ -789,7 +790,12 @@ export async function submitConnectorWorkOrder(input: {
         now,
       }),
     };
-  } catch {
+  } catch (error) {
+    console.error("[private-account] connector submit failed", {
+      platform_class: input.manifest.platform_class,
+      duration_ms: Date.now() - startedAt,
+      failure: error instanceof Error ? error.name : "unknown_error",
+    });
     return { ok: false, error: "connector_submit_failed" };
   }
 }

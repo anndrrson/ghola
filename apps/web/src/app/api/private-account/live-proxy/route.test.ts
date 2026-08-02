@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { POST } from "./route";
+import { maxDuration, POST } from "./route";
 
 const ENV_KEYS = [
   "GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS",
@@ -21,6 +21,7 @@ describe("private account live proxy", () => {
   });
 
   it("proxies allowed live mutations with server-side request proof headers", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
       ok: true,
     }), {
@@ -44,6 +45,22 @@ describe("private account live proxy", () => {
     expect(headers["x-ghola-request-nonce"]).toMatch(/^web-/);
     expect(headers["x-ghola-request-proof"]).toMatch(/^[0-9a-f]{64}$/);
     expect(headers.authorization).toBe("Bearer local-live-user");
+    expect(timeoutSpy).toHaveBeenCalledWith(55_000);
+    expect(maxDuration).toBe(60);
+  });
+
+  it("caps a configured timeout below the function duration", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_PROXY_TIMEOUT_MS = "120000";
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true })));
+
+    const res = await POST(proxyRequest({
+      path: "/v1/private-account/connectors/submit",
+      body: { version: 1 },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(timeoutSpy).toHaveBeenCalledWith(55_000);
   });
 
   it("rejects paths outside the live mutation allowlist", async () => {
