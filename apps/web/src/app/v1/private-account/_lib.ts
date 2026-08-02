@@ -5862,6 +5862,10 @@ export async function connectorSubmitFromBody(
   };
 }
 
+export function connectorNoSubmitMaxNotionalBucket(platformClass: GholaPlatformClass): "5" | "25" {
+  return platformClass === "hyperliquid_style_market" ? "25" : "5";
+}
+
 export async function connectorVerifyNoSubmitFromBody(
   body: unknown,
   owner: PrivateAccountRequestOwner,
@@ -6020,7 +6024,7 @@ export async function connectorVerifyNoSubmitFromBody(
     encrypted_execution_instruction_bundle: encryptedInstruction,
     session_policy: {
       market_allowlist: platformClass === "hyperliquid_style_market" ? ["BTC", "ETH", "SOL", "HYPE"] : [],
-      max_notional_bucket: "5",
+      max_notional_bucket: connectorNoSubmitMaxNotionalBucket(platformClass),
       max_order_count: 5,
       kill_switch: false,
     },

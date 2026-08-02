@@ -28,6 +28,7 @@ import { POST as allocatePooledVenue } from "../venues/[platform_class]/pool/all
 import { POST as allocateOmnibus } from "../omnibus/allocate/route";
 import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
 import { gholaCommitment } from "@/lib/private-account";
+import { connectorNoSubmitMaxNotionalBucket } from "../_lib";
 
 const INTERNAL_TOKEN = "test_internal_private_account_token";
 const JUPITER_SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -146,6 +147,11 @@ async function creditGholaBalance(userId: string, amountBucket = "25") {
 }
 
 describe("private account connector gateway routes", () => {
+  it("gives Hyperliquid no-submit checks a bucket that contains an executable ticket", () => {
+    expect(connectorNoSubmitMaxNotionalBucket("hyperliquid_style_market")).toBe("25");
+    expect(connectorNoSubmitMaxNotionalBucket("solana_perps_market")).toBe("5");
+  });
+
   beforeEach(() => {
     process.env.GHOLA_PRIVATE_ACCOUNT_INTERNAL_TOKEN = INTERNAL_TOKEN;
     process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS = "true";
