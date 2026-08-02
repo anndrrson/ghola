@@ -37,6 +37,7 @@ const TEST_ENV_KEYS = [
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE",
   "PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD",
   "PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS",
+  "PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS",
 ];
 
 afterEach(() => {
@@ -87,6 +88,9 @@ describe("private-agent Phala provisioning", () => {
     );
     expect(compose).toContain(
       'PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: "50"',
+    );
+    expect(compose).toContain(
+      'PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS: "30000"',
     );
     expect(compose).not.toMatch(/PHALA_CLOUD_API_KEY|PHALA_API_KEY/);
     expect(compose).not.toMatch(/prompt|strategy_text|messages|policy:/i);

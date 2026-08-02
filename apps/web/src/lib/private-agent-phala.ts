@@ -318,7 +318,10 @@ export function buildPhalaWorkerCompose(input: {
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD", "5", ["GHOLA_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD"])),
     composeEnvLine("PRIVATE_AGENT_SOLANA_RPC_URL", workerEnv("PRIVATE_AGENT_SOLANA_RPC_URL", "", ["GHOLA_SOLANA_RPC_URL", "SOLANA_RPC_URL"])),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_PRIORITY_FEE_MICRO_LAMPORTS", workerEnv("PRIVATE_AGENT_SOLANA_PERPS_PRIORITY_FEE_MICRO_LAMPORTS", "0", ["GHOLA_SOLANA_PERPS_PRIORITY_FEE_MICRO_LAMPORTS"])),
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", "12000")),
+    // The Hyperliquid SDK may need more than 12 seconds for its signed order
+    // exchange call after the read-only checks. Keep this below the web proxy's
+    // 55-second fail-closed deadline so the UI receives a definite result.
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", "30000")),
     "    volumes:",
     "      - /var/run/dstack.sock:/var/run/dstack.sock",
     "      - private-agent-data:/data",

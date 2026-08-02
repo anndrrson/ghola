@@ -140,7 +140,7 @@ orders.
 - `PRIVATE_AGENT_JUPITER_LIVE_MAX_NOTIONAL_USD=1000`
 - `PRIVATE_AGENT_JUPITER_POOLED_VAULT_JSON` or
   `PRIVATE_AGENT_JUPITER_POOLED_VAULT_PATH` for Ghola Vault Mode
-- `PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS=12000`
+- `PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS=30000` (bounded to 45 seconds, below the web proxy deadline)
 
 When `PRIVATE_AGENT_REQUIRE_DSTACK_QUOTE=true`, the worker requests a dstack
 quote over `/var/run/dstack.sock` with report data derived from the published

@@ -11,6 +11,8 @@ const TESTNET_WS_URL = "wss://api.hyperliquid-testnet.xyz/ws";
 const RECENT_FILL_WINDOW = 12;
 const OPEN_ORDER_WINDOW = 12;
 const POSITION_WINDOW = 12;
+const DEFAULT_HYPERLIQUID_RUNNER_TIMEOUT_MS = 30_000;
+const MAX_HYPERLIQUID_RUNNER_TIMEOUT_MS = 45_000;
 
 export class HyperliquidExecutionError extends Error {
   constructor(message, status = 502, code = "connector_submit_failed") {
@@ -137,7 +139,7 @@ export async function submitHyperliquidExecution({
     credential,
     instruction,
     cloid,
-    timeout_ms: Number.parseInt(process.env.PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS || "12000", 10),
+    timeout_ms: hyperliquidRunnerTimeoutMs(),
   });
   return {
     status: result.status || (instruction.operation_class === "cancel" ? "cancelled" : "submitted"),
@@ -186,7 +188,7 @@ export async function verifyHyperliquidNoSubmit({
     instruction,
     cloid,
     verify_no_submit: true,
-    timeout_ms: Number.parseInt(process.env.PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS || "12000", 10),
+    timeout_ms: hyperliquidRunnerTimeoutMs(),
   });
   return hyperliquidNoSubmitResult({
     instruction,
@@ -194,6 +196,17 @@ export async function verifyHyperliquidNoSubmit({
     executionMode,
     runnerResult,
   });
+}
+
+export function hyperliquidRunnerTimeoutMs(env = process.env) {
+  const configured = Number.parseInt(
+    env.PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS || String(DEFAULT_HYPERLIQUID_RUNNER_TIMEOUT_MS),
+    10,
+  );
+  if (!Number.isFinite(configured) || configured < 5_000) {
+    return DEFAULT_HYPERLIQUID_RUNNER_TIMEOUT_MS;
+  }
+  return Math.min(configured, MAX_HYPERLIQUID_RUNNER_TIMEOUT_MS);
 }
 
 export async function readHyperliquidAccountSnapshot({
@@ -881,7 +894,7 @@ function defaultRunner(payload) {
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
       reject(new HyperliquidExecutionError("hyperliquid runner timed out", 504));
-    }, payload.timeout_ms || 12000);
+    }, payload.timeout_ms || DEFAULT_HYPERLIQUID_RUNNER_TIMEOUT_MS);
     const stdout = [];
     const stderr = [];
     child.stdout.on("data", (chunk) => stdout.push(chunk));
