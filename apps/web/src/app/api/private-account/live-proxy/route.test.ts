@@ -5,6 +5,7 @@ const ENV_KEYS = [
   "GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS",
   "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET",
   "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE",
+  "GHOLA_PRIVATE_ACCOUNT_LIVE_PROXY_TIMEOUT_MS",
 ] as const;
 
 describe("private account live proxy", () => {
@@ -90,6 +91,25 @@ describe("private account live proxy", () => {
     const body = await res.json();
     expect(body.error).toContain("forbidden raw private-account fields");
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the guarded upstream mutation times out", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_PROXY_TIMEOUT_MS = "1000";
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        reject(new DOMException("Timed out", "TimeoutError"));
+      }, { once: true });
+    }));
+
+    const res = await POST(proxyRequest({
+      path: "/v1/private-account/hyperliquid/agent/session",
+      body: { execution_mode: "byo_api_key" },
+    }));
+
+    expect(res.status).toBe(504);
+    const body = await res.json();
+    expect(body.error).toBe("live_proxy_timeout");
+    expect(body.request_id).toMatch(/^live-/);
   });
 });
 

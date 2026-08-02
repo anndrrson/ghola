@@ -51,17 +51,47 @@ export async function POST(req: Request) {
     return json({ error: "private_account_request_proof_unconfigured" }, 503);
   }
 
-  const response = await fetch(new URL(`${target.pathname}${target.search}`, req.url), {
-    method: "POST",
-    cache: "no-store",
-    headers: {
-      "content-type": "application/json",
-      authorization: req.headers.get("authorization") ?? "",
-      cookie: req.headers.get("cookie") ?? "",
-      origin: new URL(req.url).origin,
-      ...(proofHeaders ?? {}),
-    },
-    body: JSON.stringify(proxyBody.body ?? {}),
+  const requestId = `live-${randomUUID()}`;
+  const startedAt = Date.now();
+  const timeoutMs = liveProxyTimeoutMs();
+  console.info("[private-account/live-proxy] forwarding", {
+    request_id: requestId,
+    path: target.pathname,
+    timeout_ms: timeoutMs,
+  });
+  let response: Response;
+  try {
+    response = await fetch(new URL(`${target.pathname}${target.search}`, req.url), {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "content-type": "application/json",
+        authorization: req.headers.get("authorization") ?? "",
+        cookie: req.headers.get("cookie") ?? "",
+        origin: new URL(req.url).origin,
+        ...(proofHeaders ?? {}),
+      },
+      body: JSON.stringify(proxyBody.body ?? {}),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+    console.error("[private-account/live-proxy] failed", {
+      request_id: requestId,
+      path: target.pathname,
+      duration_ms: Date.now() - startedAt,
+      failure: timedOut ? "timeout" : "upstream_error",
+    });
+    return json({
+      error: timedOut ? "live_proxy_timeout" : "live_proxy_upstream_failed",
+      request_id: requestId,
+    }, timedOut ? 504 : 502);
+  }
+  console.info("[private-account/live-proxy] completed", {
+    request_id: requestId,
+    path: target.pathname,
+    duration_ms: Date.now() - startedAt,
+    status: response.status,
   });
   const text = await response.text();
   const headers = new Headers({
@@ -72,6 +102,11 @@ export async function POST(req: Request) {
     status: response.status,
     headers,
   });
+}
+
+function liveProxyTimeoutMs() {
+  const configured = Number.parseInt(process.env.GHOLA_PRIVATE_ACCOUNT_LIVE_PROXY_TIMEOUT_MS || "20000", 10);
+  return Number.isFinite(configured) && configured >= 1_000 ? configured : 20_000;
 }
 
 function readProxyBody(value: unknown): ProxyBody | null {

@@ -1078,6 +1078,7 @@ function AlternateProductWorkspace({
     try {
       // The eager arming effect keeps this path fast. Refresh at point of use
       // as well so an idle tab can never review against an expired session.
+      setPerpNotice("Refreshing the capped Hyperliquid agent session…");
       await armHyperliquidExecutionAgent({
         execution_mode: "byo_api_key",
         market_allowlist: perpMarkets.map((item) => item.coin),
@@ -1085,13 +1086,16 @@ function AlternateProductWorkspace({
         max_order_count: 100,
         kill_switch: false,
       });
+      setPerpNotice("Creating a private order intent…");
       const safeInput = perpSafeInput(perpMarket, amount);
       const intent = await createPrivateAccountIntent(safeInput) as { intent_id?: string };
       if (!intent.intent_id) throw new Error("Ghola could not create the private order intent.");
+      setPerpNotice("Binding the private runtime envelope…");
       const runtime = await createPrivateAccountRuntimeEnvelope({
         intent_id: intent.intent_id,
         safe_input: safeInput,
       }) as { runtime_envelope?: { runtime_envelope_commitment?: string } };
+      setPerpNotice("Checking the final privacy and execution route…");
       const preview = await previewPrivateAccountAction({
         intent_id: intent.intent_id,
         safe_input: safeInput,
@@ -1116,6 +1120,7 @@ function AlternateProductWorkspace({
       }
       const previewCommitment = preview.preview?.preview_commitment;
       if (!previewCommitment) throw new Error("Ghola did not return a review commitment.");
+      setPerpNotice(null);
       setPerpReview({ intentId: intent.intent_id, previewCommitment, createdAt: Date.now() });
     } catch (error) {
       setPerpError(friendlyPerpError(error));
