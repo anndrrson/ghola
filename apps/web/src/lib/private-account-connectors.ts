@@ -827,6 +827,7 @@ export async function verifyConnectorNoSubmit(input: {
   env?: Record<string, string | undefined>;
 }): Promise<GholaConnectorNoFundsVerification> {
   const now = input.now ?? new Date();
+  const startedAt = Date.now();
   const base = {
     version: 1 as const,
     platform_class: input.platform_class,
@@ -894,6 +895,11 @@ export async function verifyConnectorNoSubmit(input: {
       body: payload,
       expected: workerCapabilityExpectedFromBody(payload),
     });
+    console.info("[private-account] connector no-submit forwarding", {
+      platform_class: input.platform_class,
+      venue_id: payload.venue_id,
+      path: verifyPath,
+    });
     const res = await fetch(new URL(verifyPath, cfg.url), {
       method: "POST",
       cache: "no-store",
@@ -904,8 +910,17 @@ export async function verifyConnectorNoSubmit(input: {
         ...(authorization ? { authorization } : {}),
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(40_000),
     });
     const body = asRecord(await res.json().catch(() => null));
+    console.info("[private-account] connector no-submit completed", {
+      platform_class: input.platform_class,
+      venue_id: payload.venue_id,
+      duration_ms: Date.now() - startedAt,
+      http_status: res.status,
+      result_status: stringValue(body.status) || null,
+      error_code: stringValue(body.error_code) || stringValue(body.code) || null,
+    });
     if (!res.ok || body.status !== "verified_no_funds") {
       console.warn("[private-account] connector no-submit verification failed", {
         platform_class: input.platform_class,
@@ -923,7 +938,12 @@ export async function verifyConnectorNoSubmit(input: {
       checks: noFundsChecks(body.checks),
       site_origin: input.site_origin,
     });
-  } catch {
+  } catch (error) {
+    console.error("[private-account] connector no-submit failed", {
+      platform_class: input.platform_class,
+      duration_ms: Date.now() - startedAt,
+      failure: error instanceof Error ? error.name : "unknown_error",
+    });
     return failedNoFundsVerification(base, "worker_unavailable", "worker_unavailable", input.site_origin);
   }
 }
