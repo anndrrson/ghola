@@ -335,6 +335,7 @@ export async function createHyperliquidAccountStateStream({
   let currentAccountAbstraction = "default";
   let currentOpenOrders = [];
   let currentFills = [];
+  let eventBackfill = null;
 
   async function backfill(status = "backfilling") {
     onEvent({ event: "stream_status", data: accountStreamStatus(status) });
@@ -384,6 +385,17 @@ export async function createHyperliquidAccountStateStream({
     });
   }
 
+  function requestEventBackfill() {
+    if (eventBackfill) return;
+    eventBackfill = backfill("backfilling")
+      .catch((error) => {
+        onEvent({ event: "error", data: safeStreamError(error) });
+      })
+      .finally(() => {
+        eventBackfill = null;
+      });
+  }
+
   function subscribe() {
     const subscriptions = [
       { type: "clearinghouseState", user: credential.account_address },
@@ -418,6 +430,10 @@ export async function createHyperliquidAccountStateStream({
     };
     socket.onmessage = (event) => {
       const changed = mergeHyperliquidAccountStreamMessage(String(event.data));
+      if (changed === "backfill") {
+        requestEventBackfill();
+        return;
+      }
       if (changed) emitAccountState("live");
     };
     socket.onerror = () => {
@@ -457,22 +473,24 @@ export async function createHyperliquidAccountStateStream({
         ? data
         : Array.isArray(data?.openOrders)
           ? data.openOrders
+          : Array.isArray(data?.orders)
+            ? data.orders
           : currentOpenOrders;
       return true;
     }
     if (channel === "userFills") {
       const fills = Array.isArray(data?.fills) ? data.fills : Array.isArray(data) ? data : [];
       currentFills = mergeByCommitment(fills, currentFills, "hyperliquid_fill").slice(0, RECENT_FILL_WINDOW);
-      return fills.length > 0;
+      return fills.length > 0 ? "backfill" : false;
     }
     if (channel === "userEvents") {
       const fills = Array.isArray(data?.fills) ? data.fills : [];
       currentFills = mergeByCommitment(fills, currentFills, "hyperliquid_fill").slice(0, RECENT_FILL_WINDOW);
-      return fills.length > 0;
+      return fills.length > 0 ? "backfill" : false;
     }
     if (channel === "orderUpdates") {
       onEvent({ event: "account_event", data: sanitizeOrderUpdate(data) });
-      return true;
+      return "backfill";
     }
     if (channel === "userFundings") {
       onEvent({ event: "account_event", data: sanitizeFundingUpdate(data) });

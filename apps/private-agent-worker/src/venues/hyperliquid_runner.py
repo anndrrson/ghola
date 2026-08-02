@@ -55,6 +55,7 @@ def main():
             order = instruction["order"]
             info = Info(base_url, skip_ws=True)
             resolved = resolve_limit_order(info, order, account_address, require_funds=False)
+            assert_leverage_supported(info, order)
             Cloid.from_str(cloid)
             print(json.dumps({
                 "status": "verified_no_funds",
@@ -70,6 +71,7 @@ def main():
             order = instruction["order"]
             info = Info(base_url, skip_ws=True)
             resolved = resolve_limit_order(info, order, account_address)
+            apply_order_leverage(exchange, info, order)
             result = exchange.order(
                 order["market"],
                 order["side"] == "buy",
@@ -120,6 +122,52 @@ def main():
         fail("hyperliquid request failed", "connector_submit_failed", submission_state)
 
     fail("unsupported hyperliquid operation")
+
+
+def requested_leverage(order):
+    try:
+        value = Decimal(str(order.get("leverage") or "1"))
+    except (InvalidOperation, ValueError):
+        fail("invalid hyperliquid leverage", "venue_rejected")
+    if value < 1 or value != value.to_integral_value():
+        fail("invalid hyperliquid leverage", "venue_rejected")
+    return int(value)
+
+
+def assert_leverage_supported(info, order):
+    requested = requested_leverage(order)
+    try:
+        for asset in info.meta().get("universe", []):
+            if asset.get("name") == order.get("market"):
+                maximum = int(asset.get("maxLeverage") or 1)
+                if requested > maximum:
+                    fail("requested leverage exceeds the market maximum", "venue_rejected")
+                return requested
+    except SystemExit:
+        raise
+    except Exception:
+        fail("hyperliquid market metadata unavailable", "connector_submit_failed")
+    fail("hyperliquid market is unavailable", "venue_rejected")
+
+
+def apply_order_leverage(exchange, info, order):
+    # Closing a position must not mutate its margin configuration. Opening and
+    # position-increasing orders must apply the reviewed leverage explicitly;
+    # Hyperliquid otherwise keeps the account's prior/default market leverage.
+    if order.get("reduce_only"):
+        return None
+    leverage = assert_leverage_supported(info, order)
+    try:
+        result = exchange.update_leverage(
+            leverage,
+            order["market"],
+            is_cross=order.get("margin_mode", "cross") == "cross",
+        )
+    except Exception:
+        fail("hyperliquid leverage update failed", "connector_submit_failed", "not_submitted")
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        fail("hyperliquid leverage update failed", "venue_rejected", "not_submitted")
+    return result
 
 
 def resolve_limit_order(info, order, account_address, require_funds=True):

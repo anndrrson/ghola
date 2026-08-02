@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
+  createHyperliquidAccountStateStream,
   hyperliquidCollateralValue,
   hyperliquidRunnerTimeoutMs,
   readHyperliquidAccountSnapshot,
@@ -68,6 +69,55 @@ print(json.dumps([
     assert.equal(rejected.status, "rejected");
     assert.equal(rejected.error_code, "order_below_venue_minimum");
     assert.equal(unknown.status, "outcome_unknown");
+  });
+});
+
+describe("Hyperliquid leverage application", () => {
+  it("applies the reviewed cross leverage before an opening order and skips closes", () => {
+    const runnerPath = fileURLToPath(new URL("../src/venues/hyperliquid_runner.py", import.meta.url));
+    const script = `
+import importlib.util, json
+spec = importlib.util.spec_from_file_location("ghola_hl_runner", ${JSON.stringify(runnerPath)})
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+class Info:
+    def meta(self): return {"universe": [{"name": "SOL", "maxLeverage": 20}]}
+class Exchange:
+    def __init__(self): self.calls = []
+    def update_leverage(self, leverage, market, is_cross=True):
+        self.calls.append([leverage, market, is_cross])
+        return {"status": "ok", "response": {"type": "default"}}
+exchange = Exchange()
+runner.apply_order_leverage(exchange, Info(), {"market": "SOL", "leverage": 1, "margin_mode": "cross"})
+runner.apply_order_leverage(exchange, Info(), {"market": "SOL", "leverage": 5, "margin_mode": "isolated", "reduce_only": True})
+print(json.dumps(exchange.calls))
+`;
+    const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+    assert.equal(result.status, 0);
+    assert.deepEqual(JSON.parse(result.stdout.trim()), [[1, "SOL", true]]);
+  });
+
+  it("fails closed before order submission when leverage is rejected", () => {
+    const runnerPath = fileURLToPath(new URL("../src/venues/hyperliquid_runner.py", import.meta.url));
+    const script = `
+import importlib.util
+spec = importlib.util.spec_from_file_location("ghola_hl_runner", ${JSON.stringify(runnerPath)})
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+class Info:
+    def meta(self): return {"universe": [{"name": "SOL", "maxLeverage": 20}]}
+class Exchange:
+    def update_leverage(self, *_args, **_kwargs): return {"status": "err"}
+try:
+    runner.apply_order_leverage(Exchange(), Info(), {"market": "SOL", "leverage": 1})
+except SystemExit:
+    pass
+`;
+    const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+    assert.equal(result.status, 0);
+    const failure = JSON.parse(result.stdout.trim());
+    assert.equal(failure.error_code, "venue_rejected");
+    assert.equal(failure.submission_state, "not_submitted");
   });
 });
 
@@ -139,5 +189,58 @@ describe("Hyperliquid collateral readiness", () => {
       if (previousRetryMs == null) delete process.env.PRIVATE_AGENT_HYPERLIQUID_INFO_RETRY_MS;
       else process.env.PRIVATE_AGENT_HYPERLIQUID_INFO_RETRY_MS = previousRetryMs;
     }
+  });
+
+  it("refreshes clearinghouse positions after a websocket fill", async () => {
+    let clearinghouseReads = 0;
+    const fetchImpl = async (_url, init) => {
+      const { type } = JSON.parse(init.body);
+      if (type === "userAbstraction") return Response.json("unifiedAccount");
+      if (type === "spotClearinghouseState") {
+        return Response.json({
+          balances: [{ coin: "USDC", token: 0, total: "11.5", hold: "0" }],
+          tokenToAvailableAfterMaintenance: [[0, "11.5"]],
+        });
+      }
+      if (type === "clearinghouseState") {
+        clearinghouseReads += 1;
+        return Response.json({
+          marginSummary: { accountValue: "0" },
+          assetPositions: clearinghouseReads > 1
+            ? [{ position: { coin: "SOL", szi: "0.14", entryPx: "73.4", unrealizedPnl: "0.01" } }]
+            : [],
+        });
+      }
+      return Response.json([]);
+    };
+    class FakeWebSocket {
+      static instance;
+      constructor() { FakeWebSocket.instance = this; }
+      send() {}
+      close() { this.onclose?.(); }
+      open() { this.onopen?.(); }
+      message(value) { this.onmessage?.({ data: JSON.stringify(value) }); }
+    }
+    const states = [];
+    const stop = await createHyperliquidAccountStateStream({
+      credential: {
+        network: "testnet",
+        base_url: "https://api.hyperliquid-testnet.xyz",
+        account_address: "0x1111111111111111111111111111111111111111",
+        api_wallet_private_key: "0x" + "22".repeat(32),
+      },
+      fetchImpl,
+      webSocketCtor: FakeWebSocket,
+      onEvent(event) {
+        if (event.event === "account_state") states.push(event.data);
+      },
+    });
+    FakeWebSocket.instance.open();
+    FakeWebSocket.instance.message({ channel: "userEvents", data: { fills: [{ coin: "SOL", side: "B", px: "73.4", sz: "0.14", time: Date.now(), fee: "0.005" }] } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    stop();
+    assert.ok(clearinghouseReads >= 2);
+    assert.equal(states.at(-1)?.position_count, 1);
+    assert.equal(states.at(-1)?.positions?.[0]?.market, "SOL");
   });
 });
