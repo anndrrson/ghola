@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { PrivateExecutionOrderDraft } from "@/lib/private-execution-instruction-seal";
-import { validatePerpTicket } from "./PublicCoinbaseLiveTrade";
+import {
+  HYPERLIQUID_REVIEW_TTL_MS,
+  hyperliquidReviewExpired,
+  validatePerpTicket,
+} from "./PublicCoinbaseLiveTrade";
 
 function ticket(quoteSize: string, reduceOnly = false): PrivateExecutionOrderDraft {
   return {
@@ -42,5 +46,20 @@ describe("bounded Hyperliquid ticket", () => {
     expect(validatePerpTicket(ticket("11", true), "70", 20, 50)).not.toContain(
       "Orders are capped at $10 during the bounded mainnet launch.",
     );
+  });
+});
+
+describe("Hyperliquid live review freshness", () => {
+  it("keeps a review valid long enough for a deliberate confirmation", () => {
+    const createdAt = 1_000_000;
+
+    expect(hyperliquidReviewExpired(createdAt, createdAt + 30_000)).toBe(false);
+    expect(hyperliquidReviewExpired(createdAt, createdAt + HYPERLIQUID_REVIEW_TTL_MS)).toBe(false);
+  });
+
+  it("expires the review after the bounded confirmation window", () => {
+    const createdAt = 1_000_000;
+
+    expect(hyperliquidReviewExpired(createdAt, createdAt + HYPERLIQUID_REVIEW_TTL_MS + 1)).toBe(true);
   });
 });

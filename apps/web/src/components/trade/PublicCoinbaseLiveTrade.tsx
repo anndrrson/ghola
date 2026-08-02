@@ -66,6 +66,12 @@ import {
 
 type LiveStep = "idle" | "prepared" | "submitted";
 
+export const HYPERLIQUID_REVIEW_TTL_MS = 60_000;
+
+export function hyperliquidReviewExpired(createdAt: number, now = Date.now()) {
+  return now - createdAt > HYPERLIQUID_REVIEW_TTL_MS;
+}
+
 type PublicLivePrepareResult = {
   status: string;
   account_commitment?: string;
@@ -1132,7 +1138,7 @@ function AlternateProductWorkspace({
   async function submitPerpOrder() {
     if (!perpReview || perpWorking) return;
     setPerpError(null);
-    if (Date.now() - perpReview.createdAt > 15_000) {
+    if (hyperliquidReviewExpired(perpReview.createdAt)) {
       setPerpReview(null);
       setPerpError("The live review expired. Review the order again for a fresh price and account check.");
       return;
@@ -1545,7 +1551,7 @@ function AlternateProductWorkspace({
               </div>
             )}
             <div className="mt-4 rounded-lg border border-[#303744] bg-[#090b0f] p-4 text-xs leading-5 text-[#8d98a8]">
-              Hyperliquid can see the execution account and order. Ghola stores the approval, ciphertext, and reconciliation commitments. This quote expires after 15 seconds.
+              Hyperliquid can see the execution account and order. Ghola stores the approval, ciphertext, and reconciliation commitments. This review expires after 60 seconds; venue slippage protection is checked again at execution.
             </div>
             <div className="mt-auto grid gap-2 pt-6">
               <button type="button" disabled={perpWorking !== null} onClick={() => void submitPerpOrder()} className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-[#3da8ff] text-sm font-bold text-[#03101d] hover:bg-[#67baff] disabled:cursor-wait disabled:opacity-65">
