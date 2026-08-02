@@ -122,6 +122,7 @@ import {
 import type { MobileMarketJupiter } from "@/lib/mobile-market-data";
 import { useMarketData } from "@/lib/market-data-store";
 import {
+  HYPERLIQUID_NO_SUBMIT_QUOTE_SIZE_USD,
   customerAutopilotEventCopy,
   deriveAutopilotExecutionDisplay,
   deriveTradingNextAction,
@@ -2200,7 +2201,7 @@ export function PrivateAccountCockpit({
         side: "buy",
         base_size: "",
         limit_price: "",
-        quote_size: "1",
+        quote_size: HYPERLIQUID_NO_SUBMIT_QUOTE_SIZE_USD,
         max_slippage_bps: "25",
         live_order_mode: "tiny_fill",
         order_type: "market",
