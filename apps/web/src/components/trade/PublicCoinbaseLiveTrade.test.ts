@@ -4,6 +4,7 @@ import {
   buildVenueSetupHref,
   HYPERLIQUID_REVIEW_TTL_MS,
   hyperliquidReviewExpired,
+  minimumExecutablePerpQuote,
   validatePerpTicket,
 } from "./PublicCoinbaseLiveTrade";
 
@@ -52,25 +53,32 @@ function ticket(quoteSize: string, reduceOnly = false): PrivateExecutionOrderDra
 }
 
 describe("bounded Hyperliquid ticket", () => {
-  it("accepts the exact $10 venue minimum and launch cap", () => {
-    expect(validatePerpTicket(ticket("10"), "70", 20, 50)).toEqual([]);
+  it("accepts a capped ticket that remains above $10 after SOL lot-size rounding", () => {
+    expect(validatePerpTicket(ticket("11"), "70", 20, 50, 2)).toEqual([]);
   });
 
-  it("rejects notionals below the venue minimum or above the launch cap", () => {
-    expect(validatePerpTicket(ticket("5"), "70", 20, 50)).toContain(
-      "Hyperliquid orders must be at least $10.",
+  it("rejects notionals below the venue minimum or above the bounded launch cap", () => {
+    expect(validatePerpTicket(ticket("5"), "70", 20, 50, 2)).toContain(
+      "Hyperliquid orders must be at least $10 after venue lot-size rounding.",
     );
-    expect(validatePerpTicket(ticket("11"), "70", 20, 50)).toContain(
-      "Orders are capped at $10 during the bounded mainnet launch.",
+    expect(validatePerpTicket(ticket("16"), "70", 20, 50, 2)).toContain(
+      "Orders are capped at $15 during the bounded mainnet launch.",
     );
+  });
+
+  it("rejects an apparent $10 SOL ticket when lot rounding would send less than $10", () => {
+    expect(validatePerpTicket(ticket("10"), "70", 20, 50, 2)).toContain(
+      "SOL needs at least $10.57 at the current price and venue lot size.",
+    );
+    expect(minimumExecutablePerpQuote(ticket("10"), "70", 2)).toBe(10.57);
   });
 
   it("allows reduce-only exits outside the entry ticket bounds", () => {
-    expect(validatePerpTicket(ticket("9", true), "70", 20, 50)).not.toContain(
-      "Hyperliquid orders must be at least $10.",
+    expect(validatePerpTicket(ticket("9", true), "70", 20, 50, 2)).not.toContain(
+      "Hyperliquid orders must be at least $10 after venue lot-size rounding.",
     );
-    expect(validatePerpTicket(ticket("11", true), "70", 20, 50)).not.toContain(
-      "Orders are capped at $10 during the bounded mainnet launch.",
+    expect(validatePerpTicket(ticket("16", true), "70", 20, 50, 2)).not.toContain(
+      "Orders are capped at $15 during the bounded mainnet launch.",
     );
   });
 });

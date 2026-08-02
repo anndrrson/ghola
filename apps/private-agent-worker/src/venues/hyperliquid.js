@@ -15,11 +15,17 @@ const DEFAULT_HYPERLIQUID_RUNNER_TIMEOUT_MS = 30_000;
 const MAX_HYPERLIQUID_RUNNER_TIMEOUT_MS = 45_000;
 
 export class HyperliquidExecutionError extends Error {
-  constructor(message, status = 502, code = "connector_submit_failed") {
+  constructor(
+    message,
+    status = 502,
+    code = "connector_submit_failed",
+    submissionState = "not_submitted",
+  ) {
     super(message);
     this.name = "HyperliquidExecutionError";
     this.status = status;
     this.code = code;
+    this.submissionState = submissionState;
   }
 }
 
@@ -893,7 +899,12 @@ function defaultRunner(payload) {
     });
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(new HyperliquidExecutionError("hyperliquid runner timed out", 504));
+      reject(new HyperliquidExecutionError(
+        "hyperliquid runner timed out",
+        504,
+        "connector_submit_failed",
+        "unknown",
+      ));
     }, payload.timeout_ms || DEFAULT_HYPERLIQUID_RUNNER_TIMEOUT_MS);
     const stdout = [];
     const stderr = [];
@@ -901,7 +912,12 @@ function defaultRunner(payload) {
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {
       clearTimeout(timeout);
-      reject(new HyperliquidExecutionError(error.message || "hyperliquid runner failed", 502));
+      reject(new HyperliquidExecutionError(
+        error.message || "hyperliquid runner failed",
+        502,
+        "connector_submit_failed",
+        "unknown",
+      ));
     });
     child.on("close", (code) => {
       clearTimeout(timeout);
@@ -912,13 +928,19 @@ function defaultRunner(payload) {
           parsed.message,
           parsed.status,
           parsed.code,
+          parsed.submissionState,
         ));
         return;
       }
       try {
         resolve(JSON.parse(text || "{}"));
       } catch {
-        reject(new HyperliquidExecutionError("hyperliquid runner returned invalid JSON", 502));
+        reject(new HyperliquidExecutionError(
+          "hyperliquid runner returned invalid JSON",
+          502,
+          "connector_submit_failed",
+          "unknown",
+        ));
       }
     });
     child.stdin.write(JSON.stringify(payload));
@@ -936,14 +958,20 @@ function parseRunnerFailure(text) {
       ? "venue_rejected"
       : body.error_code === "venue_access_required"
         ? "venue_access_required"
-        : "connector_submit_failed";
-    const status = code === "venue_rejected" ? 422 : code === "venue_access_required" ? 400 : 502;
-    return { message, code, status };
+        : body.error_code === "order_below_venue_minimum"
+          ? "order_below_venue_minimum"
+          : "connector_submit_failed";
+    const status = code === "venue_rejected" || code === "order_below_venue_minimum"
+      ? 422
+      : code === "venue_access_required" ? 400 : 502;
+    const submissionState = body.submission_state === "unknown" ? "unknown" : "not_submitted";
+    return { message, code, status, submissionState };
   } catch {
     return {
       message: "hyperliquid runner failed",
       code: "connector_submit_failed",
       status: 502,
+      submissionState: "unknown",
     };
   }
 }

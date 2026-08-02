@@ -836,7 +836,7 @@ function AlternateProductWorkspace({
     : null;
   const initialPerpMarket = requestedPerpMarket || "SOL";
   const [side, setSide] = useState<"buy" | "sell">("buy");
-  const [amount, setAmount] = useState("10");
+  const [amount, setAmount] = useState("11");
   const [limitPrice, setLimitPrice] = useState("");
   const [stopLoss, setStopLoss] = useState("");
   const [takeProfit, setTakeProfit] = useState("");
@@ -858,8 +858,8 @@ function AlternateProductWorkspace({
   const [setupOpen, setSetupOpen] = useState(false);
   const [activityTab, setActivityTab] = useState<"positions" | "orders" | "activity">("positions");
   const [perpMarket, setPerpMarket] = useState(initialPerpMarket);
-  const [perpMarkets, setPerpMarkets] = useState<Array<{ coin: string; max_leverage: number | null }>>([
-    { coin: initialPerpMarket, max_leverage: null },
+  const [perpMarkets, setPerpMarkets] = useState<Array<{ coin: string; max_leverage: number | null; size_decimals: number | null }>>([
+    { coin: initialPerpMarket, max_leverage: null, size_decimals: null },
   ]);
   const [perpMarketCatalogState, setPerpMarketCatalogState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [hyperliquidAccount, setHyperliquidAccount] = useState<HyperliquidAccountSnapshot | null>(null);
@@ -937,8 +937,14 @@ function AlternateProductWorkspace({
     },
   }), [amount, leverage, limitPrice, marginMode, maxSlippageBps, orderType, perpMarket, reduceOnly, side, stopLoss, takeProfit, timeInForce]);
   const perpOrderErrors = useMemo(
-    () => validatePerpTicket(perpOrder, displayedMid, maxLeverage, hyperliquidMaxSlippageBps),
-    [displayedMid, hyperliquidMaxSlippageBps, maxLeverage, perpOrder],
+    () => validatePerpTicket(
+      perpOrder,
+      displayedMid,
+      maxLeverage,
+      hyperliquidMaxSlippageBps,
+      selectedMarketCapability?.size_decimals ?? null,
+    ),
+    [displayedMid, hyperliquidMaxSlippageBps, maxLeverage, perpOrder, selectedMarketCapability?.size_decimals],
   );
 
   useEffect(() => {
@@ -957,12 +963,16 @@ function AlternateProductWorkspace({
       void fetch("/v1/private-account/hyperliquid/markets", { cache: "no-store" })
         .then(async (response) => {
           if (!response.ok) throw new Error("markets unavailable");
-          return response.json() as Promise<{ markets?: Array<{ coin?: string; max_leverage?: number | null }> }>;
+          return response.json() as Promise<{ markets?: Array<{ coin?: string; max_leverage?: number | null; size_decimals?: number | null }> }>;
         })
         .then((result) => {
           if (cancelled) return;
           const next = (result.markets ?? []).flatMap((item) =>
-            item.coin ? [{ coin: item.coin, max_leverage: item.max_leverage ?? null }] : []
+            item.coin ? [{
+              coin: item.coin,
+              max_leverage: item.max_leverage ?? null,
+              size_decimals: item.size_decimals ?? null,
+            }] : []
           );
           if (next.length > 0) startTransition(() => setPerpMarkets(next));
           if (!cancelled) setPerpMarketCatalogState("ready");
@@ -1046,7 +1056,7 @@ function AlternateProductWorkspace({
     void armHyperliquidExecutionAgent({
       execution_mode: "byo_api_key",
       market_allowlist: perpMarkets.map((item) => item.coin),
-      max_notional_bucket: "10",
+      max_notional_bucket: "25",
       max_order_count: 100,
       kill_switch: false,
     }).catch((error) => {
@@ -1101,7 +1111,7 @@ function AlternateProductWorkspace({
       await armHyperliquidExecutionAgent({
         execution_mode: "byo_api_key",
         market_allowlist: perpMarkets.map((item) => item.coin),
-        max_notional_bucket: "10",
+        max_notional_bucket: "25",
         max_order_count: 100,
         kill_switch: false,
       });
@@ -1586,7 +1596,7 @@ function PerpMarketPicker({
   onChange,
 }: {
   value: string;
-  markets: Array<{ coin: string; max_leverage: number | null }>;
+  markets: Array<{ coin: string; max_leverage: number | null; size_decimals: number | null }>;
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1728,6 +1738,7 @@ export function validatePerpTicket(
   referencePrice: string | null | undefined,
   maxLeverage: number | null,
   maxSlippagePolicyBps: number,
+  sizeDecimals: number | null = null,
 ): string[] {
   const errors = validatePrivateExecutionOrderDraft(order);
   const notional = Number(order.quote_size);
@@ -1735,8 +1746,24 @@ export function validatePerpTicket(
   const stop = Number(order.protective_orders?.stop_loss);
   const takeProfit = Number(order.protective_orders?.take_profit);
   const slippage = Number(order.max_slippage_bps);
-  if (!order.reduce_only && Number.isFinite(notional) && notional < 10) errors.unshift("Hyperliquid orders must be at least $10.");
-  if (!order.reduce_only && Number.isFinite(notional) && notional > 10) errors.unshift("Orders are capped at $10 during the bounded mainnet launch.");
+  if (!order.reduce_only && Number.isFinite(notional) && notional < 10) {
+    errors.unshift("Hyperliquid orders must be at least $10 after venue lot-size rounding.");
+  }
+  if (!order.reduce_only && Number.isFinite(notional) && notional > 15) {
+    errors.unshift("Orders are capped at $15 during the bounded mainnet launch.");
+  }
+  const minimumExecutable = minimumExecutablePerpQuote(order, referencePrice, sizeDecimals);
+  if (
+    !order.reduce_only &&
+    Number.isFinite(notional) &&
+    notional >= 10 &&
+    minimumExecutable != null &&
+    notional < minimumExecutable
+  ) {
+    errors.unshift(
+      `${order.market} needs at least $${minimumExecutable.toFixed(2)} at the current price and venue lot size.`,
+    );
+  }
   if (maxLeverage != null && Number(order.leverage) > maxLeverage) errors.unshift(`This market supports at most ${maxLeverage}× leverage.`);
   if (Number.isFinite(slippage) && slippage > maxSlippagePolicyBps) {
     errors.unshift(`Max slippage is capped at ${maxSlippagePolicyBps} bps for this environment.`);
@@ -1750,6 +1777,35 @@ export function validatePerpTicket(
     if (order.side === "sell" && takeProfit >= reference) errors.unshift("A short take-profit must be below the current mark price.");
   }
   return [...new Set(errors)];
+}
+
+export function minimumExecutablePerpQuote(
+  order: PrivateExecutionOrderDraft,
+  referencePrice: string | null | undefined,
+  sizeDecimals: number | null,
+): number | null {
+  const reference = Number(order.order_type === "limit" ? order.limit_price : referencePrice);
+  const slippageBps = Number(order.max_slippage_bps || "50");
+  if (sizeDecimals == null) return null;
+  const decimals = Number(sizeDecimals);
+  if (
+    !Number.isFinite(reference) ||
+    reference <= 0 ||
+    !Number.isInteger(decimals) ||
+    decimals < 0 ||
+    decimals > 12
+  ) {
+    return null;
+  }
+  const slippage = Number.isFinite(slippageBps) && slippageBps > 0 ? slippageBps / 10_000 : 0;
+  const venueLimit = order.order_type === "limit"
+    ? reference
+    : reference * (order.side === "buy" ? 1 + slippage : 1 - slippage);
+  if (!Number.isFinite(venueLimit) || venueLimit <= 0) return null;
+  const lotSize = 10 ** -decimals;
+  const lots = Math.ceil(10 / (venueLimit * lotSize));
+  const minimum = lots * lotSize * venueLimit;
+  return Math.ceil((minimum + 0.01) * 100) / 100;
 }
 
 function perpSafeInput(market: string, amount: string): PrivateAccountSafeInput {
@@ -1790,6 +1846,7 @@ function friendlyPerpError(error: unknown): string {
   if (normalized.includes("preview_expired") || normalized.includes("intent_expired")) return "The live review expired. Review the order again.";
   if (normalized.includes("max notional") || normalized.includes("max_notional") || normalized.includes("notional cap")) return "This order exceeds the account’s configured trading limit.";
   if (normalized.includes("live_proxy_timeout")) return "Ghola timed out while waiting for the private worker. The order was not blindly resubmitted; reconcile the account before trying again.";
+  if (normalized.includes("order_below_venue_minimum")) return "The reviewed size falls below Hyperliquid’s $10 minimum after lot-size rounding. Increase the ticket to the minimum shown and review again.";
   if (normalized.includes("worker") || normalized.includes("connector")) return "The private execution worker is reconnecting. Your order was not blindly resubmitted.";
   if (normalized.includes("venue_rejected")) return "Hyperliquid rejected the order. Recheck collateral, price, size, and leverage.";
   return raw.replaceAll("_", " ");

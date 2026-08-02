@@ -49,6 +49,85 @@ describe("full-ticket execution policy", () => {
     );
   });
 
+  it("uses versioned ledgers and returns reservations for a live tiny-fill submit", async () => {
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "tiny_fill";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD = "15";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD = "25";
+    const keys = [];
+    const reservations = [];
+    await enforceInstructionPolicy({
+      body: {
+        vault_commitment: "vault_policy_reservation_test",
+        policy_commitment: "policy_reservation_test",
+        session_policy: {
+          policy_commitment: "policy_reservation_test",
+          market_allowlist: ["SOL"],
+          max_notional_bucket: "25",
+          max_daily_notional_bucket: "25",
+          max_order_count: 5,
+        },
+      },
+      instruction: hyperliquidTinyFillOrder({ quote_size: "11" }),
+      session: null,
+      state: {
+        async incrementPolicyAmount(key) {
+          keys.push(key);
+          return { ok: true };
+        },
+        async incrementPolicyCount(key) {
+          keys.push(key);
+          return { ok: true };
+        },
+      },
+      reservations,
+    });
+
+    assert.equal(keys.every((key) => key.includes(":v2:")), true);
+    assert.deepEqual(reservations.map((item) => item.kind).sort(), ["amount", "amount", "count"]);
+  });
+
+  it("checks existing policy capacity during no-submit without consuming it", async () => {
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "tiny_fill";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD = "15";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD = "25";
+    const instruction = hyperliquidTinyFillOrder({ quote_size: "11" });
+    const state = {
+      async getPolicyAmount(key) {
+        return key.startsWith("hyperliquid_live_notional") ? 15 : 0;
+      },
+      async getPolicyCount() {
+        return 0;
+      },
+      async incrementPolicyAmount() {
+        throw new Error("no-submit must not mutate the amount ledger");
+      },
+      async incrementPolicyCount() {
+        throw new Error("no-submit must not mutate the count ledger");
+      },
+    };
+
+    await assert.rejects(
+      () => enforceInstructionPolicy({
+        body: {
+          vault_commitment: "vault_policy_check_test",
+          policy_commitment: "policy_check_test",
+          session_policy: {
+            policy_commitment: "policy_check_test",
+            market_allowlist: ["SOL"],
+            max_notional_bucket: "25",
+            max_daily_notional_bucket: "25",
+            max_order_count: 5,
+          },
+        },
+        instruction,
+        session: null,
+        state,
+        policyMode: "check",
+      }),
+      /daily notional cap/,
+    );
+  });
+
   it("allows a reduce-only close above the entry cap without consuming daily entry capacity", async () => {
     let increments = 0;
     const instruction = hyperliquidTinyFillOrder({

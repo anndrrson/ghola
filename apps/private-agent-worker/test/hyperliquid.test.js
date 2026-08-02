@@ -1,5 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   hyperliquidCollateralValue,
   hyperliquidRunnerTimeoutMs,
@@ -16,6 +18,56 @@ describe("Hyperliquid SDK runner timeout", () => {
   it("fails closed before the outer 55 second proxy deadline", () => {
     assert.equal(hyperliquidRunnerTimeoutMs({ PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS: "90000" }), 45_000);
     assert.equal(hyperliquidRunnerTimeoutMs({ PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS: "1000" }), 30_000);
+  });
+});
+
+describe("Hyperliquid venue minimum", () => {
+  it("rejects a $10 SOL quote that floors below the venue minimum", () => {
+    const runnerPath = fileURLToPath(new URL("../src/venues/hyperliquid_runner.py", import.meta.url));
+    const script = `
+import importlib.util
+spec = importlib.util.spec_from_file_location("ghola_hl_runner", ${JSON.stringify(runnerPath)})
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+class Info:
+    def all_mids(self): return {"SOL": "70"}
+    def meta(self): return {"universe": [{"name": "SOL", "szDecimals": 2}]}
+    def post(self, *_args): return "unifiedAccount"
+    def spot_user_state(self, *_args): return {"tokenToAvailableAfterMaintenance": [[0, "25"]]}
+try:
+    runner.resolve_market_ioc_order(Info(), {
+        "market": "SOL", "side": "buy", "quote_size": "10", "max_slippage_bps": "50"
+    }, "0x" + "1" * 40, require_funds=False)
+except SystemExit:
+    pass
+`;
+    const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+    assert.equal(result.status, 0);
+    const failure = JSON.parse(result.stdout.trim());
+    assert.equal(failure.error_code, "order_below_venue_minimum");
+    assert.equal(failure.submission_state, "not_submitted");
+  });
+
+  it("classifies venue result envelopes instead of assuming submission", () => {
+    const runnerPath = fileURLToPath(new URL("../src/venues/hyperliquid_runner.py", import.meta.url));
+    const script = `
+import importlib.util, json
+spec = importlib.util.spec_from_file_location("ghola_hl_runner", ${JSON.stringify(runnerPath)})
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+print(json.dumps([
+    runner.redact_result("submitted", {"response": {"data": {"statuses": [{"filled": {"oid": 7}}]}}}),
+    runner.redact_result("submitted", {"response": {"data": {"statuses": [{"error": "Order must have minimum value of $10."}]}}}),
+    runner.redact_result("submitted", {}),
+]))
+`;
+    const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+    assert.equal(result.status, 0);
+    const [filled, rejected, unknown] = JSON.parse(result.stdout.trim());
+    assert.deepEqual(filled, { status: "submitted", oid: 7 });
+    assert.equal(rejected.status, "rejected");
+    assert.equal(rejected.error_code, "order_below_venue_minimum");
+    assert.equal(unknown.status, "outcome_unknown");
   });
 });
 

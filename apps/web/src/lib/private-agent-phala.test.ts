@@ -81,7 +81,7 @@ describe("private-agent Phala provisioning", () => {
       'PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "disabled"',
     );
     expect(compose).toContain(
-      'PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD: "10"',
+      'PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD: "15"',
     );
     expect(compose).toContain(
       'PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD: "25"',

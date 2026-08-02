@@ -305,10 +305,10 @@ export function buildPhalaWorkerCompose(input: {
     composeEnvLine("PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD", "0")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", workerEnv("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", "false", ["GHOLA_HYPERLIQUID_ALLOW_MAINNET"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", "disabled")),
-    // Hyperliquid rejects perp orders below $10, so a lower worker cap makes
-    // every opening order impossible. Keep the bounded launch at that venue
-    // minimum; reduce-only exits remain exempt in worker policy.
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", "10")),
+    // Hyperliquid enforces $10 after lot-size rounding. A $10 quote floors
+    // below that minimum, so allow a still-tiny buffer while the UI computes
+    // the selected market's actual executable minimum.
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", "15")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", "25", ["GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD", "")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD", "")),

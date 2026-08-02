@@ -5,8 +5,16 @@ import time
 from decimal import Decimal, ROUND_DOWN, InvalidOperation, localcontext
 
 
-def fail(message, error_code="connector_submit_failed"):
-    print(json.dumps({"status": "failed", "error": message, "error_code": error_code}))
+MIN_PERP_NOTIONAL = Decimal("10")
+
+
+def fail(message, error_code="connector_submit_failed", submission_state="not_submitted"):
+    print(json.dumps({
+        "status": "failed",
+        "error": message,
+        "error_code": error_code,
+        "submission_state": submission_state,
+    }))
     sys.exit(1)
 
 
@@ -71,7 +79,20 @@ def main():
                 reduce_only=bool(order.get("reduce_only")),
                 cloid=Cloid.from_str(cloid),
             )
-            print(json.dumps(redact_result("submitted", result)))
+            redacted = redact_result("submitted", result)
+            if redacted.get("status") == "rejected":
+                fail(
+                    "hyperliquid venue rejected order",
+                    redacted.get("error_code") or "venue_rejected",
+                    "not_submitted",
+                )
+            if redacted.get("status") == "outcome_unknown":
+                fail(
+                    "hyperliquid venue returned an unrecognized order result",
+                    "connector_submit_failed",
+                    "unknown",
+                )
+            print(json.dumps(redacted))
             return
         if op == "cancel":
             cancel = instruction["cancel"]
@@ -79,7 +100,12 @@ def main():
                 result = exchange.cancel_by_cloid(cancel["market"], Cloid.from_str(cancel["client_order_id"]))
             else:
                 result = exchange.cancel(cancel["market"], int(cancel["order_id"]))
-            print(json.dumps(redact_result("cancelled", result)))
+            redacted = redact_result("cancelled", result)
+            if redacted.get("status") == "rejected":
+                fail("hyperliquid venue rejected cancel", "venue_rejected", "not_submitted")
+            if redacted.get("status") == "outcome_unknown":
+                fail("hyperliquid venue returned an unrecognized cancel result", "connector_submit_failed", "unknown")
+            print(json.dumps(redacted))
             return
         if op in ("read", "reconcile"):
             info = Info(base_url, skip_ws=True)
@@ -90,7 +116,8 @@ def main():
             }))
             return
     except Exception:
-        fail("hyperliquid request failed", "venue_rejected")
+        submission_state = "unknown" if op in ("limit_order", "cancel") else "not_submitted"
+        fail("hyperliquid request failed", "connector_submit_failed", submission_state)
 
     fail("unsupported hyperliquid operation")
 
@@ -113,6 +140,7 @@ def resolve_limit_order(info, order, account_address, require_funds=True):
         if base <= 0:
             fail("hyperliquid limit order size is below venue minimum", "venue_rejected")
         notional = base * price
+        enforce_minimum_notional(order, notional)
         if notional > 0:
             check_account_value(info, account_address, notional, require_funds=require_funds)
         return {
@@ -148,6 +176,7 @@ def resolve_limit_order(info, order, account_address, require_funds=True):
     base_size = floor_decimal(quote_size / price, coin_size_decimals(info, coin))
     if base_size <= 0:
         fail("hyperliquid tiny fill size is below venue minimum", "venue_rejected")
+    enforce_minimum_notional(order, base_size * price)
     return {
         "base_size": decimal_text(base_size),
         "limit_price": decimal_text(price),
@@ -193,6 +222,7 @@ def resolve_market_ioc_order(info, order, account_address, require_funds=True):
         base_size = floor_decimal(quote_size / price, coin_size_decimals(info, coin))
     if base_size <= 0:
         fail("hyperliquid market order size is below venue minimum", "venue_rejected")
+    enforce_minimum_notional(order, base_size * price)
     return {
         "base_size": decimal_text(base_size),
         "limit_price": decimal_text(price),
@@ -221,6 +251,15 @@ def check_account_value(info, account_address, quote_size, require_funds=True):
         raise
     except Exception:
         fail("hyperliquid account state unavailable", "venue_rejected")
+
+
+def enforce_minimum_notional(order, notional):
+    if not order.get("reduce_only") and notional < MIN_PERP_NOTIONAL:
+        fail(
+            "hyperliquid order is below the venue's $10 minimum after lot-size rounding",
+            "order_below_venue_minimum",
+            "not_submitted",
+        )
 
 
 def spot_usdc_available(spot_state):
@@ -275,12 +314,23 @@ def redact_result(status, result):
     try:
         statuses = result.get("response", {}).get("data", {}).get("statuses", [])
         if statuses:
-            resting = statuses[0].get("resting") or {}
-            filled = statuses[0].get("filled") or {}
+            first = statuses[0]
+            if status == "cancelled" and first == "success":
+                return {"status": "cancelled", "oid": None}
+            if not isinstance(first, dict):
+                return {"status": "outcome_unknown", "oid": None}
+            if first.get("error"):
+                error_text = str(first.get("error") or "").lower()
+                error_code = "order_below_venue_minimum" if "minimum value" in error_text else "venue_rejected"
+                return {"status": "rejected", "oid": None, "error_code": error_code}
+            resting = first.get("resting") or {}
+            filled = first.get("filled") or {}
             oid = resting.get("oid") or filled.get("oid")
+            if oid is not None:
+                return {"status": status, "oid": oid}
     except Exception:
         oid = None
-    return {"status": status, "oid": oid}
+    return {"status": "outcome_unknown", "oid": None}
 
 
 def redact_fill(fill):

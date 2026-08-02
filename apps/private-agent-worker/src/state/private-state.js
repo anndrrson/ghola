@@ -1121,6 +1121,32 @@ export function createPostgresWorkerState(databaseUrl) {
       return { ok: true, count: Number(rows[0]?.count || 0) };
     },
 
+    async getPolicyCount(key) {
+      const sql = await ensureInitialized();
+      const rows = await sql`
+        SELECT count FROM worker_policy_counts WHERE key = ${key}
+      `;
+      return Number(rows[0]?.count || 0);
+    },
+
+    async releasePolicyCount(key, count = 1) {
+      const sql = await ensureInitialized();
+      const parsedCount = Number.parseInt(String(count || "0"), 10);
+      if (!Number.isInteger(parsedCount) || parsedCount <= 0) {
+        return { released: false, count: 0 };
+      }
+      const rows = await sql`
+        UPDATE worker_policy_counts
+        SET count = GREATEST(0, count - ${parsedCount}), updated_at = NOW()
+        WHERE key = ${key}
+        RETURNING count
+      `;
+      return {
+        released: Boolean(rows[0]),
+        count: Number(rows[0]?.count || 0),
+      };
+    },
+
     async incrementPolicyAmount(key, amount, maxAmount) {
       const sql = await ensureInitialized();
       const parsedAmount = Number.parseFloat(String(amount || "0"));
@@ -1154,6 +1180,32 @@ export function createPostgresWorkerState(databaseUrl) {
         RETURNING amount
       `;
       return { ok: true, amount: Number(rows[0]?.amount || 0) };
+    },
+
+    async getPolicyAmount(key) {
+      const sql = await ensureInitialized();
+      const rows = await sql`
+        SELECT amount FROM worker_policy_amounts WHERE key = ${key}
+      `;
+      return Number(rows[0]?.amount || 0);
+    },
+
+    async releasePolicyAmount(key, amount) {
+      const sql = await ensureInitialized();
+      const parsedAmount = Number.parseFloat(String(amount || "0"));
+      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+        return { released: false, amount: 0 };
+      }
+      const rows = await sql`
+        UPDATE worker_policy_amounts
+        SET amount = GREATEST(0, amount - ${parsedAmount}), updated_at = NOW()
+        WHERE key = ${key}
+        RETURNING amount
+      `;
+      return {
+        released: Boolean(rows[0]),
+        amount: Number(rows[0]?.amount || 0),
+      };
     },
 
     async putOmnibusAllocation(allocation) {
@@ -2001,6 +2053,27 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
       return { ok: true, count: next.count };
     },
 
+    async getPolicyCount(key) {
+      return Number((await loadState()).policy_counts[key]?.count || 0);
+    },
+
+    async releasePolicyCount(key, count = 1) {
+      const state = await loadState();
+      const parsedCount = Number.parseInt(String(count || "0"), 10);
+      if (!Number.isInteger(parsedCount) || parsedCount <= 0) {
+        return { released: false, count: 0 };
+      }
+      const current = state.policy_counts[key];
+      if (!current) return { released: false, count: 0 };
+      const next = {
+        count: Math.max(0, Number(current.count || 0) - parsedCount),
+        updated_at: new Date().toISOString(),
+      };
+      state.policy_counts[key] = next;
+      await save(state);
+      return { released: true, count: next.count };
+    },
+
     async incrementPolicyAmount(key, amount, maxAmount) {
       const state = await loadState();
       const parsedAmount = Number.parseFloat(String(amount || "0"));
@@ -2020,6 +2093,27 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save }) {
       state.policy_amounts[key] = next;
       await save(state);
       return { ok: true, amount: next.amount };
+    },
+
+    async getPolicyAmount(key) {
+      return Number((await loadState()).policy_amounts[key]?.amount || 0);
+    },
+
+    async releasePolicyAmount(key, amount) {
+      const state = await loadState();
+      const parsedAmount = Number.parseFloat(String(amount || "0"));
+      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+        return { released: false, amount: 0 };
+      }
+      const current = state.policy_amounts[key];
+      if (!current) return { released: false, amount: 0 };
+      const next = {
+        amount: Math.max(0, Number(current.amount || 0) - parsedAmount),
+        updated_at: new Date().toISOString(),
+      };
+      state.policy_amounts[key] = next;
+      await save(state);
+      return { released: true, amount: next.amount };
     },
 
     async putOmnibusAllocation(allocation) {

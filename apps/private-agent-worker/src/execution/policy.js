@@ -63,6 +63,7 @@ const SUBMITTING_OPERATIONS = new Set([
   "perp_limit_order",
   "swap",
 ]);
+const POLICY_LEDGER_VERSION = "v2";
 
 export class ExecutionPolicyError extends Error {
   constructor(message, status = 400) {
@@ -266,7 +267,14 @@ function normalizeCancel(cancel, venueId) {
   };
 }
 
-export async function enforceInstructionPolicy({ body, instruction, session, state }) {
+export async function enforceInstructionPolicy({
+  body,
+  instruction,
+  session,
+  state,
+  policyMode = "reserve",
+  reservations = [],
+}) {
   if (process.env.PRIVATE_AGENT_GLOBAL_KILL_SWITCH === "true") {
     throw new ExecutionPolicyError("private execution kill switch is active", 503);
   }
@@ -305,12 +313,34 @@ export async function enforceInstructionPolicy({ body, instruction, session, sta
     if (maxNotional > 0 && notional > maxNotional) {
       throw new ExecutionPolicyError("execution instruction exceeds max notional bucket");
     }
-    await enforceGlobalSessionDailyNotional({ body, instruction, state, policy, notional });
-    await enforceHyperliquidTinyFillPolicy({ body, instruction, state, notional });
-    await enforceHyperliquidFullTicketPolicy({ body, instruction, state, notional });
+    await enforceGlobalSessionDailyNotional({
+      body,
+      instruction,
+      state,
+      policy,
+      notional,
+      policyMode,
+      reservations,
+    });
+    await enforceHyperliquidTinyFillPolicy({
+      body,
+      instruction,
+      state,
+      notional,
+      policyMode,
+      reservations,
+    });
+    await enforceHyperliquidFullTicketPolicy({
+      body,
+      instruction,
+      state,
+      notional,
+      policyMode,
+      reservations,
+    });
   }
   const rateLimit = Number.parseInt(process.env.PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE || "0", 10);
-  if (state && Number.isInteger(rateLimit) && rateLimit > 0) {
+  if (state && policyMode !== "check" && Number.isInteger(rateLimit) && rateLimit > 0) {
     const minute = Math.floor(Date.now() / 60_000);
     const count = await state.incrementPolicyCount(
       `rate:${instruction.venue_id}:${minute}`,
@@ -321,8 +351,14 @@ export async function enforceInstructionPolicy({ body, instruction, session, sta
   if (state && policy?.policy_commitment && Number.isInteger(policy.max_order_count)) {
     const countedOps = ["limit_order", "spot_limit_order", "spot_market_order", "preview_order", "perp_limit_order", "swap"];
     if (countedOps.includes(instruction.operation_class)) {
-      const count = await state.incrementPolicyCount(policy.policy_commitment, policy.max_order_count);
-      if (!count.ok) throw new ExecutionPolicyError("session policy order count exceeded");
+      await enforcePolicyCount({
+        state,
+        key: `session_order_count:${POLICY_LEDGER_VERSION}:${policy.policy_commitment}`,
+        maxCount: policy.max_order_count,
+        policyMode,
+        reservations,
+        errorMessage: "session policy order count exceeded",
+      });
     }
   }
 }
@@ -472,7 +508,15 @@ function agentMandateRequiresConditionProof(mandate) {
     mandate.strategy_profile === "custom";
 }
 
-async function enforceGlobalSessionDailyNotional({ body, instruction, state, policy, notional }) {
+async function enforceGlobalSessionDailyNotional({
+  body,
+  instruction,
+  state,
+  policy,
+  notional,
+  policyMode,
+  reservations,
+}) {
   if (!state || !policy) return;
   const dailyCap = bucketToUsd(policy.max_daily_notional_bucket);
   if (dailyCap <= 0) return;
@@ -483,12 +527,15 @@ async function enforceGlobalSessionDailyNotional({ body, instruction, state, pol
     body.policy_commitment ||
     body.autopilot_session_id ||
     "unknown";
-  const amount = await state.incrementPolicyAmount(
-    `session_daily_notional:${subject}:${day}`,
-    notional,
-    dailyCap,
-  );
-  if (!amount.ok) throw new ExecutionPolicyError("session policy daily notional cap exceeded");
+  await enforcePolicyAmount({
+    state,
+    key: `session_daily_notional:${POLICY_LEDGER_VERSION}:${subject}:${day}`,
+    amount: notional,
+    maxAmount: dailyCap,
+    policyMode,
+    reservations,
+    errorMessage: "session policy daily notional cap exceeded",
+  });
 }
 
 function allowedOperationsForVenue(venueId) {
@@ -505,7 +552,14 @@ function allowedOperationsForVenue(venueId) {
   return HYPERLIQUID_ALLOWED;
 }
 
-async function enforceHyperliquidTinyFillPolicy({ body, instruction, state, notional }) {
+async function enforceHyperliquidTinyFillPolicy({
+  body,
+  instruction,
+  state,
+  notional,
+  policyMode,
+  reservations,
+}) {
   if (instruction.venue_id !== "hyperliquid" || instruction.operation_class !== "limit_order") {
     return;
   }
@@ -556,16 +610,26 @@ async function enforceHyperliquidTinyFillPolicy({ body, instruction, state, noti
       body.managed_allocation_commitment ||
       body.policy_commitment ||
       "unknown";
-    const amount = await state.incrementPolicyAmount(
-      `hyperliquid_live_notional:${subject}:${day}`,
-      notional,
-      dailyCap,
-    );
-    if (!amount.ok) throw new ExecutionPolicyError("hyperliquid tiny fill daily notional cap exceeded");
+    await enforcePolicyAmount({
+      state,
+      key: `hyperliquid_live_notional:${POLICY_LEDGER_VERSION}:${subject}:${day}`,
+      amount: notional,
+      maxAmount: dailyCap,
+      policyMode,
+      reservations,
+      errorMessage: "hyperliquid tiny fill daily notional cap exceeded",
+    });
   }
 }
 
-async function enforceHyperliquidFullTicketPolicy({ body, instruction, state, notional }) {
+async function enforceHyperliquidFullTicketPolicy({
+  body,
+  instruction,
+  state,
+  notional,
+  policyMode,
+  reservations,
+}) {
   if (instruction.venue_id !== "hyperliquid" || instruction.operation_class !== "limit_order") {
     return;
   }
@@ -614,13 +678,59 @@ async function enforceHyperliquidFullTicketPolicy({ body, instruction, state, no
       body.managed_allocation_commitment ||
       body.policy_commitment ||
       "unknown";
-    const amount = await state.incrementPolicyAmount(
-      `hyperliquid_full_ticket_notional:${subject}:${day}`,
-      notional,
-      dailyCap,
-    );
-    if (!amount.ok) throw new ExecutionPolicyError("hyperliquid full-ticket daily notional cap exceeded");
+    await enforcePolicyAmount({
+      state,
+      key: `hyperliquid_full_ticket_notional:${POLICY_LEDGER_VERSION}:${subject}:${day}`,
+      amount: notional,
+      maxAmount: dailyCap,
+      policyMode,
+      reservations,
+      errorMessage: "hyperliquid full-ticket daily notional cap exceeded",
+    });
   }
+}
+
+async function enforcePolicyAmount({
+  state,
+  key,
+  amount,
+  maxAmount,
+  policyMode,
+  reservations,
+  errorMessage,
+}) {
+  if (policyMode === "check") {
+    if (typeof state.getPolicyAmount !== "function") {
+      throw new ExecutionPolicyError("policy amount ledger is unavailable", 503);
+    }
+    const current = await state.getPolicyAmount(key);
+    if (current + amount > maxAmount) throw new ExecutionPolicyError(errorMessage);
+    return;
+  }
+  const result = await state.incrementPolicyAmount(key, amount, maxAmount);
+  if (!result.ok) throw new ExecutionPolicyError(errorMessage);
+  reservations.push({ kind: "amount", key, amount });
+}
+
+async function enforcePolicyCount({
+  state,
+  key,
+  maxCount,
+  policyMode,
+  reservations,
+  errorMessage,
+}) {
+  if (policyMode === "check") {
+    if (typeof state.getPolicyCount !== "function") {
+      throw new ExecutionPolicyError("policy count ledger is unavailable", 503);
+    }
+    const current = await state.getPolicyCount(key);
+    if (current + 1 > maxCount) throw new ExecutionPolicyError(errorMessage);
+    return;
+  }
+  const result = await state.incrementPolicyCount(key, maxCount);
+  if (!result.ok) throw new ExecutionPolicyError(errorMessage);
+  reservations.push({ kind: "count", key, count: 1 });
 }
 
 export function estimateOrderNotionalUsd(order) {

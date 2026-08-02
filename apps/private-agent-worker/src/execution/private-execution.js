@@ -250,7 +250,12 @@ export async function storeCoinbaseSession({ body, recipient, state, provider })
   return session;
 }
 
-export async function executeHyperliquidOrder({ body, recipient, state }) {
+export async function executeHyperliquidOrder({
+  body,
+  recipient,
+  state,
+  submitHyperliquid = submitHyperliquidExecution,
+}) {
   const cached = await state.getIdempotency(body.work_order_commitment);
   if (cached?.receipt) return cached.receipt;
   const executionMode = hyperliquidExecutionMode(body);
@@ -289,13 +294,38 @@ export async function executeHyperliquidOrder({ body, recipient, state }) {
     venue_id: "hyperliquid",
     session,
   }), { state, venue_id: "hyperliquid" });
-  await enforceInstructionPolicy({ body, instruction, session, state });
-  const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
-  const adapterResult = await submitHyperliquidExecution({
-    credential,
-    instruction,
-    cloid,
-  });
+  const policyReservations = [];
+  let adapterStarted = false;
+  let adapterResult;
+  try {
+    await enforceInstructionPolicy({
+      body,
+      instruction,
+      session,
+      state,
+      reservations: policyReservations,
+    });
+    const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
+    adapterStarted = true;
+    adapterResult = await submitHyperliquid({
+      credential,
+      instruction,
+      cloid,
+    });
+  } catch (error) {
+    const failure = sanitizedHyperliquidExecutionFailure(error, { adapterStarted });
+    const releaseStatus = failure.submission_state === "unknown"
+      ? "held_for_reconciliation"
+      : await releasePolicyReservations(state, policyReservations);
+    await recordFailedHyperliquidExecution({
+      state,
+      workOrderCommitment: body.work_order_commitment,
+      executionMode,
+      failure,
+      releaseStatus,
+    });
+    throw error;
+  }
   await state.putExecutionAttempt(body.work_order_commitment, {
     venue_id: "hyperliquid",
     platform_class: "hyperliquid_style_market",
@@ -1083,7 +1113,13 @@ export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state })
     venue_id: "hyperliquid",
     session,
   }), { state, venue_id: "hyperliquid" });
-  await enforceInstructionPolicy({ body, instruction, session, state: null });
+  await enforceInstructionPolicy({
+    body,
+    instruction,
+    session,
+    state,
+    policyMode: "check",
+  });
   const cloid = await state.deriveHyperliquidCloid(body.work_order_commitment);
   const adapterResult = await verifyHyperliquidNoSubmit({
     credential,
@@ -1125,6 +1161,81 @@ export async function verifyHyperliquidOrderNoSubmit({ body, recipient, state })
     },
     updated_at: new Date().toISOString(),
   };
+}
+
+async function releasePolicyReservations(state, reservations) {
+  let released = true;
+  for (const reservation of [...reservations].reverse()) {
+    try {
+      if (reservation.kind === "amount") {
+        const result = await state.releasePolicyAmount(reservation.key, reservation.amount);
+        released = result.released === true && released;
+      } else if (reservation.kind === "count") {
+        const result = await state.releasePolicyCount(reservation.key, reservation.count);
+        released = result.released === true && released;
+      }
+    } catch {
+      released = false;
+    }
+  }
+  return released ? "released" : "release_incomplete";
+}
+
+function sanitizedHyperliquidExecutionFailure(error, { adapterStarted }) {
+  const allowedCodes = new Set([
+    "connector_submit_failed",
+    "venue_access_required",
+    "venue_rejected",
+    "order_below_venue_minimum",
+  ]);
+  const rawCode = typeof error?.code === "string" ? error.code : "";
+  const failureCode = allowedCodes.has(rawCode)
+    ? rawCode
+    : error?.name === "ExecutionPolicyError" ? "policy_rejected" : "execution_failed";
+  const status = Number(error?.status);
+  const explicitSubmissionState = error?.submissionState;
+  const submissionState = !adapterStarted
+    ? "not_submitted"
+    : explicitSubmissionState === "not_submitted" || explicitSubmissionState === "unknown"
+      ? explicitSubmissionState
+      : failureCode === "venue_rejected" || failureCode === "venue_access_required" || failureCode === "order_below_venue_minimum"
+        ? "not_submitted"
+        : "unknown";
+  return {
+    failure_code: failureCode,
+    http_status: Number.isInteger(status) && status >= 400 && status <= 599 ? status : 500,
+    submission_state: submissionState,
+  };
+}
+
+async function recordFailedHyperliquidExecution({
+  state,
+  workOrderCommitment,
+  executionMode,
+  failure,
+  releaseStatus,
+}) {
+  const attempt = {
+    venue_id: "hyperliquid",
+    platform_class: "hyperliquid_style_market",
+    execution_mode: executionMode,
+    status: failure.submission_state === "unknown" ? "outcome_unknown" : "failed",
+    failure_code: failure.failure_code,
+    http_status: failure.http_status,
+    submission_state: failure.submission_state,
+    policy_reservation_status: releaseStatus,
+    created_at: new Date().toISOString(),
+  };
+  try {
+    await state.putExecutionAttempt(workOrderCommitment, attempt);
+  } catch {
+    console.error("[hyperliquid/execution] failed to persist sanitized failure", {
+      work_order_commitment: workOrderCommitment,
+      failure_code: failure.failure_code,
+      submission_state: failure.submission_state,
+      policy_reservation_status: releaseStatus,
+    });
+  }
 }
 
 export async function reconcileStoredExecution({ body, state, venue_id, platform_class }) {
