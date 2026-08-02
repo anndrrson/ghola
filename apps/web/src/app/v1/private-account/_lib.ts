@@ -7740,8 +7740,18 @@ async function connectorContextForIntent(input: {
     compiled_intent: compiled.compiled_intent,
     selected_rail: selectedRail,
   });
+  // A privacy preview is read-only. Do not let abandoned, expired, or failed
+  // reviews poison future venue readiness as if they were executed actions.
+  // Only intents with an executed receipt are historical venue activity.
+  const executedIntentIds = new Set(
+    (await listPrivateAccountReceipts(input.owner.owner_commitment, 100))
+      .filter((record) => record.receipt.result === "executed")
+      .map((record) => record.intent_id),
+  );
   const prior = (await listLinkabilityScores(input.owner.owner_commitment, 200))
-    .filter((record) => record.intent_id !== input.intent.intent_id);
+    .filter((record) =>
+      record.intent_id !== input.intent.intent_id && executedIntentIds.has(record.intent_id)
+    );
   const platformPrior = prior.filter((record) => record.platform_class === input.platform_class);
   const sameAmount = platformPrior.filter((record) =>
     record.amount_bucket === compiled.compiled_intent.amount_bucket

@@ -629,6 +629,60 @@ describe("private account connector gateway routes", () => {
     expect(JSON.stringify(verified)).not.toContain("sealed-hyperliquid-instruction");
   });
 
+  it("does not count repeated Hyperliquid reviews as executed linkability history", async () => {
+    process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = "true";
+    process.env.GHOLA_HYPERLIQUID_LIVE_MODE = "tiny_fill";
+    const statusRes = await getHyperliquidVault(get("/v1/private-account/hyperliquid/vault"));
+    const status = await statusRes.json();
+    const accountCommitment = status.account_commitment;
+    const sealRes = await sealHyperliquidVault(
+      post("/v1/private-account/hyperliquid/vault", {
+        encrypted_execution_vault: {
+          alg: "sealed-provider-v1",
+          ciphertext: "sealed-hyperliquid-vault-preview-history",
+          recipient: "mock_attested:dev",
+          aad: [
+            "ghola/hyperliquid-execution-vault-v1",
+            `account:${accountCommitment}`,
+            "recipient:mock_attested:dev",
+            "network:mainnet",
+          ].join("|"),
+        },
+      }),
+    );
+    expect(sealRes.status).toBe(201);
+
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const intentRes = await createIntent(
+        post("/v1/private-account/actions/intent", {
+          action_class: "trade_on_platform",
+          product_bucket: "perps",
+        }),
+      );
+      const intent = await intentRes.json();
+      const previewRes = await previewAction(
+        post("/v1/private-account/actions/privacy-preview", {
+          intent_id: intent.intent_id,
+          platform_class: "hyperliquid_style_market",
+          requested_rail: "direct_public_fallback",
+          safe_input: {
+            amount_bucket: "5",
+            asset_bucket: "SOL",
+            destination_class: "platform_subaccount",
+            urgency: "fast_degraded",
+            solver_count_bucket: "5+",
+          },
+        }),
+      );
+      const preview = await previewRes.json();
+
+      expect(previewRes.status).toBe(200);
+      expect(preview.preview.claim_status).toBe("degraded_user_accepted_required");
+      expect(preview.preview.rotation.reuse_count).toBe(0);
+      expect(preview.preview.connector_context.linkability_decision).toBe("proceed");
+    }
+  });
+
   it("verifies Coinbase readiness without submitting or exposing raw fields", async () => {
     process.env.GHOLA_V6_COINBASE_PILOT_ENABLED = "true";
     process.env.GHOLA_COINBASE_PARTNER_OMNIBUS_ENABLED = "true";
