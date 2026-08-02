@@ -68,6 +68,19 @@ type LiveStep = "idle" | "prepared" | "submitted";
 
 export const HYPERLIQUID_REVIEW_TTL_MS = 60_000;
 
+export function buildVenueSetupHref({
+  product,
+  venue,
+  market,
+}: {
+  product: TradeProduct;
+  venue: string;
+  market: string;
+}) {
+  const setupVenue = product === "perps" ? "hyperliquid" : venue;
+  return `/account?flow=private-mode&setup=${encodeURIComponent(setupVenue)}&return_to=${encodeURIComponent(`/trade?product=${product}&venue=${setupVenue}&market=${market}`)}`;
+}
+
 export function hyperliquidReviewExpired(createdAt: number, now = Date.now()) {
   return now - createdAt > HYPERLIQUID_REVIEW_TTL_MS;
 }
@@ -858,7 +871,7 @@ function AlternateProductWorkspace({
   const baseSymbol = product === "perps" ? perpMarket : product === "swap" ? "SOL" : referenceProduct.split("-")[0];
   const marketLabel = product === "perps" ? `${baseSymbol}-PERP` : product === "swap" ? "SOL / USDC" : referenceProduct;
   const nativeProtection = selectedVenue?.protective_orders === "native";
-  const setupHref = `/account?flow=private-mode&setup=${encodeURIComponent(venue)}&return_to=${encodeURIComponent(`/trade?product=${product}&venue=${venue}&market=${marketLabel}`)}`;
+  const setupHref = buildVenueSetupHref({ product, venue, market: marketLabel });
   const useHyperliquidMarket = active && product === "perps" && venue === "hyperliquid";
   const hyperliquidRecord = useMarketData({
     venue: "hyperliquid",

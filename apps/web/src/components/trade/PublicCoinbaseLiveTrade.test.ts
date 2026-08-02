@@ -1,10 +1,36 @@
 import { describe, expect, it } from "vitest";
 import type { PrivateExecutionOrderDraft } from "@/lib/private-execution-instruction-seal";
 import {
+  buildVenueSetupHref,
   HYPERLIQUID_REVIEW_TTL_MS,
   hyperliquidReviewExpired,
   validatePerpTicket,
 } from "./PublicCoinbaseLiveTrade";
+
+describe("venue setup route", () => {
+  it("always routes perpetual setup through the Hyperliquid verifier", () => {
+    const href = buildVenueSetupHref({
+      product: "perps",
+      venue: "coinbase_advanced",
+      market: "SOL-PERP",
+    });
+
+    expect(href).toContain("setup=hyperliquid");
+    expect(decodeURIComponent(href)).toContain("venue=hyperliquid");
+    expect(href).not.toContain("coinbase_advanced");
+  });
+
+  it("preserves the selected venue for non-perpetual setup", () => {
+    const href = buildVenueSetupHref({
+      product: "spot",
+      venue: "coinbase_advanced",
+      market: "SOL-USD",
+    });
+
+    expect(href).toContain("setup=coinbase_advanced");
+    expect(decodeURIComponent(href)).toContain("venue=coinbase_advanced");
+  });
+});
 
 function ticket(quoteSize: string, reduceOnly = false): PrivateExecutionOrderDraft {
   return {
