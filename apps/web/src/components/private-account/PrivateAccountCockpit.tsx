@@ -2203,7 +2203,6 @@ export function PrivateAccountCockpit({
         limit_price: "",
         quote_size: HYPERLIQUID_NO_SUBMIT_QUOTE_SIZE_USD,
         max_slippage_bps: "25",
-        live_order_mode: "tiny_fill",
         order_type: "market",
         size_mode: "quote",
         tif: "Ioc",
