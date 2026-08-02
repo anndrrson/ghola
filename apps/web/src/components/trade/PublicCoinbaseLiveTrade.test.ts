@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PrivateExecutionOrderDraft } from "@/lib/private-execution-instruction-seal";
 import { validatePerpTicket } from "./PublicCoinbaseLiveTrade";
 
-function ticket(quoteSize: string): PrivateExecutionOrderDraft {
+function ticket(quoteSize: string, reduceOnly = false): PrivateExecutionOrderDraft {
   return {
     venue_id: "hyperliquid",
     operation_class: "limit_order",
@@ -17,6 +17,7 @@ function ticket(quoteSize: string): PrivateExecutionOrderDraft {
     max_slippage_bps: "50",
     leverage: 1,
     margin_mode: "cross",
+    reduce_only: reduceOnly,
   };
 }
 
@@ -30,6 +31,15 @@ describe("bounded Hyperliquid ticket", () => {
       "Hyperliquid orders must be at least $10.",
     );
     expect(validatePerpTicket(ticket("11"), "70", 20, 50)).toContain(
+      "Orders are capped at $10 during the bounded mainnet launch.",
+    );
+  });
+
+  it("allows reduce-only exits outside the entry ticket bounds", () => {
+    expect(validatePerpTicket(ticket("9", true), "70", 20, 50)).not.toContain(
+      "Hyperliquid orders must be at least $10.",
+    );
+    expect(validatePerpTicket(ticket("11", true), "70", 20, 50)).not.toContain(
       "Orders are capped at $10 during the bounded mainnet launch.",
     );
   });

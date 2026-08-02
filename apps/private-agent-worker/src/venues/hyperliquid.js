@@ -220,7 +220,14 @@ export async function readHyperliquidAccountSnapshot({
       next_step: "Preview trade",
     };
   }
-  const [state, spotState, accountAbstraction, openOrders, userFills] = await Promise.all([
+  // Account abstraction decides which clearinghouse owns usable collateral.
+  // Read it first and retry transient failures: silently treating an unavailable
+  // response as a standard account makes funded unified accounts look empty.
+  const accountAbstraction = await postHyperliquidInfoWithRetry(fetchImpl, credential.base_url, {
+    type: "userAbstraction",
+    user: credential.account_address,
+  });
+  const [state, spotState, openOrders, userFills] = await Promise.all([
     postHyperliquidInfo(fetchImpl, credential.base_url, {
       type: "clearinghouseState",
       user: credential.account_address,
@@ -229,10 +236,6 @@ export async function readHyperliquidAccountSnapshot({
       type: "spotClearinghouseState",
       user: credential.account_address,
     }),
-    postHyperliquidInfo(fetchImpl, credential.base_url, {
-      type: "userAbstraction",
-      user: credential.account_address,
-    }).catch(() => "default"),
     postHyperliquidInfo(fetchImpl, credential.base_url, {
       type: "openOrders",
       user: credential.account_address,
@@ -316,7 +319,11 @@ export async function createHyperliquidAccountStateStream({
 
   async function backfill(status = "backfilling") {
     onEvent({ event: "stream_status", data: accountStreamStatus(status) });
-    const [state, spotState, accountAbstraction, openOrders, userFills] = await Promise.all([
+    const accountAbstraction = await postHyperliquidInfoWithRetry(fetchImpl, credential.base_url, {
+      type: "userAbstraction",
+      user: credential.account_address,
+    });
+    const [state, spotState, openOrders, userFills] = await Promise.all([
       postHyperliquidInfo(fetchImpl, credential.base_url, {
         type: "clearinghouseState",
         user: credential.account_address,
@@ -325,10 +332,6 @@ export async function createHyperliquidAccountStateStream({
         type: "spotClearinghouseState",
         user: credential.account_address,
       }),
-      postHyperliquidInfo(fetchImpl, credential.base_url, {
-        type: "userAbstraction",
-        user: credential.account_address,
-      }).catch(() => "default"),
       postHyperliquidInfo(fetchImpl, credential.base_url, {
         type: "openOrders",
         user: credential.account_address,
@@ -762,9 +765,33 @@ async function postHyperliquidInfo(fetchImpl, baseUrl, body) {
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new HyperliquidExecutionError("hyperliquid account read failed", 502, "connector_submit_failed");
+    const status = res.status === 429 ? 429 : 502;
+    throw new HyperliquidExecutionError("hyperliquid account read failed", status, "connector_submit_failed");
   }
   return res.json();
+}
+
+async function postHyperliquidInfoWithRetry(fetchImpl, baseUrl, body) {
+  const attempts = 3;
+  const retryMs = Math.max(
+    0,
+    Number.parseInt(process.env.PRIVATE_AGENT_HYPERLIQUID_INFO_RETRY_MS || "250", 10) || 0,
+  );
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await postHyperliquidInfo(fetchImpl, baseUrl, body);
+    } catch (error) {
+      lastError = error;
+      const status = Number(error?.status || 0);
+      const retryable = status === 429 || status >= 500;
+      if (!retryable || attempt === attempts - 1) throw error;
+      if (retryMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, retryMs * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError;
 }
 
 function decimalNumber(value) {

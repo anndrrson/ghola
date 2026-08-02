@@ -526,11 +526,12 @@ async function enforceHyperliquidTinyFillPolicy({ body, instruction, state, noti
   if (!order.quote_size) {
     throw new ExecutionPolicyError("hyperliquid tiny fill requires quote size");
   }
+  const reduceOnly = order.reduce_only === true;
   const perOrderCap = Math.min(
     capUsd(process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD, 50),
     50,
   );
-  if (notional > perOrderCap) {
+  if (!reduceOnly && notional > perOrderCap) {
     throw new ExecutionPolicyError("hyperliquid tiny fill exceeds live notional cap");
   }
   const maxSlippageBps = Number.parseInt(order.max_slippage_bps || "50", 10);
@@ -549,7 +550,7 @@ async function enforceHyperliquidTinyFillPolicy({ body, instruction, state, noti
     capUsd(process.env.PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD, 250),
     250,
   );
-  if (state && dailyCap > 0) {
+  if (!reduceOnly && state && dailyCap > 0) {
     const day = new Date().toISOString().slice(0, 10);
     const subject = body.vault_commitment ||
       body.managed_allocation_commitment ||

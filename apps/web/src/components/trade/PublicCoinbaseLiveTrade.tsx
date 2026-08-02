@@ -1711,8 +1711,8 @@ export function validatePerpTicket(
   const stop = Number(order.protective_orders?.stop_loss);
   const takeProfit = Number(order.protective_orders?.take_profit);
   const slippage = Number(order.max_slippage_bps);
-  if (Number.isFinite(notional) && notional < 10) errors.unshift("Hyperliquid orders must be at least $10.");
-  if (Number.isFinite(notional) && notional > 10) errors.unshift("Orders are capped at $10 during the bounded mainnet launch.");
+  if (!order.reduce_only && Number.isFinite(notional) && notional < 10) errors.unshift("Hyperliquid orders must be at least $10.");
+  if (!order.reduce_only && Number.isFinite(notional) && notional > 10) errors.unshift("Orders are capped at $10 during the bounded mainnet launch.");
   if (maxLeverage != null && Number(order.leverage) > maxLeverage) errors.unshift(`This market supports at most ${maxLeverage}× leverage.`);
   if (Number.isFinite(slippage) && slippage > maxSlippagePolicyBps) {
     errors.unshift(`Max slippage is capped at ${maxSlippagePolicyBps} bps for this environment.`);

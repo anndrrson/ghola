@@ -49,6 +49,29 @@ describe("full-ticket execution policy", () => {
     );
   });
 
+  it("allows a reduce-only close above the entry cap without consuming daily entry capacity", async () => {
+    let increments = 0;
+    const instruction = hyperliquidTinyFillOrder({
+      quote_size: "11",
+      reduce_only: true,
+    });
+    await enforceInstructionPolicy({
+      body: { policy_commitment: "policy_test" },
+      instruction,
+      session: null,
+      state: {
+        async incrementPolicyAmount() {
+          increments += 1;
+          return { ok: false };
+        },
+        async incrementPolicyCount() {
+          return { ok: true };
+        },
+      },
+    });
+    assert.equal(increments, 0);
+  });
+
   it("preserves sealed agent mandates during normalization", () => {
     const instruction = hyperliquidFullTicketOrder({}, {
       mandate: {
@@ -159,6 +182,30 @@ function hyperliquidFullTicketOrder(overrides = {}, instructionOverrides = {}) {
       ...overrides,
     },
     ...instructionOverrides,
+  }, {
+    venue_id: "hyperliquid",
+    operation_class: "limit_order",
+  });
+}
+
+function hyperliquidTinyFillOrder(overrides = {}) {
+  return normalizeInstruction({
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: "hyperliquid",
+    operation_class: "limit_order",
+    order: {
+      market: "SOL",
+      side: "sell",
+      quote_size: "10",
+      limit_price: "70",
+      order_type: "market",
+      size_mode: "quote",
+      tif: "Ioc",
+      max_slippage_bps: "50",
+      live_order_mode: "tiny_fill",
+      ...overrides,
+    },
   }, {
     venue_id: "hyperliquid",
     operation_class: "limit_order",
