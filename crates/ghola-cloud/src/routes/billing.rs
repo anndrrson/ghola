@@ -10,7 +10,7 @@ use crate::state::AppState;
 
 #[derive(Deserialize)]
 pub struct CreateCheckoutRequest {
-    pub tier: String, // "pro", "private_agent", or "unlimited"
+    pub tier: String, // "pro", "private_agent", "founding_trader", or "unlimited"
 }
 
 #[derive(Serialize)]
@@ -100,6 +100,14 @@ pub struct PrivateAgentComputeReservationResponse {
     pub private_agent_compute: PrivateAgentComputeStatus,
 }
 
+fn founding_trader_invited(email: Option<&str>, invite_emails: &[String]) -> bool {
+    email.is_some_and(|candidate| {
+        invite_emails
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(candidate.trim()))
+    })
+}
+
 /// POST /api/billing/checkout
 pub async fn create_checkout(
     State(state): State<AppState>,
@@ -115,6 +123,12 @@ pub async fn create_checkout(
                 "billing not configured".to_string(),
             ))?;
 
+    let email: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(claims.sub)
+        .fetch_optional(&state.db)
+        .await?
+        .flatten();
+
     let price_id =
         match req.tier.as_str() {
             "pro" => {
@@ -127,26 +141,34 @@ pub async fn create_checkout(
                     ))?
             }
             "private_agent" => state.config.stripe_price_private_agent.as_deref().ok_or(
-                CloudError::ServiceUnavailable(
-                    "private agent price not configured".to_string(),
-                ),
+                CloudError::ServiceUnavailable("private agent price not configured".to_string()),
             )?,
+            "founding_trader" => {
+                let invited = founding_trader_invited(
+                    email.as_deref(),
+                    &state.config.founding_trader_invite_emails,
+                );
+                if !invited {
+                    return Err(CloudError::BadRequest(
+                        "Founding Trader is currently invite-only".to_string(),
+                    ));
+                }
+                state.config.stripe_price_founding_trader.as_deref().ok_or(
+                    CloudError::ServiceUnavailable(
+                        "founding trader price not configured".to_string(),
+                    ),
+                )?
+            }
             "unlimited" => state.config.stripe_price_unlimited.as_deref().ok_or(
                 CloudError::ServiceUnavailable("unlimited price not configured".to_string()),
             )?,
             _ => {
                 return Err(CloudError::BadRequest(
-                    "tier must be 'pro', 'private_agent', or 'unlimited'".to_string(),
+                    "tier must be 'pro', 'private_agent', 'founding_trader', or 'unlimited'"
+                        .to_string(),
                 ));
             }
         };
-
-    // Get or create Stripe customer
-    let email: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
-        .bind(claims.sub)
-        .fetch_optional(&state.db)
-        .await?
-        .flatten();
 
     let client = reqwest::Client::new();
 
@@ -157,20 +179,23 @@ pub async fn create_checkout(
         ("line_items[0][quantity]", "1".to_string()),
         (
             "success_url",
-            format!("{}/settings?tab=plan&checkout=success", state.config.base_url),
+            format!(
+                "{}/settings?tab=plan&checkout=success",
+                state.config.base_url
+            ),
         ),
         (
             "cancel_url",
-            format!("{}/settings?tab=plan&checkout=cancelled", state.config.base_url),
+            format!(
+                "{}/settings?tab=plan&checkout=cancelled",
+                state.config.base_url
+            ),
         ),
         ("client_reference_id", claims.sub.to_string()),
         ("metadata[ghola_kind]", "subscription".to_string()),
         ("metadata[ghola_tier]", req.tier.clone()),
         ("metadata[price_id]", price_id.to_string()),
-        (
-            "subscription_data[metadata][ghola_tier]",
-            req.tier.clone(),
-        ),
+        ("subscription_data[metadata][ghola_tier]", req.tier.clone()),
         (
             "subscription_data[metadata][price_id]",
             price_id.to_string(),
@@ -404,9 +429,9 @@ fn verify_stripe_signature(
     // A non-numeric timestamp must be REJECTED rather than silently skipping
     // the replay window (L1) — otherwise a malformed `t=` value would strip
     // replay protection while a valid signature still passes.
-    let ts = timestamp.parse::<i64>().map_err(|_| {
-        CloudError::BadRequest("invalid timestamp in Stripe signature".to_string())
-    })?;
+    let ts = timestamp
+        .parse::<i64>()
+        .map_err(|_| CloudError::BadRequest("invalid timestamp in Stripe signature".to_string()))?;
     let now = chrono::Utc::now().timestamp();
     if (now - ts).abs() > 300 {
         return Err(CloudError::BadRequest(
@@ -478,7 +503,24 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
 
 /// Determine tier from the Stripe price ID in the checkout session.
 fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static str {
+    tier_from_configured_price(
+        event,
+        state.config.stripe_price_pro.as_deref(),
+        state.config.stripe_price_private_agent.as_deref(),
+        state.config.stripe_price_founding_trader.as_deref(),
+        state.config.stripe_price_unlimited.as_deref(),
+    )
+}
+
+fn tier_from_configured_price(
+    event: &serde_json::Value,
+    pro_price: Option<&str>,
+    private_agent_price: Option<&str>,
+    founding_trader_price: Option<&str>,
+    unlimited_price: Option<&str>,
+) -> &'static str {
     match event["data"]["object"]["metadata"]["ghola_tier"].as_str() {
+        Some("founding_trader") => return "founding_trader",
         Some("private_agent") => return "private_agent",
         Some("unlimited") => return "unlimited",
         Some("pro") => return "pro",
@@ -488,20 +530,26 @@ fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static s
     // Try to extract price ID from line_items or metadata
     let price_id = event["data"]["object"]["line_items"]["data"][0]["price"]["id"]
         .as_str()
+        .or_else(|| event["data"]["object"]["items"]["data"][0]["price"]["id"].as_str())
         .or_else(|| event["data"]["object"]["metadata"]["price_id"].as_str())
         .unwrap_or("");
 
-    if let Some(ref unlimited_price) = state.config.stripe_price_unlimited {
+    if let Some(unlimited_price) = unlimited_price {
         if price_id == unlimited_price {
             return "unlimited";
         }
     }
-    if let Some(ref private_agent_price) = state.config.stripe_price_private_agent {
+    if let Some(private_agent_price) = private_agent_price {
         if price_id == private_agent_price {
             return "private_agent";
         }
     }
-    if let Some(ref pro_price) = state.config.stripe_price_pro {
+    if let Some(founding_trader_price) = founding_trader_price {
+        if price_id == founding_trader_price {
+            return "founding_trader";
+        }
+    }
+    if let Some(pro_price) = pro_price {
         if price_id == pro_price {
             return "pro";
         }
@@ -513,6 +561,8 @@ fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static s
         .unwrap_or(0);
     if amount >= 2999 {
         "unlimited"
+    } else if amount >= 2900 {
+        "founding_trader"
     } else if amount >= 1999 {
         "private_agent"
     } else {
@@ -523,6 +573,7 @@ fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static s
 fn private_agent_limits(tier: &str) -> (i64, i64) {
     match tier {
         "private_agent" => (30 * 60 * 60, 1),
+        "founding_trader" => (100 * 60 * 60, 3),
         "unlimited" => (100 * 60 * 60, 3),
         "enterprise" => (500 * 60 * 60, 10),
         _ => (0, 0),
@@ -532,7 +583,7 @@ fn private_agent_limits(tier: &str) -> (i64, i64) {
 fn billing_limits(tier: &str) -> BillingLimits {
     let (calls_per_month, emails_per_month) = match tier {
         "pro" | "private_agent" => (30, 50),
-        "unlimited" | "enterprise" => (999, 999),
+        "founding_trader" | "unlimited" | "enterprise" => (999, 999),
         _ => (5, 10),
     };
     let (private_compute_seconds, active_private_agents) = private_agent_limits(tier);
@@ -752,6 +803,37 @@ pub async fn billing_webhook(
             .await?;
 
             tracing::info!(customer_id, "subscription cancelled, reverted to free");
+        }
+        "customer.subscription.created" | "customer.subscription.updated" => {
+            let subscription = &event["data"]["object"];
+            let customer_id = subscription["customer"].as_str().unwrap_or("");
+            let status = subscription["status"].as_str().unwrap_or("");
+            let tier = if matches!(status, "active" | "trialing") {
+                tier_from_price_id(&event, &state)
+            } else {
+                "free"
+            };
+            sqlx::query(
+                "UPDATE users SET tier = $1, updated_at = now() WHERE stripe_customer_id = $2",
+            )
+            .bind(tier)
+            .bind(customer_id)
+            .execute(&state.db)
+            .await?;
+            tracing::info!(customer_id, status, tier, "subscription state synchronized");
+        }
+        "invoice.payment_failed" => {
+            let customer_id = event["data"]["object"]["customer"].as_str().unwrap_or("");
+            sqlx::query(
+                "UPDATE users SET tier = 'free', updated_at = now() WHERE stripe_customer_id = $1",
+            )
+            .bind(customer_id)
+            .execute(&state.db)
+            .await?;
+            tracing::warn!(
+                customer_id,
+                "subscription payment failed, opening trades disabled"
+            );
         }
         _ => {
             tracing::debug!(event_type, "unhandled Stripe event");
@@ -981,4 +1063,54 @@ pub async fn release_private_agent_compute(
     .await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn founding_trader_checkout_metadata_maps_to_the_trading_tier() {
+        let event = serde_json::json!({
+            "data": { "object": { "metadata": { "ghola_tier": "founding_trader" } } }
+        });
+        assert_eq!(
+            tier_from_configured_price(&event, None, None, None, None),
+            "founding_trader"
+        );
+    }
+
+    #[test]
+    fn founding_trader_checkout_requires_an_email_invite() {
+        let allowlist = vec!["founder@example.com".to_string()];
+        assert!(founding_trader_invited(Some("Founder@Example.com"), &allowlist));
+        assert!(!founding_trader_invited(Some("public@example.com"), &allowlist));
+        assert!(!founding_trader_invited(None, &allowlist));
+    }
+
+    #[test]
+    fn founding_trader_subscription_price_survives_webhook_updates() {
+        let event = serde_json::json!({
+            "data": { "object": { "items": { "data": [{ "price": { "id": "price_founding" } }] } } }
+        });
+        assert_eq!(
+            tier_from_configured_price(
+                &event,
+                Some("price_pro"),
+                Some("price_agents"),
+                Some("price_founding"),
+                Some("price_unlimited"),
+            ),
+            "founding_trader"
+        );
+    }
+
+    #[test]
+    fn founding_trader_includes_bounded_private_compute() {
+        assert_eq!(private_agent_limits("founding_trader"), (100 * 60 * 60, 3));
+        let limits = billing_limits("founding_trader");
+        assert_eq!(limits.private_compute_seconds, 100 * 60 * 60);
+        assert_eq!(limits.active_private_agents, 3);
+        assert_eq!(limits.calls_per_month, 999);
+    }
 }

@@ -63,6 +63,16 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: STRIPE_PRICE_PRO
+        sync: false
+      - key: STRIPE_PRICE_PRIVATE_AGENT
+        sync: false
+      - key: STRIPE_PRICE_FOUNDING_TRADER
+        sync: false
+      - key: STRIPE_PRICE_UNLIMITED
+        sync: false
+      - key: FOUNDING_TRADER_INVITE_EMAILS
+        sync: false
       - key: STRIPE_PRICE_CONSUMER_PRO
         sync: false
       - key: STRIPE_PRICE_BUSINESS

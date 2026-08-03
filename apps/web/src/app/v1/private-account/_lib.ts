@@ -687,6 +687,47 @@ export interface PrivateAccountAgentBillingGate {
   response?: Response;
 }
 
+export interface PrivateAccountTradingBillingPolicy {
+  tier: string | null;
+  can_increase_exposure: boolean;
+  reason: "entitled" | "gate_disabled" | "auth_required" | "subscription_required" | "billing_unavailable";
+}
+
+export function hasPrivateAccountTradingEntitlement(tier: string | null | undefined): boolean {
+  return tier === "founding_trader" || tier === "unlimited" || tier === "enterprise";
+}
+
+export async function privateAccountTradingBillingPolicy(
+  req: Request,
+): Promise<PrivateAccountTradingBillingPolicy> {
+  if (process.env.GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED !== "true") {
+    return { tier: null, can_increase_exposure: true, reason: "gate_disabled" };
+  }
+  if (localPrivateAccountAuthBypassAllowed()) {
+    return { tier: "local_dev", can_increase_exposure: true, reason: "entitled" };
+  }
+  const bearer = billingBearerToken(req);
+  if (!bearer) {
+    return { tier: null, can_increase_exposure: false, reason: "auth_required" };
+  }
+  const upstream = await fetchWithTimeout(`${THUMPER_API_BASE}/api/billing/status`, {
+    method: "GET",
+    headers: { Authorization: bearer, Accept: "application/json" },
+    cache: "no-store",
+  }).catch(() => null);
+  if (!upstream?.ok) {
+    return { tier: null, can_increase_exposure: false, reason: "billing_unavailable" };
+  }
+  const body = await upstream.json().catch(() => null) as { tier?: string | null } | null;
+  const tier = body?.tier ?? "free";
+  const entitled = hasPrivateAccountTradingEntitlement(tier);
+  return {
+    tier,
+    can_increase_exposure: entitled,
+    reason: entitled ? "entitled" : "subscription_required",
+  };
+}
+
 export interface PrivateAccountComputeReservation {
   ok: true;
   reservation_id: string;
@@ -1627,7 +1668,15 @@ export function executeBody(body: unknown) {
   };
 }
 
-export async function executeStoredActionFromBody(body: unknown, owner: PrivateAccountRequestOwner) {
+export async function executeStoredActionFromBody(
+  body: unknown,
+  owner: PrivateAccountRequestOwner,
+  billingPolicy: PrivateAccountTradingBillingPolicy = {
+    tier: null,
+    can_increase_exposure: true,
+    reason: "gate_disabled",
+  },
+) {
   const value = objectBody(body);
   const intentId = stringValue(value.intent_id);
   const previewCommitment = stringValue(value.preview_commitment);
@@ -1707,6 +1756,7 @@ export async function executeStoredActionFromBody(body: unknown, owner: PrivateA
     approval_commitment: approval.approval_commitment,
     execution_plan_commitment: planResult.plan?.plan_commitment ?? null,
     encrypted_execution_instruction_bundle: value.encrypted_execution_instruction_bundle,
+    billing_execution_policy: billingPolicy.can_increase_exposure ? "all" : "risk_reducing_only",
   });
   if ("error" in connectorSubmission) return connectorSubmission;
   const boundEvidenceChain = evidenceChain
@@ -5821,6 +5871,11 @@ export async function compileConnectorIntentFromBody(
 export async function connectorSubmitFromBody(
   body: unknown,
   owner: PrivateAccountRequestOwner,
+  billingPolicy: PrivateAccountTradingBillingPolicy = {
+    tier: null,
+    can_increase_exposure: true,
+    reason: "gate_disabled",
+  },
 ) {
   const value = objectBody(body);
   const intentId = stringValue(value.intent_id);
@@ -5852,6 +5907,7 @@ export async function connectorSubmitFromBody(
     preview: preview.preview,
     approval_commitment: approval.approval_commitment,
     execution_plan_commitment: planResult.plan?.plan_commitment ?? null,
+    billing_execution_policy: billingPolicy.can_increase_exposure ? "all" : "risk_reducing_only",
   });
   if ("error" in submitted) return submitted;
   return {
@@ -8308,6 +8364,7 @@ async function connectorForExecution(input: {
   approval_commitment: string;
   execution_plan_commitment: string | null;
   encrypted_execution_instruction_bundle?: unknown;
+  billing_execution_policy: "all" | "risk_reducing_only";
 }): Promise<
   | { work_order: GholaConnectorWorkOrder | null; result: GholaConnectorResult | null }
   | {
@@ -8316,6 +8373,7 @@ async function connectorForExecution(input: {
         | "connector_not_ready"
         | "connector_submit_failed"
         | "connector_submit_blocked"
+        | "trading_subscription_required"
         | "max_notional_exceeded"
         | "connector_submit_in_progress"
         | "venue_access_required"
@@ -8402,6 +8460,12 @@ async function connectorForExecution(input: {
   }
 
   const connectorEnv = await connectorRuntimeEnv(manifestRecord.platform_class);
+  const billingExecutionPolicy = mainnetTradingSubscriptionGateApplies(
+    manifestRecord.platform_class,
+    connectorEnv,
+  )
+    ? input.billing_execution_policy
+    : "all";
   const readiness = await connectorReadiness({
     manifest: manifestRecord.manifest,
     execution_vault_ready: usesVenueVault
@@ -8524,6 +8588,7 @@ async function connectorForExecution(input: {
       omnibus_allocation: omnibusAllocation?.allocation ?? null,
       pooled_venue_allocation: pooledAllocation?.allocation ?? null,
       encrypted_execution_instruction_bundle: input.encrypted_execution_instruction_bundle,
+      billing_execution_policy: billingExecutionPolicy,
       env: connectorEnv,
     });
     if (!submitted.ok) {
@@ -8579,6 +8644,31 @@ async function connectorForExecution(input: {
       lockRunCommitment,
     );
   }
+}
+
+export function mainnetTradingSubscriptionGateApplies(
+  platformClass: GholaPlatformClass,
+  env: Record<string, string | undefined>,
+): boolean {
+  if (env.GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED !== "true") return false;
+  if (platformClass === "hyperliquid_style_market") {
+    return env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
+      env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket";
+  }
+  if (platformClass === "coinbase_style_provider") {
+    return env.GHOLA_V6_COINBASE_PILOT_ENABLED === "true";
+  }
+  if (platformClass === "solana_perps_market") {
+    return env.GHOLA_SOLANA_PERPS_LIVE_MODE === "sdk_runner" ||
+      env.GHOLA_SOLANA_PERPS_LIVE_MODE === "full_ticket" ||
+      env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE === "sdk_runner" ||
+      env.PRIVATE_AGENT_SOLANA_PERPS_LIVE_MODE === "full_ticket";
+  }
+  if (platformClass === "solana_swap_aggregator") {
+    return env.GHOLA_JUPITER_LIVE_MODE === "full" ||
+      env.PRIVATE_AGENT_JUPITER_LIVE_MODE === "full";
+  }
+  return false;
 }
 
 async function recordRejectedFundingImport(input: {

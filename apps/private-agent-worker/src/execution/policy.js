@@ -66,11 +66,32 @@ const SUBMITTING_OPERATIONS = new Set([
 const POLICY_LEDGER_VERSION = "v2";
 
 export class ExecutionPolicyError extends Error {
-  constructor(message, status = 400) {
+  constructor(message, status = 400, code = "policy_rejected") {
     super(message);
     this.name = "ExecutionPolicyError";
     this.status = status;
+    this.code = code;
   }
+}
+
+export function enforceBillingExecutionPolicy({ body, instruction }) {
+  const policy = body?.billing_execution_policy;
+  if (policy === undefined || policy === null || policy === "all") return;
+  if (policy !== "risk_reducing_only") {
+    throw new ExecutionPolicyError(
+      "billing execution policy is invalid",
+      403,
+      "billing_execution_policy_invalid",
+    );
+  }
+  if (instruction?.operation_class === "cancel" || instruction?.order?.reduce_only === true) {
+    return;
+  }
+  throw new ExecutionPolicyError(
+    "a Founding Trader subscription is required to open or increase a live position",
+    402,
+    "trading_subscription_required",
+  );
 }
 
 export function assertVenueOperationAllowed(venueId, operationClass) {

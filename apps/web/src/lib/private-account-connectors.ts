@@ -31,6 +31,7 @@ export type GholaConnectorSubmitError =
   | "connector_not_ready"
   | "connector_submit_failed"
   | "connector_submit_blocked"
+  | "trading_subscription_required"
   | "max_notional_exceeded"
   | "venue_access_required"
   | "needs_funds"
@@ -709,6 +710,7 @@ export async function submitConnectorWorkOrder(input: {
     status?: string;
   } | null;
   encrypted_execution_instruction_bundle?: unknown;
+  billing_execution_policy?: "all" | "risk_reducing_only";
   now?: Date;
   env?: Record<string, string | undefined>;
 }): Promise<
@@ -1297,6 +1299,9 @@ function connectorAccessContext(
 function connectorSubmitError(body: Record<string, unknown>, status: number): GholaConnectorSubmitError {
   const code = stringValue(body.error_code) || stringValue(body.code) || stringValue(body.error);
   const text = `${code} ${stringValue(body.error)}`;
+  if (code === "trading_subscription_required") {
+    return "trading_subscription_required";
+  }
   if (code === "needs_funds" || /needs funds|insufficient|not enough|balance/i.test(text)) {
     return "needs_funds";
   }
@@ -1365,6 +1370,7 @@ function redactedConnectorPayload(input: {
     status?: string;
   } | null;
   encrypted_execution_instruction_bundle?: unknown;
+  billing_execution_policy?: "all" | "risk_reducing_only";
 }) {
   return {
     version: 1,
@@ -1377,6 +1383,7 @@ function redactedConnectorPayload(input: {
     selected_rail: input.preview.selected_rail,
     claim_status: input.preview.claim_status,
     operation_class: operationForAction(input.manifest.platform_class, input.compiled_intent.action_class),
+    billing_execution_policy: input.billing_execution_policy ?? "all",
     ...(input.encrypted_execution_instruction_bundle
       ? { encrypted_execution_instruction_bundle: input.encrypted_execution_instruction_bundle }
       : {}),

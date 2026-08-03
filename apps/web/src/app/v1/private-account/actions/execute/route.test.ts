@@ -27,6 +27,10 @@ import { POST as writeAnonymityEvidence } from "../../anonymity-evidence/route";
 import { POST as createFundingInstruction } from "../../funding/instruction/route";
 import { POST as importFunding } from "../../funding/import/route";
 import { POST as runBatchCoordinator } from "../../funding/batch/run/route";
+import {
+  hasPrivateAccountTradingEntitlement,
+  mainnetTradingSubscriptionGateApplies,
+} from "../../_lib";
 
 function auth(userId: string) {
   return `Bearer ${[
@@ -38,6 +42,27 @@ function auth(userId: string) {
 
 const AUTH = auth("user_1");
 const INTERNAL_TOKEN = "test_internal_private_account_token";
+
+describe("manual trading entitlement", () => {
+  it("reserves opening trades for Founding Trader and higher plans", () => {
+    expect(hasPrivateAccountTradingEntitlement("free")).toBe(false);
+    expect(hasPrivateAccountTradingEntitlement("private_agent")).toBe(false);
+    expect(hasPrivateAccountTradingEntitlement("founding_trader")).toBe(true);
+    expect(hasPrivateAccountTradingEntitlement("unlimited")).toBe(true);
+    expect(hasPrivateAccountTradingEntitlement("enterprise")).toBe(true);
+  });
+
+  it("keeps Hyperliquid testnet free while gating mainnet", () => {
+    expect(mainnetTradingSubscriptionGateApplies("hyperliquid_style_market", {
+      GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED: "true",
+      GHOLA_HYPERLIQUID_LIVE_MODE: "testnet",
+    })).toBe(false);
+    expect(mainnetTradingSubscriptionGateApplies("hyperliquid_style_market", {
+      GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED: "true",
+      GHOLA_HYPERLIQUID_LIVE_MODE: "full_ticket",
+    })).toBe(true);
+  });
+});
 
 function request(path: string, body: unknown, auth = AUTH) {
   return new Request(`https://ghola.test${path}`, {

@@ -18,6 +18,8 @@ pub struct CloudConfig {
     pub stripe_webhook_secret: Option<String>,
     pub stripe_price_pro: Option<String>,
     pub stripe_price_private_agent: Option<String>,
+    pub stripe_price_founding_trader: Option<String>,
+    pub founding_trader_invite_emails: Vec<String>,
     pub stripe_price_unlimited: Option<String>,
     pub base_url: String,
     pub encryption_key: [u8; 32],
@@ -78,6 +80,14 @@ impl CloudConfig {
             stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET").ok(),
             stripe_price_pro: env::var("STRIPE_PRICE_PRO").ok(),
             stripe_price_private_agent: env::var("STRIPE_PRICE_PRIVATE_AGENT").ok(),
+            stripe_price_founding_trader: env::var("STRIPE_PRICE_FOUNDING_TRADER").ok(),
+            founding_trader_invite_emails: env::var("FOUNDING_TRADER_INVITE_EMAILS")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|email| !email.is_empty())
+                .map(|email| email.to_ascii_lowercase())
+                .collect(),
             stripe_price_unlimited: env::var("STRIPE_PRICE_UNLIMITED").ok(),
             base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
             encryption_key,

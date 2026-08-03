@@ -992,6 +992,8 @@ mod privacy_log_safety_tests {
             stripe_webhook_secret: None,
             stripe_price_pro: None,
             stripe_price_private_agent: None,
+            stripe_price_founding_trader: None,
+            founding_trader_invite_emails: vec![],
             stripe_price_unlimited: None,
             base_url: "http://localhost:3000".to_string(),
             encryption_key: [7u8; 32],

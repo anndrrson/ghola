@@ -1847,6 +1847,7 @@ function friendlyPerpError(error: unknown): string {
   if (normalized.includes("max notional") || normalized.includes("max_notional") || normalized.includes("notional cap")) return "This order exceeds the account’s configured trading limit.";
   if (normalized.includes("live_proxy_timeout")) return "Ghola timed out while waiting for the private worker. The order was not blindly resubmitted; reconcile the account before trying again.";
   if (normalized.includes("order_below_venue_minimum")) return "The reviewed size falls below Hyperliquid’s $10 minimum after lot-size rounding. Increase the ticket to the minimum shown and review again.";
+  if (normalized.includes("trading_subscription_required")) return "A Founding Trader subscription is required to open or increase a mainnet position. Reduce-only closes and cancellations remain available.";
   if (normalized.includes("worker") || normalized.includes("connector")) return "The private execution worker is reconnecting. Your order was not blindly resubmitted.";
   if (normalized.includes("venue_rejected")) return "Hyperliquid rejected the order. Recheck collateral, price, size, and leverage.";
   return raw.replaceAll("_", " ");

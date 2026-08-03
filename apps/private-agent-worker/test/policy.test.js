@@ -1,11 +1,54 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  enforceBillingExecutionPolicy,
   enforceInstructionPolicy,
   normalizeInstruction,
 } from "../src/execution/policy.js";
 
 const OLD_ENV = { ...process.env };
+
+describe("trading subscription execution policy", () => {
+  const openingOrder = {
+    venue_id: "hyperliquid",
+    operation_class: "limit_order",
+    order: { market: "SOL", side: "buy", reduce_only: false },
+  };
+
+  it("allows an entitled opening order", () => {
+    assert.doesNotThrow(() => enforceBillingExecutionPolicy({
+      body: { billing_execution_policy: "all" },
+      instruction: openingOrder,
+    }));
+  });
+
+  it("blocks an unpaid opening order before venue submission", () => {
+    assert.throws(
+      () => enforceBillingExecutionPolicy({
+        body: { billing_execution_policy: "risk_reducing_only" },
+        instruction: openingOrder,
+      }),
+      (error) => error.status === 402 && error.code === "trading_subscription_required",
+    );
+  });
+
+  it("allows a reduce-only close during billing failure", () => {
+    assert.doesNotThrow(() => enforceBillingExecutionPolicy({
+      body: { billing_execution_policy: "risk_reducing_only" },
+      instruction: {
+        ...openingOrder,
+        order: { ...openingOrder.order, side: "sell", reduce_only: true },
+      },
+    }));
+  });
+
+  it("allows cancellation during billing failure", () => {
+    assert.doesNotThrow(() => enforceBillingExecutionPolicy({
+      body: { billing_execution_policy: "risk_reducing_only" },
+      instruction: { venue_id: "hyperliquid", operation_class: "cancel", cancel: {} },
+    }));
+  });
+});
 
 describe("full-ticket execution policy", () => {
   beforeEach(() => {

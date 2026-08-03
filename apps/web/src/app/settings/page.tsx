@@ -743,6 +743,8 @@ function PlanTab() {
   const [agentRuntime, setAgentRuntime] = useState<PrivateAgentRuntimeStatus | null>(null);
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const foundingCheckoutEnabled =
+    process.env.NEXT_PUBLIC_FOUNDING_TRADER_CHECKOUT_ENABLED === "true";
 
   useEffect(() => {
     getThumperBillingStatus()
@@ -803,6 +805,23 @@ function PlanTab() {
       ],
     },
     {
+      id: "founding_trader",
+      name: "Founding Trader",
+      price: "$29",
+      period: "/month",
+      features: [
+        "Everything in Private Agents",
+        "100 private compute hours and 3 active agents",
+        "Unlimited calls and emails",
+        "Manual mainnet trading through sealed workers",
+        "Read-only venue and collateral preflight",
+        "Encrypted trading-only credential vault",
+        "Execution receipts and position reconciliation",
+        "Perp reduce-only exits and cancellations stay available",
+        "Founding onboarding and direct support",
+      ],
+    },
+    {
       id: "unlimited",
       name: "Unlimited",
       price: "$29.99",
@@ -827,6 +846,7 @@ function PlanTab() {
 
   const privateAgentPaid =
     billing?.tier === "private_agent" ||
+    billing?.tier === "founding_trader" ||
     billing?.tier === "unlimited" ||
     billing?.tier === "enterprise";
   const remoteReady = agentRuntime?.remote_execution_ready === true;
@@ -927,7 +947,9 @@ function PlanTab() {
       {plans.map((plan) => {
         const isCurrent = billing?.tier === plan.id;
         const cta =
-          plan.id === "private_agent"
+          plan.id === "founding_trader"
+            ? "Join for $29/month"
+            : plan.id === "private_agent"
             ? "Start with 30 hours"
             : plan.id === "unlimited"
               ? "Upgrade to 100 hours"
@@ -965,7 +987,8 @@ function PlanTab() {
                 </li>
               ))}
             </ul>
-            {!isCurrent && plan.id !== "free" && plan.id !== "enterprise" && (
+            {!isCurrent && plan.id !== "free" && plan.id !== "enterprise" &&
+              (plan.id !== "founding_trader" || foundingCheckoutEnabled) && (
               <button
                 onClick={() => handleUpgrade(plan.id)}
                 disabled={upgrading === plan.id}
@@ -973,6 +996,14 @@ function PlanTab() {
               >
                 {upgrading === plan.id ? "Redirecting..." : cta}
               </button>
+            )}
+            {!isCurrent && plan.id === "founding_trader" && !foundingCheckoutEnabled && (
+              <a
+                href="mailto:hello@ghola.xyz?subject=Founding%20Trader%20access"
+                className="block w-full rounded-lg bg-[#3da8ff] py-2 text-center text-xs font-medium text-[#08090d] transition-colors hover:bg-[#5bb8ff]"
+              >
+                Request founding access
+              </a>
             )}
             {!isCurrent && plan.id === "enterprise" && (
               <a

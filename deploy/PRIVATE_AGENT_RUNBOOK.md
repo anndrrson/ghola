@@ -14,12 +14,26 @@ the Stripe price IDs:
 ```bash
 STRIPE_PRICE_PRO=price_...
 STRIPE_PRICE_PRIVATE_AGENT=price_...
+STRIPE_PRICE_FOUNDING_TRADER=price_...
 STRIPE_PRICE_UNLIMITED=price_...
+FOUNDING_TRADER_INVITE_EMAILS=founder@example.com,trader@example.com
 ```
 
-`private_agent`, `unlimited`, and `enterprise` users can create sealed cloud
+`private_agent`, `founding_trader`, `unlimited`, and `enterprise` users can create sealed cloud
 agent sessions. Free users remain limited to local encrypted strategy
 preparation.
+
+The $29 `founding_trader` checkout is rejected unless the signed-in email is in
+`FOUNDING_TRADER_INVITE_EMAILS`. After the Stripe price and invite list are
+configured, set `NEXT_PUBLIC_FOUNDING_TRADER_CHECKOUT_ENABLED=true` in the web
+build to replace the request-access link with Checkout.
+
+Set `GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED=true` in the web runtime
+only after the mainnet fresh-user readiness gate is green. When enabled,
+`founding_trader`, `unlimited`, and `enterprise` can open or increase mainnet
+positions. Testnet and all no-submit/readiness checks remain free. Billing
+failure fails closed for new exposure, while the sealed worker continues to
+allow cancellations and verified reduce-only perp closes.
 
 ## Runtime contract
 

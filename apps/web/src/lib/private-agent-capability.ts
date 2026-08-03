@@ -72,6 +72,7 @@ export function workerCapabilityExpectedFromBody(
     platform_class: body.platform_class,
     execution_mode: body.execution_mode,
     operation_class: body.operation_class,
+    billing_execution_policy: body.billing_execution_policy,
     work_order_commitment: body.work_order_commitment,
     policy_commitment: body.policy_commitment,
     allocation_commitment: body.allocation_commitment,

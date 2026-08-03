@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { openSealedBundle } from "../crypto/envelope.js";
 import {
   bucketToUsd,
+  enforceBillingExecutionPolicy,
   enforceInstructionPolicy,
   estimateOrderNotionalUsd,
   normalizeInstruction,
@@ -298,6 +299,7 @@ export async function executeHyperliquidOrder({
   let adapterStarted = false;
   let adapterResult;
   try {
+    enforceBillingExecutionPolicy({ body, instruction });
     await enforceInstructionPolicy({
       body,
       instruction,
@@ -492,6 +494,7 @@ export async function executeCoinbaseOrder({ body, recipient, state }) {
     venue_id: "coinbase_advanced",
     session,
   }), { state, venue_id: "coinbase_advanced" });
+  enforceBillingExecutionPolicy({ body, instruction });
   await enforceInstructionPolicy({ body, instruction, session, state });
 
   let credential;
@@ -610,6 +613,7 @@ export async function executeSolanaPerpsOrder({ body, recipient, state }) {
     venue_id: venueId,
     session,
   }), { state, venue_id: venueId });
+  enforceBillingExecutionPolicy({ body, instruction });
   await enforceInstructionPolicy({ body, instruction, session, state });
   const clientOrderId = await state.deriveClientOrderId(venueId, body.work_order_commitment);
   const adapterResult = await submitSolanaPerpsExecution({
@@ -684,6 +688,7 @@ export async function executeJupiterSwapOrder({ body, recipient, state }) {
     venue_id: "jupiter",
     session,
   });
+  enforceBillingExecutionPolicy({ body, instruction });
   await enforceInstructionPolicy({ body, instruction, session, state });
   const clientOrderId = await state.deriveClientOrderId("jupiter", body.work_order_commitment);
   const adapterResult = await submitJupiterSwapExecution({
