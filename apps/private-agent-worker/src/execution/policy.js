@@ -585,15 +585,24 @@ async function enforceHyperliquidTinyFillPolicy({
     return;
   }
   const order = instruction.order;
-  if (
-    configValue("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") === "full_ticket" &&
-    order.live_order_mode !== "tiny_fill"
-  ) {
+  const liveMode = configValue("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE");
+  if (liveMode === "full_ticket" && order.live_order_mode !== "tiny_fill") {
     return;
   }
   if (order.live_order_mode !== "tiny_fill" && !order.quote_size) return;
   if (order.live_order_mode !== "tiny_fill") {
-    throw new ExecutionPolicyError("hyperliquid live order must use tiny_fill mode");
+    if (liveMode !== "tiny_fill" && liveMode !== "full_ticket") {
+      throw new ExecutionPolicyError(
+        "hyperliquid live submit is disabled",
+        403,
+        "live_gate_disabled",
+      );
+    }
+    throw new ExecutionPolicyError(
+      "hyperliquid live order must use tiny_fill mode",
+      403,
+      "live_mode_mismatch",
+    );
   }
   if (order.tif !== "Ioc") {
     throw new ExecutionPolicyError("hyperliquid tiny fill must use IOC");
@@ -662,7 +671,11 @@ async function enforceHyperliquidFullTicketPolicy({
   }
   const perOrderCap = capUsd(process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD, 0);
   if (perOrderCap <= 0) {
-    throw new ExecutionPolicyError("hyperliquid full-ticket max notional is not configured");
+    throw new ExecutionPolicyError(
+      "hyperliquid full-ticket max notional is not configured",
+      503,
+      "live_gate_disabled",
+    );
   }
   const launchPerOrderCap = capUsd(
     process.env.PRIVATE_AGENT_LIVE_MAX_ORDER_NOTIONAL_USD ||

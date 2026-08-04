@@ -37,4 +37,16 @@ describe("noFundsReason", () => {
       error: "unrecognized internal detail",
     }, 400)).toBe("invalid_authority_or_access");
   });
+
+  it("preserves actionable Hyperliquid live-policy failures", () => {
+    expect(noFundsReason({
+      error_code: "live_gate_disabled",
+      error: "hyperliquid full-ticket max notional is not configured",
+    }, 503)).toBe("live_gate_disabled");
+
+    expect(noFundsReason({
+      error_code: "live_mode_mismatch",
+      error: "hyperliquid live order must use tiny_fill mode",
+    }, 403)).toBe("live_mode_mismatch");
+  });
 });

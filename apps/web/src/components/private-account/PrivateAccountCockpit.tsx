@@ -9363,7 +9363,10 @@ function friendlyPrivateAccountError(err: unknown, fallback: string) {
     return "No-submit verification is wired for Hyperliquid, Phoenix, and Jupiter.";
   }
   if (message === "policy_blocked" || message === "live_gate_disabled") {
-    return "Live Capped trading is not available for this order yet.";
+    return "Hyperliquid live trading is disabled or its safety caps are not configured.";
+  }
+  if (message === "live_mode_mismatch") {
+    return "The Hyperliquid order mode does not match the worker's configured live mode.";
   }
   if (message === "solana_perps_execution_vault_not_ready") {
     return "Connect a Phoenix trading authority first.";

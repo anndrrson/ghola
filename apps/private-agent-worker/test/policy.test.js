@@ -71,6 +71,24 @@ describe("full-ticket execution policy", () => {
     );
   });
 
+  it("reports a disabled full-ticket cap as a live gate failure", async () => {
+    delete process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD;
+    const instruction = hyperliquidFullTicketOrder({ quote_size: "11", max_slippage_bps: "50" });
+    await assert.rejects(
+      () => enforceInstructionPolicy({ body: { policy_commitment: "policy_test" }, instruction, session: null, state: null }),
+      (error) => error.status === 503 && error.code === "live_gate_disabled",
+    );
+  });
+
+  it("reports disabled Hyperliquid submit mode before tiny-fill shape policy", async () => {
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "disabled";
+    const instruction = hyperliquidFullTicketOrder({ quote_size: "11", max_slippage_bps: "50" });
+    await assert.rejects(
+      () => enforceInstructionPolicy({ body: { policy_commitment: "policy_test" }, instruction, session: null, state: null }),
+      (error) => error.status === 403 && error.code === "live_gate_disabled",
+    );
+  });
+
   it("applies full-ticket policy when the deployment value has a trailing newline", async () => {
     process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "full_ticket\n";
     const instruction = hyperliquidFullTicketOrder({ quote_size: "1001", max_slippage_bps: "50" });

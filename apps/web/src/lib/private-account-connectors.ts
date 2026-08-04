@@ -2021,6 +2021,10 @@ export function noFundsReason(body: Record<string, unknown>, status: number): st
     ? body.details.filter((detail): detail is string => typeof detail === "string").join(" ")
     : "";
   const text = `${code} ${error} ${details}`.toLowerCase();
+  if (code === "live_gate_disabled" || /live submit is disabled|max notional is not configured/.test(text)) {
+    return "live_gate_disabled";
+  }
+  if (code === "live_mode_mismatch") return "live_mode_mismatch";
   if (/insufficient|needs funds|not enough|collateral|account value|margin/.test(text)) return "needs_funds";
   if (code.includes("access") || code === "venue_access_required") {
     if (/encrypted_execution_vault\.recipient must match worker recipient/.test(text)) {
