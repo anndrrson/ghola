@@ -320,12 +320,16 @@ UPDATE users SET tier = 'free' WHERE tier IS NULL;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS apple_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS siws_pubkey TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS seeker_verified_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS seeker_wallet_pubkey TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS seeker_sgt_mint TEXT;
 DROP INDEX IF EXISTS idx_users_google_id;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
 DROP INDEX IF EXISTS idx_users_apple_id;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_id ON users(apple_id);
 DROP INDEX IF EXISTS idx_users_siws_pubkey;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_siws_pubkey ON users(siws_pubkey);
+CREATE INDEX IF NOT EXISTS idx_users_seeker_sgt_mint ON users(seeker_sgt_mint);
 
 -- Ensure columns from CREATE TABLE exist (live DB may predate them)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();

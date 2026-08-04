@@ -8,11 +8,11 @@ pub mod routes;
 pub mod services;
 pub mod state;
 
-use axum::Json;
-use axum::Router;
 use axum::extract::State;
 use axum::http::HeaderValue;
 use axum::routing::{delete, get, patch, post};
+use axum::Json;
+use axum::Router;
 use serde_json::json;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -154,6 +154,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/auth/refresh", post(routes::auth::refresh_token))
         .route("/api/auth/email/signup", post(routes::auth::email_sign_up))
         .route("/api/auth/email/signin", post(routes::auth::email_sign_in))
+        // Seeker Genesis Token ownership proof. Authenticated with the same
+        // SIWS JWT issued above so reviewers never cross an issuer boundary.
+        .route("/api/seeker/verify", post(routes::seeker::verify))
         // Cookie-only logout — clears ghola_session + ghola_csrf cookies.
         .route("/api/auth/logout", post(routes::auth::logout))
         // One-shot migration: re-emit a Set-Cookie for callers who still
