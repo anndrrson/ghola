@@ -28,6 +28,18 @@ interface PhalaRecipientMetadata {
   expires_at_unix?: number | null;
 }
 
+interface PhalaRuntimeHealthMetadata {
+  service?: string;
+  status?: string;
+  ok?: boolean;
+  ready?: boolean;
+  attested?: boolean;
+  attested_ready?: boolean;
+  image_digest?: string | null;
+  runtime_attestation_commitment?: string | null;
+  runtime_measurement_commitment?: string | null;
+}
+
 interface PhalaProvisionResult {
   attempted: boolean;
   ready: boolean;
@@ -472,11 +484,117 @@ function attestationPresent(attestation: unknown): boolean {
   return false;
 }
 
+async function discoverConfiguredPhalaExecutionProvider(): Promise<
+  ConfidentialComputeProviderStatus | null
+> {
+  const executionUrl = safeExecutionUrl(
+    env("GHOLA_PRIVATE_AGENT_EXECUTION_URL") ??
+      env("PHALA_AGENT_ENDPOINT") ??
+      env("GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL"),
+  );
+  if (!executionUrl) return null;
+
+  const [recipient, health] = await Promise.all([
+    fetchJson<PhalaRecipientMetadata>(
+      new URL("/.well-known/private-agent-recipient", executionUrl),
+    ),
+    fetchJson<PhalaRuntimeHealthMetadata>(new URL("/health", executionUrl)),
+  ]);
+  if (!recipient || !health) return null;
+
+  const fundingSignerPublicKeyB64 = recipient.funding_signer_public_key_b64?.trim() || "";
+  const pinnedFundingSigners = pinnedFundingSignerKeys();
+  const fundingSignerBound =
+    !fundingSignerPublicKeyB64 ||
+    (pinnedFundingSigners.size > 0 && pinnedFundingSigners.has(fundingSignerPublicKeyB64));
+  const expectedReportData =
+    recipient.recipient_id && recipient.x25519_pub_hex
+      ? expectedRecipientReportDataHex({
+          recipientId: recipient.recipient_id,
+          x25519PubHex: recipient.x25519_pub_hex,
+          fundingSignerPublicKeyB64: fundingSignerBound ? fundingSignerPublicKeyB64 : null,
+        })
+      : null;
+  const reportDataBound =
+    expectedReportData !== null &&
+    recipient.report_data_hex?.toLowerCase() === expectedReportData.toLowerCase();
+  const configuredImageDigest =
+    env("GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST") ??
+    env("GHOLA_PRIVATE_AGENT_IMAGE_DIGEST") ??
+    env("PHALA_CVM_IMAGE_DIGEST");
+  const imageDigestBound =
+    Boolean(recipient.image_digest) &&
+    recipient.image_digest === health.image_digest &&
+    (!configuredImageDigest || recipient.image_digest === configuredImageDigest);
+  const quoteBound = Boolean(
+    recipient.attestation_hash &&
+      recipient.quote_hash &&
+      recipient.attestation_hash === recipient.quote_hash,
+  );
+  const recipientReady = Boolean(
+    recipient.recipient_id &&
+      validX25519Hex(recipient.x25519_pub_hex) &&
+      recipient.attested_ready === true &&
+      fundingSignerBound &&
+      reportDataBound &&
+      imageDigestBound &&
+      quoteBound,
+  );
+  const attestedReady = Boolean(
+    health.ok === true &&
+      health.ready === true &&
+      health.attested === true &&
+      health.attested_ready === true &&
+      health.runtime_attestation_commitment &&
+      health.runtime_measurement_commitment,
+  );
+  const ready = recipientReady && attestedReady;
+
+  return {
+    id: "phala",
+    label: "Phala TEE",
+    configured: true,
+    available: ready,
+    attested: ready,
+    supports_sealed_secrets: ready,
+    supports_background_agents: ready,
+    supports_trading_execution: ready,
+    execution_url: executionUrl,
+    reason: ready
+      ? null
+      : "Configured Phala worker did not publish matching attestation-bound recipient evidence.",
+    ...(recipientReady && recipient.recipient_id && recipient.x25519_pub_hex
+      ? {
+          sealed_recipient: {
+            recipient_id: recipient.recipient_id,
+            x25519_pub_hex: recipient.x25519_pub_hex,
+            tee_kind: recipient.tee_kind ?? "phala",
+            measurement_hex: recipient.measurement_hex ?? recipient.image_digest ?? null,
+            attestation_hash: recipient.attestation_hash ?? recipient.quote_hash ?? null,
+            expires_at_unix: recipient.expires_at_unix ?? null,
+          },
+        }
+      : {}),
+    evidence: {
+      tee_kind: recipient.tee_kind ?? "phala",
+      verifier_url_configured: true,
+      execution_url_configured: true,
+      image_digest_configured: Boolean(configuredImageDigest),
+      recipient_configured: recipientReady,
+      provisioning_enabled: phalaJitProvisioningEnabled(),
+      cvm_status: health.status ?? null,
+      report_data_bound: reportDataBound,
+      funding_signer_bound: fundingSignerBound,
+      phala_attestation_present: attestedReady,
+    },
+  };
+}
+
 export async function discoverPhalaPrivateAgentProvider(): Promise<
   ConfidentialComputeProviderStatus | null
 > {
   const client = await phalaClient();
-  if (!client) return null;
+  if (!client) return discoverConfiguredPhalaExecutionProvider();
 
   const name = phalaCvmName();
   const token = phalaWorkerExecutionToken();
@@ -502,7 +620,7 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
   try {
     info = await client.getCvmInfo({ id: name }, { schema: false });
   } catch {
-    return null;
+    return discoverConfiguredPhalaExecutionProvider();
   }
 
   const status =

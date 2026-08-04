@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildPhalaWorkerCompose,
+  discoverPhalaPrivateAgentProvider,
   expectedRecipientReportDataHex,
   markPhalaPrivateAgentActivity,
   phalaIdleLeaseMs,
@@ -27,6 +28,9 @@ const TEST_ENV_KEYS = [
   "GHOLA_PRIVATE_AGENT_SPEND_LOCKDOWN",
   "GHOLA_PRIVATE_AGENT_WORKER_IMAGE",
   "GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST",
+  "GHOLA_PRIVATE_AGENT_EXECUTION_URL",
+  "GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL",
+  "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64",
   "GHOLA_HYPERLIQUID_LIVE_MODE",
   "GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD",
   "GHOLA_HYPERLIQUID_LIVE_MAX_SLIPPAGE_BPS",
@@ -41,6 +45,7 @@ const TEST_ENV_KEYS = [
 ];
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   resetPrivateAgentRuntimeLeaseStoreForTests();
   for (const key of TEST_ENV_KEYS) {
     if (ORIGINAL_ENV[key] === undefined) {
@@ -222,6 +227,60 @@ describe("private-agent Phala provisioning", () => {
     expect(second).toMatch(/^0x[0-9a-f]{64}$/);
     expect(first).not.toBe(second);
     expect(withFundingSigner).not.toBe(first);
+  });
+
+  it("discovers an attested configured worker without a Phala management key", async () => {
+    const recipientId = "phala:cvm:direct-test";
+    const x25519PubHex = "11".repeat(32);
+    const fundingSignerPublicKeyB64 = "MCowBQYDK2VwAyEAdirect-worker-public-key=";
+    const imageDigest = `sha256:${"22".repeat(32)}`;
+    const reportDataHex = expectedRecipientReportDataHex({
+      recipientId,
+      x25519PubHex,
+      fundingSignerPublicKeyB64,
+    });
+    setTestEnv({
+      GHOLA_PRIVATE_AGENT_EXECUTION_URL: "https://worker.example",
+      GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST: imageDigest,
+      GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: fundingSignerPublicKeyB64,
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/.well-known/private-agent-recipient")) {
+        return Response.json({
+          recipient_id: recipientId,
+          x25519_pub_hex: x25519PubHex,
+          funding_signer_public_key_b64: fundingSignerPublicKeyB64,
+          tee_kind: "phala",
+          image_digest: imageDigest,
+          report_data_hex: reportDataHex,
+          attestation_hash: "aa".repeat(32),
+          quote_hash: "aa".repeat(32),
+          attested_ready: true,
+        });
+      }
+      if (url.endsWith("/health")) {
+        return Response.json({
+          service: "ghola-private-agent-worker",
+          status: "green",
+          ok: true,
+          ready: true,
+          attested: true,
+          attested_ready: true,
+          image_digest: imageDigest,
+          runtime_attestation_commitment: "runtime_attestation_test",
+          runtime_measurement_commitment: "runtime_measurement_test",
+        });
+      }
+      return Response.json({}, { status: 404 });
+    }));
+
+    const provider = await discoverPhalaPrivateAgentProvider();
+
+    expect(provider?.available).toBe(true);
+    expect(provider?.attested).toBe(true);
+    expect(provider?.execution_url).toBe("https://worker.example");
+    expect(provider?.sealed_recipient?.recipient_id).toBe(recipientId);
   });
 
   it("uses a bounded idle lease and allows explicit idle shutdown disable", () => {
