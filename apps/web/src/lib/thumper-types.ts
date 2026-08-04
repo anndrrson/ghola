@@ -170,6 +170,7 @@ export interface ThumperTemplateResponse {
 export interface ThumperBillingStatusResponse {
   tier: "free" | "pro" | "private_agent" | "founding_trader" | "unlimited" | "enterprise";
   stripe_customer_id: string | null;
+  subscription_status?: string | null;
   expires_at?: string | null;
   portal_url?: string | null;
   limits: {

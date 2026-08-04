@@ -36,11 +36,48 @@ pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
 }
 
 pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
-    // Run embedded migrations
-    sqlx::raw_sql(MIGRATION_SQL).execute(pool).await?;
-    tracing::info!("database migrations applied");
+    // Render can start more than one instance against the same database. Keep
+    // the embedded idempotent schema pass serialized so concurrent boots don't
+    // race while PostgreSQL is creating tables, constraints, or row types.
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('ghola-cloud-migrations', 0))")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS ghola_schema_migrations (
+            version TEXT PRIMARY KEY,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    let already_applied: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM ghola_schema_migrations WHERE version = $1)",
+    )
+    .bind(MIGRATION_VERSION)
+    .fetch_one(&mut *tx)
+    .await?;
+    if already_applied {
+        tx.commit().await?;
+        tracing::info!(
+            version = MIGRATION_VERSION,
+            "database schema already current"
+        );
+        return Ok(());
+    }
+    sqlx::raw_sql(MIGRATION_SQL).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO ghola_schema_migrations (version) VALUES ($1)")
+        .bind(MIGRATION_VERSION)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    tracing::info!(version = MIGRATION_VERSION, "database migrations applied");
     Ok(())
 }
+
+const MIGRATION_VERSION: &str = "2026-08-03-billing-lifecycle-v1";
 
 const MIGRATION_SQL: &str = r#"
 -- Thumper Cloud Schema
@@ -56,6 +93,8 @@ CREATE TABLE IF NOT EXISTS users (
     timezone TEXT DEFAULT 'America/New_York',
     tier TEXT DEFAULT 'free' CHECK (tier IN ('free', 'pro', 'private_agent', 'founding_trader', 'unlimited')),
     stripe_customer_id TEXT,
+    stripe_subscription_id TEXT,
+    stripe_subscription_status TEXT,
     said_identity_id TEXT,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
@@ -265,7 +304,7 @@ CREATE INDEX IF NOT EXISTS idx_private_agent_compute_usage_active
 CREATE TABLE IF NOT EXISTS founding_trader_seats (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'reserved'
-        CHECK (status IN ('reserved', 'active', 'released')),
+        CHECK (status IN ('reserved', 'pending_payment', 'active', 'released')),
     stripe_session_id TEXT,
     checkout_url TEXT,
     reserved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -278,11 +317,49 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_founding_trader_seats_stripe_session
     ON founding_trader_seats(stripe_session_id) WHERE stripe_session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_founding_trader_seats_claimed
     ON founding_trader_seats(status, expires_at);
+ALTER TABLE founding_trader_seats DROP CONSTRAINT IF EXISTS founding_trader_seats_status_check;
+ALTER TABLE founding_trader_seats ADD CONSTRAINT founding_trader_seats_status_check
+    CHECK (status IN ('reserved', 'pending_payment', 'active', 'released'));
 INSERT INTO founding_trader_seats (user_id, status, activated_at, expires_at)
 SELECT id, 'active', now(), NULL
 FROM users
 WHERE tier = 'founding_trader'
 ON CONFLICT (user_id) DO NOTHING;
+
+-- Durable Stripe subscription identity and webhook replay protection. Stripe
+-- doesn't guarantee event ordering and can deliver the same event more than
+-- once, so entitlements must be derived from subscription-specific state.
+CREATE TABLE IF NOT EXISTS stripe_subscriptions (
+    stripe_subscription_id TEXT PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    stripe_customer_id TEXT NOT NULL,
+    stripe_price_id TEXT NOT NULL,
+    tier TEXT NOT NULL
+        CHECK (tier IN ('pro', 'private_agent', 'founding_trader', 'unlimited')),
+    status TEXT NOT NULL,
+    current_period_end TIMESTAMPTZ,
+    cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+    last_event_created BIGINT NOT NULL DEFAULT 0,
+    last_event_id TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_stripe_subscriptions_user
+    ON stripe_subscriptions(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_stripe_subscriptions_customer
+    ON stripe_subscriptions(stripe_customer_id);
+
+CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+    stripe_event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    event_created BIGINT NOT NULL,
+    livemode BOOLEAN NOT NULL DEFAULT FALSE,
+    object_id TEXT,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    processed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_stripe_webhook_events_received
+    ON stripe_webhook_events(received_at DESC);
 
 -- Email/password auth
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
@@ -401,6 +478,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone TEXT DEFAULT 'America/New_York';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_status TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS said_identity_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();

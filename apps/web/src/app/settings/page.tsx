@@ -869,6 +869,10 @@ function PlanTab() {
   const resetDate = privateCompute?.period_end
     ? new Date(`${privateCompute.period_end}T00:00:00Z`)
     : null;
+  const billingNeedsAttention =
+    Boolean(billing?.subscription_status) &&
+    billing?.subscription_status !== "active" &&
+    billing?.subscription_status !== "trialing";
 
   return (
     <div className="space-y-4">
@@ -890,6 +894,20 @@ function PlanTab() {
       {notice && (
         <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] px-4 py-3 text-sm text-[#cfeaff]">
           {notice}
+        </div>
+      )}
+
+      {billingNeedsAttention && (
+        <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+          <p>Your subscription payment needs attention. New paid actions remain disabled until Stripe confirms payment.</p>
+          {billing?.portal_url && (
+            <a
+              href={billing.portal_url}
+              className="mt-2 inline-flex font-medium text-amber-50 underline underline-offset-4"
+            >
+              Update billing in Stripe
+            </a>
+          )}
         </div>
       )}
 

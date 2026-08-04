@@ -864,11 +864,23 @@ async fn health_providers(State(state): State<AppState>) -> Json<serde_json::Val
     }))
 }
 
-async fn health_payments() -> Json<serde_json::Value> {
+async fn health_payments(State(state): State<AppState>) -> Json<serde_json::Value> {
     let shielded = services::x402_service::shielded_stablecoin_runtime_status();
     let solana_shielded = services::x402_service::solana_shielded_pool_runtime_status();
     let railgun = services::x402_service::railgun_evm_runtime_status();
     Json(json!({
+        "billing": {
+            "stripe_configured": state.config.stripe_secret_key.is_some(),
+            "stripe_livemode": state.config.stripe_secret_key.as_deref()
+                .and_then(routes::billing::stripe_key_livemode),
+            "webhook_verification_configured": state.config.stripe_webhook_secret.is_some(),
+            "founding_trader_price_configured": state.config.stripe_price_founding_trader.is_some(),
+            "adaptive_pricing_enabled": state.config.stripe_adaptive_pricing_enabled,
+            "automatic_tax_enabled": state.config.stripe_automatic_tax_enabled,
+            "tax_id_collection_enabled": state.config.stripe_tax_id_collection_enabled,
+            "payment_methods": "stripe_dashboard_managed",
+            "payment_method_configuration_configured": state.config.stripe_payment_method_configuration.is_some(),
+        },
         "default_rail": services::x402_service::SOLANA_PUBLIC_USDC_RAIL,
         "rails": {
             "solana_public_usdc": {
@@ -999,6 +1011,10 @@ mod privacy_log_safety_tests {
             stripe_price_founding_trader: None,
             founding_trader_max_seats: 100,
             stripe_price_unlimited: None,
+            stripe_automatic_tax_enabled: false,
+            stripe_tax_id_collection_enabled: true,
+            stripe_adaptive_pricing_enabled: true,
+            stripe_payment_method_configuration: None,
             base_url: "http://localhost:3000".to_string(),
             encryption_key: [7u8; 32],
             telegram_bot_token: None,
@@ -1078,6 +1094,30 @@ mod privacy_log_safety_tests {
             services::x402_service::REMOTE_AGENT_COMPUTE_DISCLOSURE
         );
         assert_eq!(body["private_rail_fail_closed"], true);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn payment_health_reports_billing_readiness_without_secrets() {
+        let mut config = test_config();
+        config.stripe_secret_key = Some("sk_live_redacted".to_string());
+        config.stripe_webhook_secret = Some("whsec_redacted".to_string());
+        config.stripe_price_founding_trader = Some("price_redacted".to_string());
+        let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pool");
+        let state = AppState::new(config, pool);
+
+        let Json(body) = health_payments(State(state)).await;
+
+        assert_eq!(body["billing"]["stripe_configured"], true);
+        assert_eq!(body["billing"]["stripe_livemode"], true);
+        assert_eq!(body["billing"]["webhook_verification_configured"], true);
+        assert_eq!(body["billing"]["founding_trader_price_configured"], true);
+        assert_eq!(
+            body["billing"]["payment_methods"],
+            "stripe_dashboard_managed"
+        );
+        assert!(!body.to_string().contains("sk_live_redacted"));
+        assert!(!body.to_string().contains("whsec_redacted"));
+        assert!(!body.to_string().contains("price_redacted"));
     }
 
     #[test]

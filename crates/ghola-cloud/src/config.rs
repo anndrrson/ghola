@@ -21,6 +21,10 @@ pub struct CloudConfig {
     pub stripe_price_founding_trader: Option<String>,
     pub founding_trader_max_seats: i64,
     pub stripe_price_unlimited: Option<String>,
+    pub stripe_automatic_tax_enabled: bool,
+    pub stripe_tax_id_collection_enabled: bool,
+    pub stripe_adaptive_pricing_enabled: bool,
+    pub stripe_payment_method_configuration: Option<String>,
     pub base_url: String,
     pub encryption_key: [u8; 32],
     pub telegram_bot_token: Option<String>,
@@ -41,10 +45,12 @@ pub struct CloudConfig {
 
 impl CloudConfig {
     pub fn from_env() -> Self {
-        let encryption_hex = ghola_assistant_types::env_compat("GHOLA_ENCRYPTION_KEY", "THUMPER_ENCRYPTION_KEY").expect(
-            "GHOLA_ENCRYPTION_KEY must be set (generate with `openssl rand -hex 32`). \
+        let encryption_hex =
+            ghola_assistant_types::env_compat("GHOLA_ENCRYPTION_KEY", "THUMPER_ENCRYPTION_KEY")
+                .expect(
+                    "GHOLA_ENCRYPTION_KEY must be set (generate with `openssl rand -hex 32`). \
              Without it, BYOM API keys and Gmail tokens cannot be encrypted.",
-        );
+                );
 
         let encryption_key = parse_hex_key(&encryption_hex);
 
@@ -87,6 +93,12 @@ impl CloudConfig {
                 .unwrap_or(100)
                 .clamp(1, 10_000),
             stripe_price_unlimited: env::var("STRIPE_PRICE_UNLIMITED").ok(),
+            stripe_automatic_tax_enabled: env_flag("STRIPE_AUTOMATIC_TAX_ENABLED", false),
+            stripe_tax_id_collection_enabled: env_flag("STRIPE_TAX_ID_COLLECTION_ENABLED", true),
+            stripe_adaptive_pricing_enabled: env_flag("STRIPE_ADAPTIVE_PRICING_ENABLED", true),
+            stripe_payment_method_configuration: env::var("STRIPE_PAYMENT_METHOD_CONFIGURATION")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
             base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
             encryption_key,
             telegram_bot_token: env::var("TELEGRAM_BOT_TOKEN").ok(),
@@ -126,6 +138,17 @@ impl CloudConfig {
                 .unwrap_or(3600),
         }
     }
+}
+
+fn env_flag(name: &str, default: bool) -> bool {
+    env::var(name)
+        .ok()
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(default)
 }
 
 impl CloudConfig {

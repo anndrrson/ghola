@@ -71,6 +71,17 @@ services:
         sync: false
       - key: STRIPE_PRICE_UNLIMITED
         sync: false
+      # Checkout internationalization. Adaptive Pricing and tax-ID collection
+      # are safe defaults; automatic tax stays opt-in until registrations and
+      # the Stripe account origin are configured.
+      - key: STRIPE_ADAPTIVE_PRICING_ENABLED
+        value: "true"
+      - key: STRIPE_TAX_ID_COLLECTION_ENABLED
+        value: "true"
+      - key: STRIPE_AUTOMATIC_TAX_ENABLED
+        value: "false"
+      - key: STRIPE_PAYMENT_METHOD_CONFIGURATION
+        sync: false
       - key: FOUNDING_TRADER_MAX_SEATS
         value: "100"
       - key: STRIPE_PRICE_CONSUMER_PRO

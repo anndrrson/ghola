@@ -102,6 +102,10 @@ export default function FoundingTraderPage() {
           )}
 
           <p className="mt-5 text-xs leading-5 text-[#667085]">
+            Stripe Checkout shows eligible cards, wallets, local currencies, and approved payment
+            methods for your location. Payment availability varies by country and billing method.
+          </p>
+          <p className="mt-2 text-xs leading-5 text-[#667085]">
             Subscription does not include trading capital and does not guarantee profit or venue
             availability. Mainnet execution remains unavailable until the trader&apos;s selected venue,
             trading-only authority, market, and collateral all pass readiness checks.
