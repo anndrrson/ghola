@@ -210,8 +210,19 @@ describe("Hyperliquid private execution layer", () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       Response.json({
         ok: true,
+        status: "filled",
         provider_ref_commitment: "hyperliquid_provider_ref_test",
         result_commitment: "hyperliquid_result_test",
+        final_proof: {
+          version: 1,
+          proof_kind: "hyperliquid_immediate_order_result_v1",
+          status: "filled",
+          venue_id: "hyperliquid",
+          broadcast_performed: true,
+          final_venue_execution_proven: true,
+          final_fill_proven: true,
+          checked_at: NOW.toISOString(),
+        },
       }, { status: 202 }),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -313,6 +324,9 @@ describe("Hyperliquid private execution layer", () => {
     });
 
     expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    expect(submitted.result.status).toBe("filled");
+    expect(submitted.result.final_proof?.final_fill_proven).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toBe("https://worker.ghola.test/hyperliquid/orders");

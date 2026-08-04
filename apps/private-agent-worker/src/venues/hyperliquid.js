@@ -147,20 +147,33 @@ export async function submitHyperliquidExecution({
     cloid,
     timeout_ms: hyperliquidRunnerTimeoutMs(),
   });
+  const resultStatus = result.status || (instruction.operation_class === "cancel" ? "cancelled" : "submitted");
+  const fills = Array.isArray(result.fills) ? result.fills.slice(0, 25) : [];
+  const finalProof = instruction.operation_class === "cancel" ? null : {
+    version: 1,
+    proof_kind: "hyperliquid_immediate_order_result_v1",
+    status: resultStatus,
+    venue_id: "hyperliquid",
+    broadcast_performed: true,
+    final_venue_execution_proven: ["filled", "resting", "unfilled"].includes(resultStatus),
+    final_fill_proven: resultStatus === "filled" && fills.length > 0,
+    checked_at: new Date().toISOString(),
+  };
   return {
-    status: result.status || (instruction.operation_class === "cancel" ? "cancelled" : "submitted"),
+    status: resultStatus,
     provider_ref_seed: {
       venue: "hyperliquid",
       cloid,
       oid: result.oid || null,
-      fills_count: Array.isArray(result.fills) ? result.fills.length : 0,
+      fills_count: fills.length,
     },
     result_seed: {
       kind: "hyperliquid_result",
-      status: result.status || "submitted",
+      status: resultStatus,
       market: instruction.order?.market || instruction.cancel?.market || null,
     },
-    fills: Array.isArray(result.fills) ? result.fills.slice(0, 25) : [],
+    fills,
+    final_proof: finalProof,
   };
 }
 

@@ -68,6 +68,29 @@ type LiveStep = "idle" | "prepared" | "submitted";
 
 export const HYPERLIQUID_REVIEW_TTL_MS = 60_000;
 
+export function hyperliquidExecutionNotice(result: {
+  status?: string;
+  final_proof?: { final_fill_proven?: boolean; final_venue_execution_proven?: boolean } | null;
+}): string {
+  const status = result.status || "submitted";
+  if (status === "unfilled") {
+    return "Hyperliquid completed the IOC without a fill. No fill is being claimed.";
+  }
+  if (status === "resting") {
+    return "Hyperliquid accepted a resting order. It is working, not filled.";
+  }
+  if (result.final_proof?.final_fill_proven === true) {
+    return "Hyperliquid fill proven by the venue response. Account state refreshed.";
+  }
+  if (status === "filled") {
+    return "Hyperliquid reported a fill, but Ghola did not receive fill proof. Check account state before relying on it.";
+  }
+  if (result.final_proof?.final_venue_execution_proven === true) {
+    return `Hyperliquid returned ${status.replaceAll("_", " ")}; no fill was proven.`;
+  }
+  return "Hyperliquid order submitted; no fill is proven yet. Account reconciliation is active.";
+}
+
 export function buildVenueSetupHref({
   product,
   venue,
@@ -1191,9 +1214,23 @@ function AlternateProductWorkspace({
         preview_commitment: perpReview.previewCommitment,
         approval_commitment: approvalCommitment,
         encrypted_execution_instruction_bundle: sealed.encrypted_execution_instruction_bundle,
-      }) as { execution?: { status?: string }; status?: string };
-      const status = execution.execution?.status || execution.status || "submitted";
-      setPerpNotice(`Hyperliquid order ${status.replaceAll("_", " ")}. Reconciliation is active.`);
+      }) as {
+        execution?: {
+          status?: string;
+          final_proof?: { final_fill_proven?: boolean; final_venue_execution_proven?: boolean } | null;
+        };
+        status?: string;
+        final_proof?: { final_fill_proven?: boolean; final_venue_execution_proven?: boolean } | null;
+      };
+      const result = execution.execution ?? execution;
+      setPerpNotice(hyperliquidExecutionNotice(result));
+      try {
+        const snapshot = await getHyperliquidAccountSnapshot();
+        setHyperliquidAccount(snapshot);
+        setAccountState("ready");
+      } catch {
+        // Keep the signed venue result visible if the account refresh lags.
+      }
       setPerpReview(null);
     } catch (error) {
       setPerpError(friendlyPerpError(error));

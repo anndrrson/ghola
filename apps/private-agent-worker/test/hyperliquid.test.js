@@ -7,7 +7,41 @@ import {
   hyperliquidCollateralValue,
   hyperliquidRunnerTimeoutMs,
   readHyperliquidAccountSnapshot,
+  submitHyperliquidExecution,
 } from "../src/venues/hyperliquid.js";
+
+describe("Hyperliquid immediate execution proof", () => {
+  it("preserves a venue-proven fill instead of reducing it to submitted", async () => {
+    const result = await submitHyperliquidExecution({
+      credential: { network: "testnet" },
+      instruction: { operation_class: "limit_order", order: { market: "BTC" } },
+      cloid: "0x" + "1".repeat(32),
+      runner: async () => ({
+        status: "filled",
+        oid: 7,
+        fills: [{ oid: 7, px: "64000", sz: "0.0002" }],
+      }),
+    });
+
+    assert.equal(result.status, "filled");
+    assert.equal(result.fills.length, 1);
+    assert.equal(result.final_proof.final_venue_execution_proven, true);
+    assert.equal(result.final_proof.final_fill_proven, true);
+  });
+
+  it("proves an IOC completed without claiming a fill", async () => {
+    const result = await submitHyperliquidExecution({
+      credential: { network: "testnet" },
+      instruction: { operation_class: "limit_order", order: { market: "BTC" } },
+      cloid: "0x" + "2".repeat(32),
+      runner: async () => ({ status: "unfilled", oid: null, fills: [] }),
+    });
+
+    assert.equal(result.status, "unfilled");
+    assert.equal(result.final_proof.final_venue_execution_proven, true);
+    assert.equal(result.final_proof.final_fill_proven, false);
+  });
+});
 
 describe("Hyperliquid SDK runner timeout", () => {
   it("allows signed venue submission to finish inside the web proxy bound", () => {
@@ -57,15 +91,23 @@ spec = importlib.util.spec_from_file_location("ghola_hl_runner", ${JSON.stringif
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 print(json.dumps([
-    runner.redact_result("submitted", {"response": {"data": {"statuses": [{"filled": {"oid": 7}}]}}}),
+    runner.redact_result("submitted", {"response": {"data": {"statuses": [{"filled": {"oid": 7, "avgPx": "64000", "totalSz": "0.0002"}}]}}}),
+    runner.redact_result("submitted", {"response": {"data": {"statuses": [{"resting": {"oid": 8}}]}}}),
+    runner.redact_result("submitted", {"response": {"data": {"statuses": [{"error": "Order could not immediately match against any resting orders."}]}}}),
     runner.redact_result("submitted", {"response": {"data": {"statuses": [{"error": "Order must have minimum value of $10."}]}}}),
     runner.redact_result("submitted", {}),
 ]))
 `;
     const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
     assert.equal(result.status, 0);
-    const [filled, rejected, unknown] = JSON.parse(result.stdout.trim());
-    assert.deepEqual(filled, { status: "submitted", oid: 7 });
+    const [filled, resting, unfilled, rejected, unknown] = JSON.parse(result.stdout.trim());
+    assert.deepEqual(filled, {
+      status: "filled",
+      oid: 7,
+      fills: [{ oid: 7, px: "64000", sz: "0.0002" }],
+    });
+    assert.deepEqual(resting, { status: "resting", oid: 8, fills: [] });
+    assert.deepEqual(unfilled, { status: "unfilled", oid: null, fills: [] });
     assert.equal(rejected.status, "rejected");
     assert.equal(rejected.error_code, "order_below_venue_minimum");
     assert.equal(unknown.status, "outcome_unknown");

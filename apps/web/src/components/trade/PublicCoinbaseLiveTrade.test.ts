@@ -3,10 +3,23 @@ import type { PrivateExecutionOrderDraft } from "@/lib/private-execution-instruc
 import {
   buildVenueSetupHref,
   HYPERLIQUID_REVIEW_TTL_MS,
+  hyperliquidExecutionNotice,
   hyperliquidReviewExpired,
   minimumExecutablePerpQuote,
   validatePerpTicket,
 } from "./PublicCoinbaseLiveTrade";
+
+describe("Hyperliquid execution evidence", () => {
+  it("distinguishes venue-proven fills from accepted and unfilled orders", () => {
+    expect(hyperliquidExecutionNotice({
+      status: "filled",
+      final_proof: { final_fill_proven: true },
+    })).toContain("fill proven");
+    expect(hyperliquidExecutionNotice({ status: "resting" })).toContain("working, not filled");
+    expect(hyperliquidExecutionNotice({ status: "unfilled" })).toContain("without a fill");
+    expect(hyperliquidExecutionNotice({ status: "submitted" })).toContain("no fill is proven yet");
+  });
+});
 
 describe("venue setup route", () => {
   it("always routes perpetual setup through the Hyperliquid verifier", () => {

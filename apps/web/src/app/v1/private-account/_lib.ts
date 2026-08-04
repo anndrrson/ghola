@@ -5725,7 +5725,7 @@ export async function operationsStatusForOwner(owner: PrivateAccountRequestOwner
     enterprise_gate: enterpriseGate,
     connector_health: connectorHealth,
     connector_work_order_depth: connectorWorkOrders.filter((item) =>
-      item.status === "prepared" || item.status === "submitted"
+      item.status === "prepared" || item.status === "submitted" || item.status === "resting"
     ).length,
     connector_ready_count: connectorHealth.filter((item) => item.status === "ready").length,
     blocked_connectors: connectorHealth.filter((item) => item.status === "blocked"),
@@ -6216,7 +6216,7 @@ export async function connectorOperationsForOwner(owner: PrivateAccountRequestOw
     version: 1,
     connector_health: readiness,
     work_order_depth: workOrders.filter((item) =>
-      item.status === "prepared" || item.status === "submitted"
+      item.status === "prepared" || item.status === "submitted" || item.status === "resting"
     ).length,
     rotation_required_count: rotations.filter((item) => item.rotation.status !== "ready").length,
     simulator_wait_or_block_count: simulations.filter((item) =>

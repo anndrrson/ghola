@@ -88,6 +88,9 @@ def main():
                     redacted.get("error_code") or "venue_rejected",
                     "not_submitted",
                 )
+            if redacted.get("status") == "unfilled":
+                print(json.dumps(redacted))
+                return
             if redacted.get("status") == "outcome_unknown":
                 fail(
                     "hyperliquid venue returned an unrecognized order result",
@@ -369,13 +372,24 @@ def redact_result(status, result):
                 return {"status": "outcome_unknown", "oid": None}
             if first.get("error"):
                 error_text = str(first.get("error") or "").lower()
+                if "could not immediately match" in error_text or ("ioc" in error_text and "not" in error_text):
+                    return {"status": "unfilled", "oid": None, "fills": []}
                 error_code = "order_below_venue_minimum" if "minimum value" in error_text else "venue_rejected"
                 return {"status": "rejected", "oid": None, "error_code": error_code}
             resting = first.get("resting") or {}
             filled = first.get("filled") or {}
-            oid = resting.get("oid") or filled.get("oid")
-            if oid is not None:
-                return {"status": status, "oid": oid}
+            if filled.get("oid") is not None:
+                return {
+                    "status": "filled",
+                    "oid": filled.get("oid"),
+                    "fills": [{
+                        "oid": filled.get("oid"),
+                        "px": filled.get("avgPx"),
+                        "sz": filled.get("totalSz"),
+                    }],
+                }
+            if resting.get("oid") is not None:
+                return {"status": "resting", "oid": resting.get("oid"), "fills": []}
     except Exception:
         oid = None
     return {"status": "outcome_unknown", "oid": None}

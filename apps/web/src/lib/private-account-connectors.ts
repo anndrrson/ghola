@@ -47,6 +47,9 @@ export type GholaLinkabilityDecision =
 export type GholaConnectorWorkOrderStatus =
   | "prepared"
   | "submitted"
+  | "filled"
+  | "resting"
+  | "unfilled"
   | "reconciled"
   | "failed"
   | "cancelled"
@@ -173,7 +176,7 @@ export interface GholaConnectorResult {
   connector_result_commitment: string;
   work_order_commitment: string;
   platform_class: GholaPlatformClass;
-  status: "submitted" | "reconciled" | "failed" | "cancelled" | "blocked";
+  status: "submitted" | "filled" | "resting" | "unfilled" | "reconciled" | "failed" | "cancelled" | "blocked";
   provider_ref_commitment: string | null;
   result_commitment: string;
   final_proof: GholaConnectorFinalProof | null;
@@ -783,7 +786,7 @@ export async function submitConnectorWorkOrder(input: {
       result: connectorResult({
         work_order: input.work_order,
         manifest: input.manifest,
-        status: "submitted",
+        status: connectorExecutionStatus(body.status),
         provider_ref_seed: stringValue(body.provider_ref_commitment) ||
           stringValue(body.result_commitment) ||
           input.work_order.work_order_commitment,
@@ -1194,6 +1197,12 @@ function connectorResult(input: {
     created_at: input.now.toISOString(),
     updated_at: input.now.toISOString(),
   };
+}
+
+function connectorExecutionStatus(value: unknown): GholaConnectorResult["status"] {
+  return value === "filled" || value === "resting" || value === "unfilled" || value === "cancelled"
+    ? value
+    : "submitted";
 }
 
 function connectorAccessContext(
