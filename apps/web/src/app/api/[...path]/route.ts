@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sameOrigin } from "../auth/session/_lib";
 
-const THUMPER_API_BASE =
-  process.env.NEXT_PUBLIC_THUMPER_API_URL ||
-  "https://thumper-cloud.onrender.com";
+const DEFAULT_THUMPER_API_BASE = "https://thumper-cloud.onrender.com";
+
+function thumperApiBase(path: string): string {
+  const primary =
+    process.env.NEXT_PUBLIC_THUMPER_API_URL || DEFAULT_THUMPER_API_BASE;
+  if (path === "billing" || path.startsWith("billing/")) {
+    return process.env.GHOLA_BILLING_API_URL || primary;
+  }
+  return primary;
+}
 
 const SESSION_COOKIE_NAME = "ghola_thumper_session";
 
@@ -35,7 +42,7 @@ async function handle(req: NextRequest, pathParts: string[]) {
       { status: 400, headers: NO_STORE_HEADERS },
     );
   }
-  const upstreamUrl = `${THUMPER_API_BASE}/api/${safePath}${req.nextUrl.search}`;
+  const upstreamUrl = `${thumperApiBase(safePath)}/api/${safePath}${req.nextUrl.search}`;
   const sessionToken = req.cookies.get(SESSION_COOKIE_NAME)?.value;
   const method = req.method.toUpperCase();
 

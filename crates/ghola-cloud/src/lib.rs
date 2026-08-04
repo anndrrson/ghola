@@ -996,6 +996,8 @@ mod privacy_log_safety_tests {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             database_url: "postgres://user:pass@localhost/test".to_string(),
             jwt_secret: "test-secret".to_string(),
+            jwt_compat_verify_secret: None,
+            jwt_compat_autoprovision: false,
             bland_api_key: None,
             bland_webhook_url: None,
             claude_api_key: Some("claude-test".to_string()),

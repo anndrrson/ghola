@@ -6,6 +6,8 @@ pub struct CloudConfig {
     pub bind_addr: SocketAddr,
     pub database_url: String,
     pub jwt_secret: String,
+    pub jwt_compat_verify_secret: Option<String>,
+    pub jwt_compat_autoprovision: bool,
     pub bland_api_key: Option<String>,
     pub bland_webhook_url: Option<String>,
     pub claude_api_key: Option<String>,
@@ -74,6 +76,10 @@ impl CloudConfig {
                 }),
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
             jwt_secret: env::var("JWT_SECRET").expect("JWT_SECRET must be set"),
+            jwt_compat_verify_secret: env::var("JWT_COMPAT_VERIFY_SECRET")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            jwt_compat_autoprovision: env_flag("JWT_COMPAT_AUTOPROVISION", false),
             bland_api_key: env::var("BLAND_API_KEY").ok(),
             bland_webhook_url: env::var("BLAND_WEBHOOK_URL").ok(),
             claude_api_key,

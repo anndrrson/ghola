@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 
 function thumperBase(): string {
   return (
+    process.env.GHOLA_BILLING_API_URL ||
     process.env.NEXT_PUBLIC_THUMPER_API_URL ||
     process.env.THUMPER_API_URL ||
     "https://thumper-cloud.onrender.com"

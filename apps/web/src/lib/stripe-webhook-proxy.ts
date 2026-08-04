@@ -21,6 +21,7 @@ const HOP_BY_HOP = new Set([
 
 function thumperApiBase(): string {
   return (
+    process.env.GHOLA_BILLING_API_URL ||
     process.env.NEXT_PUBLIC_THUMPER_API_URL ||
     process.env.THUMPER_API_URL ||
     THUMPER_API_FALLBACK

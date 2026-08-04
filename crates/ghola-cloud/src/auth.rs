@@ -130,10 +130,56 @@ impl FromRequestParts<AppState> for AuthUser {
             let claims = verify_api_key(token, state).await?;
             Ok(AuthUser(claims))
         } else {
-            let claims = verify_jwt(token, &state.config.jwt_secret)?;
+            let (claims, used_compat_secret) = verify_access_jwt(token, state)?;
+            if used_compat_secret && state.config.jwt_compat_autoprovision {
+                ensure_compat_user(state, &claims).await?;
+            }
             Ok(AuthUser(claims))
         }
     }
+}
+
+fn verify_access_jwt(token: &str, state: &AppState) -> Result<(Claims, bool), CloudError> {
+    verify_jwt_with_compat(
+        token,
+        &state.config.jwt_secret,
+        state.config.jwt_compat_verify_secret.as_deref(),
+    )
+}
+
+fn verify_jwt_with_compat(
+    token: &str,
+    primary_secret: &str,
+    compat_secret: Option<&str>,
+) -> Result<(Claims, bool), CloudError> {
+    match verify_jwt(token, primary_secret) {
+        Ok(claims) => Ok((claims, false)),
+        Err(primary_error) => {
+            let Some(compat_secret) = compat_secret else {
+                return Err(primary_error);
+            };
+            verify_jwt(token, compat_secret).map(|claims| (claims, true))
+        }
+    }
+}
+
+async fn ensure_compat_user(state: &AppState, claims: &Claims) -> Result<(), CloudError> {
+    sqlx::query(
+        r#"
+        INSERT INTO users (id, email, display_name, tier)
+        VALUES ($1, $2, $3, 'free')
+        ON CONFLICT DO NOTHING
+        "#,
+    )
+    .bind(claims.sub)
+    .bind(claims.email.as_deref())
+    .bind(claims.name.as_deref())
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        CloudError::Internal(format!("compatible session user provisioning failed: {e}"))
+    })?;
+    Ok(())
 }
 
 /// Verify an API key by hashing it and looking up the hash in the database.
@@ -541,5 +587,50 @@ fn apple_email_verified_is_false(value: Option<&serde_json::Value>) -> bool {
         Some(serde_json::Value::Bool(false)) => true,
         Some(serde_json::Value::String(raw)) if raw.eq_ignore_ascii_case("false") => true,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compatible_jwt_is_accepted_without_changing_the_primary_signing_secret() {
+        let user_id = Uuid::new_v4();
+        let token = create_jwt(
+            user_id,
+            Some("compat@example.test"),
+            Some("Compat User"),
+            "founding_trader",
+            "legacy-signing-secret",
+        )
+        .expect("legacy token");
+
+        let (claims, used_compat) = verify_jwt_with_compat(
+            &token,
+            "testnet-signing-secret",
+            Some("legacy-signing-secret"),
+        )
+        .expect("compatible token");
+
+        assert!(used_compat);
+        assert_eq!(claims.sub, user_id);
+        assert_eq!(claims.email.as_deref(), Some("compat@example.test"));
+        assert!(verify_jwt(&token, "testnet-signing-secret").is_err());
+    }
+
+    #[test]
+    fn primary_jwt_remains_primary_when_a_compat_secret_is_configured() {
+        let token = create_jwt(Uuid::new_v4(), None, None, "free", "testnet-signing-secret")
+            .expect("primary token");
+
+        let (_, used_compat) = verify_jwt_with_compat(
+            &token,
+            "testnet-signing-secret",
+            Some("legacy-signing-secret"),
+        )
+        .expect("primary token accepted");
+
+        assert!(!used_compat);
     }
 }

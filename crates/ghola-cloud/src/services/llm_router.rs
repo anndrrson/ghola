@@ -2539,6 +2539,8 @@ mod tests {
             bind_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             database_url: "postgres://invalid".into(),
             jwt_secret: "test-secret".into(),
+            jwt_compat_verify_secret: None,
+            jwt_compat_autoprovision: false,
             bland_api_key: None,
             bland_webhook_url: None,
             claude_api_key: None,
