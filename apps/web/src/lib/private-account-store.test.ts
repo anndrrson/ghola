@@ -158,6 +158,73 @@ describe("private account store", () => {
     expect(JSON.stringify(reloadedVault)).not.toContain("api_wallet_private_key");
   });
 
+  it("keeps 100 durable Hyperliquid credentials isolated by account across reloads", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_STORE = "blob";
+    process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS = "private";
+    process.env.BLOB_READ_WRITE_TOKEN = "private-test-token";
+    setPrivateBlobRecordAdapterForTests({
+      async put(pathname, value) {
+        privateBlobRecords.set(pathname, value);
+      },
+      async get(pathname) {
+        return privateBlobRecords.get(pathname) ?? null;
+      },
+    });
+
+    const expected = await Promise.all(Array.from({ length: 100 }, async (_, index) => {
+      const ownerCommitment = `owner_100_trader_${index}`;
+      const accountCommitment = `account_100_trader_${index}`;
+      const created = createHyperliquidExecutionVault({
+        account_commitment: accountCommitment,
+        encrypted_execution_vault: {
+          alg: "sealed-provider-v1",
+          ciphertext: `opaque-test-ciphertext-${index}`,
+          recipient: "phala:cvm:production-worker",
+          aad: [
+            "ghola/hyperliquid-execution-vault-v1",
+            `account:${accountCommitment}`,
+            "recipient:phala:cvm:production-worker",
+            "network:mainnet",
+          ].join("|"),
+        },
+        now: new Date(`2026-08-01T00:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) throw new Error(created.error);
+      const record = {
+        version: 1 as const,
+        owner_commitment: ownerCommitment,
+        account_commitment: accountCommitment,
+        vault_commitment: created.vault.vault_commitment,
+        encrypted_vault_commitment: created.vault.encrypted_vault_commitment,
+        recipient_commitment: created.vault.recipient_commitment,
+        policy_commitment: created.vault.policy_commitment,
+        status: "sealed" as const,
+        vault: created.vault,
+        created_at: created.vault.created_at,
+        updated_at: created.vault.updated_at,
+      };
+      await putHyperliquidExecutionVault(record);
+      return record;
+    }));
+
+    await resetPrivateAccountStoreForTests();
+    const reloaded = await Promise.all(expected.map((record) =>
+      getHyperliquidExecutionVaultByAccount(record.account_commitment)));
+
+    expect(reloaded).toHaveLength(100);
+    expect(new Set(reloaded.map((record) => record?.vault_commitment)).size).toBe(100);
+    reloaded.forEach((record, index) => {
+      expect(record).toMatchObject({
+        owner_commitment: expected[index].owner_commitment,
+        account_commitment: expected[index].account_commitment,
+        vault_commitment: expected[index].vault_commitment,
+      });
+      expect(record?.account_commitment).not.toBe(expected[(index + 1) % expected.length].account_commitment);
+    });
+    expect(JSON.stringify(reloaded)).not.toContain("api_wallet_private_key");
+  });
+
   it("persists intent, preview, and approval records in memory during tests", async () => {
     const action = createPrivateAccountAction({ action_class: "transfer" });
     const intent = await putPrivateAccountIntent({

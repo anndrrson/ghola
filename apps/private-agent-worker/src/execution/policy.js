@@ -363,11 +363,26 @@ export async function enforceInstructionPolicy({
   const rateLimit = Number.parseInt(process.env.PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE || "0", 10);
   if (state && policyMode !== "check" && Number.isInteger(rateLimit) && rateLimit > 0) {
     const minute = Math.floor(Date.now() / 60_000);
+    const subject = executionRateLimitSubject(body, session);
     const count = await state.incrementPolicyCount(
-      `rate:${instruction.venue_id}:${minute}`,
+      `rate:${POLICY_LEDGER_VERSION}:${instruction.venue_id}:${subject}:${minute}`,
       rateLimit,
     );
     if (!count.ok) throw new ExecutionPolicyError("private execution rate limit exceeded", 429);
+
+    const globalRateLimit = Number.parseInt(
+      process.env.PRIVATE_AGENT_MAX_GLOBAL_VENUE_REQUESTS_PER_MINUTE || "0",
+      10,
+    );
+    if (Number.isInteger(globalRateLimit) && globalRateLimit > 0) {
+      const globalCount = await state.incrementPolicyCount(
+        `rate_global:${POLICY_LEDGER_VERSION}:${instruction.venue_id}:${minute}`,
+        globalRateLimit,
+      );
+      if (!globalCount.ok) {
+        throw new ExecutionPolicyError("private execution venue capacity exceeded", 429);
+      }
+    }
   }
   if (state && policy?.policy_commitment && Number.isInteger(policy.max_order_count)) {
     const countedOps = ["limit_order", "spot_limit_order", "spot_market_order", "preview_order", "perp_limit_order", "swap"];
@@ -382,6 +397,17 @@ export async function enforceInstructionPolicy({
       });
     }
   }
+}
+
+function executionRateLimitSubject(body, session) {
+  return body?.vault_commitment ||
+    body?.managed_allocation_commitment ||
+    body?.allocation_commitment ||
+    body?.policy_commitment ||
+    session?.vault_commitment ||
+    session?.allocation_commitment ||
+    session?.policy_commitment ||
+    "unscoped";
 }
 
 function normalizeAgentMandate(value) {

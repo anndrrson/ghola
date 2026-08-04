@@ -119,6 +119,55 @@ describe("full-ticket execution policy", () => {
     );
   });
 
+  it("isolates venue request limits across 100 trader vaults", async () => {
+    process.env.PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE = "1";
+    process.env.PRIVATE_AGENT_MAX_GLOBAL_VENUE_REQUESTS_PER_MINUTE = "100";
+    const counts = new Map();
+    const rateKeys = [];
+    const state = {
+      async incrementPolicyAmount() {
+        return { ok: true };
+      },
+      async incrementPolicyCount(key, maxCount) {
+        const next = (counts.get(key) || 0) + 1;
+        if (next > maxCount) return { ok: false, count: next - 1 };
+        counts.set(key, next);
+        rateKeys.push(key);
+        return { ok: true, count: next };
+      },
+    };
+
+    await Promise.all(Array.from({ length: 100 }, (_, index) => enforceInstructionPolicy({
+      body: {
+        vault_commitment: `vault_trader_${index}`,
+        policy_commitment: `policy_trader_${index}`,
+      },
+      instruction: hyperliquidFullTicketOrder({ quote_size: "10" }),
+      session: null,
+      state,
+    })));
+
+    const tenantRateKeys = rateKeys.filter((key) => key.startsWith("rate:v2:hyperliquid:"));
+    assert.equal(new Set(tenantRateKeys).size, 100);
+    assert.equal(
+      rateKeys.filter((key) => key.startsWith("rate_global:v2:hyperliquid:")).length,
+      100,
+    );
+
+    await assert.rejects(
+      () => enforceInstructionPolicy({
+        body: {
+          vault_commitment: "vault_trader_0",
+          policy_commitment: "policy_trader_0",
+        },
+        instruction: hyperliquidFullTicketOrder({ quote_size: "10" }),
+        session: null,
+        state,
+      }),
+      (error) => error.status === 429 && /rate limit/.test(error.message),
+    );
+  });
+
   it("uses versioned ledgers and returns reservations for a live tiny-fill submit", async () => {
     process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "tiny_fill";
     process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD = "15";

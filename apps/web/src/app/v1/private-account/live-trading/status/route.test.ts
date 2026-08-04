@@ -222,6 +222,37 @@ describe("private account live trading launch gate", () => {
     ]);
   });
 
+  it("accepts smaller bounded per-trader Hyperliquid launch caps", async () => {
+    enableGreenGateEnv();
+    process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = "25";
+    process.env.GHOLA_LIVE_TRADING_DAILY_CAP_USD = "100";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD = "25";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD = "100";
+
+    const res = await GET();
+    const body = await res.json();
+
+    expect(body.status).toBe("green");
+    expect(body.live_submit_mode).toBe("byo_mainnet");
+    expect(body.hyperliquid_byo).toMatchObject({ status: "green", reason_codes: [] });
+  });
+
+  it("rejects unusable or internally inconsistent Hyperliquid caps precisely", async () => {
+    enableGreenGateEnv();
+    process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = "5";
+    process.env.GHOLA_LIVE_TRADING_DAILY_CAP_USD = "4";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD = "25";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD = "20";
+
+    const res = await GET();
+    const body = await res.json();
+
+    expect(body.status).toBe("red");
+    expect(body.reason_codes).toContain("launch_max_order_cap_out_of_range");
+    expect(body.reason_codes).toContain("launch_daily_cap_out_of_range");
+    expect(body.hyperliquid_byo.reason_codes).toContain("hyperliquid_daily_cap_out_of_range");
+  });
+
   it("does not require sealed runtime health for BYO scoped-account live submit", async () => {
     enableGreenGateEnv();
     delete process.env.GHOLA_PRIVATE_RUNTIME_URL;

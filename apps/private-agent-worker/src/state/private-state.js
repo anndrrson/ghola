@@ -1043,27 +1043,21 @@ export function createPostgresWorkerState(databaseUrl) {
 
     async findSession(input) {
       const sql = await ensureInitialized();
+      const venueId = input.venue_id || null;
+      const vaultCommitment = input.vault_commitment || null;
+      const policyCommitment = input.policy_commitment || null;
+      const allocationCommitment = input.allocation_commitment || null;
       const rows = await sql`
         SELECT session_json
         FROM worker_sessions
+        WHERE (${venueId}::text IS NULL OR venue_id = ${venueId})
+          AND (${vaultCommitment}::text IS NULL OR vault_commitment = ${vaultCommitment})
+          AND (${policyCommitment}::text IS NULL OR policy_commitment = ${policyCommitment})
+          AND (${allocationCommitment}::text IS NULL OR allocation_commitment = ${allocationCommitment})
         ORDER BY updated_at DESC
-        LIMIT 1000
+        LIMIT 1
       `;
-      return rows
-        .map((row) => decodeJson(row.session_json))
-        .filter(Boolean)
-        .find((session) => {
-          if (input.venue_id && session.venue_id !== input.venue_id) return false;
-          if (input.vault_commitment && session.vault_commitment !== input.vault_commitment) return false;
-          if (input.policy_commitment && session.policy_commitment !== input.policy_commitment) return false;
-          if (
-            input.allocation_commitment &&
-            session.allocation_commitment !== input.allocation_commitment
-          ) {
-            return false;
-          }
-          return true;
-        }) || null;
+      return decodeJson(rows[0]?.session_json) || null;
     },
 
     async putHyperliquidManagedAllocation(allocation) {
