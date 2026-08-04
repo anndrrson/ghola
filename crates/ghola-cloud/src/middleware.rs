@@ -25,8 +25,17 @@ pub struct IpRateLimiter {
 
 impl IpRateLimiter {
     const MAX_PER_MIN: u32 = 30;
+    const PUBLIC_COHORT_MAX_PER_MIN: u32 = 120;
 
     pub async fn check(&self, ip: std::net::IpAddr) -> Result<(), CloudError> {
+        self.check_with_limit(ip, Self::MAX_PER_MIN).await
+    }
+
+    async fn check_with_limit(
+        &self,
+        ip: std::net::IpAddr,
+        max_per_min: u32,
+    ) -> Result<(), CloudError> {
         let now_minute = chrono::Utc::now().timestamp() / 60;
         let mut windows = self.windows.lock().await;
         let entry = windows.entry(ip).or_insert((now_minute, 0));
@@ -35,7 +44,7 @@ impl IpRateLimiter {
             return Ok(());
         }
         entry.1 += 1;
-        if entry.1 > Self::MAX_PER_MIN {
+        if entry.1 > max_per_min {
             return Err(CloudError::RateLimit);
         }
         Ok(())
@@ -151,7 +160,17 @@ pub async fn track_api_usage(state: AppState, request: Request, next: Next) -> R
     // Rate limit unauthenticated requests by IP (prevents x402 RPC DoS)
     if user_id.is_none() {
         if let Some(ip) = extract_client_ip(&request) {
-            if let Err(e) = state.ip_rate_limiter.check(ip).await {
+            let public_cohort_read = request.method() == axum::http::Method::GET
+                && request.uri().path() == "/api/billing/founding-cohort";
+            let check = if public_cohort_read {
+                state
+                    .ip_rate_limiter
+                    .check_with_limit(ip, IpRateLimiter::PUBLIC_COHORT_MAX_PER_MIN)
+                    .await
+            } else {
+                state.ip_rate_limiter.check(ip).await
+            };
+            if let Err(e) = check {
                 return e.into_response();
             }
         }
@@ -256,5 +275,29 @@ mod tests {
             extract_client_ip(&request),
             Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 44))),
         );
+    }
+
+    #[tokio::test]
+    async fn public_cohort_limit_allows_a_100_client_launch_burst() {
+        let limiter = IpRateLimiter::default();
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 45));
+        for _ in 0..100 {
+            assert!(limiter
+                .check_with_limit(ip, IpRateLimiter::PUBLIC_COHORT_MAX_PER_MIN)
+                .await
+                .is_ok());
+        }
+        for _ in 100..IpRateLimiter::PUBLIC_COHORT_MAX_PER_MIN {
+            assert!(limiter
+                .check_with_limit(ip, IpRateLimiter::PUBLIC_COHORT_MAX_PER_MIN)
+                .await
+                .is_ok());
+        }
+        assert!(matches!(
+            limiter
+                .check_with_limit(ip, IpRateLimiter::PUBLIC_COHORT_MAX_PER_MIN)
+                .await,
+            Err(CloudError::RateLimit)
+        ));
     }
 }

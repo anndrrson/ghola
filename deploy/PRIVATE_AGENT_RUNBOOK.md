@@ -16,17 +16,29 @@ STRIPE_PRICE_PRO=price_...
 STRIPE_PRICE_PRIVATE_AGENT=price_...
 STRIPE_PRICE_FOUNDING_TRADER=price_...
 STRIPE_PRICE_UNLIMITED=price_...
-FOUNDING_TRADER_INVITE_EMAILS=founder@example.com,trader@example.com
+FOUNDING_TRADER_MAX_SEATS=100
 ```
 
 `private_agent`, `founding_trader`, `unlimited`, and `enterprise` users can create sealed cloud
 agent sessions. Free users remain limited to local encrypted strategy
 preparation.
 
-The $29 `founding_trader` checkout is rejected unless the signed-in email is in
-`FOUNDING_TRADER_INVITE_EMAILS`. After the Stripe price and invite list are
-configured, set `NEXT_PUBLIC_FOUNDING_TRADER_CHECKOUT_ENABLED=true` in the web
-build to replace the request-access link with Checkout.
+The $29 `founding_trader` checkout is public to signed-in users and uses an
+atomic seat reservation. `FOUNDING_TRADER_MAX_SEATS` caps active subscriptions
+plus unexpired Checkout reservations, so concurrent signups cannot oversubscribe
+the cohort. Reservations expire after about 30 minutes and are also released by
+Stripe's `checkout.session.expired`, subscription deletion, and payment-failure
+events. After the Stripe price and cap are configured, set
+`NEXT_PUBLIC_FOUNDING_TRADER_CHECKOUT_ENABLED=true` in the web build to expose
+Checkout.
+
+The cohort cap is an enrollment limit, not a claim that 100 mainnet execution
+requests have been proven safe at the same instant. Before enabling the public
+Checkout flag, run `npm run verify:load:founding-readonly` against localhost to
+exercise 100 concurrent non-order requests, then separately load-test encrypted
+session creation against the exact attested worker image and configured Phala
+instance size. Publish only the concurrency number that the session-worker test
+actually sustains. Never use live order submission as a load test.
 
 Set `GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED=true` in the web runtime
 only after the mainnet fresh-user readiness gate is green. When enabled,

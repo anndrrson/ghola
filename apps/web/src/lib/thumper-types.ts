@@ -192,6 +192,12 @@ export interface ThumperBillingStatusResponse {
     metering_unit: "agent_second";
     metering_mode?: "hybrid_allowance_v1";
   };
+  founding_trader_cohort: {
+    capacity: number;
+    claimed_seats: number;
+    remaining_seats: number;
+    checkout_open: boolean;
+  };
 }
 
 export interface ThumperTelegramLinkCode {

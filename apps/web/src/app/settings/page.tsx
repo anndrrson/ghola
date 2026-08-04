@@ -41,7 +41,8 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (!loading && !authenticated) {
-      router.push("/signup");
+      const returnTo = `${window.location.pathname}${window.location.search}`;
+      router.push(`/signup?redirect=${encodeURIComponent(returnTo)}`);
     }
   }, [authenticated, loading, router]);
 
@@ -766,10 +767,12 @@ function PlanTab() {
 
   const handleUpgrade = async (tier: string) => {
     setUpgrading(tier);
+    setNotice(null);
     try {
       const { checkout_url } = await createThumperCheckout(tier);
       window.location.href = checkout_url;
-    } catch {
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Checkout is unavailable right now.");
       setUpgrading(null);
     }
   };
@@ -811,7 +814,8 @@ function PlanTab() {
       period: "/month",
       features: [
         "Everything in Private Agents",
-        "100 private compute hours and 3 active agents",
+        "Public founding cohort capped at 100 traders",
+        "100 private compute hours and up to 3 logical agents",
         "Unlimited calls and emails",
         "Manual mainnet trading through sealed workers",
         "Read-only venue and collateral preflight",
@@ -849,6 +853,9 @@ function PlanTab() {
     billing?.tier === "founding_trader" ||
     billing?.tier === "unlimited" ||
     billing?.tier === "enterprise";
+  const foundingCohort = billing?.founding_trader_cohort ?? null;
+  const foundingCheckoutOpen =
+    foundingCheckoutEnabled && foundingCohort?.checkout_open !== false;
   const remoteReady = agentRuntime?.remote_execution_ready === true;
   const privateCompute = billing?.private_agent_compute ?? null;
   const includedSeconds =
@@ -948,7 +955,9 @@ function PlanTab() {
         const isCurrent = billing?.tier === plan.id;
         const cta =
           plan.id === "founding_trader"
-            ? "Join for $29/month"
+            ? foundingCohort && foundingCohort.remaining_seats <= 0
+              ? "Founding cohort full"
+              : "Join for $29/month"
             : plan.id === "private_agent"
             ? "Start with 30 hours"
             : plan.id === "unlimited"
@@ -987,8 +996,14 @@ function PlanTab() {
                 </li>
               ))}
             </ul>
+            {plan.id === "founding_trader" && foundingCohort && (
+              <p className="mb-3 text-xs text-[#8b95a8]">
+                {foundingCohort.remaining_seats.toLocaleString()} of{" "}
+                {foundingCohort.capacity.toLocaleString()} founding seats remaining.
+              </p>
+            )}
             {!isCurrent && plan.id !== "free" && plan.id !== "enterprise" &&
-              (plan.id !== "founding_trader" || foundingCheckoutEnabled) && (
+              (plan.id !== "founding_trader" || foundingCheckoutOpen) && (
               <button
                 onClick={() => handleUpgrade(plan.id)}
                 disabled={upgrading === plan.id}
@@ -997,13 +1012,26 @@ function PlanTab() {
                 {upgrading === plan.id ? "Redirecting..." : cta}
               </button>
             )}
-            {!isCurrent && plan.id === "founding_trader" && !foundingCheckoutEnabled && (
+            {!isCurrent && plan.id === "founding_trader" && !foundingCheckoutOpen &&
+              foundingCohort?.remaining_seats === 0 && (
+              <p className="rounded-lg border border-[#1e2a3a] py-2 text-center text-xs text-[#8b95a8]">
+                The founding cohort is full
+              </p>
+            )}
+            {!isCurrent && plan.id === "founding_trader" && !foundingCheckoutEnabled &&
+              foundingCohort?.remaining_seats !== 0 && (
               <a
                 href="mailto:hello@ghola.xyz?subject=Founding%20Trader%20access"
                 className="block w-full rounded-lg bg-[#3da8ff] py-2 text-center text-xs font-medium text-[#08090d] transition-colors hover:bg-[#5bb8ff]"
               >
                 Request founding access
               </a>
+            )}
+            {!isCurrent && plan.id === "founding_trader" && foundingCheckoutEnabled &&
+              foundingCohort?.remaining_seats !== 0 && !foundingCohort?.checkout_open && (
+              <p className="rounded-lg border border-[#1e2a3a] py-2 text-center text-xs text-[#8b95a8]">
+                Checkout is being configured
+              </p>
             )}
             {!isCurrent && plan.id === "enterprise" && (
               <a

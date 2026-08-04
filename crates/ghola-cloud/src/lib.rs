@@ -318,6 +318,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/billing/webhook",
             post(routes::billing::billing_webhook),
         )
+        .route(
+            "/api/billing/founding-cohort",
+            get(routes::billing::founding_trader_cohort_status),
+        )
         .route("/api/billing/status", get(routes::billing::billing_status))
         // Templates
         .route("/api/templates", get(routes::templates::list_templates))
@@ -993,7 +997,7 @@ mod privacy_log_safety_tests {
             stripe_price_pro: None,
             stripe_price_private_agent: None,
             stripe_price_founding_trader: None,
-            founding_trader_invite_emails: vec![],
+            founding_trader_max_seats: 100,
             stripe_price_unlimited: None,
             base_url: "http://localhost:3000".to_string(),
             encryption_key: [7u8; 32],

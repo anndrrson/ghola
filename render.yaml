@@ -71,8 +71,8 @@ services:
         sync: false
       - key: STRIPE_PRICE_UNLIMITED
         sync: false
-      - key: FOUNDING_TRADER_INVITE_EMAILS
-        sync: false
+      - key: FOUNDING_TRADER_MAX_SEATS
+        value: "100"
       - key: STRIPE_PRICE_CONSUMER_PRO
         sync: false
       - key: STRIPE_PRICE_BUSINESS

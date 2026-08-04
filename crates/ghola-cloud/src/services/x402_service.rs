@@ -3431,7 +3431,7 @@ mod tests {
             stripe_price_pro: None,
             stripe_price_private_agent: None,
             stripe_price_founding_trader: None,
-            founding_trader_invite_emails: vec![],
+            founding_trader_max_seats: 100,
             stripe_price_unlimited: None,
             base_url: "http://localhost".into(),
             encryption_key: [0u8; 32],

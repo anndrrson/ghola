@@ -57,6 +57,15 @@ pub struct BillingStatusResponse {
     pub portal_url: Option<String>,
     pub limits: BillingLimits,
     pub private_agent_compute: PrivateAgentComputeStatus,
+    pub founding_trader_cohort: FoundingTraderCohortStatus,
+}
+
+#[derive(Serialize)]
+pub struct FoundingTraderCohortStatus {
+    pub capacity: i64,
+    pub claimed_seats: i64,
+    pub remaining_seats: i64,
+    pub checkout_open: bool,
 }
 
 #[derive(Serialize)]
@@ -100,12 +109,124 @@ pub struct PrivateAgentComputeReservationResponse {
     pub private_agent_compute: PrivateAgentComputeStatus,
 }
 
-fn founding_trader_invited(email: Option<&str>, invite_emails: &[String]) -> bool {
-    email.is_some_and(|candidate| {
-        invite_emails
-            .iter()
-            .any(|allowed| allowed.eq_ignore_ascii_case(candidate.trim()))
-    })
+// Stripe validates `expires_at` after receiving the request. Use one minute of
+// clock/network headroom beyond its 30-minute minimum.
+const FOUNDING_TRADER_RESERVATION_MINUTES: i64 = 31;
+
+enum FoundingTraderSeatReservation {
+    Created,
+    ExistingCheckout(String),
+}
+
+fn founding_trader_cohort_has_capacity(claimed_seats: i64, max_seats: i64) -> bool {
+    claimed_seats < max_seats
+}
+
+async fn reserve_founding_trader_seat(
+    db: &sqlx::PgPool,
+    max_seats: i64,
+    user_id: uuid::Uuid,
+) -> Result<FoundingTraderSeatReservation, CloudError> {
+    let mut tx = db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('founding-trader-seats', 0))")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        r#"
+        UPDATE founding_trader_seats
+        SET status = 'released', released_at = now(), updated_at = now()
+        WHERE status = 'reserved' AND expires_at <= now()
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let existing = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, checkout_url
+        FROM founding_trader_seats
+        WHERE user_id = $1 AND (
+            status = 'active' OR (status = 'reserved' AND expires_at > now())
+        )
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((status, checkout_url)) = existing {
+        tx.commit().await?;
+        if status == "active" {
+            return Err(CloudError::BadRequest(
+                "Founding Trader is already active for this account".to_string(),
+            ));
+        }
+        return checkout_url
+            .map(FoundingTraderSeatReservation::ExistingCheckout)
+            .ok_or_else(|| {
+                CloudError::ServiceUnavailable(
+                    "Founding Trader checkout is already being prepared; retry shortly".to_string(),
+                )
+            });
+    }
+
+    let claimed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::BIGINT
+        FROM founding_trader_seats
+        WHERE status = 'active' OR (status = 'reserved' AND expires_at > now())
+        "#,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if !founding_trader_cohort_has_capacity(claimed, max_seats) {
+        tx.commit().await?;
+        return Err(CloudError::BadRequest(format!(
+            "The {}-seat Founding Trader cohort is full",
+            max_seats
+        )));
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO founding_trader_seats
+            (user_id, status, reserved_at, expires_at, stripe_session_id,
+             checkout_url, activated_at, released_at, updated_at)
+        VALUES ($1, 'reserved', now(), now() + ($2 || ' minutes')::interval,
+                NULL, NULL, NULL, NULL, now())
+        ON CONFLICT (user_id) DO UPDATE SET
+            status = 'reserved',
+            reserved_at = now(),
+            expires_at = now() + ($2 || ' minutes')::interval,
+            stripe_session_id = NULL,
+            checkout_url = NULL,
+            activated_at = NULL,
+            released_at = NULL,
+            updated_at = now()
+        "#,
+    )
+    .bind(user_id)
+    .bind(FOUNDING_TRADER_RESERVATION_MINUTES.to_string())
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(FoundingTraderSeatReservation::Created)
+}
+
+async fn release_founding_trader_reservation(
+    db: &sqlx::PgPool,
+    user_id: uuid::Uuid,
+) -> Result<(), CloudError> {
+    sqlx::query(
+        r#"
+        UPDATE founding_trader_seats
+        SET status = 'released', released_at = now(), updated_at = now()
+        WHERE user_id = $1 AND status = 'reserved'
+        "#,
+    )
+    .bind(user_id)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// POST /api/billing/checkout
@@ -129,6 +250,7 @@ pub async fn create_checkout(
         .await?
         .flatten();
 
+    let founding_trader_checkout = req.tier == "founding_trader";
     let price_id =
         match req.tier.as_str() {
             "pro" => {
@@ -143,22 +265,9 @@ pub async fn create_checkout(
             "private_agent" => state.config.stripe_price_private_agent.as_deref().ok_or(
                 CloudError::ServiceUnavailable("private agent price not configured".to_string()),
             )?,
-            "founding_trader" => {
-                let invited = founding_trader_invited(
-                    email.as_deref(),
-                    &state.config.founding_trader_invite_emails,
-                );
-                if !invited {
-                    return Err(CloudError::BadRequest(
-                        "Founding Trader is currently invite-only".to_string(),
-                    ));
-                }
-                state.config.stripe_price_founding_trader.as_deref().ok_or(
-                    CloudError::ServiceUnavailable(
-                        "founding trader price not configured".to_string(),
-                    ),
-                )?
-            }
+            "founding_trader" => state.config.stripe_price_founding_trader.as_deref().ok_or(
+                CloudError::ServiceUnavailable("founding trader price not configured".to_string()),
+            )?,
             "unlimited" => state.config.stripe_price_unlimited.as_deref().ok_or(
                 CloudError::ServiceUnavailable("unlimited price not configured".to_string()),
             )?,
@@ -169,6 +278,21 @@ pub async fn create_checkout(
                 ));
             }
         };
+
+    if founding_trader_checkout {
+        match reserve_founding_trader_seat(
+            &state.db,
+            state.config.founding_trader_max_seats,
+            claims.sub,
+        )
+        .await?
+        {
+            FoundingTraderSeatReservation::ExistingCheckout(checkout_url) => {
+                return Ok(Json(CheckoutResponse { checkout_url }));
+            }
+            FoundingTraderSeatReservation::Created => {}
+        }
+    }
 
     let client = reqwest::Client::new();
 
@@ -197,10 +321,21 @@ pub async fn create_checkout(
         ("metadata[price_id]", price_id.to_string()),
         ("subscription_data[metadata][ghola_tier]", req.tier.clone()),
         (
+            "subscription_data[metadata][user_id]",
+            claims.sub.to_string(),
+        ),
+        (
             "subscription_data[metadata][price_id]",
             price_id.to_string(),
         ),
     ];
+
+    if founding_trader_checkout {
+        form.push((
+            "expires_at",
+            (chrono::Utc::now().timestamp() + FOUNDING_TRADER_RESERVATION_MINUTES * 60).to_string(),
+        ));
+    }
 
     if let Some(ref email) = email {
         form.push(("customer_email", email.clone()));
@@ -212,7 +347,17 @@ pub async fn create_checkout(
         .form(&form)
         .send()
         .await
-        .map_err(|e| CloudError::Internal(format!("stripe request failed: {e}")))?;
+        .map_err(|e| CloudError::Internal(format!("stripe request failed: {e}")));
+
+    let resp = match resp {
+        Ok(resp) => resp,
+        Err(error) => {
+            if founding_trader_checkout {
+                release_founding_trader_reservation(&state.db, claims.sub).await?;
+            }
+            return Err(error);
+        }
+    };
 
     let status = resp.status();
     let body: serde_json::Value = resp
@@ -222,17 +367,49 @@ pub async fn create_checkout(
 
     if !status.is_success() {
         tracing::warn!(?body, "Stripe subscription checkout could not be created");
+        if founding_trader_checkout {
+            release_founding_trader_reservation(&state.db, claims.sub).await?;
+        }
         return Err(CloudError::ServiceUnavailable(
             "Stripe checkout could not be created".to_string(),
         ));
     }
 
-    let checkout_url = body["url"]
-        .as_str()
-        .ok_or(CloudError::Internal(
-            "no checkout URL in Stripe response".to_string(),
-        ))?
-        .to_string();
+    let checkout_url = match body["url"].as_str() {
+        Some(url) => url.to_string(),
+        None => {
+            if founding_trader_checkout {
+                release_founding_trader_reservation(&state.db, claims.sub).await?;
+            }
+            return Err(CloudError::Internal(
+                "no checkout URL in Stripe response".to_string(),
+            ));
+        }
+    };
+
+    if founding_trader_checkout {
+        let stripe_session_id = match body["id"].as_str() {
+            Some(session_id) => session_id,
+            None => {
+                release_founding_trader_reservation(&state.db, claims.sub).await?;
+                return Err(CloudError::Internal(
+                    "no Checkout session ID in Stripe response".to_string(),
+                ));
+            }
+        };
+        sqlx::query(
+            r#"
+            UPDATE founding_trader_seats
+            SET stripe_session_id = $2, checkout_url = $3, updated_at = now()
+            WHERE user_id = $1 AND status = 'reserved'
+            "#,
+        )
+        .bind(claims.sub)
+        .bind(stripe_session_id)
+        .bind(&checkout_url)
+        .execute(&state.db)
+        .await?;
+    }
 
     Ok(Json(CheckoutResponse { checkout_url }))
 }
@@ -737,6 +914,89 @@ async fn mark_private_balance_top_up_paid(
     Ok(())
 }
 
+fn subscription_event_user_id(event: &serde_json::Value) -> Option<uuid::Uuid> {
+    event["data"]["object"]["client_reference_id"]
+        .as_str()
+        .or_else(|| event["data"]["object"]["metadata"]["user_id"].as_str())
+        .and_then(|value| value.parse::<uuid::Uuid>().ok())
+}
+
+async fn activate_founding_trader_seat(
+    db: &sqlx::PgPool,
+    user_id: uuid::Uuid,
+    stripe_session_id: Option<&str>,
+) -> Result<(), CloudError> {
+    sqlx::query(
+        r#"
+        INSERT INTO founding_trader_seats
+            (user_id, status, stripe_session_id, activated_at, expires_at, updated_at)
+        VALUES ($1, 'active', $2, now(), NULL, now())
+        ON CONFLICT (user_id) DO UPDATE SET
+            status = 'active',
+            stripe_session_id = COALESCE(EXCLUDED.stripe_session_id,
+                                         founding_trader_seats.stripe_session_id),
+            activated_at = COALESCE(founding_trader_seats.activated_at, now()),
+            expires_at = NULL,
+            released_at = NULL,
+            updated_at = now()
+        "#,
+    )
+    .bind(user_id)
+    .bind(stripe_session_id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+async fn release_founding_trader_seat_for_customer(
+    db: &sqlx::PgPool,
+    customer_id: &str,
+) -> Result<(), CloudError> {
+    sqlx::query(
+        r#"
+        UPDATE founding_trader_seats
+        SET status = 'released', released_at = now(), expires_at = NULL, updated_at = now()
+        WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = $1)
+          AND status <> 'released'
+        "#,
+    )
+    .bind(customer_id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+async fn founding_trader_cohort_status_for(
+    state: &AppState,
+) -> Result<FoundingTraderCohortStatus, CloudError> {
+    let claimed_seats: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)::BIGINT
+        FROM founding_trader_seats
+        WHERE status = 'active' OR (status = 'reserved' AND expires_at > now())
+        "#,
+    )
+    .fetch_one(&state.db)
+    .await?;
+    let capacity = state.config.founding_trader_max_seats;
+    let remaining_seats = (capacity - claimed_seats).max(0);
+    Ok(FoundingTraderCohortStatus {
+        capacity,
+        claimed_seats,
+        remaining_seats,
+        checkout_open: founding_trader_cohort_has_capacity(claimed_seats, capacity)
+            && state.config.stripe_price_founding_trader.is_some()
+            && state.config.stripe_secret_key.is_some(),
+    })
+}
+
+/// GET /api/billing/founding-cohort — Public, non-user-specific seat count.
+pub async fn founding_trader_cohort_status(
+    State(state): State<AppState>,
+) -> Result<Json<FoundingTraderCohortStatus>, CloudError> {
+    Ok(Json(founding_trader_cohort_status_for(&state).await?))
+}
+
 /// POST /api/billing/webhook — Stripe webhook
 pub async fn billing_webhook(
     State(state): State<AppState>,
@@ -771,26 +1031,53 @@ pub async fn billing_webhook(
                 return Ok(Json(serde_json::json!({ "ok": true })));
             }
 
-            let user_id_str = event["data"]["object"]["client_reference_id"]
+            let payment_status = event["data"]["object"]["payment_status"]
                 .as_str()
                 .unwrap_or("");
             let customer_id = event["data"]["object"]["customer"].as_str().unwrap_or("");
 
-            if let Ok(user_id) = user_id_str.parse::<uuid::Uuid>() {
-                // Determine tier from the checkout session's price ID
-                let tier = tier_from_price_id(&event, &state);
+            if matches!(payment_status, "paid" | "no_payment_required") {
+                if let Some(user_id) = subscription_event_user_id(&event) {
+                    // Determine tier from the checkout session's price ID.
+                    let tier = tier_from_price_id(&event, &state);
 
-                sqlx::query(
-                    "UPDATE users SET tier = $1, stripe_customer_id = $2, updated_at = now() WHERE id = $3",
-                )
-                .bind(tier)
-                .bind(customer_id)
-                .bind(user_id)
-                .execute(&state.db)
-                .await?;
+                    sqlx::query(
+                        "UPDATE users SET tier = $1, stripe_customer_id = $2, updated_at = now() WHERE id = $3",
+                    )
+                    .bind(tier)
+                    .bind(customer_id)
+                    .bind(user_id)
+                    .execute(&state.db)
+                    .await?;
 
-                tracing::info!(%user_id, tier, "subscription activated");
+                    if tier == "founding_trader" {
+                        activate_founding_trader_seat(
+                            &state.db,
+                            user_id,
+                            event["data"]["object"]["id"].as_str(),
+                        )
+                        .await?;
+                    }
+
+                    tracing::info!(%user_id, tier, "subscription activated");
+                }
+            } else {
+                tracing::info!(payment_status, "subscription checkout is awaiting payment");
             }
+        }
+        "checkout.session.expired" => {
+            let stripe_session_id = event["data"]["object"]["id"].as_str().unwrap_or("");
+            sqlx::query(
+                r#"
+                UPDATE founding_trader_seats
+                SET status = 'released', released_at = now(), expires_at = NULL, updated_at = now()
+                WHERE stripe_session_id = $1 AND status = 'reserved'
+                "#,
+            )
+            .bind(stripe_session_id)
+            .execute(&state.db)
+            .await?;
+            tracing::info!(stripe_session_id, "expired founding checkout seat released");
         }
         "customer.subscription.deleted" => {
             let customer_id = event["data"]["object"]["customer"].as_str().unwrap_or("");
@@ -801,6 +1088,7 @@ pub async fn billing_webhook(
             .bind(customer_id)
             .execute(&state.db)
             .await?;
+            release_founding_trader_seat_for_customer(&state.db, customer_id).await?;
 
             tracing::info!(customer_id, "subscription cancelled, reverted to free");
         }
@@ -813,13 +1101,41 @@ pub async fn billing_webhook(
             } else {
                 "free"
             };
-            sqlx::query(
-                "UPDATE users SET tier = $1, updated_at = now() WHERE stripe_customer_id = $2",
-            )
-            .bind(tier)
-            .bind(customer_id)
-            .execute(&state.db)
-            .await?;
+            let event_user_id = subscription_event_user_id(&event);
+            if let Some(user_id) = event_user_id {
+                sqlx::query(
+                    "UPDATE users SET tier = $1, stripe_customer_id = $2, updated_at = now() WHERE id = $3",
+                )
+                .bind(tier)
+                .bind(customer_id)
+                .bind(user_id)
+                .execute(&state.db)
+                .await?;
+            } else {
+                sqlx::query(
+                    "UPDATE users SET tier = $1, updated_at = now() WHERE stripe_customer_id = $2",
+                )
+                .bind(tier)
+                .bind(customer_id)
+                .execute(&state.db)
+                .await?;
+            }
+            if tier == "founding_trader" {
+                let user_id = match event_user_id {
+                    Some(user_id) => Some(user_id),
+                    None => {
+                        sqlx::query_scalar("SELECT id FROM users WHERE stripe_customer_id = $1")
+                            .bind(customer_id)
+                            .fetch_optional(&state.db)
+                            .await?
+                    }
+                };
+                if let Some(user_id) = user_id {
+                    activate_founding_trader_seat(&state.db, user_id, None).await?;
+                }
+            } else {
+                release_founding_trader_seat_for_customer(&state.db, customer_id).await?;
+            }
             tracing::info!(customer_id, status, tier, "subscription state synchronized");
         }
         "invoice.payment_failed" => {
@@ -830,6 +1146,7 @@ pub async fn billing_webhook(
             .bind(customer_id)
             .execute(&state.db)
             .await?;
+            release_founding_trader_seat_for_customer(&state.db, customer_id).await?;
             tracing::warn!(
                 customer_id,
                 "subscription payment failed, opening trades disabled"
@@ -959,10 +1276,12 @@ pub async fn billing_status(
 
     let private_agent_compute =
         private_agent_compute_status_for(&state, claims.sub, &row.0).await?;
+    let founding_trader_cohort = founding_trader_cohort_status_for(&state).await?;
 
     Ok(Json(BillingStatusResponse {
         limits: billing_limits(&row.0),
         private_agent_compute,
+        founding_trader_cohort,
         tier: row.0,
         stripe_customer_id: row.1,
         portal_url,
@@ -1081,14 +1400,6 @@ mod tests {
     }
 
     #[test]
-    fn founding_trader_checkout_requires_an_email_invite() {
-        let allowlist = vec!["founder@example.com".to_string()];
-        assert!(founding_trader_invited(Some("Founder@Example.com"), &allowlist));
-        assert!(!founding_trader_invited(Some("public@example.com"), &allowlist));
-        assert!(!founding_trader_invited(None, &allowlist));
-    }
-
-    #[test]
     fn founding_trader_subscription_price_survives_webhook_updates() {
         let event = serde_json::json!({
             "data": { "object": { "items": { "data": [{ "price": { "id": "price_founding" } }] } } }
@@ -1103,6 +1414,118 @@ mod tests {
             ),
             "founding_trader"
         );
+    }
+
+    #[test]
+    fn founding_trader_cohort_closes_at_its_atomic_cap() {
+        assert!(founding_trader_cohort_has_capacity(0, 100));
+        assert!(founding_trader_cohort_has_capacity(99, 100));
+        assert!(!founding_trader_cohort_has_capacity(100, 100));
+        assert!(!founding_trader_cohort_has_capacity(101, 100));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn founding_trader_reservations_do_not_oversubscribe_under_concurrency() {
+        let Ok(database_url) = ghola_assistant_types::env_compat(
+            "GHOLA_BILLING_E2E_DATABASE_URL",
+            "THUMPER_BILLING_E2E_DATABASE_URL",
+        ) else {
+            eprintln!(
+                "skipping billing concurrency e2e: GHOLA_BILLING_E2E_DATABASE_URL is not set"
+            );
+            return;
+        };
+        let pool = crate::db::create_pool(&database_url)
+            .await
+            .expect("billing e2e database should connect");
+        crate::db::run_migrations(&pool)
+            .await
+            .expect("billing e2e migrations should apply");
+
+        let run_id = uuid::Uuid::new_v4();
+        let mut user_ids = Vec::with_capacity(101);
+        for index in 0..101 {
+            let user_id: uuid::Uuid =
+                sqlx::query_scalar("INSERT INTO users (email) VALUES ($1) RETURNING id")
+                    .bind(format!("billing-cap-{run_id}-{index}@example.invalid"))
+                    .fetch_one(&pool)
+                    .await
+                    .expect("billing test user should be created");
+            user_ids.push(user_id);
+        }
+
+        let baseline: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)::BIGINT FROM founding_trader_seats
+            WHERE status = 'active' OR (status = 'reserved' AND expires_at > now())
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("baseline seat count should load");
+        let max_seats = baseline + 100;
+
+        let mut handles = Vec::with_capacity(user_ids.len());
+        for user_id in user_ids.iter().copied() {
+            let pool = pool.clone();
+            handles.push(tokio::spawn(async move {
+                reserve_founding_trader_seat(&pool, max_seats, user_id).await
+            }));
+        }
+        let mut created = 0;
+        let mut rejected = 0;
+        for handle in handles {
+            match handle.await.expect("reservation task should finish") {
+                Ok(FoundingTraderSeatReservation::Created) => created += 1,
+                Ok(FoundingTraderSeatReservation::ExistingCheckout(_)) => {
+                    panic!("fresh users must not reuse a checkout")
+                }
+                Err(CloudError::BadRequest(message)) if message.contains("cohort is full") => {
+                    rejected += 1
+                }
+                Err(error) => panic!("unexpected reservation error: {error}"),
+            }
+        }
+
+        let lifecycle_user = user_ids[0];
+        let customer_id = format!("cus_billing_cap_{run_id}");
+        sqlx::query("UPDATE users SET stripe_customer_id = $1 WHERE id = $2")
+            .bind(&customer_id)
+            .bind(lifecycle_user)
+            .execute(&pool)
+            .await
+            .expect("billing test customer should be assigned");
+        activate_founding_trader_seat(&pool, lifecycle_user, Some("cs_test_founding"))
+            .await
+            .expect("completed checkout should activate its seat");
+        release_founding_trader_reservation(&pool, lifecycle_user)
+            .await
+            .expect("reservation cleanup should be idempotent");
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM founding_trader_seats WHERE user_id = $1")
+                .bind(lifecycle_user)
+                .fetch_one(&pool)
+                .await
+                .expect("active seat should survive a reload query");
+        assert_eq!(status, "active");
+        release_founding_trader_seat_for_customer(&pool, &customer_id)
+            .await
+            .expect("subscription cancellation should release its seat");
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM founding_trader_seats WHERE user_id = $1")
+                .bind(lifecycle_user)
+                .fetch_one(&pool)
+                .await
+                .expect("released seat should remain durable");
+        assert_eq!(status, "released");
+
+        sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+            .bind(&user_ids)
+            .execute(&pool)
+            .await
+            .expect("billing test users should be cleaned up");
+        assert_eq!(created, 100);
+        assert_eq!(rejected, 1);
     }
 
     #[test]

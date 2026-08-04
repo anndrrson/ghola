@@ -19,7 +19,7 @@ pub struct CloudConfig {
     pub stripe_price_pro: Option<String>,
     pub stripe_price_private_agent: Option<String>,
     pub stripe_price_founding_trader: Option<String>,
-    pub founding_trader_invite_emails: Vec<String>,
+    pub founding_trader_max_seats: i64,
     pub stripe_price_unlimited: Option<String>,
     pub base_url: String,
     pub encryption_key: [u8; 32],
@@ -81,13 +81,11 @@ impl CloudConfig {
             stripe_price_pro: env::var("STRIPE_PRICE_PRO").ok(),
             stripe_price_private_agent: env::var("STRIPE_PRICE_PRIVATE_AGENT").ok(),
             stripe_price_founding_trader: env::var("STRIPE_PRICE_FOUNDING_TRADER").ok(),
-            founding_trader_invite_emails: env::var("FOUNDING_TRADER_INVITE_EMAILS")
-                .unwrap_or_default()
-                .split(',')
-                .map(str::trim)
-                .filter(|email| !email.is_empty())
-                .map(|email| email.to_ascii_lowercase())
-                .collect(),
+            founding_trader_max_seats: env::var("FOUNDING_TRADER_MAX_SEATS")
+                .ok()
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(100)
+                .clamp(1, 10_000),
             stripe_price_unlimited: env::var("STRIPE_PRICE_UNLIMITED").ok(),
             base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
             encryption_key,

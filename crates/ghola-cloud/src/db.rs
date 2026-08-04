@@ -260,6 +260,30 @@ CREATE INDEX IF NOT EXISTS idx_private_agent_compute_usage_user_period
 CREATE INDEX IF NOT EXISTS idx_private_agent_compute_usage_active
     ON private_agent_compute_usage(user_id, status) WHERE status = 'active';
 
+-- Public founding cohort seats. Pending Checkout sessions reserve a seat for a
+-- bounded window so concurrent signups cannot oversubscribe the cohort.
+CREATE TABLE IF NOT EXISTS founding_trader_seats (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'reserved'
+        CHECK (status IN ('reserved', 'active', 'released')),
+    stripe_session_id TEXT,
+    checkout_url TEXT,
+    reserved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ,
+    activated_at TIMESTAMPTZ,
+    released_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_founding_trader_seats_stripe_session
+    ON founding_trader_seats(stripe_session_id) WHERE stripe_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_founding_trader_seats_claimed
+    ON founding_trader_seats(status, expires_at);
+INSERT INTO founding_trader_seats (user_id, status, activated_at, expires_at)
+SELECT id, 'active', now(), NULL
+FROM users
+WHERE tier = 'founding_trader'
+ON CONFLICT (user_id) DO NOTHING;
+
 -- Email/password auth
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
 

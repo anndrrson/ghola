@@ -19,6 +19,7 @@
     "verify:prod:trading": "node scripts/verify-prod-trading.mjs",
     "verify:prod:hyperliquid": "node scripts/verify-prod-hyperliquid.mjs",
     "verify:prod:hyperliquid:live": "GHOLA_VERIFY_LIVE_SUBMIT=true node scripts/verify-prod-hyperliquid.mjs",
+    "verify:load:founding-readonly": "node scripts/load-check-founding-readonly.mjs",
     "guard:auth-bundle": "node scripts/check-auth-client-bundle.mjs"
   },
   "overrides": {
