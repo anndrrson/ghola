@@ -51,10 +51,10 @@ export function hyperliquidCredentialFromVault(vault) {
 export function assertHyperliquidPilotNetwork(credential, instruction = null) {
   const network = credential?.network === "testnet" ? "testnet" : "mainnet";
   if (network === "testnet") return;
-  if (process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET !== "true") {
+  if (normalizedConfig("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET") !== "true") {
     throw new HyperliquidExecutionError("hyperliquid pilot is testnet-only unless live mainnet is explicitly enabled", 400);
   }
-  const liveMode = process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE || "disabled";
+  const liveMode = normalizedConfig("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", "disabled");
   const operationClass = instruction?.operation_class || "read";
   if (operationClass === "read" || operationClass === "reconcile") {
     if (liveMode === "read_only" || liveMode === "tiny_fill" || liveMode === "full_ticket") return;
@@ -186,8 +186,8 @@ export async function verifyHyperliquidNoSubmit({
 }) {
   assertHyperliquidPilotNetwork(credential, instruction);
   if (
-    process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" ||
-    process.env.PRIVATE_AGENT_HYPERLIQUID_NO_SUBMIT_LOCAL_CHECKS === "true"
+    normalizedConfig("PRIVATE_AGENT_VENUE_DRY_RUN") === "true" ||
+    normalizedConfig("PRIVATE_AGENT_HYPERLIQUID_NO_SUBMIT_LOCAL_CHECKS") === "true"
   ) {
     return hyperliquidNoSubmitResult({
       instruction,
@@ -215,6 +215,11 @@ export async function verifyHyperliquidNoSubmit({
     executionMode,
     runnerResult,
   });
+}
+
+function normalizedConfig(name, fallback = "") {
+  const value = process.env[name];
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
 export function hyperliquidRunnerTimeoutMs(env = process.env) {

@@ -759,14 +759,14 @@ function commaListEnv(...names) {
 
 function pooledVenueReadiness(venueId, sharedState) {
   const reasonCodes = [];
-  const dryRun = process.env.PRIVATE_AGENT_VENUE_DRY_RUN === "true";
+  const dryRun = env("PRIVATE_AGENT_VENUE_DRY_RUN") === "true";
   if (!sharedState.ready) reasonCodes.push(...sharedState.reason_codes);
   try {
     if (venueId === "hyperliquid") {
-      if (process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET !== "true") {
+      if (env("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET") !== "true") {
         reasonCodes.push("hyperliquid_mainnet_worker_disabled");
       }
-      if (process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE !== "full_ticket") {
+      if (env("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") !== "full_ticket") {
         reasonCodes.push("hyperliquid_live_mode_disabled");
       }
       if (positiveCap("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD") <= 0) {

@@ -22,10 +22,32 @@ export function mergeHyperliquidAccountSnapshot(
   current: HyperliquidAccountSnapshot | null,
   incoming: HyperliquidAccountSnapshot,
 ): HyperliquidAccountSnapshot {
+  if (current && hyperliquidAccountSnapshotAuthoritative(current) && !hyperliquidAccountSnapshotAuthoritative(incoming)) {
+    return current;
+  }
   if (current?.status === "needs_funds" && incoming.status === "private_mode_waiting") {
     return current;
   }
   return incoming;
+}
+
+export function hyperliquidAccountSnapshotAuthoritative(
+  snapshot: HyperliquidAccountSnapshot | null,
+): boolean {
+  return Boolean(
+    snapshot &&
+    snapshot.status === "ready_to_trade" &&
+    snapshot.stream_status !== "worker_unavailable" &&
+    Array.isArray(snapshot.positions) &&
+    Array.isArray(snapshot.open_orders) &&
+    Array.isArray(snapshot.recent_fills),
+  );
+}
+
+export function hyperliquidAccountSnapshotUnavailable(
+  snapshot: HyperliquidAccountSnapshot,
+): boolean {
+  return snapshot.status === "worker_unavailable" || snapshot.stream_status === "worker_unavailable";
 }
 
 export function spotVenueReadiness(venue: "coinbase" | "phoenix", status: SpotReadinessStatus | null): TradeReadiness {

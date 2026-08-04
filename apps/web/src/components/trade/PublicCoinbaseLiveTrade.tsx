@@ -59,6 +59,8 @@ import {
 import { useMarketData } from "@/lib/market-data-store";
 import {
   hyperliquidCredentialsSealed,
+  hyperliquidAccountSnapshotAuthoritative,
+  hyperliquidAccountSnapshotUnavailable,
   hyperliquidPerpsReadiness,
   mergeHyperliquidAccountSnapshot,
   spotVenueReadiness,
@@ -1030,8 +1032,8 @@ function AlternateProductWorkspace({
       try {
         const snapshot = await getHyperliquidAccountSnapshot();
         if (!cancelled) {
-          setHyperliquidAccount(snapshot);
-          setAccountState("ready");
+          setHyperliquidAccount((current) => mergeHyperliquidAccountSnapshot(current, snapshot));
+          setAccountState(hyperliquidAccountSnapshotUnavailable(snapshot) ? "unavailable" : "ready");
         }
       } catch {
         if (!cancelled) {
@@ -1046,7 +1048,7 @@ function AlternateProductWorkspace({
       onState(snapshot) {
         if (!cancelled) {
           setHyperliquidAccount((current) => mergeHyperliquidAccountSnapshot(current, snapshot));
-          setAccountState("ready");
+          setAccountState(hyperliquidAccountSnapshotUnavailable(snapshot) ? "unavailable" : "ready");
         }
       },
       onError() {
@@ -1967,6 +1969,9 @@ function AccountActivityPanel({
   }
   if (snapshot.status !== "ready_to_trade") {
     return <ActivityNotice>{snapshot.next_step || "Hyperliquid account connection is not verified."}</ActivityNotice>;
+  }
+  if (!hyperliquidAccountSnapshotAuthoritative(snapshot)) {
+    return <ActivityNotice>Account activity is not authoritative yet. No claim is being made about positions, orders, or fills.</ActivityNotice>;
   }
 
   if (tab === "positions") {

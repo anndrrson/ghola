@@ -1475,7 +1475,7 @@ export async function createStoredPreviewFromBody(body: unknown, owner: PrivateA
     front_run_mode: value.front_run_mode === "zero_front_run" ? "zero_front_run" : "pre_submit_private",
     require_private_mode_evidence: true,
     explicit_testnet_venue_canary:
-      process.env.GHOLA_HYPERLIQUID_PILOT_NETWORK === "testnet" &&
+      stringValue(process.env.GHOLA_HYPERLIQUID_PILOT_NETWORK) === "testnet" &&
       platformClass === "hyperliquid_style_market" &&
       rail === "direct_public_fallback",
   });
@@ -1687,6 +1687,9 @@ export async function executeStoredActionFromBody(
   const existing = await getPrivateAccountExecutionByApproval(approvalCommitment);
   if (existing && existing.owner_commitment === owner.owner_commitment) {
     const receipt = await getPrivateAccountReceipt(existing.receipt_commitment);
+    const connectorResult = receipt?.receipt.connector_result_commitment
+      ? await getConnectorResult(receipt.receipt.connector_result_commitment)
+      : null;
     return receipt
       ? {
           version: 1,
@@ -1694,6 +1697,7 @@ export async function executeStoredActionFromBody(
           intent_id: existing.intent_id,
           execution_commitment: existing.execution_commitment,
           receipt: receipt.receipt,
+          execution: connectorResult ? publicConnectorResult(connectorResult.result) : null,
         }
       : { error: "receipt_not_found" as const };
   }
@@ -1866,6 +1870,9 @@ export async function executeStoredActionFromBody(
     intent_id: intent.intent_id,
     execution_commitment: executionCommitment,
     receipt,
+    execution: connectorSubmission.result
+      ? publicConnectorResult(connectorSubmission.result)
+      : null,
   };
 }
 
@@ -2637,8 +2644,8 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
   const workerConfigured = Boolean(hyperliquidWorkerConfig().url) || localHyperliquidPilotEnabled();
   const workerReady = Boolean(runtime?.selected_provider) || localHyperliquidPilotEnabled();
   const liveTinyFill =
-    process.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
-    process.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket";
+    stringValue(process.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "tiny_fill" ||
+    stringValue(process.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "full_ticket";
   const privateFundingReady = Boolean(
     evidence?.anonymity_set &&
       evidence.anonymity_set.effective >= evidence.anonymity_set.required &&
@@ -6104,8 +6111,8 @@ export async function connectorVerifyNoSubmitFromBody(
       status: "verified_no_funds" as const,
       verification_commitment: verification.verification_commitment,
       work_order_commitment: verification.work_order_commitment,
-      network: (process.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
-        process.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket" ? "mainnet" : "testnet") as "mainnet" | "testnet",
+      network: (stringValue(process.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "tiny_fill" ||
+        stringValue(process.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "full_ticket" ? "mainnet" : "testnet") as "mainnet" | "testnet",
       credential_opened: true as const,
       signer_binding_verified: true as const,
       account_read_verified: true as const,
@@ -6530,7 +6537,7 @@ function normalizeHyperliquidManagedAllocation(
   };
 }
 
-function normalizeHyperliquidAccountSnapshot(
+export function normalizeHyperliquidAccountSnapshot(
   value: Record<string, unknown>,
   fallbackSource: "sealed_byo" | "ghola_managed" | "ghola_pooled" | "none",
 ) {
@@ -6540,6 +6547,9 @@ function normalizeHyperliquidAccountSnapshot(
     : "worker_unavailable";
   const source = stringValue(value.account_source);
   const equityBucket = stringValue(value.equity_bucket);
+  const positions = normalizeHyperliquidPositions(value.positions);
+  const openOrders = normalizeHyperliquidOpenOrders(value.open_orders);
+  const recentFills = normalizeHyperliquidFills(value.recent_fills);
   return {
     version: 1,
     platform_class: "hyperliquid_style_market" as const,
@@ -6552,11 +6562,85 @@ function normalizeHyperliquidAccountSnapshot(
     equity_bucket: equityBucket === "none" || equityBucket === "low" || equityBucket === "ready"
       ? equityBucket
       : "unknown",
-    position_count: Math.max(0, Math.min(100, Math.floor(numberValue(value.position_count) || 0))),
-    open_order_count: Math.max(0, Math.min(100, Math.floor(numberValue(value.open_order_count) || 0))),
+    position_count: Math.max(positions?.length ?? 0, Math.max(0, Math.min(100, Math.floor(numberValue(value.position_count) || 0)))),
+    open_order_count: Math.max(openOrders?.length ?? 0, Math.max(0, Math.min(100, Math.floor(numberValue(value.open_order_count) || 0)))),
+    stream_status: normalizeHyperliquidStreamStatus(stringValue(value.stream_status)),
+    ...(positions ? { positions } : {}),
+    ...(openOrders ? { open_orders: openOrders } : {}),
+    ...(recentFills ? { recent_fills: recentFills } : {}),
     last_checked_at: stringValue(value.last_checked_at) || new Date().toISOString(),
     next_step: stringValue(value.next_step) || hyperliquidSnapshotNextStep(normalizedStatus),
   };
+}
+
+function normalizeHyperliquidPositions(value: unknown) {
+  if (!Array.isArray(value)) return undefined;
+  return value.slice(0, 100).flatMap((entry) => {
+    const row = objectBody(entry);
+    const positionCommitment = stringValue(row.position_commitment);
+    const market = stringValue(row.market);
+    const side = stringValue(row.side);
+    if (!positionCommitment || !market || (side !== "long" && side !== "short")) return [];
+    return [{
+      position_commitment: positionCommitment,
+      market,
+      side,
+      size_bucket: stringValue(row.size_bucket) || "unknown",
+      entry_price_bucket: stringValue(row.entry_price_bucket) || "unknown",
+      unrealized_pnl_bucket: stringValue(row.unrealized_pnl_bucket) || "unknown",
+    }];
+  });
+}
+
+function normalizeHyperliquidOpenOrders(value: unknown) {
+  if (!Array.isArray(value)) return undefined;
+  return value.slice(0, 100).flatMap((entry) => {
+    const row = objectBody(entry);
+    const orderHandleCommitment = stringValue(row.order_handle_commitment);
+    const market = stringValue(row.market);
+    const sideValue = stringValue(row.side);
+    const side = sideValue === "buy" || sideValue === "sell" ? sideValue : "unknown" as const;
+    if (!orderHandleCommitment || !market) return [];
+    return [{
+      order_handle_commitment: orderHandleCommitment,
+      market,
+      side,
+      size_bucket: stringValue(row.size_bucket) || "unknown",
+      price_bucket: stringValue(row.price_bucket) || "unknown",
+      status: stringValue(row.status) || "unknown",
+      reduce_only: row.reduce_only === true,
+    }];
+  });
+}
+
+function normalizeHyperliquidFills(value: unknown) {
+  if (!Array.isArray(value)) return undefined;
+  return value.slice(0, 100).flatMap((entry) => {
+    const row = objectBody(entry);
+    const fillCommitment = stringValue(row.fill_commitment);
+    const market = stringValue(row.market);
+    const sideValue = stringValue(row.side);
+    const side = sideValue === "buy" || sideValue === "sell" ? sideValue : "unknown" as const;
+    if (!fillCommitment || !market) return [];
+    return [{
+      fill_commitment: fillCommitment,
+      market,
+      side,
+      size_bucket: stringValue(row.size_bucket) || "unknown",
+      price_bucket: stringValue(row.price_bucket) || "unknown",
+      fee_bucket: stringValue(row.fee_bucket) || "unknown",
+      time_bucket: stringValue(row.time_bucket) || "unknown",
+    }];
+  });
+}
+
+function normalizeHyperliquidStreamStatus(value: string) {
+  if (
+    value === "connecting" || value === "live" || value === "reconnecting" ||
+    value === "backfilling" || value === "snapshot" || value === "worker_unavailable" ||
+    value === "venue_access_required" || value === "needs_funds"
+  ) return value;
+  return "snapshot" as const;
 }
 
 function localHyperliquidAccountSnapshot(input: {
@@ -8650,10 +8734,10 @@ export function mainnetTradingSubscriptionGateApplies(
   platformClass: GholaPlatformClass,
   env: Record<string, string | undefined>,
 ): boolean {
-  if (env.GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED !== "true") return false;
+  if (stringValue(env.GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED) !== "true") return false;
   if (platformClass === "hyperliquid_style_market") {
-    return env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
-      env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket";
+    return stringValue(env.GHOLA_HYPERLIQUID_LIVE_MODE) === "tiny_fill" ||
+      stringValue(env.GHOLA_HYPERLIQUID_LIVE_MODE) === "full_ticket";
   }
   if (platformClass === "coinbase_style_provider") {
     return env.GHOLA_V6_COINBASE_PILOT_ENABLED === "true";
@@ -8983,9 +9067,9 @@ async function connectorReadinessForManifest(
   const env = await connectorRuntimeEnv(manifest.platform_class);
   const platformLaunchReady =
     manifest.platform_class === "hyperliquid_style_market"
-      ? env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED === "true" &&
-        (env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
-          env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket")
+      ? stringValue(env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED) === "true" &&
+        (stringValue(env.GHOLA_HYPERLIQUID_LIVE_MODE) === "tiny_fill" ||
+          stringValue(env.GHOLA_HYPERLIQUID_LIVE_MODE) === "full_ticket")
       : manifest.platform_class === "solana_perps_market"
         ? env.GHOLA_VENUE_PHOENIX_PILOT_ENABLED === "true" &&
           (env.GHOLA_SOLANA_PERPS_LIVE_MODE === "sdk_runner" ||

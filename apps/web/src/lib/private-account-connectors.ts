@@ -1624,8 +1624,8 @@ function venueReadinessGate(input: {
   const hyperliquidByoTinyFill =
     venueId === "hyperliquid" &&
     input.execution_mode === "byo_api_key" &&
-    (input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
-      input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket");
+    (stringValue(input.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "tiny_fill" ||
+      stringValue(input.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "full_ticket");
   const solanaPerpsStealthTinyFill =
     venueId === "phoenix" &&
     input.execution_mode === "user_stealth" &&
@@ -1636,8 +1636,8 @@ function venueReadinessGate(input: {
   const hyperliquidPooledTinyFill =
     venueId === "hyperliquid" &&
     input.execution_mode === "ghola_pooled" &&
-    (input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
-      input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket");
+    (stringValue(input.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "tiny_fill" ||
+      stringValue(input.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "full_ticket");
   const solanaPerpsPooledTinyFill =
     venueId === "phoenix" &&
     input.execution_mode === "ghola_pooled" &&

@@ -118,7 +118,8 @@ function hyperliquidReadiness(
   shieldedReady: boolean,
 ): { status: PrivateAccountReadinessStatus; reason_codes: string[]; ready_rails: GholaRailKind[] } {
   const reasonCodes: string[] = [];
-  const liveTinyFill = env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill";
+  const liveMode = normalizedEnv(env.GHOLA_HYPERLIQUID_LIVE_MODE);
+  const liveTinyFill = liveMode === "tiny_fill" || liveMode === "full_ticket";
   const connectorReady =
     env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS === "ready" ||
     env.GHOLA_HYPERLIQUID_READINESS === "ready";
@@ -145,4 +146,8 @@ function hyperliquidReadiness(
     reason_codes: reasonCodes,
     ready_rails: liveTinyFill ? ["direct_public_fallback"] : ["shielded_pool"],
   };
+}
+
+function normalizedEnv(value: string | undefined): string {
+  return value?.trim() ?? "";
 }

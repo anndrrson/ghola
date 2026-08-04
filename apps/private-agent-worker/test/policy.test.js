@@ -71,6 +71,15 @@ describe("full-ticket execution policy", () => {
     );
   });
 
+  it("applies full-ticket policy when the deployment value has a trailing newline", async () => {
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "full_ticket\n";
+    const instruction = hyperliquidFullTicketOrder({ quote_size: "1001", max_slippage_bps: "50" });
+    await assert.rejects(
+      () => enforceInstructionPolicy({ body: { policy_commitment: "policy_test" }, instruction, session: null, state: null }),
+      /notional cap/,
+    );
+  });
+
   it("blocks Hyperliquid full-ticket orders over the slippage cap", async () => {
     const instruction = hyperliquidFullTicketOrder({ quote_size: "10", max_slippage_bps: "101" });
     await assert.rejects(

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { HyperliquidAccountSnapshot } from "@/lib/private-account-client";
 import {
   hyperliquidCredentialsSealed,
+  hyperliquidAccountSnapshotAuthoritative,
+  hyperliquidAccountSnapshotUnavailable,
   hyperliquidPerpsReadiness,
   mergeHyperliquidAccountSnapshot,
   spotVenueReadiness,
@@ -35,5 +37,36 @@ describe("trade readiness", () => {
     const incoming = { status: "private_mode_waiting", next_step: "Run the no-submit connection check." } as HyperliquidAccountSnapshot;
     expect(mergeHyperliquidAccountSnapshot(current, incoming)).toBe(current);
     expect(mergeHyperliquidAccountSnapshot(null, incoming)).toBe(incoming);
+  });
+
+  it("never replaces an authoritative account with a worker-unavailable empty fallback", () => {
+    const current = {
+      status: "ready_to_trade",
+      stream_status: "live",
+      positions: [{ position_commitment: "position_1" }],
+      open_orders: [],
+      recent_fills: [],
+    } as HyperliquidAccountSnapshot;
+    const incoming = {
+      status: "worker_unavailable",
+      stream_status: "worker_unavailable",
+      positions: [],
+      open_orders: [],
+      recent_fills: [],
+    } as HyperliquidAccountSnapshot;
+
+    expect(hyperliquidAccountSnapshotAuthoritative(current)).toBe(true);
+    expect(hyperliquidAccountSnapshotUnavailable(incoming)).toBe(true);
+    expect(mergeHyperliquidAccountSnapshot(current, incoming)).toBe(current);
+  });
+
+  it("does not treat missing activity arrays as proof that an account is flat", () => {
+    const incomplete = {
+      status: "ready_to_trade",
+      stream_status: "snapshot",
+      position_count: 1,
+    } as HyperliquidAccountSnapshot;
+
+    expect(hyperliquidAccountSnapshotAuthoritative(incomplete)).toBe(false);
   });
 });

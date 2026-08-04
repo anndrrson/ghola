@@ -1231,10 +1231,11 @@ function hyperliquidAutopilotReadiness(
   env: Record<string, string | undefined>,
   workerConfigured: boolean,
 ): AutopilotVenueReadiness {
+  const liveMode = env.GHOLA_HYPERLIQUID_LIVE_MODE?.trim() || "";
   const reasonCodes = [
     ...(workerConfigured ? [] : ["private_worker_not_configured"]),
     ...(env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED === "true" ? [] : ["hyperliquid_pilot_disabled"]),
-    ...(env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ? [] : ["hyperliquid_tiny_fill_disabled"]),
+    ...(liveMode === "tiny_fill" || liveMode === "full_ticket" ? [] : ["hyperliquid_live_mode_disabled"]),
     ...(env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS === "ready" ||
       env.GHOLA_PRIVATE_AGENT_EXECUTION_URL ||
       env.GHOLA_PRIVATE_AGENT_WORKER_URL ||
@@ -1249,7 +1250,7 @@ function hyperliquidAutopilotReadiness(
   return {
     venue_id: "hyperliquid",
     status: reasonCodes.length ? "blocked" : "ready",
-    live_mode: env.GHOLA_HYPERLIQUID_LIVE_MODE || null,
+    live_mode: liveMode || null,
     reason_codes: reasonCodes,
   };
 }

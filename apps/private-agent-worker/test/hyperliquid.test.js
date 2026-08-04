@@ -6,6 +6,7 @@ import {
   createHyperliquidAccountStateStream,
   hyperliquidCollateralValue,
   hyperliquidRunnerTimeoutMs,
+  assertHyperliquidPilotNetwork,
   readHyperliquidAccountSnapshot,
   submitHyperliquidExecution,
 } from "../src/venues/hyperliquid.js";
@@ -40,6 +41,26 @@ describe("Hyperliquid immediate execution proof", () => {
     assert.equal(result.status, "unfilled");
     assert.equal(result.final_proof.final_venue_execution_proven, true);
     assert.equal(result.final_proof.final_fill_proven, false);
+  });
+});
+
+describe("Hyperliquid deployment configuration", () => {
+  it("accepts newline-terminated mainnet policy values", () => {
+    const previousAllow = process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET;
+    const previousMode = process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE;
+    process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = "true\n";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "full_ticket\n";
+    try {
+      assert.doesNotThrow(() => assertHyperliquidPilotNetwork(
+        { network: "mainnet" },
+        { operation_class: "limit_order", order: { market: "BTC" } },
+      ));
+    } finally {
+      if (previousAllow == null) delete process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET;
+      else process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = previousAllow;
+      if (previousMode == null) delete process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE;
+      else process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = previousMode;
+    }
   });
 });
 

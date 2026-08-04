@@ -5,6 +5,7 @@ import {
 } from "./vault/route";
 import { POST as armAgent } from "./agent/session/route";
 import { POST as accountSnapshot } from "./account-snapshot/route";
+import { normalizeHyperliquidAccountSnapshot } from "../_lib";
 import { GET as accountStream } from "./account-stream/route";
 import { POST as allocateManaged } from "./managed-allocation/route";
 import { GET as hyperliquidRoot } from "./route";
@@ -480,6 +481,43 @@ describe("Hyperliquid private-account routes", () => {
     expect(JSON.stringify(ready)).not.toContain("hyperliquid_account_id");
     expect(JSON.stringify(ready)).not.toContain("api_wallet_private_key");
     expect(JSON.stringify(ready)).not.toContain("\"orders\"");
+  });
+
+  it("preserves sanitized activity arrays and distinguishes missing activity data from an empty account", () => {
+    const raw = {
+      status: "ready_to_trade",
+      account_source: "sealed_byo",
+      trading_enabled: true,
+      equity_bucket: "ready",
+      position_count: 1,
+      open_order_count: 0,
+      positions: [{
+        position_commitment: "position_safe_1",
+        market: "BTC",
+        side: "long",
+        size_bucket: "low",
+        entry_price_bucket: "64000",
+        unrealized_pnl_bucket: "positive",
+      }],
+      open_orders: [],
+      recent_fills: [],
+    };
+
+    const complete = normalizeHyperliquidAccountSnapshot(raw, "sealed_byo");
+    const incomplete = normalizeHyperliquidAccountSnapshot({
+      ...raw,
+      positions: undefined,
+      open_orders: undefined,
+      recent_fills: undefined,
+    }, "sealed_byo");
+
+    expect(complete.positions).toHaveLength(1);
+    expect(complete.positions?.[0]).toMatchObject({ market: "BTC", side: "long" });
+    expect(complete.open_orders).toEqual([]);
+    expect(complete.recent_fills).toEqual([]);
+    expect("positions" in incomplete).toBe(false);
+    expect("open_orders" in incomplete).toBe(false);
+    expect("recent_fills" in incomplete).toBe(false);
   });
 
   it("streams account state without raw venue fields", async () => {

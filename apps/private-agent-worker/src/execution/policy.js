@@ -586,7 +586,7 @@ async function enforceHyperliquidTinyFillPolicy({
   }
   const order = instruction.order;
   if (
-    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE === "full_ticket" &&
+    configValue("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") === "full_ticket" &&
     order.live_order_mode !== "tiny_fill"
   ) {
     return;
@@ -657,7 +657,7 @@ async function enforceHyperliquidFullTicketPolicy({
   if (instruction.order.live_order_mode === "tiny_fill" || instruction.order.quote_size && !instruction.order.order_type) {
     return;
   }
-  if (process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE !== "full_ticket") {
+  if (configValue("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") !== "full_ticket") {
     return;
   }
   const perOrderCap = capUsd(process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD, 0);
@@ -910,6 +910,11 @@ function capBps(value, fallback) {
 
 function stringValue(value) {
   return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+}
+
+function configValue(name, fallback = "") {
+  const value = process.env[name];
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
 function stringOrNull(value) {

@@ -223,6 +223,11 @@ describe("private account stateful execution route", () => {
     expect(body.ok).toBe(true);
     expect(body.receipt.preview_commitment).toBe(preview.preview.preview_commitment);
     expect(body.receipt.execution_commitment).toBe(body.execution_commitment);
+    expect(body.execution).toMatchObject({
+      connector_result_commitment: body.receipt.connector_result_commitment,
+      work_order_commitment: body.receipt.work_order_commitment,
+    });
+    expect(body.execution.status).toEqual(expect.any(String));
     expect(body.receipt.evidence_chain.funding_import_commitment).toMatch(/^funding_import_/);
     expect(body.receipt.evidence_chain.batch_evidence_commitment).toMatch(/^anon_evidence_/);
     expect(body.receipt.evidence_chain.preview_commitment).toBe(preview.preview.preview_commitment);
@@ -622,6 +627,7 @@ describe("private account stateful execution route", () => {
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
     expect(secondBody.execution_commitment).toBe(firstBody.execution_commitment);
+    expect(secondBody.execution).toEqual(firstBody.execution);
   });
 
   it("refuses execution when shielded settlement evidence is not finalized", async () => {
