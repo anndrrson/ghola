@@ -93,6 +93,7 @@ spec.loader.exec_module(runner)
 print(json.dumps([
     runner.redact_result("submitted", {"response": {"data": {"statuses": [{"filled": {"oid": 7, "avgPx": "64000", "totalSz": "0.0002"}}]}}}),
     runner.redact_result("submitted", {"response": {"data": {"statuses": [{"resting": {"oid": 8}}]}}}),
+    runner.redact_result("unfilled", {"response": {"data": {"statuses": [{"resting": {"oid": 9}}]}}}),
     runner.redact_result("submitted", {"response": {"data": {"statuses": [{"error": "Order could not immediately match against any resting orders."}]}}}),
     runner.redact_result("submitted", {"response": {"data": {"statuses": [{"error": "Order must have minimum value of $10."}]}}}),
     runner.redact_result("submitted", {}),
@@ -100,13 +101,14 @@ print(json.dumps([
 `;
     const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
     assert.equal(result.status, 0);
-    const [filled, resting, unfilled, rejected, unknown] = JSON.parse(result.stdout.trim());
+    const [filled, resting, iocResting, unfilled, rejected, unknown] = JSON.parse(result.stdout.trim());
     assert.deepEqual(filled, {
       status: "filled",
       oid: 7,
       fills: [{ oid: 7, px: "64000", sz: "0.0002" }],
     });
     assert.deepEqual(resting, { status: "resting", oid: 8, fills: [] });
+    assert.deepEqual(iocResting, { status: "unfilled", oid: 9, fills: [] });
     assert.deepEqual(unfilled, { status: "unfilled", oid: null, fills: [] });
     assert.equal(rejected.status, "rejected");
     assert.equal(rejected.error_code, "order_below_venue_minimum");

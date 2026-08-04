@@ -81,7 +81,10 @@ def main():
                 reduce_only=bool(order.get("reduce_only")),
                 cloid=Cloid.from_str(cloid),
             )
-            redacted = redact_result("submitted", result)
+            redacted = redact_result(
+                "unfilled" if resolved.get("tif") == "Ioc" else "submitted",
+                result,
+            )
             if redacted.get("status") == "rejected":
                 fail(
                     "hyperliquid venue rejected order",
@@ -389,6 +392,8 @@ def redact_result(status, result):
                     }],
                 }
             if resting.get("oid") is not None:
+                if status == "unfilled":
+                    return {"status": "unfilled", "oid": resting.get("oid"), "fills": []}
                 return {"status": "resting", "oid": resting.get("oid"), "fills": []}
     except Exception:
         oid = None
