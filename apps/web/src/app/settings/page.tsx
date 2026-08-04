@@ -30,6 +30,7 @@ import type {
   ThumperTelegramStatus,
 } from "@/lib/thumper-types";
 import type { PrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime";
+import { subscriptionNeedsAttention } from "@/lib/billing-status";
 import { GholaLogo } from "@/components/GholaLogo";
 
 type Tab = "profile" | "privacy" | "model" | "usage" | "accounts" | "telegram" | "plan";
@@ -869,10 +870,7 @@ function PlanTab() {
   const resetDate = privateCompute?.period_end
     ? new Date(`${privateCompute.period_end}T00:00:00Z`)
     : null;
-  const billingNeedsAttention =
-    Boolean(billing?.subscription_status) &&
-    billing?.subscription_status !== "active" &&
-    billing?.subscription_status !== "trialing";
+  const billingNeedsAttention = subscriptionNeedsAttention(billing?.subscription_status);
 
   return (
     <div className="space-y-4">
@@ -899,7 +897,7 @@ function PlanTab() {
 
       {billingNeedsAttention && (
         <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
-          <p>Your subscription payment needs attention. New paid actions remain disabled until Stripe confirms payment.</p>
+          <p>Your subscription needs attention. New paid actions remain disabled until Stripe confirms payment.</p>
           {billing?.portal_url && (
             <a
               href={billing.portal_url}

@@ -113,6 +113,8 @@ pub struct PrivateAgentComputeReservationResponse {
 // Stripe validates `expires_at` after receiving the request. Use one minute of
 // clock/network headroom beyond its 30-minute minimum.
 const FOUNDING_TRADER_RESERVATION_MINUTES: i64 = 31;
+const FOUNDING_TRADER_LOCK_RETRY_ATTEMPTS: usize = 600;
+const FOUNDING_TRADER_LOCK_RETRY_MILLIS: u64 = 50;
 
 enum FoundingTraderSeatReservation {
     Created,
@@ -201,95 +203,125 @@ async fn reserve_founding_trader_seat(
     max_seats: i64,
     user_id: uuid::Uuid,
 ) -> Result<FoundingTraderSeatReservation, CloudError> {
-    let mut tx = db.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('founding-trader-seats', 0))")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
-        r#"
-        UPDATE founding_trader_seats
-        SET status = 'released', released_at = now(), updated_at = now()
-        WHERE status = 'reserved' AND expires_at <= now()
-        "#,
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    let existing = sqlx::query_as::<_, (String, Option<String>)>(
-        r#"
-        SELECT status, checkout_url
-        FROM founding_trader_seats
-        WHERE user_id = $1 AND (
-            status = 'active' OR (status IN ('reserved', 'pending_payment') AND expires_at > now())
+    // The lock decision, cleanup, cap count, and reservation all execute in one
+    // PostgreSQL statement. The transaction-scoped advisory lock is therefore
+    // released before the pooled connection returns. Busy callers retry without
+    // occupying a connection, while the single statement keeps the cap atomic.
+    for attempt in 1..=FOUNDING_TRADER_LOCK_RETRY_ATTEMPTS {
+        let (acquired, existing_status, checkout_url, claimed, created): (
+            bool,
+            Option<String>,
+            Option<String>,
+            i64,
+            bool,
+        ) = sqlx::query_as(
+            r#"
+            WITH cohort_lock AS MATERIALIZED (
+                SELECT pg_try_advisory_xact_lock(
+                    hashtextextended('founding-trader-seats', 0)
+                ) AS acquired
+            ),
+            released AS (
+                UPDATE founding_trader_seats
+                SET status = 'released', released_at = now(), updated_at = now()
+                WHERE (SELECT acquired FROM cohort_lock)
+                  AND status = 'reserved' AND expires_at <= now()
+                RETURNING user_id
+            ),
+            existing AS MATERIALIZED (
+                SELECT status, checkout_url
+                FROM founding_trader_seats
+                WHERE (SELECT acquired FROM cohort_lock)
+                  AND user_id = $1 AND (
+                    status = 'active'
+                    OR (status IN ('reserved', 'pending_payment') AND expires_at > now())
+                  )
+            ),
+            claimed AS MATERIALIZED (
+                SELECT COUNT(*)::BIGINT AS count
+                FROM founding_trader_seats
+                WHERE (SELECT acquired FROM cohort_lock)
+                  AND (
+                    status = 'active'
+                    OR (status IN ('reserved', 'pending_payment') AND expires_at > now())
+                  )
+            ),
+            reservation AS (
+                INSERT INTO founding_trader_seats
+                    (user_id, status, reserved_at, expires_at, stripe_session_id,
+                     checkout_url, activated_at, released_at, updated_at)
+                SELECT $1, 'reserved', now(), now() + ($2 || ' minutes')::interval,
+                       NULL, NULL, NULL, NULL, now()
+                WHERE (SELECT acquired FROM cohort_lock)
+                  AND NOT EXISTS (SELECT 1 FROM existing)
+                  AND (SELECT count FROM claimed) < $3
+                ON CONFLICT (user_id) DO UPDATE SET
+                    status = 'reserved',
+                    reserved_at = now(),
+                    expires_at = now() + ($2 || ' minutes')::interval,
+                    stripe_session_id = NULL,
+                    checkout_url = NULL,
+                    activated_at = NULL,
+                    released_at = NULL,
+                    updated_at = now()
+                RETURNING user_id
+            )
+            SELECT
+                (SELECT acquired FROM cohort_lock),
+                (SELECT status FROM existing),
+                (SELECT checkout_url FROM existing),
+                (SELECT count FROM claimed),
+                EXISTS(SELECT 1 FROM reservation)
+            "#,
         )
-        "#,
-    )
-    .bind(user_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if let Some((status, checkout_url)) = existing {
-        tx.commit().await?;
-        if status == "active" {
-            return Err(CloudError::BadRequest(
-                "Founding Trader is already active for this account".to_string(),
-            ));
+        .bind(user_id)
+        .bind(FOUNDING_TRADER_RESERVATION_MINUTES.to_string())
+        .bind(max_seats)
+        .fetch_one(db)
+        .await?;
+
+        if !acquired {
+            tokio::time::sleep(std::time::Duration::from_millis(
+                FOUNDING_TRADER_LOCK_RETRY_MILLIS,
+            ))
+            .await;
+            continue;
         }
-        if status == "pending_payment" {
-            return Err(CloudError::BadRequest(
-                "Founding Trader payment is still being confirmed".to_string(),
-            ));
+        if let Some(status) = existing_status {
+            if status == "active" {
+                return Err(CloudError::BadRequest(
+                    "Founding Trader is already active for this account".to_string(),
+                ));
+            }
+            if status == "pending_payment" {
+                return Err(CloudError::BadRequest(
+                    "Founding Trader payment is still being confirmed".to_string(),
+                ));
+            }
+            return checkout_url
+                .map(FoundingTraderSeatReservation::ExistingCheckout)
+                .ok_or_else(|| {
+                    CloudError::ServiceUnavailable(
+                        "Founding Trader checkout is already being prepared; retry shortly"
+                            .to_string(),
+                    )
+                });
         }
-        return checkout_url
-            .map(FoundingTraderSeatReservation::ExistingCheckout)
-            .ok_or_else(|| {
-                CloudError::ServiceUnavailable(
-                    "Founding Trader checkout is already being prepared; retry shortly".to_string(),
-                )
-            });
+        if created {
+            return Ok(FoundingTraderSeatReservation::Created);
+        }
+        if !founding_trader_cohort_has_capacity(claimed, max_seats) {
+            return Err(CloudError::BadRequest(format!(
+                "The {}-seat Founding Trader cohort is full",
+                max_seats
+            )));
+        }
+        tracing::warn!(attempt, "founding cohort reservation returned no decision");
     }
 
-    let claimed: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)::BIGINT
-        FROM founding_trader_seats
-        WHERE status = 'active'
-           OR (status IN ('reserved', 'pending_payment') AND expires_at > now())
-        "#,
-    )
-    .fetch_one(&mut *tx)
-    .await?;
-    if !founding_trader_cohort_has_capacity(claimed, max_seats) {
-        tx.commit().await?;
-        return Err(CloudError::BadRequest(format!(
-            "The {}-seat Founding Trader cohort is full",
-            max_seats
-        )));
-    }
-
-    sqlx::query(
-        r#"
-        INSERT INTO founding_trader_seats
-            (user_id, status, reserved_at, expires_at, stripe_session_id,
-             checkout_url, activated_at, released_at, updated_at)
-        VALUES ($1, 'reserved', now(), now() + ($2 || ' minutes')::interval,
-                NULL, NULL, NULL, NULL, now())
-        ON CONFLICT (user_id) DO UPDATE SET
-            status = 'reserved',
-            reserved_at = now(),
-            expires_at = now() + ($2 || ' minutes')::interval,
-            stripe_session_id = NULL,
-            checkout_url = NULL,
-            activated_at = NULL,
-            released_at = NULL,
-            updated_at = now()
-        "#,
-    )
-    .bind(user_id)
-    .bind(FOUNDING_TRADER_RESERVATION_MINUTES.to_string())
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(FoundingTraderSeatReservation::Created)
+    Err(CloudError::ServiceUnavailable(
+        "Founding Trader checkout is busy; retry shortly".to_string(),
+    ))
 }
 
 async fn release_founding_trader_reservation(
@@ -1210,7 +1242,30 @@ async fn reconcile_user_subscription_entitlement(
 
     let (tier, subscription_id, subscription_status) = match active {
         Some((tier, subscription_id, status)) => (tier, Some(subscription_id), Some(status)),
-        None => ("free".to_string(), None, None),
+        None => {
+            // A failed payment must revoke the paid entitlement, but it must not
+            // erase the recovery state the Settings UI needs to direct the user
+            // back to Stripe. Terminal states such as canceled intentionally do
+            // not linger as an attention banner.
+            let attention_required = sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT stripe_subscription_id, status
+                FROM stripe_subscriptions
+                WHERE user_id = $1 AND status IN ('past_due', 'unpaid', 'incomplete')
+                ORDER BY updated_at DESC
+                LIMIT 1
+                "#,
+            )
+            .bind(user_id)
+            .fetch_optional(&mut *db)
+            .await?;
+            match attention_required {
+                Some((subscription_id, status)) => {
+                    ("free".to_string(), Some(subscription_id), Some(status))
+                }
+                None => ("free".to_string(), None, None),
+            }
+        }
     };
     sqlx::query(
         r#"
@@ -1999,6 +2054,33 @@ mod tests {
     }
 
     #[test]
+    fn stripe_signatures_reject_tampering_and_replays() {
+        let payload = r#"{"id":"evt_signature_regression"}"#;
+        let secret = "whsec_signature_regression";
+        let valid_headers = signed_headers(payload, secret);
+        let valid_signature = valid_headers
+            .get("stripe-signature")
+            .and_then(|value| value.to_str().ok())
+            .expect("signed header should be valid UTF-8");
+        assert!(verify_stripe_signature(payload, valid_signature, secret).is_ok());
+        assert!(verify_stripe_signature("{}", valid_signature, secret).is_err());
+
+        let stale_timestamp = chrono::Utc::now().timestamp() - 301;
+        let stale_payload = format!("{stale_timestamp}.{payload}");
+        let stale_signature = hmac_sha256(secret.as_bytes(), stale_payload.as_bytes());
+        let stale_signature_hex: String = stale_signature
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert!(verify_stripe_signature(
+            payload,
+            &format!("t={stale_timestamp},v1={stale_signature_hex}"),
+            secret,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn founding_trader_cohort_closes_at_its_atomic_cap() {
         assert!(founding_trader_cohort_has_capacity(0, 100));
         assert!(founding_trader_cohort_has_capacity(99, 100));
@@ -2185,12 +2267,21 @@ mod tests {
             }}
         });
         deliver_test_event(&state, failed).await;
-        let tier: String = sqlx::query_scalar("SELECT tier FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .expect("failed-payment tier should load");
+        let (tier, subscription_status): (String, Option<String>) =
+            sqlx::query_as("SELECT tier, stripe_subscription_status FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("failed-payment state should load");
         assert_eq!(tier, "free");
+        assert_eq!(subscription_status.as_deref(), Some("past_due"));
+        let seat_status: String =
+            sqlx::query_scalar("SELECT status FROM founding_trader_seats WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("failed-payment seat state should load");
+        assert_eq!(seat_status, "released");
 
         let paid = serde_json::json!({
             "id": format!("{event_prefix}_paid"),
@@ -2205,12 +2296,21 @@ mod tests {
             }}
         });
         deliver_test_event(&state, paid).await;
-        let tier: String = sqlx::query_scalar("SELECT tier FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&pool)
-            .await
-            .expect("renewed tier should load");
+        let (tier, subscription_status): (String, Option<String>) =
+            sqlx::query_as("SELECT tier, stripe_subscription_status FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("renewed subscription state should load");
         assert_eq!(tier, "founding_trader");
+        assert_eq!(subscription_status.as_deref(), Some("active"));
+        let seat_status: String =
+            sqlx::query_scalar("SELECT status FROM founding_trader_seats WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("renewed seat state should load");
+        assert_eq!(seat_status, "active");
 
         let stale_cancel = serde_json::json!({
             "id": format!("{event_prefix}_stale_cancel"),
@@ -2289,6 +2389,42 @@ mod tests {
             .await
             .expect("cancelled tier should load");
         assert_eq!(tier, "free");
+
+        let mismatched_customer_event_id = format!("{event_prefix}_mismatched_customer");
+        let mismatched_customer = serde_json::json!({
+            "id": mismatched_customer_event_id,
+            "type": "customer.subscription.created",
+            "created": created + 7,
+            "livemode": false,
+            "data": { "object": {
+                "id": format!("sub_mismatched_{run_id}"),
+                "customer": format!("cus_other_{run_id}"),
+                "status": "active",
+                "metadata": { "user_id": user_id, "price_id": "price_founding" },
+                "items": { "data": [{ "price": { "id": "price_founding" } }] }
+            }}
+        });
+        let mismatched_body = mismatched_customer.to_string();
+        let secret = state
+            .config
+            .stripe_webhook_secret
+            .as_deref()
+            .expect("test webhook secret");
+        let mismatch_result = billing_webhook(
+            State(state.clone()),
+            signed_headers(&mismatched_body, secret),
+            mismatched_body,
+        )
+        .await;
+        assert!(matches!(mismatch_result, Err(CloudError::BadRequest(_))));
+        let mismatch_persisted: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM stripe_webhook_events WHERE stripe_event_id = $1)",
+        )
+        .bind(&mismatched_customer_event_id)
+        .fetch_one(&pool)
+        .await
+        .expect("mismatched event ledger state should load");
+        assert!(!mismatch_persisted);
 
         let processed_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*)::BIGINT FROM stripe_webhook_events WHERE stripe_event_id LIKE $1",
