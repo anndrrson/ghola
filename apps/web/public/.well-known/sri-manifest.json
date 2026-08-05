@@ -1,24 +1,24 @@
 {
   "version": 1,
-  "generated_at": "2026-08-05T15:03:12.635Z",
-  "git_commit": "891fea294266ddc6991b30e1528eb9c6ae869d85",
+  "generated_at": "2026-08-05T15:12:36.190Z",
+  "git_commit": "58767a20cca77c3e15775a9e853fe13344110c86",
   "file_count": 124,
   "total_bytes": 11049793,
   "files": [
     {
-      "path": "/_next/static/891fea294266ddc6991b30e1528eb9c6ae869d85/_buildManifest.js",
+      "path": "/_next/static/58767a20cca77c3e15775a9e853fe13344110c86/_buildManifest.js",
       "sha256": "9476e0afd3f9da68a64e6ec58631191fd3eaca62c9f5a377e7517fe9a89e59ea",
       "sha384": "sha384-xr4huECvJoP45OIUwQLqlWueVWKPpJ8tTlpYNAQiFwHzPMXAn5oy1XDD1WshOwyU",
       "bytes": 219
     },
     {
-      "path": "/_next/static/891fea294266ddc6991b30e1528eb9c6ae869d85/_clientMiddlewareManifest.js",
+      "path": "/_next/static/58767a20cca77c3e15775a9e853fe13344110c86/_clientMiddlewareManifest.js",
       "sha256": "50baa2c484269e83418716f7035c644f55cb56c738698f9786ad03c7edfbdf9f",
       "sha384": "sha384-336t3E+3ofwfIZzIApPBRILPlviDY38kCiMZTWKkULgD9CxTFkDTZTkc/LvXwJ5f",
       "bytes": 347
     },
     {
-      "path": "/_next/static/891fea294266ddc6991b30e1528eb9c6ae869d85/_ssgManifest.js",
+      "path": "/_next/static/58767a20cca77c3e15775a9e853fe13344110c86/_ssgManifest.js",
       "sha256": "678f6ce2cb80b1fe72fc67e7412be6e2ab6ada083111b64f7c40d35e3cba5e00",
       "sha384": "sha384-IahYFZWHVi15AEIjFvtLcYfsYp3a5TRlT5Nvpi0E/GXcTFwjd3OitBYYkqfevQ/7",
       "bytes": 80
@@ -180,12 +180,6 @@
       "bytes": 6238
     },
     {
-      "path": "/_next/static/chunks/0_pxbpk~~siai.js",
-      "sha256": "d789d1728104cd11e5d02ebfe729d6e9d81058a839734bde87ab99b5e6649a76",
-      "sha384": "sha384-M4F3Fqpi4GtwOS+1Npwr+hHvv/MWlinq6JorX+fZi2HobUbBA+wiRig4UXg6wvRd",
-      "bytes": 71078
-    },
-    {
       "path": "/_next/static/chunks/0a.cmcp9ejlhu.js",
       "sha256": "d332ba801bef81a9fcbf0a18365acea4b24aa7f7e5c1775f864d25922bbc9977",
       "sha384": "sha384-iCkYSlQUPxjn8ISCn36tHC+e0WIndHprMzG4+hg9erdd6EEy1ZiY+dFWw9zDeNsK",
@@ -262,6 +256,12 @@
       "sha256": "8f4b78dc5bc12b1cfcc642353520c8c3fe450425f66ed705d019a88b0def09a9",
       "sha384": "sha384-MFBXPrKa1cuP3eIifhEU/9BRzaYIYiQN9G5dMhfG+lDsM0Y1z+wcOYBcb1LwBe3j",
       "bytes": 57086
+    },
+    {
+      "path": "/_next/static/chunks/0d8z~mk80_xu8.js",
+      "sha256": "713b3728bb7baed6cfda583e86ca5e8647e681de40b58f983532e880dccb9623",
+      "sha384": "sha384-GjwGhy3ZSGyzVmD5xeEVpkgyFrCLEiWU7op/bAqkjkPI3w0nARdWPy7TAJpSJ6Hf",
+      "bytes": 71078
     },
     {
       "path": "/_next/static/chunks/0dorldkd~tlx1.js",
@@ -750,5 +750,5 @@
       "bytes": 112901
     }
   ],
-  "manifest_sha256": "7e154d687621353d9ef6802df6e9852da1b96df64213e5f280628ff98595b2b6"
+  "manifest_sha256": "f0e04a9c7508e5c2e9241bb2b1b45a72602b1d8ef6b80b2d07932c4224922c70"
 }
