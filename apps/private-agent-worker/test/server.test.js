@@ -4,7 +4,7 @@ import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ed25519 } from "@noble/curves/ed25519";
+import { ed25519, x25519 } from "@noble/curves/ed25519";
 import { Keypair } from "@solana/web3.js";
 import {
   createPrivateAgentWorkerServer,
@@ -378,6 +378,23 @@ describe("private agent worker", () => {
         x25519_pub_hex: body.x25519_pub_hex,
       }, body.funding_signer_public_key_b64),
     );
+  });
+
+  it("keeps an explicitly provisioned recipient stable across data-volume replacement", () => {
+    const secret = new Uint8Array(32).fill(17);
+    const publicHex = Buffer.from(x25519.getPublicKey(secret)).toString("hex");
+    process.env.PRIVATE_AGENT_RECIPIENT_ID = "phala:cvm:durable-test";
+    process.env.PRIVATE_AGENT_X25519_SECRET_HEX = Buffer.from(secret).toString("hex");
+    process.env.PRIVATE_AGENT_X25519_PUB_HEX = publicHex;
+
+    const first = loadRecipient();
+    process.env.PRIVATE_AGENT_DATA_DIR = mkdtempSync(join(tmpdir(), "ghola-replaced-volume-"));
+    const afterDeployment = loadRecipient();
+
+    assert.equal(afterDeployment.recipient_id, first.recipient_id);
+    assert.equal(afterDeployment.x25519_pub_hex, first.x25519_pub_hex);
+    assert.equal(afterDeployment.x25519_secret_hex, first.x25519_secret_hex);
+    rmSync(process.env.PRIVATE_AGENT_DATA_DIR, { recursive: true, force: true });
   });
 
   it("can require dstack quote evidence before accepting production sessions", async () => {
