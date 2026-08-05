@@ -5,6 +5,7 @@ export interface HyperliquidWorkerShard {
   url: string;
   recipient_id: string;
   x25519_pub_hex: string;
+  image_digest: string;
   token_env: string | null;
   measurement_hex: string | null;
   attestation_hash: string | null;
@@ -12,6 +13,7 @@ export interface HyperliquidWorkerShard {
 }
 
 const HEX_32 = /^[0-9a-f]{64}$/i;
+const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/i;
 const HEALTH_CACHE_MS = 15_000;
 const shardHealthCache = new Map<string, { expires_at: number; promise: Promise<boolean> }>();
 
@@ -38,7 +40,8 @@ export function configuredHyperliquidWorkerShards(
     const recipientId = stringField(item.recipient_id);
     const x25519 = stringField(item.x25519_pub_hex).toLowerCase();
     const tokenEnv = stringField(item.token_env) || null;
-    if (!id || !url || !recipientId || !HEX_32.test(x25519)) return [];
+    const imageDigest = stringField(item.image_digest).toLowerCase();
+    if (!id || !url || !recipientId || !HEX_32.test(x25519) || !SHA256_DIGEST.test(imageDigest)) return [];
     if (ids.has(id) || recipients.has(recipientId)) return [];
     if (tokenEnv && !/^[A-Z][A-Z0-9_]{2,127}$/.test(tokenEnv)) return [];
     ids.add(id);
@@ -48,6 +51,7 @@ export function configuredHyperliquidWorkerShards(
       url,
       recipient_id: recipientId,
       x25519_pub_hex: x25519,
+      image_digest: imageDigest,
       token_env: tokenEnv,
       measurement_hex: nullableString(item.measurement_hex),
       attestation_hash: nullableString(item.attestation_hash),
@@ -131,7 +135,9 @@ async function verifyShardHealth(shard: HyperliquidWorkerShard, fetcher: typeof 
       health.attested_ready !== true ||
       recipient.attested_ready !== true ||
       recipient.recipient_id !== shard.recipient_id ||
-      String(recipient.x25519_pub_hex || "").toLowerCase() !== shard.x25519_pub_hex
+      String(recipient.x25519_pub_hex || "").toLowerCase() !== shard.x25519_pub_hex ||
+      String(health.image_digest || "").toLowerCase() !== shard.image_digest ||
+      String(recipient.image_digest || "").toLowerCase() !== shard.image_digest
     ) return false;
     if (shard.measurement_hex) {
       const observed = String(recipient.measurement_hex || health.measurement_hex || "");

@@ -12,6 +12,7 @@ const config = JSON.stringify(Array.from({ length: 10 }, (_, index) => ({
   url: `https://hl-${index}.example.test`,
   recipient_id: `phala:hl-${index}`,
   x25519_pub_hex: String(index).padStart(2, "0").repeat(32),
+  image_digest: `sha256:${String(index).padStart(2, "0").repeat(32)}`,
   token_env: `HL_SHARD_${index}_TOKEN`,
   attested_ready: true,
 })));
@@ -69,11 +70,12 @@ describe("Hyperliquid worker shard routing", () => {
       (async (input: URL | RequestInfo) => {
         const url = String(input);
         return Response.json(url.endsWith("/health")
-          ? { status: "green", ready: true, attested_ready: true }
+          ? { status: "green", ready: true, attested_ready: true, image_digest: shard.image_digest }
           : {
               attested_ready: true,
               recipient_id: shard.recipient_id,
               x25519_pub_hex: shard.x25519_pub_hex,
+              image_digest: shard.image_digest,
             });
       }) as typeof fetch,
     );
@@ -83,13 +85,28 @@ describe("Hyperliquid worker shard routing", () => {
       [{ ...shard, url: "https://mismatch.example.test" }],
       { NODE_ENV: "production" },
       (async (input: URL | RequestInfo) => Response.json(String(input).endsWith("/health")
-        ? { status: "green", ready: true, attested_ready: true }
+        ? { status: "green", ready: true, attested_ready: true, image_digest: shard.image_digest }
         : {
             attested_ready: true,
             recipient_id: "phala:wrong",
             x25519_pub_hex: shard.x25519_pub_hex,
+            image_digest: shard.image_digest,
           })) as typeof fetch,
     );
     expect(mismatched).toEqual([]);
+
+    const staleImage = await healthyHyperliquidWorkerShards(
+      [{ ...shard, url: "https://stale.example.test" }],
+      { NODE_ENV: "production" },
+      (async (input: URL | RequestInfo) => Response.json(String(input).endsWith("/health")
+        ? { status: "green", ready: true, attested_ready: true, image_digest: "sha256:" + "ff".repeat(32) }
+        : {
+            attested_ready: true,
+            recipient_id: shard.recipient_id,
+            x25519_pub_hex: shard.x25519_pub_hex,
+            image_digest: shard.image_digest,
+          })) as typeof fetch,
+    );
+    expect(staleImage).toEqual([]);
   });
 });

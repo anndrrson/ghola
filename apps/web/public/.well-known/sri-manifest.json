@@ -1,10 +1,28 @@
 {
   "version": 1,
-  "generated_at": "2026-08-05T14:52:05.718Z",
-  "git_commit": "e2370ddafe625c38fe3b7a0571269ad2f83df907",
+  "generated_at": "2026-08-05T15:03:12.635Z",
+  "git_commit": "891fea294266ddc6991b30e1528eb9c6ae869d85",
   "file_count": 124,
   "total_bytes": 11049793,
   "files": [
+    {
+      "path": "/_next/static/891fea294266ddc6991b30e1528eb9c6ae869d85/_buildManifest.js",
+      "sha256": "9476e0afd3f9da68a64e6ec58631191fd3eaca62c9f5a377e7517fe9a89e59ea",
+      "sha384": "sha384-xr4huECvJoP45OIUwQLqlWueVWKPpJ8tTlpYNAQiFwHzPMXAn5oy1XDD1WshOwyU",
+      "bytes": 219
+    },
+    {
+      "path": "/_next/static/891fea294266ddc6991b30e1528eb9c6ae869d85/_clientMiddlewareManifest.js",
+      "sha256": "50baa2c484269e83418716f7035c644f55cb56c738698f9786ad03c7edfbdf9f",
+      "sha384": "sha384-336t3E+3ofwfIZzIApPBRILPlviDY38kCiMZTWKkULgD9CxTFkDTZTkc/LvXwJ5f",
+      "bytes": 347
+    },
+    {
+      "path": "/_next/static/891fea294266ddc6991b30e1528eb9c6ae869d85/_ssgManifest.js",
+      "sha256": "678f6ce2cb80b1fe72fc67e7412be6e2ab6ada083111b64f7c40d35e3cba5e00",
+      "sha384": "sha384-IahYFZWHVi15AEIjFvtLcYfsYp3a5TRlT5Nvpi0E/GXcTFwjd3OitBYYkqfevQ/7",
+      "bytes": 80
+    },
     {
       "path": "/_next/static/chunks/0.ki6rlst-ms6.js",
       "sha256": "98f2ff092d09808e4feeca0a88d70fda0951aeedbb0bd85bf10d421451699352",
@@ -726,29 +744,11 @@
       "bytes": 818
     },
     {
-      "path": "/_next/static/e2370ddafe625c38fe3b7a0571269ad2f83df907/_buildManifest.js",
-      "sha256": "9476e0afd3f9da68a64e6ec58631191fd3eaca62c9f5a377e7517fe9a89e59ea",
-      "sha384": "sha384-xr4huECvJoP45OIUwQLqlWueVWKPpJ8tTlpYNAQiFwHzPMXAn5oy1XDD1WshOwyU",
-      "bytes": 219
-    },
-    {
-      "path": "/_next/static/e2370ddafe625c38fe3b7a0571269ad2f83df907/_clientMiddlewareManifest.js",
-      "sha256": "50baa2c484269e83418716f7035c644f55cb56c738698f9786ad03c7edfbdf9f",
-      "sha384": "sha384-336t3E+3ofwfIZzIApPBRILPlviDY38kCiMZTWKkULgD9CxTFkDTZTkc/LvXwJ5f",
-      "bytes": 347
-    },
-    {
-      "path": "/_next/static/e2370ddafe625c38fe3b7a0571269ad2f83df907/_ssgManifest.js",
-      "sha256": "678f6ce2cb80b1fe72fc67e7412be6e2ab6ada083111b64f7c40d35e3cba5e00",
-      "sha384": "sha384-IahYFZWHVi15AEIjFvtLcYfsYp3a5TRlT5Nvpi0E/GXcTFwjd3OitBYYkqfevQ/7",
-      "bytes": 80
-    },
-    {
       "path": "/_next/static/media/ort.webgpu.bundle.min.0llo9vc5t-h48.mjs",
       "sha256": "2ec70f685749470635e64dd142c2510dc13b37bb593d9cd6ab4f8923e5204479",
       "sha384": "sha384-05oW++cf3Wks8/51AZrOWtfpZmt7PzAEMqRJXttIlsKpkvuFVNIqKfhqoPIQv9fG",
       "bytes": 112901
     }
   ],
-  "manifest_sha256": "71d6675c24abd5c9b1d18906ba984b26fba3857402eab84e2591de29c9929a1c"
+  "manifest_sha256": "7e154d687621353d9ef6802df6e9852da1b96df64213e5f280628ff98595b2b6"
 }
