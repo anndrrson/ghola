@@ -31,6 +31,7 @@ import type {
 } from "@/lib/thumper-types";
 import type { PrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime";
 import { subscriptionNeedsAttention } from "@/lib/billing-status";
+import { foundingCheckoutIsOpen } from "@/lib/founding-checkout";
 import { GholaLogo } from "@/components/GholaLogo";
 
 type Tab = "profile" | "privacy" | "model" | "usage" | "accounts" | "telegram" | "plan";
@@ -742,6 +743,9 @@ function TelegramTab() {
 
 function PlanTab() {
   const [billing, setBilling] = useState<ThumperBillingStatusResponse | null>(null);
+  const [publicFoundingCohort, setPublicFoundingCohort] = useState<
+    ThumperBillingStatusResponse["founding_trader_cohort"] | null
+  >(null);
   const [agentRuntime, setAgentRuntime] = useState<PrivateAgentRuntimeStatus | null>(null);
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -752,6 +756,14 @@ function PlanTab() {
     getThumperBillingStatus()
       .then(setBilling)
       .catch(() => {});
+    fetch("/api/billing/founding-cohort", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((status) =>
+        setPublicFoundingCohort(
+          status as ThumperBillingStatusResponse["founding_trader_cohort"] | null,
+        ),
+      )
+      .catch(() => setPublicFoundingCohort(null));
     fetch("/api/private-agent/status", { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : null))
       .then((status) => setAgentRuntime(status as PrivateAgentRuntimeStatus | null))
@@ -854,9 +866,11 @@ function PlanTab() {
     billing?.tier === "founding_trader" ||
     billing?.tier === "unlimited" ||
     billing?.tier === "enterprise";
-  const foundingCohort = billing?.founding_trader_cohort ?? null;
-  const foundingCheckoutOpen =
-    foundingCheckoutEnabled && foundingCohort?.checkout_open !== false;
+  const foundingCohort = billing?.founding_trader_cohort ?? publicFoundingCohort;
+  const foundingCheckoutOpen = foundingCheckoutIsOpen(
+    foundingCheckoutEnabled,
+    foundingCohort,
+  );
   const remoteReady = agentRuntime?.remote_execution_ready === true;
   const privateCompute = billing?.private_agent_compute ?? null;
   const includedSeconds =
