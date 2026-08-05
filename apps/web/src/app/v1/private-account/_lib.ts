@@ -236,6 +236,7 @@ import {
   putPrivateVaultState,
   putHyperliquidExecutionVault,
   reserveHyperliquidShardAssignment,
+  retireUnavailableHyperliquidShardAssignment,
   sealHyperliquidShardAssignment,
   putHyperliquidManagedAllocation,
   putOmnibusAllocation,
@@ -2670,10 +2671,19 @@ export async function hyperliquidRuntimeStatusForOwner(owner: PrivateAccountRequ
   };
   if (operatorSpendLock) return base;
   const durableRecipient = vault?.vault.encrypted_execution_vault.recipient || null;
+  const durableRecipientAvailable = durableRecipient
+    ? shards.some((shard) => shard.recipient_id === durableRecipient)
+    : false;
+  if (durableRecipient && !durableRecipientAvailable) {
+    await retireUnavailableHyperliquidShardAssignment({
+      account_commitment: account.account_commitment,
+      active_recipient_ids: shards.map((shard) => shard.recipient_id),
+    });
+  }
   const assignment = await reserveHyperliquidShardAssignment({
     account_commitment: account.account_commitment,
     shards,
-    preferred_recipient_id: durableRecipient,
+    preferred_recipient_id: durableRecipientAvailable ? durableRecipient : null,
     slots_per_shard: positiveIntegerEnv("GHOLA_HYPERLIQUID_USERS_PER_SHARD", 10),
   });
   const shard = assignment

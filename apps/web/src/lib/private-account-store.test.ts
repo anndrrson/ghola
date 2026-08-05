@@ -24,6 +24,7 @@ import {
   putPrivacyBudget,
   putQueuedAction,
   reserveHyperliquidShardAssignment,
+  retireUnavailableHyperliquidShardAssignment,
   recordPrivacyBudgetEvent,
   resetPrivateAccountStoreForTests,
   setPrivateBlobRecordAdapterForTests,
@@ -256,6 +257,28 @@ describe("private account store", () => {
     expect(await sealHyperliquidShardAssignment({
       account_commitment: "account_capacity_0",
       recipient_id: "phala:wrong",
+    })).toBe(false);
+  });
+
+  it("retires only assignments whose recipient is no longer active", async () => {
+    const account = "account_retired_recipient";
+    const original = await reserveHyperliquidShardAssignment({
+      account_commitment: account,
+      shards: [{ id: "old", recipient_id: "phala:old" }],
+    });
+    expect(original?.recipient_id).toBe("phala:old");
+    expect(await retireUnavailableHyperliquidShardAssignment({
+      account_commitment: account,
+      active_recipient_ids: ["phala:new"],
+    })).toBe(true);
+    const replacement = await reserveHyperliquidShardAssignment({
+      account_commitment: account,
+      shards: [{ id: "new", recipient_id: "phala:new" }],
+    });
+    expect(replacement?.recipient_id).toBe("phala:new");
+    expect(await retireUnavailableHyperliquidShardAssignment({
+      account_commitment: account,
+      active_recipient_ids: ["phala:new"],
     })).toBe(false);
   });
 

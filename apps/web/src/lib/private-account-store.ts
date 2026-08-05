@@ -1656,6 +1656,35 @@ export async function reserveHyperliquidShardAssignment(input: {
   return null;
 }
 
+export async function retireUnavailableHyperliquidShardAssignment(input: {
+  account_commitment: string;
+  active_recipient_ids: string[];
+}): Promise<boolean> {
+  const active = new Set(input.active_recipient_ids.filter(Boolean));
+  const sql = await getSql();
+  if (!sql) {
+    const existing = hyperliquidShardAssignments.get(input.account_commitment);
+    if (!existing || active.has(existing.recipient_id)) return false;
+    hyperliquidShardAssignments.delete(input.account_commitment);
+    return true;
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    SELECT recipient_id FROM private_account_hyperliquid_shard_assignments
+    WHERE account_commitment = ${input.account_commitment}
+    LIMIT 1
+  `) as Record<string, unknown>[];
+  const recipientId = String(rows[0]?.recipient_id || "");
+  if (!recipientId || active.has(recipientId)) return false;
+  const deleted = (await sql`
+    DELETE FROM private_account_hyperliquid_shard_assignments
+    WHERE account_commitment = ${input.account_commitment}
+      AND recipient_id = ${recipientId}
+    RETURNING account_commitment
+  `) as Record<string, unknown>[];
+  return Boolean(deleted[0]);
+}
+
 export async function sealHyperliquidShardAssignment(input: {
   account_commitment: string;
   recipient_id: string;
