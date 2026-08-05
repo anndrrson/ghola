@@ -503,6 +503,18 @@ export interface PrivateHyperliquidManagedAllocationRecordV1 {
   updated_at: string;
 }
 
+export interface PrivateHyperliquidShardAssignmentRecordV1 {
+  version: 1;
+  account_commitment: string;
+  shard_id: string;
+  recipient_id: string;
+  slot_number: number;
+  status: "pending" | "sealed";
+  created_at: string;
+  updated_at: string;
+  expires_at: string | null;
+}
+
 export interface PrivateVenueExecutionVaultRecordV1 {
   version: 1;
   owner_commitment: string;
@@ -1069,6 +1081,7 @@ const agentPassports = new Map<string, PrivateAgentPassportRecordV1>();
 const venueCapabilities = new Map<string, PrivateVenueCapabilityRecordV1>();
 const vaults = new Map<string, PrivateVaultStateRecordV1>();
 const hyperliquidVaults = new Map<string, PrivateHyperliquidVaultRecordV1>();
+const hyperliquidShardAssignments = new Map<string, PrivateHyperliquidShardAssignmentRecordV1>();
 const hyperliquidManagedAllocations = new Map<string, PrivateHyperliquidManagedAllocationRecordV1>();
 const venueExecutionVaults = new Map<string, PrivateVenueExecutionVaultRecordV1>();
 const venueSecretHandles = new Map<string, PrivateVenueSecretHandleRecordV1>();
@@ -1108,6 +1121,7 @@ const receiptExportRevocations = new Map<string, PrivateReceiptExportRevocationR
 
 let sqlClient: NeonSql | null = null;
 let schemaReady = false;
+let schemaInitialization: Promise<void> | null = null;
 let privateBlobRecordAdapterForTests: {
   put(pathname: string, value: string): Promise<void>;
   get(pathname: string): Promise<string | null>;
@@ -1559,6 +1573,148 @@ export async function getHyperliquidExecutionVaultByAccount(
     LIMIT 1
   `) as HyperliquidVaultRow[];
   return rows[0] ? hyperliquidVaultRow(rows[0]) : null;
+}
+
+export async function reserveHyperliquidShardAssignment(input: {
+  account_commitment: string;
+  shards: Array<{ id: string; recipient_id: string }>;
+  preferred_recipient_id?: string | null;
+  slots_per_shard?: number;
+  pending_ttl_ms?: number;
+}): Promise<PrivateHyperliquidShardAssignmentRecordV1 | null> {
+  const slotsPerShard = Math.max(1, Math.min(1_000, Math.floor(input.slots_per_shard ?? 10)));
+  const pendingTtlMs = Math.max(60_000, Math.min(60 * 60_000, input.pending_ttl_ms ?? 15 * 60_000));
+  const candidateShards = input.preferred_recipient_id
+    ? input.shards.filter((shard) => shard.recipient_id === input.preferred_recipient_id)
+    : input.shards;
+  if (!input.account_commitment || candidateShards.length === 0) return null;
+  const sql = await getSql();
+  if (!sql) {
+    const existing = hyperliquidShardAssignments.get(input.account_commitment);
+    if (existing && (existing.status === "sealed" || !existing.expires_at || Date.parse(existing.expires_at) > Date.now())) {
+      return existing;
+    }
+    if (existing) hyperliquidShardAssignments.delete(input.account_commitment);
+    const occupied = new Set([...hyperliquidShardAssignments.values()].map((record) =>
+      `${record.recipient_id}:${record.slot_number}`
+    ));
+    for (const shard of rotatedShardCandidates(input.account_commitment, candidateShards)) {
+      for (const slot of rotatedSlotCandidates(input.account_commitment, slotsPerShard)) {
+        if (occupied.has(`${shard.recipient_id}:${slot}`)) continue;
+        const now = new Date();
+        const record: PrivateHyperliquidShardAssignmentRecordV1 = {
+          version: 1,
+          account_commitment: input.account_commitment,
+          shard_id: shard.id,
+          recipient_id: shard.recipient_id,
+          slot_number: slot,
+          status: "pending",
+          created_at: now.toISOString(),
+          updated_at: now.toISOString(),
+          expires_at: new Date(now.getTime() + pendingTtlMs).toISOString(),
+        };
+        hyperliquidShardAssignments.set(input.account_commitment, record);
+        return record;
+      }
+    }
+    return null;
+  }
+  await ensureSchema(sql);
+  await sql`
+    DELETE FROM private_account_hyperliquid_shard_assignments
+    WHERE status = 'pending' AND expires_at <= NOW()
+  `;
+  const existingRows = (await sql`
+    SELECT * FROM private_account_hyperliquid_shard_assignments
+    WHERE account_commitment = ${input.account_commitment}
+    LIMIT 1
+  `) as Record<string, unknown>[];
+  if (existingRows[0]) return hyperliquidShardAssignmentRow(existingRows[0]);
+
+  for (const shard of rotatedShardCandidates(input.account_commitment, candidateShards)) {
+    for (const slot of rotatedSlotCandidates(input.account_commitment, slotsPerShard)) {
+      const rows = (await sql`
+        INSERT INTO private_account_hyperliquid_shard_assignments (
+          account_commitment, shard_id, recipient_id, slot_number, status,
+          created_at, updated_at, expires_at
+        ) VALUES (
+          ${input.account_commitment}, ${shard.id}, ${shard.recipient_id}, ${slot}, 'pending',
+          NOW(), NOW(), NOW() + (${pendingTtlMs} * INTERVAL '1 millisecond')
+        )
+        ON CONFLICT DO NOTHING
+        RETURNING *
+      `) as Record<string, unknown>[];
+      if (rows[0]) return hyperliquidShardAssignmentRow(rows[0]);
+      const raced = (await sql`
+        SELECT * FROM private_account_hyperliquid_shard_assignments
+        WHERE account_commitment = ${input.account_commitment}
+        LIMIT 1
+      `) as Record<string, unknown>[];
+      if (raced[0]) return hyperliquidShardAssignmentRow(raced[0]);
+    }
+  }
+  return null;
+}
+
+export async function sealHyperliquidShardAssignment(input: {
+  account_commitment: string;
+  recipient_id: string;
+}): Promise<boolean> {
+  const sql = await getSql();
+  if (!sql) {
+    const existing = hyperliquidShardAssignments.get(input.account_commitment);
+    if (!existing || existing.recipient_id !== input.recipient_id) return false;
+    hyperliquidShardAssignments.set(input.account_commitment, {
+      ...existing,
+      status: "sealed",
+      expires_at: null,
+      updated_at: new Date().toISOString(),
+    });
+    return true;
+  }
+  await ensureSchema(sql);
+  const rows = (await sql`
+    UPDATE private_account_hyperliquid_shard_assignments
+    SET status = 'sealed', expires_at = NULL, updated_at = NOW()
+    WHERE account_commitment = ${input.account_commitment}
+      AND recipient_id = ${input.recipient_id}
+      AND (status = 'sealed' OR expires_at > NOW())
+    RETURNING account_commitment
+  `) as Record<string, unknown>[];
+  return Boolean(rows[0]);
+}
+
+function hyperliquidShardAssignmentRow(row: Record<string, unknown>): PrivateHyperliquidShardAssignmentRecordV1 {
+  return {
+    version: 1,
+    account_commitment: String(row.account_commitment || ""),
+    shard_id: String(row.shard_id || ""),
+    recipient_id: String(row.recipient_id || ""),
+    slot_number: Number(row.slot_number || 0),
+    status: row.status === "sealed" ? "sealed" : "pending",
+    created_at: new Date(String(row.created_at)).toISOString(),
+    updated_at: new Date(String(row.updated_at)).toISOString(),
+    expires_at: row.expires_at ? new Date(String(row.expires_at)).toISOString() : null,
+  };
+}
+
+function rotatedShardCandidates<T>(accountCommitment: string, shards: T[]): T[] {
+  const start = stableAssignmentNumber(accountCommitment) % shards.length;
+  return [...shards.slice(start), ...shards.slice(0, start)];
+}
+
+function rotatedSlotCandidates(accountCommitment: string, slots: number): number[] {
+  const start = stableAssignmentNumber(`${accountCommitment}:slot`) % slots;
+  return Array.from({ length: slots }, (_, index) => ((start + index) % slots) + 1);
+}
+
+function stableAssignmentNumber(value: string): number {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }
 
 export async function putHyperliquidManagedAllocation(
@@ -5345,6 +5501,7 @@ export async function resetPrivateAccountStoreForTests() {
   accounts.clear();
   vaults.clear();
   hyperliquidVaults.clear();
+  hyperliquidShardAssignments.clear();
   hyperliquidManagedAllocations.clear();
   venueExecutionVaults.clear();
   venueSecretHandles.clear();
@@ -5387,6 +5544,7 @@ export async function resetPrivateAccountStoreForTests() {
   if (process.env.GHOLA_PRIVATE_ACCOUNT_STORE !== "postgres") {
     sqlClient = null;
     schemaReady = false;
+    schemaInitialization = null;
   }
 }
 
@@ -5651,6 +5809,15 @@ function hyperliquidVaultByCommitmentBlobPath(vaultCommitment: string): string {
 
 async function ensureSchema(sql: NeonSql): Promise<void> {
   if (schemaReady) return;
+  if (!schemaInitialization) {
+    schemaInitialization = initializeSchema(sql).finally(() => {
+      schemaInitialization = null;
+    });
+  }
+  await schemaInitialization;
+}
+
+async function initializeSchema(sql: NeonSql): Promise<void> {
   await sql`
     CREATE TABLE IF NOT EXISTS private_account_intents (
       intent_id TEXT PRIMARY KEY,
@@ -6077,6 +6244,19 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
       vault JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS private_account_hyperliquid_shard_assignments (
+      account_commitment TEXT PRIMARY KEY,
+      shard_id TEXT NOT NULL,
+      recipient_id TEXT NOT NULL,
+      slot_number INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      expires_at TIMESTAMPTZ,
+      UNIQUE (recipient_id, slot_number)
     )
   `;
   await sql`

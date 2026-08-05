@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import {
+  configuredHyperliquidWorkerShards,
+  healthyHyperliquidWorkerShards,
+  hyperliquidWorkerShardToken,
+  resolveHyperliquidWorkerShard,
+} from "@/lib/hyperliquid-worker-shards";
+import {
   fetchWithTimeout,
   fetchSessionUser,
   SESSION_COOKIE_NAME,
@@ -229,6 +235,8 @@ import {
   putPrivateAccountReceipt,
   putPrivateVaultState,
   putHyperliquidExecutionVault,
+  reserveHyperliquidShardAssignment,
+  sealHyperliquidShardAssignment,
   putHyperliquidManagedAllocation,
   putOmnibusAllocation,
   putPooledVenueAllocation,
@@ -320,6 +328,7 @@ import {
 } from "@/lib/private-agent-runtime";
 import {
   phalaIdleLeaseMs,
+  privateAgentRemoteExecutionDisabled,
   wakePhalaPrivateAgentForUse,
 } from "@/lib/private-agent-phala";
 import { enterpriseGateStatus } from "@/lib/enterprise-gate-status";
@@ -2621,12 +2630,121 @@ export async function hyperliquidVaultStatusForOwner(owner: PrivateAccountReques
   };
 }
 
+export async function hyperliquidRuntimeStatusForOwner(owner: PrivateAccountRequestOwner) {
+  const account = await createOrGetStoredPrivateAccount(owner);
+  const vault = await getHyperliquidExecutionVaultByAccount(account.account_commitment);
+  const configuredShards = configuredHyperliquidWorkerShards();
+  if (configuredShards.length === 0) return getPrivateAgentRuntimeStatus();
+  const shards = await healthyHyperliquidWorkerShards(configuredShards);
+  const operatorSpendLock = privateAgentRemoteExecutionDisabled();
+  const base = {
+    version: 1 as const,
+    checked_at: new Date().toISOString(),
+    sealed_execution_required: true as const,
+    entitlement_required: "paid_private_agent_plan" as const,
+    bounded_beta_enabled: process.env.GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED === "true",
+    operator_spend_lock: operatorSpendLock,
+    preferred_provider: "phala" as const,
+    selected_provider: null,
+    remote_execution_ready: false,
+    shielded_rail_ready: false,
+    providers: [{
+      id: "phala" as const,
+      label: "Phala TEE",
+      configured: true,
+      available: false,
+      attested: false,
+      supports_sealed_secrets: false,
+      supports_background_agents: false,
+      supports_trading_execution: false,
+      reason: operatorSpendLock
+        ? "Remote private-agent execution is disabled by operator spend lock."
+        : "Hyperliquid shard assignment is pending.",
+      evidence: {
+        execution_url_configured: false,
+        recipient_configured: false,
+      },
+    }],
+    blocking_reasons: operatorSpendLock ? ["operator_spend_lock"] : ["hyperliquid_shard_assignment_pending"],
+    disclosure: "Ghola exposes only attestation-bound shard recipient material; credential plaintext remains client-sealed.",
+  };
+  if (operatorSpendLock) return base;
+  const durableRecipient = vault?.vault.encrypted_execution_vault.recipient || null;
+  const assignment = await reserveHyperliquidShardAssignment({
+    account_commitment: account.account_commitment,
+    shards,
+    preferred_recipient_id: durableRecipient,
+    slots_per_shard: positiveIntegerEnv("GHOLA_HYPERLIQUID_USERS_PER_SHARD", 10),
+  });
+  const shard = assignment
+    ? shards.find((candidate) => candidate.recipient_id === assignment.recipient_id) ?? null
+    : null;
+  if (!shard) {
+    return {
+      ...base,
+      selected_provider: null,
+      remote_execution_ready: false,
+      providers: base.providers.map((provider) => provider.id === "phala"
+        ? {
+            ...provider,
+            available: false,
+            supports_sealed_secrets: false,
+            supports_background_agents: false,
+            supports_trading_execution: false,
+            reason: "Hyperliquid worker shard capacity is exhausted.",
+          }
+        : provider),
+      blocking_reasons: Array.from(new Set([
+        ...base.blocking_reasons.filter((reason) => reason !== "hyperliquid_shard_assignment_pending"),
+        "hyperliquid_shard_capacity_exhausted",
+      ])),
+    };
+  }
+  return {
+    ...base,
+    selected_provider: "phala" as const,
+    remote_execution_ready: true,
+    providers: base.providers.map((provider) => provider.id === "phala"
+      ? {
+          ...provider,
+          label: `Phala TEE (${shard.id})`,
+          configured: true,
+          available: true,
+          attested: true,
+          supports_sealed_secrets: true,
+          supports_background_agents: true,
+          supports_trading_execution: true,
+          execution_url: shard.url,
+          reason: null,
+          sealed_recipient: {
+            recipient_id: shard.recipient_id,
+            x25519_pub_hex: shard.x25519_pub_hex,
+            tee_kind: "phala",
+            measurement_hex: shard.measurement_hex,
+            attestation_hash: shard.attestation_hash,
+            expires_at_unix: null,
+          },
+          evidence: {
+            ...provider.evidence,
+            execution_url_configured: true,
+            recipient_configured: true,
+          },
+        }
+      : provider),
+    blocking_reasons: base.blocking_reasons.filter((reason) =>
+      reason !== "no_attested_provider" &&
+      reason !== "remote_execution_unavailable" &&
+      reason !== "hyperliquid_shard_assignment_pending"
+    ),
+  };
+}
+
 export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwner) {
   const account = await createOrGetStoredPrivateAccount(owner);
   const [vault, allocation, runtime, evidence, balanceSnapshot] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
-    getPrivateAgentRuntimeStatus().catch(() => null),
+    hyperliquidRuntimeStatusForOwner(owner).catch(() => null),
     getLatestAnonymityEvidence({ account_commitment: account.account_commitment }),
     getGholaBalanceSnapshot({
       owner_commitment: owner.owner_commitment,
@@ -2641,7 +2759,10 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
     : 0;
   const pooledBalanceReady = allocationMode !== "ghola_pooled" ||
     balanceSnapshot.available_micro_usdc >= pooledBalanceRequiredMicroUsdc;
-  const workerConfigured = Boolean(hyperliquidWorkerConfig().url) || localHyperliquidPilotEnabled();
+  const workerConfigured = Boolean(hyperliquidWorkerConfig({
+    accountCommitment: account.account_commitment,
+    recipientId: vault?.vault.encrypted_execution_vault.recipient,
+  }).url) || localHyperliquidPilotEnabled();
   const workerReady = Boolean(runtime?.selected_provider) || localHyperliquidPilotEnabled();
   const liveTinyFill =
     stringValue(process.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "tiny_fill" ||
@@ -2746,7 +2867,7 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
   const [vault, allocation, runtime] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
-    getPrivateAgentRuntimeStatus().catch(() => null),
+    hyperliquidRuntimeStatusForOwner(owner).catch(() => null),
   ]);
   const hasVault = vault?.status === "sealed";
   const hasManaged = allocation?.status === "allocated";
@@ -2770,7 +2891,10 @@ export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRe
       next_step: "Start the private worker and run the no-submit connection check.",
     });
   }
-  const cfg = hyperliquidWorkerConfig();
+  const cfg = hyperliquidWorkerConfig({
+    accountCommitment: account.account_commitment,
+    recipientId: vault?.vault.encrypted_execution_vault.recipient,
+  });
   const workerReady = Boolean(runtime?.selected_provider);
   if (!cfg.url || !workerReady) {
     return localHyperliquidAccountSnapshot({
@@ -2861,7 +2985,7 @@ export async function hyperliquidAccountStreamForOwner(
   const [vault, allocation, runtime] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
-    getPrivateAgentRuntimeStatus().catch(() => null),
+    hyperliquidRuntimeStatusForOwner(owner).catch(() => null),
   ]);
   const hasVault = vault?.status === "sealed";
   const hasManaged = allocation?.status === "allocated";
@@ -2899,7 +3023,10 @@ export async function hyperliquidAccountStreamForOwner(
     }));
   }
 
-  const cfg = hyperliquidWorkerConfig();
+  const cfg = hyperliquidWorkerConfig({
+    accountCommitment: account.account_commitment,
+    recipientId: vault?.vault.encrypted_execution_vault.recipient,
+  });
   const workerReady = Boolean(runtime?.selected_provider);
   if (!cfg.url || !workerReady) {
     return localHyperliquidAccountSse(localHyperliquidAccountSnapshot({
@@ -3131,6 +3258,13 @@ export async function sealHyperliquidVaultFromBody(
   const allowedRecipients = await currentPrivateAgentRecipientIds();
   if (!allowedRecipients.has(recipient)) {
     return { error: "encrypted_execution_vault_recipient_mismatch" as const };
+  }
+  if (configuredHyperliquidWorkerShards().length > 0) {
+    const assignmentSealed = await sealHyperliquidShardAssignment({
+      account_commitment: account.account_commitment,
+      recipient_id: recipient,
+    });
+    if (!assignmentSealed) return { error: "hyperliquid_shard_assignment_required" as const };
   }
   const created = createHyperliquidExecutionVault({
     account_commitment: account.account_commitment,
@@ -4133,6 +4267,11 @@ function parseVenueVaultAad(value: string): {
 
 async function currentPrivateAgentRecipientIds(): Promise<Set<string>> {
   const recipients = new Set<string>();
+  const configuredShards = configuredHyperliquidWorkerShards();
+  for (const shard of await healthyHyperliquidWorkerShards(configuredShards)) {
+    recipients.add(shard.recipient_id);
+  }
+  if (configuredShards.length > 0) return recipients;
   if (process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER === "true") {
     recipients.add(
       process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_KEY_ID?.trim() || "mock_attested:dev",
@@ -5957,7 +6096,7 @@ export async function connectorVerifyNoSubmitFromBody(
   if (!venueId) return { error: "venue_not_supported" as const };
 
   const manifest = getConnectorManifest(platformClass);
-  const connectorEnv = await connectorRuntimeEnv(platformClass);
+  let hyperliquidRecipient: string | null = null;
   let executionMode: GholaVenueExecutionMode;
   let connectorVault: {
     venue_id: string;
@@ -5985,6 +6124,7 @@ export async function connectorVerifyNoSubmitFromBody(
       return { error: "hyperliquid_execution_vault_not_ready" as const };
     } else {
       executionMode = "byo_api_key";
+      hyperliquidRecipient = vault.vault.encrypted_execution_vault.recipient;
       connectorVault = {
         venue_id: "hyperliquid",
         execution_mode: "byo_api_key",
@@ -6055,6 +6195,10 @@ export async function connectorVerifyNoSubmitFromBody(
       connectorVault = vault.vault;
     }
   }
+  const connectorEnv = await connectorRuntimeEnv(platformClass, {
+    accountCommitment: account.account_commitment,
+    recipientId: hyperliquidRecipient,
+  });
   if (executionMode === "ghola_pooled") {
     await wakePooledWorkerForUse(`pooled_${pooledWorkerVenueId(venueId) ?? venueId}_no_submit_check`);
   }
@@ -6704,7 +6848,23 @@ function hyperliquidSnapshotNextStep(status: string) {
   return "Wait for the private worker to come back online.";
 }
 
-function hyperliquidWorkerConfig() {
+function hyperliquidWorkerConfig(input: {
+  accountCommitment?: string | null;
+  recipientId?: string | null;
+} = {}) {
+  const shards = configuredHyperliquidWorkerShards();
+  const shard = resolveHyperliquidWorkerShard(shards, input);
+  if (shard) {
+    return {
+      url: shard.url,
+      token: hyperliquidWorkerShardToken(shard),
+      shard_id: shard.id,
+      recipient_id: shard.recipient_id,
+    };
+  }
+  if (shards.length > 0) {
+    return { url: "", token: "", shard_id: null, recipient_id: null };
+  }
   return {
     url:
       process.env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL?.trim() ||
@@ -6717,6 +6877,8 @@ function hyperliquidWorkerConfig() {
       process.env.GHOLA_PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
       process.env.PRIVATE_AGENT_EXECUTION_TOKEN?.trim() ||
       "",
+    shard_id: null,
+    recipient_id: null,
   };
 }
 
@@ -7778,14 +7940,17 @@ async function connectorContextForIntent(input: {
 > {
   const now = new Date();
   const manifest = getConnectorManifest(input.platform_class, now);
-  const connectorEnv = await connectorRuntimeEnv(input.platform_class);
-  const runtimeHealth = await freshSealedRuntimeHealth(now, connectorEnv);
   const hyperliquidVault = input.platform_class === "hyperliquid_style_market"
     ? await getHyperliquidExecutionVaultByAccount(input.intent.account_commitment)
     : null;
   const hyperliquidAllocation = input.platform_class === "hyperliquid_style_market"
     ? await getHyperliquidManagedAllocationByAccount(input.intent.account_commitment)
     : null;
+  const connectorEnv = await connectorRuntimeEnv(input.platform_class, {
+    accountCommitment: input.intent.account_commitment,
+    recipientId: hyperliquidVault?.vault.encrypted_execution_vault.recipient,
+  });
+  const runtimeHealth = await freshSealedRuntimeHealth(now, connectorEnv);
   const venueId = venueIdForPlatformClass(input.platform_class);
   const usesVenueVault = input.platform_class === "coinbase_style_provider" ||
     input.platform_class === "solana_perps_market" ||
@@ -8543,7 +8708,10 @@ async function connectorForExecution(input: {
     await wakePooledWorkerForUse(`pooled_${pooledWorkerVenueId(venueId ?? "hyperliquid") ?? venueId ?? "hyperliquid"}_submit`);
   }
 
-  const connectorEnv = await connectorRuntimeEnv(manifestRecord.platform_class);
+  const connectorEnv = await connectorRuntimeEnv(manifestRecord.platform_class, {
+    accountCommitment: input.intent.account_commitment,
+    recipientId: hyperliquidVault?.vault.encrypted_execution_vault.recipient,
+  });
   const billingExecutionPolicy = mainnetTradingSubscriptionGateApplies(
     manifestRecord.platform_class,
     connectorEnv,
@@ -9016,6 +9184,7 @@ function isRailKind(value: string): value is GholaRailKind {
 
 async function connectorRuntimeEnv(
   platformClass: GholaPlatformClass,
+  routing: { accountCommitment?: string | null; recipientId?: string | null } = {},
 ): Promise<Record<string, string | undefined>> {
   const env: Record<string, string | undefined> = { ...process.env };
   if (
@@ -9024,6 +9193,27 @@ async function connectorRuntimeEnv(
     platformClass !== "solana_swap_aggregator" &&
     platformClass !== "coinbase_style_provider"
   ) return env;
+
+  if (platformClass === "hyperliquid_style_market") {
+    const configuredShards = configuredHyperliquidWorkerShards(env);
+    const shards = await healthyHyperliquidWorkerShards(configuredShards, env);
+    const shard = resolveHyperliquidWorkerShard(shards, routing);
+    if (shard?.attested_ready) {
+      env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL = shard.url;
+      env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_TOKEN = hyperliquidWorkerShardToken(shard, env);
+      env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS = "ready";
+      env.GHOLA_PRIVATE_RUNTIME_URL = shard.url;
+      env.GHOLA_PRIVATE_RUNTIME_MEASUREMENT = shard.measurement_hex || shard.attestation_hash || "attested";
+      env.GHOLA_PRIVATE_RUNTIME_EXPECTED_MEASUREMENT = env.GHOLA_PRIVATE_RUNTIME_MEASUREMENT;
+      return env;
+    }
+    if (configuredShards.length > 0) {
+      env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL = "";
+      env.GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS = "missing";
+      env.GHOLA_PRIVATE_RUNTIME_URL = "";
+      return env;
+    }
+  }
 
   const runtime = await getPrivateAgentRuntimeStatus().catch(() => null);
   if (!runtime?.remote_execution_ready || !runtime.selected_provider) return env;

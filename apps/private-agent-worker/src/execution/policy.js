@@ -64,6 +64,13 @@ const SUBMITTING_OPERATIONS = new Set([
   "swap",
 ]);
 const POLICY_LEDGER_VERSION = "v2";
+const HYPERLIQUID_VENUE_WEIGHTS = Object.freeze({
+  read: 40,
+  reconcile: 25,
+  limit_order: 60,
+  cancel: 10,
+  account_stream: 80,
+});
 
 export class ExecutionPolicyError extends Error {
   constructor(message, status = 400, code = "policy_rejected") {
@@ -370,18 +377,21 @@ export async function enforceInstructionPolicy({
     );
     if (!count.ok) throw new ExecutionPolicyError("private execution rate limit exceeded", 429);
 
+  }
+  if (state && instruction.venue_id === "hyperliquid") {
+    await reserveHyperliquidVenueCapacity({ state, operationClass: instruction.operation_class });
+  } else if (state && policyMode !== "check") {
     const globalRateLimit = Number.parseInt(
       process.env.PRIVATE_AGENT_MAX_GLOBAL_VENUE_REQUESTS_PER_MINUTE || "0",
       10,
     );
     if (Number.isInteger(globalRateLimit) && globalRateLimit > 0) {
+      const minute = Math.floor(Date.now() / 60_000);
       const globalCount = await state.incrementPolicyCount(
         `rate_global:${POLICY_LEDGER_VERSION}:${instruction.venue_id}:${minute}`,
         globalRateLimit,
       );
-      if (!globalCount.ok) {
-        throw new ExecutionPolicyError("private execution venue capacity exceeded", 429);
-      }
+      if (!globalCount.ok) throw new ExecutionPolicyError("private execution venue capacity exceeded", 429);
     }
   }
   if (state && policy?.policy_commitment && Number.isInteger(policy.max_order_count)) {
@@ -397,6 +407,27 @@ export async function enforceInstructionPolicy({
       });
     }
   }
+}
+
+export async function reserveHyperliquidVenueCapacity({ state, operationClass }) {
+  const capacity = Number.parseInt(
+    process.env.PRIVATE_AGENT_MAX_GLOBAL_VENUE_WEIGHT_PER_MINUTE ||
+      process.env.PRIVATE_AGENT_MAX_GLOBAL_VENUE_REQUESTS_PER_MINUTE ||
+      "0",
+    10,
+  );
+  if (!state || !Number.isInteger(capacity) || capacity <= 0) return { ok: true, amount: 0 };
+  const weight = HYPERLIQUID_VENUE_WEIGHTS[operationClass] || HYPERLIQUID_VENUE_WEIGHTS.read;
+  const minute = Math.floor(Date.now() / 60_000);
+  const result = await state.incrementPolicyAmount(
+    `venue_weight:${POLICY_LEDGER_VERSION}:hyperliquid:${minute}`,
+    weight,
+    capacity,
+  );
+  if (!result.ok) {
+    throw new ExecutionPolicyError("private execution venue weighted capacity exceeded", 429);
+  }
+  return { ok: true, amount: result.amount, weight, capacity };
 }
 
 function executionRateLimitSubject(body, session) {

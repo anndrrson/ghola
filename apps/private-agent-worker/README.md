@@ -106,8 +106,12 @@ orders.
 - `PRIVATE_AGENT_STATE_STORE=postgres`
 - `PRIVATE_AGENT_STATE_POSTGRES_URL` or `DATABASE_URL`
 - `PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE=60` per credential/allocation
-- `PRIVATE_AGENT_MAX_GLOBAL_VENUE_REQUESTS_PER_MINUTE=6000` as a separate
-  venue-wide capacity ceiling (sized for 100 traders at the default per-trader limit)
+- `PRIVATE_AGENT_MAX_GLOBAL_VENUE_WEIGHT_PER_MINUTE=1000` as a conservative
+  Hyperliquid outbound budget below the venue's 1200-weight/IP/minute ceiling.
+  Reads, reconciles, orders, and cancels reserve different weights; this is
+  capacity admission, not a fill guarantee.
+- `PRIVATE_AGENT_MAX_HYPERLIQUID_STREAMING_USERS=10` prevents a shard from
+  exceeding Hyperliquid's user-specific WebSocket user limit for one egress IP.
 - `PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD=0`
 - `PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=false`
 - `PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=disabled`

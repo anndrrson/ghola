@@ -10,6 +10,7 @@ import { GET as accountStream } from "./account-stream/route";
 import { POST as allocateManaged } from "./managed-allocation/route";
 import { GET as hyperliquidRoot } from "./route";
 import { GET as hyperliquidStatus } from "./status/route";
+import { GET as hyperliquidRuntime } from "./runtime/route";
 import { POST as createBalanceFundingIntent } from "../balance/funding-intent/route";
 import { POST as importBalanceCredit } from "../balance/import-credit/route";
 import { POST as verifyVenueEligibility } from "../venues/[platform_class]/eligibility/route";
@@ -136,6 +137,7 @@ describe("Hyperliquid private-account routes", () => {
     delete process.env.GHOLA_HYPERLIQUID_LIVE_MODE;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET;
+    delete process.env.GHOLA_HYPERLIQUID_WORKER_SHARDS_JSON;
     await resetPrivateAccountStoreForTests();
   });
 
@@ -147,6 +149,44 @@ describe("Hyperliquid private-account routes", () => {
 
     expect(sealRes.status).toBe(400);
     expect(body.error).toBe("encrypted_execution_vault_required");
+  });
+
+  it("reserves and preserves the authenticated account's durable worker recipient", async () => {
+    process.env.GHOLA_HYPERLIQUID_WORKER_SHARDS_JSON = JSON.stringify([{
+      id: "hl-00",
+      url: "https://hl-00.example.test",
+      recipient_id: "phala:hl-00",
+      x25519_pub_hex: "22".repeat(32),
+      attested_ready: true,
+    }]);
+    const runtimeRes = await hyperliquidRuntime(
+      request("/v1/private-account/hyperliquid/runtime"),
+    );
+    expect(runtimeRes.status).toBe(200);
+    const runtime = await runtimeRes.json();
+    expect(runtime.selected_provider).toBe("phala");
+    expect(runtime.blocking_reasons).toEqual([]);
+    expect(runtime.providers.find((provider: { id: string }) => provider.id === "phala")
+      ?.sealed_recipient?.recipient_id).toBe("phala:hl-00");
+
+    const vaultRes = await vaultStatus(request("/v1/private-account/hyperliquid/vault"));
+    const vault = await vaultRes.json();
+    const sealRes = await sealVault(request("/v1/private-account/hyperliquid/vault", {
+      encrypted_execution_vault: {
+        alg: "sealed-provider-v1",
+        ciphertext: "opaque-shard-ciphertext",
+        recipient: "phala:hl-00",
+        aad: vaultAad(vault.account_commitment, "phala:hl-00"),
+      },
+    }));
+    expect(sealRes.status).toBe(201);
+
+    const reloaded = await hyperliquidRuntime(
+      request("/v1/private-account/hyperliquid/runtime"),
+    );
+    expect((await reloaded.json()).providers.find(
+      (provider: { id: string }) => provider.id === "phala",
+    )?.sealed_recipient?.recipient_id).toBe("phala:hl-00");
   });
 
   it("reports missing BYO venue access without jurisdiction gating", async () => {

@@ -88,8 +88,12 @@ describe("private-agent Phala provisioning", () => {
       'PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE: "60"',
     );
     expect(compose).toContain(
-      'PRIVATE_AGENT_MAX_GLOBAL_VENUE_REQUESTS_PER_MINUTE: "6000"',
+      'PRIVATE_AGENT_MAX_GLOBAL_VENUE_WEIGHT_PER_MINUTE: "1000"',
     );
+    expect(compose).toContain(
+      'PRIVATE_AGENT_MAX_HYPERLIQUID_STREAMING_USERS: "10"',
+    );
+    expect(compose).toContain('PRIVATE_AGENT_SHARD_ID: "unassigned"');
     expect(compose).toContain(
       'PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "disabled"',
     );

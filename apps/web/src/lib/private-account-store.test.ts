@@ -23,9 +23,11 @@ import {
   putAnonymityEvidence,
   putPrivacyBudget,
   putQueuedAction,
+  reserveHyperliquidShardAssignment,
   recordPrivacyBudgetEvent,
   resetPrivateAccountStoreForTests,
   setPrivateBlobRecordAdapterForTests,
+  sealHyperliquidShardAssignment,
 } from "./private-account-store";
 import {
   approvePrivateAccountAction,
@@ -223,6 +225,38 @@ describe("private account store", () => {
       expect(record?.account_commitment).not.toBe(expected[(index + 1) % expected.length].account_commitment);
     });
     expect(JSON.stringify(reloaded)).not.toContain("api_wallet_private_key");
+  });
+
+  it("atomically admits exactly 100 accounts into ten ten-user Hyperliquid shards", async () => {
+    const shards = Array.from({ length: 10 }, (_, index) => ({
+      id: `hl-${index}`,
+      recipient_id: `phala:hl-${index}`,
+    }));
+    const assignments = await Promise.all(Array.from({ length: 101 }, (_, index) =>
+      reserveHyperliquidShardAssignment({
+        account_commitment: `account_capacity_${index}`,
+        shards,
+        slots_per_shard: 10,
+      })
+    ));
+    expect(assignments.filter(Boolean)).toHaveLength(100);
+    expect(assignments.filter((assignment) => assignment === null)).toHaveLength(1);
+    for (const shard of shards) {
+      expect(assignments.filter((assignment) => assignment?.recipient_id === shard.recipient_id)).toHaveLength(10);
+    }
+    expect(new Set(assignments.filter(Boolean).map((assignment) =>
+      `${assignment?.recipient_id}:${assignment?.slot_number}`
+    )).size).toBe(100);
+    const first = assignments[0];
+    expect(first).not.toBeNull();
+    expect(await sealHyperliquidShardAssignment({
+      account_commitment: "account_capacity_0",
+      recipient_id: first!.recipient_id,
+    })).toBe(true);
+    expect(await sealHyperliquidShardAssignment({
+      account_commitment: "account_capacity_0",
+      recipient_id: "phala:wrong",
+    })).toBe(false);
   });
 
   it("persists intent, preview, and approval records in memory during tests", async () => {

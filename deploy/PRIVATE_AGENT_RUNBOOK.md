@@ -46,6 +46,63 @@ session creation against the exact attested worker image and configured Phala
 instance size. Publish only the concurrency number that the session-worker test
 actually sustains. Never use live order submission as a load test.
 
+### Hyperliquid 100-user shard admission
+
+Hyperliquid permits at most 10 distinct user-specific WebSocket users per IP
+and applies a 1200-weight/minute REST ceiling per IP. A replicated service
+behind one shared egress IP is therefore not a 100-user deployment. Provision
+at least ten attested workers with independently verified outbound IPs. Set on
+each worker:
+
+```bash
+PRIVATE_AGENT_SHARD_ID=hl-00
+PRIVATE_AGENT_MAX_HYPERLIQUID_STREAMING_USERS=10
+PRIVATE_AGENT_MAX_GLOBAL_VENUE_WEIGHT_PER_MINUTE=1000
+```
+
+The web runtime receives only public routing and attestation material in
+`GHOLA_HYPERLIQUID_WORKER_SHARDS_JSON`:
+
+```json
+[
+  {
+    "id": "hl-00",
+    "url": "https://worker-00.example",
+    "recipient_id": "phala:...",
+    "x25519_pub_hex": "...",
+    "token_env": "GHOLA_HL_SHARD_00_TOKEN",
+    "measurement_hex": "...",
+    "attestation_hash": "...",
+    "attested_ready": true
+  }
+]
+```
+
+Never put bearer tokens in that JSON. `token_env` names a separate secret
+environment variable. The authenticated Hyperliquid runtime route atomically
+reserves one of ten durable slots per shard. Sealing the credential makes the
+reservation permanent, and the vault recipient remains the routing key across
+reloads and deployments. Unknown recipients fail closed instead of falling
+back to a different worker.
+Production readiness fetches `/health` and
+`/.well-known/private-agent-recipient` from the selected shards and requires a
+green attested response with the exact configured recipient key, measurement,
+and attestation hash. `GHOLA_HYPERLIQUID_SHARD_HEALTH_MODE=local_test` may skip
+those network checks only for localhost load tests.
+
+Before Checkout is public, run the non-order checks against localhost and then
+the immutable preview deployment:
+
+```bash
+npm run verify:load:founding-readonly
+npm run verify:load:hyperliquid-shards
+```
+
+The shard command performs authenticated read-only runtime reservations and
+does not preview or submit orders. Remote preview checks require
+`GHOLA_SHARD_LOAD_ALLOW_REMOTE=true` and real authorized test sessions; never
+enable the local unsigned-token bypass outside localhost.
+
 Set `GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED=true` in the web runtime
 only after the mainnet fresh-user readiness gate is green. When enabled,
 `founding_trader`, `unlimited`, and `enterprise` can open or increase mainnet

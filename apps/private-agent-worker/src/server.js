@@ -38,6 +38,7 @@ import {
   verifySolanaPerpsOrderNoSubmit,
 } from "./execution/private-execution.js";
 import { createConfiguredWorkerState } from "./state/private-state.js";
+import { reserveHyperliquidVenueCapacity } from "./execution/policy.js";
 import {
   attestFreshCredentialFunded,
   FundingAttestationError,
@@ -2159,9 +2160,30 @@ function triVenueSessionBody(body, strategy = "arb", hyperliquidAllocation = nul
   };
 }
 
+function emitHyperliquidTerminalTelemetry({ body, receipt = null, error = null, startedAt, kind }) {
+  const finalProof = receipt?.final_proof || receipt?.connector_final_proof || null;
+  const event = {
+    event: "hyperliquid_terminal_outcome",
+    version: 1,
+    shard_id: env("PRIVATE_AGENT_SHARD_ID", "unassigned"),
+    kind,
+    work_order_commitment: body?.work_order_commitment || null,
+    vault_commitment: body?.vault_commitment || null,
+    execution_mode: body?.execution_mode || null,
+    status: receipt?.status || (error ? "error" : "unknown"),
+    final_venue_execution_proven: finalProof?.final_venue_execution_proven === true,
+    final_fill_proven: finalProof?.final_fill_proven === true,
+    error_code: error?.code || null,
+    duration_ms: Math.max(0, Date.now() - startedAt),
+    observed_at: new Date().toISOString(),
+  };
+  console.info(JSON.stringify(event));
+}
+
 export function createPrivateAgentWorkerServer(options = {}) {
   const recipient = options.recipient || loadRecipient();
   const state = options.state || createConfiguredWorkerState(dataDir());
+  const hyperliquidStreamRefs = new Map();
   const dueLoop = options.startAutopilotDueLoop === false
     ? null
     : startAutopilotDueLoop({ state, recipient });
@@ -2805,6 +2827,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             missing: ready.missing,
           });
         }
+        await reserveHyperliquidVenueCapacity({ state, operationClass: "read" });
         const snapshot = await readHyperliquidSnapshot({ body, recipient, state });
         return json(res, 200, snapshot);
       }
@@ -2838,11 +2861,39 @@ export function createPrivateAgentWorkerServer(options = {}) {
             missing: ready.missing,
           });
         }
+        const streamAccount = String(body.account_commitment || "");
+        const maxStreamingUsers = Number.parseInt(
+          env("PRIVATE_AGENT_MAX_HYPERLIQUID_STREAMING_USERS", "10"),
+          10,
+        );
+        if (
+          !hyperliquidStreamRefs.has(streamAccount) &&
+          Number.isInteger(maxStreamingUsers) &&
+          maxStreamingUsers > 0 &&
+          hyperliquidStreamRefs.size >= maxStreamingUsers
+        ) {
+          return json(res, 429, {
+            error: "hyperliquid stream shard is at capacity",
+            error_code: "venue_stream_capacity_exceeded",
+            retryable: true,
+          });
+        }
+        await reserveHyperliquidVenueCapacity({ state, operationClass: "account_stream" });
+        hyperliquidStreamRefs.set(streamAccount, (hyperliquidStreamRefs.get(streamAccount) || 0) + 1);
+        let streamRefReleased = false;
+        const releaseStreamRef = () => {
+          if (streamRefReleased) return;
+          streamRefReleased = true;
+          const remaining = (hyperliquidStreamRefs.get(streamAccount) || 1) - 1;
+          if (remaining <= 0) hyperliquidStreamRefs.delete(streamAccount);
+          else hyperliquidStreamRefs.set(streamAccount, remaining);
+        };
         sseHeaders(res);
         let stop = null;
         let closed = false;
         req.on("close", () => {
           closed = true;
+          releaseStreamRef();
           if (stop) stop();
         });
         try {
@@ -2856,6 +2907,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           });
           if (closed && stop) stop();
         } catch (error) {
+          releaseStreamRef();
           if (!closed) {
             writeSse(res, "error", {
               version: 1,
@@ -2901,8 +2953,15 @@ export function createPrivateAgentWorkerServer(options = {}) {
             missing: ready.missing,
           });
         }
-        const receipt = await executeHyperliquidOrder({ body, recipient, state });
-        return json(res, 202, receipt);
+        const startedAt = Date.now();
+        try {
+          const receipt = await executeHyperliquidOrder({ body, recipient, state });
+          emitHyperliquidTerminalTelemetry({ body, receipt, startedAt, kind: "submit" });
+          return json(res, 202, receipt);
+        } catch (error) {
+          emitHyperliquidTerminalTelemetry({ body, error, startedAt, kind: "submit" });
+          throw error;
+        }
       }
 
       if (req.method === "POST" && url.pathname === "/hyperliquid/verify") {
@@ -2937,8 +2996,15 @@ export function createPrivateAgentWorkerServer(options = {}) {
             missing: ready.missing,
           });
         }
-        const receipt = await verifyHyperliquidOrderNoSubmit({ body, recipient, state });
-        return json(res, 200, receipt);
+        const startedAt = Date.now();
+        try {
+          const receipt = await verifyHyperliquidOrderNoSubmit({ body, recipient, state });
+          emitHyperliquidTerminalTelemetry({ body, receipt, startedAt, kind: "no_submit" });
+          return json(res, 200, receipt);
+        } catch (error) {
+          emitHyperliquidTerminalTelemetry({ body, error, startedAt, kind: "no_submit" });
+          throw error;
+        }
       }
 
       if (req.method === "POST" && url.pathname === "/hyperliquid/reconcile") {
@@ -2965,6 +3031,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             error_code: hyperliquidValidationErrorCode(errors),
           });
         }
+        await reserveHyperliquidVenueCapacity({ state, operationClass: "reconcile" });
         return json(res, 200, await reconcileStoredExecution({
           body: {
             ...body,

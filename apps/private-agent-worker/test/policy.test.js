@@ -119,14 +119,18 @@ describe("full-ticket execution policy", () => {
     );
   });
 
-  it("isolates venue request limits across 100 trader vaults", async () => {
+  it("isolates tenant limits while reserving weighted capacity for 100 trader orders", async () => {
     process.env.PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE = "1";
-    process.env.PRIVATE_AGENT_MAX_GLOBAL_VENUE_REQUESTS_PER_MINUTE = "100";
+    process.env.PRIVATE_AGENT_MAX_GLOBAL_VENUE_WEIGHT_PER_MINUTE = "6000";
     const counts = new Map();
+    const amounts = new Map();
     const rateKeys = [];
     const state = {
-      async incrementPolicyAmount() {
-        return { ok: true };
+      async incrementPolicyAmount(key, amount, maxAmount) {
+        const next = (amounts.get(key) || 0) + amount;
+        if (next > maxAmount) return { ok: false, amount: next - amount };
+        amounts.set(key, next);
+        return { ok: true, amount: next };
       },
       async incrementPolicyCount(key, maxCount) {
         const next = (counts.get(key) || 0) + 1;
@@ -150,8 +154,8 @@ describe("full-ticket execution policy", () => {
     const tenantRateKeys = rateKeys.filter((key) => key.startsWith("rate:v2:hyperliquid:"));
     assert.equal(new Set(tenantRateKeys).size, 100);
     assert.equal(
-      rateKeys.filter((key) => key.startsWith("rate_global:v2:hyperliquid:")).length,
-      100,
+      [...amounts.entries()].find(([key]) => key.startsWith("venue_weight:v2:hyperliquid:"))?.[1],
+      6000,
     );
 
     await assert.rejects(
@@ -165,6 +169,33 @@ describe("full-ticket execution policy", () => {
         state,
       }),
       (error) => error.status === 429 && /rate limit/.test(error.message),
+    );
+  });
+
+  it("rejects an order before exceeding the weighted Hyperliquid IP budget", async () => {
+    process.env.PRIVATE_AGENT_MAX_GLOBAL_VENUE_WEIGHT_PER_MINUTE = "100";
+    let used = 0;
+    const state = {
+      async incrementPolicyAmount(_key, amount, maxAmount) {
+        if (used + amount > maxAmount) return { ok: false, amount: used };
+        used += amount;
+        return { ok: true, amount: used };
+      },
+    };
+    await enforceInstructionPolicy({
+      body: { policy_commitment: "weighted_one" },
+      instruction: hyperliquidFullTicketOrder({ quote_size: "10" }),
+      session: null,
+      state,
+    });
+    await assert.rejects(
+      () => enforceInstructionPolicy({
+        body: { policy_commitment: "weighted_two" },
+        instruction: hyperliquidFullTicketOrder({ quote_size: "10" }),
+        session: null,
+        state,
+      }),
+      (error) => error.status === 429 && /weighted capacity/.test(error.message),
     );
   });
 
