@@ -5,16 +5,17 @@ Status: **NOT PROVEN END TO END**
 
 ## Production observations
 
-- `ghola.xyz/trade` loaded in an existing authenticated Chrome session.
+- `ghola.xyz/trade` loaded in a temporary tab in the user's existing Chrome profile. After asynchronous session verification, it showed `credentials required`, proving the current browser identity is admitted to the trade page but has no connected Hyperliquid credential.
 - `/signup` returned HTTP 200, but no account was created and the isolated signed-out browser was unavailable.
 - Hyperliquid/mainnet was selected; the account showed `credentials required` and `Connect Hyperliquid mainnet`.
 - No credential, checkout, signup, or order control was submitted.
 - Public Hyperliquid market data was live and non-stale.
 - The chart rendered live Coinbase BTC-USD data, not venue-matched Hyperliquid data.
 - `/founding` returned 404; Settings exposed Free, Pro, Private Agents, Unlimited, and Enterprise plans, but no Founding Trader checkout.
+- The production `Connect Hyperliquid` dialog incorrectly linked to `/account` with both `setup=coinbase_advanced` and `venue=coinbase_advanced`; this prevents the visible Hyperliquid onboarding action from reaching its verifier.
 - `/api/billing/founding-cohort` reported capacity 10, claimed 0, remaining 10, and checkout open.
 - Ten concurrent GETs all returned HTTP 200 and satisfied `claimed + remaining = 10`; no checkout or reservation was created.
-- `/api/private-agent/status` reported `remote_execution_ready=false`; no attested provider was selected. The configured Phala CVM was stopped and lacked recipient/report-data binding.
+- A fresh `/api/private-agent/status` read reported `remote_execution_ready=false`, no selected provider, and `no_attested_confidential_compute_provider`. The configured Phala CVM was previously observed stopped and lacking recipient/report-data binding.
 
 ## Deployment provenance
 
@@ -41,6 +42,7 @@ Status: **NOT PROVEN END TO END**
 - The database-backed signed-webhook test proved idempotent, ordered paid-entitlement activation and restoration.
 - A disposable PostgreSQL 16 database proved the actual backend lifecycle for a new email user: signup issued a verified free-tier JWT; the same subject returned 10 available seats; a correctly signed paid-checkout webhook activated `founding_trader` and changed capacity to 1 claimed/9 remaining; re-signin preserved the user ID and returned the paid tier. Cleanup left zero users and zero seats.
 - The web admission boundary forwards that same bearer identity to billing, admits `founding_trader`, and denies `free` with `subscription_required`.
+- The candidate canonicalizes perpetual setup to `setup=hyperliquid` and `venue=hyperliquid`; its regression test starts with the production-bug state (`venue=coinbase_advanced`) and proves neither Coinbase value survives in the generated Hyperliquid setup URL.
 - Credential reload/isolation tests passed against a private-Blob adapter.
 - A disposable PostgreSQL 16.11 database proved sealed mainnet-vault persistence across two separate web test processes: the first wrote one account and one encrypted vault, and the second detected the verified connection from durable state. Both JSONB records were database objects; the public status exposed commitments/readiness but no ciphertext or wallet-key material.
 - The persistence audit found and fixed two candidate gaps: ordinary PostgreSQL URLs now use a TCP driver instead of Neon HTTP, and JSONB writes are forced through text to prevent driver-dependent double encoding.
