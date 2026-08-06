@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { PrivateExecutionOrderDraft } from "@/lib/private-execution-instruction-seal";
 import {
   buildVenueSetupHref,
@@ -6,8 +8,35 @@ import {
   hyperliquidExecutionNotice,
   hyperliquidReviewExpired,
   minimumExecutablePerpQuote,
+  resolveAvailableTradeProduct,
   validatePerpTicket,
+  WorkspaceProductNav,
 } from "./PublicCoinbaseLiveTrade";
+
+describe("available trade products", () => {
+  it("defaults new and legacy Spot visits to Hyperliquid Perps", () => {
+    expect(resolveAvailableTradeProduct(null)).toBe("perps");
+    expect(resolveAvailableTradeProduct("spot", "automate")).toBe("perps");
+    expect(resolveAvailableTradeProduct(null, "spot")).toBe("perps");
+  });
+
+  it("preserves enabled product selections", () => {
+    expect(resolveAvailableTradeProduct("perps")).toBe("perps");
+    expect(resolveAvailableTradeProduct("swap")).toBe("swap");
+    expect(resolveAvailableTradeProduct(null, "automate")).toBe("automate");
+  });
+
+  it("renders Coinbase Spot as a disabled Coming soon control", () => {
+    const markup = renderToStaticMarkup(createElement(WorkspaceProductNav, {
+      value: "perps",
+      onChange: () => undefined,
+    }));
+
+    expect(markup).toContain("disabled");
+    expect(markup).toContain("Coinbase Spot is coming soon");
+    expect(markup).toContain("Coming soon");
+  });
+});
 
 describe("Hyperliquid execution evidence", () => {
   it("distinguishes venue-proven fills from accepted and unfilled orders", () => {

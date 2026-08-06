@@ -169,8 +169,8 @@ const DEFAULT_QUOTE_SIZE = "25";
 const QUOTE_SIZE_OPTIONS = ["5", "25", "100"] as const;
 const PRODUCTS: CoinbaseProductId[] = ["SOL-USD", "BTC-USD", "ETH-USD"];
 const INTERVALS: CoinbaseCandleInterval[] = ["1m", "5m", "15m", "1h"];
-const TRADE_PRODUCTS: Array<{ id: TradeProduct; label: string }> = [
-  { id: "spot", label: "Spot" },
+const TRADE_PRODUCTS: Array<{ id: TradeProduct; label: string; disabled?: boolean }> = [
+  { id: "spot", label: "Spot", disabled: true },
   { id: "perps", label: "Perps" },
   { id: "swap", label: "Swap" },
   { id: "automate", label: "Automate" },
@@ -193,9 +193,7 @@ export function PublicCoinbaseLiveTrade({
   const searchParams = useSearchParams();
   const initialProduct = searchParams.get("product");
   const [tradeProduct, setTradeProduct] = useState<TradeProduct>(
-    initialProduct === "perps" || initialProduct === "swap" || initialProduct === "automate"
-      ? initialProduct
-      : "spot",
+    resolveAvailableTradeProduct(initialProduct),
   );
   const [venue, setVenue] = useState<TradeVenueId>(
     tradeProduct === "perps" ? "hyperliquid" : tradeProduct === "swap" ? "jupiter" : "coinbase_advanced",
@@ -225,17 +223,20 @@ export function PublicCoinbaseLiveTrade({
 
   useEffect(() => {
     const requestedProduct = searchParams.get("product");
-    const nextProduct: TradeProduct =
-      requestedProduct === "perps" || requestedProduct === "swap" || requestedProduct === "automate"
-        ? requestedProduct
-        : requestedProduct === "spot"
-          ? "spot"
-      : readStoredTradeProduct() || "spot";
+    const nextProduct = resolveAvailableTradeProduct(requestedProduct, readStoredTradeProduct());
     if (TRADE_PRODUCTS.some((item) => item.id === nextProduct)) {
       setTradeProduct(nextProduct);
     }
     const requestedVenue = searchParams.get("venue");
-    if (
+    if (requestedProduct === "spot") {
+      setVenue("hyperliquid");
+      const retainedPerpMarket = readStoredPerpMarket() || "SOL";
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("product", "perps");
+      params.set("venue", "hyperliquid");
+      params.set("market", `${retainedPerpMarket}-PERP`);
+      replaceTradeUrlAfterPaint(`/trade?${params.toString()}`);
+    } else if (
       requestedVenue === "coinbase_advanced" ||
       requestedVenue === "phoenix" ||
       requestedVenue === "hyperliquid" ||
@@ -303,6 +304,7 @@ export function PublicCoinbaseLiveTrade({
     : dayChange >= 0 ? "text-emerald-200" : "text-rose-200";
 
   function changeTradeProduct(next: TradeProduct) {
+    if (next === "spot") return;
     const nextVenue: TradeVenueId =
       next === "perps" ? "hyperliquid" :
       next === "swap" ? "jupiter" :
@@ -790,7 +792,7 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-function WorkspaceProductNav({
+export function WorkspaceProductNav({
   value,
   onChange,
 }: {
@@ -807,14 +809,24 @@ function WorkspaceProductNav({
           key={product.id}
           type="button"
           aria-current={value === product.id ? "page" : undefined}
+          aria-disabled={product.disabled || undefined}
+          disabled={product.disabled}
+          title={product.disabled ? "Coinbase Spot is coming soon" : undefined}
           onClick={() => onChange(product.id)}
           className={
-            value === product.id
+            product.disabled
+              ? "min-w-[112px] flex-1 cursor-not-allowed rounded-md border border-white/[0.035] bg-white/[0.018] px-4 py-2 text-[#505865] opacity-75"
+              : value === product.id
               ? "min-w-[88px] flex-1 rounded-md bg-[#142235] px-4 py-2.5 text-sm font-semibold text-[#8fcbff] shadow-[inset_0_0_0_1px_rgba(61,168,255,0.24)]"
               : "min-w-[88px] flex-1 rounded-md px-4 py-2.5 text-sm font-medium text-[#7f8998] transition hover:bg-white/[0.035] hover:text-[#dfe5ed]"
           }
         >
-          {product.label}
+          <span className="block text-sm font-medium">{product.label}</span>
+          {product.disabled && (
+            <span className="mt-0.5 block text-[10px] font-semibold uppercase tracking-[0.1em] text-[#666f7d]">
+              Coming soon
+            </span>
+          )}
         </button>
       ))}
     </nav>
@@ -2077,6 +2089,20 @@ function readStoredTradeProduct(): TradeProduct | null {
   } catch {
     return null;
   }
+}
+
+export function resolveAvailableTradeProduct(
+  requested: string | null | undefined,
+  stored: TradeProduct | null = null,
+): TradeProduct {
+  if (requested != null) {
+    return requested === "perps" || requested === "swap" || requested === "automate"
+      ? requested
+      : "perps";
+  }
+  return stored === "perps" || stored === "swap" || stored === "automate"
+    ? stored
+    : "perps";
 }
 
 function readStoredPerpMarket(): string | null {
