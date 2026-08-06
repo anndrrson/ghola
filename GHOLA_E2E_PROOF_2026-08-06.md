@@ -46,7 +46,7 @@ Status: **NOT PROVEN END TO END**
 - The persistence audit found and fixed two candidate gaps: ordinary PostgreSQL URLs now use a TCP driver instead of Neon HTTP, and JSONB writes are forced through text to prevent driver-dependent double encoding.
 - Lint: 0 errors, 20 pre-existing warnings.
 - Production build passed, including auth client-bundle and SRI checks.
-- Candidate head: `99586d6f` on `codex/production-e2e-proof-20260806`.
+- Candidate implementation head: `99586d6f` on `codex/production-e2e-proof-20260806`.
 - Candidate was not deployed.
 
 ## Safety incident
