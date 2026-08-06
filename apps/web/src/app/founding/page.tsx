@@ -51,7 +51,9 @@ export default function FoundingTraderPage() {
         <section className="mt-16 rounded-2xl border border-[#1e2a3a] bg-[#0f1117] p-6 sm:p-10">
           <div className="inline-flex items-center gap-2 rounded-full border border-[#3da8ff]/30 bg-[#3da8ff]/10 px-3 py-1 text-xs text-[#8dcfff]">
             <ShieldCheck className="h-3.5 w-3.5" />
-            Public founding cohort · 100 seats
+            Public founding cohort · {cohort
+              ? `${cohort.capacity.toLocaleString()} seats`
+              : "verified capacity"}
           </div>
           <h1 className="mt-6 text-4xl font-medium tracking-tight sm:text-5xl">
             Founding Trader

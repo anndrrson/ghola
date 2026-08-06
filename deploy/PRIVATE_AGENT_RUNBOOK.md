@@ -22,7 +22,7 @@ STRIPE_TAX_ID_COLLECTION_ENABLED=true
 STRIPE_AUTOMATIC_TAX_ENABLED=false
 # Optional Dashboard-managed set of recurring payment methods.
 STRIPE_PAYMENT_METHOD_CONFIGURATION=pmc_...
-FOUNDING_TRADER_MAX_SEATS=100
+FOUNDING_TRADER_MAX_SEATS=10 # raise only with proven distinct-egress capacity
 ```
 
 `private_agent`, `founding_trader`, `unlimited`, and `enterprise` users can create sealed cloud
