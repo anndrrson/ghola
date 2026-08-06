@@ -31,6 +31,8 @@ export type GholaConnectorSubmitError =
   | "connector_not_ready"
   | "connector_submit_failed"
   | "connector_submit_blocked"
+  | "trading_subscription_required"
+  | "max_notional_exceeded"
   | "venue_access_required"
   | "needs_funds"
   | "venue_rejected";
@@ -45,6 +47,9 @@ export type GholaLinkabilityDecision =
 export type GholaConnectorWorkOrderStatus =
   | "prepared"
   | "submitted"
+  | "filled"
+  | "resting"
+  | "unfilled"
   | "reconciled"
   | "failed"
   | "cancelled"
@@ -171,7 +176,7 @@ export interface GholaConnectorResult {
   connector_result_commitment: string;
   work_order_commitment: string;
   platform_class: GholaPlatformClass;
-  status: "submitted" | "reconciled" | "failed" | "cancelled" | "blocked";
+  status: "submitted" | "filled" | "resting" | "unfilled" | "reconciled" | "failed" | "cancelled" | "blocked";
   provider_ref_commitment: string | null;
   result_commitment: string;
   final_proof: GholaConnectorFinalProof | null;
@@ -708,6 +713,7 @@ export async function submitConnectorWorkOrder(input: {
     status?: string;
   } | null;
   encrypted_execution_instruction_bundle?: unknown;
+  billing_execution_policy?: "all" | "risk_reducing_only";
   now?: Date;
   env?: Record<string, string | undefined>;
 }): Promise<
@@ -737,6 +743,7 @@ export async function submitConnectorWorkOrder(input: {
   }
   const cfg = connectorEnvConfig(input.manifest.platform_class, input.env ?? process.env);
   if (!cfg.url) return { ok: false, error: "connector_not_ready" };
+  const startedAt = Date.now();
   try {
     const submitPath = connectorSubmitPath(input.manifest.platform_class);
     const payload = redactedConnectorPayload(input);
@@ -779,7 +786,7 @@ export async function submitConnectorWorkOrder(input: {
       result: connectorResult({
         work_order: input.work_order,
         manifest: input.manifest,
-        status: "submitted",
+        status: connectorExecutionStatus(body.status),
         provider_ref_seed: stringValue(body.provider_ref_commitment) ||
           stringValue(body.result_commitment) ||
           input.work_order.work_order_commitment,
@@ -788,7 +795,12 @@ export async function submitConnectorWorkOrder(input: {
         now,
       }),
     };
-  } catch {
+  } catch (error) {
+    console.error("[private-account] connector submit failed", {
+      platform_class: input.manifest.platform_class,
+      duration_ms: Date.now() - startedAt,
+      failure: error instanceof Error ? error.name : "unknown_error",
+    });
     return { ok: false, error: "connector_submit_failed" };
   }
 }
@@ -820,6 +832,7 @@ export async function verifyConnectorNoSubmit(input: {
   env?: Record<string, string | undefined>;
 }): Promise<GholaConnectorNoFundsVerification> {
   const now = input.now ?? new Date();
+  const startedAt = Date.now();
   const base = {
     version: 1 as const,
     platform_class: input.platform_class,
@@ -887,6 +900,11 @@ export async function verifyConnectorNoSubmit(input: {
       body: payload,
       expected: workerCapabilityExpectedFromBody(payload),
     });
+    console.info("[private-account] connector no-submit forwarding", {
+      platform_class: input.platform_class,
+      venue_id: payload.venue_id,
+      path: verifyPath,
+    });
     const res = await fetch(new URL(verifyPath, cfg.url), {
       method: "POST",
       cache: "no-store",
@@ -897,9 +915,25 @@ export async function verifyConnectorNoSubmit(input: {
         ...(authorization ? { authorization } : {}),
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(40_000),
     });
     const body = asRecord(await res.json().catch(() => null));
+    console.info("[private-account] connector no-submit completed", {
+      platform_class: input.platform_class,
+      venue_id: payload.venue_id,
+      duration_ms: Date.now() - startedAt,
+      http_status: res.status,
+      result_status: stringValue(body.status) || null,
+      error_code: stringValue(body.error_code) || stringValue(body.code) || null,
+    });
     if (!res.ok || body.status !== "verified_no_funds") {
+      console.warn("[private-account] connector no-submit verification failed", {
+        platform_class: input.platform_class,
+        venue_id: payload.venue_id,
+        http_status: res.status,
+        error_code: stringValue(body.error_code) || stringValue(body.code) || null,
+        error: stringValue(body.error) || null,
+      });
       return failedNoFundsVerification(base, noFundsReason(body, res.status), "failed", input.site_origin);
     }
     return verifiedNoFundsVerification(base, {
@@ -909,7 +943,12 @@ export async function verifyConnectorNoSubmit(input: {
       checks: noFundsChecks(body.checks),
       site_origin: input.site_origin,
     });
-  } catch {
+  } catch (error) {
+    console.error("[private-account] connector no-submit failed", {
+      platform_class: input.platform_class,
+      duration_ms: Date.now() - startedAt,
+      failure: error instanceof Error ? error.name : "unknown_error",
+    });
     return failedNoFundsVerification(base, "worker_unavailable", "worker_unavailable", input.site_origin);
   }
 }
@@ -1160,6 +1199,12 @@ function connectorResult(input: {
   };
 }
 
+function connectorExecutionStatus(value: unknown): GholaConnectorResult["status"] {
+  return value === "filled" || value === "resting" || value === "unfilled" || value === "cancelled"
+    ? value
+    : "submitted";
+}
+
 function connectorAccessContext(
   manifest: GholaConnectorManifest,
   executionMode?: GholaVenueExecutionMode,
@@ -1263,8 +1308,14 @@ function connectorAccessContext(
 function connectorSubmitError(body: Record<string, unknown>, status: number): GholaConnectorSubmitError {
   const code = stringValue(body.error_code) || stringValue(body.code) || stringValue(body.error);
   const text = `${code} ${stringValue(body.error)}`;
+  if (code === "trading_subscription_required") {
+    return "trading_subscription_required";
+  }
   if (code === "needs_funds" || /needs funds|insufficient|not enough|balance/i.test(text)) {
     return "needs_funds";
+  }
+  if (/notional cap|max notional|exceeds live notional/i.test(text)) {
+    return "max_notional_exceeded";
   }
   if (code === "venue_access_required" || code === "hyperliquid_execution_vault_not_ready") {
     return "venue_access_required";
@@ -1328,6 +1379,7 @@ function redactedConnectorPayload(input: {
     status?: string;
   } | null;
   encrypted_execution_instruction_bundle?: unknown;
+  billing_execution_policy?: "all" | "risk_reducing_only";
 }) {
   return {
     version: 1,
@@ -1340,6 +1392,7 @@ function redactedConnectorPayload(input: {
     selected_rail: input.preview.selected_rail,
     claim_status: input.preview.claim_status,
     operation_class: operationForAction(input.manifest.platform_class, input.compiled_intent.action_class),
+    billing_execution_policy: input.billing_execution_policy ?? "all",
     ...(input.encrypted_execution_instruction_bundle
       ? { encrypted_execution_instruction_bundle: input.encrypted_execution_instruction_bundle }
       : {}),
@@ -1571,8 +1624,8 @@ function venueReadinessGate(input: {
   const hyperliquidByoTinyFill =
     venueId === "hyperliquid" &&
     input.execution_mode === "byo_api_key" &&
-    (input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
-      input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket");
+    (stringValue(input.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "tiny_fill" ||
+      stringValue(input.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "full_ticket");
   const solanaPerpsStealthTinyFill =
     venueId === "phoenix" &&
     input.execution_mode === "user_stealth" &&
@@ -1583,8 +1636,8 @@ function venueReadinessGate(input: {
   const hyperliquidPooledTinyFill =
     venueId === "hyperliquid" &&
     input.execution_mode === "ghola_pooled" &&
-    (input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill" ||
-      input.env.GHOLA_HYPERLIQUID_LIVE_MODE === "full_ticket");
+    (stringValue(input.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "tiny_fill" ||
+      stringValue(input.env.GHOLA_HYPERLIQUID_LIVE_MODE) === "full_ticket");
   const solanaPerpsPooledTinyFill =
     venueId === "phoenix" &&
     input.execution_mode === "ghola_pooled" &&
@@ -1961,11 +2014,39 @@ function provenNoSubmitClaims(platformClass: GholaPlatformClass): string[] {
   ];
 }
 
-function noFundsReason(body: Record<string, unknown>, status: number): string {
+export function noFundsReason(body: Record<string, unknown>, status: number): string {
   const code = stringValue(body.error_code) || stringValue(body.code) || stringValue(body.error);
-  const text = `${code} ${stringValue(body.error)}`.toLowerCase();
+  const error = stringValue(body.error);
+  const details = Array.isArray(body.details)
+    ? body.details.filter((detail): detail is string => typeof detail === "string").join(" ")
+    : "";
+  const text = `${code} ${error} ${details}`.toLowerCase();
+  if (code === "live_gate_disabled" || /live submit is disabled|max notional is not configured/.test(text)) {
+    return "live_gate_disabled";
+  }
+  if (code === "live_mode_mismatch") return "live_mode_mismatch";
   if (/insufficient|needs funds|not enough|collateral|account value|margin/.test(text)) return "needs_funds";
-  if (code.includes("access") || code === "venue_access_required") return "invalid_authority_or_access";
+  if (code.includes("access") || code === "venue_access_required") {
+    if (/encrypted_execution_vault\.recipient must match worker recipient/.test(text)) {
+      return "sealed_vault_recipient_mismatch";
+    }
+    if (/encrypted_execution_instruction_bundle\.recipient must match worker recipient/.test(text)) {
+      return "sealed_instruction_recipient_mismatch";
+    }
+    if (/\.alg is unsupported/.test(text)) return "sealed_bundle_algorithm_unsupported";
+    if (/vault_commitment is required/.test(text)) return "sealed_vault_commitment_missing";
+    if (/request must not contain plaintext hyperliquid credentials/.test(text)) {
+      return "sealed_request_plaintext_guard_failed";
+    }
+    if (/credentials are invalid/.test(text)) return "api_wallet_private_key_invalid";
+    if (/credentials are missing|vault kind is invalid|execution vault is invalid/.test(text)) {
+      return "sealed_credential_payload_invalid";
+    }
+    if (/invalid hyperliquid private verification request/.test(text)) {
+      return "sealed_credential_request_invalid";
+    }
+    return "invalid_authority_or_access";
+  }
   if (code === "venue_rejected") return "venue_rejected";
   if (code.includes("rpc")) return "rpc_unreachable";
   if (code.includes("live submit is disabled")) return "live_gate_disabled";

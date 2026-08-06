@@ -43,6 +43,7 @@ describe("private agent runtime", () => {
     expect(hasPrivateAgentEntitlement("free")).toBe(false);
     expect(hasPrivateAgentEntitlement("pro")).toBe(false);
     expect(hasPrivateAgentEntitlement("private_agent")).toBe(true);
+    expect(hasPrivateAgentEntitlement("founding_trader")).toBe(true);
     expect(hasPrivateAgentEntitlement("unlimited")).toBe(true);
     expect(hasPrivateAgentEntitlement("enterprise")).toBe(true);
   });

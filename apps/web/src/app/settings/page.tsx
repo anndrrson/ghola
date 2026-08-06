@@ -30,6 +30,8 @@ import type {
   ThumperTelegramStatus,
 } from "@/lib/thumper-types";
 import type { PrivateAgentRuntimeStatus } from "@/lib/private-agent-runtime";
+import { subscriptionNeedsAttention } from "@/lib/billing-status";
+import { foundingCheckoutIsOpen } from "@/lib/founding-checkout";
 import { GholaLogo } from "@/components/GholaLogo";
 
 type Tab = "profile" | "privacy" | "model" | "usage" | "accounts" | "telegram" | "plan";
@@ -41,7 +43,8 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (!loading && !authenticated) {
-      router.push("/signup");
+      const returnTo = `${window.location.pathname}${window.location.search}`;
+      router.push(`/signup?redirect=${encodeURIComponent(returnTo)}`);
     }
   }, [authenticated, loading, router]);
 
@@ -740,14 +743,27 @@ function TelegramTab() {
 
 function PlanTab() {
   const [billing, setBilling] = useState<ThumperBillingStatusResponse | null>(null);
+  const [publicFoundingCohort, setPublicFoundingCohort] = useState<
+    ThumperBillingStatusResponse["founding_trader_cohort"] | null
+  >(null);
   const [agentRuntime, setAgentRuntime] = useState<PrivateAgentRuntimeStatus | null>(null);
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const foundingCheckoutEnabled =
+    process.env.NEXT_PUBLIC_FOUNDING_TRADER_CHECKOUT_ENABLED === "true";
 
   useEffect(() => {
     getThumperBillingStatus()
       .then(setBilling)
       .catch(() => {});
+    fetch("/api/billing/founding-cohort", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((status) =>
+        setPublicFoundingCohort(
+          status as ThumperBillingStatusResponse["founding_trader_cohort"] | null,
+        ),
+      )
+      .catch(() => setPublicFoundingCohort(null));
     fetch("/api/private-agent/status", { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : null))
       .then((status) => setAgentRuntime(status as PrivateAgentRuntimeStatus | null))
@@ -764,10 +780,12 @@ function PlanTab() {
 
   const handleUpgrade = async (tier: string) => {
     setUpgrading(tier);
+    setNotice(null);
     try {
       const { checkout_url } = await createThumperCheckout(tier);
       window.location.href = checkout_url;
-    } catch {
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Checkout is unavailable right now.");
       setUpgrading(null);
     }
   };
@@ -803,6 +821,24 @@ function PlanTab() {
       ],
     },
     {
+      id: "founding_trader",
+      name: "Founding Trader",
+      price: "$29",
+      period: "/month",
+      features: [
+        "Everything in Private Agents",
+        "Founding cohort capped at 10 admitted traders",
+        "100 private compute hours and up to 3 logical agents",
+        "Unlimited calls and emails",
+        "Manual mainnet trading through sealed workers",
+        "Read-only venue and collateral preflight",
+        "Encrypted trading-only credential vault",
+        "Execution receipts and position reconciliation",
+        "Perp reduce-only exits and cancellations stay available",
+        "Founding onboarding and direct support",
+      ],
+    },
+    {
       id: "unlimited",
       name: "Unlimited",
       price: "$29.99",
@@ -827,8 +863,14 @@ function PlanTab() {
 
   const privateAgentPaid =
     billing?.tier === "private_agent" ||
+    billing?.tier === "founding_trader" ||
     billing?.tier === "unlimited" ||
     billing?.tier === "enterprise";
+  const foundingCohort = billing?.founding_trader_cohort ?? publicFoundingCohort;
+  const foundingCheckoutOpen = foundingCheckoutIsOpen(
+    foundingCheckoutEnabled,
+    foundingCohort,
+  );
   const remoteReady = agentRuntime?.remote_execution_ready === true;
   const privateCompute = billing?.private_agent_compute ?? null;
   const includedSeconds =
@@ -842,6 +884,7 @@ function PlanTab() {
   const resetDate = privateCompute?.period_end
     ? new Date(`${privateCompute.period_end}T00:00:00Z`)
     : null;
+  const billingNeedsAttention = subscriptionNeedsAttention(billing?.subscription_status);
 
   return (
     <div className="space-y-4">
@@ -863,6 +906,20 @@ function PlanTab() {
       {notice && (
         <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] px-4 py-3 text-sm text-[#cfeaff]">
           {notice}
+        </div>
+      )}
+
+      {billingNeedsAttention && (
+        <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+          <p>Your subscription needs attention. New paid actions remain disabled until Stripe confirms payment.</p>
+          {billing?.portal_url && (
+            <a
+              href={billing.portal_url}
+              className="mt-2 inline-flex font-medium text-amber-50 underline underline-offset-4"
+            >
+              Update billing in Stripe
+            </a>
+          )}
         </div>
       )}
 
@@ -927,7 +984,11 @@ function PlanTab() {
       {plans.map((plan) => {
         const isCurrent = billing?.tier === plan.id;
         const cta =
-          plan.id === "private_agent"
+          plan.id === "founding_trader"
+            ? foundingCohort && foundingCohort.remaining_seats <= 0
+              ? "Founding cohort full"
+              : "Join for $29/month"
+            : plan.id === "private_agent"
             ? "Start with 30 hours"
             : plan.id === "unlimited"
               ? "Upgrade to 100 hours"
@@ -965,7 +1026,14 @@ function PlanTab() {
                 </li>
               ))}
             </ul>
-            {!isCurrent && plan.id !== "free" && plan.id !== "enterprise" && (
+            {plan.id === "founding_trader" && foundingCohort && (
+              <p className="mb-3 text-xs text-[#8b95a8]">
+                {foundingCohort.remaining_seats.toLocaleString()} of{" "}
+                {foundingCohort.capacity.toLocaleString()} founding seats remaining.
+              </p>
+            )}
+            {!isCurrent && plan.id !== "free" && plan.id !== "enterprise" &&
+              (plan.id !== "founding_trader" || foundingCheckoutOpen) && (
               <button
                 onClick={() => handleUpgrade(plan.id)}
                 disabled={upgrading === plan.id}
@@ -973,6 +1041,27 @@ function PlanTab() {
               >
                 {upgrading === plan.id ? "Redirecting..." : cta}
               </button>
+            )}
+            {!isCurrent && plan.id === "founding_trader" && !foundingCheckoutOpen &&
+              foundingCohort?.remaining_seats === 0 && (
+              <p className="rounded-lg border border-[#1e2a3a] py-2 text-center text-xs text-[#8b95a8]">
+                The founding cohort is full
+              </p>
+            )}
+            {!isCurrent && plan.id === "founding_trader" && !foundingCheckoutEnabled &&
+              foundingCohort?.remaining_seats !== 0 && (
+              <a
+                href="mailto:hello@ghola.xyz?subject=Founding%20Trader%20access"
+                className="block w-full rounded-lg bg-[#3da8ff] py-2 text-center text-xs font-medium text-[#08090d] transition-colors hover:bg-[#5bb8ff]"
+              >
+                Request founding access
+              </a>
+            )}
+            {!isCurrent && plan.id === "founding_trader" && foundingCheckoutEnabled &&
+              foundingCohort?.remaining_seats !== 0 && !foundingCohort?.checkout_open && (
+              <p className="rounded-lg border border-[#1e2a3a] py-2 text-center text-xs text-[#8b95a8]">
+                Checkout is being configured
+              </p>
             )}
             {!isCurrent && plan.id === "enterprise" && (
               <a

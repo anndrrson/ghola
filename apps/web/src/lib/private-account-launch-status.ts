@@ -65,12 +65,13 @@ export async function privateAccountLaunchStatus(
     },
     check(
       "hyperliquid_pilot_enabled",
-      env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED === "true",
+      trimmed(env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED) === "true",
       "hyperliquid_pilot_disabled",
     ),
     check(
       "hyperliquid_live_tiny_fill_enabled",
-      env.GHOLA_HYPERLIQUID_LIVE_MODE === "tiny_fill",
+      trimmed(env.GHOLA_HYPERLIQUID_LIVE_MODE) === "tiny_fill" ||
+        trimmed(env.GHOLA_HYPERLIQUID_LIVE_MODE) === "full_ticket",
       "hyperliquid_live_mode_not_tiny_fill",
     ),
     check(

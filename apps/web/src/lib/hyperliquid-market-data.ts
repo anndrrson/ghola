@@ -26,6 +26,15 @@ export interface HyperliquidRecentTrade {
   time: number;
 }
 
+export interface HyperliquidMarketChannelUpdatedAt {
+  candle: number | null;
+  trades: number | null;
+  bbo: number | null;
+  order_book: number | null;
+  market_context: number | null;
+  mid: number | null;
+}
+
 export interface HyperliquidMarketSnapshot {
   version: 1;
   platform: "hyperliquid";
@@ -35,6 +44,7 @@ export interface HyperliquidMarketSnapshot {
   fetched_at: string;
   source_timestamp: number | null;
   stale: boolean;
+  channel_updated_at?: HyperliquidMarketChannelUpdatedAt;
   mid: string | null;
   best_bid: string | null;
   best_ask: string | null;
@@ -230,22 +240,28 @@ async function fetchFreshHyperliquidMarketSnapshot(input: {
   const endTime = input.now.getTime();
   const startTime = endTime - INTERVAL_MS[input.interval] * CANDLE_WINDOW;
   try {
-    const [mids, book, candles, metaAndAssetCtxs, recentTrades] = await Promise.all([
-      postInfo(input.fetchImpl, baseUrl, { type: "allMids" }),
-      postInfo(input.fetchImpl, baseUrl, { type: "l2Book", coin: input.coin }),
-      postInfo(input.fetchImpl, baseUrl, {
-        type: "candleSnapshot",
-        req: {
-          coin: input.coin,
-          interval: input.interval,
-          startTime,
-          endTime,
-        },
-      }),
+    // Candle history is the chart's critical bootstrap payload. Request it before
+    // the optional market panels so a burst of lower-priority Info requests
+    // cannot consume the venue budget and leave a freshly opened chart empty.
+    const candles = await postInfo(input.fetchImpl, baseUrl, {
+      type: "candleSnapshot",
+      req: {
+        coin: input.coin,
+        interval: input.interval,
+        startTime,
+        endTime,
+      },
+    }).catch(() => null);
+    const [mids, book, metaAndAssetCtxs, recentTrades] = await Promise.all([
+      postInfo(input.fetchImpl, baseUrl, { type: "allMids" }).catch(() => null),
+      postInfo(input.fetchImpl, baseUrl, { type: "l2Book", coin: input.coin }).catch(() => null),
       postInfo(input.fetchImpl, baseUrl, { type: "metaAndAssetCtxs" }).catch(() => null),
       postInfo(input.fetchImpl, baseUrl, { type: "recentTrades", coin: input.coin }).catch(() => null),
     ]);
-    return buildSnapshot({
+    if ([mids, book, candles, metaAndAssetCtxs, recentTrades].every((value) => value == null)) {
+      throw new Error("hyperliquid_market_snapshot_unavailable");
+    }
+    const snapshot = buildSnapshot({
       network: input.network,
       coin: input.coin,
       interval: input.interval,
@@ -255,8 +271,20 @@ async function fetchFreshHyperliquidMarketSnapshot(input: {
       candles,
       metaAndAssetCtxs,
       recentTrades,
-      stale: false,
+      stale: !Array.isArray(candles) || candles.length === 0,
     });
+    if (snapshot.candles.length === 0 && input.previous?.candles.length) {
+      return {
+        ...snapshot,
+        stale: true,
+        candles: input.previous.candles,
+        channel_updated_at: {
+          ...snapshot.channel_updated_at!,
+          candle: input.previous.channel_updated_at?.candle ?? null,
+        },
+      };
+    }
+    return snapshot;
   } catch {
     if (input.previous) {
       return {
@@ -309,6 +337,9 @@ function buildSnapshot(input: {
   const bestBid = bids[0]?.px ?? null;
   const bestAsk = asks[0]?.px ?? null;
   const assetContext = normalizeAssetContext(input.metaAndAssetCtxs, input.coin);
+  const fetchedAtMs = input.fetchedAt.getTime();
+  const normalizedCandles = normalizeCandles(input.candles);
+  const normalizedTrades = normalizeRecentTrades(input.recentTrades);
   return {
     version: 1,
     platform: "hyperliquid",
@@ -318,15 +349,23 @@ function buildSnapshot(input: {
     fetched_at: input.fetchedAt.toISOString(),
     source_timestamp: normalizeSourceTimestamp(input.book),
     stale: input.stale,
+    channel_updated_at: {
+      candle: normalizedCandles.length > 0 ? fetchedAtMs : null,
+      trades: normalizedTrades.length > 0 ? fetchedAtMs : null,
+      bbo: null,
+      order_book: bids.length > 0 || asks.length > 0 ? fetchedAtMs : null,
+      market_context: input.metaAndAssetCtxs != null ? fetchedAtMs : null,
+      mid: mid != null ? fetchedAtMs : null,
+    },
     mid,
     best_bid: bestBid,
     best_ask: bestAsk,
     spread_bps: spreadBps(bestBid, bestAsk),
     ...assetContext,
-    candles: normalizeCandles(input.candles),
+    candles: normalizedCandles,
     bids,
     asks,
-    recent_trades: normalizeRecentTrades(input.recentTrades),
+    recent_trades: normalizedTrades,
   };
 }
 
@@ -346,6 +385,14 @@ function emptySnapshot(input: {
     fetched_at: input.fetchedAt.toISOString(),
     source_timestamp: null,
     stale: input.stale,
+    channel_updated_at: {
+      candle: null,
+      trades: null,
+      bbo: null,
+      order_book: null,
+      market_context: null,
+      mid: null,
+    },
     mid: null,
     best_bid: null,
     best_ask: null,

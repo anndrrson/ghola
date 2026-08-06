@@ -43,6 +43,7 @@ export interface GholaMarketChartProps {
   height?: number;
   label?: string;
   onSelectPrice?: (price: string, side: "buy" | "sell") => void;
+  feedStatus?: string;
 }
 
 type Renderer =
@@ -109,6 +110,7 @@ export function GholaMarketChart({
   height,
   label,
   onSelectPrice,
+  feedStatus,
 }: GholaMarketChartProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
@@ -139,6 +141,7 @@ export function GholaMarketChart({
   const [, setEngineKind] = useState<"worker" | "main" | "loading">("loading");
   const [showAgentOverlays, setShowAgentOverlays] = useState(true);
   const [savedLevels, setSavedLevels] = useState<GholaChartOverlay[]>([]);
+  const [clockMs, setClockMs] = useState(0);
 
   const chartHeight = height ?? (size === "large" ? 520 : 280);
   const modes = chartModesForFrame(frame, mode, compareFrames.length > 0);
@@ -146,6 +149,12 @@ export function GholaMarketChart({
     () => (showAgentOverlays ? overlays.concat(savedLevels) : savedLevels),
     [overlays, savedLevels, showAgentOverlays],
   );
+
+  useEffect(() => {
+    setClockMs(Date.now());
+    const timer = window.setInterval(() => setClockMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const markVisibleDataDirty = useCallback(() => {
     needsVisibleDataRef.current = true;
@@ -495,7 +504,7 @@ export function GholaMarketChart({
   }
 
   const title = label || frame?.product || "Market chart";
-  const summary = chartSummary(frame, mode);
+  const summary = chartSummary(frame, mode, feedStatus, clockMs);
   const accessibleSummary = `${modeLabel(mode).toLowerCase()} chart for ${frame?.product || title}`;
   return (
     <div className="grid gap-2">
@@ -1129,10 +1138,38 @@ function canPickChartPrice(mode: GholaChartMode) {
   return mode === "candles" || mode === "line" || mode === "compare";
 }
 
-function chartSummary(frame: GholaMarketFrame | null, mode: GholaChartMode) {
+function chartSummary(
+  frame: GholaMarketFrame | null,
+  mode: GholaChartMode,
+  feedStatus: string | undefined,
+  now: number,
+) {
   if (!frame) return `${modeLabel(mode).toLowerCase()} · awaiting first tick`;
-  const stale = frame.stale ? "stale" : "live";
-  return `${modeLabel(mode).toLowerCase()} · ${stale}`;
+  const candleUpdatedAt = frame.channelUpdatedAt?.candle;
+  const age = typeof candleUpdatedAt === "number" && now > 0
+    ? conciseAge(Math.max(0, now - candleUpdatedAt))
+    : null;
+  const effectiveFeedStatus = feedStatus ?? (frame.stale ? "delayed" : "live");
+  const state = effectiveFeedStatus === "live" && !frame.stale
+    ? "live"
+    : effectiveFeedStatus === "fallback_polling"
+      ? "fallback polling"
+      : effectiveFeedStatus === "reconnecting"
+        ? "reconnecting"
+        : effectiveFeedStatus === "unavailable"
+          ? "unavailable"
+          : effectiveFeedStatus === "connecting"
+            ? "connecting"
+            : "delayed";
+  return `${modeLabel(mode).toLowerCase()} · ${state}${age ? ` · candle ${age}` : ""}`;
+}
+
+function conciseAge(ageMs: number) {
+  const seconds = Math.floor(ageMs / 1_000);
+  if (seconds < 1) return "now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s ago`;
 }
 
 function clamp(value: number, min: number, max: number) {

@@ -168,8 +168,9 @@ export interface ThumperTemplateResponse {
 }
 
 export interface ThumperBillingStatusResponse {
-  tier: "free" | "pro" | "private_agent" | "unlimited" | "enterprise";
+  tier: "free" | "pro" | "private_agent" | "founding_trader" | "unlimited" | "enterprise";
   stripe_customer_id: string | null;
+  subscription_status?: string | null;
   expires_at?: string | null;
   portal_url?: string | null;
   limits: {
@@ -191,6 +192,12 @@ export interface ThumperBillingStatusResponse {
     period_end: string;
     metering_unit: "agent_second";
     metering_mode?: "hybrid_allowance_v1";
+  };
+  founding_trader_cohort: {
+    capacity: number;
+    claimed_seats: number;
+    remaining_seats: number;
+    checkout_open: boolean;
   };
 }
 

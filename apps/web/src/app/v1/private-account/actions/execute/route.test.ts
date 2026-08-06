@@ -27,6 +27,10 @@ import { POST as writeAnonymityEvidence } from "../../anonymity-evidence/route";
 import { POST as createFundingInstruction } from "../../funding/instruction/route";
 import { POST as importFunding } from "../../funding/import/route";
 import { POST as runBatchCoordinator } from "../../funding/batch/run/route";
+import {
+  hasPrivateAccountTradingEntitlement,
+  mainnetTradingSubscriptionGateApplies,
+} from "../../_lib";
 
 function auth(userId: string) {
   return `Bearer ${[
@@ -38,6 +42,31 @@ function auth(userId: string) {
 
 const AUTH = auth("user_1");
 const INTERNAL_TOKEN = "test_internal_private_account_token";
+
+describe("manual trading entitlement", () => {
+  it("reserves opening trades for Founding Trader and higher plans", () => {
+    expect(hasPrivateAccountTradingEntitlement("free")).toBe(false);
+    expect(hasPrivateAccountTradingEntitlement("private_agent")).toBe(false);
+    expect(hasPrivateAccountTradingEntitlement("founding_trader")).toBe(true);
+    expect(hasPrivateAccountTradingEntitlement("unlimited")).toBe(true);
+    expect(hasPrivateAccountTradingEntitlement("enterprise")).toBe(true);
+  });
+
+  it("keeps Hyperliquid testnet free while gating mainnet", () => {
+    expect(mainnetTradingSubscriptionGateApplies("hyperliquid_style_market", {
+      GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED: "true",
+      GHOLA_HYPERLIQUID_LIVE_MODE: "testnet",
+    })).toBe(false);
+    expect(mainnetTradingSubscriptionGateApplies("hyperliquid_style_market", {
+      GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED: "true",
+      GHOLA_HYPERLIQUID_LIVE_MODE: "full_ticket",
+    })).toBe(true);
+    expect(mainnetTradingSubscriptionGateApplies("hyperliquid_style_market", {
+      NODE_ENV: "production",
+      GHOLA_HYPERLIQUID_LIVE_MODE: "full_ticket",
+    })).toBe(true);
+  });
+});
 
 function request(path: string, body: unknown, auth = AUTH) {
   return new Request(`https://ghola.test${path}`, {
@@ -198,6 +227,11 @@ describe("private account stateful execution route", () => {
     expect(body.ok).toBe(true);
     expect(body.receipt.preview_commitment).toBe(preview.preview.preview_commitment);
     expect(body.receipt.execution_commitment).toBe(body.execution_commitment);
+    expect(body.execution).toMatchObject({
+      connector_result_commitment: body.receipt.connector_result_commitment,
+      work_order_commitment: body.receipt.work_order_commitment,
+    });
+    expect(body.execution.status).toEqual(expect.any(String));
     expect(body.receipt.evidence_chain.funding_import_commitment).toMatch(/^funding_import_/);
     expect(body.receipt.evidence_chain.batch_evidence_commitment).toMatch(/^anon_evidence_/);
     expect(body.receipt.evidence_chain.preview_commitment).toBe(preview.preview.preview_commitment);
@@ -597,6 +631,7 @@ describe("private account stateful execution route", () => {
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
     expect(secondBody.execution_commitment).toBe(firstBody.execution_commitment);
+    expect(secondBody.execution).toEqual(firstBody.execution);
   });
 
   it("refuses execution when shielded settlement evidence is not finalized", async () => {

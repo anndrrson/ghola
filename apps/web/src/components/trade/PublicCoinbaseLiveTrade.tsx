@@ -49,20 +49,68 @@ import {
   createPrivateAccountIntent,
   createPrivateAccountRuntimeEnvelope,
   executePrivateAccountAction,
+  getHyperliquidAccountSnapshot,
+  getHyperliquidExecutionVaultStatus,
   openHyperliquidAccountStream,
   previewPrivateAccountAction,
   type HyperliquidAccountSnapshot,
+  type HyperliquidMarketSnapshot,
   type PrivateAccountSafeInput,
 } from "@/lib/private-account-client";
 import { useMarketData } from "@/lib/market-data-store";
+import { hyperliquidCandleAgeMs } from "@/lib/hyperliquid-live-market";
 import {
   hyperliquidCredentialsSealed,
+  hyperliquidAccountSnapshotAuthoritative,
+  hyperliquidAccountSnapshotUnavailable,
   hyperliquidPerpsReadiness,
   mergeHyperliquidAccountSnapshot,
   spotVenueReadiness,
 } from "@/lib/trade-readiness";
 
 type LiveStep = "idle" | "prepared" | "submitted";
+
+export const HYPERLIQUID_REVIEW_TTL_MS = 60_000;
+
+export function hyperliquidExecutionNotice(result: {
+  status?: string;
+  final_proof?: { final_fill_proven?: boolean; final_venue_execution_proven?: boolean } | null;
+}): string {
+  const status = result.status || "submitted";
+  if (status === "unfilled") {
+    return "Hyperliquid completed the IOC without a fill. No fill is being claimed.";
+  }
+  if (status === "resting") {
+    return "Hyperliquid accepted a resting order. It is working, not filled.";
+  }
+  if (result.final_proof?.final_fill_proven === true) {
+    return "Hyperliquid fill proven by the venue response. Account state refreshed.";
+  }
+  if (status === "filled") {
+    return "Hyperliquid reported a fill, but Ghola did not receive fill proof. Check account state before relying on it.";
+  }
+  if (result.final_proof?.final_venue_execution_proven === true) {
+    return `Hyperliquid returned ${status.replaceAll("_", " ")}; no fill was proven.`;
+  }
+  return "Hyperliquid order submitted; no fill is proven yet. Account reconciliation is active.";
+}
+
+export function buildVenueSetupHref({
+  product,
+  venue,
+  market,
+}: {
+  product: TradeProduct;
+  venue: string;
+  market: string;
+}) {
+  const setupVenue = product === "perps" ? "hyperliquid" : venue;
+  return `/account?flow=private-mode&setup=${encodeURIComponent(setupVenue)}&return_to=${encodeURIComponent(`/trade?product=${product}&venue=${setupVenue}&market=${market}`)}`;
+}
+
+export function hyperliquidReviewExpired(createdAt: number, now = Date.now()) {
+  return now - createdAt > HYPERLIQUID_REVIEW_TTL_MS;
+}
 
 type PublicLivePrepareResult = {
   status: string;
@@ -123,11 +171,11 @@ const DEFAULT_QUOTE_SIZE = "25";
 const QUOTE_SIZE_OPTIONS = ["5", "25", "100"] as const;
 const PRODUCTS: CoinbaseProductId[] = ["SOL-USD", "BTC-USD", "ETH-USD"];
 const INTERVALS: CoinbaseCandleInterval[] = ["1m", "5m", "15m", "1h"];
-const TRADE_PRODUCTS: Array<{ id: TradeProduct; label: string }> = [
-  { id: "spot", label: "Spot" },
+const TRADE_PRODUCTS: Array<{ id: TradeProduct; label: string; disabled?: boolean }> = [
+  { id: "spot", label: "Spot", disabled: true },
   { id: "perps", label: "Perps" },
-  { id: "swap", label: "Swap" },
-  { id: "automate", label: "Automate" },
+  { id: "swap", label: "Swap", disabled: true },
+  { id: "automate", label: "Automate", disabled: true },
 ];
 const SURFACE_RAISED = "border border-[#292c33] bg-[linear-gradient(180deg,#121317_0%,#0c0d10_58%,#090a0c_100%)] shadow-[0_24px_70px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.045),inset_0_-1px_0_rgba(0,0,0,0.42)]";
 const SURFACE_SUNKEN = "border border-[#24272e] bg-[linear-gradient(180deg,#090a0d_0%,#07080a_100%)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03),inset_0_12px_28px_rgba(0,0,0,0.24)]";
@@ -147,9 +195,7 @@ export function PublicCoinbaseLiveTrade({
   const searchParams = useSearchParams();
   const initialProduct = searchParams.get("product");
   const [tradeProduct, setTradeProduct] = useState<TradeProduct>(
-    initialProduct === "perps" || initialProduct === "swap" || initialProduct === "automate"
-      ? initialProduct
-      : "spot",
+    resolveAvailableTradeProduct(initialProduct),
   );
   const [venue, setVenue] = useState<TradeVenueId>(
     tradeProduct === "perps" ? "hyperliquid" : tradeProduct === "swap" ? "jupiter" : "coinbase_advanced",
@@ -179,24 +225,22 @@ export function PublicCoinbaseLiveTrade({
 
   useEffect(() => {
     const requestedProduct = searchParams.get("product");
-    const nextProduct: TradeProduct =
-      requestedProduct === "perps" || requestedProduct === "swap" || requestedProduct === "automate"
-        ? requestedProduct
-        : requestedProduct === "spot"
-          ? "spot"
-      : readStoredTradeProduct() || "spot";
+    const nextProduct = resolveAvailableTradeProduct(requestedProduct, readStoredTradeProduct());
     if (TRADE_PRODUCTS.some((item) => item.id === nextProduct)) {
       setTradeProduct(nextProduct);
     }
     const requestedVenue = searchParams.get("venue");
-    if (
-      requestedVenue === "coinbase_advanced" ||
-      requestedVenue === "phoenix" ||
-      requestedVenue === "hyperliquid" ||
-      requestedVenue === "jupiter" ||
-      requestedVenue === "backpack"
-    ) {
-      setVenue(requestedVenue);
+    const shouldCanonicalizePerpsUrl =
+      (requestedProduct != null && requestedProduct !== "perps") ||
+      (requestedVenue != null && requestedVenue !== "hyperliquid");
+    setVenue("hyperliquid");
+    if (shouldCanonicalizePerpsUrl) {
+      const retainedPerpMarket = readStoredPerpMarket() || "SOL";
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("product", "perps");
+      params.set("venue", "hyperliquid");
+      params.set("market", `${retainedPerpMarket}-PERP`);
+      replaceTradeUrlAfterPaint(`/trade?${params.toString()}`);
     }
     // Alternate workspaces own their market state. Letting SOL-USDC or BTC-PERP
     // flow into the spot state makes a tab change silently replace the user's
@@ -257,11 +301,8 @@ export function PublicCoinbaseLiveTrade({
     : dayChange >= 0 ? "text-emerald-200" : "text-rose-200";
 
   function changeTradeProduct(next: TradeProduct) {
-    const nextVenue: TradeVenueId =
-      next === "perps" ? "hyperliquid" :
-      next === "swap" ? "jupiter" :
-      next === "automate" ? "coinbase_advanced" :
-      "coinbase_advanced";
+    if (next !== "perps") return;
+    const nextVenue: TradeVenueId = "hyperliquid";
     // Keep the current fully-rendered workspace visible while React prepares
     // the next one. URL synchronization is deliberately post-paint because
     // Next patches history and can otherwise turn a local tab click into a
@@ -275,7 +316,7 @@ export function PublicCoinbaseLiveTrade({
     const params = new URLSearchParams(searchParams.toString());
     params.set("product", next);
     params.set("venue", nextVenue);
-    params.set("market", next === "perps" ? `${retainedPerpMarket}-PERP` : next === "swap" ? "SOL-USDC" : product);
+    params.set("market", `${retainedPerpMarket}-PERP`);
     replaceTradeUrlAfterPaint(`/trade?${params.toString()}`);
   }
 
@@ -744,7 +785,7 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-function WorkspaceProductNav({
+export function WorkspaceProductNav({
   value,
   onChange,
 }: {
@@ -761,14 +802,24 @@ function WorkspaceProductNav({
           key={product.id}
           type="button"
           aria-current={value === product.id ? "page" : undefined}
+          aria-disabled={product.disabled || undefined}
+          disabled={product.disabled}
+          title={product.disabled ? `${product.label} is coming soon` : undefined}
           onClick={() => onChange(product.id)}
           className={
-            value === product.id
+            product.disabled
+              ? "min-w-[112px] flex-1 cursor-not-allowed rounded-md border border-white/[0.035] bg-white/[0.018] px-4 py-2 text-[#505865] opacity-75"
+              : value === product.id
               ? "min-w-[88px] flex-1 rounded-md bg-[#142235] px-4 py-2.5 text-sm font-semibold text-[#8fcbff] shadow-[inset_0_0_0_1px_rgba(61,168,255,0.24)]"
               : "min-w-[88px] flex-1 rounded-md px-4 py-2.5 text-sm font-medium text-[#7f8998] transition hover:bg-white/[0.035] hover:text-[#dfe5ed]"
           }
         >
-          {product.label}
+          <span className="block text-sm font-medium">{product.label}</span>
+          {product.disabled && (
+            <span className="mt-0.5 block text-[10px] font-semibold uppercase tracking-[0.1em] text-[#666f7d]">
+              Coming soon
+            </span>
+          )}
         </button>
       ))}
     </nav>
@@ -815,7 +866,7 @@ function AlternateProductWorkspace({
     : null;
   const initialPerpMarket = requestedPerpMarket || "SOL";
   const [side, setSide] = useState<"buy" | "sell">("buy");
-  const [amount, setAmount] = useState("25");
+  const [amount, setAmount] = useState("11");
   const [limitPrice, setLimitPrice] = useState("");
   const [stopLoss, setStopLoss] = useState("");
   const [takeProfit, setTakeProfit] = useState("");
@@ -837,8 +888,8 @@ function AlternateProductWorkspace({
   const [setupOpen, setSetupOpen] = useState(false);
   const [activityTab, setActivityTab] = useState<"positions" | "orders" | "activity">("positions");
   const [perpMarket, setPerpMarket] = useState(initialPerpMarket);
-  const [perpMarkets, setPerpMarkets] = useState<Array<{ coin: string; max_leverage: number | null }>>([
-    { coin: initialPerpMarket, max_leverage: null },
+  const [perpMarkets, setPerpMarkets] = useState<Array<{ coin: string; max_leverage: number | null; size_decimals: number | null }>>([
+    { coin: initialPerpMarket, max_leverage: null, size_decimals: null },
   ]);
   const [perpMarketCatalogState, setPerpMarketCatalogState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [hyperliquidAccount, setHyperliquidAccount] = useState<HyperliquidAccountSnapshot | null>(null);
@@ -850,8 +901,9 @@ function AlternateProductWorkspace({
   const baseSymbol = product === "perps" ? perpMarket : product === "swap" ? "SOL" : referenceProduct.split("-")[0];
   const marketLabel = product === "perps" ? `${baseSymbol}-PERP` : product === "swap" ? "SOL / USDC" : referenceProduct;
   const nativeProtection = selectedVenue?.protective_orders === "native";
-  const setupHref = `/account?flow=private-mode&setup=${encodeURIComponent(venue)}&return_to=${encodeURIComponent(`/trade?product=${product}&venue=${venue}&market=${marketLabel}`)}`;
+  const setupHref = buildVenueSetupHref({ product, venue, market: marketLabel });
   const useHyperliquidMarket = active && product === "perps" && venue === "hyperliquid";
+  const marketClockMs = useMarketClock(useHyperliquidMarket);
   const hyperliquidRecord = useMarketData({
     venue: "hyperliquid",
     network: hyperliquidNetwork,
@@ -883,6 +935,9 @@ function AlternateProductWorkspace({
     ? hyperliquidRecord.frame
     : referenceMarketProduct ? referenceRecord.frame : null;
   const displayedMarketStatus = useHyperliquidMarket ? hyperliquidStatus : referenceRecord.status;
+  const displayedMarketStatusLabel = useHyperliquidMarket
+    ? formatHyperliquidMarketStatus(hyperliquidStatus, hyperliquidMarket, marketClockMs)
+    : formatStatus(displayedMarketStatus, Boolean(displayedFrame));
   const selectedMarketCapability = perpMarkets.find((item) => item.coin === perpMarket);
   const hyperliquidReadiness = useMemo(() => hyperliquidPerpsReadiness({
     authenticated,
@@ -916,8 +971,14 @@ function AlternateProductWorkspace({
     },
   }), [amount, leverage, limitPrice, marginMode, maxSlippageBps, orderType, perpMarket, reduceOnly, side, stopLoss, takeProfit, timeInForce]);
   const perpOrderErrors = useMemo(
-    () => validatePerpTicket(perpOrder, displayedMid, maxLeverage, hyperliquidMaxSlippageBps),
-    [displayedMid, hyperliquidMaxSlippageBps, maxLeverage, perpOrder],
+    () => validatePerpTicket(
+      perpOrder,
+      displayedMid,
+      maxLeverage,
+      hyperliquidMaxSlippageBps,
+      selectedMarketCapability?.size_decimals ?? null,
+    ),
+    [displayedMid, hyperliquidMaxSlippageBps, maxLeverage, perpOrder, selectedMarketCapability?.size_decimals],
   );
 
   useEffect(() => {
@@ -936,12 +997,16 @@ function AlternateProductWorkspace({
       void fetch("/v1/private-account/hyperliquid/markets", { cache: "no-store" })
         .then(async (response) => {
           if (!response.ok) throw new Error("markets unavailable");
-          return response.json() as Promise<{ markets?: Array<{ coin?: string; max_leverage?: number | null }> }>;
+          return response.json() as Promise<{ markets?: Array<{ coin?: string; max_leverage?: number | null; size_decimals?: number | null }> }>;
         })
         .then((result) => {
           if (cancelled) return;
           const next = (result.markets ?? []).flatMap((item) =>
-            item.coin ? [{ coin: item.coin, max_leverage: item.max_leverage ?? null }] : []
+            item.coin ? [{
+              coin: item.coin,
+              max_leverage: item.max_leverage ?? null,
+              size_decimals: item.size_decimals ?? null,
+            }] : []
           );
           if (next.length > 0) startTransition(() => setPerpMarkets(next));
           if (!cancelled) setPerpMarketCatalogState("ready");
@@ -974,16 +1039,10 @@ function AlternateProductWorkspace({
     let cancelled = false;
     const load = async () => {
       try {
-        const response = await fetch("/v1/private-account/hyperliquid/account-snapshot", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        if (!response.ok) throw new Error("account unavailable");
-        const snapshot = await response.json() as HyperliquidAccountSnapshot;
+        const snapshot = await getHyperliquidAccountSnapshot();
         if (!cancelled) {
-          setHyperliquidAccount(snapshot);
-          setAccountState("ready");
+          setHyperliquidAccount((current) => mergeHyperliquidAccountSnapshot(current, snapshot));
+          setAccountState(hyperliquidAccountSnapshotUnavailable(snapshot) ? "unavailable" : "ready");
         }
       } catch {
         if (!cancelled) {
@@ -998,7 +1057,7 @@ function AlternateProductWorkspace({
       onState(snapshot) {
         if (!cancelled) {
           setHyperliquidAccount((current) => mergeHyperliquidAccountSnapshot(current, snapshot));
-          setAccountState("ready");
+          setAccountState(hyperliquidAccountSnapshotUnavailable(snapshot) ? "unavailable" : "ready");
         }
       },
       onError() {
@@ -1015,11 +1074,7 @@ function AlternateProductWorkspace({
   useEffect(() => {
     if (!authenticated || !useHyperliquidMarket) return;
     let cancelled = false;
-    void fetch("/v1/private-account/hyperliquid/vault", { cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("connection status unavailable");
-        return response.json() as Promise<{ credentials_sealed?: boolean }>;
-      })
+    void getHyperliquidExecutionVaultStatus()
       .then((status) => {
         if (!cancelled) setHyperliquidConnectionReady(hyperliquidCredentialsSealed(status));
       })
@@ -1035,7 +1090,7 @@ function AlternateProductWorkspace({
     void armHyperliquidExecutionAgent({
       execution_mode: "byo_api_key",
       market_allowlist: perpMarkets.map((item) => item.coin),
-      max_notional_bucket: "1000",
+      max_notional_bucket: "25",
       max_order_count: 100,
       kill_switch: false,
     }).catch((error) => {
@@ -1086,20 +1141,24 @@ function AlternateProductWorkspace({
     try {
       // The eager arming effect keeps this path fast. Refresh at point of use
       // as well so an idle tab can never review against an expired session.
+      setPerpNotice("Refreshing the capped Hyperliquid agent session…");
       await armHyperliquidExecutionAgent({
         execution_mode: "byo_api_key",
         market_allowlist: perpMarkets.map((item) => item.coin),
-        max_notional_bucket: "1000",
+        max_notional_bucket: "25",
         max_order_count: 100,
         kill_switch: false,
       });
+      setPerpNotice("Creating a private order intent…");
       const safeInput = perpSafeInput(perpMarket, amount);
       const intent = await createPrivateAccountIntent(safeInput) as { intent_id?: string };
       if (!intent.intent_id) throw new Error("Ghola could not create the private order intent.");
+      setPerpNotice("Binding the private runtime envelope…");
       const runtime = await createPrivateAccountRuntimeEnvelope({
         intent_id: intent.intent_id,
         safe_input: safeInput,
       }) as { runtime_envelope?: { runtime_envelope_commitment?: string } };
+      setPerpNotice("Checking the final privacy and execution route…");
       const preview = await previewPrivateAccountAction({
         intent_id: intent.intent_id,
         safe_input: safeInput,
@@ -1124,6 +1183,7 @@ function AlternateProductWorkspace({
       }
       const previewCommitment = preview.preview?.preview_commitment;
       if (!previewCommitment) throw new Error("Ghola did not return a review commitment.");
+      setPerpNotice(null);
       setPerpReview({ intentId: intent.intent_id, previewCommitment, createdAt: Date.now() });
     } catch (error) {
       setPerpError(friendlyPerpError(error));
@@ -1135,7 +1195,7 @@ function AlternateProductWorkspace({
   async function submitPerpOrder() {
     if (!perpReview || perpWorking) return;
     setPerpError(null);
-    if (Date.now() - perpReview.createdAt > 15_000) {
+    if (hyperliquidReviewExpired(perpReview.createdAt)) {
       setPerpReview(null);
       setPerpError("The live review expired. Review the order again for a fresh price and account check.");
       return;
@@ -1165,9 +1225,23 @@ function AlternateProductWorkspace({
         preview_commitment: perpReview.previewCommitment,
         approval_commitment: approvalCommitment,
         encrypted_execution_instruction_bundle: sealed.encrypted_execution_instruction_bundle,
-      }) as { execution?: { status?: string }; status?: string };
-      const status = execution.execution?.status || execution.status || "submitted";
-      setPerpNotice(`Hyperliquid order ${status.replaceAll("_", " ")}. Reconciliation is active.`);
+      }) as {
+        execution?: {
+          status?: string;
+          final_proof?: { final_fill_proven?: boolean; final_venue_execution_proven?: boolean } | null;
+        };
+        status?: string;
+        final_proof?: { final_fill_proven?: boolean; final_venue_execution_proven?: boolean } | null;
+      };
+      const result = execution.execution ?? execution;
+      setPerpNotice(hyperliquidExecutionNotice(result));
+      try {
+        const snapshot = await getHyperliquidAccountSnapshot();
+        setHyperliquidAccount(snapshot);
+        setAccountState("ready");
+      } catch {
+        // Keep the signed venue result visible if the account refresh lags.
+      }
       setPerpReview(null);
     } catch (error) {
       setPerpError(friendlyPerpError(error));
@@ -1199,8 +1273,8 @@ function AlternateProductWorkspace({
           </div>
           <div className="flex items-center gap-2">
             <span className="inline-flex h-9 items-center gap-2 rounded-md border border-[#26313f] bg-[#0b0e13] px-3 text-xs text-[#a8b2c1]">
-              <span className={displayedMarketStatus === "live" ? "h-1.5 w-1.5 rounded-full bg-[#62d6a5]" : "h-1.5 w-1.5 rounded-full bg-[#d9b96e]"} />
-              {formatStatus(displayedMarketStatus, Boolean(displayedFrame))}
+              <span className={displayedMarketStatus === "live" && !displayedFrame?.stale ? "h-1.5 w-1.5 rounded-full bg-[#62d6a5]" : "h-1.5 w-1.5 rounded-full bg-[#d9b96e]"} />
+              {displayedMarketStatusLabel}
             </span>
             {product === "perps" && (
               <span className="inline-flex h-9 items-center gap-2 rounded-md border border-[#26313f] bg-[#0b0e13] px-3 text-xs text-[#a8b2c1]" title={hyperliquidReadiness.detail}>
@@ -1271,6 +1345,7 @@ function AlternateProductWorkspace({
               onModeChange={onChartModeChange}
               size="large"
               height={390}
+              feedStatus={displayedMarketStatus}
             />
             <div className="mt-4 border-t border-[#20252d] pt-3">
               <div className="flex gap-1 overflow-x-auto" role="tablist" aria-label="Trading activity">
@@ -1548,7 +1623,7 @@ function AlternateProductWorkspace({
               </div>
             )}
             <div className="mt-4 rounded-lg border border-[#303744] bg-[#090b0f] p-4 text-xs leading-5 text-[#8d98a8]">
-              Hyperliquid can see the execution account and order. Ghola stores the approval, ciphertext, and reconciliation commitments. This quote expires after 15 seconds.
+              Hyperliquid can see the execution account and order. Ghola stores the approval, ciphertext, and reconciliation commitments. This review expires after 60 seconds; venue slippage protection is checked again at execution.
             </div>
             <div className="mt-auto grid gap-2 pt-6">
               <button type="button" disabled={perpWorking !== null} onClick={() => void submitPerpOrder()} className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-[#3da8ff] text-sm font-bold text-[#03101d] hover:bg-[#67baff] disabled:cursor-wait disabled:opacity-65">
@@ -1570,7 +1645,7 @@ function PerpMarketPicker({
   onChange,
 }: {
   value: string;
-  markets: Array<{ coin: string; max_leverage: number | null }>;
+  markets: Array<{ coin: string; max_leverage: number | null; size_decimals: number | null }>;
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1707,11 +1782,12 @@ function ReviewDatum({ label, value }: { label: string; value: string }) {
   );
 }
 
-function validatePerpTicket(
+export function validatePerpTicket(
   order: PrivateExecutionOrderDraft,
   referencePrice: string | null | undefined,
   maxLeverage: number | null,
   maxSlippagePolicyBps: number,
+  sizeDecimals: number | null = null,
 ): string[] {
   const errors = validatePrivateExecutionOrderDraft(order);
   const notional = Number(order.quote_size);
@@ -1719,8 +1795,24 @@ function validatePerpTicket(
   const stop = Number(order.protective_orders?.stop_loss);
   const takeProfit = Number(order.protective_orders?.take_profit);
   const slippage = Number(order.max_slippage_bps);
-  if (Number.isFinite(notional) && notional < 10) errors.unshift("Hyperliquid orders must be at least $10.");
-  if (Number.isFinite(notional) && notional > 1_000) errors.unshift("Orders are capped at $1,000 during the bounded mainnet launch.");
+  if (!order.reduce_only && Number.isFinite(notional) && notional < 10) {
+    errors.unshift("Hyperliquid orders must be at least $10 after venue lot-size rounding.");
+  }
+  if (!order.reduce_only && Number.isFinite(notional) && notional > 15) {
+    errors.unshift("Orders are capped at $15 during the bounded mainnet launch.");
+  }
+  const minimumExecutable = minimumExecutablePerpQuote(order, referencePrice, sizeDecimals);
+  if (
+    !order.reduce_only &&
+    Number.isFinite(notional) &&
+    notional >= 10 &&
+    minimumExecutable != null &&
+    notional < minimumExecutable
+  ) {
+    errors.unshift(
+      `${order.market} needs at least $${minimumExecutable.toFixed(2)} at the current price and venue lot size.`,
+    );
+  }
   if (maxLeverage != null && Number(order.leverage) > maxLeverage) errors.unshift(`This market supports at most ${maxLeverage}× leverage.`);
   if (Number.isFinite(slippage) && slippage > maxSlippagePolicyBps) {
     errors.unshift(`Max slippage is capped at ${maxSlippagePolicyBps} bps for this environment.`);
@@ -1734,6 +1826,35 @@ function validatePerpTicket(
     if (order.side === "sell" && takeProfit >= reference) errors.unshift("A short take-profit must be below the current mark price.");
   }
   return [...new Set(errors)];
+}
+
+export function minimumExecutablePerpQuote(
+  order: PrivateExecutionOrderDraft,
+  referencePrice: string | null | undefined,
+  sizeDecimals: number | null,
+): number | null {
+  const reference = Number(order.order_type === "limit" ? order.limit_price : referencePrice);
+  const slippageBps = Number(order.max_slippage_bps || "50");
+  if (sizeDecimals == null) return null;
+  const decimals = Number(sizeDecimals);
+  if (
+    !Number.isFinite(reference) ||
+    reference <= 0 ||
+    !Number.isInteger(decimals) ||
+    decimals < 0 ||
+    decimals > 12
+  ) {
+    return null;
+  }
+  const slippage = Number.isFinite(slippageBps) && slippageBps > 0 ? slippageBps / 10_000 : 0;
+  const venueLimit = order.order_type === "limit"
+    ? reference
+    : reference * (order.side === "buy" ? 1 + slippage : 1 - slippage);
+  if (!Number.isFinite(venueLimit) || venueLimit <= 0) return null;
+  const lotSize = 10 ** -decimals;
+  const lots = Math.ceil(10 / (venueLimit * lotSize));
+  const minimum = lots * lotSize * venueLimit;
+  return Math.ceil((minimum + 0.01) * 100) / 100;
 }
 
 function perpSafeInput(market: string, amount: string): PrivateAccountSafeInput {
@@ -1772,7 +1893,10 @@ function friendlyPerpError(error: unknown): string {
   const normalized = raw.toLowerCase();
   if (normalized.includes("insufficient") || normalized.includes("needs_funds")) return "This Hyperliquid account needs enough perp collateral for the order and fees.";
   if (normalized.includes("preview_expired") || normalized.includes("intent_expired")) return "The live review expired. Review the order again.";
-  if (normalized.includes("max notional") || normalized.includes("notional cap")) return "This order exceeds the account’s configured trading limit.";
+  if (normalized.includes("max notional") || normalized.includes("max_notional") || normalized.includes("notional cap")) return "This order exceeds the account’s configured trading limit.";
+  if (normalized.includes("live_proxy_timeout")) return "Ghola timed out while waiting for the private worker. The order was not blindly resubmitted; reconcile the account before trying again.";
+  if (normalized.includes("order_below_venue_minimum")) return "The reviewed size falls below Hyperliquid’s $10 minimum after lot-size rounding. Increase the ticket to the minimum shown and review again.";
+  if (normalized.includes("trading_subscription_required")) return "A Founding Trader subscription is required to open or increase a mainnet position. Reduce-only closes and cancellations remain available.";
   if (normalized.includes("worker") || normalized.includes("connector")) return "The private execution worker is reconnecting. Your order was not blindly resubmitted.";
   if (normalized.includes("venue_rejected")) return "Hyperliquid rejected the order. Recheck collateral, price, size, and leverage.";
   return raw.replaceAll("_", " ");
@@ -1855,6 +1979,9 @@ function AccountActivityPanel({
   }
   if (snapshot.status !== "ready_to_trade") {
     return <ActivityNotice>{snapshot.next_step || "Hyperliquid account connection is not verified."}</ActivityNotice>;
+  }
+  if (!hyperliquidAccountSnapshotAuthoritative(snapshot)) {
+    return <ActivityNotice>Account activity is not authoritative yet. No claim is being made about positions, orders, or fills.</ActivityNotice>;
   }
 
   if (tab === "positions") {
@@ -1960,6 +2087,20 @@ function readStoredTradeProduct(): TradeProduct | null {
   } catch {
     return null;
   }
+}
+
+export function resolveAvailableTradeProduct(
+  requested: string | null | undefined,
+  stored: TradeProduct | null = null,
+): TradeProduct {
+  const requestedProduct = TRADE_PRODUCTS.find(
+    (item) => item.id === requested && !item.disabled,
+  );
+  if (requestedProduct) return requestedProduct.id;
+  const storedProduct = TRADE_PRODUCTS.find(
+    (item) => item.id === stored && !item.disabled,
+  );
+  return storedProduct?.id ?? "perps";
 }
 
 function readStoredPerpMarket(): string | null {
@@ -2232,6 +2373,39 @@ function formatStatus(status: string, hasMarketData = false) {
   if (status === "stale") return "Delayed";
   if (status === "error") return "Feed unavailable";
   return hasMarketData ? "Live cache · refreshing" : "Establishing feed";
+}
+
+export function formatHyperliquidMarketStatus(
+  status: string,
+  snapshot: HyperliquidMarketSnapshot | null,
+  now = Date.now(),
+) {
+  const candleAge = hyperliquidCandleAgeMs(snapshot, now);
+  const age = candleAge == null ? "awaiting candle" : `candle ${formatMarketAge(candleAge)}`;
+  if (status === "live" && !snapshot?.stale) return `Live · ${age}`;
+  if (status === "fallback_polling") return `Fallback polling · ${age}`;
+  if (status === "reconnecting") return `Reconnecting · ${age}`;
+  if (status === "unavailable" || status === "error") return `Unavailable · ${age}`;
+  if (status === "connecting") return `Connecting · ${age}`;
+  return `Delayed · ${age}`;
+}
+
+function formatMarketAge(ageMs: number) {
+  const seconds = Math.floor(ageMs / 1_000);
+  if (seconds < 1) return "now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s ago`;
+}
+
+function useMarketClock(enabled: boolean) {
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [enabled]);
+  return now;
 }
 
 function short(value: string) {

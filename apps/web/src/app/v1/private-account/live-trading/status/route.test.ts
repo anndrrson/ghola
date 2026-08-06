@@ -154,25 +154,12 @@ describe("private account live trading launch gate", () => {
     expect(body.required_venues.every((venue: { status: string }) => venue.status === "red")).toBe(true);
   });
 
-  it("uses bounded testnet policy without requiring mainnet execution", async () => {
+  it("identifies the dedicated testnet product without changing mainnet gates", async () => {
     const res = await liveTradingStatusResponse({
       env: {
         ...process.env,
         GHOLA_PRODUCT_ENVIRONMENT: "testnet",
         GHOLA_HYPERLIQUID_PILOT_NETWORK: "mainnet",
-        GHOLA_LIVE_TRADING_PUBLIC_ENABLED: "true",
-        GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED: "true",
-        GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET: "secure_private_account_request_proof_secret_32bytes",
-        GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD: "25",
-        GHOLA_LIVE_TRADING_DAILY_CAP_USD: "100",
-        GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS: "50",
-        GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
-        GHOLA_HYPERLIQUID_LIVE_MODE: "full_ticket",
-        PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET: "false",
-        PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "full_ticket",
-        PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD: "25",
-        PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD: "100",
-        PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS: "50",
       },
     });
     const body = await res.json();
@@ -180,13 +167,6 @@ describe("private account live trading launch gate", () => {
       product_environment: "testnet",
       hyperliquid_network: "testnet",
       testnet_funds_have_no_value: true,
-      live_submit_mode: "byo_testnet",
-      launch_mode: "public_byo_testnet",
-      byo_live_trading_enabled: true,
-      hyperliquid_byo: {
-        status: "green",
-        reason_codes: [],
-      },
     });
   });
 
@@ -240,6 +220,37 @@ describe("private account live trading launch gate", () => {
       { id: "jupiter", canary_status: "missing" },
       { id: "coinbase", canary_status: "missing" },
     ]);
+  });
+
+  it("accepts smaller bounded per-trader Hyperliquid launch caps", async () => {
+    enableGreenGateEnv();
+    process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = "25";
+    process.env.GHOLA_LIVE_TRADING_DAILY_CAP_USD = "100";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD = "25";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD = "100";
+
+    const res = await GET();
+    const body = await res.json();
+
+    expect(body.status).toBe("green");
+    expect(body.live_submit_mode).toBe("byo_mainnet");
+    expect(body.hyperliquid_byo).toMatchObject({ status: "green", reason_codes: [] });
+  });
+
+  it("rejects unusable or internally inconsistent Hyperliquid caps precisely", async () => {
+    enableGreenGateEnv();
+    process.env.GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD = "5";
+    process.env.GHOLA_LIVE_TRADING_DAILY_CAP_USD = "4";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD = "25";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD = "20";
+
+    const res = await GET();
+    const body = await res.json();
+
+    expect(body.status).toBe("red");
+    expect(body.reason_codes).toContain("launch_max_order_cap_out_of_range");
+    expect(body.reason_codes).toContain("launch_daily_cap_out_of_range");
+    expect(body.hyperliquid_byo.reason_codes).toContain("hyperliquid_daily_cap_out_of_range");
   });
 
   it("does not require sealed runtime health for BYO scoped-account live submit", async () => {
@@ -331,7 +342,7 @@ describe("private account live trading launch gate", () => {
       launch_mode: "public_pooled_and_byo",
       funded_operator_canary_required: false,
       first_order_policy: {
-        cap_usd: 5,
+        cap_usd: 10,
         graduate_after_reconciled_receipt: true,
       },
     });

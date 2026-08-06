@@ -25,7 +25,9 @@ vi.mock("./phoenix-live-market", () => ({
 
 import {
   acquireMarketData,
+  applyMarketDataVisibility,
   getMarketDataRecord,
+  marketDataKeyId,
   marketDataDiagnostics,
   resetMarketDataStoreForTests,
   subscribeMarketData,
@@ -126,5 +128,26 @@ describe("bounded market data store", () => {
 
     unsubscribe();
     release();
+  });
+
+  it("stops foreground streams after a long background period and restarts them on wake", async () => {
+    const release = acquireMarketData(key);
+
+    applyMarketDataVisibility(true);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mocks.stops).toBe(1);
+
+    applyMarketDataVisibility(false);
+    expect(mocks.starts).toBe(2);
+
+    release();
+  });
+
+  it("isolates Hyperliquid streams by network, market, and interval", () => {
+    const mainnetBtc1m = marketDataKeyId({ venue: "hyperliquid", network: "mainnet", coin: "BTC", interval: "1m" });
+
+    expect(marketDataKeyId({ venue: "hyperliquid", network: "testnet", coin: "BTC", interval: "1m" })).not.toBe(mainnetBtc1m);
+    expect(marketDataKeyId({ venue: "hyperliquid", network: "mainnet", coin: "ETH", interval: "1m" })).not.toBe(mainnetBtc1m);
+    expect(marketDataKeyId({ venue: "hyperliquid", network: "mainnet", coin: "BTC", interval: "5m" })).not.toBe(mainnetBtc1m);
   });
 });

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const privateBlobRecords = new Map<string, string>();
 
@@ -23,9 +23,12 @@ import {
   putAnonymityEvidence,
   putPrivacyBudget,
   putQueuedAction,
+  reserveHyperliquidShardAssignment,
+  retireUnavailableHyperliquidShardAssignment,
   recordPrivacyBudgetEvent,
   resetPrivateAccountStoreForTests,
   setPrivateBlobRecordAdapterForTests,
+  sealHyperliquidShardAssignment,
 } from "./private-account-store";
 import {
   approvePrivateAccountAction,
@@ -156,6 +159,177 @@ describe("private account store", () => {
       },
     });
     expect(JSON.stringify(reloadedVault)).not.toContain("api_wallet_private_key");
+  });
+
+  it("keeps 100 durable Hyperliquid credentials isolated by account across reloads", async () => {
+    process.env.GHOLA_PRIVATE_ACCOUNT_STORE = "blob";
+    process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS = "private";
+    process.env.BLOB_READ_WRITE_TOKEN = "private-test-token";
+    setPrivateBlobRecordAdapterForTests({
+      async put(pathname, value) {
+        privateBlobRecords.set(pathname, value);
+      },
+      async get(pathname) {
+        return privateBlobRecords.get(pathname) ?? null;
+      },
+    });
+
+    const expected = await Promise.all(Array.from({ length: 100 }, async (_, index) => {
+      const ownerCommitment = `owner_100_trader_${index}`;
+      const accountCommitment = `account_100_trader_${index}`;
+      const created = createHyperliquidExecutionVault({
+        account_commitment: accountCommitment,
+        encrypted_execution_vault: {
+          alg: "sealed-provider-v1",
+          ciphertext: `opaque-test-ciphertext-${index}`,
+          recipient: "phala:cvm:production-worker",
+          aad: [
+            "ghola/hyperliquid-execution-vault-v1",
+            `account:${accountCommitment}`,
+            "recipient:phala:cvm:production-worker",
+            "network:mainnet",
+          ].join("|"),
+        },
+        now: new Date(`2026-08-01T00:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) throw new Error(created.error);
+      const record = {
+        version: 1 as const,
+        owner_commitment: ownerCommitment,
+        account_commitment: accountCommitment,
+        vault_commitment: created.vault.vault_commitment,
+        encrypted_vault_commitment: created.vault.encrypted_vault_commitment,
+        recipient_commitment: created.vault.recipient_commitment,
+        policy_commitment: created.vault.policy_commitment,
+        status: "sealed" as const,
+        vault: created.vault,
+        created_at: created.vault.created_at,
+        updated_at: created.vault.updated_at,
+      };
+      await putHyperliquidExecutionVault(record);
+      return record;
+    }));
+
+    await resetPrivateAccountStoreForTests();
+    const reloaded = await Promise.all(expected.map((record) =>
+      getHyperliquidExecutionVaultByAccount(record.account_commitment)));
+
+    expect(reloaded).toHaveLength(100);
+    expect(new Set(reloaded.map((record) => record?.vault_commitment)).size).toBe(100);
+    reloaded.forEach((record, index) => {
+      expect(record).toMatchObject({
+        owner_commitment: expected[index].owner_commitment,
+        account_commitment: expected[index].account_commitment,
+        vault_commitment: expected[index].vault_commitment,
+      });
+      expect(record?.account_commitment).not.toBe(expected[(index + 1) % expected.length].account_commitment);
+    });
+    expect(JSON.stringify(reloaded)).not.toContain("api_wallet_private_key");
+  });
+
+  it("atomically admits exactly 100 accounts into ten ten-user Hyperliquid shards", async () => {
+    const shards = Array.from({ length: 10 }, (_, index) => ({
+      id: `hl-${index}`,
+      recipient_id: `phala:hl-${index}`,
+    }));
+    const assignments = await Promise.all(Array.from({ length: 101 }, (_, index) =>
+      reserveHyperliquidShardAssignment({
+        account_commitment: `account_capacity_${index}`,
+        shards,
+        slots_per_shard: 10,
+      })
+    ));
+    expect(assignments.filter(Boolean)).toHaveLength(100);
+    expect(assignments.filter((assignment) => assignment === null)).toHaveLength(1);
+    for (const shard of shards) {
+      expect(assignments.filter((assignment) => assignment?.recipient_id === shard.recipient_id)).toHaveLength(10);
+    }
+    expect(new Set(assignments.filter(Boolean).map((assignment) =>
+      `${assignment?.recipient_id}:${assignment?.slot_number}`
+    )).size).toBe(100);
+    const first = assignments[0];
+    expect(first).not.toBeNull();
+    expect(await sealHyperliquidShardAssignment({
+      account_commitment: "account_capacity_0",
+      recipient_id: first!.recipient_id,
+    })).toBe(true);
+    expect(await sealHyperliquidShardAssignment({
+      account_commitment: "account_capacity_0",
+      recipient_id: "phala:wrong",
+    })).toBe(false);
+  });
+
+  it("caps the founding beta at ten accounts on its single Hyperliquid egress", async () => {
+    const shard = { id: "hl-founding", recipient_id: "phala:hl-founding" };
+    const assignments = await Promise.all(Array.from({ length: 11 }, (_, index) =>
+      reserveHyperliquidShardAssignment({
+        account_commitment: `founding_account_${index}`,
+        shards: [shard],
+        slots_per_shard: 10,
+      })
+    ));
+
+    const admitted = assignments.filter((assignment) => assignment !== null);
+    expect(admitted).toHaveLength(10);
+    expect(assignments.filter((assignment) => assignment === null)).toHaveLength(1);
+    expect(new Set(admitted.map((assignment) => assignment.recipient_id))).toEqual(
+      new Set([shard.recipient_id]),
+    );
+    expect(new Set(admitted.map((assignment) => assignment.slot_number)).size).toBe(10);
+  });
+
+  it("reclaims a sealed shard lease after entitlement refreshes stop", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-06T12:00:00.000Z"));
+      const shard = { id: "hl-founding", recipient_id: "phala:hl-founding" };
+      const original = await reserveHyperliquidShardAssignment({
+        account_commitment: "former_paid_account",
+        shards: [shard],
+        slots_per_shard: 1,
+        pending_ttl_ms: 60_000,
+      });
+      expect(original).not.toBeNull();
+      expect(await sealHyperliquidShardAssignment({
+        account_commitment: "former_paid_account",
+        recipient_id: shard.recipient_id,
+        lease_ttl_ms: 60_000,
+      })).toBe(true);
+
+      vi.advanceTimersByTime(60_001);
+      const replacement = await reserveHyperliquidShardAssignment({
+        account_commitment: "new_paid_account",
+        shards: [shard],
+        slots_per_shard: 1,
+        pending_ttl_ms: 60_000,
+      });
+      expect(replacement?.slot_number).toBe(original?.slot_number);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retires only assignments whose recipient is no longer active", async () => {
+    const account = "account_retired_recipient";
+    const original = await reserveHyperliquidShardAssignment({
+      account_commitment: account,
+      shards: [{ id: "old", recipient_id: "phala:old" }],
+    });
+    expect(original?.recipient_id).toBe("phala:old");
+    expect(await retireUnavailableHyperliquidShardAssignment({
+      account_commitment: account,
+      active_recipient_ids: ["phala:new"],
+    })).toBe(true);
+    const replacement = await reserveHyperliquidShardAssignment({
+      account_commitment: account,
+      shards: [{ id: "new", recipient_id: "phala:new" }],
+    });
+    expect(replacement?.recipient_id).toBe("phala:new");
+    expect(await retireUnavailableHyperliquidShardAssignment({
+      account_commitment: account,
+      active_recipient_ids: ["phala:new"],
+    })).toBe(false);
   });
 
   it("persists intent, preview, and approval records in memory during tests", async () => {

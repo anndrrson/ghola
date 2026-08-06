@@ -1,7 +1,10 @@
 import { getCoinbaseMarketSnapshot, type CoinbaseProductId } from "./coinbase-market-data";
 import { getHyperliquidMarketSnapshot, getHyperliquidMarketUniverse } from "./hyperliquid-market-data";
 
-const WARM_INTERVAL_MS = 4_500;
+// Live charts are driven by venue WebSockets. The warmer only primes HTTP
+// fallback snapshots; refreshing three Hyperliquid markets every 4.5 seconds
+// created enough Info API fan-out to rate-limit the candle fallback itself.
+const WARM_INTERVAL_MS = 30_000;
 const POPULAR_COINBASE_MARKETS: CoinbaseProductId[] = ["BTC-USD", "ETH-USD", "SOL-USD"];
 const POPULAR_HYPERLIQUID_MARKETS = ["BTC", "ETH", "SOL"] as const;
 

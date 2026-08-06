@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   generateHyperliquidApiWallet,
   hyperliquidApiWalletAddress,
+  hyperliquidApiWalletAddressFromPrivateKey,
 } from "./hyperliquid-api-wallet";
 import { validateHyperliquidExecutionCredentialDraft } from "./hyperliquid-vault-seal";
 
@@ -38,6 +39,13 @@ describe("Hyperliquid API wallet generation", () => {
     );
     expect(() => hyperliquidApiWalletAddress(new Uint8Array(32))).toThrow(
       "Could not create a valid Hyperliquid API wallet.",
+    );
+  });
+
+  it("derives the public signer address from a private-key string", () => {
+    const privateKey = `0x${"11".repeat(32)}`;
+    expect(hyperliquidApiWalletAddressFromPrivateKey(privateKey)).toBe(
+      hyperliquidApiWalletAddress(Uint8Array.from({ length: 32 }, () => 0x11)),
     );
   });
 });
