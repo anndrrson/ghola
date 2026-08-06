@@ -138,14 +138,14 @@ fn subscription_checkout_form(
             "success_url",
             format!(
                 "{}/settings?tab=plan&checkout=success",
-                state.config.base_url
+                state.config.frontend_url.trim_end_matches('/')
             ),
         ),
         (
             "cancel_url",
             format!(
                 "{}/settings?tab=plan&checkout=cancelled",
-                state.config.base_url
+                state.config.frontend_url.trim_end_matches('/')
             ),
         ),
         ("client_reference_id", user_id.to_string()),
@@ -588,11 +588,17 @@ pub async fn create_private_balance_top_up(
         ("line_items[0][quantity]", "1".to_string()),
         (
             "success_url",
-            format!("{}/private-balance?topup=success", state.config.base_url),
+            format!(
+                "{}/private-balance?topup=success",
+                state.config.frontend_url.trim_end_matches('/')
+            ),
         ),
         (
             "cancel_url",
-            format!("{}/private-balance?topup=cancelled", state.config.base_url),
+            format!(
+                "{}/private-balance?topup=cancelled",
+                state.config.frontend_url.trim_end_matches('/')
+            ),
         ),
         ("client_reference_id", claims.sub.to_string()),
         ("metadata[ghola_kind]", "private_balance_top_up".to_string()),
@@ -1773,7 +1779,13 @@ pub async fn billing_status(
             .header("Authorization", format!("Bearer {stripe_key}"))
             .form(&[
                 ("customer", customer_id.as_str()),
-                ("return_url", &format!("{}/settings", state.config.base_url)),
+                (
+                    "return_url",
+                    &format!(
+                        "{}/settings",
+                        state.config.frontend_url.trim_end_matches('/')
+                    ),
+                ),
             ])
             .send()
             .await
@@ -1928,7 +1940,8 @@ mod tests {
             stripe_tax_id_collection_enabled: true,
             stripe_adaptive_pricing_enabled: true,
             stripe_payment_method_configuration: Some("pmc_international".to_string()),
-            base_url: "https://ghola.test".to_string(),
+            base_url: "https://api.ghola.test".to_string(),
+            frontend_url: "https://ghola.test/".to_string(),
             encryption_key: [0u8; 32],
             telegram_bot_token: None,
             solana_rpc_url: "https://api.devnet.solana.com".to_string(),
@@ -2034,6 +2047,14 @@ mod tests {
         );
         assert_eq!(value("payment_method_types[]"), None);
         assert_eq!(value("client_reference_id"), Some(user_id_string.as_str()));
+        assert_eq!(
+            value("success_url"),
+            Some("https://ghola.test/settings?tab=plan&checkout=success")
+        );
+        assert_eq!(
+            value("cancel_url"),
+            Some("https://ghola.test/settings?tab=plan&checkout=cancelled")
+        );
     }
 
     #[test]

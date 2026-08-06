@@ -26,6 +26,7 @@ pub struct CloudConfig {
     pub stripe_adaptive_pricing_enabled: bool,
     pub stripe_payment_method_configuration: Option<String>,
     pub base_url: String,
+    pub frontend_url: String,
     pub encryption_key: [u8; 32],
     pub telegram_bot_token: Option<String>,
     pub solana_rpc_url: String,
@@ -61,6 +62,9 @@ impl CloudConfig {
                  API key via Settings > AI Model (BYOM)"
             );
         }
+
+        let base_url = env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+        let frontend_url = env::var("FRONTEND_URL").unwrap_or_else(|_| base_url.clone());
 
         Self {
             bind_addr: ghola_assistant_types::env_compat("GHOLA_CLOUD_BIND", "THUMPER_CLOUD_BIND")
@@ -99,7 +103,8 @@ impl CloudConfig {
             stripe_payment_method_configuration: env::var("STRIPE_PAYMENT_METHOD_CONFIGURATION")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
-            base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
+            base_url,
+            frontend_url,
             encryption_key,
             telegram_bot_token: env::var("TELEGRAM_BOT_TOKEN").ok(),
             solana_rpc_url: env::var("SOLANA_RPC_URL")

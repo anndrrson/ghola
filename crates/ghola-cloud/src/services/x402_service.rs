@@ -3438,6 +3438,7 @@ mod tests {
             stripe_adaptive_pricing_enabled: true,
             stripe_payment_method_configuration: None,
             base_url: "http://localhost".into(),
+            frontend_url: "http://localhost".into(),
             encryption_key: [0u8; 32],
             telegram_bot_token: None,
             solana_rpc_url: "http://localhost".into(),

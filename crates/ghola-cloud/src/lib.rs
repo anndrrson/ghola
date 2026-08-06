@@ -1016,6 +1016,7 @@ mod privacy_log_safety_tests {
             stripe_adaptive_pricing_enabled: true,
             stripe_payment_method_configuration: None,
             base_url: "http://localhost:3000".to_string(),
+            frontend_url: "http://localhost:3000".to_string(),
             encryption_key: [7u8; 32],
             telegram_bot_token: None,
             solana_rpc_url: "https://api.devnet.solana.com".to_string(),
