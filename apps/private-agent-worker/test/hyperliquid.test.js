@@ -5,11 +5,23 @@ import { fileURLToPath } from "node:url";
 import {
   createHyperliquidAccountStateStream,
   hyperliquidCollateralValue,
+  hyperliquidCredentialFromVault,
   hyperliquidRunnerTimeoutMs,
   assertHyperliquidPilotNetwork,
   readHyperliquidAccountSnapshot,
   submitHyperliquidExecution,
 } from "../src/venues/hyperliquid.js";
+
+describe("Hyperliquid credential isolation", () => {
+  it("rejects the master wallet private key after opening the sealed vault", () => {
+    assert.throws(() => hyperliquidCredentialFromVault({
+      kind: "ghola_hyperliquid_execution_vault",
+      network: "mainnet",
+      hyperliquid_account_address: "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+      api_wallet_private_key: `0x${"0".repeat(63)}1`,
+    }), /master wallet key is forbidden/);
+  });
+});
 
 describe("Hyperliquid immediate execution proof", () => {
   it("preserves a venue-proven fill instead of reducing it to submitted", async () => {

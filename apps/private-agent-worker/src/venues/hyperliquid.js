@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { secp256k1 } from "@noble/curves/secp256k1";
+import { keccak_256 } from "@noble/hashes/sha3";
 
 const MAINNET_API_URL = "https://api.hyperliquid.xyz";
 const TESTNET_API_URL = "https://api.hyperliquid-testnet.xyz";
@@ -39,13 +41,37 @@ export function hyperliquidCredentialFromVault(vault) {
   if (!vault.hyperliquid_account_address || !vault.api_wallet_private_key) {
     throw new HyperliquidExecutionError("hyperliquid execution credentials are missing", 400, "venue_access_required");
   }
+  const accountAddress = String(vault.hyperliquid_account_address).toLowerCase();
+  const apiWalletPrivateKey = String(vault.api_wallet_private_key).toLowerCase();
+  let apiWalletAddress;
+  try {
+    apiWalletAddress = hyperliquidAddressFromPrivateKey(apiWalletPrivateKey);
+  } catch {
+    throw new HyperliquidExecutionError("hyperliquid API wallet key is invalid", 400, "venue_access_required");
+  }
+  if (apiWalletAddress === accountAddress) {
+    throw new HyperliquidExecutionError(
+      "hyperliquid master wallet key is forbidden; use a dedicated API wallet",
+      400,
+      "venue_access_required",
+    );
+  }
   return {
     network: vault.network === "testnet" ? "testnet" : "mainnet",
     base_url: vault.network === "testnet" ? TESTNET_API_URL : MAINNET_API_URL,
-    account_address: String(vault.hyperliquid_account_address).toLowerCase(),
-    api_wallet_private_key: String(vault.api_wallet_private_key).toLowerCase(),
+    account_address: accountAddress,
+    api_wallet_private_key: apiWalletPrivateKey,
     agent_name: vault.agent_name || null,
   };
+}
+
+function hyperliquidAddressFromPrivateKey(privateKey) {
+  const normalized = privateKey.replace(/^0x/i, "");
+  if (!/^[0-9a-f]{64}$/i.test(normalized)) throw new Error("invalid_private_key");
+  const keyBytes = Uint8Array.from(normalized.match(/.{2}/g), (pair) => Number.parseInt(pair, 16));
+  if (!secp256k1.utils.isValidPrivateKey(keyBytes)) throw new Error("invalid_private_key");
+  const publicKey = secp256k1.getPublicKey(keyBytes, false);
+  return `0x${Buffer.from(keccak_256(publicKey.slice(1)).slice(-20)).toString("hex")}`;
 }
 
 export function assertHyperliquidPilotNetwork(credential, instruction = null) {

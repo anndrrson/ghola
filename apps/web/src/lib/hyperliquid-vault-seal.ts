@@ -1,5 +1,6 @@
 import bs58 from "bs58";
 import { didKeyFromVerifying, RecipientKind, seal } from "./envelope";
+import { hyperliquidApiWalletAddressFromPrivateKey } from "./hyperliquid-api-wallet";
 import {
   chooseConfidentialComputeProvider,
   providerReadyForPrivateAgents,
@@ -63,12 +64,25 @@ export function validateHyperliquidExecutionCredentialDraft(
   if (draft.network !== "mainnet" && draft.network !== "testnet") {
     errors.push("Select a Hyperliquid network.");
   }
-  if (!ETH_ADDRESS_RE.test(draft.hyperliquid_account_address.trim())) {
+  const accountAddress = draft.hyperliquid_account_address.trim();
+  if (!ETH_ADDRESS_RE.test(accountAddress)) {
     errors.push("Enter a 0x Hyperliquid account address.");
   }
   const privateKey = draft.api_wallet_private_key.trim();
   if (/\s/.test(privateKey) || !PRIVATE_KEY_RE.test(privateKey)) {
     errors.push("Enter a 0x API wallet private key.");
+  } else {
+    try {
+      const signerAddress = hyperliquidApiWalletAddressFromPrivateKey(privateKey);
+      if (
+        ETH_ADDRESS_RE.test(accountAddress) &&
+        signerAddress.toLowerCase() === accountAddress.toLowerCase()
+      ) {
+        errors.push("Use a dedicated Hyperliquid API wallet key—not the master wallet key.");
+      }
+    } catch {
+      errors.push("Enter a valid 0x API wallet private key.");
+    }
   }
   if (draft.agent_name?.trim() && !AGENT_NAME_RE.test(draft.agent_name.trim())) {
     errors.push("Agent name can use letters, numbers, dash, underscore, dot, or colon.");

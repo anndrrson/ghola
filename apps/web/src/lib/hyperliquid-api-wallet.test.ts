@@ -48,4 +48,14 @@ describe("Hyperliquid API wallet generation", () => {
       hyperliquidApiWalletAddress(Uint8Array.from({ length: 32 }, () => 0x11)),
     );
   });
+
+  it("rejects the master wallet private key as an API wallet credential", () => {
+    const privateKey = `0x${"0".repeat(63)}1`;
+    expect(validateHyperliquidExecutionCredentialDraft({
+      network: "mainnet",
+      hyperliquid_account_address: hyperliquidApiWalletAddressFromPrivateKey(privateKey),
+      api_wallet_private_key: privateKey,
+      agent_name: "ghola",
+    })).toContain("Use a dedicated Hyperliquid API wallet key—not the master wallet key.");
+  });
 });
