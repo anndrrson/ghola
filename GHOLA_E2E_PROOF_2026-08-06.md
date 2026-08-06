@@ -29,17 +29,19 @@ Status: **NOT PROVEN END TO END**
 - Exact production-source targeted tests: 90 passed.
 - Exact production-source auth tests: 9 passed.
 - Six focused signup/session tests passed, covering same-origin protection, cookie-backed routing, upstream failure handling, and backend-verified identity.
-- Restored production-based candidate: 134 files and 710 tests passed.
+- Restored production-based candidate: 134 files and 712 tests passed.
 - Founding page tests prove the exact ten-seat display, logged-out signup redirect, and sold-out suppression.
-- Confidential worker: 141 tests passed; focused Hyperliquid/policy tests passed.
+- Confidential worker: 147 tests passed; focused Hyperliquid/policy tests passed.
 - Browser and worker validation now independently reject a private key whose signer equals the master Hyperliquid account; withdrawals, vault transfers, and leverage escalation remain blocked.
 - Worker tests prove sealed-only ingress, entitlement gates, venue-result classification, collateral handling, position refresh, and reduce-only policy with mocked venue responses—not a live fill.
+- Candidate close controls seal an explicit exact-close marker without a user-supplied size. The worker derives the full base size, validates the requested reducing side against live venue position state, uses reduce-only IOC, and reports flat-position proof only after a post-order venue account read.
+- A venue-proven close fill and a venue-proven flat account are kept as separate evidence states; residual or unavailable state cannot be labeled flat.
 - A disposable local PostgreSQL 16 database proved 11 concurrent founding reservations admit exactly 10 and reject the eleventh.
 - The database-backed signed-webhook test proved idempotent, ordered paid-entitlement activation and restoration.
 - Credential reload/isolation tests passed against a private-Blob adapter; they do not prove production persistence.
 - Lint: 0 errors, 20 pre-existing warnings.
 - Production build passed, including auth client-bundle and SRI checks.
-- Candidate implementation commit: `52f9b676` on `codex/production-e2e-proof-20260806`.
+- Candidate implementation commits: `52f9b676` and `cc2b7152` on `codex/production-e2e-proof-20260806`.
 - Candidate was not deployed.
 
 ## Safety incident
