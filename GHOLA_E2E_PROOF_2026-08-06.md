@@ -29,7 +29,7 @@ Status: **NOT PROVEN END TO END**
 - Exact production-source targeted tests: 90 passed.
 - Exact production-source auth tests: 9 passed.
 - Six focused signup/session tests passed, covering same-origin protection, cookie-backed routing, upstream failure handling, and backend-verified identity.
-- Restored production-based candidate: 134 files and 712 tests passed.
+- Restored production-based candidate: 134 test files and 713 tests passed; one opt-in PostgreSQL file/test is skipped in the ordinary suite and run separately against a disposable database.
 - Founding page tests prove the exact ten-seat display, logged-out signup redirect, and sold-out suppression.
 - Confidential worker: 147 tests passed; focused Hyperliquid/policy tests passed.
 - Browser and worker validation now independently reject a private key whose signer equals the master Hyperliquid account; withdrawals, vault transfers, and leverage escalation remain blocked.
@@ -38,10 +38,12 @@ Status: **NOT PROVEN END TO END**
 - A venue-proven close fill and a venue-proven flat account are kept as separate evidence states; residual or unavailable state cannot be labeled flat.
 - A disposable local PostgreSQL 16 database proved 11 concurrent founding reservations admit exactly 10 and reject the eleventh.
 - The database-backed signed-webhook test proved idempotent, ordered paid-entitlement activation and restoration.
-- Credential reload/isolation tests passed against a private-Blob adapter; they do not prove production persistence.
+- Credential reload/isolation tests passed against a private-Blob adapter.
+- A disposable PostgreSQL 16.11 database proved sealed mainnet-vault persistence across two separate web test processes: the first wrote one account and one encrypted vault, and the second detected the verified connection from durable state. Both JSONB records were database objects; the public status exposed commitments/readiness but no ciphertext or wallet-key material.
+- The persistence audit found and fixed two candidate gaps: ordinary PostgreSQL URLs now use a TCP driver instead of Neon HTTP, and JSONB writes are forced through text to prevent driver-dependent double encoding.
 - Lint: 0 errors, 20 pre-existing warnings.
 - Production build passed, including auth client-bundle and SRI checks.
-- Candidate implementation commits: `52f9b676` and `cc2b7152` on `codex/production-e2e-proof-20260806`.
+- Candidate implementation commits: `52f9b676`, `cc2b7152`, and `b8cdddf5` on `codex/production-e2e-proof-20260806`.
 - Candidate was not deployed.
 
 ## Safety incident
