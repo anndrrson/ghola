@@ -163,6 +163,7 @@ fn subscription_checkout_form(
             "adaptive_pricing[enabled]",
             state.config.stripe_adaptive_pricing_enabled.to_string(),
         ),
+        ("allow_promotion_codes", "true".to_string()),
     ];
 
     if state.config.stripe_automatic_tax_enabled {
@@ -2039,6 +2040,7 @@ mod tests {
         assert_eq!(value("customer"), Some("cus_existing"));
         assert_eq!(value("customer_email"), None);
         assert_eq!(value("adaptive_pricing[enabled]"), Some("true"));
+        assert_eq!(value("allow_promotion_codes"), Some("true"));
         assert_eq!(value("tax_id_collection[enabled]"), Some("true"));
         assert_eq!(value("automatic_tax[enabled]"), None);
         assert_eq!(
