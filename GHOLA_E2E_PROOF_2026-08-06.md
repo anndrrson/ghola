@@ -28,6 +28,8 @@ Status: **NOT PROVEN END TO END**
 - Exact production-source targeted tests: 90 passed.
 - Exact production-source auth tests: 9 passed.
 - Restored production-based candidate: 133 files and 707 tests passed.
+- Confidential worker: 140 tests passed; the 35 focused Hyperliquid/policy tests passed.
+- Worker tests prove sealed-only ingress, entitlement gates, venue-result classification, collateral handling, position refresh, and reduce-only policy with mocked venue responses—not a live fill.
 - A disposable local PostgreSQL 16 database proved 11 concurrent founding reservations admit exactly 10 and reject the eleventh.
 - The database-backed signed-webhook test proved idempotent, ordered paid-entitlement activation and restoration.
 - Credential reload/isolation tests passed against a private-Blob adapter; they do not prove production persistence.
