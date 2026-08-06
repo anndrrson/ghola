@@ -10,7 +10,7 @@ Status: **NOT PROVEN END TO END**
 - Hyperliquid/mainnet was selected; the account showed `credentials required` and `Connect Hyperliquid mainnet`.
 - No credential, checkout, signup, or order control was submitted.
 - Public Hyperliquid market data was live and non-stale.
-- The authoritative production launch gate returned `live_trading_enabled=false`, `live_submit_mode=disabled`, `byo_live_trading_enabled=false`, and `pooled_live_trading_enabled=false`. Hyperliquid was red because live mode and both maximum-order and daily caps were missing; the pooled-worker probe also failed. Gate commitment: `live_trading_launch_gate_dcdabb5497debf882ef3db75ce0534dc5f96e36a3f102808`.
+- The authoritative production launch gate returned `live_trading_enabled=false`, `live_submit_mode=disabled`, `byo_live_trading_enabled=false`, and `pooled_live_trading_enabled=false`. Hyperliquid BYO was red because maximum-order and daily caps were missing; its funded full-ticket canary was also missing as an advisory. Hyperliquid pooled execution additionally lacked live mode and had a failed worker probe. Gate commitment: `live_trading_launch_gate_dcdabb5497debf882ef3db75ce0534dc5f96e36a3f102808`.
 - The chart rendered live Coinbase BTC-USD data, not venue-matched Hyperliquid data.
 - `/founding` returned 404; Settings exposed Free, Pro, Private Agents, Unlimited, and Enterprise plans, but no Founding Trader checkout.
 - The production `Connect Hyperliquid` dialog incorrectly linked to `/account` with both `setup=coinbase_advanced` and `venue=coinbase_advanced`; this prevents the visible Hyperliquid onboarding action from reaching its verifier.
