@@ -12,6 +12,7 @@ Status: **NOT PROVEN END TO END**
 - The chart rendered live Coinbase BTC-USD data, not venue-matched Hyperliquid data.
 - `/founding` returned 404; Settings exposed Free, Pro, Private Agents, Unlimited, and Enterprise plans, but no Founding Trader checkout.
 - `/api/billing/founding-cohort` reported capacity 10, claimed 0, remaining 10, and checkout open.
+- Ten concurrent GETs all returned HTTP 200 and satisfied `claimed + remaining = 10`; no checkout or reservation was created.
 - `/api/private-agent/status` reported `remote_execution_ready=false`; no attested provider was selected. The configured Phala CVM was stopped and lacked recipient/report-data binding.
 
 ## Deployment provenance
@@ -27,6 +28,9 @@ Status: **NOT PROVEN END TO END**
 - Exact production-source targeted tests: 90 passed.
 - Exact production-source auth tests: 9 passed.
 - Restored production-based candidate: 133 files and 707 tests passed.
+- A disposable local PostgreSQL 16 database proved 11 concurrent founding reservations admit exactly 10 and reject the eleventh.
+- The database-backed signed-webhook test proved idempotent, ordered paid-entitlement activation and restoration.
+- Credential reload/isolation tests passed against a private-Blob adapter; they do not prove production persistence.
 - Lint: 0 errors, 20 pre-existing warnings.
 - Production build passed, including auth client-bundle and SRI checks.
 - Candidate commit: `ef8d2ccb` on `codex/production-e2e-proof-20260806`.
@@ -58,4 +62,3 @@ Status: **NOT PROVEN END TO END**
 7. Obtain fresh authorization stating account, BTC side, exact size/notional cap, order type, limit/slippage, and maximum loss.
 8. Submit one bounded opening order; retain venue order/fill IDs and reconcile the exact position.
 9. Submit an exact reduce-only close; confirm the venue reports no residual position or open order.
-
