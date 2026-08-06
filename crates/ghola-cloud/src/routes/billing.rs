@@ -2082,14 +2082,14 @@ mod tests {
 
     #[test]
     fn founding_trader_cohort_closes_at_its_atomic_cap() {
-        assert!(founding_trader_cohort_has_capacity(0, 100));
-        assert!(founding_trader_cohort_has_capacity(99, 100));
-        assert!(!founding_trader_cohort_has_capacity(100, 100));
-        assert!(!founding_trader_cohort_has_capacity(101, 100));
+        assert!(founding_trader_cohort_has_capacity(0, 10));
+        assert!(founding_trader_cohort_has_capacity(9, 10));
+        assert!(!founding_trader_cohort_has_capacity(10, 10));
+        assert!(!founding_trader_cohort_has_capacity(11, 10));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn founding_trader_reservations_do_not_oversubscribe_under_concurrency() {
+    async fn founding_trader_reservations_do_not_oversubscribe_ten_seat_cohort() {
         let Ok(database_url) = ghola_assistant_types::env_compat(
             "GHOLA_BILLING_E2E_DATABASE_URL",
             "THUMPER_BILLING_E2E_DATABASE_URL",
@@ -2107,8 +2107,8 @@ mod tests {
             .expect("billing e2e migrations should apply");
 
         let run_id = uuid::Uuid::new_v4();
-        let mut user_ids = Vec::with_capacity(101);
-        for index in 0..101 {
+        let mut user_ids = Vec::with_capacity(11);
+        for index in 0..11 {
             let user_id: uuid::Uuid =
                 sqlx::query_scalar("INSERT INTO users (email) VALUES ($1) RETURNING id")
                     .bind(format!("billing-cap-{run_id}-{index}@example.invalid"))
@@ -2128,7 +2128,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("baseline seat count should load");
-        let max_seats = baseline + 100;
+        let max_seats = baseline + 10;
 
         let mut handles = Vec::with_capacity(user_ids.len());
         for user_id in user_ids.iter().copied() {
@@ -2189,7 +2189,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("billing test users should be cleaned up");
-        assert_eq!(created, 100);
+        assert_eq!(created, 10);
         assert_eq!(rejected, 1);
     }
 

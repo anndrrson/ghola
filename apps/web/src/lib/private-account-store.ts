@@ -1590,9 +1590,20 @@ export async function reserveHyperliquidShardAssignment(input: {
   if (!input.account_commitment || candidateShards.length === 0) return null;
   const sql = await getSql();
   if (!sql) {
+    for (const [accountCommitment, assignment] of hyperliquidShardAssignments) {
+      if (!assignment.expires_at || Date.parse(assignment.expires_at) <= Date.now()) {
+        hyperliquidShardAssignments.delete(accountCommitment);
+      }
+    }
     const existing = hyperliquidShardAssignments.get(input.account_commitment);
-    if (existing && (existing.status === "sealed" || !existing.expires_at || Date.parse(existing.expires_at) > Date.now())) {
-      return existing;
+    if (existing?.expires_at && Date.parse(existing.expires_at) > Date.now()) {
+      const refreshed = {
+        ...existing,
+        expires_at: new Date(Date.now() + pendingTtlMs).toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      hyperliquidShardAssignments.set(input.account_commitment, refreshed);
+      return refreshed;
     }
     if (existing) hyperliquidShardAssignments.delete(input.account_commitment);
     const occupied = new Set([...hyperliquidShardAssignments.values()].map((record) =>
@@ -1622,12 +1633,14 @@ export async function reserveHyperliquidShardAssignment(input: {
   await ensureSchema(sql);
   await sql`
     DELETE FROM private_account_hyperliquid_shard_assignments
-    WHERE status = 'pending' AND expires_at <= NOW()
+    WHERE expires_at IS NULL OR expires_at <= NOW()
   `;
   const existingRows = (await sql`
-    SELECT * FROM private_account_hyperliquid_shard_assignments
+    UPDATE private_account_hyperliquid_shard_assignments
+    SET expires_at = NOW() + (${pendingTtlMs} * INTERVAL '1 millisecond'),
+        updated_at = NOW()
     WHERE account_commitment = ${input.account_commitment}
-    LIMIT 1
+    RETURNING *
   `) as Record<string, unknown>[];
   if (existingRows[0]) return hyperliquidShardAssignmentRow(existingRows[0]);
 
@@ -1688,7 +1701,9 @@ export async function retireUnavailableHyperliquidShardAssignment(input: {
 export async function sealHyperliquidShardAssignment(input: {
   account_commitment: string;
   recipient_id: string;
+  lease_ttl_ms?: number;
 }): Promise<boolean> {
+  const leaseTtlMs = Math.max(60_000, Math.min(60 * 60_000, input.lease_ttl_ms ?? 15 * 60_000));
   const sql = await getSql();
   if (!sql) {
     const existing = hyperliquidShardAssignments.get(input.account_commitment);
@@ -1696,7 +1711,7 @@ export async function sealHyperliquidShardAssignment(input: {
     hyperliquidShardAssignments.set(input.account_commitment, {
       ...existing,
       status: "sealed",
-      expires_at: null,
+      expires_at: new Date(Date.now() + leaseTtlMs).toISOString(),
       updated_at: new Date().toISOString(),
     });
     return true;
@@ -1704,7 +1719,9 @@ export async function sealHyperliquidShardAssignment(input: {
   await ensureSchema(sql);
   const rows = (await sql`
     UPDATE private_account_hyperliquid_shard_assignments
-    SET status = 'sealed', expires_at = NULL, updated_at = NOW()
+    SET status = 'sealed',
+        expires_at = NOW() + (${leaseTtlMs} * INTERVAL '1 millisecond'),
+        updated_at = NOW()
     WHERE account_commitment = ${input.account_commitment}
       AND recipient_id = ${input.recipient_id}
       AND (status = 'sealed' OR expires_at > NOW())

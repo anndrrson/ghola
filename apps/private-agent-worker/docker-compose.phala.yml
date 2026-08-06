@@ -1,6 +1,9 @@
 services:
   private-agent-worker:
-    image: "${GHOLA_PRIVATE_AGENT_WORKER_IMAGE:?set fresh worker image tag}@${GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST:?set fresh worker image digest}"
+    # The founding beta uses one reviewed immutable worker artifact. Updating
+    # this pin is an explicit release step; a stale deployment environment must
+    # never silently select a different image.
+    image: "ghcr.io/anndrrson/ghola/private-agent-worker:b3162c7b@sha256:0146132b86910daf2e06fd16f7015957f70203be531511e82a70b8319ba7bbfb"
     restart: unless-stopped
     ports:
       - "8787:8787"
@@ -20,7 +23,7 @@ services:
       PRIVATE_AGENT_RECIPIENT_ID: "${PRIVATE_AGENT_RECIPIENT_ID:?set durable shard recipient id}"
       PRIVATE_AGENT_X25519_PUB_HEX: "${PRIVATE_AGENT_X25519_PUB_HEX:?set durable shard recipient public key}"
       PRIVATE_AGENT_X25519_SECRET_HEX: "${PRIVATE_AGENT_X25519_SECRET_HEX:?set durable shard recipient secret key}"
-      PHALA_CVM_IMAGE_DIGEST: "${PHALA_CVM_IMAGE_DIGEST}"
+      PHALA_CVM_IMAGE_DIGEST: "sha256:0146132b86910daf2e06fd16f7015957f70203be531511e82a70b8319ba7bbfb"
       PRIVATE_AGENT_VENUE_DRY_RUN: "${PRIVATE_AGENT_VENUE_DRY_RUN:-false}"
       PRIVATE_AGENT_GLOBAL_KILL_SWITCH: "${PRIVATE_AGENT_GLOBAL_KILL_SWITCH:-false}"
       PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE: "${PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE:-60}"

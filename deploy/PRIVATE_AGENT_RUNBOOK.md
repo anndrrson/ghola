@@ -353,8 +353,13 @@ Use `--allow-partial --venues phoenix` when only the Phoenix pooled authority is
 available. Hyperliquid, Jupiter, and Coinbase stay unavailable until their
 external venue credentials are present in `deploy/private-agent-pooled-credentials.env`.
 
-You can also deploy `apps/private-agent-worker/docker-compose.phala.yml`
-manually as the Phala CVM payload, then fetch the worker recipient metadata:
+Do not update an existing CVM with the compose file alone. Phala sealed-env
+updates are replacement operations; omitting the full worker env can rotate the
+durable X25519 recipient and strand already-sealed credential ciphertext. If a
+manual update is unavoidable, pass the complete reviewed worker env with
+`-e <full-worker.env>` and record the public recipient id and X25519 public key
+before the update. The update is successful only when both values are identical
+afterward. Then fetch the worker recipient metadata:
 
 ```bash
 curl -fsS https://<phala-agent-host>/.well-known/private-agent-recipient

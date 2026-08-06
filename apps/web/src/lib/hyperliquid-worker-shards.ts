@@ -110,7 +110,10 @@ async function cachedShardHealth(shard: HyperliquidWorkerShard, fetcher: typeof 
   const cacheKey = `${shard.url}|${shard.recipient_id}|${shard.x25519_pub_hex}`;
   const cached = shardHealthCache.get(cacheKey);
   if (cached && cached.expires_at > Date.now()) return cached.promise;
-  const promise = verifyShardHealth(shard, fetcher).catch(() => false);
+  const promise = verifyShardHealth(shard, fetcher).catch((error) => {
+    logShardHealthFailure(shard, "health_request_failed", error instanceof Error ? error.name : "unknown_error");
+    return false;
+  });
   shardHealthCache.set(cacheKey, { expires_at: Date.now() + HEALTH_CACHE_MS, promise });
   return promise;
 }
@@ -126,31 +129,65 @@ async function verifyShardHealth(shard: HyperliquidWorkerShard, fetcher: typeof 
         signal: controller.signal,
       }),
     ]);
-    if (!healthResponse.ok || !recipientResponse.ok) return false;
+    if (!healthResponse.ok || !recipientResponse.ok) {
+      return logShardHealthFailure(
+        shard,
+        "health_http_error",
+        `${healthResponse.status}/${recipientResponse.status}`,
+      );
+    }
     const health = await healthResponse.json() as Record<string, unknown>;
     const recipient = await recipientResponse.json() as Record<string, unknown>;
+    if (health.status !== "green") return logShardHealthFailure(shard, "health_status_not_green");
+    if (health.ready !== true) return logShardHealthFailure(shard, "worker_not_ready");
+    if (health.attested_ready !== true || recipient.attested_ready !== true) {
+      return logShardHealthFailure(shard, "attestation_not_ready");
+    }
+    if (recipient.recipient_id !== shard.recipient_id) {
+      return logShardHealthFailure(shard, "recipient_id_mismatch");
+    }
+    if (String(recipient.x25519_pub_hex || "").toLowerCase() !== shard.x25519_pub_hex) {
+      return logShardHealthFailure(shard, "recipient_key_mismatch");
+    }
     if (
-      health.status !== "green" ||
-      health.ready !== true ||
-      health.attested_ready !== true ||
-      recipient.attested_ready !== true ||
-      recipient.recipient_id !== shard.recipient_id ||
-      String(recipient.x25519_pub_hex || "").toLowerCase() !== shard.x25519_pub_hex ||
       String(health.image_digest || "").toLowerCase() !== shard.image_digest ||
       String(recipient.image_digest || "").toLowerCase() !== shard.image_digest
-    ) return false;
+    ) {
+      return logShardHealthFailure(shard, "image_digest_mismatch");
+    }
     if (shard.measurement_hex) {
       const observed = String(recipient.measurement_hex || health.measurement_hex || "");
-      if (observed !== shard.measurement_hex) return false;
+      if (observed !== shard.measurement_hex) {
+        return logShardHealthFailure(shard, "measurement_mismatch");
+      }
     }
     if (shard.attestation_hash) {
       const observed = String(recipient.attestation_hash || health.attestation_hash || "");
-      if (observed !== shard.attestation_hash) return false;
+      if (observed !== shard.attestation_hash) {
+        return logShardHealthFailure(shard, "attestation_hash_mismatch");
+      }
     }
     return true;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function logShardHealthFailure(
+  shard: HyperliquidWorkerShard,
+  reason: string,
+  detail: string | null = null,
+): false {
+  console.warn(JSON.stringify({
+    event: "hyperliquid_shard_health",
+    version: 1,
+    shard_id: shard.id,
+    outcome: "unhealthy",
+    reason,
+    detail,
+    observed_at: new Date().toISOString(),
+  }));
+  return false;
 }
 
 function stringField(value: unknown): string {

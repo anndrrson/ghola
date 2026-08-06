@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const privateBlobRecords = new Map<string, string>();
 
@@ -258,6 +258,56 @@ describe("private account store", () => {
       account_commitment: "account_capacity_0",
       recipient_id: "phala:wrong",
     })).toBe(false);
+  });
+
+  it("caps the founding beta at ten accounts on its single Hyperliquid egress", async () => {
+    const shard = { id: "hl-founding", recipient_id: "phala:hl-founding" };
+    const assignments = await Promise.all(Array.from({ length: 11 }, (_, index) =>
+      reserveHyperliquidShardAssignment({
+        account_commitment: `founding_account_${index}`,
+        shards: [shard],
+        slots_per_shard: 10,
+      })
+    ));
+
+    const admitted = assignments.filter((assignment) => assignment !== null);
+    expect(admitted).toHaveLength(10);
+    expect(assignments.filter((assignment) => assignment === null)).toHaveLength(1);
+    expect(new Set(admitted.map((assignment) => assignment.recipient_id))).toEqual(
+      new Set([shard.recipient_id]),
+    );
+    expect(new Set(admitted.map((assignment) => assignment.slot_number)).size).toBe(10);
+  });
+
+  it("reclaims a sealed shard lease after entitlement refreshes stop", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-06T12:00:00.000Z"));
+      const shard = { id: "hl-founding", recipient_id: "phala:hl-founding" };
+      const original = await reserveHyperliquidShardAssignment({
+        account_commitment: "former_paid_account",
+        shards: [shard],
+        slots_per_shard: 1,
+        pending_ttl_ms: 60_000,
+      });
+      expect(original).not.toBeNull();
+      expect(await sealHyperliquidShardAssignment({
+        account_commitment: "former_paid_account",
+        recipient_id: shard.recipient_id,
+        lease_ttl_ms: 60_000,
+      })).toBe(true);
+
+      vi.advanceTimersByTime(60_001);
+      const replacement = await reserveHyperliquidShardAssignment({
+        account_commitment: "new_paid_account",
+        shards: [shard],
+        slots_per_shard: 1,
+        pending_ttl_ms: 60_000,
+      });
+      expect(replacement?.slot_number).toBe(original?.slot_number);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retires only assignments whose recipient is no longer active", async () => {

@@ -61,6 +61,10 @@ describe("manual trading entitlement", () => {
       GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED: "true",
       GHOLA_HYPERLIQUID_LIVE_MODE: "full_ticket",
     })).toBe(true);
+    expect(mainnetTradingSubscriptionGateApplies("hyperliquid_style_market", {
+      NODE_ENV: "production",
+      GHOLA_HYPERLIQUID_LIVE_MODE: "full_ticket",
+    })).toBe(true);
   });
 });
 

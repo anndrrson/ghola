@@ -1,11 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GET as vaultStatus,
   POST as sealVault,
 } from "./vault/route";
 import { POST as armAgent } from "./agent/session/route";
 import { POST as accountSnapshot } from "./account-snapshot/route";
-import { normalizeHyperliquidAccountSnapshot } from "../_lib";
+import {
+  hyperliquidRuntimeStatusForOwner,
+  normalizeHyperliquidAccountSnapshot,
+  privateAccountOwnerFromRequest,
+  privateAccountTradingBillingPolicy,
+} from "../_lib";
 import { GET as accountStream } from "./account-stream/route";
 import { POST as allocateManaged } from "./managed-allocation/route";
 import { GET as hyperliquidRoot } from "./route";
@@ -14,7 +19,10 @@ import { GET as hyperliquidRuntime } from "./runtime/route";
 import { POST as createBalanceFundingIntent } from "../balance/funding-intent/route";
 import { POST as importBalanceCredit } from "../balance/import-credit/route";
 import { POST as verifyVenueEligibility } from "../venues/[platform_class]/eligibility/route";
-import { resetPrivateAccountStoreForTests } from "@/lib/private-account-store";
+import {
+  reserveHyperliquidShardAssignment,
+  resetPrivateAccountStoreForTests,
+} from "@/lib/private-account-store";
 
 function auth(userId: string) {
   return `Bearer ${[
@@ -129,6 +137,7 @@ describe("Hyperliquid private-account routes", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     delete process.env.GHOLA_ENABLE_MOCK_ATTESTED_PROVIDER;
     delete process.env.GHOLA_PRIVATE_AGENT_ENCLAVE_KEY_ID;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
@@ -157,6 +166,7 @@ describe("Hyperliquid private-account routes", () => {
       url: "https://hl-00.example.test",
       recipient_id: "phala:hl-00",
       x25519_pub_hex: "22".repeat(32),
+      image_digest: `sha256:${"33".repeat(32)}`,
       attested_ready: true,
     }]);
     const runtimeRes = await hyperliquidRuntime(
@@ -187,6 +197,50 @@ describe("Hyperliquid private-account routes", () => {
     expect((await reloaded.json()).providers.find(
       (provider: { id: string }) => provider.id === "phala",
     )?.sealed_recipient?.recipient_id).toBe("phala:hl-00");
+  });
+
+  it("does not consume founding capacity before paid admission is verified", async () => {
+    process.env.GHOLA_HYPERLIQUID_WORKER_SHARDS_JSON = JSON.stringify([{
+      id: "hl-founding",
+      url: "https://hl-founding.example.test",
+      recipient_id: "phala:hl-founding",
+      x25519_pub_hex: "22".repeat(32),
+      image_digest: `sha256:${"33".repeat(32)}`,
+      attested_ready: true,
+    }]);
+    const owner = await privateAccountOwnerFromRequest(
+      request("/v1/private-account/hyperliquid/runtime"),
+    );
+    expect(owner).not.toBeNull();
+    const denied = await hyperliquidRuntimeStatusForOwner(owner!, {
+      tier: "free",
+      can_increase_exposure: false,
+      reason: "subscription_required",
+    });
+    expect(denied.remote_execution_ready).toBe(false);
+    expect(denied.blocking_reasons).toEqual(["trading_subscription_required"]);
+
+    const assignments = await Promise.all(Array.from({ length: 10 }, (_, index) =>
+      reserveHyperliquidShardAssignment({
+        account_commitment: `paid_founding_account_${index}`,
+        shards: [{ id: "hl-founding", recipient_id: "phala:hl-founding" }],
+        slots_per_shard: 10,
+      })
+    ));
+    expect(assignments.filter(Boolean)).toHaveLength(10);
+  });
+
+  it("fails closed in production when the billing gate is not configured", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    delete process.env.GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED;
+    const policy = await privateAccountTradingBillingPolicy(
+      request("/v1/private-account/hyperliquid/runtime"),
+    );
+    expect(policy).toEqual({
+      tier: null,
+      can_increase_exposure: false,
+      reason: "billing_gate_misconfigured",
+    });
   });
 
   it("reports missing BYO venue access without jurisdiction gating", async () => {

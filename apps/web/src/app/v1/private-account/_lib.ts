@@ -700,7 +700,13 @@ export interface PrivateAccountAgentBillingGate {
 export interface PrivateAccountTradingBillingPolicy {
   tier: string | null;
   can_increase_exposure: boolean;
-  reason: "entitled" | "gate_disabled" | "auth_required" | "subscription_required" | "billing_unavailable";
+  reason:
+    | "entitled"
+    | "gate_disabled"
+    | "auth_required"
+    | "subscription_required"
+    | "billing_unavailable"
+    | "billing_gate_misconfigured";
 }
 
 export function hasPrivateAccountTradingEntitlement(tier: string | null | undefined): boolean {
@@ -711,6 +717,13 @@ export async function privateAccountTradingBillingPolicy(
   req: Request,
 ): Promise<PrivateAccountTradingBillingPolicy> {
   if (process.env.GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED !== "true") {
+    if (process.env.NODE_ENV === "production") {
+      return {
+        tier: null,
+        can_increase_exposure: false,
+        reason: "billing_gate_misconfigured",
+      };
+    }
     return { tier: null, can_increase_exposure: true, reason: "gate_disabled" };
   }
   if (localPrivateAccountAuthBypassAllowed()) {
@@ -2631,11 +2644,41 @@ export async function hyperliquidVaultStatusForOwner(owner: PrivateAccountReques
   };
 }
 
-export async function hyperliquidRuntimeStatusForOwner(owner: PrivateAccountRequestOwner) {
+export async function hyperliquidRuntimeStatusForOwner(
+  owner: PrivateAccountRequestOwner,
+  billingPolicy: PrivateAccountTradingBillingPolicy,
+) {
   const account = await createOrGetStoredPrivateAccount(owner);
   const vault = await getHyperliquidExecutionVaultByAccount(account.account_commitment);
+  const billingBlockedReason = billingPolicy.can_increase_exposure
+    ? null
+    : billingPolicy.reason === "subscription_required"
+      ? "trading_subscription_required"
+      : billingPolicy.reason;
   const configuredShards = configuredHyperliquidWorkerShards();
-  if (configuredShards.length === 0) return getPrivateAgentRuntimeStatus();
+  if (configuredShards.length === 0) {
+    const runtime = await getPrivateAgentRuntimeStatus();
+    if (!billingBlockedReason) return runtime;
+    logHyperliquidAdmission("blocked", {
+      account_commitment: account.account_commitment,
+      reason: billingBlockedReason,
+      billing_tier: billingPolicy.tier,
+    });
+    return {
+      ...runtime,
+      selected_provider: null,
+      remote_execution_ready: false,
+      blocking_reasons: Array.from(new Set([
+        ...runtime.blocking_reasons,
+        billingBlockedReason,
+      ])),
+      billing: {
+        tier: billingPolicy.tier,
+        admission_ready: false,
+        reason: billingPolicy.reason,
+      },
+    };
+  }
   const shards = await healthyHyperliquidWorkerShards(configuredShards);
   const operatorSpendLock = privateAgentRemoteExecutionDisabled();
   const base = {
@@ -2660,25 +2703,51 @@ export async function hyperliquidRuntimeStatusForOwner(owner: PrivateAccountRequ
       supports_trading_execution: false,
       reason: operatorSpendLock
         ? "Remote private-agent execution is disabled by operator spend lock."
-        : "Hyperliquid shard assignment is pending.",
+        : billingBlockedReason
+          ? billingBlockedReason === "trading_subscription_required"
+            ? "A Founding Trader subscription is required for mainnet worker admission."
+            : "Billing entitlement could not be verified; worker admission is fail-closed."
+          : "Hyperliquid shard assignment is pending.",
       evidence: {
         execution_url_configured: false,
         recipient_configured: false,
       },
     }],
-    blocking_reasons: operatorSpendLock ? ["operator_spend_lock"] : ["hyperliquid_shard_assignment_pending"],
+    blocking_reasons: operatorSpendLock
+      ? ["operator_spend_lock"]
+      : billingBlockedReason
+        ? [billingBlockedReason]
+        : ["hyperliquid_shard_assignment_pending"],
+    billing: {
+      tier: billingPolicy.tier,
+      admission_ready: billingPolicy.can_increase_exposure,
+      reason: billingPolicy.reason,
+    },
     disclosure: "Ghola exposes only attestation-bound shard recipient material; credential plaintext remains client-sealed.",
   };
-  if (operatorSpendLock) return base;
+  if (operatorSpendLock || billingBlockedReason) {
+    logHyperliquidAdmission("blocked", {
+      account_commitment: account.account_commitment,
+      reason: operatorSpendLock ? "operator_spend_lock" : billingBlockedReason,
+      billing_tier: billingPolicy.tier,
+    });
+    return base;
+  }
   const durableRecipient = vault?.vault.encrypted_execution_vault.recipient || null;
   const durableRecipientAvailable = durableRecipient
     ? shards.some((shard) => shard.recipient_id === durableRecipient)
     : false;
   if (durableRecipient && !durableRecipientAvailable) {
-    await retireUnavailableHyperliquidShardAssignment({
+    const retired = await retireUnavailableHyperliquidShardAssignment({
       account_commitment: account.account_commitment,
       active_recipient_ids: shards.map((shard) => shard.recipient_id),
     });
+    if (retired) {
+      logHyperliquidAdmission("retired_unavailable_recipient", {
+        account_commitment: account.account_commitment,
+        reason: "durable_recipient_not_in_healthy_shards",
+      });
+    }
   }
   const assignment = await reserveHyperliquidShardAssignment({
     account_commitment: account.account_commitment,
@@ -2690,6 +2759,11 @@ export async function hyperliquidRuntimeStatusForOwner(owner: PrivateAccountRequ
     ? shards.find((candidate) => candidate.recipient_id === assignment.recipient_id) ?? null
     : null;
   if (!shard) {
+    logHyperliquidAdmission("blocked", {
+      account_commitment: account.account_commitment,
+      reason: "hyperliquid_shard_capacity_exhausted",
+      billing_tier: billingPolicy.tier,
+    });
     return {
       ...base,
       selected_provider: null,
@@ -2749,12 +2823,35 @@ export async function hyperliquidRuntimeStatusForOwner(owner: PrivateAccountRequ
   };
 }
 
-export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwner) {
+function logHyperliquidAdmission(
+  outcome: "blocked" | "retired_unavailable_recipient",
+  fields: {
+    account_commitment: string;
+    reason: string | null;
+    billing_tier?: string | null;
+  },
+) {
+  console.warn(JSON.stringify({
+    event: "hyperliquid_admission",
+    version: 1,
+    outcome,
+    account_commitment: fields.account_commitment,
+    reason: fields.reason,
+    billing_tier: fields.billing_tier ?? null,
+    observed_at: new Date().toISOString(),
+  }));
+}
+
+export async function hyperliquidStatusForOwner(
+  owner: PrivateAccountRequestOwner,
+  req: Request,
+) {
   const account = await createOrGetStoredPrivateAccount(owner);
+  const billingPolicy = await privateAccountTradingBillingPolicy(req);
   const [vault, allocation, runtime, evidence, balanceSnapshot] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
-    hyperliquidRuntimeStatusForOwner(owner).catch(() => null),
+    hyperliquidRuntimeStatusForOwner(owner, billingPolicy).catch(() => null),
     getLatestAnonymityEvidence({ account_commitment: account.account_commitment }),
     getGholaBalanceSnapshot({
       owner_commitment: owner.owner_commitment,
@@ -2872,12 +2969,16 @@ export async function hyperliquidStatusForOwner(owner: PrivateAccountRequestOwne
   };
 }
 
-export async function hyperliquidAccountSnapshotForOwner(owner: PrivateAccountRequestOwner) {
+export async function hyperliquidAccountSnapshotForOwner(
+  owner: PrivateAccountRequestOwner,
+  req: Request,
+) {
   const account = await createOrGetStoredPrivateAccount(owner);
+  const billingPolicy = await privateAccountTradingBillingPolicy(req);
   const [vault, allocation, runtime] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
-    hyperliquidRuntimeStatusForOwner(owner).catch(() => null),
+    hyperliquidRuntimeStatusForOwner(owner, billingPolicy).catch(() => null),
   ]);
   const hasVault = vault?.status === "sealed";
   const hasManaged = allocation?.status === "allocated";
@@ -2992,10 +3093,11 @@ export async function hyperliquidAccountStreamForOwner(
   req: Request,
 ) {
   const account = await createOrGetStoredPrivateAccount(owner);
+  const billingPolicy = await privateAccountTradingBillingPolicy(req);
   const [vault, allocation, runtime] = await Promise.all([
     getHyperliquidExecutionVaultByAccount(account.account_commitment),
     getHyperliquidManagedAllocationByAccount(account.account_commitment),
-    hyperliquidRuntimeStatusForOwner(owner).catch(() => null),
+    hyperliquidRuntimeStatusForOwner(owner, billingPolicy).catch(() => null),
   ]);
   const hasVault = vault?.status === "sealed";
   const hasManaged = allocation?.status === "allocated";
@@ -8912,7 +9014,8 @@ export function mainnetTradingSubscriptionGateApplies(
   platformClass: GholaPlatformClass,
   env: Record<string, string | undefined>,
 ): boolean {
-  if (stringValue(env.GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED) !== "true") return false;
+  const gateConfigured = stringValue(env.GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED) === "true";
+  if (!gateConfigured && env.NODE_ENV !== "production") return false;
   if (platformClass === "hyperliquid_style_market") {
     return stringValue(env.GHOLA_HYPERLIQUID_LIVE_MODE) === "tiny_fill" ||
       stringValue(env.GHOLA_HYPERLIQUID_LIVE_MODE) === "full_ticket";
