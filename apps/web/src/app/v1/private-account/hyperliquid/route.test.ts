@@ -243,6 +243,35 @@ describe("Hyperliquid private-account routes", () => {
     });
   });
 
+  it("forwards the signup bearer identity to billing and admits only the entitled tier", async () => {
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_LOCAL_AUTH_BYPASS;
+    process.env.GHOLA_MAINNET_TRADING_SUBSCRIPTION_GATE_ENABLED = "true";
+    const signupBearer = auth("new_founding_trader");
+    const billingFetch = vi.fn()
+      .mockResolvedValueOnce(Response.json({ tier: "founding_trader" }))
+      .mockResolvedValueOnce(Response.json({ tier: "free" }));
+    vi.stubGlobal("fetch", billingFetch);
+    const req = new Request("https://ghola.test/v1/private-account/hyperliquid/runtime", {
+      headers: { authorization: signupBearer },
+    });
+
+    await expect(privateAccountTradingBillingPolicy(req)).resolves.toEqual({
+      tier: "founding_trader",
+      can_increase_exposure: true,
+      reason: "entitled",
+    });
+    await expect(privateAccountTradingBillingPolicy(req)).resolves.toEqual({
+      tier: "free",
+      can_increase_exposure: false,
+      reason: "subscription_required",
+    });
+    expect(billingFetch).toHaveBeenCalledTimes(2);
+    for (const [url, init] of billingFetch.mock.calls) {
+      expect(url).toMatch(/\/api\/billing\/status$/);
+      expect(init.headers.Authorization).toBe(signupBearer);
+    }
+  });
+
   it("reports missing BYO venue access without jurisdiction gating", async () => {
     process.env.GHOLA_V6_HYPERLIQUID_PILOT_ENABLED = "true";
     process.env.GHOLA_HYPERLIQUID_LIVE_MODE = "tiny_fill";

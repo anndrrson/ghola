@@ -2194,6 +2194,116 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn new_email_user_keeps_one_identity_through_founding_trader_activation() {
+        let Ok(database_url) = ghola_assistant_types::env_compat(
+            "GHOLA_BILLING_E2E_DATABASE_URL",
+            "THUMPER_BILLING_E2E_DATABASE_URL",
+        ) else {
+            eprintln!("skipping new-user billing e2e: GHOLA_BILLING_E2E_DATABASE_URL is not set");
+            return;
+        };
+        let pool = crate::db::create_pool(&database_url)
+            .await
+            .expect("new-user billing e2e database should connect");
+        crate::db::run_migrations(&pool)
+            .await
+            .expect("new-user billing e2e migrations should apply");
+        let mut config = test_config(database_url);
+        config.founding_trader_max_seats = 10;
+        let state = AppState::new(config, pool.clone());
+
+        let run_id = uuid::Uuid::new_v4();
+        let email = format!("new-founding-user-{run_id}@example.invalid");
+        let password = "test-only-password-2026";
+        let signup = crate::routes::auth::email_sign_up(
+            State(state.clone()),
+            Json(crate::routes::auth::EmailSignUpRequest {
+                email: email.clone(),
+                password: password.to_string(),
+                display_name: Some("New Founding Trader".to_string()),
+            }),
+        )
+        .await
+        .expect("new email signup should succeed")
+        .0;
+        assert!(signup.is_new_user);
+        let signup_claims = crate::auth::verify_jwt(&signup.token, &state.config.jwt_secret)
+            .expect("signup token should verify");
+        assert_eq!(signup_claims.sub, signup.user_id);
+        assert_eq!(signup_claims.email.as_deref(), Some(email.as_str()));
+        assert_eq!(signup_claims.tier, "free");
+
+        let before = billing_status(
+            State(state.clone()),
+            crate::auth::AuthUser(signup_claims.clone()),
+        )
+        .await
+        .expect("free billing status should load")
+        .0;
+        assert_eq!(before.tier, "free");
+        assert_eq!(before.founding_trader_cohort.capacity, 10);
+        assert_eq!(before.founding_trader_cohort.claimed_seats, 0);
+        assert_eq!(before.founding_trader_cohort.remaining_seats, 10);
+
+        let customer_id = format!("cus_new_founding_{run_id}");
+        let subscription_id = format!("sub_new_founding_{run_id}");
+        let checkout_event = serde_json::json!({
+            "id": format!("evt_new_founding_{run_id}"),
+            "type": "checkout.session.completed",
+            "created": chrono::Utc::now().timestamp(),
+            "livemode": false,
+            "data": { "object": {
+                "id": format!("cs_new_founding_{run_id}"),
+                "customer": customer_id,
+                "subscription": subscription_id,
+                "client_reference_id": signup.user_id,
+                "payment_status": "paid",
+                "metadata": {
+                    "ghola_kind": "subscription",
+                    "ghola_tier": "founding_trader",
+                    "user_id": signup.user_id,
+                    "price_id": "price_founding"
+                }
+            }}
+        });
+        let delivered = deliver_test_event(&state, checkout_event).await;
+        assert_eq!(delivered["duplicate"], false);
+
+        let entitled = billing_status(State(state.clone()), crate::auth::AuthUser(signup_claims))
+            .await
+            .expect("paid billing status should load for the signup identity")
+            .0;
+        assert_eq!(entitled.tier, "founding_trader");
+        assert_eq!(entitled.subscription_status.as_deref(), Some("active"));
+        assert_eq!(entitled.founding_trader_cohort.claimed_seats, 1);
+        assert_eq!(entitled.founding_trader_cohort.remaining_seats, 9);
+        assert!(entitled.founding_trader_cohort.checkout_open);
+
+        let signin = crate::routes::auth::email_sign_in(
+            State(state.clone()),
+            Json(crate::routes::auth::EmailSignInRequest {
+                email,
+                password: password.to_string(),
+            }),
+        )
+        .await
+        .expect("the paid user should sign in again")
+        .0;
+        assert!(!signin.is_new_user);
+        assert_eq!(signin.user_id, signup.user_id);
+        let signin_claims = crate::auth::verify_jwt(&signin.token, &state.config.jwt_secret)
+            .expect("signin token should verify");
+        assert_eq!(signin_claims.sub, signup.user_id);
+        assert_eq!(signin_claims.tier, "founding_trader");
+
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(signup.user_id)
+            .execute(&pool)
+            .await
+            .expect("new-user billing test should clean up");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn signed_webhooks_are_idempotent_ordered_and_restore_paid_entitlements() {
         let Ok(database_url) = ghola_assistant_types::env_compat(
             "GHOLA_BILLING_E2E_DATABASE_URL",
