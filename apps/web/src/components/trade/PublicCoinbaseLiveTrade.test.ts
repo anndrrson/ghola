@@ -51,6 +51,22 @@ describe("Hyperliquid execution evidence", () => {
       status: "filled",
       final_proof: { final_fill_proven: true },
     })).toContain("fill proven");
+    expect(hyperliquidExecutionNotice({
+      status: "filled",
+      final_proof: {
+        final_fill_proven: true,
+        final_position_state_checked: true,
+        final_position_flat_proven: true,
+      },
+    })).toContain("flat position proven");
+    expect(hyperliquidExecutionNotice({
+      status: "filled",
+      final_proof: {
+        final_fill_proven: true,
+        final_position_state_checked: true,
+        final_position_flat_proven: false,
+      },
+    })).toContain("residual position");
     expect(hyperliquidExecutionNotice({ status: "resting" })).toContain("working, not filled");
     expect(hyperliquidExecutionNotice({ status: "unfilled" })).toContain("without a fill");
     expect(hyperliquidExecutionNotice({ status: "submitted" })).toContain("no fill is proven yet");
@@ -154,6 +170,15 @@ describe("bounded Hyperliquid ticket", () => {
     expect(validatePerpTicket(ticket("16", true), "70", 20, 50, 2)).not.toContain(
       "Orders are capped at $15 during the bounded mainnet launch.",
     );
+  });
+
+  it("allows an exact close without accepting a user-supplied size", () => {
+    expect(validatePerpTicket({
+      ...ticket("", true),
+      size_mode: "base",
+      live_order_mode: "tiny_fill",
+      close_position: true,
+    }, "70", 20, 50, 2)).toEqual([]);
   });
 });
 

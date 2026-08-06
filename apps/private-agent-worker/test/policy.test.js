@@ -42,6 +42,21 @@ describe("trading subscription execution policy", () => {
     }));
   });
 
+  it("preserves exact-close intent only for reduce-only Hyperliquid orders", () => {
+    const exactClose = hyperliquidTinyFillOrder({
+      reduce_only: true,
+      close_position: true,
+      quote_size: "",
+    });
+    assert.equal(exactClose.order.reduce_only, true);
+    assert.equal(exactClose.order.close_position, true);
+    assert.equal(exactClose.order.quote_size, null);
+    assert.throws(
+      () => hyperliquidTinyFillOrder({ reduce_only: false, close_position: true }),
+      /exact position close requires a reduce-only Hyperliquid order/,
+    );
+  });
+
   it("allows cancellation during billing failure", () => {
     assert.doesNotThrow(() => enforceBillingExecutionPolicy({
       body: { billing_execution_policy: "risk_reducing_only" },

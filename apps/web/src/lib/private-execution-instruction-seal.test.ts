@@ -229,6 +229,49 @@ describe("private execution instruction sealing", () => {
     });
   });
 
+  it("preserves an exact reduce-only close inside the sealed tiny-fill ticket", async () => {
+    const recipientSecret = x25519.utils.randomPrivateKey();
+    const recipientPub = x25519.getPublicKey(recipientSecret);
+    const senderSecret = ed25519.utils.randomPrivateKey();
+    const ownerWalletAddress = bs58.encode(ed25519.getPublicKey(senderSecret));
+    const built = await buildPrivateExecutionInstructionBundle({
+      ownerWalletAddress,
+      previewCommitment: "preview_exact_hyperliquid_close",
+      runtimeStatus: runtimeWithRecipient("phala:cvm:exact-close", recipientPub),
+      signBytes: async (bytes) => ed25519.sign(bytes, senderSecret),
+      order: {
+        venue_id: "hyperliquid",
+        operation_class: "limit_order",
+        market: "BTC",
+        side: "sell",
+        base_size: "",
+        limit_price: "",
+        quote_size: "",
+        max_slippage_bps: "50",
+        live_order_mode: "tiny_fill",
+        order_type: "market",
+        size_mode: "quote",
+        tif: "Ioc",
+        reduce_only: true,
+        close_position: true,
+      },
+    });
+    const opened = await open(
+      base64ToBytes(built.encrypted_execution_instruction_bundle.ciphertext),
+      recipientSecret,
+    );
+    const plaintext = JSON.parse(new TextDecoder().decode(opened.plaintext));
+    expect(plaintext.order).toMatchObject({
+      market: "BTC",
+      side: "sell",
+      reduce_only: true,
+      close_position: true,
+      live_order_mode: "tiny_fill",
+      tif: "Ioc",
+    });
+    expect(plaintext.order).not.toHaveProperty("quote_size");
+  });
+
   it("seals a full Hyperliquid bracket with leverage and isolated margin", async () => {
     const recipientSecret = x25519.utils.randomPrivateKey();
     const recipientPub = x25519.getPublicKey(recipientSecret);
@@ -287,6 +330,10 @@ describe("private execution instruction sealing", () => {
       reduce_only: true,
       protective_orders: { stop_loss: "71000" },
     })).toContain("Reduce-only orders cannot attach a new TP/SL bracket.");
+    expect(validatePrivateExecutionOrderDraft({
+      ...base,
+      close_position: true,
+    })).toContain("Exact position close requires a reduce-only Hyperliquid order.");
   });
 
   it("seals Phoenix tiny-fill tickets with a price limit", async () => {

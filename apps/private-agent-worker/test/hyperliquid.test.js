@@ -54,6 +54,42 @@ describe("Hyperliquid immediate execution proof", () => {
     assert.equal(result.final_proof.final_venue_execution_proven, true);
     assert.equal(result.final_proof.final_fill_proven, false);
   });
+
+  it("separates a filled exact close from proof that the account is flat", async () => {
+    const instruction = {
+      operation_class: "limit_order",
+      order: { market: "BTC", reduce_only: true, close_position: true },
+    };
+    const flat = await submitHyperliquidExecution({
+      credential: { network: "testnet" },
+      instruction,
+      cloid: "0x" + "3".repeat(32),
+      runner: async () => ({
+        status: "filled",
+        fills: [{ oid: 9, px: "64000", sz: "0.0002" }],
+        final_position_state_checked: true,
+        final_position_flat_proven: true,
+      }),
+    });
+    const residual = await submitHyperliquidExecution({
+      credential: { network: "testnet" },
+      instruction,
+      cloid: "0x" + "4".repeat(32),
+      runner: async () => ({
+        status: "filled",
+        fills: [{ oid: 10, px: "64000", sz: "0.0001" }],
+        final_position_state_checked: true,
+        final_position_flat_proven: false,
+      }),
+    });
+
+    assert.equal(flat.final_proof.final_fill_proven, true);
+    assert.equal(flat.final_proof.final_position_state_checked, true);
+    assert.equal(flat.final_proof.final_position_flat_proven, true);
+    assert.equal(residual.final_proof.final_fill_proven, true);
+    assert.equal(residual.final_proof.final_position_state_checked, true);
+    assert.equal(residual.final_proof.final_position_flat_proven, false);
+  });
 });
 
 describe("Hyperliquid deployment configuration", () => {
@@ -66,6 +102,33 @@ describe("Hyperliquid deployment configuration", () => {
       assert.doesNotThrow(() => assertHyperliquidPilotNetwork(
         { network: "mainnet" },
         { operation_class: "limit_order", order: { market: "BTC" } },
+      ));
+    } finally {
+      if (previousAllow == null) delete process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET;
+      else process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = previousAllow;
+      if (previousMode == null) delete process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE;
+      else process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = previousMode;
+    }
+  });
+
+  it("accepts an exact close without an unrelated quote amount", () => {
+    const previousAllow = process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET;
+    const previousMode = process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE;
+    process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET = "true";
+    process.env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE = "tiny_fill";
+    try {
+      assert.doesNotThrow(() => assertHyperliquidPilotNetwork(
+        { network: "mainnet" },
+        {
+          operation_class: "limit_order",
+          order: {
+            market: "BTC",
+            live_order_mode: "tiny_fill",
+            tif: "Ioc",
+            reduce_only: true,
+            close_position: true,
+          },
+        },
       ));
     } finally {
       if (previousAllow == null) delete process.env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET;
@@ -195,6 +258,99 @@ except SystemExit:
     const failure = JSON.parse(result.stdout.trim());
     assert.equal(failure.error_code, "venue_rejected");
     assert.equal(failure.submission_state, "not_submitted");
+  });
+});
+
+describe("Hyperliquid exact position close", () => {
+  it("derives the full base size and opposite side from venue position state", () => {
+    const runnerPath = fileURLToPath(new URL("../src/venues/hyperliquid_runner.py", import.meta.url));
+    const script = `
+import importlib.util, json
+spec = importlib.util.spec_from_file_location("ghola_hl_runner", ${JSON.stringify(runnerPath)})
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+class Info:
+    def __init__(self, size): self.size = size
+    def user_state(self, _account):
+        return {"assetPositions": [{"position": {"coin": "BTC", "szi": self.size}}]}
+    def all_mids(self): return {"BTC": "100"}
+def order(side):
+    return {"market": "BTC", "side": side, "reduce_only": True, "close_position": True, "max_slippage_bps": "50"}
+print(json.dumps([
+    runner.resolve_limit_order(Info("0.125"), order("sell"), "0xaccount"),
+    runner.resolve_limit_order(Info("-0.375"), order("buy"), "0xaccount"),
+]))
+`;
+    const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+    assert.equal(result.status, 0);
+    assert.deepEqual(JSON.parse(result.stdout.trim()), [
+      {
+        base_size: "0.125",
+        limit_price: "99.5",
+        tif: "Ioc",
+        account_state_checked: true,
+        source_position_size: "0.125",
+      },
+      {
+        base_size: "0.375",
+        limit_price: "100.5",
+        tif: "Ioc",
+        account_state_checked: true,
+        source_position_size: "-0.375",
+      },
+    ]);
+  });
+
+  it("fails closed when the requested side would not reduce the live position", () => {
+    const runnerPath = fileURLToPath(new URL("../src/venues/hyperliquid_runner.py", import.meta.url));
+    const script = `
+import importlib.util
+spec = importlib.util.spec_from_file_location("ghola_hl_runner", ${JSON.stringify(runnerPath)})
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+class Info:
+    def user_state(self, _account):
+        return {"assetPositions": [{"position": {"coin": "BTC", "szi": "0.125"}}]}
+    def all_mids(self): return {"BTC": "100"}
+try:
+    runner.resolve_limit_order(Info(), {"market": "BTC", "side": "buy", "reduce_only": True, "close_position": True}, "0xaccount")
+except SystemExit:
+    pass
+`;
+    const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+    assert.equal(result.status, 0);
+    const failure = JSON.parse(result.stdout.trim());
+    assert.equal(failure.error_code, "venue_rejected");
+    assert.match(failure.error, /does not reduce/);
+  });
+
+  it("proves flat only from a successful post-order venue account read", () => {
+    const runnerPath = fileURLToPath(new URL("../src/venues/hyperliquid_runner.py", import.meta.url));
+    const script = `
+import importlib.util, json
+spec = importlib.util.spec_from_file_location("ghola_hl_runner", ${JSON.stringify(runnerPath)})
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+class Info:
+    def __init__(self, state): self.state = state
+    def user_state(self, _account):
+        if self.state == "error": raise RuntimeError("unavailable")
+        if self.state == "flat": return {"assetPositions": []}
+        return {"assetPositions": [{"position": {"coin": "BTC", "szi": "0.025"}}]}
+order = {"market": "BTC", "reduce_only": True, "close_position": True}
+print(json.dumps([
+    runner.reconcile_exact_position_close(Info("flat"), order, "0xaccount"),
+    runner.reconcile_exact_position_close(Info("residual"), order, "0xaccount"),
+    runner.reconcile_exact_position_close(Info("error"), order, "0xaccount"),
+]))
+`;
+    const result = spawnSync("python3", ["-c", script], { encoding: "utf8" });
+    assert.equal(result.status, 0);
+    assert.deepEqual(JSON.parse(result.stdout.trim()), [
+      { final_position_state_checked: true, final_position_flat_proven: true },
+      { final_position_state_checked: true, final_position_flat_proven: false },
+      { final_position_state_checked: false, final_position_flat_proven: false },
+    ]);
   });
 });
 

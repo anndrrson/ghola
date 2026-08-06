@@ -221,6 +221,8 @@ describe("Hyperliquid private execution layer", () => {
           broadcast_performed: true,
           final_venue_execution_proven: true,
           final_fill_proven: true,
+          final_position_state_checked: true,
+          final_position_flat_proven: true,
           checked_at: NOW.toISOString(),
         },
       }, { status: 202 }),
@@ -327,6 +329,7 @@ describe("Hyperliquid private execution layer", () => {
     if (!submitted.ok) return;
     expect(submitted.result.status).toBe("filled");
     expect(submitted.result.final_proof?.final_fill_proven).toBe(true);
+    expect(submitted.result.final_proof?.final_position_flat_proven).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toBe("https://worker.ghola.test/hyperliquid/orders");

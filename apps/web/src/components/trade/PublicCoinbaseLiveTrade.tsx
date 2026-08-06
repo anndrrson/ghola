@@ -74,7 +74,12 @@ export const HYPERLIQUID_REVIEW_TTL_MS = 60_000;
 
 export function hyperliquidExecutionNotice(result: {
   status?: string;
-  final_proof?: { final_fill_proven?: boolean; final_venue_execution_proven?: boolean } | null;
+  final_proof?: {
+    final_fill_proven?: boolean;
+    final_venue_execution_proven?: boolean;
+    final_position_state_checked?: boolean;
+    final_position_flat_proven?: boolean;
+  } | null;
 }): string {
   const status = result.status || "submitted";
   if (status === "unfilled") {
@@ -84,6 +89,15 @@ export function hyperliquidExecutionNotice(result: {
     return "Hyperliquid accepted a resting order. It is working, not filled.";
   }
   if (result.final_proof?.final_fill_proven === true) {
+    if (result.final_proof.final_position_flat_proven === true) {
+      return "Hyperliquid fill and final flat position proven by venue state.";
+    }
+    if (result.final_proof.final_position_state_checked === true) {
+      return "Hyperliquid fill proven, but the venue still reports a residual position.";
+    }
+    if (result.final_proof.final_position_state_checked === false) {
+      return "Hyperliquid fill proven, but final flat position is not yet proven.";
+    }
     return "Hyperliquid fill proven by the venue response. Account state refreshed.";
   }
   if (status === "filled") {
@@ -874,6 +888,7 @@ function AlternateProductWorkspace({
   const [orderType, setOrderType] = useState<"market" | "limit">("market");
   const [timeInForce, setTimeInForce] = useState<"Gtc" | "Ioc" | "Alo">("Gtc");
   const [reduceOnly, setReduceOnly] = useState(false);
+  const [closePosition, setClosePosition] = useState(false);
   const [leverage, setLeverage] = useState("1");
   const [marginMode, setMarginMode] = useState<"cross" | "isolated">("cross");
   const [maxSlippageBps, setMaxSlippageBps] = useState(String(hyperliquidMaxSlippageBps));
@@ -955,21 +970,23 @@ function AlternateProductWorkspace({
     market: perpMarket,
     side,
     base_size: "",
-    quote_size: amount,
-    limit_price: orderType === "limit" ? limitPrice : "",
-    order_type: orderType,
-    size_mode: "quote",
-    tif: orderType === "market" ? "Ioc" : timeInForce,
+    quote_size: closePosition ? "" : amount,
+    limit_price: !closePosition && orderType === "limit" ? limitPrice : "",
+    order_type: closePosition ? "market" : orderType,
+    size_mode: closePosition ? "base" : "quote",
+    tif: closePosition || orderType === "market" ? "Ioc" : timeInForce,
+    ...(closePosition ? { live_order_mode: "tiny_fill" as const } : {}),
     max_slippage_bps: maxSlippageBps,
     reduce_only: reduceOnly,
-    post_only: orderType === "limit" && timeInForce === "Alo",
+    close_position: reduceOnly && closePosition,
+    post_only: !closePosition && orderType === "limit" && timeInForce === "Alo",
     leverage: Number(leverage),
     margin_mode: marginMode,
     protective_orders: reduceOnly ? undefined : {
       ...(stopLoss.trim() ? { stop_loss: stopLoss.trim() } : {}),
       ...(takeProfit.trim() ? { take_profit: takeProfit.trim() } : {}),
     },
-  }), [amount, leverage, limitPrice, marginMode, maxSlippageBps, orderType, perpMarket, reduceOnly, side, stopLoss, takeProfit, timeInForce]);
+  }), [amount, closePosition, leverage, limitPrice, marginMode, maxSlippageBps, orderType, perpMarket, reduceOnly, side, stopLoss, takeProfit, timeInForce]);
   const perpOrderErrors = useMemo(
     () => validatePerpTicket(
       perpOrder,
@@ -1150,7 +1167,7 @@ function AlternateProductWorkspace({
         kill_switch: false,
       });
       setPerpNotice("Creating a private order intent…");
-      const safeInput = perpSafeInput(perpMarket, amount);
+      const safeInput = perpSafeInput(perpMarket, amount, closePosition);
       const intent = await createPrivateAccountIntent(safeInput) as { intent_id?: string };
       if (!intent.intent_id) throw new Error("Ghola could not create the private order intent.");
       setPerpNotice("Binding the private runtime envelope…");
@@ -1228,10 +1245,20 @@ function AlternateProductWorkspace({
       }) as {
         execution?: {
           status?: string;
-          final_proof?: { final_fill_proven?: boolean; final_venue_execution_proven?: boolean } | null;
+          final_proof?: {
+            final_fill_proven?: boolean;
+            final_venue_execution_proven?: boolean;
+            final_position_state_checked?: boolean;
+            final_position_flat_proven?: boolean;
+          } | null;
         };
         status?: string;
-        final_proof?: { final_fill_proven?: boolean; final_venue_execution_proven?: boolean } | null;
+        final_proof?: {
+          final_fill_proven?: boolean;
+          final_venue_execution_proven?: boolean;
+          final_position_state_checked?: boolean;
+          final_position_flat_proven?: boolean;
+        } | null;
       };
       const result = execution.execution ?? execution;
       setPerpNotice(hyperliquidExecutionNotice(result));
@@ -1446,7 +1473,9 @@ function AlternateProductWorkspace({
                       </button>
                     ))}
                   </div>
-                  <TicketInput label="Size" prefix="$" value={amount} onChange={setAmount} />
+                  {closePosition
+                    ? <TicketField label="Size" value="Full live position at submit" readOnly />
+                    : <TicketInput label="Size" prefix="$" value={amount} onChange={setAmount} />}
                   {orderType === "limit" && (
                     <TicketInput label="Limit price" prefix="$" value={limitPrice} onChange={setLimitPrice} placeholder="Required" />
                   )}
@@ -1492,10 +1521,30 @@ function AlternateProductWorkspace({
                         <input
                           type="checkbox"
                           checked={reduceOnly}
-                          onChange={(event) => setReduceOnly(event.target.checked)}
+                          onChange={(event) => {
+                            setReduceOnly(event.target.checked);
+                            if (!event.target.checked) setClosePosition(false);
+                          }}
                           className="h-4 w-4 accent-[#3da8ff]"
                         />
                       </label>
+                      {reduceOnly && (
+                        <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-[#28313d] bg-[#080a0d] px-3 text-sm text-[#aab4c2]">
+                          Close full live position
+                          <input
+                            type="checkbox"
+                            checked={closePosition}
+                            onChange={(event) => {
+                              setClosePosition(event.target.checked);
+                              if (event.target.checked) {
+                                setOrderType("market");
+                                setLimitPrice("");
+                              }
+                            }}
+                            className="h-4 w-4 accent-[#3da8ff]"
+                          />
+                        </label>
+                      )}
                       {orderType === "limit" && (
                         <label className="block">
                           <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-[#778295]">Time in force</span>
@@ -1602,18 +1651,18 @@ function AlternateProductWorkspace({
             <div className="flex items-start justify-between gap-4 border-b border-[#232b35] pb-5">
               <div>
                 <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#3da8ff]">Final review</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">{side === "buy" ? "Long" : "Short"} {perpMarket}-PERP</h2>
-                <p className="mt-1 text-sm text-[#7f8998]">Hyperliquid · {marginMode} · {leverage}×</p>
+                <h2 className="mt-2 text-2xl font-semibold text-white">{closePosition ? "Close" : side === "buy" ? "Long" : "Short"} {perpMarket}-PERP</h2>
+                <p className="mt-1 text-sm text-[#7f8998]">{closePosition ? "Hyperliquid · IOC · reduce only" : `Hyperliquid · ${marginMode} · ${leverage}×`}</p>
               </div>
               <button type="button" disabled={perpWorking !== null} onClick={() => setPerpReview(null)} className="rounded-md p-2 text-[#7f8998] hover:bg-white/5 hover:text-white disabled:opacity-40">Close</button>
             </div>
             <div className="mt-5 grid grid-cols-2 gap-2">
-              <ReviewDatum label="Order" value={orderType === "market" ? `Market · ${maxSlippageBps} bps max` : `Limit · ${timeInForce}`} />
-              <ReviewDatum label="Notional" value={`$${amount}`} />
+              <ReviewDatum label="Order" value={closePosition || orderType === "market" ? `Market · ${maxSlippageBps} bps max` : `Limit · ${timeInForce}`} />
+              <ReviewDatum label="Notional" value={closePosition ? "Full live position" : `$${amount}`} />
               <ReviewDatum label="Reference" value={formatUsdPrice(displayedMid)} />
-              <ReviewDatum label="Estimated size" value={estimatedPerpSize(amount, displayedMid, perpMarket)} />
-              <ReviewDatum label="Initial margin" value={estimatedMargin(amount, leverage)} />
-              <ReviewDatum label="Mode" value={`${reduceOnly ? "reduce-only · " : ""}${marginMode} · ${leverage}×`} />
+              <ReviewDatum label="Estimated size" value={closePosition ? "Venue position at submit" : estimatedPerpSize(amount, displayedMid, perpMarket)} />
+              <ReviewDatum label="Initial margin" value={closePosition ? "Not applicable" : estimatedMargin(amount, leverage)} />
+              <ReviewDatum label="Mode" value={closePosition ? "Exact reduce-only close" : `${reduceOnly ? "reduce-only · " : ""}${marginMode} · ${leverage}×`} />
             </div>
             {(stopLoss || takeProfit) && !reduceOnly && (
               <div className="mt-4 rounded-lg border border-[#294437] bg-[#0b1913] p-4">
@@ -1628,7 +1677,7 @@ function AlternateProductWorkspace({
             <div className="mt-auto grid gap-2 pt-6">
               <button type="button" disabled={perpWorking !== null} onClick={() => void submitPerpOrder()} className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-[#3da8ff] text-sm font-bold text-[#03101d] hover:bg-[#67baff] disabled:cursor-wait disabled:opacity-65">
                 <ShieldCheck className="h-4 w-4" />
-                {perpWorking === "submit" ? "Submitting securely…" : `Submit ${side === "buy" ? "long" : "short"}`}
+                {perpWorking === "submit" ? "Submitting securely…" : closePosition ? "Submit exact close" : `Submit ${side === "buy" ? "long" : "short"}`}
               </button>
               <button type="button" disabled={perpWorking !== null} onClick={() => setPerpReview(null)} className="h-11 rounded-md border border-[#2b3441] text-sm text-[#aab4c2] hover:border-[#465367] hover:text-white disabled:opacity-40">Back to ticket</button>
             </div>
@@ -1857,10 +1906,10 @@ export function minimumExecutablePerpQuote(
   return Math.ceil((minimum + 0.01) * 100) / 100;
 }
 
-function perpSafeInput(market: string, amount: string): PrivateAccountSafeInput {
+function perpSafeInput(market: string, amount: string, fullPosition = false): PrivateAccountSafeInput {
   const notional = Number(amount);
   const buckets = [5, 10, 25, 50, 100, 250, 500, 1_000] as const;
-  const bucket = buckets.find((candidate) => candidate >= notional) ?? 1_000;
+  const bucket = fullPosition ? 1_000 : buckets.find((candidate) => candidate >= notional) ?? 1_000;
   const normalized = market.toUpperCase();
   return {
     action_class: "trade_on_platform",

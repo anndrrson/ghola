@@ -185,6 +185,8 @@ function normalizeOrder(order, venueId, operationClass) {
   }
   const liveOrderMode = normalizeLiveOrderMode(order.live_order_mode || order.mode);
   const orderType = normalizeOrderType(order.order_type);
+  const reduceOnly = order.reduce_only === true;
+  const closePosition = order.close_position === true;
   const sizeMode = normalizeSizeMode(order.size_mode || (order.quote_size || order.notional_usd ? "quote" : "base"));
   const hyperliquidTinyFill =
     venueId === "hyperliquid" &&
@@ -196,16 +198,19 @@ function normalizeOrder(order, venueId, operationClass) {
   }
   const baseSize = decimalString(order.base_size ?? order.size ?? order.sz);
   const quoteSize = decimalString(order.quote_size ?? order.notional_usd);
-  if (sizeMode === "base" && !baseSize) {
+  if (closePosition && (venueId !== "hyperliquid" || !reduceOnly)) {
+    throw new ExecutionPolicyError("exact position close requires a reduce-only Hyperliquid order");
+  }
+  if (!closePosition && sizeMode === "base" && !baseSize) {
     throw new ExecutionPolicyError("execution instruction base size is required");
   }
-  if (sizeMode === "quote" && !quoteSize) {
+  if (!closePosition && sizeMode === "quote" && !quoteSize) {
     throw new ExecutionPolicyError("execution instruction quote size is required");
   }
-  if (!baseSize && !quoteSize) {
+  if (!closePosition && !baseSize && !quoteSize) {
     throw new ExecutionPolicyError("execution instruction size is required");
   }
-  if (hyperliquidTinyFill && !quoteSize) {
+  if (hyperliquidTinyFill && !closePosition && !quoteSize) {
     throw new ExecutionPolicyError("hyperliquid tiny fill requires quote size");
   }
   const tif = stringValue(order.tif || order.time_in_force || "Gtc");
@@ -223,7 +228,8 @@ function normalizeOrder(order, venueId, operationClass) {
     live_order_mode: liveOrderMode,
     max_slippage_bps: maxSlippageBps,
     post_only: order.post_only === true,
-    reduce_only: order.reduce_only === true,
+    reduce_only: reduceOnly,
+    ...(closePosition ? { close_position: true } : {}),
   };
 }
 

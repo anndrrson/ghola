@@ -33,6 +33,7 @@ export interface PrivateExecutionOrderDraft {
   size_mode?: "base" | "quote";
   post_only?: boolean;
   reduce_only?: boolean;
+  close_position?: boolean;
   leverage?: number;
   margin_mode?: "cross" | "isolated";
   protective_orders?: {
@@ -247,6 +248,9 @@ export function validatePrivateExecutionOrderDraft(draft: PrivateExecutionOrderD
   if (draft.reduce_only && (stopLoss || takeProfit)) {
     errors.push("Reduce-only orders cannot attach a new TP/SL bracket.");
   }
+  if (draft.close_position && (draft.venue_id !== "hyperliquid" || !draft.reduce_only)) {
+    errors.push("Exact position close requires a reduce-only Hyperliquid order.");
+  }
   const tinyFill =
     (draft.venue_id === "hyperliquid" || draft.venue_id === "phoenix") &&
     draft.live_order_mode === "tiny_fill";
@@ -255,9 +259,9 @@ export function validatePrivateExecutionOrderDraft(draft: PrivateExecutionOrderD
   if (tinyFill) {
     const quoteSize = draft.quote_size?.trim() || "";
     const slippageBps = draft.max_slippage_bps?.trim() || "50";
-    if (!DECIMAL_RE.test(quoteSize) || Number(quoteSize) <= 0) {
+    if (!draft.close_position && (!DECIMAL_RE.test(quoteSize) || Number(quoteSize) <= 0)) {
       errors.push("Enter a live order amount greater than $0.");
-    } else if (Number(quoteSize) > 25) {
+    } else if (!draft.close_position && Number(quoteSize) > 25) {
       errors.push("Live orders are capped at $25.");
     }
     if (draft.venue_id === "hyperliquid" && (!/^\d+$/.test(slippageBps) || Number(slippageBps) < 1 || Number(slippageBps) > 100)) {
@@ -283,10 +287,10 @@ export function validatePrivateExecutionOrderDraft(draft: PrivateExecutionOrderD
     ) {
       errors.push("Enter a Phoenix market price limit greater than 0.");
     }
-    if (!DECIMAL_RE.test(draft.base_size.trim()) || Number(draft.base_size) <= 0) {
+    if (!draft.close_position && (!DECIMAL_RE.test(draft.base_size.trim()) || Number(draft.base_size) <= 0)) {
       if (sizeMode === "base") errors.push("Enter a base size greater than 0.");
     }
-    if (sizeMode === "quote") {
+    if (!draft.close_position && sizeMode === "quote") {
       const quoteSize = draft.quote_size?.trim() || "";
       if (!DECIMAL_RE.test(quoteSize) || Number(quoteSize) <= 0) {
         errors.push("Enter a USD amount greater than 0.");
@@ -437,7 +441,9 @@ export async function buildPrivateExecutionInstructionBundle(
         side: options.order.side,
         ...(options.order.live_order_mode === "tiny_fill"
           ? {
-              quote_size: options.order.quote_size?.trim(),
+              ...(options.order.quote_size?.trim()
+                ? { quote_size: options.order.quote_size.trim() }
+                : {}),
               ...(options.order.venue_id === "hyperliquid"
                 ? { max_slippage_bps: options.order.max_slippage_bps?.trim() || "50" }
                 : {}),
@@ -446,6 +452,8 @@ export async function buildPrivateExecutionInstructionBundle(
                 : {}),
               live_order_mode: "tiny_fill" as const,
               tif: "Ioc",
+              ...(options.order.reduce_only ? { reduce_only: true } : {}),
+              ...(options.order.close_position ? { close_position: true } : {}),
             }
           : {
               order_type: options.order.order_type || "limit",
@@ -458,6 +466,7 @@ export async function buildPrivateExecutionInstructionBundle(
               tif: options.order.tif || (options.order.venue_id === "coinbase_advanced" ? "gtc" : "Gtc"),
               post_only: options.order.post_only === true,
               reduce_only: options.order.reduce_only === true,
+              ...(options.order.close_position ? { close_position: true } : {}),
               leverage: options.order.leverage ?? 1,
               margin_mode: options.order.margin_mode || "cross",
               ...(options.order.protective_orders?.stop_loss?.trim() ||

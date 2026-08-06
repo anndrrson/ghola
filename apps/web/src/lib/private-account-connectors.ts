@@ -208,6 +208,8 @@ export interface GholaConnectorFinalProof {
   broadcast_performed: boolean;
   final_venue_execution_proven: boolean;
   final_fill_proven: boolean;
+  final_position_state_checked?: boolean;
+  final_position_flat_proven?: boolean;
   signature_commitment?: string | null;
   request_commitment?: string | null;
   checked_at: string;
@@ -2124,6 +2126,12 @@ function connectorFinalProof(value: unknown): GholaConnectorFinalProof | null {
     broadcast_performed: body.broadcast_performed === true,
     final_venue_execution_proven: body.final_venue_execution_proven === true,
     final_fill_proven: body.final_fill_proven === true,
+    ...(typeof body.final_position_state_checked === "boolean"
+      ? { final_position_state_checked: body.final_position_state_checked }
+      : {}),
+    ...(typeof body.final_position_flat_proven === "boolean"
+      ? { final_position_flat_proven: body.final_position_flat_proven }
+      : {}),
     signature_commitment: stringValue(body.signature_commitment) || null,
     request_commitment: stringValue(body.request_commitment) || null,
     checked_at: checkedAt,

@@ -100,6 +100,8 @@ def main():
                     "connector_submit_failed",
                     "unknown",
                 )
+            if order.get("reduce_only") and order.get("close_position"):
+                redacted.update(reconcile_exact_position_close(info, order, account_address))
             print(json.dumps(redacted))
             return
         if op == "cancel":
@@ -177,6 +179,8 @@ def apply_order_leverage(exchange, info, order):
 
 
 def resolve_limit_order(info, order, account_address, require_funds=True):
+    if order.get("reduce_only") and order.get("close_position"):
+        return resolve_exact_position_close(info, order, account_address)
     if order.get("order_type") == "market":
         return resolve_market_ioc_order(info, order, account_address, require_funds=require_funds)
 
@@ -282,6 +286,72 @@ def resolve_market_ioc_order(info, order, account_address, require_funds=True):
         "limit_price": decimal_text(price),
         "tif": "Ioc",
         "account_state_checked": account_state_checked,
+    }
+
+
+def resolve_exact_position_close(info, order, account_address):
+    coin = order.get("market")
+    try:
+        state = info.user_state(account_address)
+        position = next(
+            item.get("position", {})
+            for item in state.get("assetPositions", [])
+            if item.get("position", {}).get("coin") == coin
+        )
+        signed_size = Decimal(str(position.get("szi") or "0"))
+    except (StopIteration, InvalidOperation, ValueError):
+        fail("hyperliquid position is unavailable for exact close", "venue_rejected")
+    except Exception:
+        fail("hyperliquid account state unavailable", "venue_rejected")
+    if signed_size == 0:
+        fail("hyperliquid position is already flat", "venue_rejected")
+    expected_side = "sell" if signed_size > 0 else "buy"
+    if order.get("side") != expected_side:
+        fail("hyperliquid exact close side does not reduce the live position", "venue_rejected")
+    try:
+        mid = Decimal(str(info.all_mids()[coin]))
+        slippage_bps = Decimal(str(order.get("max_slippage_bps") or "50"))
+    except (InvalidOperation, ValueError, KeyError):
+        fail("hyperliquid market data unavailable", "connector_submit_failed")
+    except Exception:
+        fail("hyperliquid market data unavailable", "connector_submit_failed")
+    if mid <= 0 or slippage_bps <= 0:
+        fail("invalid hyperliquid exact close market data", "venue_rejected")
+    slippage = slippage_bps / Decimal("10000")
+    limit = mid * (Decimal("1") - slippage if expected_side == "sell" else Decimal("1") + slippage)
+    if limit <= 0:
+        fail("invalid hyperliquid exact close limit", "venue_rejected")
+    return {
+        "base_size": decimal_text(abs(signed_size)),
+        "limit_price": decimal_text(price_to_5_sig(limit)),
+        "tif": "Ioc",
+        "account_state_checked": True,
+        "source_position_size": decimal_text(signed_size),
+    }
+
+
+def reconcile_exact_position_close(info, order, account_address):
+    try:
+        state = info.user_state(account_address)
+        positions = [
+            item.get("position", {})
+            for item in state.get("assetPositions", [])
+            if item.get("position", {}).get("coin") == order.get("market")
+        ]
+        residual = Decimal(str(positions[0].get("szi") or "0")) if positions else Decimal("0")
+    except (InvalidOperation, ValueError, TypeError, AttributeError):
+        return {
+            "final_position_state_checked": False,
+            "final_position_flat_proven": False,
+        }
+    except Exception:
+        return {
+            "final_position_state_checked": False,
+            "final_position_flat_proven": False,
+        }
+    return {
+        "final_position_state_checked": True,
+        "final_position_flat_proven": residual == 0,
     }
 
 

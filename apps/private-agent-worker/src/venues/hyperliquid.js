@@ -100,7 +100,8 @@ export function assertHyperliquidPilotNetwork(credential, instruction = null) {
     throw new HyperliquidExecutionError("hyperliquid mainnet submit requires tiny_fill live mode", 400);
   }
   const order = instruction?.order || {};
-  if (order.live_order_mode !== "tiny_fill" || order.tif !== "Ioc" || !order.quote_size) {
+  const exactClose = order.reduce_only === true && order.close_position === true;
+  if (order.live_order_mode !== "tiny_fill" || order.tif !== "Ioc" || (!exactClose && !order.quote_size)) {
     throw new HyperliquidExecutionError("hyperliquid mainnet order must use tiny_fill IOC quote sizing", 400);
   }
 }
@@ -183,6 +184,12 @@ export async function submitHyperliquidExecution({
     broadcast_performed: true,
     final_venue_execution_proven: ["filled", "resting", "unfilled"].includes(resultStatus),
     final_fill_proven: resultStatus === "filled" && fills.length > 0,
+    ...(instruction.order?.close_position === true
+      ? {
+          final_position_state_checked: result.final_position_state_checked === true,
+          final_position_flat_proven: result.final_position_flat_proven === true,
+        }
+      : {}),
     checked_at: new Date().toISOString(),
   };
   return {
