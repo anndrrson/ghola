@@ -6,6 +6,7 @@ Status: **NOT PROVEN END TO END**
 ## Production observations
 
 - `ghola.xyz/trade` loaded in an existing authenticated Chrome session.
+- `/signup` returned HTTP 200, but no account was created and the isolated signed-out browser was unavailable.
 - Hyperliquid/mainnet was selected; the account showed `credentials required` and `Connect Hyperliquid mainnet`.
 - No credential, checkout, signup, or order control was submitted.
 - Public Hyperliquid market data was live and non-stale.
@@ -27,6 +28,7 @@ Status: **NOT PROVEN END TO END**
 
 - Exact production-source targeted tests: 90 passed.
 - Exact production-source auth tests: 9 passed.
+- Six focused signup/session tests passed, covering same-origin protection, cookie-backed routing, upstream failure handling, and backend-verified identity.
 - Restored production-based candidate: 133 files and 707 tests passed.
 - Confidential worker: 140 tests passed; the 35 focused Hyperliquid/policy tests passed.
 - Worker tests prove sealed-only ingress, entitlement gates, venue-result classification, collateral handling, position refresh, and reduce-only policy with mocked venue responses—not a live fill.
