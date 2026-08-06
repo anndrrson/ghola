@@ -1179,7 +1179,7 @@ export async function putPrivateAccountRecord(
       ${record.privacy_mode},
       ${record.claim_boundary},
       ${record.vault_ready},
-      ${JSON.stringify(record.account)}::jsonb,
+      ${JSON.stringify(record.account)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -1322,7 +1322,7 @@ export async function putPrivateAgentPassport(
       ${record.owner_commitment},
       ${record.account_commitment},
       ${record.status},
-      ${JSON.stringify(record.passport)}::jsonb,
+      ${JSON.stringify(record.passport)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -1378,7 +1378,7 @@ export async function putPrivateVenueCapability(
       ${record.account_commitment},
       ${record.venue_id},
       ${record.status},
-      ${JSON.stringify(record.capability)}::jsonb,
+      ${JSON.stringify(record.capability)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -1450,8 +1450,8 @@ export async function putPrivateVaultState(
       ${record.vault_root_commitment},
       ${record.note_root_commitment},
       ${record.nullifier_root_commitment},
-      ${JSON.stringify(record.balance_bucket_summary)}::jsonb,
-      ${JSON.stringify(record.ready_rails)}::jsonb,
+      ${JSON.stringify(record.balance_bucket_summary)}::text::jsonb,
+      ${JSON.stringify(record.ready_rails)}::text::jsonb,
       ${record.last_import_commitment},
       ${record.created_at},
       ${record.updated_at}
@@ -1514,7 +1514,7 @@ export async function putHyperliquidExecutionVault(
       ${record.recipient_commitment},
       ${record.policy_commitment},
       ${record.status},
-      ${JSON.stringify(record.vault)}::jsonb,
+      ${JSON.stringify(record.vault)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -1792,7 +1792,7 @@ export async function putHyperliquidManagedAllocation(
       ${record.pool_commitment},
       ${record.subledger_account_commitment},
       ${record.status},
-      ${JSON.stringify(record.allocation)}::jsonb,
+      ${JSON.stringify(record.allocation)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -1874,7 +1874,7 @@ export async function putVenueExecutionVault(
       ${record.policy_commitment},
       ${record.allocation_commitment},
       ${record.status},
-      ${JSON.stringify(record.vault)}::jsonb,
+      ${JSON.stringify(record.vault)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -1974,7 +1974,7 @@ export async function putVenueSecretHandle(
       ${record.account_mode},
       ${record.purpose},
       ${record.status},
-      ${JSON.stringify(record.secret_handle)}::jsonb,
+      ${JSON.stringify(record.secret_handle)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -2064,7 +2064,7 @@ export async function putStealthVenueAccount(
       ${record.platform_class},
       ${record.secret_handle_commitment},
       ${record.status},
-      ${JSON.stringify(record.venue_account)}::jsonb,
+      ${JSON.stringify(record.venue_account)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -2131,7 +2131,7 @@ export async function putPooledVenueAllocation(
       ${record.pool_commitment},
       ${record.subledger_account_commitment},
       ${record.status},
-      ${JSON.stringify(record.allocation)}::jsonb,
+      ${JSON.stringify(record.allocation)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -2195,7 +2195,7 @@ export async function putVenueEligibilityCredential(
       ${record.venue_id},
       ${record.platform_class},
       ${record.status},
-      ${JSON.stringify(record.credential)}::jsonb,
+      ${JSON.stringify(record.credential)}::text::jsonb,
       ${record.created_at},
       ${record.expires_at},
       ${record.updated_at}
@@ -2283,7 +2283,7 @@ export async function putOmnibusAllocation(
       ${record.settlement_funding_commitment},
       ${record.utilization_bucket},
       ${record.status},
-      ${JSON.stringify(record.allocation)}::jsonb,
+      ${JSON.stringify(record.allocation)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -2382,7 +2382,7 @@ export async function putPrivacyBudget(
     ) VALUES (
       ${record.owner_commitment},
       ${record.account_commitment},
-      ${JSON.stringify(record.budget)}::jsonb,
+      ${JSON.stringify(record.budget)}::text::jsonb,
       ${record.updated_at}
     )
     ON CONFLICT (account_commitment) DO UPDATE SET
@@ -2465,7 +2465,7 @@ export async function putQueuedAction(
       ${record.latest_preview_commitment},
       ${record.platform_class},
       ${record.requested_rail},
-      ${JSON.stringify(record.wait_reasons)}::jsonb,
+      ${JSON.stringify(record.wait_reasons)}::text::jsonb,
       ${record.target_anonymity_set},
       ${record.current_anonymity_set},
       ${record.status},
@@ -2576,7 +2576,7 @@ export async function putAnonymityEvidence(
       ${record.action_commitment},
       ${record.queue_id},
       ${record.source},
-      ${JSON.stringify(record.anonymity_set)}::jsonb,
+      ${JSON.stringify(record.anonymity_set)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -2898,7 +2898,7 @@ export async function putPrivateFundingBatch(
       ${record.asset_bucket},
       ${record.network},
       ${record.shielded_rail},
-      ${JSON.stringify(record.import_commitments)}::jsonb,
+      ${JSON.stringify(record.import_commitments)}::text::jsonb,
       ${record.effective_anonymity_set},
       ${record.required_anonymity_set},
       ${record.timing_window_met},
@@ -3455,8 +3455,8 @@ export async function putPrivateAuctionClearing(
       ${record.auction_epoch_commitment},
       ${record.status},
       ${record.clearing_price_commitment},
-      ${JSON.stringify(record.matched_order_commitments)}::jsonb,
-      ${JSON.stringify(record.rolled_order_commitments)}::jsonb,
+      ${JSON.stringify(record.matched_order_commitments)}::text::jsonb,
+      ${JSON.stringify(record.rolled_order_commitments)}::text::jsonb,
       ${record.proof_commitment},
       ${record.settlement_commitment},
       ${record.created_at},
@@ -3552,7 +3552,7 @@ export async function putPrivateAuctionPreparedTransaction(
       ${record.account_commitment},
       ${record.operation},
       ${record.transaction_base64},
-      ${JSON.stringify(record.payload)}::jsonb,
+      ${JSON.stringify(record.payload)}::text::jsonb,
       ${record.status},
       ${record.signature},
       ${record.created_at},
@@ -3771,7 +3771,7 @@ export async function putPrivateAccountPreview(
       ${record.selected_rail},
       ${record.claim_status},
       ${record.anonymity_level},
-      ${JSON.stringify(record.preview)}::jsonb,
+      ${JSON.stringify(record.preview)}::text::jsonb,
       ${record.created_at},
       ${record.expires_at},
       ${record.consumed_at}
@@ -3920,7 +3920,7 @@ export async function putPrivateAccountExecution(
       ${record.claim_status},
       ${record.rail_used},
       ${record.receipt_commitment},
-      ${JSON.stringify(record.evidence_chain)}::jsonb,
+      ${JSON.stringify(record.evidence_chain)}::text::jsonb,
       ${record.status},
       ${record.created_at}
     )
@@ -3979,7 +3979,7 @@ export async function putPrivateExecutionPlan(
       ${record.action_commitment},
       ${record.status},
       ${record.selected_rail},
-      ${JSON.stringify(record.plan)}::jsonb,
+      ${JSON.stringify(record.plan)}::text::jsonb,
       ${record.created_at},
       ${record.expires_at},
       ${record.consumed_at}
@@ -4089,7 +4089,7 @@ export async function putPrivateSettlement(
       ${record.finality_commitment},
       ${record.attestation_commitment},
       ${record.failure_reason},
-      ${JSON.stringify(record.evidence)}::jsonb,
+      ${JSON.stringify(record.evidence)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -4428,14 +4428,14 @@ export async function putAgentArbCanaryReport(
       ${record.market},
       ${record.worker_url},
       ${record.leg_notional_usd},
-      ${JSON.stringify(record.checks)}::jsonb,
-      ${JSON.stringify(record.quote)}::jsonb,
-      ${JSON.stringify(record.pair)}::jsonb,
-      ${JSON.stringify(record.preflight)}::jsonb,
-      ${JSON.stringify(record.live_receipts)}::jsonb,
-      ${JSON.stringify(record.reconciliation)}::jsonb,
+      ${JSON.stringify(record.checks)}::text::jsonb,
+      ${JSON.stringify(record.quote)}::text::jsonb,
+      ${JSON.stringify(record.pair)}::text::jsonb,
+      ${JSON.stringify(record.preflight)}::text::jsonb,
+      ${JSON.stringify(record.live_receipts)}::text::jsonb,
+      ${JSON.stringify(record.reconciliation)}::text::jsonb,
       ${record.evidence_commitment},
-      ${JSON.stringify(record.reason_codes)}::jsonb,
+      ${JSON.stringify(record.reason_codes)}::text::jsonb,
       ${record.reason},
       ${record.observed_at},
       ${record.expires_at},
@@ -4502,7 +4502,7 @@ export async function putConnectorManifest(
     ) VALUES (
       ${record.manifest_commitment},
       ${record.platform_class},
-      ${JSON.stringify(record.manifest)}::jsonb,
+      ${JSON.stringify(record.manifest)}::text::jsonb,
       ${record.status},
       ${record.created_at},
       ${record.expires_at},
@@ -4578,7 +4578,7 @@ export async function putCompiledIntent(
       ${record.action_commitment},
       ${record.platform_class},
       ${record.manifest_commitment},
-      ${JSON.stringify(record.compiled_intent)}::jsonb,
+      ${JSON.stringify(record.compiled_intent)}::text::jsonb,
       ${record.created_at}
     )
     ON CONFLICT (compiler_commitment) DO NOTHING
@@ -4658,7 +4658,7 @@ export async function putLinkabilityScore(
       ${record.amount_bucket},
       ${record.asset_bucket},
       ${record.destination_class},
-      ${JSON.stringify(record.score)}::jsonb,
+      ${JSON.stringify(record.score)}::text::jsonb,
       ${record.created_at}
     )
     ON CONFLICT (score_commitment) DO NOTHING
@@ -4737,7 +4737,7 @@ export async function putConnectorWorkOrder(
       ${record.execution_plan_commitment},
       ${record.platform_class},
       ${record.status},
-      ${JSON.stringify(record.work_order)}::jsonb,
+      ${JSON.stringify(record.work_order)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -4833,7 +4833,7 @@ export async function putConnectorResult(
       ${record.intent_id},
       ${record.platform_class},
       ${record.status},
-      ${JSON.stringify(record.result)}::jsonb,
+      ${JSON.stringify(record.result)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -4927,7 +4927,7 @@ export async function putRuntimeEnvelope(
       ${record.account_commitment},
       ${record.action_commitment},
       ${record.platform_class},
-      ${JSON.stringify(record.envelope)}::jsonb,
+      ${JSON.stringify(record.envelope)}::text::jsonb,
       ${record.created_at},
       ${record.expires_at}
     )
@@ -4991,7 +4991,7 @@ export async function putScheduleDecision(
       ${record.owner_commitment},
       ${record.intent_id},
       ${record.preview_commitment},
-      ${JSON.stringify(record.decision)}::jsonb,
+      ${JSON.stringify(record.decision)}::text::jsonb,
       ${record.created_at}
     )
     ON CONFLICT (schedule_commitment) DO NOTHING
@@ -5035,7 +5035,7 @@ export async function putPlatformRotation(
       ${record.owner_commitment},
       ${record.account_commitment},
       ${record.platform_class},
-      ${JSON.stringify(record.rotation)}::jsonb,
+      ${JSON.stringify(record.rotation)}::text::jsonb,
       ${record.created_at}
     )
     ON CONFLICT (rotation_commitment) DO NOTHING
@@ -5101,7 +5101,7 @@ export async function putLinkabilitySimulation(
       ${record.owner_commitment},
       ${record.intent_id},
       ${record.preview_commitment},
-      ${JSON.stringify(record.simulation)}::jsonb,
+      ${JSON.stringify(record.simulation)}::text::jsonb,
       ${record.created_at}
     )
     ON CONFLICT (simulator_commitment) DO NOTHING
@@ -5161,7 +5161,7 @@ export async function putRuntimeHealth(
       created_at
     ) VALUES (
       ${record.runtime_health_commitment},
-      ${JSON.stringify(record.health)}::jsonb,
+      ${JSON.stringify(record.health)}::text::jsonb,
       ${record.created_at}
     )
     ON CONFLICT (runtime_health_commitment) DO NOTHING
@@ -5188,7 +5188,7 @@ export async function putViewKey(
     ) VALUES (
       ${record.view_key_commitment},
       ${record.owner_commitment},
-      ${JSON.stringify(record.view_key)}::jsonb,
+      ${JSON.stringify(record.view_key)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at}
     )
@@ -5236,7 +5236,7 @@ export async function putPrivateReceiptExport(
       ${record.owner_commitment},
       ${record.receipt_commitment},
       ${record.view_key_commitment},
-      ${JSON.stringify(record.private_export)}::jsonb,
+      ${JSON.stringify(record.private_export)}::text::jsonb,
       ${record.created_at},
       ${record.revoked_at}
     )
@@ -5283,7 +5283,7 @@ export async function putPrivateReceiptExportRevocation(
       ${record.owner_commitment},
       ${record.private_export_commitment},
       ${record.view_key_commitment},
-      ${JSON.stringify(record.revocation)}::jsonb,
+      ${JSON.stringify(record.revocation)}::text::jsonb,
       ${record.revoked_at}
     )
     ON CONFLICT (revocation_commitment) DO NOTHING
@@ -5315,7 +5315,7 @@ export async function putPrivateAccountReceipt(
       ${record.intent_id},
       ${record.preview_commitment},
       ${record.approval_commitment},
-      ${JSON.stringify(record.receipt)}::jsonb,
+      ${JSON.stringify(record.receipt)}::text::jsonb,
       ${record.created_at}
     )
     ON CONFLICT (receipt_commitment) DO UPDATE SET receipt = EXCLUDED.receipt
@@ -5398,7 +5398,7 @@ export async function putPrivateAutopilotSession(
       ${record.autopilot_session_id},
       ${record.owner_commitment},
       ${record.status},
-      ${JSON.stringify(record.session)}::jsonb,
+      ${JSON.stringify(record.session)}::text::jsonb,
       ${record.created_at},
       ${record.updated_at},
       ${record.expires_at}
@@ -5475,7 +5475,7 @@ export async function putPrivateAutopilotEvent(
       ${record.type},
       ${record.status},
       ${record.message},
-      ${JSON.stringify(record.data)}::jsonb,
+      ${JSON.stringify(record.data)}::text::jsonb,
       ${record.created_at}
     )
     ON CONFLICT (event_id) DO UPDATE SET
@@ -5608,9 +5608,32 @@ async function getSql(): Promise<NeonSql | null> {
     process.env.POSTGRES_URL ||
     null;
   if (!databaseUrl) return null;
-  const { neon } = await import("@neondatabase/serverless");
-  sqlClient = neon(databaseUrl);
+  if (privateAccountDatabaseDriver(databaseUrl) === "neon") {
+    const { neon } = await import("@neondatabase/serverless");
+    sqlClient = neon(databaseUrl);
+  } else {
+    const { default: postgres } = await import("postgres");
+    sqlClient = postgres(databaseUrl, {
+      max: 1,
+      prepare: false,
+      connect_timeout: 15,
+      idle_timeout: process.env.NODE_ENV === "test" ? 1 : 20,
+      max_lifetime: 30 * 60,
+      ...(process.env.NODE_ENV === "test" ? { onnotice: () => undefined } : {}),
+    }) as unknown as NeonSql;
+  }
   return sqlClient;
+}
+
+export function privateAccountDatabaseDriver(databaseUrl: string): "neon" | "postgres" {
+  const configured = process.env.GHOLA_PRIVATE_ACCOUNT_DATABASE_DRIVER?.trim().toLowerCase();
+  if (configured === "neon" || configured === "postgres") return configured;
+  try {
+    const hostname = new URL(databaseUrl).hostname.toLowerCase();
+    return hostname === "neon.tech" || hostname.endsWith(".neon.tech") ? "neon" : "postgres";
+  } catch {
+    throw new Error("private_account_database_url_invalid");
+  }
 }
 
 function shouldUsePostgresStore(): boolean {

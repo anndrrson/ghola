@@ -20,6 +20,7 @@ import {
   putPrivateAccountIntent,
   putPrivateAccountPreview,
   putPrivateVaultState,
+  privateAccountDatabaseDriver,
   putAnonymityEvidence,
   putPrivacyBudget,
   putQueuedAction,
@@ -45,8 +46,15 @@ describe("private account store", () => {
     privateBlobRecords.clear();
     setPrivateBlobRecordAdapterForTests(null);
     delete process.env.GHOLA_PRIVATE_ACCOUNT_STORE;
+    delete process.env.GHOLA_PRIVATE_ACCOUNT_DATABASE_DRIVER;
     delete process.env.GHOLA_PRIVATE_ACCOUNT_BLOB_ACCESS;
     delete process.env.BLOB_READ_WRITE_TOKEN;
+  });
+
+  it("selects Neon HTTP only for Neon hosts and TCP PostgreSQL otherwise", () => {
+    expect(privateAccountDatabaseDriver("postgresql://user:pass@ep-test.us-east-2.aws.neon.tech/db")).toBe("neon");
+    expect(privateAccountDatabaseDriver("postgresql://user:pass@127.0.0.1:5432/db")).toBe("postgres");
+    expect(privateAccountDatabaseDriver("postgresql://user:pass@db.internal.example/db")).toBe("postgres");
   });
 
   it("restores a verified Hyperliquid credential after process memory is cleared", async () => {

@@ -84,6 +84,27 @@ reserves one of ten durable slots per shard. Sealing the credential makes the
 reservation permanent, and the vault recipient remains the routing key across
 reloads and deployments. Unknown recipients fail closed instead of falling
 back to a different worker.
+
+Persist web-side private-account and encrypted venue-vault records in
+PostgreSQL:
+
+```bash
+GHOLA_PRIVATE_ACCOUNT_STORE=postgres
+GHOLA_PRIVATE_ACCOUNT_DATABASE_URL=postgresql://...
+# Optional: neon or postgres. Otherwise inferred from the database hostname.
+GHOLA_PRIVATE_ACCOUNT_DATABASE_DRIVER=
+```
+
+Neon hosts use the serverless HTTP driver. Other PostgreSQL hosts use the TCP
+driver. Before deployment, run the two-phase PostgreSQL persistence test in
+separate processes and confirm the public vault status contains commitments and
+readiness only, never ciphertext or wallet-key material.
+
+```bash
+GHOLA_PRIVATE_ACCOUNT_POSTGRES_E2E_PHASE=write npm test -- src/lib/private-account-store-postgres-e2e.test.ts
+GHOLA_PRIVATE_ACCOUNT_POSTGRES_E2E_PHASE=read npm test -- src/lib/private-account-store-postgres-e2e.test.ts
+```
+
 Production readiness fetches `/health` and
 `/.well-known/private-agent-recipient` from the selected shards and requires a
 green attested response with the exact configured recipient key, measurement,
