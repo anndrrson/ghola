@@ -85,6 +85,28 @@ describe("ghola chart engine", () => {
     if (response.type !== "visible-data") throw new Error("expected visible-data");
     expect(response.data.routeQuotes.map((quote) => quote.price)).toEqual(["74.10", "74.14"]);
   });
+
+  it("redraws a same-bucket active candle through both main-thread and worker request paths", () => {
+    const initial = marketFrame("hyperliquid", [candle(0, 100, 101, 99, 100)]);
+    const replacement = marketFrame("hyperliquid", [candle(0, 100, 103, 99, 102)]);
+    const mainThread = new GholaChartEngineState();
+    mainThread.ingestFrame(initial);
+    mainThread.ingestFrame(replacement);
+    expect(mainThread.visibleData({ width: 600, height: 360 }).candles.at(-1)?.c).toBe("102.00");
+
+    const workerPath = new GholaChartEngineState();
+    handleGholaChartWorkerRequest(workerPath, { type: "set-frame", frame: initial });
+    handleGholaChartWorkerRequest(workerPath, { type: "set-frame", frame: replacement });
+    const response = handleGholaChartWorkerRequest(workerPath, {
+      id: 9,
+      type: "visible-data",
+      width: 600,
+      height: 360,
+    });
+    expect(response.type).toBe("visible-data");
+    if (response.type !== "visible-data") throw new Error("expected visible-data");
+    expect(response.data.candles.at(-1)?.c).toBe("102.00");
+  });
 });
 
 function candles(count: number): GholaChartCandle[] {

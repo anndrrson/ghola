@@ -3,10 +3,10 @@ import type { HyperliquidMarketSnapshot } from "./private-account-client";
 export type HyperliquidLiveMarketStatus =
   | "connecting"
   | "live"
+  | "delayed"
   | "reconnecting"
   | "fallback_polling"
-  | "stale"
-  | "blocked";
+  | "unavailable";
 
 type HyperliquidNetwork = HyperliquidMarketSnapshot["network"];
 type HyperliquidMarketCoin = HyperliquidMarketSnapshot["coin"];
@@ -48,6 +48,7 @@ export interface HyperliquidLiveMarketStreamOptions {
   onStatus: (status: HyperliquidLiveMarketStatus) => void;
   isDocumentHidden?: () => boolean;
   now?: () => number;
+  candleStaleAfterMs?: number;
 }
 
 const WS_URLS: Record<HyperliquidNetwork, string> = {
@@ -60,12 +61,42 @@ const CANDLE_WINDOW = 240;
 const BOOK_LEVEL_WINDOW = 20;
 const RECENT_TRADE_WINDOW = 20;
 const HEARTBEAT_MS = 30_000;
-const STALE_AFTER_MS = 10_000;
+const CONNECTION_STALE_AFTER_MS = 10_000;
 const STALE_CHECK_MS = 3_000;
-const FALLBACK_VISIBLE_MS = 4_000;
-const FALLBACK_HIDDEN_MS = 15_000;
+const CANDLE_RESUBSCRIBE_COOLDOWN_MS = 10_000;
+const FALLBACK_VISIBLE_MS = 8_000;
+const FALLBACK_HIDDEN_MS = 30_000;
+const FALLBACK_MAX_MS = 30_000;
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 8_000;
+const CANDLE_STALE_AFTER_MS: Record<HyperliquidCandleInterval, number> = {
+  "1m": 15_000,
+  "5m": 30_000,
+  "15m": 45_000,
+  "1h": 60_000,
+};
+
+type HyperliquidFreshnessChannel = keyof NonNullable<HyperliquidMarketSnapshot["channel_updated_at"]>;
+
+const EMPTY_CHANNEL_UPDATED_AT: NonNullable<HyperliquidMarketSnapshot["channel_updated_at"]> = {
+  candle: null,
+  trades: null,
+  bbo: null,
+  order_book: null,
+  market_context: null,
+  mid: null,
+};
+
+export function hyperliquidCandleAgeMs(
+  snapshot: HyperliquidMarketSnapshot | null | undefined,
+  now = Date.now(),
+): number | null {
+  if (!Number.isFinite(now) || now <= 0) return null;
+  const updatedAt = snapshot?.channel_updated_at?.candle;
+  return typeof updatedAt === "number" && Number.isFinite(updatedAt)
+    ? Math.max(0, now - updatedAt)
+    : null;
+}
 
 export function hyperliquidLiveMarketWebSocketUrl(network: HyperliquidNetwork): string {
   return WS_URLS[network];
@@ -153,8 +184,12 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private fallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private fallbackInFlight = false;
+  private fallbackAttempts = 0;
   private reconnectAttempts = 0;
   private lastMessageAt = 0;
+  private socketOpenedAt = 0;
+  private lastWebSocketCandleAt = 0;
+  private lastCandleResubscribeAt = 0;
   private status: HyperliquidLiveMarketStatus = "connecting";
   private currentSnapshot: HyperliquidMarketSnapshot;
 
@@ -209,20 +244,26 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
         if (!this.active || socket !== this.socket) return;
         this.reconnectAttempts = 0;
         this.lastMessageAt = this.now();
-        this.emitStatus("live");
-        this.clearFallbackTimer();
+        this.socketOpenedAt = this.lastMessageAt;
+        this.lastWebSocketCandleAt = 0;
+        this.emitStatus("connecting");
         this.sendSubscriptions("subscribe");
         this.startHeartbeat();
         this.startStaleMonitor();
       };
       socket.onmessage = (event) => {
         if (!this.active || socket !== this.socket) return;
-        this.lastMessageAt = this.now();
-        if (this.status !== "live") {
+        const receivedAt = this.now();
+        this.lastMessageAt = receivedAt;
+        const parsedMessage = parseWebSocketMessage(event.data);
+        const next = mergeHyperliquidLiveMarketMessage(this.currentSnapshot, event.data, new Date(receivedAt));
+        const receivedOfficialCandle = parsedMessage?.channel === "candle" && next.candles !== this.currentSnapshot.candles;
+        if (receivedOfficialCandle) {
+          this.lastWebSocketCandleAt = receivedAt;
+          this.fallbackAttempts = 0;
           this.emitStatus("live");
           this.clearFallbackTimer();
         }
-        const next = mergeHyperliquidLiveMarketMessage(this.currentSnapshot, event.data, new Date(this.now()));
         if (next !== this.currentSnapshot) {
           this.currentSnapshot = next;
           this.options.onSnapshot(next);
@@ -243,7 +284,7 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
         this.scheduleReconnect();
       };
     } catch {
-      this.emitStatus("blocked");
+      this.emitStatus("unavailable");
       this.startFallbackLoop();
       this.scheduleReconnect();
     }
@@ -255,6 +296,19 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
     for (const subscription of hyperliquidLiveMarketSubscriptions(this.options.coin, this.options.interval)) {
       this.sendJson({ method, subscription });
     }
+  }
+
+  private resubscribeCandle() {
+    const now = this.now();
+    if (now - this.lastCandleResubscribeAt < CANDLE_RESUBSCRIBE_COOLDOWN_MS) return;
+    this.lastCandleResubscribeAt = now;
+    const subscription: HyperliquidSubscription = {
+      type: "candle",
+      coin: this.options.coin,
+      interval: this.options.interval,
+    };
+    this.sendJson({ method: "unsubscribe", subscription });
+    this.sendJson({ method: "subscribe", subscription });
   }
 
   private sendJson(payload: Record<string, unknown>) {
@@ -284,10 +338,30 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
     this.stopStaleMonitor();
     this.staleTimer = setInterval(() => {
       if (!this.active || !this.socket || this.socket.readyState !== WEBSOCKET_OPEN) return;
-      if (this.now() - this.lastMessageAt <= STALE_AFTER_MS) return;
-      this.emitStatus("stale");
+      const now = this.now();
+      if (now - this.lastMessageAt > CONNECTION_STALE_AFTER_MS) {
+        this.emitStatus("reconnecting");
+        this.startFallbackLoop();
+        try {
+          this.socket.close();
+        } catch {
+          this.scheduleReconnect();
+        }
+        return;
+      }
+      const candleReference = this.lastWebSocketCandleAt || this.socketOpenedAt;
+      if (now - candleReference <= this.candleStaleAfterMs()) return;
+      if (!this.currentSnapshot.stale) {
+        this.currentSnapshot = {
+          ...this.currentSnapshot,
+          fetched_at: new Date(now).toISOString(),
+          stale: true,
+        };
+        this.options.onSnapshot(this.currentSnapshot);
+      }
+      if (this.status !== "fallback_polling") this.emitStatus("delayed");
+      this.resubscribeCandle();
       this.startFallbackLoop();
-      this.sendJson({ method: "ping" });
     }, STALE_CHECK_MS);
   }
 
@@ -317,18 +391,46 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
   private fetchFallbackSnapshot() {
     if (!this.active || this.fallbackInFlight || !this.options.getFallbackSnapshot) return;
     this.fallbackInFlight = true;
+    const requestedAt = this.now();
     if (this.status !== "connecting" && this.status !== "live") this.emitStatus("fallback_polling");
     this.options.getFallbackSnapshot()
       .then((snapshot) => {
         if (!this.active) return;
-        this.currentSnapshot = snapshot;
-        this.options.onSnapshot(snapshot);
+        if (this.lastWebSocketCandleAt > 0 && this.lastWebSocketCandleAt >= requestedAt && this.hasHealthySocket()) return;
+        const fallbackAt = this.now();
+        const channelUpdatedAt = snapshot.channel_updated_at ?? EMPTY_CHANNEL_UPDATED_AT;
+        const hasFreshFallbackCandles = snapshot.candles.length > 0 && !snapshot.stale;
+        const fallbackSnapshot: HyperliquidMarketSnapshot = {
+          ...snapshot,
+          fetched_at: new Date(fallbackAt).toISOString(),
+          stale: !hasFreshFallbackCandles,
+          channel_updated_at: {
+            ...channelUpdatedAt,
+            // A stale-while-revalidate response can legitimately contain old
+            // candles. Preserve its last verified age instead of relabeling
+            // those candles as fresh merely because this poll completed now.
+            candle: hasFreshFallbackCandles
+              ? channelUpdatedAt.candle ?? fallbackAt
+              : channelUpdatedAt.candle,
+          },
+        };
+        this.currentSnapshot = fallbackSnapshot;
+        this.options.onSnapshot(fallbackSnapshot);
+        if (!this.hasHealthySocket()) {
+          this.fallbackAttempts += 1;
+          this.emitStatus("fallback_polling");
+        } else {
+          this.fallbackAttempts = 0;
+        }
       })
       .catch(() => {
         if (!this.active) return;
         const stale = { ...this.currentSnapshot, fetched_at: new Date(this.now()).toISOString(), stale: true };
         this.currentSnapshot = stale;
         this.options.onSnapshot(stale);
+        if (stale.candles.length === 0) this.emitStatus("unavailable");
+        else if (this.status !== "reconnecting") this.emitStatus("delayed");
+        this.fallbackAttempts += 1;
       })
       .finally(() => {
         this.fallbackInFlight = false;
@@ -349,12 +451,18 @@ class BrowserHyperliquidLiveMarketStream implements HyperliquidLiveMarketStream 
       this.socket &&
       this.socket.readyState === WEBSOCKET_OPEN &&
       this.status === "live" &&
-      this.now() - this.lastMessageAt <= STALE_AFTER_MS,
+      this.now() - this.lastMessageAt <= CONNECTION_STALE_AFTER_MS &&
+      this.now() - this.lastWebSocketCandleAt <= this.candleStaleAfterMs(),
     );
   }
 
+  private candleStaleAfterMs() {
+    return this.options.candleStaleAfterMs ?? CANDLE_STALE_AFTER_MS[this.options.interval];
+  }
+
   private fallbackDelay() {
-    return this.options.isDocumentHidden?.() ? FALLBACK_HIDDEN_MS : FALLBACK_VISIBLE_MS;
+    if (this.options.isDocumentHidden?.()) return FALLBACK_HIDDEN_MS;
+    return Math.min(FALLBACK_MAX_MS, FALLBACK_VISIBLE_MS * 2 ** Math.min(this.fallbackAttempts, 2));
   }
 
   private emitStatus(status: HyperliquidLiveMarketStatus) {
@@ -391,7 +499,7 @@ function mergeAllMids(
   if (!mids || typeof mids !== "object" || Array.isArray(mids)) return snapshot;
   const mid = safeDecimalString((mids as Record<string, unknown>)[snapshot.coin]);
   if (!mid) return snapshot;
-  return touchSnapshot(snapshot, now, { mid });
+  return touchSnapshot(snapshot, now, { mid }, "mid");
 }
 
 function mergeBbo(
@@ -409,14 +517,16 @@ function mergeBbo(
   const asks = ask ? replaceTopBookLevel(snapshot.asks, ask) : snapshot.asks;
   const bestBid = bid?.px ?? snapshot.best_bid;
   const bestAsk = ask?.px ?? snapshot.best_ask;
+  const mid = midpointString(bestBid, bestAsk) ?? snapshot.mid;
   return touchSnapshot(snapshot, now, {
     source_timestamp: numberValue(row.time) ?? snapshot.source_timestamp,
     bids,
     asks,
     best_bid: bestBid,
     best_ask: bestAsk,
+    mid,
     spread_bps: spreadBps(bestBid, bestAsk),
-  });
+  }, "bbo");
 }
 
 function mergeBook(
@@ -439,7 +549,7 @@ function mergeBook(
     best_bid: bestBid,
     best_ask: bestAsk,
     spread_bps: spreadBps(bestBid, bestAsk),
-  });
+  }, "order_book");
 }
 
 function mergeTrades(
@@ -457,7 +567,8 @@ function mergeTrades(
     seen.add(key);
     return true;
   }).slice(0, RECENT_TRADE_WINDOW);
-  return touchSnapshot(snapshot, now, { recent_trades });
+  const candles = reconcileCandlesFromTrades(snapshot, incoming);
+  return touchSnapshot(snapshot, now, { recent_trades, candles }, "trades");
 }
 
 function mergeCandles(
@@ -471,7 +582,7 @@ function mergeCandles(
   const byOpenTime = new Map(snapshot.candles.map((candle) => [candle.t, candle]));
   for (const candle of incoming) byOpenTime.set(candle.t, candle);
   const candles = Array.from(byOpenTime.values()).sort((a, b) => a.t - b.t).slice(-CANDLE_WINDOW);
-  return touchSnapshot(snapshot, now, { candles });
+  return touchSnapshot(snapshot, now, { candles, stale: false }, "candle");
 }
 
 function mergeActiveAssetContext(
@@ -494,20 +605,75 @@ function mergeActiveAssetContext(
     open_interest: safeDecimalString(row.openInterest) ?? snapshot.open_interest,
     funding_rate: safeSignedDecimalString(row.funding) ?? snapshot.funding_rate,
     premium: safeSignedDecimalString(row.premium) ?? snapshot.premium,
-  });
+  }, "market_context");
 }
 
 function touchSnapshot(
   snapshot: HyperliquidMarketSnapshot,
   now: Date,
   patch: Partial<HyperliquidMarketSnapshot>,
+  channel: HyperliquidFreshnessChannel,
 ): HyperliquidMarketSnapshot {
   return {
     ...snapshot,
     ...patch,
     fetched_at: now.toISOString(),
-    stale: false,
+    channel_updated_at: {
+      ...(snapshot.channel_updated_at ?? EMPTY_CHANNEL_UPDATED_AT),
+      [channel]: now.getTime(),
+    },
   };
+}
+
+function reconcileCandlesFromTrades(
+  snapshot: HyperliquidMarketSnapshot,
+  incoming: HyperliquidMarketSnapshot["recent_trades"],
+): HyperliquidMarketSnapshot["candles"] {
+  const intervalMs = intervalMilliseconds(snapshot.interval);
+  const byOpenTime = new Map(snapshot.candles.map((candle) => [candle.t, candle]));
+  const latestKnownTradeByBucket = new Map<number, number>();
+  for (const trade of snapshot.recent_trades) {
+    const bucket = Math.floor(trade.time / intervalMs) * intervalMs;
+    latestKnownTradeByBucket.set(bucket, Math.max(latestKnownTradeByBucket.get(bucket) ?? 0, trade.time));
+  }
+  for (const trade of [...incoming].sort((left, right) => left.time - right.time)) {
+    const bucket = Math.floor(trade.time / intervalMs) * intervalMs;
+    const existing = byOpenTime.get(bucket);
+    const tradePrice = Number(trade.px);
+    if (!Number.isFinite(tradePrice)) continue;
+    if (!existing) {
+      byOpenTime.set(bucket, {
+        t: bucket,
+        T: bucket + intervalMs - 1,
+        o: trade.px,
+        h: trade.px,
+        l: trade.px,
+        c: trade.px,
+        v: "0",
+        n: null,
+      });
+      latestKnownTradeByBucket.set(bucket, trade.time);
+      continue;
+    }
+    const high = Number(existing.h);
+    const low = Number(existing.l);
+    const latestKnownTrade = latestKnownTradeByBucket.get(bucket) ?? 0;
+    byOpenTime.set(bucket, {
+      ...existing,
+      h: !Number.isFinite(high) || tradePrice > high ? trade.px : existing.h,
+      l: !Number.isFinite(low) || tradePrice < low ? trade.px : existing.l,
+      c: trade.time >= latestKnownTrade ? trade.px : existing.c,
+    });
+    latestKnownTradeByBucket.set(bucket, Math.max(latestKnownTrade, trade.time));
+  }
+  return Array.from(byOpenTime.values()).sort((left, right) => left.t - right.t).slice(-CANDLE_WINDOW);
+}
+
+function intervalMilliseconds(interval: HyperliquidCandleInterval) {
+  if (interval === "1m") return 60_000;
+  if (interval === "5m") return 5 * 60_000;
+  if (interval === "15m") return 15 * 60_000;
+  return 60 * 60_000;
 }
 
 function parseWebSocketMessage(rawMessage: unknown): Record<string, unknown> | null {
@@ -615,4 +781,12 @@ function spreadBps(bestBid: string | null, bestAsk: string | null) {
   const mid = (bid + ask) / 2;
   if (mid <= 0) return null;
   return Math.max(0, Math.round(((ask - bid) / mid) * 10_000 * 100) / 100);
+}
+
+function midpointString(bestBid: string | null, bestAsk: string | null) {
+  if (!bestBid || !bestAsk) return null;
+  const bid = Number(bestBid);
+  const ask = Number(bestAsk);
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || ask < bid) return null;
+  return String((bid + ask) / 2);
 }

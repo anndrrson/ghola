@@ -273,6 +273,14 @@ export interface HyperliquidMarketSnapshot {
   fetched_at: string;
   source_timestamp: number | null;
   stale: boolean;
+  channel_updated_at?: {
+    candle: number | null;
+    trades: number | null;
+    bbo: number | null;
+    order_book: number | null;
+    market_context: number | null;
+    mid: number | null;
+  };
   mid: string | null;
   best_bid: string | null;
   best_ask: string | null;

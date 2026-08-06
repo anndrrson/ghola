@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { PrivateExecutionOrderDraft } from "@/lib/private-execution-instruction-seal";
 import {
   buildVenueSetupHref,
+  formatHyperliquidMarketStatus,
   HYPERLIQUID_REVIEW_TTL_MS,
   hyperliquidExecutionNotice,
   hyperliquidReviewExpired,
@@ -12,6 +13,7 @@ import {
   validatePerpTicket,
   WorkspaceProductNav,
 } from "./PublicCoinbaseLiveTrade";
+import { emptyHyperliquidLiveMarketSnapshot } from "@/lib/hyperliquid-live-market";
 
 describe("available trade products", () => {
   it("defaults new and unavailable product visits to Hyperliquid Perps", () => {
@@ -52,6 +54,31 @@ describe("Hyperliquid execution evidence", () => {
     expect(hyperliquidExecutionNotice({ status: "resting" })).toContain("working, not filled");
     expect(hyperliquidExecutionNotice({ status: "unfilled" })).toContain("without a fill");
     expect(hyperliquidExecutionNotice({ status: "submitted" })).toContain("no fill is proven yet");
+  });
+});
+
+describe("Hyperliquid chart feed status", () => {
+  it("shows candle-specific age for every clear feed state", () => {
+    const now = new Date("2026-08-06T06:00:10.000Z").getTime();
+    const snapshot = {
+      ...emptyHyperliquidLiveMarketSnapshot({ network: "mainnet", coin: "BTC", interval: "1m" }),
+      stale: false,
+      channel_updated_at: {
+        candle: now - 3_000,
+        trades: now - 1_000,
+        bbo: now - 100,
+        order_book: now - 200,
+        market_context: now - 500,
+        mid: now - 100,
+      },
+    };
+
+    expect(formatHyperliquidMarketStatus("live", snapshot, now)).toBe("Live · candle 3s ago");
+    expect(formatHyperliquidMarketStatus("delayed", { ...snapshot, stale: true }, now)).toBe("Delayed · candle 3s ago");
+    expect(formatHyperliquidMarketStatus("reconnecting", snapshot, now)).toBe("Reconnecting · candle 3s ago");
+    expect(formatHyperliquidMarketStatus("fallback_polling", snapshot, now)).toBe("Fallback polling · candle 3s ago");
+    expect(formatHyperliquidMarketStatus("unavailable", snapshot, now)).toBe("Unavailable · candle 3s ago");
+    expect(formatHyperliquidMarketStatus("connecting", null, now)).toBe("Connecting · awaiting candle");
   });
 });
 

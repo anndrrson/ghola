@@ -54,9 +54,11 @@ import {
   openHyperliquidAccountStream,
   previewPrivateAccountAction,
   type HyperliquidAccountSnapshot,
+  type HyperliquidMarketSnapshot,
   type PrivateAccountSafeInput,
 } from "@/lib/private-account-client";
 import { useMarketData } from "@/lib/market-data-store";
+import { hyperliquidCandleAgeMs } from "@/lib/hyperliquid-live-market";
 import {
   hyperliquidCredentialsSealed,
   hyperliquidAccountSnapshotAuthoritative,
@@ -901,6 +903,7 @@ function AlternateProductWorkspace({
   const nativeProtection = selectedVenue?.protective_orders === "native";
   const setupHref = buildVenueSetupHref({ product, venue, market: marketLabel });
   const useHyperliquidMarket = active && product === "perps" && venue === "hyperliquid";
+  const marketClockMs = useMarketClock(useHyperliquidMarket);
   const hyperliquidRecord = useMarketData({
     venue: "hyperliquid",
     network: hyperliquidNetwork,
@@ -932,6 +935,9 @@ function AlternateProductWorkspace({
     ? hyperliquidRecord.frame
     : referenceMarketProduct ? referenceRecord.frame : null;
   const displayedMarketStatus = useHyperliquidMarket ? hyperliquidStatus : referenceRecord.status;
+  const displayedMarketStatusLabel = useHyperliquidMarket
+    ? formatHyperliquidMarketStatus(hyperliquidStatus, hyperliquidMarket, marketClockMs)
+    : formatStatus(displayedMarketStatus, Boolean(displayedFrame));
   const selectedMarketCapability = perpMarkets.find((item) => item.coin === perpMarket);
   const hyperliquidReadiness = useMemo(() => hyperliquidPerpsReadiness({
     authenticated,
@@ -1267,8 +1273,8 @@ function AlternateProductWorkspace({
           </div>
           <div className="flex items-center gap-2">
             <span className="inline-flex h-9 items-center gap-2 rounded-md border border-[#26313f] bg-[#0b0e13] px-3 text-xs text-[#a8b2c1]">
-              <span className={displayedMarketStatus === "live" ? "h-1.5 w-1.5 rounded-full bg-[#62d6a5]" : "h-1.5 w-1.5 rounded-full bg-[#d9b96e]"} />
-              {formatStatus(displayedMarketStatus, Boolean(displayedFrame))}
+              <span className={displayedMarketStatus === "live" && !displayedFrame?.stale ? "h-1.5 w-1.5 rounded-full bg-[#62d6a5]" : "h-1.5 w-1.5 rounded-full bg-[#d9b96e]"} />
+              {displayedMarketStatusLabel}
             </span>
             {product === "perps" && (
               <span className="inline-flex h-9 items-center gap-2 rounded-md border border-[#26313f] bg-[#0b0e13] px-3 text-xs text-[#a8b2c1]" title={hyperliquidReadiness.detail}>
@@ -1339,6 +1345,7 @@ function AlternateProductWorkspace({
               onModeChange={onChartModeChange}
               size="large"
               height={390}
+              feedStatus={displayedMarketStatus}
             />
             <div className="mt-4 border-t border-[#20252d] pt-3">
               <div className="flex gap-1 overflow-x-auto" role="tablist" aria-label="Trading activity">
@@ -2366,6 +2373,39 @@ function formatStatus(status: string, hasMarketData = false) {
   if (status === "stale") return "Delayed";
   if (status === "error") return "Feed unavailable";
   return hasMarketData ? "Live cache · refreshing" : "Establishing feed";
+}
+
+export function formatHyperliquidMarketStatus(
+  status: string,
+  snapshot: HyperliquidMarketSnapshot | null,
+  now = Date.now(),
+) {
+  const candleAge = hyperliquidCandleAgeMs(snapshot, now);
+  const age = candleAge == null ? "awaiting candle" : `candle ${formatMarketAge(candleAge)}`;
+  if (status === "live" && !snapshot?.stale) return `Live · ${age}`;
+  if (status === "fallback_polling") return `Fallback polling · ${age}`;
+  if (status === "reconnecting") return `Reconnecting · ${age}`;
+  if (status === "unavailable" || status === "error") return `Unavailable · ${age}`;
+  if (status === "connecting") return `Connecting · ${age}`;
+  return `Delayed · ${age}`;
+}
+
+function formatMarketAge(ageMs: number) {
+  const seconds = Math.floor(ageMs / 1_000);
+  if (seconds < 1) return "now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s ago`;
+}
+
+function useMarketClock(enabled: boolean) {
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [enabled]);
+  return now;
 }
 
 function short(value: string) {

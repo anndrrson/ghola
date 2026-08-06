@@ -30,6 +30,15 @@ describe("Hyperliquid live market stream", () => {
     }, new Date("2026-05-29T00:00:01Z"));
 
     snapshot = mergeHyperliquidLiveMarketMessage(snapshot, {
+      channel: "bbo",
+      data: {
+        coin: "BTC",
+        time: 1710000000000,
+        bbo: [{ px: "68099.5", sz: "0.1", n: 1 }, { px: "68100.5", sz: "0.2", n: 1 }],
+      },
+    }, new Date("2026-05-29T00:00:01.500Z"));
+
+    snapshot = mergeHyperliquidLiveMarketMessage(snapshot, {
       channel: "l2Book",
       data: {
         coin: "BTC",
@@ -97,7 +106,7 @@ describe("Hyperliquid live market stream", () => {
       },
     }, new Date("2026-05-29T00:00:05Z"));
 
-    expect(snapshot.mid).toBe("68100.5");
+    expect(snapshot.mid).toBe("68100");
     expect(snapshot.bids).toHaveLength(20);
     expect(snapshot.asks).toHaveLength(20);
     expect(snapshot.best_bid).toBe("68099");
@@ -114,6 +123,14 @@ describe("Hyperliquid live market stream", () => {
       T: 1710000299999,
       c: "68100",
       n: 40,
+    });
+    expect(snapshot.channel_updated_at).toEqual({
+      candle: new Date("2026-05-29T00:00:05Z").getTime(),
+      trades: new Date("2026-05-29T00:00:03Z").getTime(),
+      bbo: new Date("2026-05-29T00:00:01.500Z").getTime(),
+      order_book: new Date("2026-05-29T00:00:02Z").getTime(),
+      market_context: new Date("2026-05-29T00:00:04Z").getTime(),
+      mid: new Date("2026-05-29T00:00:01Z").getTime(),
     });
     expect(JSON.stringify(snapshot)).not.toContain("0xabc");
     expect(JSON.stringify(snapshot)).not.toContain("0xdeadbeef");
@@ -210,7 +227,7 @@ describe("Hyperliquid live market stream", () => {
 
     const first = FakeWebSocket.instances[0];
     first.open();
-    expect(statuses).toContain("live");
+    expect(statuses).not.toContain("live");
     expect(first.sent.map((item) => JSON.parse(item))).toEqual(
       hyperliquidLiveMarketSubscriptions("BTC", "5m").map((subscription) => ({
         method: "subscribe",
@@ -218,10 +235,22 @@ describe("Hyperliquid live market stream", () => {
       })),
     );
 
+    first.message(JSON.stringify({
+      channel: "candle",
+      data: candleRow("BTC", "5m", Date.now(), "68001"),
+    }));
+    expect(statuses).toContain("live");
+
     first.message(JSON.stringify({ channel: "allMids", data: { mids: { BTC: "68001" } } }));
     expect(snapshots.at(-1)?.mid).toBe("68001");
 
-    await vi.advanceTimersByTimeAsync(30_000);
+    for (let index = 0; index < 4; index += 1) {
+      await vi.advanceTimersByTimeAsync(9_000);
+      first.message(JSON.stringify({
+        channel: "bbo",
+        data: { coin: "BTC", time: Date.now(), bbo: [{ px: "68000", sz: "1", n: 1 }, { px: "68002", sz: "1", n: 1 }] },
+      }));
+    }
     expect(first.sent.map((item) => JSON.parse(item))).toContainEqual({ method: "ping" });
 
     first.closeFromServer();
@@ -234,7 +263,148 @@ describe("Hyperliquid live market stream", () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
     stream.stop();
   });
+
+  it("does not let continuing BBO traffic mask a stalled candle channel", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-06T06:00:00.000Z"));
+    const statuses: string[] = [];
+    const snapshots: HyperliquidMarketSnapshot[] = [];
+    const fallback = mergeHyperliquidLiveMarketMessage(
+      emptyHyperliquidLiveMarketSnapshot({ network: "mainnet", coin: "BTC", interval: "1m" }),
+      { channel: "candle", data: candleRow("BTC", "1m", Date.now(), "64800") },
+      new Date(),
+    );
+    const stream = createHyperliquidLiveMarketStream({
+      network: "mainnet",
+      coin: "BTC",
+      interval: "1m",
+      candleStaleAfterMs: 5_000,
+      webSocketCtor: FakeWebSocket as unknown as HyperliquidWebSocketConstructor,
+      getFallbackSnapshot: vi.fn(async () => fallback),
+      onSnapshot: (snapshot) => snapshots.push(snapshot),
+      onStatus: (status) => statuses.push(status),
+      now: () => Date.now(),
+    });
+
+    stream.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    socket.message(JSON.stringify({
+      channel: "candle",
+      data: candleRow("BTC", "1m", Date.now(), "64801"),
+    }));
+    expect(statuses.at(-1)).toBe("live");
+
+    for (let index = 0; index < 3; index += 1) {
+      await vi.advanceTimersByTimeAsync(2_000);
+      socket.message(JSON.stringify({
+        channel: "bbo",
+        data: { coin: "BTC", time: Date.now(), bbo: [{ px: "64800", sz: "1", n: 1 }, { px: "64802", sz: "1", n: 1 }] },
+      }));
+    }
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(statuses).toContain("delayed");
+    expect(statuses.at(-1)).not.toBe("live");
+    expect(snapshots.some((snapshot) => snapshot.stale)).toBe(true);
+    expect(socket.sent.map((item) => JSON.parse(item))).toContainEqual({
+      method: "unsubscribe",
+      subscription: { type: "candle", coin: "BTC", interval: "1m" },
+    });
+
+    socket.message(JSON.stringify({
+      channel: "candle",
+      data: candleRow("BTC", "1m", Date.now(), "64803"),
+    }));
+    expect(statuses.at(-1)).toBe("live");
+    expect(snapshots.at(-1)?.stale).toBe(false);
+    stream.stop();
+  });
+
+  it("does not relabel stale fallback candles as freshly updated", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-06T06:10:00.000Z"));
+    const oldCandleAt = Date.now() - 90_000;
+    const staleFallback = mergeHyperliquidLiveMarketMessage(
+      emptyHyperliquidLiveMarketSnapshot({ network: "mainnet", coin: "BTC", interval: "1m" }),
+      { channel: "candle", data: candleRow("BTC", "1m", oldCandleAt, "64800") },
+      new Date(oldCandleAt),
+    );
+    staleFallback.stale = true;
+    const snapshots: HyperliquidMarketSnapshot[] = [];
+    const statuses: string[] = [];
+    const stream = createHyperliquidLiveMarketStream({
+      network: "mainnet",
+      coin: "BTC",
+      interval: "1m",
+      webSocketCtor: null,
+      getFallbackSnapshot: vi.fn(async () => staleFallback),
+      onSnapshot: (snapshot) => snapshots.push(snapshot),
+      onStatus: (status) => statuses.push(status),
+      now: () => Date.now(),
+    });
+
+    stream.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    expect(statuses).toContain("fallback_polling");
+    expect(snapshots.at(-1)?.stale).toBe(true);
+    expect(snapshots.at(-1)?.channel_updated_at?.candle).toBe(oldCandleAt);
+    stream.stop();
+  });
+
+  it("reconciles the active candle from real trades without hiding official candle staleness", () => {
+    const candleAt = new Date("2026-08-06T06:00:00.000Z");
+    let snapshot = mergeHyperliquidLiveMarketMessage(
+      emptyHyperliquidLiveMarketSnapshot({ network: "mainnet", coin: "BTC", interval: "1m" }),
+      { channel: "candle", data: candleRow("BTC", "1m", candleAt.getTime(), "64800") },
+      candleAt,
+    );
+    const officialCandleAt = snapshot.channel_updated_at?.candle;
+
+    snapshot = mergeHyperliquidLiveMarketMessage(snapshot, {
+      channel: "trades",
+      data: [{ coin: "BTC", side: "B", px: "64810", sz: "0.02", time: candleAt.getTime() + 20_000 }],
+    }, new Date(candleAt.getTime() + 20_000));
+
+    expect(snapshot.candles.at(-1)).toMatchObject({ c: "64810", h: "64810" });
+    expect(snapshot.channel_updated_at?.trades).toBe(candleAt.getTime() + 20_000);
+    expect(snapshot.channel_updated_at?.candle).toBe(officialCandleAt);
+  });
+
+  it("ignores candle and trade updates for another market or interval", () => {
+    const snapshot = emptyHyperliquidLiveMarketSnapshot({ network: "mainnet", coin: "BTC", interval: "1m" });
+    const wrongCoin = mergeHyperliquidLiveMarketMessage(snapshot, {
+      channel: "trades",
+      data: [{ coin: "ETH", side: "B", px: "3000", sz: "1", time: Date.now() }],
+    });
+    const wrongInterval = mergeHyperliquidLiveMarketMessage(snapshot, {
+      channel: "candle",
+      data: candleRow("BTC", "5m", Date.now(), "64800"),
+    });
+
+    expect(wrongCoin).toBe(snapshot);
+    expect(wrongInterval).toBe(snapshot);
+  });
 });
+
+function candleRow(coin: string, interval: string, time: number, close: string) {
+  const intervalMs = interval === "1m" ? 60_000 : 5 * 60_000;
+  const openTime = Math.floor(time / intervalMs) * intervalMs;
+  return {
+    s: coin,
+    i: interval,
+    t: openTime,
+    T: openTime + intervalMs - 1,
+    o: close,
+    h: close,
+    l: close,
+    c: close,
+    v: "1",
+    n: 1,
+  };
+}
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];

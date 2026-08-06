@@ -9691,7 +9691,8 @@ function hyperliquidMarketConnectionCopy(
   if (status === "fallback_polling" && !snapshot?.stale) return { label: "polling fallback", tone: "warn" as const };
   if (status === "connecting") return { label: "connecting", tone: "warn" as const };
   if (status === "reconnecting") return { label: "reconnecting", tone: "warn" as const };
-  if (status === "blocked") return { label: "stream blocked", tone: "bad" as const };
+  if (status === "unavailable") return { label: "stream unavailable", tone: "bad" as const };
+  if (status === "delayed") return { label: "candle feed delayed", tone: "warn" as const };
   return { label: "market stale", tone: "warn" as const };
 }
 

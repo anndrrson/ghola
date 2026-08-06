@@ -361,17 +361,22 @@ function installVisibilityPolicy() {
   if (visibilityInstalled || typeof document === "undefined") return;
   visibilityInstalled = true;
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      for (const entry of entries.values()) if (entry.leases === 0) stopEntry(entry);
-      hiddenTimer = setTimeout(() => {
-        for (const entry of entries.values()) stopEntry(entry);
-      }, WARM_TTL_MS);
-      return;
-    }
-    if (hiddenTimer) clearTimeout(hiddenTimer);
-    hiddenTimer = null;
-    for (const entry of entries.values()) if (entry.leases > 0) startEntry(entry);
+    applyMarketDataVisibility(document.hidden);
   });
+}
+
+export function applyMarketDataVisibility(hidden: boolean) {
+  if (hidden) {
+    for (const entry of entries.values()) if (entry.leases === 0) stopEntry(entry);
+    if (hiddenTimer) clearTimeout(hiddenTimer);
+    hiddenTimer = setTimeout(() => {
+      for (const entry of entries.values()) stopEntry(entry);
+    }, WARM_TTL_MS);
+    return;
+  }
+  if (hiddenTimer) clearTimeout(hiddenTimer);
+  hiddenTimer = null;
+  for (const entry of entries.values()) if (entry.leases > 0) startEntry(entry);
 }
 
 async function fetchCoinbaseSnapshot(productId: CoinbaseProductId, interval: CoinbaseCandleInterval) {

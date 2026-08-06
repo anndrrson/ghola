@@ -135,6 +135,29 @@ describe("Hyperliquid market data", () => {
     expect(snapshot.recent_trades).toEqual([]);
   });
 
+  it("preserves successful candle history when another Info subrequest is rate limited", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      if (body.type === "candleSnapshot") {
+        return json([{ t: 1710000000000, T: 1710000059999, o: "68000", h: "68002", l: "67999", c: "68001", v: "2", n: 3 }]);
+      }
+      return { ok: false, status: 429, json: async () => ({}) } as Response;
+    });
+
+    const snapshot = await getHyperliquidMarketSnapshot({
+      network: "mainnet",
+      coin: "BTC",
+      interval: "1m",
+      now: new Date("2026-05-29T00:00:00Z"),
+      fetchImpl: fetchImpl as never,
+    });
+
+    expect(snapshot.stale).toBe(false);
+    expect(snapshot.candles).toHaveLength(1);
+    expect(snapshot.candles[0]?.c).toBe("68001");
+    expect(snapshot.channel_updated_at?.candle).toBe(new Date("2026-05-29T00:00:00Z").getTime());
+  });
+
   it("serves cached data immediately and deduplicates a slow background refresh", async () => {
     const firstAt = new Date("2026-05-29T00:00:00Z");
     const initial = await getHyperliquidMarketSnapshot({
@@ -156,9 +179,12 @@ describe("Hyperliquid market data", () => {
 
     expect(first).toMatchObject({ mid: initial.mid, stale: true });
     expect(second).toMatchObject({ mid: initial.mid, stale: true });
-    expect(slowFetch).toHaveBeenCalledTimes(5);
+    // Only the candle bootstrap should be in flight until it resolves; the
+    // second caller must share that same refresh rather than starting another.
+    expect(slowFetch).toHaveBeenCalledTimes(1);
     release();
     await getHyperliquidMarketSnapshot({ network: "mainnet", coin: "BTC", interval: "1m", now: staleAt, fetchImpl: slowFetch as never, cacheMode: "refresh" });
+    expect(slowFetch).toHaveBeenCalledTimes(5);
   });
 
   it("keeps mainnet and testnet market-universe caches isolated", async () => {

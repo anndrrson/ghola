@@ -50,6 +50,7 @@ export interface GholaMarketFrame {
   interval: string;
   fetchedAt: string | null;
   stale: boolean;
+  channelUpdatedAt?: HyperliquidMarketSnapshot["channel_updated_at"];
   mid: string | null;
   bestBid: string | null;
   bestAsk: string | null;
@@ -183,6 +184,7 @@ export function gholaFrameFromHyperliquid(snapshot: HyperliquidMarketSnapshot | 
     interval: snapshot.interval,
     fetchedAt: snapshot.fetched_at,
     stale: snapshot.stale,
+    channelUpdatedAt: snapshot.channel_updated_at,
     mid: snapshot.mid,
     bestBid: snapshot.best_bid,
     bestAsk: snapshot.best_ask,

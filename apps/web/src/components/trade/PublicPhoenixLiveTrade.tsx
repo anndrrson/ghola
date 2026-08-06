@@ -20,6 +20,7 @@ import {
   type PrivateExecutionOrderDraft,
 } from "@/lib/private-execution-instruction-seal";
 import type { PhoenixCandleInterval, PhoenixMarketSnapshot } from "@/lib/phoenix-market-data";
+import type { PhoenixLiveMarketStatus } from "@/lib/phoenix-live-market";
 import { useMarketData } from "@/lib/market-data-store";
 import { formatPhoenixPrice } from "@/lib/phoenix-chart-helpers";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
@@ -202,7 +203,7 @@ export function PublicPhoenixLiveTrade() {
   const submitInFlight = useRef(false);
   const phoenixRecord = useMarketData({ venue: "phoenix", network: "mainnet", symbol: "SOL", interval: phoenixInterval });
   const phoenixMarket = phoenixRecord.snapshot?.platform === "phoenix" ? phoenixRecord.snapshot : null;
-  const phoenixMarketStatus = phoenixRecord.status;
+  const phoenixMarketStatus = phoenixRecord.status as PhoenixLiveMarketStatus;
 
   const order = useMemo<PrivateExecutionOrderDraft>(() => ({
     venue_id: "phoenix",
