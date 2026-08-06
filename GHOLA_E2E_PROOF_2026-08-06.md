@@ -29,7 +29,8 @@ Status: **NOT PROVEN END TO END**
 - Exact production-source targeted tests: 90 passed.
 - Exact production-source auth tests: 9 passed.
 - Six focused signup/session tests passed, covering same-origin protection, cookie-backed routing, upstream failure handling, and backend-verified identity.
-- Restored production-based candidate: 134 test files and 713 tests passed; one opt-in PostgreSQL file/test is skipped in the ordinary suite and run separately against a disposable database.
+- Restored production-based candidate: 134 test files and 714 tests passed; one opt-in PostgreSQL file/test is skipped in the ordinary suite and run separately against a disposable database.
+- Ghola Cloud backend: 136 tests passed.
 - Founding page tests prove the exact ten-seat display, logged-out signup redirect, and sold-out suppression.
 - Confidential worker: 147 tests passed; focused Hyperliquid/policy tests passed.
 - Browser and worker validation now independently reject a private key whose signer equals the master Hyperliquid account; withdrawals, vault transfers, and leverage escalation remain blocked.
@@ -38,12 +39,14 @@ Status: **NOT PROVEN END TO END**
 - A venue-proven close fill and a venue-proven flat account are kept as separate evidence states; residual or unavailable state cannot be labeled flat.
 - A disposable local PostgreSQL 16 database proved 11 concurrent founding reservations admit exactly 10 and reject the eleventh.
 - The database-backed signed-webhook test proved idempotent, ordered paid-entitlement activation and restoration.
+- A disposable PostgreSQL 16 database proved the actual backend lifecycle for a new email user: signup issued a verified free-tier JWT; the same subject returned 10 available seats; a correctly signed paid-checkout webhook activated `founding_trader` and changed capacity to 1 claimed/9 remaining; re-signin preserved the user ID and returned the paid tier. Cleanup left zero users and zero seats.
+- The web admission boundary forwards that same bearer identity to billing, admits `founding_trader`, and denies `free` with `subscription_required`.
 - Credential reload/isolation tests passed against a private-Blob adapter.
 - A disposable PostgreSQL 16.11 database proved sealed mainnet-vault persistence across two separate web test processes: the first wrote one account and one encrypted vault, and the second detected the verified connection from durable state. Both JSONB records were database objects; the public status exposed commitments/readiness but no ciphertext or wallet-key material.
 - The persistence audit found and fixed two candidate gaps: ordinary PostgreSQL URLs now use a TCP driver instead of Neon HTTP, and JSONB writes are forced through text to prevent driver-dependent double encoding.
 - Lint: 0 errors, 20 pre-existing warnings.
 - Production build passed, including auth client-bundle and SRI checks.
-- Candidate implementation commits: `52f9b676`, `cc2b7152`, and `b8cdddf5` on `codex/production-e2e-proof-20260806`.
+- Candidate head: `99586d6f` on `codex/production-e2e-proof-20260806`.
 - Candidate was not deployed.
 
 ## Safety incident
@@ -54,10 +57,10 @@ Status: **NOT PROVEN END TO END**
 
 ## Not proven
 
-- New-user signup and authenticated session creation.
-- Paid entitlement, real checkout, and atomic admission into the ten-seat cohort.
+- Production new-user signup and authenticated session creation.
+- Production Stripe checkout, paid entitlement, and atomic admission into the ten-seat cohort. The backend lifecycle and ten-seat invariant are proven only against disposable infrastructure.
 - Scoped Hyperliquid trading-only API-wallet connection without secret disclosure.
-- Durable credential detection after reload and deployment.
+- Durable credential detection in production after reload and deployment. Cross-process persistence is proven only against disposable infrastructure.
 - Account-, network-, worker-, market-, and collateral-specific live readiness.
 - Venue-authoritative order acceptance, fill, position, reduce-only close, and final flat state.
 
