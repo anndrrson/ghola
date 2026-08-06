@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { thumperSignIn, thumperSignUp } from "./thumper-api";
+import {
+  createThumperCheckout,
+  getThumperBillingStatus,
+  thumperSignIn,
+  thumperSignUp,
+} from "./thumper-api";
 
 describe("thumper auth helpers", () => {
   beforeEach(() => {
@@ -89,6 +94,34 @@ describe("thumper auth helpers", () => {
     });
     expect(res.token).toBeUndefined();
     expect(localStorage.getItem("thumper_token")).toBeNull();
+  });
+
+  it("routes authenticated billing through the same-origin session proxy", async () => {
+    vi.stubEnv("NEXT_PUBLIC_THUMPER_API_URL", "https://thumper-cloud.onrender.com");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ tier: "free" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ checkout_url: "https://checkout.stripe.test/session" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getThumperBillingStatus();
+    await createThumperCheckout("founding_trader");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/billing/status", {
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/billing/checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ tier: "founding_trader" }),
+    });
   });
 
   it("does not expose raw auth API 404s to users", async () => {

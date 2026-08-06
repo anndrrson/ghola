@@ -35,9 +35,10 @@ function thumperApiBase() {
 }
 
 function thumperFetchUrl(path: string) {
-  // Cookie-backed session routes live in this Next app. They must remain
-  // same-origin even when production has a public upstream API URL configured.
-  if (path.startsWith("/api/auth/session/")) return path;
+  // Authenticated API calls must pass through this Next app so its HTTP-only
+  // session cookie can be exchanged for the upstream bearer token. Legacy
+  // clients that still provide a bearer token remain supported by the proxy.
+  if (path.startsWith("/api/")) return path;
   return `${thumperApiBase()}${path}`;
 }
 
