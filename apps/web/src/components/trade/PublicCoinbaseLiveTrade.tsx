@@ -172,8 +172,8 @@ const INTERVALS: CoinbaseCandleInterval[] = ["1m", "5m", "15m", "1h"];
 const TRADE_PRODUCTS: Array<{ id: TradeProduct; label: string; disabled?: boolean }> = [
   { id: "spot", label: "Spot", disabled: true },
   { id: "perps", label: "Perps" },
-  { id: "swap", label: "Swap" },
-  { id: "automate", label: "Automate" },
+  { id: "swap", label: "Swap", disabled: true },
+  { id: "automate", label: "Automate", disabled: true },
 ];
 const SURFACE_RAISED = "border border-[#292c33] bg-[linear-gradient(180deg,#121317_0%,#0c0d10_58%,#090a0c_100%)] shadow-[0_24px_70px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.045),inset_0_-1px_0_rgba(0,0,0,0.42)]";
 const SURFACE_SUNKEN = "border border-[#24272e] bg-[linear-gradient(180deg,#090a0d_0%,#07080a_100%)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03),inset_0_12px_28px_rgba(0,0,0,0.24)]";
@@ -228,22 +228,17 @@ export function PublicCoinbaseLiveTrade({
       setTradeProduct(nextProduct);
     }
     const requestedVenue = searchParams.get("venue");
-    if (requestedProduct === "spot") {
-      setVenue("hyperliquid");
+    const shouldCanonicalizePerpsUrl =
+      (requestedProduct != null && requestedProduct !== "perps") ||
+      (requestedVenue != null && requestedVenue !== "hyperliquid");
+    setVenue("hyperliquid");
+    if (shouldCanonicalizePerpsUrl) {
       const retainedPerpMarket = readStoredPerpMarket() || "SOL";
       const params = new URLSearchParams(searchParams.toString());
       params.set("product", "perps");
       params.set("venue", "hyperliquid");
       params.set("market", `${retainedPerpMarket}-PERP`);
       replaceTradeUrlAfterPaint(`/trade?${params.toString()}`);
-    } else if (
-      requestedVenue === "coinbase_advanced" ||
-      requestedVenue === "phoenix" ||
-      requestedVenue === "hyperliquid" ||
-      requestedVenue === "jupiter" ||
-      requestedVenue === "backpack"
-    ) {
-      setVenue(requestedVenue);
     }
     // Alternate workspaces own their market state. Letting SOL-USDC or BTC-PERP
     // flow into the spot state makes a tab change silently replace the user's
@@ -304,12 +299,8 @@ export function PublicCoinbaseLiveTrade({
     : dayChange >= 0 ? "text-emerald-200" : "text-rose-200";
 
   function changeTradeProduct(next: TradeProduct) {
-    if (next === "spot") return;
-    const nextVenue: TradeVenueId =
-      next === "perps" ? "hyperliquid" :
-      next === "swap" ? "jupiter" :
-      next === "automate" ? "coinbase_advanced" :
-      "coinbase_advanced";
+    if (next !== "perps") return;
+    const nextVenue: TradeVenueId = "hyperliquid";
     // Keep the current fully-rendered workspace visible while React prepares
     // the next one. URL synchronization is deliberately post-paint because
     // Next patches history and can otherwise turn a local tab click into a
@@ -323,7 +314,7 @@ export function PublicCoinbaseLiveTrade({
     const params = new URLSearchParams(searchParams.toString());
     params.set("product", next);
     params.set("venue", nextVenue);
-    params.set("market", next === "perps" ? `${retainedPerpMarket}-PERP` : next === "swap" ? "SOL-USDC" : product);
+    params.set("market", `${retainedPerpMarket}-PERP`);
     replaceTradeUrlAfterPaint(`/trade?${params.toString()}`);
   }
 
@@ -811,7 +802,7 @@ export function WorkspaceProductNav({
           aria-current={value === product.id ? "page" : undefined}
           aria-disabled={product.disabled || undefined}
           disabled={product.disabled}
-          title={product.disabled ? "Coinbase Spot is coming soon" : undefined}
+          title={product.disabled ? `${product.label} is coming soon` : undefined}
           onClick={() => onChange(product.id)}
           className={
             product.disabled
@@ -2095,14 +2086,14 @@ export function resolveAvailableTradeProduct(
   requested: string | null | undefined,
   stored: TradeProduct | null = null,
 ): TradeProduct {
-  if (requested != null) {
-    return requested === "perps" || requested === "swap" || requested === "automate"
-      ? requested
-      : "perps";
-  }
-  return stored === "perps" || stored === "swap" || stored === "automate"
-    ? stored
-    : "perps";
+  const requestedProduct = TRADE_PRODUCTS.find(
+    (item) => item.id === requested && !item.disabled,
+  );
+  if (requestedProduct) return requestedProduct.id;
+  const storedProduct = TRADE_PRODUCTS.find(
+    (item) => item.id === stored && !item.disabled,
+  );
+  return storedProduct?.id ?? "perps";
 }
 
 function readStoredPerpMarket(): string | null {

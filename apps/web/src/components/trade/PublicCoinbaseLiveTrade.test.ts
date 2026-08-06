@@ -14,27 +14,32 @@ import {
 } from "./PublicCoinbaseLiveTrade";
 
 describe("available trade products", () => {
-  it("defaults new and legacy Spot visits to Hyperliquid Perps", () => {
+  it("defaults new and unavailable product visits to Hyperliquid Perps", () => {
     expect(resolveAvailableTradeProduct(null)).toBe("perps");
     expect(resolveAvailableTradeProduct("spot", "automate")).toBe("perps");
+    expect(resolveAvailableTradeProduct("swap")).toBe("perps");
+    expect(resolveAvailableTradeProduct("automate")).toBe("perps");
     expect(resolveAvailableTradeProduct(null, "spot")).toBe("perps");
+    expect(resolveAvailableTradeProduct(null, "swap")).toBe("perps");
+    expect(resolveAvailableTradeProduct(null, "automate")).toBe("perps");
   });
 
-  it("preserves enabled product selections", () => {
+  it("preserves the enabled Perps selection", () => {
     expect(resolveAvailableTradeProduct("perps")).toBe("perps");
-    expect(resolveAvailableTradeProduct("swap")).toBe("swap");
-    expect(resolveAvailableTradeProduct(null, "automate")).toBe("automate");
+    expect(resolveAvailableTradeProduct(null, "perps")).toBe("perps");
   });
 
-  it("renders Coinbase Spot as a disabled Coming soon control", () => {
+  it("renders Spot, Swap, and Automate as disabled Coming soon controls", () => {
     const markup = renderToStaticMarkup(createElement(WorkspaceProductNav, {
       value: "perps",
       onChange: () => undefined,
     }));
 
-    expect(markup).toContain("disabled");
-    expect(markup).toContain("Coinbase Spot is coming soon");
-    expect(markup).toContain("Coming soon");
+    expect(markup.match(/ disabled=""/g)).toHaveLength(3);
+    expect(markup).toContain("Spot is coming soon");
+    expect(markup).toContain("Swap is coming soon");
+    expect(markup).toContain("Automate is coming soon");
+    expect(markup.match(/Coming soon/g)).toHaveLength(3);
   });
 });
 
