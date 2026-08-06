@@ -39,7 +39,7 @@ Status: **NOT PROVEN END TO END**
 - Credential reload/isolation tests passed against a private-Blob adapter; they do not prove production persistence.
 - Lint: 0 errors, 20 pre-existing warnings.
 - Production build passed, including auth client-bundle and SRI checks.
-- Candidate commit: `ef8d2ccb` on `codex/production-e2e-proof-20260806`.
+- Candidate implementation commit: `52f9b676` on `codex/production-e2e-proof-20260806`.
 - Candidate was not deployed.
 
 ## Safety incident
