@@ -3,7 +3,22 @@
 Date: 2026-08-06  
 Status: **NOT PROVEN END TO END**
 
-## Production observations
+## Current production verification
+
+- Production is deployment `dpl_GxNgC4qp2HJPTtBJT9D7YKYQWLgA`, built from pushed commit `80d6867e3392e4c28c8122ba2a10ff836d496b4a` with that SHA supplied as deployment metadata.
+- `/founding` returns 200. `/v1/private-account/live-trading/status` is green for BYO Hyperliquid mainnet (`live_trading_enabled=true`); pooled trading remains red because its worker is unavailable.
+- Production limits are $15/order, $25/day, and 50 bps. Their prior trailing-newline encoding was corrected without widening the configured limits.
+- A synthetic user signed up in production, signed in again on `ghola.xyz`, and retained authentication after a hard reload.
+- Founding capacity remained 0 claimed, 10 remaining before payment.
+- Email-session billing was initially broken because authenticated `/api/billing/*` calls bypassed the cookie-to-bearer proxy. Commit `80d6867e` fixes all authenticated `/api/*` calls to use the same-origin proxy; 715 web tests pass.
+- The same user now reaches a recoverable live Stripe Checkout for **Ghola Founding Trader — $29/month** without `Failed to fetch` or `unauthorized`. No payment was submitted.
+- Stripe's current success/cancel return URL still points to the old Render frontend because `ghola-cloud` checkout code uses backend `BASE_URL`; payment should not be completed until the user accepts this recovery caveat or a separately authorized Render release fixes it.
+- Chrome's official Hyperliquid UI showed the master account with $21.33 trading equity. A dedicated signer named `ghola-e2e-0806` was authorized for two days; the existing `ghola-main-26` signer was preserved.
+- Ghola's read-only preflight passed mainnet selection, master-account recognition, connected-wallet match, signer authorization, unified account mode, 5–25 USDC collateral, and BTC/ETH/SOL market availability.
+- Encrypted credential storage correctly failed closed with `trading_subscription_required` while the synthetic user remained free. The generated key remains only in the preserved browser tab; it was never printed, committed, or sent unencrypted.
+- No order, preview, cancellation, or close was submitted.
+
+## Initial production baseline
 
 - `ghola.xyz/trade` loaded in a temporary tab in the user's existing Chrome profile. After asynchronous session verification, it showed `credentials required`, proving the current browser identity is admitted to the trade page but has no connected Hyperliquid credential.
 - `/signup` returned HTTP 200, but no account was created and the isolated signed-out browser was unavailable.
@@ -19,7 +34,7 @@ Status: **NOT PROVEN END TO END**
 - A fresh `/api/private-agent/status` read reported `remote_execution_ready=false`, no selected provider, and `no_attested_confidential_compute_provider`. The configured Phala CVM was previously observed stopped and lacking recipient/report-data binding.
 - The candidate's no-credential production verifier completed as `routes_ready_credentials_required`; it sent no order and confirmed the Hyperliquid market endpoint was HTTP 200 and non-stale. Route availability is not execution readiness.
 
-## Deployment provenance
+## Initial deployment provenance
 
 - Current production deployment: `dpl_3vDWBTMwS12x2boMmB4w3f3d87Y4`.
 - It was created by CLI without Git metadata; an exact Git commit cannot be attributed.
@@ -50,32 +65,30 @@ Status: **NOT PROVEN END TO END**
 - The persistence audit found and fixed two candidate gaps: ordinary PostgreSQL URLs now use a TCP driver instead of Neon HTTP, and JSONB writes are forced through text to prevent driver-dependent double encoding.
 - Lint: 0 errors, 20 pre-existing warnings.
 - Production build passed, including auth client-bundle and SRI checks.
-- Candidate implementation head: `99586d6f` on `codex/production-e2e-proof-20260806`.
-- Candidate was not deployed.
+- Current implementation head: `80d6867e` on pushed branch `codex/production-e2e-proof-20260806`.
+- Current production deployment: `dpl_GxNgC4qp2HJPTtBJT9D7YKYQWLgA`.
 
 ## Safety incident
 
 - A local production environment file was unintentionally printed during inspection.
-- Its credentials must be treated as compromised and rotated before deployment or trading verification.
+- Its credentials must be treated as compromised and rotated before promotion claims or trading verification.
 - No exposed value was reused or repeated, and no credential was rotated without authorization.
 
 ## Not proven
 
-- Production new-user signup and authenticated session creation.
-- Production Stripe checkout, paid entitlement, and atomic admission into the ten-seat cohort. The backend lifecycle and ten-seat invariant are proven only against disposable infrastructure.
-- Scoped Hyperliquid trading-only API-wallet connection without secret disclosure.
+- Production payment completion, paid entitlement, and atomic admission into the ten-seat cohort. Checkout creation now works; no charge was submitted.
+- Encrypted storage of the authorized scoped Hyperliquid API wallet. Venue authorization and read-only preflight are proven; storage is correctly blocked until entitlement.
 - Durable credential detection in production after reload and deployment. Cross-process persistence is proven only against disposable infrastructure.
 - Account-, network-, worker-, market-, and collateral-specific live readiness.
 - Venue-authoritative order acceptance, fill, position, reduce-only close, and final flat state.
 
 ## Required completion sequence
 
-1. Rotate all exposed production credentials and redeploy safely.
-2. Deploy the reviewed candidate with a traceable Git SHA.
-3. Start and attest the confidential worker; verify exact recipient, image, signer, and report-data bindings.
-4. Use an authorized new test user to prove signup, paid entitlement, and one of ten admissions.
-5. Connect an authorized scoped Hyperliquid API wallet; verify secret-free persistence across reload and deployment.
-6. Confirm venue/account/network/worker/market/collateral readiness from authenticated production APIs.
-7. Obtain fresh authorization stating account, BTC side, exact size/notional cap, order type, limit/slippage, and maximum loss.
-8. Submit one bounded opening order; retain venue order/fill IDs and reconcile the exact position.
-9. Submit an exact reduce-only close; confirm the venue reports no residual position or open order.
+1. Complete or authorize the $29 Stripe payment; then verify webhook-driven entitlement and 1/10 admission. A Render change is separately required to correct Stripe's return URL.
+2. Store the already-authorized scoped wallet from the preserved browser tab; verify secret-free persistence across reload and deployment.
+3. Rotate all exposed production credentials and redeploy safely.
+4. Start and attest the confidential worker; verify exact recipient, image, signer, and report-data bindings.
+5. Confirm venue/account/network/worker/market/collateral readiness from authenticated production APIs.
+6. Obtain fresh authorization stating account, BTC side, exact size/notional cap, order type, limit/slippage, and maximum loss.
+7. Submit one bounded opening order; retain venue order/fill IDs and reconcile the exact position.
+8. Submit an exact reduce-only close; confirm the venue reports no residual position or open order.
