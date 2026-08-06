@@ -116,42 +116,6 @@ describe("private account anonymity engine", () => {
     expect(preview.degraded_reasons).toContain("this platform will see the order");
   });
 
-  it("keeps direct BYO venue linkability as explicit degradation instead of a permanent block", () => {
-    const action = createPrivateAccountAction({ action_class: "trade_on_platform" });
-    const preview = previewPrivateAccountAction({
-      action,
-      platform_class: "hyperliquid_style_market",
-      requested_rail: "direct_public_fallback",
-      connector_context: {
-        ...connectorContext(),
-        linkability_decision: "blocked",
-        venue_access_source: "user_provided_credentials",
-        venue_order_visibility: "account_and_order",
-        venue_gate: "venue_accepts_or_rejects_credentials",
-        venue_visibility: "execution_account_and_order_activity",
-        privacy_claim: "venue_visible_order_degraded",
-        reason_codes: ["simulator_threshold_blocked"],
-      },
-      rotation: {
-        ...platformRotation(),
-        reuse_count: 8,
-        status: "rotate_required",
-        reason_codes: ["platform_funding_account_reuse"],
-      },
-      linkability_simulation: {
-        ...linkabilitySimulation(),
-        score_bps: 9_500,
-        decision: "blocked",
-        reason_codes: ["venue_order_visibility", "simulator_threshold_blocked"],
-      },
-    });
-
-    expect(preview.claim_status).toBe("degraded_user_accepted_required");
-    expect(preview.blocked_reasons).not.toContain("adversarial linkability simulator blocked execution");
-    expect(preview.wait_reasons).not.toContain("platform funding account rotation is required");
-    expect(preview.degraded_reasons).toContain("venue-visible BYO execution requires degraded acceptance");
-  });
-
   it("blocks RFQ when the solver set is too small", () => {
     const action = createPrivateAccountAction({ action_class: "trade_on_platform" });
 

@@ -9,7 +9,6 @@ export type PrivateAgentEntitlementTier =
   | "free"
   | "pro"
   | "private_agent"
-  | "founding_trader"
   | "unlimited"
   | "enterprise"
   | "unknown";
@@ -78,7 +77,6 @@ export function normalizePrivateAgentTier(
   if (
     tier === "pro" ||
     tier === "private_agent" ||
-    tier === "founding_trader" ||
     tier === "unlimited" ||
     tier === "enterprise"
   ) {
@@ -94,7 +92,6 @@ export function hasPrivateAgentEntitlement(
   const normalized = normalizePrivateAgentTier(tier);
   return (
     normalized === "private_agent" ||
-    normalized === "founding_trader" ||
     normalized === "unlimited" ||
     normalized === "enterprise"
   );

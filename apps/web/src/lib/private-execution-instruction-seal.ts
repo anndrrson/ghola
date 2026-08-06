@@ -169,24 +169,6 @@ const AGENT_TIME_HORIZON_VALUES = new Set([
   "until_invalidated",
   "custom_window",
 ]);
-const PRIVATE_EXECUTION_SEAL_TIMEOUT_MS = 20_000;
-
-async function withPrivateExecutionSealTimeout<T>(promise: Promise<T>): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error("Secure signing timed out. Check the account signer and try again.")),
-          PRIVATE_EXECUTION_SEAL_TIMEOUT_MS,
-        );
-      }),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-}
 
 export function validatePrivateExecutionOrderDraft(draft: PrivateExecutionOrderDraft): string[] {
   const errors: string[] = [];
@@ -487,7 +469,7 @@ export async function buildPrivateExecutionInstructionBundle(
     ...(mandate ? { mandate } : {}),
   };
 
-  const sealedBytes = await withPrivateExecutionSealTimeout(seal({
+  const sealedBytes = await seal({
     senderDid: ownerDid,
     recipientId: recipient.recipient_id,
     recipientX25519,
@@ -495,7 +477,7 @@ export async function buildPrivateExecutionInstructionBundle(
     associatedData: new TextEncoder().encode(associatedData),
     plaintext: new TextEncoder().encode(JSON.stringify(sealedPlaintext)),
     signBody: options.signBytes,
-  }));
+  });
 
   return {
     recipient,

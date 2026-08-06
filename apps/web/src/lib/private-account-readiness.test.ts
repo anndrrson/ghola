@@ -69,19 +69,4 @@ describe("private account readiness", () => {
     expect(ready?.reason_codes).toContain("venue_visible_order_degraded");
     expect(ready?.reason_codes).not.toContain("shielded_rail_unavailable");
   });
-
-  it("normalizes full-ticket deployment values with trailing newlines", () => {
-    const ready = privateAccountReadiness({
-      paymentHealth: null,
-      env: {
-        GHOLA_V6_HYPERLIQUID_PILOT_ENABLED: "true",
-        GHOLA_HYPERLIQUID_LIVE_MODE: "full_ticket\n",
-        GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_READINESS: "ready",
-      },
-    }).profiles.find((profile) => profile.platform_class === "hyperliquid_style_market");
-
-    expect(ready?.status).toBe("ready");
-    expect(ready?.ready_rails).toEqual(["direct_public_fallback"]);
-    expect(ready?.reason_codes).not.toContain("shielded_rail_unavailable");
-  });
 });

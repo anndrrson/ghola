@@ -4,7 +4,6 @@ import {
   type PrivateExecutionOrderDraft,
 } from "./private-execution-instruction-seal";
 import {
-  HYPERLIQUID_NO_SUBMIT_QUOTE_SIZE_USD,
   deriveLiveReadinessDisplay,
   deriveAutopilotExecutionDisplay,
   deriveLiveTradingExecutionDisplay,
@@ -44,10 +43,6 @@ const validOrder: PrivateExecutionOrderDraft = {
 };
 
 describe("private account trading UI derivation", () => {
-  it("uses an executable Hyperliquid quote size for no-submit verification", () => {
-    expect(Number(HYPERLIQUID_NO_SUBMIT_QUOTE_SIZE_USD)).toBeGreaterThan(10);
-  });
-
   it("uses clearer signed-out and venue-access calls to action", () => {
     expect(deriveTradingNextAction({ ...base, authenticated: false }).label).toBe("Sign in to trade");
     expect(deriveTradingNextAction(base).label).toBe("Connect Phoenix authority");

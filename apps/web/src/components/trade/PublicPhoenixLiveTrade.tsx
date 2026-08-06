@@ -192,6 +192,7 @@ export function PublicPhoenixLiveTrade() {
   const [acceptedRisk, setAcceptedRisk] = useState(false);
   const [notProhibited, setNotProhibited] = useState(false);
   const [working, setWorking] = useState<string | null>(null);
+  const [workerWaking, setWorkerWaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [prepared, setPrepared] = useState<PublicLivePrepareResult | null>(null);
   const [submitted, setSubmitted] = useState<PublicLiveSubmitResult | null>(null);
@@ -200,6 +201,7 @@ export function PublicPhoenixLiveTrade() {
   const [showReview, setShowReview] = useState(false);
   const [phoenixInterval, setPhoenixInterval] = useState<PhoenixCandleInterval>("1m");
   const submitInFlight = useRef(false);
+  const wakeInFlight = useRef(false);
   const phoenixRecord = useMarketData({ venue: "phoenix", network: "mainnet", symbol: "SOL", interval: phoenixInterval });
   const phoenixMarket = phoenixRecord.snapshot?.platform === "phoenix" ? phoenixRecord.snapshot : null;
   const phoenixMarketStatus = phoenixRecord.status;
@@ -340,6 +342,11 @@ export function PublicPhoenixLiveTrade() {
       }
       setWallet(pubkey);
       setStep("connected");
+      if (!phoenixPooledReady) {
+        // A connected wallet is a strong live-user signal. Start the paid secure
+        // worker while the user reviews the ticket instead of waiting for submit.
+        window.setTimeout(() => void wakeWorker({ silent: true }), 0);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Wallet connection failed.");
     } finally {
@@ -347,9 +354,11 @@ export function PublicPhoenixLiveTrade() {
     }
   }
 
-  async function wakeWorker() {
-    setWorking("wake");
-    setError(null);
+  async function wakeWorker({ silent = false }: { silent?: boolean } = {}) {
+    if (wakeInFlight.current) return;
+    wakeInFlight.current = true;
+    setWorkerWaking(true);
+    if (!silent) setError(null);
     try {
       const result = await postJson<PublicLiveWakeResult>("/v1/private-account/public-live/phoenix/wake", {
         venue_id: "phoenix",
@@ -361,13 +370,16 @@ export function PublicPhoenixLiveTrade() {
       const ready = status.pooled_live_trading_enabled === true &&
         phoenix?.status === "green" &&
         status.pooled_live_venues?.includes("phoenix") === true;
-      if (!ready) {
+      if (!ready && !silent) {
         setError(result.provisioning?.reason || "Secure worker is starting. Refresh readiness in a moment.");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start the secure worker.");
+      if (!silent) {
+        setError(err instanceof Error ? err.message : "Could not start the secure worker.");
+      }
     } finally {
-      setWorking(null);
+      wakeInFlight.current = false;
+      setWorkerWaking(false);
     }
   }
 
@@ -567,11 +579,11 @@ export function PublicPhoenixLiveTrade() {
               <button
                 type="button"
                 onClick={() => void wakeWorker()}
-                disabled={working !== null}
+                disabled={workerWaking}
                 className="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-sky-300/30 bg-sky-300/10 px-4 text-sm font-medium text-sky-50 transition hover:bg-sky-300/15 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Power className="h-4 w-4" />
-                {working === "wake" ? "Starting" : "Start agent"}
+                {workerWaking ? "Starting" : "Start agent"}
               </button>
             ) : (
               <div className="flex flex-wrap items-center gap-2 lg:justify-end">

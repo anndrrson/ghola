@@ -8,9 +8,9 @@ import {
 } from "./private-agent-runtime-lease";
 
 const DEFAULT_WORKER_IMAGE =
-  "ghcr.io/anndrrson/ghola:private-agent-worker-9398c08f@sha256:6949f1b48c38797be7d7242c7a2f609802103087a4c16d8c03af5e03ea8b4bab";
+  "ghcr.io/anndrrson/ghola:private-agent-worker-6a4f843@sha256:9b36fd7356dc8be88a685419b8af9b17bb5c46248daf942d753e928b6edc7933";
 const DEFAULT_WORKER_IMAGE_DIGEST =
-  "sha256:6949f1b48c38797be7d7242c7a2f609802103087a4c16d8c03af5e03ea8b4bab";
+  "sha256:9b36fd7356dc8be88a685419b8af9b17bb5c46248daf942d753e928b6edc7933";
 const DEFAULT_CVM_NAME = "ghola-private-agent-worker";
 const RECIPIENT_REPORT_DOMAIN = "ghola-private-agent-recipient-v1";
 
@@ -26,18 +26,6 @@ interface PhalaRecipientMetadata {
   quote_hash?: string | null;
   attested_ready?: boolean;
   expires_at_unix?: number | null;
-}
-
-interface PhalaRuntimeHealthMetadata {
-  service?: string;
-  status?: string;
-  ok?: boolean;
-  ready?: boolean;
-  attested?: boolean;
-  attested_ready?: boolean;
-  image_digest?: string | null;
-  runtime_attestation_commitment?: string | null;
-  runtime_measurement_commitment?: string | null;
 }
 
 interface PhalaProvisionResult {
@@ -71,10 +59,6 @@ interface PhalaProvisionResponse {
   app_env_encrypt_pubkey: string;
 }
 
-interface PhalaComposeUpdateResponse {
-  compose_hash: string;
-}
-
 interface PhalaCloudClient {
   getCvmInfo(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
   getCvmNetwork(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
@@ -82,16 +66,11 @@ interface PhalaCloudClient {
   getCvmState(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
   startCvm(input: { id: string }): Promise<unknown>;
   stopCvm(input: { id: string }): Promise<unknown>;
-  getCvmComposeFile(input: { id: string }, options?: { schema: boolean }): Promise<unknown>;
   provisionCvm(input: Record<string, unknown>): Promise<PhalaProvisionResponse>;
   commitCvmProvision(
     input: Record<string, unknown>,
     options?: { schema: boolean },
   ): Promise<unknown>;
-  provisionCvmComposeFileUpdate(
-    input: Record<string, unknown>,
-  ): Promise<PhalaComposeUpdateResponse>;
-  commitCvmComposeFileUpdate(input: Record<string, unknown>): Promise<unknown>;
 }
 
 function env(name: string): string | null {
@@ -159,10 +138,10 @@ function phalaWorkerImageDigest(): string {
 }
 
 function liveHyperliquidEnabled(): boolean {
-  const mode =
-    env("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") ??
-    env("GHOLA_HYPERLIQUID_LIVE_MODE");
-  return mode === "tiny_fill" || mode === "full_ticket";
+  return (
+    env("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE") === "tiny_fill" ||
+    env("GHOLA_HYPERLIQUID_LIVE_MODE") === "tiny_fill"
+  );
 }
 
 function liveSolanaPerpsEnabled(): boolean {
@@ -314,16 +293,10 @@ export function buildPhalaWorkerCompose(input: {
     composeEnvLine("PRIVATE_AGENT_VENUE_DRY_RUN", workerEnv("PRIVATE_AGENT_VENUE_DRY_RUN", "false")),
     composeEnvLine("PRIVATE_AGENT_GLOBAL_KILL_SWITCH", workerEnv("PRIVATE_AGENT_GLOBAL_KILL_SWITCH", "false")),
     composeEnvLine("PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE", workerEnv("PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE", "60")),
-    composeEnvLine("PRIVATE_AGENT_MAX_GLOBAL_VENUE_WEIGHT_PER_MINUTE", workerEnv("PRIVATE_AGENT_MAX_GLOBAL_VENUE_WEIGHT_PER_MINUTE", "1000")),
-    composeEnvLine("PRIVATE_AGENT_MAX_HYPERLIQUID_STREAMING_USERS", workerEnv("PRIVATE_AGENT_MAX_HYPERLIQUID_STREAMING_USERS", "10")),
-    composeEnvLine("PRIVATE_AGENT_SHARD_ID", workerEnv("PRIVATE_AGENT_SHARD_ID", "unassigned")),
     composeEnvLine("PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_MIN_ORDER_NOTIONAL_USD", "0")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", workerEnv("PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET", "false", ["GHOLA_HYPERLIQUID_ALLOW_MAINNET"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", "disabled")),
-    // Hyperliquid enforces $10 after lot-size rounding. A $10 quote floors
-    // below that minimum, so allow a still-tiny buffer while the UI computes
-    // the selected market's actual executable minimum.
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", "15")),
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD", "5")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD", "25", ["GHOLA_HYPERLIQUID_LIVE_DAILY_NOTIONAL_CAP_USD"])),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD", "")),
     composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD", workerEnv("PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD", "")),
@@ -333,10 +306,7 @@ export function buildPhalaWorkerCompose(input: {
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD", workerLiveEnv("PRIVATE_AGENT_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD", "5", ["GHOLA_SOLANA_PERPS_LIVE_MAX_NOTIONAL_USD"])),
     composeEnvLine("PRIVATE_AGENT_SOLANA_RPC_URL", workerEnv("PRIVATE_AGENT_SOLANA_RPC_URL", "", ["GHOLA_SOLANA_RPC_URL", "SOLANA_RPC_URL"])),
     composeEnvLine("PRIVATE_AGENT_SOLANA_PERPS_PRIORITY_FEE_MICRO_LAMPORTS", workerEnv("PRIVATE_AGENT_SOLANA_PERPS_PRIORITY_FEE_MICRO_LAMPORTS", "0", ["GHOLA_SOLANA_PERPS_PRIORITY_FEE_MICRO_LAMPORTS"])),
-    // The Hyperliquid SDK may need more than 12 seconds for its signed order
-    // exchange call after the read-only checks. Keep this below the web proxy's
-    // 55-second fail-closed deadline so the UI receives a definite result.
-    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", "30000")),
+    composeEnvLine("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", workerEnv("PRIVATE_AGENT_HYPERLIQUID_TIMEOUT_MS", "12000")),
     "    volumes:",
     "      - /var/run/dstack.sock:/var/run/dstack.sock",
     "      - private-agent-data:/data",
@@ -345,67 +315,6 @@ export function buildPhalaWorkerCompose(input: {
     "  private-agent-data:",
     "",
   ].join("\n");
-}
-
-export function phalaWorkerComposeUsesImage(input: {
-  currentCompose: unknown;
-  image: string;
-  imageDigest: string;
-}): boolean {
-  if (typeof input.currentCompose !== "string") return false;
-  const imageLine = `    image: ${input.image}`;
-  const digestLine = `      PHALA_CVM_IMAGE_DIGEST: ${JSON.stringify(input.imageDigest)}`;
-  return (
-    input.currentCompose.split("\n").includes(imageLine) &&
-    input.currentCompose.split("\n").includes(digestLine)
-  );
-}
-
-export function phalaWorkerComposeMatchesDesired(input: {
-  currentCompose: unknown;
-  desiredCompose: string;
-}): boolean {
-  return typeof input.currentCompose === "string" &&
-    input.currentCompose.trim() === input.desiredCompose.trim();
-}
-
-async function reconcilePhalaWorkerImage(input: {
-  client: PhalaCloudClient;
-  name: string;
-}): Promise<"current" | "updated" | "unknown"> {
-  let composeFile: unknown;
-  try {
-    composeFile = await input.client.getCvmComposeFile(
-      { id: input.name },
-      { schema: false },
-    );
-  } catch {
-    return "unknown";
-  }
-  const record =
-    composeFile && typeof composeFile === "object"
-      ? (composeFile as Record<string, unknown>)
-      : null;
-  const currentCompose = record?.docker_compose_file;
-  const desiredCompose = buildPhalaWorkerCompose();
-  if (phalaWorkerComposeMatchesDesired({ currentCompose, desiredCompose })) {
-    return "current";
-  }
-
-  const provision = await input.client.provisionCvmComposeFileUpdate({
-    id: input.name,
-    app_compose: {
-      ...(record ?? {}),
-      docker_compose_file: desiredCompose,
-    },
-    update_env_vars: false,
-  });
-  await input.client.commitCvmComposeFileUpdate({
-    id: input.name,
-    compose_hash: provision.compose_hash,
-    update_env_vars: false,
-  });
-  return "updated";
 }
 
 async function phalaClient(): Promise<PhalaCloudClient | null> {
@@ -487,117 +396,11 @@ function attestationPresent(attestation: unknown): boolean {
   return false;
 }
 
-async function discoverConfiguredPhalaExecutionProvider(): Promise<
-  ConfidentialComputeProviderStatus | null
-> {
-  const executionUrl = safeExecutionUrl(
-    env("GHOLA_PRIVATE_AGENT_EXECUTION_URL") ??
-      env("PHALA_AGENT_ENDPOINT") ??
-      env("GHOLA_CONNECTOR_HYPERLIQUID_STYLE_MARKET_URL"),
-  );
-  if (!executionUrl) return null;
-
-  const [recipient, health] = await Promise.all([
-    fetchJson<PhalaRecipientMetadata>(
-      new URL("/.well-known/private-agent-recipient", executionUrl),
-    ),
-    fetchJson<PhalaRuntimeHealthMetadata>(new URL("/health", executionUrl)),
-  ]);
-  if (!recipient || !health) return null;
-
-  const fundingSignerPublicKeyB64 = recipient.funding_signer_public_key_b64?.trim() || "";
-  const pinnedFundingSigners = pinnedFundingSignerKeys();
-  const fundingSignerBound =
-    !fundingSignerPublicKeyB64 ||
-    (pinnedFundingSigners.size > 0 && pinnedFundingSigners.has(fundingSignerPublicKeyB64));
-  const expectedReportData =
-    recipient.recipient_id && recipient.x25519_pub_hex
-      ? expectedRecipientReportDataHex({
-          recipientId: recipient.recipient_id,
-          x25519PubHex: recipient.x25519_pub_hex,
-          fundingSignerPublicKeyB64: fundingSignerBound ? fundingSignerPublicKeyB64 : null,
-        })
-      : null;
-  const reportDataBound =
-    expectedReportData !== null &&
-    recipient.report_data_hex?.toLowerCase() === expectedReportData.toLowerCase();
-  const configuredImageDigest =
-    env("GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST") ??
-    env("GHOLA_PRIVATE_AGENT_IMAGE_DIGEST") ??
-    env("PHALA_CVM_IMAGE_DIGEST");
-  const imageDigestBound =
-    Boolean(recipient.image_digest) &&
-    recipient.image_digest === health.image_digest &&
-    (!configuredImageDigest || recipient.image_digest === configuredImageDigest);
-  const quoteBound = Boolean(
-    recipient.attestation_hash &&
-      recipient.quote_hash &&
-      recipient.attestation_hash === recipient.quote_hash,
-  );
-  const recipientReady = Boolean(
-    recipient.recipient_id &&
-      validX25519Hex(recipient.x25519_pub_hex) &&
-      recipient.attested_ready === true &&
-      fundingSignerBound &&
-      reportDataBound &&
-      imageDigestBound &&
-      quoteBound,
-  );
-  const attestedReady = Boolean(
-    health.ok === true &&
-      health.ready === true &&
-      health.attested === true &&
-      health.attested_ready === true &&
-      health.runtime_attestation_commitment &&
-      health.runtime_measurement_commitment,
-  );
-  const ready = recipientReady && attestedReady;
-
-  return {
-    id: "phala",
-    label: "Phala TEE",
-    configured: true,
-    available: ready,
-    attested: ready,
-    supports_sealed_secrets: ready,
-    supports_background_agents: ready,
-    supports_trading_execution: ready,
-    execution_url: executionUrl,
-    reason: ready
-      ? null
-      : "Configured Phala worker did not publish matching attestation-bound recipient evidence.",
-    ...(recipientReady && recipient.recipient_id && recipient.x25519_pub_hex
-      ? {
-          sealed_recipient: {
-            recipient_id: recipient.recipient_id,
-            x25519_pub_hex: recipient.x25519_pub_hex,
-            tee_kind: recipient.tee_kind ?? "phala",
-            measurement_hex: recipient.measurement_hex ?? recipient.image_digest ?? null,
-            attestation_hash: recipient.attestation_hash ?? recipient.quote_hash ?? null,
-            expires_at_unix: recipient.expires_at_unix ?? null,
-          },
-        }
-      : {}),
-    evidence: {
-      tee_kind: recipient.tee_kind ?? "phala",
-      verifier_url_configured: true,
-      execution_url_configured: true,
-      image_digest_configured: Boolean(configuredImageDigest),
-      recipient_configured: recipientReady,
-      provisioning_enabled: phalaJitProvisioningEnabled(),
-      cvm_status: health.status ?? null,
-      report_data_bound: reportDataBound,
-      funding_signer_bound: fundingSignerBound,
-      phala_attestation_present: attestedReady,
-    },
-  };
-}
-
 export async function discoverPhalaPrivateAgentProvider(): Promise<
   ConfidentialComputeProviderStatus | null
 > {
   const client = await phalaClient();
-  if (!client) return discoverConfiguredPhalaExecutionProvider();
+  if (!client) return null;
 
   const name = phalaCvmName();
   const token = phalaWorkerExecutionToken();
@@ -623,7 +426,7 @@ export async function discoverPhalaPrivateAgentProvider(): Promise<
   try {
     info = await client.getCvmInfo({ id: name }, { schema: false });
   } catch {
-    return discoverConfiguredPhalaExecutionProvider();
+    return null;
   }
 
   const status =
@@ -763,6 +566,14 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
   }
 
   const discovered = await discoverPhalaPrivateAgentProvider();
+  if (discovered?.available) {
+    return {
+      attempted: false,
+      ready: true,
+      status: "already_ready",
+      cvm_name: phalaCvmName(),
+    };
+  }
 
   const name = phalaCvmName();
   let info: unknown = null;
@@ -770,38 +581,6 @@ export async function ensurePhalaPrivateAgentProvisioned(input: {
     info = await client.getCvmInfo({ id: name }, { schema: false });
   } catch {
     // Missing CVM is expected before the first paid private-agent request.
-  }
-
-  if (info) {
-    try {
-      const imageState = await reconcilePhalaWorkerImage({ client, name });
-      if (imageState === "updated") {
-        return {
-          attempted: true,
-          ready: false,
-          status: "provisioning",
-          reason: "Updating the existing Phala worker to the configured image.",
-          cvm_name: name,
-        };
-      }
-    } catch (error) {
-      return {
-        attempted: true,
-        ready: false,
-        status: "failed",
-        reason: error instanceof Error ? error.message : "Phala worker image update failed.",
-        cvm_name: name,
-      };
-    }
-
-    if (discovered?.available) {
-      return {
-        attempted: false,
-        ready: true,
-        status: "already_ready",
-        cvm_name: name,
-      };
-    }
   }
 
   if (!info) {

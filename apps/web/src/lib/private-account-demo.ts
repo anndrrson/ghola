@@ -8,6 +8,7 @@ import {
   getPooledWorkerReadiness,
   type PooledWorkerReadiness,
 } from "@/lib/private-account-pooled-readiness";
+import { wakePhalaPrivateAgentForUse } from "@/lib/private-agent-phala";
 
 type FetchLike = (input: URL | string, init?: RequestInit) => Promise<Response>;
 
@@ -292,6 +293,15 @@ export async function buildPublicPrivateAgentDemoRun(
   body: PublicPrivateAgentDemoRunRequest = {},
   input: PublicPrivateAgentDemoInput = {},
 ): Promise<PublicPrivateAgentDemoRun> {
+  // An explicit proof request may wake a short-lived worker lease. Passive
+  // capability reads stay side-effect free, and idle shutdown still caps cost.
+  if (!input.runtimeStatus && !input.workerStatus && process.env.NODE_ENV !== "test") {
+    await wakePhalaPrivateAgentForUse({
+      reason: "public_no_submit_review",
+      waitForReadyMs: 45_000,
+      leaseMs: 15 * 60_000,
+    }).catch(() => null);
+  }
   const capabilities = await getPublicPrivateAgentDemoCapabilities(input);
   return buildPublicPrivateAgentDemoRunFromCapabilities(
     body,

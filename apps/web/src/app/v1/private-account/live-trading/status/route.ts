@@ -361,7 +361,7 @@ function publicLiveProofModel(input: {
       revenue_evidence: true,
     },
     first_order_policy: {
-      cap_usd: 10,
+      cap_usd: 5,
       graduate_after_reconciled_receipt: true,
       max_slippage_bps: 100,
     },
@@ -386,16 +386,12 @@ function byoLiveGateFailures(
   if (!envIs(env, "GHOLA_LIVE_TRADING_PUBLIC_ENABLED", "true")) failures.push("live_trading_public_flag_disabled");
   if (envIs(env, "PRIVATE_AGENT_VENUE_DRY_RUN", "true")) failures.push("venue_dry_run_enabled");
   if (!validRequestProofSecret(env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET || "")) failures.push("request_proof_secret_missing");
-  failures.push(...boundedCapFailureCodes({
-    env,
-    orderKeys: ["GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD"],
-    dailyKeys: ["GHOLA_LIVE_TRADING_DAILY_CAP_USD"],
-    minOrderUsd: 10,
-    maxOrderUsd: maxOrderNotionalUsd,
-    maxDailyUsd: dailyCapUsd,
-    orderCodePrefix: "launch_max_order_cap",
-    dailyCodePrefix: "launch_daily_cap",
-  }));
+  if (!capEnvEquals(env, ["GHOLA_LIVE_TRADING_MAX_ORDER_NOTIONAL_USD"], maxOrderNotionalUsd)) {
+    failures.push("launch_max_order_cap_missing");
+  }
+  if (!capEnvEquals(env, ["GHOLA_LIVE_TRADING_DAILY_CAP_USD"], dailyCapUsd)) {
+    failures.push("launch_daily_cap_missing");
+  }
   if (!capEnvAtMost(env, ["GHOLA_LIVE_TRADING_MAX_SLIPPAGE_BPS"], 100)) {
     failures.push("launch_slippage_cap_missing");
   }
@@ -446,16 +442,12 @@ function venueByoLiveGate(
     if (!envIs(env, "PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE", "full_ticket")) {
       reasonCodes.push("hyperliquid_worker_full_ticket_disabled");
     }
-    reasonCodes.push(...boundedCapFailureCodes({
-      env,
-      orderKeys: ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD"],
-      dailyKeys: ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD"],
-      minOrderUsd: 10,
-      maxOrderUsd: isTestnet ? 25 : 1_000,
-      maxDailyUsd: isTestnet ? 100 : 5_000,
-      orderCodePrefix: "hyperliquid_max_order_cap",
-      dailyCodePrefix: "hyperliquid_daily_cap",
-    }));
+    if (!capEnvEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_MAX_NOTIONAL_USD"], isTestnet ? 25 : 1_000)) {
+      reasonCodes.push("hyperliquid_max_order_cap_missing");
+    }
+    if (!capEnvEquals(env, ["PRIVATE_AGENT_HYPERLIQUID_FULL_TICKET_DAILY_NOTIONAL_CAP_USD"], isTestnet ? 100 : 5_000)) {
+      reasonCodes.push("hyperliquid_daily_cap_missing");
+    }
     if (!capEnvAtMost(env, ["PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS"], 100)) {
       reasonCodes.push("hyperliquid_slippage_cap_missing");
     }
@@ -807,47 +799,6 @@ function capEnvAtMost(env: Record<string, string | undefined>, keys: string[], m
     const value = Number(env[key]);
     return Number.isFinite(value) && value > 0 && value <= max;
   });
-}
-
-function boundedCapFailureCodes(input: {
-  env: Record<string, string | undefined>;
-  orderKeys: string[];
-  dailyKeys: string[];
-  minOrderUsd: number;
-  maxOrderUsd: number;
-  maxDailyUsd: number;
-  orderCodePrefix: string;
-  dailyCodePrefix: string;
-}): string[] {
-  const orderCap = firstPositiveCap(input.env, input.orderKeys);
-  const dailyCap = firstPositiveCap(input.env, input.dailyKeys);
-  const failures: string[] = [];
-
-  if (orderCap === null) failures.push(`${input.orderCodePrefix}_missing`);
-  else if (orderCap < input.minOrderUsd || orderCap > input.maxOrderUsd) {
-    failures.push(`${input.orderCodePrefix}_out_of_range`);
-  }
-
-  if (dailyCap === null) failures.push(`${input.dailyCodePrefix}_missing`);
-  else if (
-    dailyCap > input.maxDailyUsd ||
-    (orderCap !== null && dailyCap < orderCap)
-  ) {
-    failures.push(`${input.dailyCodePrefix}_out_of_range`);
-  }
-
-  return failures;
-}
-
-function firstPositiveCap(
-  env: Record<string, string | undefined>,
-  keys: string[],
-): number | null {
-  for (const key of keys) {
-    const value = Number(env[key]);
-    if (Number.isFinite(value) && value > 0) return value;
-  }
-  return null;
 }
 
 function jupiterApiKeyConfigured(env: Record<string, string | undefined>): boolean {

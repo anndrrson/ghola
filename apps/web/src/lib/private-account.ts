@@ -1779,8 +1779,6 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
   }
   const sealedRuntimeRequired = !connectorContext ||
     connectorContext.venue_access_source !== "user_provided_credentials";
-  const directByoVenueRoute = !fullRail &&
-    connectorContext?.venue_access_source === "user_provided_credentials";
   const scheduleDecision = input.schedule_decision ?? null;
   const rotation = input.rotation ?? null;
   const linkabilitySimulation = input.linkability_simulation ?? null;
@@ -1817,7 +1815,7 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
       else waitReasons.push(reason);
     }
   }
-  if (rotation && !explicitTestnetVenueCanary && !directByoVenueRoute) {
+  if (rotation && !explicitTestnetVenueCanary) {
     if (rotation.status === "rotate_required") waitReasons.push("platform funding account rotation is required");
     if (rotation.status === "blocked") blockedReasons.push("platform funding account rotation is blocked");
     for (const reason of rotation.reason_codes) {
@@ -1827,17 +1825,6 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
   }
   if (explicitTestnetVenueCanary) {
     degradedReasons.push("explicit testnet venue canary exposes the execution account and order");
-  } else if (linkabilitySimulation && directByoVenueRoute) {
-    // A user-provided venue account is necessarily visible to the venue and
-    // cannot gain batch anonymity by waiting or rotating a Ghola funding
-    // account. Surface that limitation for explicit degraded acceptance while
-    // preserving the financial, credential, worker, and connector hard gates.
-    if (linkabilitySimulation.decision !== "proceed") {
-      degradedReasons.push("venue-visible BYO execution requires degraded acceptance");
-    }
-    for (const reason of linkabilitySimulation.reason_codes) {
-      degradedReasons.push(reason);
-    }
   } else if (linkabilitySimulation) {
     if (linkabilitySimulation.decision === "blocked") blockedReasons.push("adversarial linkability simulator blocked execution");
     if (linkabilitySimulation.decision === "rotate") waitReasons.push("adversarial simulator requires platform account rotation");
@@ -1857,11 +1844,6 @@ export function previewPrivateAccountAction(input: GholaPrivateAccountPreviewInp
     }
     if (explicitTestnetVenueCanary) {
       degradedReasons.push("testnet canary explicitly accepts venue linkability");
-    } else if (directByoVenueRoute) {
-      if (connectorContext.linkability_decision !== "proceed") {
-        degradedReasons.push("venue-visible BYO linkability requires degraded acceptance");
-      }
-      for (const reason of connectorContext.reason_codes) degradedReasons.push(reason);
     } else {
       if (connectorContext.linkability_decision === "blocked") {
         blockedReasons.push("cross-platform linkability score blocks execution");

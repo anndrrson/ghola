@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import bs58 from "bs58";
 import { ed25519, x25519 } from "@noble/curves/ed25519";
 import { open } from "./envelope";
@@ -46,40 +46,6 @@ function runtimeWithRecipient(recipientId: string, recipientPub: Uint8Array): Pr
 }
 
 describe("private execution instruction sealing", () => {
-  it("fails visibly when the account signer never resolves", async () => {
-    vi.useFakeTimers();
-    try {
-      const recipientPub = x25519.getPublicKey(x25519.utils.randomPrivateKey());
-      const senderPub = ed25519.getPublicKey(ed25519.utils.randomPrivateKey());
-      const pending = buildPrivateExecutionInstructionBundle({
-        ownerWalletAddress: bs58.encode(senderPub),
-        previewCommitment: "preview_signer_timeout",
-        runtimeStatus: runtimeWithRecipient("phala:cvm:signer-timeout", recipientPub),
-        signBytes: async () => new Promise<Uint8Array>(() => undefined),
-        order: {
-          venue_id: "hyperliquid",
-          operation_class: "limit_order",
-          market: "SOL",
-          side: "buy",
-          base_size: "",
-          limit_price: "",
-          quote_size: "1",
-          max_slippage_bps: "25",
-          live_order_mode: "tiny_fill",
-          order_type: "market",
-          size_mode: "quote",
-          tif: "Ioc",
-        },
-      });
-
-      const rejection = expect(pending).rejects.toThrow("Secure signing timed out");
-      await vi.advanceTimersByTimeAsync(20_000);
-      await rejection;
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("seals raw order instructions to the attested TEE recipient only", async () => {
     const recipientSecret = x25519.utils.randomPrivateKey();
     const recipientPub = x25519.getPublicKey(recipientSecret);

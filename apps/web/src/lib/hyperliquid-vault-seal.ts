@@ -146,9 +146,8 @@ export function parseHyperliquidCredentialImport(
   };
 }
 
-export async function fetchPrivateAgentRuntimeStatus(accountCommitment?: string): Promise<PrivateAgentRuntimeStatus> {
-  void accountCommitment;
-  const res = await fetch("/v1/private-account/hyperliquid/runtime", {
+export async function fetchPrivateAgentRuntimeStatus(): Promise<PrivateAgentRuntimeStatus> {
+  const res = await fetch("/api/private-agent/status", {
     method: "GET",
     credentials: "same-origin",
     cache: "no-store",
@@ -172,9 +171,7 @@ export async function buildHyperliquidExecutionVaultBundle(
   }
 
   const runtime = options.runtimeStatus ??
-    await (options.fetchRuntimeStatus
-      ? options.fetchRuntimeStatus()
-      : fetchPrivateAgentRuntimeStatus(options.accountCommitment));
+    await (options.fetchRuntimeStatus ?? fetchPrivateAgentRuntimeStatus)();
   const provider = selectedReadyProvider(runtime);
   const recipient = provider?.sealed_recipient;
   if (!recipient) {

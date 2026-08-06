@@ -33,11 +33,6 @@ export type TradingActionTone = "primary" | "success" | "warn" | "danger" | "neu
 export type TradingStatusTone = "good" | "warn" | "bad" | "neutral";
 export type CustomerExecutionMode = "needs_setup" | "preview" | "live_capped" | "waiting" | "paused" | "stopped";
 
-// Hyperliquid rejects perp orders below $10 after lot-size rounding. The
-// no-submit check must still describe an executable ticket even though it is
-// never broadcast.
-export const HYPERLIQUID_NO_SUBMIT_QUOTE_SIZE_USD = "11";
-
 export interface TradingNextAction {
   kind: TradingActionKind;
   label: string;

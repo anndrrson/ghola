@@ -10,5 +10,5 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request) {
   const owner = await privateAccountOwnerFromRequest(req);
   if (!owner) return unauthorized();
-  return json(await hyperliquidAccountSnapshotForOwner(owner, req));
+  return json(await hyperliquidAccountSnapshotForOwner(owner));
 }
