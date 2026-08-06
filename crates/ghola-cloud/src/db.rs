@@ -53,31 +53,43 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     )
     .execute(&mut *tx)
     .await?;
-    let already_applied: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM ghola_schema_migrations WHERE version = $1)",
-    )
-    .bind(MIGRATION_VERSION)
-    .fetch_one(&mut *tx)
-    .await?;
-    if already_applied {
-        tx.commit().await?;
-        tracing::info!(
-            version = MIGRATION_VERSION,
-            "database schema already current"
-        );
-        return Ok(());
-    }
-    sqlx::raw_sql(MIGRATION_SQL).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO ghola_schema_migrations (version) VALUES ($1)")
-        .bind(MIGRATION_VERSION)
-        .execute(&mut *tx)
+    for (version, migration_sql) in MIGRATIONS {
+        let already_applied: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM ghola_schema_migrations WHERE version = $1)",
+        )
+        .bind(version)
+        .fetch_one(&mut *tx)
         .await?;
+        if already_applied {
+            continue;
+        }
+        sqlx::raw_sql(migration_sql).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO ghola_schema_migrations (version) VALUES ($1)")
+            .bind(version)
+            .execute(&mut *tx)
+            .await?;
+        tracing::info!(version, "database migration applied");
+    }
     tx.commit().await?;
-    tracing::info!(version = MIGRATION_VERSION, "database migrations applied");
+    tracing::info!("database schema current");
     Ok(())
 }
 
-const MIGRATION_VERSION: &str = "2026-08-03-billing-lifecycle-v1";
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("2026-08-03-billing-lifecycle-v1", MIGRATION_SQL),
+    (
+        "2026-08-06-founding-trader-user-tier-v2",
+        FOUNDING_TRADER_USER_TIER_SQL,
+    ),
+];
+
+// This incremental repair is intentionally separate from the bootstrap schema:
+// production may already have recorded v1 before `founding_trader` was allowed.
+const FOUNDING_TRADER_USER_TIER_SQL: &str = r#"
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
+ALTER TABLE users ADD CONSTRAINT users_tier_check
+    CHECK (tier IN ('free', 'pro', 'private_agent', 'founding_trader', 'unlimited', 'enterprise'));
+"#;
 
 const MIGRATION_SQL: &str = r#"
 -- Thumper Cloud Schema
