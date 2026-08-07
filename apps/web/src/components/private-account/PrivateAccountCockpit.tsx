@@ -1267,7 +1267,9 @@ export function PrivateAccountCockpit({
       setAuthOpen(true);
       return;
     }
-    if (liveHyperliquidFlow && !hyperliquidLaunchAccepted) {
+    const usesHyperliquidPool =
+      hyperliquidVault?.managed_allocation?.execution_mode === "ghola_pooled";
+    if (liveHyperliquidFlow && usesHyperliquidPool && !hyperliquidLaunchAccepted) {
       setHyperliquidSetupNotice({
         tone: "warn",
         title: "Terms acceptance required",
