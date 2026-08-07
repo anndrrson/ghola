@@ -431,7 +431,10 @@ export async function reserveHyperliquidVenueCapacity({ state, operationClass })
     capacity,
   );
   if (!result.ok) {
-    throw new ExecutionPolicyError("private execution venue weighted capacity exceeded", 429);
+    throw new ExecutionPolicyError(
+      `private execution venue weighted capacity exceeded (used ${result.amount}, requested ${weight}, limit ${capacity})`,
+      429,
+    );
   }
   return { ok: true, amount: result.amount, weight, capacity };
 }

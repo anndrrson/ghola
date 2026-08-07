@@ -210,7 +210,9 @@ describe("full-ticket execution policy", () => {
         session: null,
         state,
       }),
-      (error) => error.status === 429 && /weighted capacity/.test(error.message),
+      (error) => error.status === 429 &&
+        /weighted capacity/.test(error.message) &&
+        /used 80, requested 60, limit 100/.test(error.message),
     );
   });
 
