@@ -2027,6 +2027,15 @@ export function noFundsReason(body: Record<string, unknown>, status: number): st
     return "live_gate_disabled";
   }
   if (code === "live_mode_mismatch") return "live_mode_mismatch";
+  if (code === "policy_rejected") {
+    if (/below min notional/.test(text)) return "below_min_notional";
+    if (/daily notional/.test(text)) return "daily_notional_cap_exceeded";
+    if (/max notional|notional cap/.test(text)) return "max_notional_exceeded";
+    if (/slippage/.test(text)) return "slippage_cap_exceeded";
+    if (/weighted capacity|rate limit/.test(text)) return "worker_capacity_exceeded";
+    if (/expired/.test(text)) return "policy_expired";
+    return "policy_blocked";
+  }
   if (/insufficient|needs funds|not enough|collateral|account value|margin/.test(text)) return "needs_funds";
   if (code.includes("access") || code === "venue_access_required") {
     if (/encrypted_execution_vault\.recipient must match worker recipient/.test(text)) {
@@ -2052,7 +2061,7 @@ export function noFundsReason(body: Record<string, unknown>, status: number): st
   if (code === "venue_rejected") return "venue_rejected";
   if (code.includes("rpc")) return "rpc_unreachable";
   if (code.includes("live submit is disabled")) return "live_gate_disabled";
-  if (code.includes("notional cap")) return "policy_blocked";
+  if (/max notional|notional cap/.test(text)) return "max_notional_exceeded";
   if (status === 503) return "worker_unavailable";
   if (status === 401) return "worker_unauthorized";
   return code || "verification_failed";

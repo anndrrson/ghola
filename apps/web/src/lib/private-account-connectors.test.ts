@@ -48,5 +48,15 @@ describe("noFundsReason", () => {
       error_code: "live_mode_mismatch",
       error: "hyperliquid live order must use tiny_fill mode",
     }, 403)).toBe("live_mode_mismatch");
+
+    expect(noFundsReason({
+      error_code: "policy_rejected",
+      error: "hyperliquid full-ticket order exceeds live notional cap",
+    }, 403)).toBe("max_notional_exceeded");
+
+    expect(noFundsReason({
+      error_code: "policy_rejected",
+      error: "hyperliquid full-ticket slippage is outside policy",
+    }, 403)).toBe("slippage_cap_exceeded");
   });
 });

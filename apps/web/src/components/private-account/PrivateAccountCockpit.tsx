@@ -9365,6 +9365,12 @@ function friendlyPrivateAccountError(err: unknown, fallback: string) {
   if (message === "policy_blocked" || message === "live_gate_disabled") {
     return "Hyperliquid live trading is disabled or its safety caps are not configured.";
   }
+  if (message === "below_min_notional") return "This order is below the worker's minimum size.";
+  if (message === "max_notional_exceeded") return "This order exceeds the worker's per-order cap.";
+  if (message === "slippage_cap_exceeded") return "This order exceeds the worker's slippage cap.";
+  if (message === "daily_notional_cap_exceeded") return "This order exceeds the worker's daily cap.";
+  if (message === "worker_capacity_exceeded") return "The worker's bounded venue capacity is temporarily full.";
+  if (message === "policy_expired") return "This trading policy has expired; create a fresh agent policy.";
   if (message === "live_mode_mismatch") {
     return "The Hyperliquid order mode does not match the worker's configured live mode.";
   }
