@@ -20,6 +20,10 @@ test("Phala full-ticket mode has bounded founding-beta defaults", () => {
     compose,
     /PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET: "true"/,
   );
+  assert.match(compose, /PRIVATE_AGENT_STATE_STORE: "postgres"/);
+  assert.match(compose, /PRIVATE_AGENT_MAX_VENUE_REQUESTS_PER_MINUTE: "60"/);
+  assert.match(compose, /PRIVATE_AGENT_MAX_GLOBAL_VENUE_WEIGHT_PER_MINUTE: "1000"/);
+  assert.match(compose, /PRIVATE_AGENT_MAX_HYPERLIQUID_STREAMING_USERS: "10"/);
   assert.match(
     compose,
     /PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE: "full_ticket"/,
