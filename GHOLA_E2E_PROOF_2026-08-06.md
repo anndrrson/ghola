@@ -1,7 +1,7 @@
 # Ghola Hyperliquid production proof
 
 Date: 2026-08-06/07  
-Status: **TRADING PROVEN; NONZERO SUBSCRIPTION REVENUE NOT YET PROVEN**
+Status: **FULL END-TO-END PROOF COMPLETE**
 
 ## Production result
 
@@ -19,8 +19,13 @@ Status: **TRADING PROVEN; NONZERO SUBSCRIPTION REVENUE NOT YET PROVEN**
 - Production health reports Stripe configured in **live mode**, verified webhooks configured, and the Founding Trader price configured.
 - Stripe created a live customer, succeeded in saving payment method `•••• 5493`, created an active `$29/month` Founding Trader subscription, and Ghola's webhook-driven entitlement admitted the account and allowed the opening trade.
 - This canary used coupon `ghola_canary_nocharge_20260806` (**100% off forever**). Its paid invoice and next invoice are `$0.00`.
-- Therefore subscription creation, payment-method setup, signed webhook processing, entitlement, admission, and trading gates are proven. **Actual nonzero revenue capture is not proven.**
-- Normal production checkout uses the configured `$29` recurring price and does not automatically attach this canary coupon; it only permits user-entered promotion codes. A non-discounted live charge is still required to prove cash capture.
+- A second, separately authorized live billing canary used the same production Founding Trader product and price with a one-time `$28.50` discount. Stripe charged exactly **$0.50**.
+- Invoice `in_1U1g2iErhj1YeA4TyaEjPeWk` (`8AA5IBIE-0002`) is **Paid**: `$0.50` due, `$0.50` paid, `$0.00` remaining. Payment `pi_3U1g2jErhj1YeA4T0V82ZSud` is **Succeeded**. Stripe's ledger shows `$0.50` cash and `$0.50` revenue.
+- Stripe delivered the canary's live `invoice.paid` event `evt_1U1g2nErhj1YeA4ToEIzslwK` to Ghola's canonical backend at `https://thumper-cloud.onrender.com/api/billing/webhook`; the endpoint returned **200 OK / Delivered**.
+- The paid canary subscription `sub_1U1g2iErhj1YeA4ThPO68pSc` was canceled immediately after payment. Stripe shows it as **Canceled**, with no renewal; the `$0.50` was not refunded and no credit note exists.
+- The original no-charge canary subscription remains active, and Ghola still shows **Founding Trader — Current**, the paid private-agent entitlement active, and 9 of 10 seats remaining.
+- Therefore live payment capture, signed webhook delivery, entitlement, admission, and the trading gate are proven. Normal production checkout remains `$29/month`; the one-time canary discount is not attached automatically.
+- Configuration hygiene: Stripe also attempted delivery to the obsolete duplicate endpoint `https://ghola-api.onrender.com/v1/billing/webhook`, which returned 500. The canonical endpoint succeeded, so this did not block billing or entitlement; the obsolete destination should be removed separately.
 
 ## Privacy and safety evidence
 
@@ -40,4 +45,4 @@ Status: **TRADING PROVEN; NONZERO SUBSCRIPTION REVENUE NOT YET PROVEN**
 
 ## Remaining proof
 
-Run one non-discounted live Stripe payment (then optionally refund it) and verify a nonzero successful Payment/Invoice plus Ghola entitlement. No further Hyperliquid trading proof is needed.
+None for the stated single-user production objective. This run does not claim ten separately operated live traders or guaranteed fills; the ten-seat cap and admission concurrency are covered by automated/database tests.
