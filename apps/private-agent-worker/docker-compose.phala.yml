@@ -3,7 +3,7 @@ services:
     # The founding beta uses one reviewed immutable worker artifact. Updating
     # this pin is an explicit release step; a stale deployment environment must
     # never silently select a different image.
-    image: "ghcr.io/anndrrson/ghola/private-agent-worker:prod-df1270a6@sha256:0936b5dfebd087b4647223156b00af77483669049c01ccfd94ef17ea0a8bb214"
+    image: "ghcr.io/anndrrson/ghola/private-agent-worker:prod-6a66f307@sha256:b0c6df660a126b8de26ce4b0ec23cb99d6b95bb377483ae9e9d69c654ba684af"
     restart: unless-stopped
     ports:
       - "8787:8787"
@@ -23,7 +23,7 @@ services:
       PRIVATE_AGENT_RECIPIENT_ID: "${PRIVATE_AGENT_RECIPIENT_ID:?set durable shard recipient id}"
       PRIVATE_AGENT_X25519_PUB_HEX: "${PRIVATE_AGENT_X25519_PUB_HEX:?set durable shard recipient public key}"
       PRIVATE_AGENT_X25519_SECRET_HEX: "${PRIVATE_AGENT_X25519_SECRET_HEX:?set durable shard recipient secret key}"
-      PHALA_CVM_IMAGE_DIGEST: "sha256:0936b5dfebd087b4647223156b00af77483669049c01ccfd94ef17ea0a8bb214"
+      PHALA_CVM_IMAGE_DIGEST: "sha256:b0c6df660a126b8de26ce4b0ec23cb99d6b95bb377483ae9e9d69c654ba684af"
       PRIVATE_AGENT_VENUE_DRY_RUN: "${PRIVATE_AGENT_VENUE_DRY_RUN:-false}"
       PRIVATE_AGENT_GLOBAL_KILL_SWITCH: "${PRIVATE_AGENT_GLOBAL_KILL_SWITCH:-false}"
       # Keep the founding shard below Hyperliquid's 1,200-weight/IP/minute
