@@ -28,9 +28,9 @@ const funnelDisplay = Funnel_Display({
 // site ever moves off the apex domain this is the one place to flip.
 const SITE_URL = "https://ghola.xyz";
 
-const SHARED_TITLE = "ghola — private execution for onchain finance";
-const SHARED_DESCRIPTION =
-  "Private execution accounts for onchain finance with anonymity previews, private balance rails, and auditable privacy receipts.";
+const SHARED_TITLE = "ghola | Private execution for onchain markets";
+const SHARED_DESCRIPTION = "Private execution for onchain markets.";
+const SOCIAL_IMAGE = "/og-onchain-markets-v1.png";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -45,10 +45,8 @@ export const metadata: Metadata = {
   other: {
     "mobile-web-app-capable": "yes",
   },
-  // Open Graph block. Image is auto-wired by opengraph-image.tsx at
-  // the app root — no need to set images here. siteName and type
-  // matter for richer unfurls (Slack and LinkedIn use them to
-  // disambiguate the card layout).
+  // Keep the image URL versioned so social platforms fetch a fresh card
+  // when the positioning changes.
   openGraph: {
     title: SHARED_TITLE,
     description: SHARED_DESCRIPTION,
@@ -56,14 +54,20 @@ export const metadata: Metadata = {
     siteName: "ghola",
     type: "website",
     locale: "en_US",
+    images: [
+      {
+        url: SOCIAL_IMAGE,
+        width: 1200,
+        height: 630,
+        alt: SHARED_DESCRIPTION,
+      },
+    ],
   },
-  // summary_large_image is the wide-card variant Twitter/X uses.
-  // twitter.image falls back to og:image automatically when omitted,
-  // so the dynamic opengraph-image.tsx serves both.
   twitter: {
     card: "summary_large_image",
     title: SHARED_TITLE,
     description: SHARED_DESCRIPTION,
+    images: [{ url: SOCIAL_IMAGE, alt: SHARED_DESCRIPTION }],
   },
 };
 
