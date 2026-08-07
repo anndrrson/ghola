@@ -906,6 +906,7 @@ export async function verifyConnectorNoSubmit(input: {
       platform_class: input.platform_class,
       venue_id: payload.venue_id,
       path: verifyPath,
+      worker_origin: new URL(cfg.url).origin,
     });
     const res = await fetch(new URL(verifyPath, cfg.url), {
       method: "POST",
@@ -927,6 +928,7 @@ export async function verifyConnectorNoSubmit(input: {
       http_status: res.status,
       result_status: stringValue(body.status) || null,
       error_code: stringValue(body.error_code) || stringValue(body.code) || null,
+      error: stringValue(body.error) || null,
     });
     if (!res.ok || body.status !== "verified_no_funds") {
       console.warn("[private-account] connector no-submit verification failed", {

@@ -1151,13 +1151,13 @@ export function createPostgresWorkerState(databaseUrl) {
       if (Number.isFinite(parsedMax) && parsedMax > 0) {
         const rows = await sql`
           INSERT INTO worker_policy_amounts (key, amount, updated_at)
-          SELECT ${key}, ${parsedAmount}, NOW()
-          WHERE ${parsedAmount} <= ${parsedMax}
+          SELECT ${key}, ${parsedAmount}::double precision, NOW()
+          WHERE ${parsedAmount}::double precision <= ${parsedMax}::double precision
           ON CONFLICT (key)
           DO UPDATE SET
             amount = worker_policy_amounts.amount + ${parsedAmount},
             updated_at = NOW()
-          WHERE worker_policy_amounts.amount + ${parsedAmount} <= ${parsedMax}
+          WHERE worker_policy_amounts.amount + ${parsedAmount}::double precision <= ${parsedMax}::double precision
           RETURNING amount
         `;
         if (rows[0]) return { ok: true, amount: Number(rows[0].amount || 0) };
