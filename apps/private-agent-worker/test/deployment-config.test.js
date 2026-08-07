@@ -10,11 +10,11 @@ test("Phala full-ticket mode has bounded founding-beta defaults", () => {
 
   assert.match(
     compose,
-    /image: "ghcr\.io\/anndrrson\/ghola\/private-agent-worker:prod-68c24c48@sha256:b4f751c2286ccd69e91e917c3954271102c37b5d2718bf5ee2ab6cd6eebf0917"/,
+    /image: "ghcr\.io\/anndrrson\/ghola\/private-agent-worker:prod-394790fb@sha256:7a5320baec2d4caa565cb19926523ec136d1a7008006e14ea5dd4d56350c8588"/,
   );
   assert.match(
     compose,
-    /PHALA_CVM_IMAGE_DIGEST: "sha256:b4f751c2286ccd69e91e917c3954271102c37b5d2718bf5ee2ab6cd6eebf0917"/,
+    /PHALA_CVM_IMAGE_DIGEST: "sha256:7a5320baec2d4caa565cb19926523ec136d1a7008006e14ea5dd4d56350c8588"/,
   );
   assert.match(
     compose,
