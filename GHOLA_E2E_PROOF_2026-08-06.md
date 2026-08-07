@@ -25,7 +25,7 @@ Status: **FULL END-TO-END PROOF COMPLETE**
 - The paid canary subscription `sub_1U1g2iErhj1YeA4ThPO68pSc` was canceled immediately after payment. Stripe shows it as **Canceled**, with no renewal; the `$0.50` was not refunded and no credit note exists.
 - The original no-charge canary subscription remains active, and Ghola still shows **Founding Trader — Current**, the paid private-agent entitlement active, and 9 of 10 seats remaining.
 - Therefore live payment capture, signed webhook delivery, entitlement, admission, and the trading gate are proven. Normal production checkout remains `$29/month`; the one-time canary discount is not attached automatically.
-- Configuration hygiene: Stripe also attempted delivery to the obsolete duplicate endpoint `https://ghola-api.onrender.com/v1/billing/webhook`, which returned 500. The canonical endpoint succeeded, so this did not block billing or entitlement; the obsolete destination should be removed separately.
+- Configuration hygiene: the obsolete duplicate endpoint `https://ghola-api.onrender.com/v1/billing/webhook` was removed after verification. The canonical `thumper-cloud` destination remains active.
 
 ## Privacy and safety evidence
 
