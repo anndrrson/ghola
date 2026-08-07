@@ -28,11 +28,10 @@ const funnelDisplay = Funnel_Display({
 // metadata blocks below. If the site ever moves off the apex domain
 // this is the one place to flip.
 const SITE_URL = "https://ghola.xyz";
-const SOCIAL_IMAGE_URL = `${SITE_URL}/og/trade-like-a-ghost-v2`;
+const SOCIAL_IMAGE_URL = `${SITE_URL}/og-onchain-markets-v1.png`;
 
-const SHARED_TITLE = "ghola — trade like a ghost";
-const SHARED_DESCRIPTION =
-  "Private AI agents for live markets. Captured intent, sealed execution, verifiable receipts.";
+const SHARED_TITLE = "ghola | Private execution for onchain markets";
+const SHARED_DESCRIPTION = "Private execution for onchain markets.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -47,9 +46,8 @@ export const metadata: Metadata = {
   other: {
     "mobile-web-app-capable": "yes",
   },
-  // Open Graph block. Use an explicit versioned social-image URL so
-  // crawlers that aggressively cache card assets have to fetch the
-  // current "Trade like a ghost" preview.
+  // Use an explicit versioned social-image URL so crawlers that
+  // aggressively cache card assets fetch the approved preview.
   openGraph: {
     title: SHARED_TITLE,
     description: SHARED_DESCRIPTION,
