@@ -109,4 +109,36 @@ describe("Hyperliquid worker shard routing", () => {
     );
     expect(staleImage).toEqual([]);
   });
+
+  it("accepts a rotated quote hash when the durable attested identity matches", async () => {
+    const [configured] = configuredHyperliquidWorkerShards({
+      NODE_ENV: "test",
+      GHOLA_HYPERLIQUID_WORKER_SHARDS_JSON: JSON.stringify([{
+        ...JSON.parse(config)[0],
+        url: "https://restarted.example.test",
+        attestation_hash: "old-quote-hash",
+      }]),
+    });
+    const healthy = await healthyHyperliquidWorkerShards(
+      [configured],
+      { NODE_ENV: "production" },
+      (async (input: URL | RequestInfo) => Response.json(String(input).endsWith("/health")
+        ? {
+            status: "green",
+            ready: true,
+            attested_ready: true,
+            image_digest: configured.image_digest,
+            attestation_hash: "new-quote-hash",
+          }
+        : {
+            attested_ready: true,
+            recipient_id: configured.recipient_id,
+            x25519_pub_hex: configured.x25519_pub_hex,
+            image_digest: configured.image_digest,
+            attestation_hash: "new-quote-hash",
+          })) as typeof fetch,
+    );
+
+    expect(healthy).toEqual([configured]);
+  });
 });

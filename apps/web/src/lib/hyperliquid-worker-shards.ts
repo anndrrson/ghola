@@ -161,12 +161,11 @@ async function verifyShardHealth(shard: HyperliquidWorkerShard, fetcher: typeof 
         return logShardHealthFailure(shard, "measurement_mismatch");
       }
     }
-    if (shard.attestation_hash) {
-      const observed = String(recipient.attestation_hash || health.attestation_hash || "");
-      if (observed !== shard.attestation_hash) {
-        return logShardHealthFailure(shard, "attestation_hash_mismatch");
-      }
-    }
+    // attestation_hash identifies a single quote and rotates on an ordinary CVM
+    // restart. The durable trust anchors are attested_ready plus the exact
+    // recipient, encryption key, image digest, and optional measurement above.
+    // Keep accepting the field in deployed configuration for compatibility, but
+    // never use a stale quote hash as a worker-availability gate.
     return true;
   } finally {
     clearTimeout(timeout);

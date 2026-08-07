@@ -1,28 +1,10 @@
 {
   "version": 1,
-  "generated_at": "2026-08-06T20:41:59.770Z",
-  "git_commit": "7417857e288237aba3a3ac6d06033d5e0b1e4bb2",
+  "generated_at": "2026-08-07T02:25:28.433Z",
+  "git_commit": "dc51fc7a879a95dda24421475599c597b4315bc8",
   "file_count": 125,
-  "total_bytes": 10839927,
+  "total_bytes": 10839914,
   "files": [
-    {
-      "path": "/_next/static/7417857e288237aba3a3ac6d06033d5e0b1e4bb2/_buildManifest.js",
-      "sha256": "9476e0afd3f9da68a64e6ec58631191fd3eaca62c9f5a377e7517fe9a89e59ea",
-      "sha384": "sha384-xr4huECvJoP45OIUwQLqlWueVWKPpJ8tTlpYNAQiFwHzPMXAn5oy1XDD1WshOwyU",
-      "bytes": 219
-    },
-    {
-      "path": "/_next/static/7417857e288237aba3a3ac6d06033d5e0b1e4bb2/_clientMiddlewareManifest.js",
-      "sha256": "50baa2c484269e83418716f7035c644f55cb56c738698f9786ad03c7edfbdf9f",
-      "sha384": "sha384-336t3E+3ofwfIZzIApPBRILPlviDY38kCiMZTWKkULgD9CxTFkDTZTkc/LvXwJ5f",
-      "bytes": 347
-    },
-    {
-      "path": "/_next/static/7417857e288237aba3a3ac6d06033d5e0b1e4bb2/_ssgManifest.js",
-      "sha256": "678f6ce2cb80b1fe72fc67e7412be6e2ab6ada083111b64f7c40d35e3cba5e00",
-      "sha384": "sha384-IahYFZWHVi15AEIjFvtLcYfsYp3a5TRlT5Nvpi0E/GXcTFwjd3OitBYYkqfevQ/7",
-      "bytes": 80
-    },
     {
       "path": "/_next/static/chunks/0-wnztlmn47kx.js",
       "sha256": "4430c9ce270dac9e788607544155c0f7afedb34bd943e58a84bc45d44eeeedaf",
@@ -306,12 +288,6 @@
       "bytes": 15553
     },
     {
-      "path": "/_next/static/chunks/0fp_3e5h4k5r1.js",
-      "sha256": "dcb0af0ff0dc18cd6669b324fcc02fb229effc71f900ac20dc5db9a49fca1ac0",
-      "sha384": "sha384-PObvHB0bS2FJdqoZT+RPd55A1psZmRksb5H55mhP/wl8w1blL/Nk7P6sbySXjT0k",
-      "bytes": 51523
-    },
-    {
       "path": "/_next/static/chunks/0fv1y1ufn9bbs.js",
       "sha256": "f1b889c15041049eba4267f01728891edc55fd148b96711868f0f225fe841fb1",
       "sha384": "sha384-bDRT2v9BihV2PZLxDRYnWbqUZcCCBDYc7auySGPdI2zAAQLRMzSuKjci7x+hehz4",
@@ -388,6 +364,12 @@
       "sha256": "4ccde3392c962162a9af567adb83bc8cf5a855408bde4d28095e435f34f72348",
       "sha384": "sha384-K/Wu1TY2vAEDUSaP+Rsj+8THYpSD5FKNBClCI7Xf4lYMaRX4DphZgGIZ0aWHYgNE",
       "bytes": 4760
+    },
+    {
+      "path": "/_next/static/chunks/0lssjftw8134_.js",
+      "sha256": "bd9f788ddb971ccc3e74d05c9b8d42592f321474f7c4e8396f88410e3a206582",
+      "sha384": "sha384-BR2mOBdkrDD3n5ADODcyqZGKqxE4Ym68msbrve2xfN102CSa6p/9Eb7Uki8nR0rG",
+      "bytes": 51510
     },
     {
       "path": "/_next/static/chunks/0lt6yp9p1w4to.js",
@@ -750,11 +732,29 @@
       "bytes": 818
     },
     {
+      "path": "/_next/static/dc51fc7a879a95dda24421475599c597b4315bc8/_buildManifest.js",
+      "sha256": "9476e0afd3f9da68a64e6ec58631191fd3eaca62c9f5a377e7517fe9a89e59ea",
+      "sha384": "sha384-xr4huECvJoP45OIUwQLqlWueVWKPpJ8tTlpYNAQiFwHzPMXAn5oy1XDD1WshOwyU",
+      "bytes": 219
+    },
+    {
+      "path": "/_next/static/dc51fc7a879a95dda24421475599c597b4315bc8/_clientMiddlewareManifest.js",
+      "sha256": "50baa2c484269e83418716f7035c644f55cb56c738698f9786ad03c7edfbdf9f",
+      "sha384": "sha384-336t3E+3ofwfIZzIApPBRILPlviDY38kCiMZTWKkULgD9CxTFkDTZTkc/LvXwJ5f",
+      "bytes": 347
+    },
+    {
+      "path": "/_next/static/dc51fc7a879a95dda24421475599c597b4315bc8/_ssgManifest.js",
+      "sha256": "678f6ce2cb80b1fe72fc67e7412be6e2ab6ada083111b64f7c40d35e3cba5e00",
+      "sha384": "sha384-IahYFZWHVi15AEIjFvtLcYfsYp3a5TRlT5Nvpi0E/GXcTFwjd3OitBYYkqfevQ/7",
+      "bytes": 80
+    },
+    {
       "path": "/_next/static/media/ort.webgpu.bundle.min.0llo9vc5t-h48.mjs",
       "sha256": "2ec70f685749470635e64dd142c2510dc13b37bb593d9cd6ab4f8923e5204479",
       "sha384": "sha384-05oW++cf3Wks8/51AZrOWtfpZmt7PzAEMqRJXttIlsKpkvuFVNIqKfhqoPIQv9fG",
       "bytes": 112901
     }
   ],
-  "manifest_sha256": "09211a153089c4cb69296630bd0074300ae23bf50f5750294cba3d4cf98ff8ab"
+  "manifest_sha256": "b79d0db9c686584ac1090d56686a1d73721e9c495ec74ea240ed0e134f535869"
 }
