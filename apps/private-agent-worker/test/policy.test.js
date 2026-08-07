@@ -342,6 +342,28 @@ describe("full-ticket execution policy", () => {
     });
   });
 
+  it("accepts every strategy profile emitted by the trading UI", () => {
+    const profiles = [
+      "trend_following",
+      "breakout",
+      "momentum_continuation",
+      "breakout_retest",
+      "mean_reversion",
+    ];
+    for (const strategy_profile of profiles) {
+      const instruction = hyperliquidFullTicketOrder({}, {
+        mandate: {
+          version: 1,
+          strategy_profile,
+          entry_trigger: "preview_now",
+          exit_rule: "manual_approval",
+          time_horizon: "scalp",
+        },
+      });
+      assert.equal(instruction.mandate.strategy_profile, strategy_profile);
+    }
+  });
+
   it("rejects live submit when a conditional agent mandate has no proof", async () => {
     const instruction = hyperliquidFullTicketOrder({}, {
       mandate: {

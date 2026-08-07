@@ -23,14 +23,20 @@ const BLOCKED_OPERATION_WORDS = [
   "derivatives",
 ];
 const AGENT_STRATEGY_PROFILE_VALUES = new Set([
+  "trend_following",
+  "breakout",
+  "reversal",
   "momentum_continuation",
   "breakout_retest",
   "sweep_reclaim",
   "mean_reversion",
+  "range_trade",
+  "funding_basis",
   "funding_mark_divergence",
   "venue_route_edge",
   "custom",
 ]);
+const AGENT_ROUTE_PRIORITY_VALUES = new Set(["best_price", "fastest", "most_private"]);
 const AGENT_ENTRY_TRIGGER_VALUES = new Set([
   "preview_now",
   "break_level",
@@ -478,6 +484,9 @@ function normalizeAgentMandate(value) {
   const invalidationLevel = optionalPositiveDecimal(value.invalidation_level, "agent mandate invalidation level is invalid");
   const edgeThresholdBps = optionalBps(value.edge_threshold_bps, "agent mandate edge threshold is invalid");
   const timeWindow = stringValue(value.time_window);
+  const rangeLow = optionalPositiveDecimal(value.range_low, "agent mandate range low is invalid");
+  const rangeHigh = optionalPositiveDecimal(value.range_high, "agent mandate range high is invalid");
+  const routePriority = stringValue(value.route_priority);
   const strategyNote = stringValue(value.strategy_note);
   if (strategyNote.length > 240) {
     throw new ExecutionPolicyError("agent mandate strategy note is too long");
@@ -497,6 +506,17 @@ function normalizeAgentMandate(value) {
   if (needsAgentTimeWindow(timeHorizon, exitRule) && !timeWindow) {
     throw new ExecutionPolicyError("agent mandate time window is required");
   }
+  if (strategyProfile === "range_trade") {
+    if (!rangeLow || !rangeHigh) {
+      throw new ExecutionPolicyError("agent mandate range is required");
+    }
+    if (Number(rangeLow) >= Number(rangeHigh)) {
+      throw new ExecutionPolicyError("agent mandate range low must be below range high");
+    }
+  }
+  if (routePriority && !AGENT_ROUTE_PRIORITY_VALUES.has(routePriority)) {
+    throw new ExecutionPolicyError("agent mandate route priority is unsupported");
+  }
   if ((strategyProfile === "custom" || entryTrigger === "custom") && strategyNote.length < 8) {
     throw new ExecutionPolicyError("agent mandate custom rule is required");
   }
@@ -511,6 +531,9 @@ function normalizeAgentMandate(value) {
     ...(invalidationLevel ? { invalidation_level: invalidationLevel } : {}),
     ...(edgeThresholdBps ? { edge_threshold_bps: edgeThresholdBps } : {}),
     ...(timeWindow ? { time_window: timeWindow } : {}),
+    ...(rangeLow ? { range_low: rangeLow } : {}),
+    ...(rangeHigh ? { range_high: rangeHigh } : {}),
+    ...(routePriority ? { route_priority: routePriority } : {}),
     ...(strategyNote ? { strategy_note: strategyNote } : {}),
     ...(value.condition_proof ? { condition_proof: normalizeAgentConditionProof(value.condition_proof) } : {}),
   };
@@ -957,7 +980,8 @@ function needsAgentEdgeThreshold(strategyProfile, entryTrigger) {
     entryTrigger === "funding_mark_divergence" ||
     entryTrigger === "route_edge_threshold" ||
     strategyProfile === "funding_mark_divergence" ||
-    strategyProfile === "venue_route_edge"
+    strategyProfile === "venue_route_edge" ||
+    strategyProfile === "funding_basis"
   );
 }
 
@@ -965,7 +989,8 @@ function needsAgentInvalidationLevel(strategyProfile, exitRule) {
   return (
     exitRule === "exit_on_invalidation" ||
     exitRule === "reduce_on_risk_flip" ||
-    strategyProfile === "sweep_reclaim"
+    strategyProfile === "sweep_reclaim" ||
+    strategyProfile === "reversal"
   );
 }
 
