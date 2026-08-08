@@ -403,7 +403,7 @@ $$;
 -- Enterprise tier support
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
 ALTER TABLE users ADD CONSTRAINT users_tier_check
-    CHECK (tier IN ('free', 'pro', 'trial_pack', 'starter', 'private_agent', 'unlimited', 'enterprise'));
+    CHECK (tier IN ('free', 'pro', 'trial_pack', 'starter', 'private_agent', 'unlimited', 'enterprise')) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS private_agent_compute_reservations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
