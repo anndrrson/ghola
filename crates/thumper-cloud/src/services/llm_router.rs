@@ -2344,6 +2344,7 @@ mod tests {
             stripe_price_private_agent: None,
             stripe_price_unlimited: None,
             investor_pass_admin_secret: None,
+            investor_pass_base_url: "https://ghola.xyz".into(),
             base_url: "http://localhost".into(),
             encryption_key: [0u8; 32],
             telegram_bot_token: None,

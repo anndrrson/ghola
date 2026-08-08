@@ -1673,7 +1673,7 @@ pub async fn create_access_pass(
     Ok(Json(CreateAccessPassResponse {
         invite_url: format!(
             "{}/trade?access={code}",
-            state.config.base_url.trim_end_matches('/')
+            state.config.investor_pass_base_url.trim_end_matches('/')
         ),
         tier,
         redeem_expires_at: redeem_expires_at.to_rfc3339(),

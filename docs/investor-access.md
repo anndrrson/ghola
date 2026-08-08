@@ -2,7 +2,7 @@
 
 Investor passes are one-time, email-bound, auditable, and expire automatically. They grant metered Starter Agent access without changing Stripe state.
 
-1. Set a strong `GHOLA_INVESTOR_PASS_ADMIN_SECRET` on `thumper-cloud`.
+1. Set a strong `GHOLA_INVESTOR_PASS_ADMIN_SECRET` on `thumper-cloud`. `GHOLA_INVESTOR_PASS_BASE_URL` defaults to `https://ghola.xyz`.
 2. Issue a 14-day pass:
 
 ```bash
