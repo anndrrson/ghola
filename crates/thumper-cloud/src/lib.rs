@@ -287,6 +287,14 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::patch(routes::billing::update_private_agent_trading_cap),
         )
         .route(
+            "/api/billing/access-passes",
+            post(routes::billing::create_access_pass),
+        )
+        .route(
+            "/api/billing/access-passes/redeem",
+            post(routes::billing::redeem_access_pass),
+        )
+        .route(
             "/api/billing/webhook",
             post(routes::billing::billing_webhook),
         )

@@ -37,7 +37,11 @@ function thumperApiBase() {
 function thumperFetchUrl(path: string) {
   // Cookie-backed session routes live in this Next app. They must remain
   // same-origin even when production has a public upstream API URL configured.
-  if (path.startsWith("/api/auth/session/")) return path;
+  if (
+    path.startsWith("/api/auth/session/") ||
+    path === "/api/billing/status" ||
+    path === "/api/billing/access-passes/redeem"
+  ) return path;
   return `${thumperApiBase()}${path}`;
 }
 
@@ -450,6 +454,18 @@ export async function updatePrivateAgentTradingFeeCap(
       body: JSON.stringify({ monthly_fee_cap_micro_usd: monthlyFeeCapMicroUsd }),
     },
   );
+}
+
+export async function redeemComplimentaryAccessPass(code: string): Promise<{
+  ok: boolean;
+  tier: string;
+  expires_at: string;
+  access_source: "complimentary_pass";
+}> {
+  return thumperFetch("/api/billing/access-passes/redeem", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
 }
 
 export async function reservePrivateAgentCompute(input: {

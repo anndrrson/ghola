@@ -2343,6 +2343,7 @@ mod tests {
             stripe_price_private_agent_trial_pack: None,
             stripe_price_private_agent: None,
             stripe_price_unlimited: None,
+            investor_pass_admin_secret: None,
             base_url: "http://localhost".into(),
             encryption_key: [0u8; 32],
             telegram_bot_token: None,

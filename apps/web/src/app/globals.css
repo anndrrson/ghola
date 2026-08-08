@@ -5,7 +5,7 @@
   --color-foreground: #eef1f8;
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --font-display: var(--font-display);
+  --font-display: var(--font-geist-sans);
   --color-ghola-50: #e6f3ff;
   --color-ghola-100: #cce7ff;
   --color-ghola-200: #99cfff;

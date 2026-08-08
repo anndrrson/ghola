@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { thumperSignIn, thumperSignUp } from "./thumper-api";
+import {
+  getThumperBillingStatus,
+  redeemComplimentaryAccessPass,
+  thumperSignIn,
+  thumperSignUp,
+} from "./thumper-api";
 
 describe("thumper auth helpers", () => {
   beforeEach(() => {
@@ -110,5 +115,30 @@ describe("thumper auth helpers", () => {
       status: 404,
       path: "/api/auth/session/email/signin",
     });
+  });
+
+  it("keeps billing status and access-pass redemption on the cookie-backed origin", async () => {
+    vi.stubEnv("NEXT_PUBLIC_THUMPER_API_URL", "https://thumper-cloud.onrender.com");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ tier: "free", limits: {} }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        tier: "starter",
+        expires_at: "2026-08-22T00:00:00Z",
+        access_source: "complimentary_pass",
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getThumperBillingStatus();
+    await redeemComplimentaryAccessPass("access-code");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/billing/status", expect.objectContaining({
+      credentials: "same-origin",
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/billing/access-passes/redeem", expect.objectContaining({
+      method: "POST",
+      credentials: "same-origin",
+      body: JSON.stringify({ code: "access-code" }),
+    }));
   });
 });

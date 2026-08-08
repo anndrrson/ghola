@@ -54,6 +54,7 @@ pub struct PrivateBalanceStatusResponse {
 pub struct BillingStatusResponse {
     pub tier: String,
     pub expires_at: Option<String>,
+    pub access_source: String,
     pub stripe_customer_id: Option<String>,
     pub portal_url: Option<String>,
     pub limits: BillingLimits,
@@ -155,6 +156,35 @@ pub struct ReleasePrivateAgentComputeResponse {
     pub ok: bool,
 }
 
+#[derive(Deserialize)]
+pub struct CreateAccessPassRequest {
+    pub email: Option<String>,
+    pub tier: Option<String>,
+    pub grant_days: Option<i64>,
+    pub redeem_days: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct CreateAccessPassResponse {
+    pub invite_url: String,
+    pub tier: String,
+    pub redeem_expires_at: String,
+    pub grant_days: i64,
+}
+
+#[derive(Deserialize)]
+pub struct RedeemAccessPassRequest {
+    pub code: String,
+}
+
+#[derive(Serialize)]
+pub struct RedeemAccessPassResponse {
+    pub ok: bool,
+    pub tier: String,
+    pub expires_at: String,
+    pub access_source: &'static str,
+}
+
 const PRIVATE_AGENT_TRIAL_PACK_INCLUDED_COMPUTE_SECONDS: i64 = 5 * 60 * 60;
 const PRIVATE_AGENT_TRIAL_PACK_ACTIVE_AGENT_LIMIT: i64 = 1;
 const PRIVATE_AGENT_TRIAL_PACK_DAYS: i64 = 14;
@@ -162,6 +192,16 @@ const PRIVATE_AGENT_STARTER_INCLUDED_COMPUTE_SECONDS: i64 = 20 * 60 * 60;
 const PRIVATE_AGENT_STARTER_ACTIVE_AGENT_LIMIT: i64 = 1;
 const PRIVATE_AGENT_INCLUDED_COMPUTE_SECONDS: i64 = 80 * 60 * 60;
 const PRIVATE_AGENT_ACTIVE_AGENT_LIMIT: i64 = 1;
+const EXPIRE_STALE_PRIVATE_AGENT_RESERVATIONS: &str = r#"
+    UPDATE private_agent_compute_reservations
+    SET status = 'completed',
+        used_seconds = seconds,
+        released_at = COALESCE(released_at, expires_at),
+        updated_at = now()
+    WHERE user_id = $1
+      AND status = 'reserved'
+      AND expires_at <= now()
+"#;
 const ENTERPRISE_INCLUDED_COMPUTE_SECONDS: i64 = 31 * 24 * 60 * 60;
 const ENTERPRISE_ACTIVE_AGENT_LIMIT: i64 = 10;
 const PRIVATE_AGENT_TRIAL_INCLUDED_NOTIONAL_MICRO_USD: i64 = 10_000_000_000;
@@ -188,61 +228,36 @@ pub async fn create_checkout(
                 "billing not configured".to_string(),
             ))?;
 
-    let (price_id, mode, checkout_kind) = match req.tier.as_str() {
-        "pro" => (
-            state
-                .config
-                .stripe_price_pro
-                .as_deref()
-                .ok_or(CloudError::ServiceUnavailable(
-                    "pro price not configured".to_string(),
-                ))?,
-            "subscription",
-            "subscription",
-        ),
-        "trial_pack" => (
-            state
-                .config
-                .stripe_price_private_agent_trial_pack
-                .as_deref()
-                .ok_or(CloudError::ServiceUnavailable(
-                    "trial pack price not configured".to_string(),
-                ))?,
-            "payment",
-            "private_agent_trial_pack",
-        ),
-        "starter" => (
-            state
+    let price_id =
+        match req.tier.as_str() {
+            "pro" => {
+                state
+                    .config
+                    .stripe_price_pro
+                    .as_deref()
+                    .ok_or(CloudError::ServiceUnavailable(
+                        "pro price not configured".to_string(),
+                    ))?
+            }
+            "starter" => state
                 .config
                 .stripe_price_private_agent_starter
                 .as_deref()
                 .ok_or(CloudError::ServiceUnavailable(
                     "starter private-agent price not configured".to_string(),
                 ))?,
-            "subscription",
-            "subscription",
-        ),
-        "private_agent" => (
-            state.config.stripe_price_private_agent.as_deref().ok_or(
+            "private_agent" => state.config.stripe_price_private_agent.as_deref().ok_or(
                 CloudError::ServiceUnavailable("private-agent price not configured".to_string()),
             )?,
-            "subscription",
-            "subscription",
-        ),
-        "unlimited" => (
-            state.config.stripe_price_unlimited.as_deref().ok_or(
+            "unlimited" => state.config.stripe_price_unlimited.as_deref().ok_or(
                 CloudError::ServiceUnavailable("unlimited price not configured".to_string()),
             )?,
-            "subscription",
-            "subscription",
-        ),
-        _ => {
-            return Err(CloudError::BadRequest(
-                "tier must be 'pro', 'trial_pack', 'starter', 'private_agent', or 'unlimited'"
-                    .to_string(),
-            ));
-        }
-    };
+            _ => {
+                return Err(CloudError::BadRequest(
+                    "tier must be 'pro', 'starter', 'private_agent', or 'unlimited'".to_string(),
+                ));
+            }
+        };
 
     // Get or create Stripe customer
     let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
@@ -257,10 +272,10 @@ pub async fn create_checkout(
 
     // Create checkout session
     let mut form = vec![
-        ("mode", mode.to_string()),
+        ("mode", "subscription".to_string()),
         ("line_items[0][price]", price_id.to_string()),
         ("line_items[0][quantity]", "1".to_string()),
-        ("metadata[ghola_kind]", checkout_kind.to_string()),
+        ("metadata[ghola_kind]", "subscription".to_string()),
         ("metadata[tier]", req.tier.clone()),
         ("metadata[price_id]", price_id.to_string()),
         (
@@ -274,27 +289,14 @@ pub async fn create_checkout(
         ("client_reference_id", claims.sub.to_string()),
     ];
 
-    if mode == "subscription" {
-        form.push(("subscription_data[metadata][tier]", req.tier.clone()));
-        form.push((
-            "subscription_data[metadata][price_id]",
-            price_id.to_string(),
-        ));
-    } else {
-        form.push((
-            "payment_intent_data[metadata][ghola_kind]",
-            checkout_kind.to_string(),
-        ));
-        form.push(("payment_intent_data[metadata][tier]", req.tier.clone()));
-    }
+    form.push(("subscription_data[metadata][tier]", req.tier.clone()));
+    form.push((
+        "subscription_data[metadata][price_id]",
+        price_id.to_string(),
+    ));
 
     if let Some(ref customer_id) = row.1 {
         form.push(("customer", customer_id.clone()));
-    } else if mode == "payment" {
-        form.push(("customer_creation", "always".to_string()));
-        if let Some(ref email) = row.0 {
-            form.push(("customer_email", email.clone()));
-        }
     } else if let Some(ref email) = row.0 {
         form.push(("customer_email", email.clone()));
     }
@@ -586,20 +588,9 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     out
 }
 
-/// Determine tier from the Stripe price ID in the checkout session.
-fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static str {
-    for tier in ["trial_pack", "starter", "private_agent", "unlimited", "pro"] {
-        if event["data"]["object"]["metadata"]["tier"].as_str() == Some(tier) {
-            return tier;
-        }
-        if event["data"]["object"]["subscription_details"]["metadata"]["tier"].as_str()
-            == Some(tier)
-        {
-            return tier;
-        }
-    }
-
-    // Try to extract price ID from line_items or metadata
+/// Resolve tiers only from configured Stripe price IDs. Signed metadata and
+/// amounts are insufficient authority to grant trading entitlements.
+fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> Option<&'static str> {
     let price_id = event["data"]["object"]["line_items"]["data"][0]["price"]["id"]
         .as_str()
         .or_else(|| event["data"]["object"]["items"]["data"][0]["price"]["id"].as_str())
@@ -608,47 +599,30 @@ fn tier_from_price_id(event: &serde_json::Value, state: &AppState) -> &'static s
 
     if let Some(ref trial_pack_price) = state.config.stripe_price_private_agent_trial_pack {
         if price_id == trial_pack_price {
-            return "trial_pack";
+            return Some("trial_pack");
         }
     }
     if let Some(ref starter_price) = state.config.stripe_price_private_agent_starter {
         if price_id == starter_price {
-            return "starter";
+            return Some("starter");
         }
     }
     if let Some(ref private_agent_price) = state.config.stripe_price_private_agent {
         if price_id == private_agent_price {
-            return "private_agent";
+            return Some("private_agent");
         }
     }
     if let Some(ref unlimited_price) = state.config.stripe_price_unlimited {
         if price_id == unlimited_price {
-            return "unlimited";
+            return Some("unlimited");
         }
     }
     if let Some(ref pro_price) = state.config.stripe_price_pro {
         if price_id == pro_price {
-            return "pro";
+            return Some("pro");
         }
     }
-
-    // Fallback: check amount if price ID not available
-    let amount = event["data"]["object"]["amount_total"]
-        .as_i64()
-        .unwrap_or(0);
-    if amount >= 12900 {
-        "private_agent"
-    } else if amount >= 3900 {
-        "starter"
-    } else if amount >= 2999 {
-        "unlimited"
-    } else if amount >= 999 {
-        "pro"
-    } else if amount >= 900 {
-        "trial_pack"
-    } else {
-        "pro"
-    }
+    None
 }
 
 fn effective_tier(tier: String, expires_at: Option<chrono::DateTime<chrono::Utc>>) -> String {
@@ -661,6 +635,73 @@ fn effective_tier(tier: String, expires_at: Option<chrono::DateTime<chrono::Utc>
         }
     }
     tier
+}
+
+#[derive(Debug)]
+struct EffectiveAccess {
+    tier: String,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    source: &'static str,
+}
+
+fn tier_rank(tier: &str) -> u8 {
+    match tier {
+        "enterprise" => 6,
+        "private_agent" => 5,
+        "starter" => 4,
+        "trial_pack" => 3,
+        "unlimited" => 2,
+        "pro" => 1,
+        _ => 0,
+    }
+}
+
+fn resolve_effective_access(
+    raw_tier: String,
+    raw_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    grant: Option<(String, chrono::DateTime<chrono::Utc>)>,
+) -> EffectiveAccess {
+    let tier = effective_tier(raw_tier, raw_expires_at);
+    let subscription_expiry = if tier == "trial_pack" {
+        raw_expires_at
+    } else {
+        None
+    };
+    if let Some((grant_tier, grant_expires_at)) = grant {
+        if grant_expires_at > chrono::Utc::now() && tier_rank(&grant_tier) > tier_rank(&tier) {
+            return EffectiveAccess {
+                tier: grant_tier,
+                expires_at: Some(grant_expires_at),
+                source: "complimentary_pass",
+            };
+        }
+    }
+    EffectiveAccess {
+        source: if tier == "free" { "free" } else { "stripe" },
+        tier,
+        expires_at: subscription_expiry,
+    }
+}
+
+async fn active_access_grant(
+    state: &AppState,
+    user_id: uuid::Uuid,
+) -> Result<Option<(String, chrono::DateTime<chrono::Utc>)>, CloudError> {
+    Ok(sqlx::query_as(
+        r#"
+        SELECT tier, grant_expires_at
+        FROM complimentary_access_passes
+        WHERE redeemed_by = $1
+          AND redeemed_at IS NOT NULL
+          AND revoked_at IS NULL
+          AND grant_expires_at > now()
+        ORDER BY grant_expires_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?)
 }
 
 fn private_agent_allowance_for_tier(tier: &str) -> Option<(i64, i64)> {
@@ -871,15 +912,23 @@ async fn private_agent_compute_status_for_user(
     else {
         return Ok(None);
     };
+    sqlx::query(EXPIRE_STALE_PRIVATE_AGENT_RESERVATIONS)
+        .bind(user_id)
+        .execute(&state.db)
+        .await?;
     let (period_start, period_start_dt, period_end_dt) = current_private_agent_period()?;
     let (reserved_seconds, used_seconds, active_agent_count) =
         sqlx::query_as::<_, (i64, i64, i64)>(
             r#"
         SELECT
-            COALESCE(SUM(seconds) FILTER (WHERE status = 'reserved'), 0)::BIGINT,
-            COALESCE(SUM(seconds) FILTER (WHERE status = 'completed'), 0)::BIGINT,
+            COALESCE(SUM(seconds) FILTER (
+                WHERE status = 'reserved' AND expires_at > now()
+            ), 0)::BIGINT,
+            COALESCE(SUM(used_seconds) FILTER (WHERE status <> 'reserved'), 0)::BIGINT,
             COALESCE(COUNT(*) FILTER (
-                WHERE status = 'reserved' AND reason = 'private_agent_session'
+                WHERE status = 'reserved'
+                  AND expires_at > now()
+                  AND reason = 'private_agent_session'
             ), 0)::BIGINT
         FROM private_agent_compute_reservations
         WHERE user_id = $1 AND period_start = $2
@@ -1056,6 +1105,114 @@ async fn mark_private_balance_top_up_paid(
     Ok(())
 }
 
+#[derive(Debug)]
+struct StripeSubscriptionState {
+    status: String,
+    tier: Option<String>,
+    subscription_created: i64,
+    event_created: i64,
+    event_rank: i16,
+    event_id: String,
+}
+
+fn stripe_event_identity(event: &serde_json::Value) -> Result<(&str, i64), CloudError> {
+    let event_id = event["id"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CloudError::BadRequest("Stripe event id is required".to_string()))?;
+    let event_created = event["created"]
+        .as_i64()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            CloudError::BadRequest("Stripe event created timestamp is required".to_string())
+        })?;
+    Ok((event_id, event_created))
+}
+
+async fn upsert_stripe_subscription_state(
+    state: &AppState,
+    subscription_id: &str,
+    customer_id: &str,
+    status: &str,
+    tier: Option<&str>,
+    subscription_created: i64,
+    event_created: i64,
+    event_rank: i16,
+    event_id: &str,
+) -> Result<StripeSubscriptionState, CloudError> {
+    if subscription_id.is_empty() || customer_id.is_empty() {
+        return Err(CloudError::BadRequest(
+            "Stripe subscription and customer ids are required".to_string(),
+        ));
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO stripe_subscription_states
+            (subscription_id, customer_id, status, tier, subscription_created,
+             event_created, event_rank, event_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (subscription_id) DO UPDATE
+        SET customer_id = EXCLUDED.customer_id,
+            status = EXCLUDED.status,
+            tier = EXCLUDED.tier,
+            subscription_created = EXCLUDED.subscription_created,
+            event_created = EXCLUDED.event_created,
+            event_rank = EXCLUDED.event_rank,
+            event_id = EXCLUDED.event_id,
+            updated_at = now()
+        WHERE EXCLUDED.subscription_created > stripe_subscription_states.subscription_created
+           OR (
+                EXCLUDED.subscription_created = stripe_subscription_states.subscription_created
+                AND (
+                    EXCLUDED.event_created > stripe_subscription_states.event_created
+                    OR (
+                        EXCLUDED.event_created = stripe_subscription_states.event_created
+                        AND EXCLUDED.event_rank >= stripe_subscription_states.event_rank
+                    )
+                )
+           )
+        "#,
+    )
+    .bind(subscription_id)
+    .bind(customer_id)
+    .bind(status)
+    .bind(tier)
+    .bind(subscription_created.max(0))
+    .bind(event_created)
+    .bind(event_rank)
+    .bind(event_id)
+    .execute(&state.db)
+    .await?;
+
+    sqlx::query_as::<_, (String, Option<String>, i64, i64, i16, String)>(
+        r#"
+        SELECT status, tier, subscription_created, event_created, event_rank, event_id
+        FROM stripe_subscription_states
+        WHERE subscription_id = $1
+        "#,
+    )
+    .bind(subscription_id)
+    .fetch_optional(&state.db)
+    .await?
+    .map(|row| StripeSubscriptionState {
+        status: row.0,
+        tier: row.1,
+        subscription_created: row.2,
+        event_created: row.3,
+        event_rank: row.4,
+        event_id: row.5,
+    })
+    .ok_or_else(|| CloudError::Internal("Stripe subscription state was not persisted".to_string()))
+}
+
+fn stripe_state_tier(state: &StripeSubscriptionState) -> &str {
+    if matches!(state.status.as_str(), "active" | "trialing") {
+        state.tier.as_deref().unwrap_or("free")
+    } else {
+        "free"
+    }
+}
+
 /// POST /api/billing/webhook — Stripe webhook
 pub async fn billing_webhook(
     State(state): State<AppState>,
@@ -1090,6 +1247,20 @@ pub async fn billing_webhook(
                 return Ok(Json(serde_json::json!({ "ok": true })));
             }
 
+            if event["data"]["object"]["metadata"]["ghola_kind"].as_str() != Some("subscription") {
+                return Err(CloudError::BadRequest(
+                    "unrecognized Stripe checkout kind".to_string(),
+                ));
+            }
+            let payment_status = event["data"]["object"]["payment_status"]
+                .as_str()
+                .unwrap_or("");
+            if !matches!(payment_status, "paid" | "no_payment_required") {
+                return Err(CloudError::PaymentRequired(
+                    "Stripe checkout is not paid".to_string(),
+                ));
+            }
+
             let user_id_str = event["data"]["object"]["client_reference_id"]
                 .as_str()
                 .unwrap_or("");
@@ -1097,10 +1268,27 @@ pub async fn billing_webhook(
             let subscription_id = event["data"]["object"]["subscription"]
                 .as_str()
                 .unwrap_or("");
+            let (event_id, event_created) = stripe_event_identity(&event)?;
 
             if let Ok(user_id) = user_id_str.parse::<uuid::Uuid>() {
-                // Determine tier from the checkout session's price ID
-                let tier = tier_from_price_id(&event, &state);
+                let tier = tier_from_price_id(&event, &state).ok_or_else(|| {
+                    CloudError::ServiceUnavailable(
+                        "unrecognized Stripe subscription price".to_string(),
+                    )
+                })?;
+                let subscription = upsert_stripe_subscription_state(
+                    &state,
+                    subscription_id,
+                    customer_id,
+                    "active",
+                    Some(tier),
+                    0,
+                    event_created,
+                    0,
+                    event_id,
+                )
+                .await?;
+                let effective_tier = stripe_state_tier(&subscription);
                 let expires_at = if tier == "trial_pack" {
                     Some(chrono::Utc::now() + chrono::Duration::days(PRIVATE_AGENT_TRIAL_PACK_DAYS))
                 } else {
@@ -1113,57 +1301,185 @@ pub async fn billing_webhook(
                     SET tier = $1,
                         tier_expires_at = $2,
                         stripe_customer_id = COALESCE(NULLIF($3, ''), stripe_customer_id),
-                        stripe_subscription_id = COALESCE(NULLIF($4, ''), stripe_subscription_id),
+                        stripe_subscription_id = $4,
+                        stripe_subscription_status = $5,
+                        stripe_subscription_created = $6,
+                        stripe_subscription_event_created = $7,
+                        stripe_subscription_event_rank = $8,
+                        stripe_subscription_event_id = $9,
                         updated_at = now()
-                    WHERE id = $5
+                    WHERE id = $10
+                      AND (
+                          stripe_subscription_id IS NULL
+                          OR stripe_subscription_id = $4
+                          OR $6 > stripe_subscription_created
+                          OR ($6 = stripe_subscription_created AND $7 >= stripe_subscription_event_created)
+                      )
                     "#,
                 )
-                .bind(tier)
+                .bind(effective_tier)
                 .bind(expires_at)
                 .bind(customer_id)
                 .bind(subscription_id)
+                .bind(&subscription.status)
+                .bind(subscription.subscription_created)
+                .bind(subscription.event_created)
+                .bind(subscription.event_rank)
+                .bind(&subscription.event_id)
                 .bind(user_id)
                 .execute(&state.db)
                 .await?;
 
-                tracing::info!(%user_id, tier, "subscription activated");
+                tracing::info!(%user_id, effective_tier, subscription_id, "subscription checkout reconciled");
             }
         }
         "customer.subscription.deleted" => {
             let customer_id = event["data"]["object"]["customer"].as_str().unwrap_or("");
+            let subscription_id = event["data"]["object"]["id"].as_str().unwrap_or("");
+            let subscription_created = event["data"]["object"]["created"].as_i64().unwrap_or(0);
+            let (event_id, event_created) = stripe_event_identity(&event)?;
+            let subscription = upsert_stripe_subscription_state(
+                &state,
+                subscription_id,
+                customer_id,
+                "canceled",
+                None,
+                subscription_created,
+                event_created,
+                2,
+                event_id,
+            )
+            .await?;
 
             sqlx::query(
-                "UPDATE users SET tier = 'free', tier_expires_at = NULL, stripe_subscription_id = NULL, updated_at = now() WHERE stripe_customer_id = $1",
+                r#"
+                UPDATE users
+                SET tier = 'free',
+                    tier_expires_at = NULL,
+                    stripe_subscription_status = $1,
+                    stripe_subscription_event_created = $2,
+                    stripe_subscription_event_rank = $3,
+                    stripe_subscription_event_id = $4,
+                    updated_at = now()
+                WHERE stripe_customer_id = $5
+                  AND stripe_subscription_id = $6
+                  AND (
+                      $2 > stripe_subscription_event_created
+                      OR ($2 = stripe_subscription_event_created AND $3 >= stripe_subscription_event_rank)
+                  )
+                "#,
             )
+            .bind(&subscription.status)
+            .bind(subscription.event_created)
+            .bind(subscription.event_rank)
+            .bind(&subscription.event_id)
             .bind(customer_id)
+            .bind(subscription_id)
             .execute(&state.db)
             .await?;
 
-            tracing::info!(customer_id, "subscription cancelled, reverted to free");
+            tracing::info!(customer_id, subscription_id, "subscription cancelled");
         }
         "customer.subscription.updated" => {
             let customer_id = event["data"]["object"]["customer"].as_str().unwrap_or("");
             let subscription_id = event["data"]["object"]["id"].as_str().unwrap_or("");
+            let subscription_created = event["data"]["object"]["created"].as_i64().unwrap_or(0);
             let status = event["data"]["object"]["status"].as_str().unwrap_or("");
-            if matches!(status, "active" | "trialing") {
-                let tier = tier_from_price_id(&event, &state);
+            let active = matches!(status, "active" | "trialing");
+            let tier = if active {
+                Some(tier_from_price_id(&event, &state).ok_or_else(|| {
+                    CloudError::ServiceUnavailable(
+                        "unrecognized Stripe subscription price".to_string(),
+                    )
+                })?)
+            } else {
+                None
+            };
+            let (event_id, event_created) = stripe_event_identity(&event)?;
+            let subscription = upsert_stripe_subscription_state(
+                &state,
+                subscription_id,
+                customer_id,
+                status,
+                tier,
+                subscription_created,
+                event_created,
+                if active { 1 } else { 2 },
+                event_id,
+            )
+            .await?;
+            if active {
+                let effective_tier = stripe_state_tier(&subscription);
                 sqlx::query(
-                    "UPDATE users SET tier = $1, tier_expires_at = NULL, stripe_subscription_id = COALESCE(NULLIF($2, ''), stripe_subscription_id), updated_at = now() WHERE stripe_customer_id = $3",
+                    r#"
+                    UPDATE users
+                    SET tier = $1,
+                        tier_expires_at = NULL,
+                        stripe_subscription_id = $2,
+                        stripe_subscription_status = $3,
+                        stripe_subscription_created = $4,
+                        stripe_subscription_event_created = $5,
+                        stripe_subscription_event_rank = $6,
+                        stripe_subscription_event_id = $7,
+                        updated_at = now()
+                    WHERE stripe_customer_id = $8
+                      AND (
+                          stripe_subscription_id IS NULL
+                          OR stripe_subscription_id = $2
+                          OR $4 > stripe_subscription_created
+                          OR ($4 = stripe_subscription_created AND $5 >= stripe_subscription_event_created)
+                      )
+                    "#,
                 )
-                .bind(tier)
+                .bind(effective_tier)
                 .bind(subscription_id)
+                .bind(&subscription.status)
+                .bind(subscription.subscription_created)
+                .bind(subscription.event_created)
+                .bind(subscription.event_rank)
+                .bind(&subscription.event_id)
                 .bind(customer_id)
                 .execute(&state.db)
                 .await?;
-                tracing::info!(customer_id, tier, "subscription tier updated");
-            } else if matches!(status, "canceled" | "unpaid" | "incomplete_expired") {
+                tracing::info!(
+                    customer_id,
+                    subscription_id,
+                    effective_tier,
+                    "subscription tier updated"
+                );
+            } else {
                 sqlx::query(
-                    "UPDATE users SET tier = 'free', tier_expires_at = NULL, updated_at = now() WHERE stripe_customer_id = $1",
+                    r#"
+                    UPDATE users
+                    SET tier = 'free',
+                        tier_expires_at = NULL,
+                        stripe_subscription_status = $1,
+                        stripe_subscription_event_created = $2,
+                        stripe_subscription_event_rank = $3,
+                        stripe_subscription_event_id = $4,
+                        updated_at = now()
+                    WHERE stripe_customer_id = $5
+                      AND stripe_subscription_id = $6
+                      AND (
+                          $2 > stripe_subscription_event_created
+                          OR ($2 = stripe_subscription_event_created AND $3 >= stripe_subscription_event_rank)
+                      )
+                    "#,
                 )
+                .bind(&subscription.status)
+                .bind(subscription.event_created)
+                .bind(subscription.event_rank)
+                .bind(&subscription.event_id)
                 .bind(customer_id)
+                .bind(subscription_id)
                 .execute(&state.db)
                 .await?;
-                tracing::info!(customer_id, status, "subscription no longer active");
+                tracing::info!(
+                    customer_id,
+                    subscription_id,
+                    status,
+                    "subscription no longer active"
+                );
             }
         }
         "invoice.paid" => {
@@ -1270,6 +1586,208 @@ pub async fn private_balance_status(
     }))
 }
 
+fn access_pass_hash(code: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(code.as_bytes()))
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.as_bytes()
+        .iter()
+        .zip(right.as_bytes())
+        .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+        == 0
+}
+
+/// POST /api/billing/access-passes — operator-only complimentary invite creation.
+pub async fn create_access_pass(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    headers: HeaderMap,
+    Json(req): Json<CreateAccessPassRequest>,
+) -> Result<Json<CreateAccessPassResponse>, CloudError> {
+    let configured_secret = state
+        .config
+        .investor_pass_admin_secret
+        .as_deref()
+        .ok_or_else(|| {
+            CloudError::ServiceUnavailable("access-pass issuance is disabled".to_string())
+        })?;
+    let provided_secret = headers
+        .get("x-ghola-admin-secret")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if !constant_time_eq(configured_secret, provided_secret) {
+        return Err(CloudError::Forbidden(
+            "access-pass issuance is not permitted".to_string(),
+        ));
+    }
+
+    let tier = req.tier.unwrap_or_else(|| "starter".to_string());
+    if !matches!(tier.as_str(), "starter" | "private_agent") {
+        return Err(CloudError::BadRequest(
+            "tier must be starter or private_agent".to_string(),
+        ));
+    }
+    let grant_days = req.grant_days.unwrap_or(14);
+    let redeem_days = req.redeem_days.unwrap_or(7);
+    if !(1..=90).contains(&grant_days) || !(1..=30).contains(&redeem_days) {
+        return Err(CloudError::BadRequest(
+            "grant_days must be 1-90 and redeem_days must be 1-30".to_string(),
+        ));
+    }
+    let email = req
+        .email
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CloudError::BadRequest("email is required".to_string()))?;
+    if email.len() > 320 || !email.contains('@') || email.starts_with('@') || email.ends_with('@') {
+        return Err(CloudError::BadRequest("email is invalid".to_string()));
+    }
+
+    use base64::Engine;
+    use rand::RngCore;
+    let mut random = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut random);
+    let code = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random);
+    let redeem_expires_at = chrono::Utc::now() + chrono::Duration::days(redeem_days);
+    sqlx::query(
+        r#"
+        INSERT INTO complimentary_access_passes
+            (code_hash, email, tier, redeem_expires_at, grant_days, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(access_pass_hash(&code))
+    .bind(Some(email))
+    .bind(&tier)
+    .bind(redeem_expires_at)
+    .bind(grant_days as i32)
+    .bind(claims.sub)
+    .execute(&state.db)
+    .await?;
+
+    Ok(Json(CreateAccessPassResponse {
+        invite_url: format!(
+            "{}/trade?access={code}",
+            state.config.base_url.trim_end_matches('/')
+        ),
+        tier,
+        redeem_expires_at: redeem_expires_at.to_rfc3339(),
+        grant_days,
+    }))
+}
+
+/// POST /api/billing/access-passes/redeem — consume one invite for the signed-in user.
+pub async fn redeem_access_pass(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    Json(req): Json<RedeemAccessPassRequest>,
+) -> Result<Json<RedeemAccessPassResponse>, CloudError> {
+    let code = req.code.trim();
+    if !(32..=128).contains(&code.len())
+        || !code
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+    {
+        return Err(CloudError::BadRequest("access pass is invalid".to_string()));
+    }
+    let mut tx = state.db.begin().await?;
+    let pass = sqlx::query_as::<
+        _,
+        (
+            Option<String>,
+            String,
+            chrono::DateTime<chrono::Utc>,
+            i32,
+            Option<uuid::Uuid>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<chrono::DateTime<chrono::Utc>>,
+        ),
+    >(
+        r#"
+        SELECT email, tier, redeem_expires_at, grant_days, redeemed_by, grant_expires_at, revoked_at
+        FROM complimentary_access_passes
+        WHERE code_hash = $1
+        FOR UPDATE
+        "#,
+    )
+    .bind(access_pass_hash(code))
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| CloudError::BadRequest("access pass is invalid".to_string()))?;
+
+    let (
+        bound_email,
+        tier,
+        redeem_expires_at,
+        grant_days,
+        redeemed_by,
+        existing_expiry,
+        revoked_at,
+    ) = pass;
+    if revoked_at.is_some() || redeem_expires_at <= chrono::Utc::now() {
+        return Err(CloudError::BadRequest(
+            "access pass has expired".to_string(),
+        ));
+    }
+    if let Some(expected_email) = bound_email {
+        if claims
+            .email
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+            != Some(expected_email.as_str())
+        {
+            return Err(CloudError::Forbidden(
+                "access pass belongs to another email".to_string(),
+            ));
+        }
+    }
+    if let Some(user_id) = redeemed_by {
+        if user_id != claims.sub {
+            return Err(CloudError::BadRequest(
+                "access pass has already been redeemed".to_string(),
+            ));
+        }
+        let expires_at = existing_expiry
+            .filter(|expiry| *expiry > chrono::Utc::now())
+            .ok_or_else(|| CloudError::BadRequest("access pass has expired".to_string()))?;
+        tx.commit().await?;
+        return Ok(Json(RedeemAccessPassResponse {
+            ok: true,
+            tier,
+            expires_at: expires_at.to_rfc3339(),
+            access_source: "complimentary_pass",
+        }));
+    }
+
+    let grant_expires_at = chrono::Utc::now() + chrono::Duration::days(i64::from(grant_days));
+    sqlx::query(
+        r#"
+        UPDATE complimentary_access_passes
+        SET redeemed_by = $2, redeemed_at = now(), grant_expires_at = $3
+        WHERE code_hash = $1 AND redeemed_by IS NULL AND revoked_at IS NULL
+        "#,
+    )
+    .bind(access_pass_hash(code))
+    .bind(claims.sub)
+    .bind(grant_expires_at)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(Json(RedeemAccessPassResponse {
+        ok: true,
+        tier,
+        expires_at: grant_expires_at.to_rfc3339(),
+        access_source: "complimentary_pass",
+    }))
+}
+
 /// POST /api/billing/private-agent/compute/reserve
 pub async fn reserve_private_agent_compute(
     State(state): State<AppState>,
@@ -1293,7 +1811,19 @@ pub async fn reserve_private_agent_compute(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(CloudError::NotFound("user not found".to_string()))?;
-    let tier = effective_tier(row.0, row.1);
+    let grant = sqlx::query_as::<_, (String, chrono::DateTime<chrono::Utc>)>(
+        r#"
+        SELECT tier, grant_expires_at
+        FROM complimentary_access_passes
+        WHERE redeemed_by = $1 AND revoked_at IS NULL AND grant_expires_at > now()
+        ORDER BY grant_expires_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(claims.sub)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let tier = resolve_effective_access(row.0, row.1, grant).tier;
 
     let Some((included_seconds, active_agent_limit)) = private_agent_allowance_for_tier(&tier)
     else {
@@ -1301,6 +1831,11 @@ pub async fn reserve_private_agent_compute(
             "private-agent compute allowance required".to_string(),
         ));
     };
+
+    sqlx::query(EXPIRE_STALE_PRIVATE_AGENT_RESERVATIONS)
+        .bind(claims.sub)
+        .execute(&mut *tx)
+        .await?;
 
     if let Some((reservation_id, reserved_seconds, status)) =
         sqlx::query_as::<_, (uuid::Uuid, i64, String)>(
@@ -1332,10 +1867,14 @@ pub async fn reserve_private_agent_compute(
         sqlx::query_as::<_, (i64, i64, i64)>(
             r#"
             SELECT
-                COALESCE(SUM(seconds) FILTER (WHERE status = 'reserved'), 0)::BIGINT,
-                COALESCE(SUM(seconds) FILTER (WHERE status = 'completed'), 0)::BIGINT,
+                COALESCE(SUM(seconds) FILTER (
+                    WHERE status = 'reserved' AND expires_at > now()
+                ), 0)::BIGINT,
+                COALESCE(SUM(used_seconds) FILTER (WHERE status <> 'reserved'), 0)::BIGINT,
                 COALESCE(COUNT(*) FILTER (
-                    WHERE status = 'reserved' AND reason = 'private_agent_session'
+                    WHERE status = 'reserved'
+                      AND expires_at > now()
+                      AND reason = 'private_agent_session'
                 ), 0)::BIGINT
             FROM private_agent_compute_reservations
             WHERE user_id = $1 AND period_start = $2
@@ -1360,8 +1899,8 @@ pub async fn reserve_private_agent_compute(
     let reservation_id: uuid::Uuid = sqlx::query_scalar(
         r#"
         INSERT INTO private_agent_compute_reservations
-            (user_id, session_id, seconds, reason, status, period_start)
-        VALUES ($1, $2, $3, $4, 'reserved', $5)
+            (user_id, session_id, seconds, reason, status, period_start, expires_at)
+        VALUES ($1, $2, $3, $4, 'reserved', $5, now() + make_interval(secs => $3::double precision))
         RETURNING id
         "#,
     )
@@ -1400,6 +1939,13 @@ pub async fn release_private_agent_compute(
         r#"
         UPDATE private_agent_compute_reservations
         SET status = $3,
+            used_seconds = CASE
+                WHEN $3 = 'failed' THEN 0
+                ELSE LEAST(
+                    seconds,
+                    GREATEST(1, CEIL(EXTRACT(EPOCH FROM (now() - created_at)))::BIGINT)
+                )
+            END,
             released_at = COALESCE(released_at, now()),
             updated_at = now()
         WHERE user_id = $1
@@ -1838,13 +2384,14 @@ pub async fn billing_status(
     .ok_or(CloudError::NotFound("user not found".to_string()))?;
 
     let (raw_tier, tier_expires_at, stripe_customer_id) = row;
-    let tier = effective_tier(raw_tier, tier_expires_at);
     process_private_agent_trading_invoice_outbox(&state, claims.sub).await?;
-    let expires_at = if tier == "trial_pack" {
-        tier_expires_at.map(|expiry| expiry.to_rfc3339())
-    } else {
-        None
-    };
+    let access = resolve_effective_access(
+        raw_tier,
+        tier_expires_at,
+        active_access_grant(&state, claims.sub).await?,
+    );
+    let tier = access.tier;
+    let expires_at = access.expires_at.map(|expiry| expiry.to_rfc3339());
 
     let portal_url = if let (Some(ref customer_id), Some(stripe_key)) = (
         &stripe_customer_id,
@@ -1881,6 +2428,7 @@ pub async fn billing_status(
             .await?,
         tier,
         expires_at,
+        access_source: access.source.to_string(),
         stripe_customer_id,
         portal_url,
     }))
@@ -1987,5 +2535,70 @@ mod tests {
         );
         assert!(status.cap_reached);
         assert!(!status.live_trading_allowed);
+    }
+
+    fn subscription(status: &str, tier: Option<&str>) -> StripeSubscriptionState {
+        StripeSubscriptionState {
+            status: status.to_string(),
+            tier: tier.map(str::to_string),
+            subscription_created: 10,
+            event_created: 20,
+            event_rank: 1,
+            event_id: "evt_test".to_string(),
+        }
+    }
+
+    #[test]
+    fn only_active_or_trialing_subscription_state_grants_a_tier() {
+        assert_eq!(
+            stripe_state_tier(&subscription("active", Some("private_agent"))),
+            "private_agent"
+        );
+        assert_eq!(
+            stripe_state_tier(&subscription("trialing", Some("starter"))),
+            "starter"
+        );
+        for status in ["past_due", "paused", "canceled", "unpaid", "incomplete"] {
+            assert_eq!(
+                stripe_state_tier(&subscription(status, Some("private_agent"))),
+                "free"
+            );
+        }
+    }
+
+    #[test]
+    fn signed_subscription_events_require_stable_identity_and_time() {
+        let event = serde_json::json!({ "id": "evt_123", "created": 123 });
+        assert_eq!(stripe_event_identity(&event).unwrap(), ("evt_123", 123));
+        assert!(stripe_event_identity(&serde_json::json!({ "created": 123 })).is_err());
+        assert!(stripe_event_identity(&serde_json::json!({ "id": "evt_123" })).is_err());
+    }
+
+    #[test]
+    fn complimentary_access_is_expiring_and_never_downgrades_paid_access() {
+        let grant_expiry = chrono::Utc::now() + chrono::Duration::days(14);
+        let granted = resolve_effective_access(
+            "free".to_string(),
+            None,
+            Some(("starter".to_string(), grant_expiry)),
+        );
+        assert_eq!(granted.tier, "starter");
+        assert_eq!(granted.source, "complimentary_pass");
+        assert_eq!(granted.expires_at, Some(grant_expiry));
+
+        let paid = resolve_effective_access(
+            "private_agent".to_string(),
+            None,
+            Some(("starter".to_string(), grant_expiry)),
+        );
+        assert_eq!(paid.tier, "private_agent");
+        assert_eq!(paid.source, "stripe");
+    }
+
+    #[test]
+    fn operator_secret_comparison_rejects_length_and_content_mismatches() {
+        assert!(constant_time_eq("correct-secret", "correct-secret"));
+        assert!(!constant_time_eq("correct-secret", "wrong-secret"));
+        assert!(!constant_time_eq("correct-secret", "short"));
     }
 }
