@@ -703,7 +703,7 @@ function PlanTab() {
   };
 
   const plans: Array<{
-    id: "free" | "pro" | "trial_pack" | "starter" | "private_agent" | "unlimited" | "enterprise";
+    id: "free" | "pro" | "starter" | "private_agent" | "unlimited" | "enterprise";
     name: string;
     price: string;
     period: string;
@@ -725,20 +725,6 @@ function PlanTab() {
       price: "$9.99",
       period: "/month",
       features: ["30 calls/month", "50 emails/month", "BYOM support", "Priority responses"],
-    },
-    {
-      id: "trial_pack",
-      name: "Trial Pack",
-      price: `$${PRIVATE_AGENT_TRIAL_PACK_PRICE_USD}`,
-      period: " once",
-      badge: "Proof",
-      computeSeconds: PRIVATE_AGENT_TRIAL_PACK_INCLUDED_COMPUTE_SECONDS,
-      features: [
-        "Try real secure-worker execution",
-        `${privateAgentComputeHours(PRIVATE_AGENT_TRIAL_PACK_INCLUDED_COMPUTE_SECONDS)} private compute hours`,
-        `Expires after ${PRIVATE_AGENT_TRIAL_PACK_DAYS} days`,
-        "No profit share",
-      ],
     },
     {
       id: "starter",
@@ -800,6 +786,14 @@ function PlanTab() {
 
   return (
     <div className="space-y-4">
+      {billing?.access_source === "complimentary_pass" && (
+        <div className="rounded-xl border border-sky-400/30 bg-sky-400/5 p-5">
+          <h3 className="text-sm font-medium text-sky-100">Complimentary investor access</h3>
+          <p className="mt-1 text-xs text-[#8b95a8]">
+            No charge. Access expires {billing.expires_at ? new Date(billing.expires_at).toLocaleDateString() : "automatically"}; private compute remains metered.
+          </p>
+        </div>
+      )}
       {billing?.private_agent_compute && (
         <div className="rounded-xl border border-[#1e2a3a] bg-[#0f1117] p-5">
           <div className="flex items-baseline justify-between gap-4">
@@ -923,11 +917,7 @@ function PlanTab() {
                 disabled={upgrading === plan.id}
                 className="w-full rounded-lg bg-[#3da8ff] py-2 text-xs font-medium text-[#08090d] hover:bg-[#5bb8ff] disabled:opacity-50 transition-colors cursor-pointer"
               >
-                {upgrading === plan.id
-                  ? "Redirecting..."
-                  : plan.id === "trial_pack"
-                    ? "Try secure worker"
-                    : `Upgrade to ${plan.name}`}
+                {upgrading === plan.id ? "Redirecting..." : `Upgrade to ${plan.name}`}
               </button>
             )}
             {!isCurrent && plan.id === "enterprise" && (

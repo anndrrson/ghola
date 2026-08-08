@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Funnel_Display } from "next/font/google";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 import { AuthProvider } from "@/lib/auth-context";
 import { ThumperAuthProvider } from "@/lib/thumper-auth-context";
@@ -8,21 +9,6 @@ import { LayoutShell } from "@/components/LayoutShell";
 import { ServiceWorker } from "@/components/ServiceWorker";
 import { Analytics } from "@vercel/analytics/next";
 import { SpeedInsights } from "@vercel/speed-insights/next";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-const funnelDisplay = Funnel_Display({
-  variable: "--font-display",
-  subsets: ["latin"],
-});
 
 // metadataBase tells Next.js how to resolve relative URLs in the
 // metadata blocks below. If the site ever moves off the apex domain
@@ -126,7 +112,7 @@ export default function RootLayout({
         <link rel="dns-prefetch" href="https://ghola-gateway.onrender.com" />
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${funnelDisplay.variable} bg-[#08090d] text-[#eef1f8] font-sans antialiased`}
+        className={`${GeistSans.variable} ${GeistMono.variable} bg-[#08090d] text-[#eef1f8] font-sans antialiased`}
       >
         <ServiceWorker />
         <AuthProvider>

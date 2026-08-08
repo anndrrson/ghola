@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS users (
     tier TEXT DEFAULT 'free' CHECK (tier IN ('free', 'pro', 'trial_pack', 'starter', 'private_agent', 'unlimited')),
     tier_expires_at TIMESTAMPTZ,
     stripe_customer_id TEXT,
+    stripe_subscription_id TEXT,
+    stripe_subscription_status TEXT,
+    stripe_subscription_created BIGINT NOT NULL DEFAULT 0,
+    stripe_subscription_event_created BIGINT NOT NULL DEFAULT 0,
+    stripe_subscription_event_rank SMALLINT NOT NULL DEFAULT 0,
+    stripe_subscription_event_id TEXT,
     said_identity_id TEXT,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
@@ -333,6 +339,45 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone TEXT DEFAULT 'America/New_York';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_status TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_created BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_event_created BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_event_rank SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_event_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_users_stripe_subscription
+    ON users(stripe_subscription_id);
+
+CREATE TABLE IF NOT EXISTS complimentary_access_passes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code_hash TEXT NOT NULL UNIQUE,
+    email TEXT,
+    tier TEXT NOT NULL CHECK (tier IN ('starter', 'private_agent')),
+    redeem_expires_at TIMESTAMPTZ NOT NULL,
+    grant_days INTEGER NOT NULL CHECK (grant_days BETWEEN 1 AND 90),
+    redeemed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    redeemed_at TIMESTAMPTZ,
+    grant_expires_at TIMESTAMPTZ,
+    created_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_complimentary_access_passes_active
+    ON complimentary_access_passes(redeemed_by, grant_expires_at)
+    WHERE revoked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS stripe_subscription_states (
+    subscription_id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    tier TEXT,
+    subscription_created BIGINT NOT NULL DEFAULT 0,
+    event_created BIGINT NOT NULL,
+    event_rank SMALLINT NOT NULL,
+    event_id TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_stripe_subscription_states_customer
+    ON stripe_subscription_states(customer_id, subscription_created DESC);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS said_identity_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
@@ -358,19 +403,21 @@ $$;
 -- Enterprise tier support
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
 ALTER TABLE users ADD CONSTRAINT users_tier_check
-    CHECK (tier IN ('free', 'pro', 'trial_pack', 'starter', 'private_agent', 'unlimited', 'enterprise'));
+    CHECK (tier IN ('free', 'pro', 'trial_pack', 'starter', 'private_agent', 'unlimited', 'enterprise')) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS private_agent_compute_reservations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     session_id TEXT NOT NULL UNIQUE,
     seconds BIGINT NOT NULL CHECK (seconds > 0),
+    used_seconds BIGINT NOT NULL DEFAULT 0 CHECK (used_seconds >= 0),
     reason TEXT NOT NULL DEFAULT 'private_agent_session'
         CHECK (reason IN ('private_agent_session', 'live_trade_submit')),
     status TEXT NOT NULL DEFAULT 'reserved'
         CHECK (status IN ('reserved', 'completed', 'paused', 'failed')),
     period_start DATE NOT NULL DEFAULT date_trunc('month', now())::date,
     created_at TIMESTAMPTZ DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL,
     released_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -378,6 +425,28 @@ CREATE INDEX IF NOT EXISTS idx_private_agent_compute_reservations_user_period
     ON private_agent_compute_reservations(user_id, period_start);
 CREATE INDEX IF NOT EXISTS idx_private_agent_compute_reservations_status
     ON private_agent_compute_reservations(status, reason);
+ALTER TABLE private_agent_compute_reservations
+    ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+ALTER TABLE private_agent_compute_reservations
+    ADD COLUMN IF NOT EXISTS used_seconds BIGINT NOT NULL DEFAULT 0;
+UPDATE private_agent_compute_reservations
+SET expires_at = created_at + (seconds * interval '1 second')
+WHERE expires_at IS NULL;
+UPDATE private_agent_compute_reservations
+SET used_seconds = CASE
+    WHEN status = 'completed' THEN seconds
+    WHEN status = 'paused' THEN LEAST(
+        seconds,
+        GREATEST(0, CEIL(EXTRACT(EPOCH FROM (COALESCE(released_at, updated_at, now()) - created_at)))::BIGINT)
+    )
+    ELSE 0
+END
+WHERE used_seconds = 0
+  AND status IN ('completed', 'paused');
+ALTER TABLE private_agent_compute_reservations
+    ALTER COLUMN expires_at SET NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_private_agent_compute_reservations_expiry
+    ON private_agent_compute_reservations(status, expires_at);
 
 CREATE TABLE IF NOT EXISTS private_agent_trading_usage_periods (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

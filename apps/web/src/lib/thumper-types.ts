@@ -171,6 +171,7 @@ export interface ThumperBillingStatusResponse {
   tier: "free" | "pro" | "trial_pack" | "starter" | "private_agent" | "unlimited" | "enterprise";
   stripe_customer_id: string | null;
   expires_at?: string | null;
+  access_source?: "free" | "stripe" | "complimentary_pass";
   portal_url?: string | null;
   limits: {
     calls_per_month: number;

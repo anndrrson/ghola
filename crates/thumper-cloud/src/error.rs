@@ -11,6 +11,9 @@ pub enum CloudError {
     #[error("unauthorized")]
     Unauthorized,
 
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+
     #[error("not found: {0}")]
     NotFound(String),
 
@@ -50,6 +53,7 @@ impl IntoResponse for CloudError {
                 (StatusCode::UNAUTHORIZED, public_msg)
             }
             CloudError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
+            CloudError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             CloudError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             CloudError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             CloudError::RateLimit => (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded".to_string()),

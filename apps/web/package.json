@@ -49,6 +49,7 @@
     "@vercel/speed-insights": "^2.0.0",
     "bs58": "^6.0.0",
     "dompurify": "^3.3.3",
+    "geist": "1.7.2",
     "hpke-js": "^1.8.0",
     "jszip": "^3.10.1",
     "lightweight-charts": "^5.2.0",

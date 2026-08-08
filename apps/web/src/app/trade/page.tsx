@@ -51,7 +51,12 @@ import type { CoinbaseMarketSnapshot } from "@/lib/coinbase-market-data";
 import type { PhoenixMarketSnapshot } from "@/lib/phoenix-market-data";
 import type { PrivateExecutionOrderDraft } from "@/lib/private-execution-instruction-seal";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
-import { handleTwitterSession } from "@/lib/thumper-api";
+import {
+  getThumperBillingStatus,
+  handleTwitterSession,
+  redeemComplimentaryAccessPass,
+} from "@/lib/thumper-api";
+import type { ThumperBillingStatusResponse } from "@/lib/thumper-types";
 
 type VenueId = "hyperliquid" | "phoenix" | "coinbase";
 type Side = "buy" | "sell";
@@ -255,6 +260,10 @@ export default function TradePage() {
     | { status: "error"; message: string }
   >({ status: "idle" });
   const [liveExecution, setLiveExecution] = useState<LiveExecutionState>({ status: "idle" });
+  const [accessCode, setAccessCode] = useState<string | null>(null);
+  const [billingStatus, setBillingStatus] = useState<ThumperBillingStatusResponse | null>(null);
+  const [billingLoading, setBillingLoading] = useState(false);
+  const [accessError, setAccessError] = useState<string | null>(null);
   const [signedPayloadText, setSignedPayloadText] = useState("");
   const [bookOpen, setBookOpen] = useState(false);
   const [openRow, setOpenRow] = useState<string | null>(null);
@@ -276,6 +285,45 @@ export default function TradePage() {
   const prevMidRef = useRef<number | null>(null);
   const wakeAttemptedRef = useRef(false);
   const agentWakeAttemptedRef = useRef(false);
+
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get("access");
+    setAccessCode(code);
+    if (!thumperAuth.authenticated) {
+      if (code && !thumperAuth.loading) {
+        setAuthMode("signup");
+        setAuthOpen(true);
+      }
+      return;
+    }
+
+    let cancelled = false;
+    setBillingLoading(true);
+    setAccessError(null);
+    void (async () => {
+      try {
+        if (code) await redeemComplimentaryAccessPass(code);
+        const status = await getThumperBillingStatus();
+        if (cancelled) return;
+        setBillingStatus(status);
+        if (code) {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("access");
+          window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+          setAccessCode(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setAccessError(error instanceof Error ? error.message : "Investor access could not be activated.");
+        }
+      } finally {
+        if (!cancelled) setBillingLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [thumperAuth.authenticated, thumperAuth.loading]);
 
   useEffect(() => {
     if (prevMidRef.current != null && mid != null && prevMidRef.current !== mid) {
@@ -667,6 +715,14 @@ export default function TradePage() {
       openAuth("signin");
       return;
     }
+    if (billingLoading) {
+      setLiveExecution({ status: "error", message: "Checking trading access. Try again in a moment." });
+      return;
+    }
+    if (!billingStatus?.private_agent_trading?.live_trading_allowed) {
+      setLiveExecution({ status: "error", message: "A trading plan or investor pass is required for live execution." });
+      return;
+    }
     setLiveExecution({ status: "working", stage: "session" });
     try {
       const signedMaterial = parseSignedExecutionPayload(venue.id, signedPayloadText);
@@ -750,7 +806,8 @@ export default function TradePage() {
   const readyToPreview = thumperAuth.authenticated && venueLiveStatus === "green";
   const userSignedPayloadRequired = venue.id !== "coinbase";
   const liveWorking = liveExecution.status === "working";
-  const readyToExecute = thumperAuth.authenticated && (!userSignedPayloadRequired || signedPayloadText.trim().length > 0);
+  const tradingAccessActive = billingStatus?.private_agent_trading?.live_trading_allowed === true;
+  const readyToExecute = thumperAuth.authenticated && tradingAccessActive && (!userSignedPayloadRequired || signedPayloadText.trim().length > 0);
   const workerSleeping = Boolean(liveStatus && shouldWakePooledWorker(liveStatus));
   const workerStatusValue = workerWakeState === "waking" || workerSleeping ? "starting" : workerLabel;
   const workerStatusTone = workerReady || workerWakeState === "ready" || workerWakeState === "waking" || workerSleeping
@@ -818,7 +875,7 @@ export default function TradePage() {
         open={authOpen}
         onClose={() => setAuthOpen(false)}
         onModeChange={setAuthMode}
-        redirectTo={`/account?flow=${venueId === "coinbase" ? "coinbase" : venueId === "phoenix" ? "phoenix-live" : "hyperliquid-live"}`}
+        redirectTo={accessCode ? `/trade?access=${encodeURIComponent(accessCode)}` : `/account?flow=${venueId === "coinbase" ? "coinbase" : venueId === "phoenix" ? "phoenix-live" : "hyperliquid-live"}`}
       />
       <header className="relative flex h-14 items-center justify-between border-b border-[#182234] bg-gradient-to-b from-[#0a0e16] to-[#070a10] px-4 sm:px-6">
         <span
@@ -866,6 +923,18 @@ export default function TradePage() {
           )}
         </div>
       </header>
+
+      {(accessCode || accessError || (thumperAuth.authenticated && billingStatus?.access_source === "complimentary_pass") || (thumperAuth.authenticated && !billingLoading && billingStatus && !tradingAccessActive)) && (
+        <div className={`border-b px-4 py-2 text-center text-xs ${accessError ? "border-rose-500/30 bg-rose-500/10 text-rose-200" : billingStatus?.access_source === "complimentary_pass" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200" : "border-amber-400/30 bg-amber-400/10 text-amber-100"}`}>
+          {accessError
+            ? accessError
+            : billingStatus?.access_source === "complimentary_pass"
+              ? `Investor access active${billingStatus.expires_at ? ` until ${new Date(billingStatus.expires_at).toLocaleDateString()}` : ""}.`
+              : accessCode
+                ? "Investor pass detected. Sign in to activate it."
+                : "Live execution requires a trading plan or investor pass."}
+        </div>
+      )}
 
       <main className="grid min-h-[calc(100vh-3.5rem)] grid-cols-1 xl:grid-cols-[minmax(0,1fr)_24rem]">
         <section className="min-w-0 border-r border-[#182234]">

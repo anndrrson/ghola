@@ -21,6 +21,8 @@ pub struct CloudConfig {
     pub stripe_price_private_agent_trial_pack: Option<String>,
     pub stripe_price_private_agent: Option<String>,
     pub stripe_price_unlimited: Option<String>,
+    pub investor_pass_admin_secret: Option<String>,
+    pub investor_pass_base_url: String,
     pub base_url: String,
     pub encryption_key: [u8; 32],
     pub telegram_bot_token: Option<String>,
@@ -86,6 +88,9 @@ impl CloudConfig {
             .ok(),
             stripe_price_private_agent: env::var("STRIPE_PRICE_PRIVATE_AGENT").ok(),
             stripe_price_unlimited: env::var("STRIPE_PRICE_UNLIMITED").ok(),
+            investor_pass_admin_secret: env::var("GHOLA_INVESTOR_PASS_ADMIN_SECRET").ok(),
+            investor_pass_base_url: env::var("GHOLA_INVESTOR_PASS_BASE_URL")
+                .unwrap_or_else(|_| "https://ghola.xyz".to_string()),
             base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
             encryption_key,
             telegram_bot_token: env::var("TELEGRAM_BOT_TOKEN").ok(),
