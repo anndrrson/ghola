@@ -15,13 +15,15 @@ import {
 } from "../src/venues/hyperliquid.js";
 import { hyperliquidTestnetCloid } from "./hyperliquid-testnet-lifecycle.mjs";
 
-const CONFIRMATION = "I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_FUNDED_TESTNET_POSITION";
+const TESTNET_CONFIRMATION = "I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_FUNDED_TESTNET_POSITION";
+export const MAINNET_ROUNDTRIP_CONFIRMATION =
+  "I_UNDERSTAND_THIS_OPENS_AND_CLOSES_A_REAL_MAINNET_POSITION";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 export function testnetRoundTripConfig(env = process.env) {
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") throw new Error("testnet round trip refuses dry-run mode");
-  if (env.GHOLA_HYPERLIQUID_TESTNET_ROUNDTRIP_CONFIRM !== CONFIRMATION) {
-    throw new Error(`GHOLA_HYPERLIQUID_TESTNET_ROUNDTRIP_CONFIRM must equal ${CONFIRMATION}`);
+  if (env.GHOLA_HYPERLIQUID_TESTNET_ROUNDTRIP_CONFIRM !== TESTNET_CONFIRMATION) {
+    throw new Error(`GHOLA_HYPERLIQUID_TESTNET_ROUNDTRIP_CONFIRM must equal ${TESTNET_CONFIRMATION}`);
   }
   const databaseUrl = required(env, "PRIVATE_AGENT_TEST_POSTGRES_URL");
   const accountAddress = required(env, "GHOLA_HYPERLIQUID_TESTNET_ACCOUNT_ADDRESS").toLowerCase();
@@ -41,37 +43,106 @@ export function testnetRoundTripConfig(env = process.env) {
   return { databaseUrl, accountAddress, privateKey, market, notionalUsd, slippageBps };
 }
 
+export function mainnetRoundTripConfig(env = process.env) {
+  if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") throw new Error("mainnet round trip refuses dry-run mode");
+  if (env.GHOLA_HYPERLIQUID_MAINNET_ROUNDTRIP_CONFIRM !== MAINNET_ROUNDTRIP_CONFIRMATION) {
+    throw new Error(`GHOLA_HYPERLIQUID_MAINNET_ROUNDTRIP_CONFIRM must equal ${MAINNET_ROUNDTRIP_CONFIRMATION}`);
+  }
+  if (env.PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET !== "true") {
+    throw new Error("mainnet round trip requires PRIVATE_AGENT_HYPERLIQUID_ALLOW_MAINNET=true");
+  }
+  if (env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE !== "tiny_fill") {
+    throw new Error("mainnet round trip requires PRIVATE_AGENT_HYPERLIQUID_LIVE_MODE=tiny_fill");
+  }
+  const databaseUrl = required(env, "PRIVATE_AGENT_MAINNET_CANARY_POSTGRES_URL");
+  if (!/^postgres(?:ql)?:\/\//.test(databaseUrl)) throw new Error("mainnet canary claim store must use Postgres");
+  const accountAddress = required(env, "GHOLA_HYPERLIQUID_MAINNET_ACCOUNT_ADDRESS").toLowerCase();
+  const privateKey = required(env, "GHOLA_HYPERLIQUID_MAINNET_API_WALLET_PRIVATE_KEY").toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(accountAddress)) throw new Error("mainnet account address is invalid");
+  if (!/^0x[0-9a-f]{64}$/.test(privateKey)) throw new Error("mainnet API wallet key is invalid");
+  const market = String(env.GHOLA_HYPERLIQUID_MAINNET_MARKET || "HYPE").trim().toUpperCase();
+  if (!/^[A-Z0-9]{2,12}$/.test(market)) throw new Error("mainnet market is invalid");
+  const notionalUsd = Number(env.GHOLA_HYPERLIQUID_MAINNET_ROUNDTRIP_NOTIONAL_USD || "10.5");
+  if (!Number.isFinite(notionalUsd) || notionalUsd < 10 || notionalUsd > 11) {
+    throw new Error("mainnet round-trip notional must be between 10 and 11 USD");
+  }
+  const slippageBps = Number(env.GHOLA_HYPERLIQUID_MAINNET_ROUNDTRIP_SLIPPAGE_BPS || "100");
+  if (!Number.isInteger(slippageBps) || slippageBps < 25 || slippageBps > 100) {
+    throw new Error("mainnet round-trip slippage must be between 25 and 100 bps");
+  }
+  const perOrderCap = Number(env.PRIVATE_AGENT_HYPERLIQUID_LIVE_MAX_NOTIONAL_USD);
+  if (!Number.isFinite(perOrderCap) || perOrderCap < notionalUsd || perOrderCap > 11) {
+    throw new Error("mainnet tiny-fill cap must cover the order and be at most 11 USD");
+  }
+  const dailyCap = Number(env.PRIVATE_AGENT_HYPERLIQUID_DAILY_NOTIONAL_CAP_USD);
+  if (!Number.isFinite(dailyCap) || dailyCap < notionalUsd || dailyCap > 25) {
+    throw new Error("mainnet tiny-fill daily cap must cover the order and be at most 25 USD");
+  }
+  const slippageCap = Number(env.PRIVATE_AGENT_HYPERLIQUID_MAX_SLIPPAGE_BPS);
+  if (!Number.isInteger(slippageCap) || slippageCap < slippageBps || slippageCap > 100) {
+    throw new Error("mainnet tiny-fill slippage cap must cover the order and be at most 100 bps");
+  }
+  return { databaseUrl, accountAddress, privateKey, market, notionalUsd, slippageBps };
+}
+
 export function positionSizeForMarket(state, market) {
   const row = Array.isArray(state?.assetPositions)
     ? state.assetPositions.find((item) => item?.position?.coin === market)
     : null;
   if (!row) return "0";
   const size = String(row.position?.szi ?? "");
-  if (!size || !Number.isFinite(Number(size))) throw new Error("testnet position size is invalid");
+  if (!size || !Number.isFinite(Number(size))) throw new Error("position size is invalid");
   return size;
 }
 
 export async function runHyperliquidTestnetRoundTrip({ env = process.env, fetchImpl = fetch } = {}) {
   const config = testnetRoundTripConfig(env);
+  return runHyperliquidRoundTrip({
+    config,
+    fetchImpl,
+    network: "testnet",
+    liveOrderMode: null,
+    emergencySlippageBps: Math.max(config.slippageBps, 250),
+  });
+}
+
+export async function runHyperliquidMainnetRoundTrip({ env = process.env, fetchImpl = fetch } = {}) {
+  const config = mainnetRoundTripConfig(env);
+  return runHyperliquidRoundTrip({
+    config,
+    fetchImpl,
+    network: "mainnet",
+    liveOrderMode: "tiny_fill",
+    emergencySlippageBps: config.slippageBps,
+  });
+}
+
+async function runHyperliquidRoundTrip({
+  config,
+  fetchImpl,
+  network,
+  liveOrderMode,
+  emergencySlippageBps,
+}) {
   const state = createPostgresWorkerState(config.databaseUrl, { driver: "pg" });
   const credential = hyperliquidCredentialFromVault({
     version: 1,
     kind: "ghola_hyperliquid_execution_vault",
-    network: "testnet",
+    network,
     hyperliquid_account_address: config.accountAddress,
     api_wallet_private_key: config.privateKey,
   });
   const runId = `${Date.now().toString(36)}_${randomBytes(6).toString("hex")}`;
-  const entryWorkOrder = `hl_testnet_roundtrip_entry_${runId}`;
-  const exitWorkOrder = `hl_testnet_roundtrip_exit_${runId}`;
+  const entryWorkOrder = `hl_${network}_roundtrip_entry_${runId}`;
+  const exitWorkOrder = `hl_${network}_roundtrip_exit_${runId}`;
   let flatConfirmed = false;
 
   try {
     const account = await readHyperliquidAccountSnapshot({ credential, fetchImpl });
-    if (account.status !== "ready_to_trade") throw new Error(`testnet account is not funded: ${account.status}`);
+    if (account.status !== "ready_to_trade") throw new Error(`${network} account is not funded: ${account.status}`);
     const initial = await exactMarketState(fetchImpl, credential.base_url, config.accountAddress, config.market);
-    if (Number(initial.positionSize) !== 0) throw new Error("testnet round trip requires an initially flat market position");
-    if (initial.openOrderCount !== 0) throw new Error("testnet round trip requires no open orders in the target market");
+    if (Number(initial.positionSize) !== 0) throw new Error(`${network} round trip requires an initially flat market position`);
+    if (initial.openOrderCount !== 0) throw new Error(`${network} round trip requires no open orders in the target market`);
 
     const entryInstruction = marketInstruction({
       market: config.market,
@@ -79,6 +150,7 @@ export async function runHyperliquidTestnetRoundTrip({ env = process.env, fetchI
       quoteSize: String(config.notionalUsd),
       slippageBps: config.slippageBps,
       reduceOnly: false,
+      liveOrderMode,
     });
     const entryContext = claimContext(entryWorkOrder, entryInstruction);
     const entry = await executeClaimedPrivateSubmission({
@@ -109,7 +181,7 @@ export async function runHyperliquidTestnetRoundTrip({ env = process.env, fetchI
       config.accountAddress,
       config.market,
       (snapshot) => Number(snapshot.positionSize) > 0,
-      "testnet long position was not observed",
+      `${network} long position was not observed`,
     );
     const exitInstruction = marketInstruction({
       market: config.market,
@@ -117,6 +189,7 @@ export async function runHyperliquidTestnetRoundTrip({ env = process.env, fetchI
       baseSize: opened.positionSize,
       slippageBps: config.slippageBps,
       reduceOnly: true,
+      liveOrderMode,
     });
     const exitContext = claimContext(exitWorkOrder, exitInstruction);
     const exited = await executeClaimedPrivateSubmission({
@@ -147,7 +220,7 @@ export async function runHyperliquidTestnetRoundTrip({ env = process.env, fetchI
       config.accountAddress,
       config.market,
       (snapshot) => Number(snapshot.positionSize) === 0 && snapshot.openOrderCount === 0,
-      "testnet account did not return flat",
+      `${network} account did not return flat`,
     );
     flatConfirmed = true;
 
@@ -163,7 +236,7 @@ export async function runHyperliquidTestnetRoundTrip({ env = process.env, fetchI
 
     return {
       ok: true,
-      network: "testnet",
+      network,
       market: config.market,
       notional_usd: config.notionalUsd,
       claim_store: "postgres",
@@ -183,13 +256,21 @@ export async function runHyperliquidTestnetRoundTrip({ env = process.env, fetchI
     };
   } finally {
     if (!flatConfirmed) {
-      await emergencyFlatten({ config, credential, fetchImpl, runId });
+      await emergencyFlatten({
+        config,
+        credential,
+        fetchImpl,
+        runId,
+        network,
+        liveOrderMode,
+        emergencySlippageBps,
+      });
     }
     await state.close?.();
   }
 }
 
-function marketInstruction({ market, side, quoteSize, baseSize, slippageBps, reduceOnly }) {
+function marketInstruction({ market, side, quoteSize, baseSize, slippageBps, reduceOnly, liveOrderMode }) {
   return {
     version: 1,
     venue_id: "hyperliquid",
@@ -204,6 +285,7 @@ function marketInstruction({ market, side, quoteSize, baseSize, slippageBps, red
       post_only: false,
       reduce_only: reduceOnly,
       max_slippage_bps: String(slippageBps),
+      ...(liveOrderMode ? { live_order_mode: liveOrderMode } : {}),
     },
   };
 }
@@ -245,11 +327,11 @@ function executionEvidence(workOrder, requestDigest, result) {
 }
 
 function assertFilled(receipt, phase) {
-  if (receipt?.status !== "filled") throw new Error(`testnet ${phase} was not filled: ${receipt?.status || "unknown"}`);
+  if (receipt?.status !== "filled") throw new Error(`${phase} was not filled: ${receipt?.status || "unknown"}`);
   if (receipt?.final_proof?.broadcast_performed !== true ||
       receipt?.final_proof?.final_venue_execution_proven !== true ||
       receipt?.final_proof?.final_fill_proven !== true) {
-    throw new Error(`testnet ${phase} lacks final venue fill proof`);
+    throw new Error(`${phase} lacks final venue fill proof`);
   }
 }
 
@@ -258,8 +340,8 @@ async function exactMarketState(fetchImpl, baseUrl, accountAddress, market) {
     infoRequest(fetchImpl, baseUrl, { type: "clearinghouseState", user: accountAddress }),
     infoRequest(fetchImpl, baseUrl, { type: "openOrders", user: accountAddress }),
   ]);
-  if (!Array.isArray(stateResponse?.assetPositions)) throw new Error("testnet position state is invalid");
-  if (!Array.isArray(ordersResponse)) throw new Error("testnet open-order state is invalid");
+  if (!Array.isArray(stateResponse?.assetPositions)) throw new Error("position state is invalid");
+  if (!Array.isArray(ordersResponse)) throw new Error("open-order state is invalid");
   return {
     positionSize: positionSizeForMarket(stateResponse, market),
     openOrderCount: ordersResponse.filter((order) => order?.coin === market).length,
@@ -273,7 +355,7 @@ async function infoRequest(fetchImpl, baseUrl, body) {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
   });
-  if (!response.ok) throw new Error("testnet account state request failed");
+  if (!response.ok) throw new Error("account state request failed");
   return response.json();
 }
 
@@ -286,7 +368,15 @@ async function waitForMarketState(fetchImpl, baseUrl, accountAddress, market, pr
   throw new Error(errorMessage);
 }
 
-async function emergencyFlatten({ config, credential, fetchImpl, runId }) {
+async function emergencyFlatten({
+  config,
+  credential,
+  fetchImpl,
+  runId,
+  network,
+  liveOrderMode,
+  emergencySlippageBps,
+}) {
   const current = await exactMarketState(fetchImpl, credential.base_url, config.accountAddress, config.market);
   const size = Number(current.positionSize);
   if (!Number.isFinite(size) || size === 0) return;
@@ -299,8 +389,9 @@ async function emergencyFlatten({ config, credential, fetchImpl, runId }) {
       market: config.market,
       side: size > 0 ? "sell" : "buy",
       baseSize: absoluteSize,
-      slippageBps: Math.max(config.slippageBps, 250),
+      slippageBps: emergencySlippageBps,
       reduceOnly: true,
+      liveOrderMode,
     }),
     cloid: hyperliquidTestnetCloid(`emergency_flatten_${runId}`),
   });
@@ -310,7 +401,7 @@ async function emergencyFlatten({ config, credential, fetchImpl, runId }) {
     config.accountAddress,
     config.market,
     (snapshot) => Number(snapshot.positionSize) === 0,
-    "emergency flatten did not return the testnet account flat",
+    `emergency flatten did not return the ${network} account flat`,
   );
 }
 
