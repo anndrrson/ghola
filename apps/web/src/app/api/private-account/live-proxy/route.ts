@@ -40,6 +40,11 @@ const FORWARDED_HEADERS = [
   "x-ghola-idempotency-key",
   "x-ghola-order-id",
   "x-ghola-venue",
+  "x-ghola-mobile-proof-version",
+  "x-ghola-mobile-wallet",
+  "x-ghola-mobile-proof-timestamp",
+  "x-ghola-mobile-proof-nonce",
+  "x-ghola-mobile-proof-signature-b64",
 ];
 
 const RESPONSE_HEADERS = [

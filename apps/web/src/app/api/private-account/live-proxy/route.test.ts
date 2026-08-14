@@ -42,12 +42,14 @@ describe("private account live proxy", () => {
 
   it("signs and forwards live guarded autopilot session creation", async () => {
     const upstreamBody = { version: 1, session: { autopilot_session_id: "autopilot_test" } };
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      Response.json(upstreamBody, {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      void _input;
+      void _init;
+      return Response.json(upstreamBody, {
         status: 201,
         headers: { "x-ghola-session-id": "autopilot_test" },
-      })
-    );
+      });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const body = {
@@ -98,6 +100,35 @@ describe("private account live proxy", () => {
     expect(timestamp).toMatch(/^\d+$/);
     expect(nonce).toMatch(/^[0-9a-f]{32}$/);
     expect(proof).toBe(expected);
+  });
+
+  it("forwards exact browser mobile-proof headers to the guarded route", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      void _input;
+      void _init;
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const mobileHeaders = {
+      "x-ghola-mobile-proof-version": "1",
+      "x-ghola-mobile-wallet": "wallet-pubkey",
+      "x-ghola-mobile-proof-timestamp": "1782000000000",
+      "x-ghola-mobile-proof-nonce": "vault-proof-0003",
+      "x-ghola-mobile-proof-signature-b64": "signature-base64",
+    };
+
+    const res = await POST(request({
+      path: "/v1/private-account/hyperliquid/vault",
+      method: "POST",
+      body: { encrypted_execution_vault: { version: 1 } },
+    }, mobileHeaders));
+
+    expect(res.status).toBe(200);
+    const upstreamHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    for (const [name, value] of Object.entries(mobileHeaders)) {
+      expect(upstreamHeaders.get(name)).toBe(value);
+    }
+    expect(upstreamHeaders.get("x-ghola-request-proof")).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("rejects non-live-guarded paths before upstream fetch", async () => {

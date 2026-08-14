@@ -626,6 +626,7 @@ type PrivateAccountLiveGuardResult =
       ok: true;
       body: unknown;
       owner: PrivateAccountRequestOwner;
+      request_proof_kind: PrivateAccountRequestProofKind;
       revenue?: PrivateAccountLiveRevenueReservation;
     }
   | {
@@ -650,6 +651,12 @@ type PrivateAccountLiveRevenueGuardResult =
       response: Response;
     };
 
+type PrivateAccountRequestProofKind = "mobile_wallet" | "server_hmac" | "report_only";
+
+type PrivateAccountRequestProofResult =
+  | { ok: true; kind: PrivateAccountRequestProofKind }
+  | { ok: false; response: Response };
+
 export async function privateAccountLiveGuard(
   req: Request,
   options: PrivateAccountLiveGuardOptions = {},
@@ -671,16 +678,22 @@ export async function privateAccountLiveGuard(
   const rateLimited = await consumeLiveGuardRateLimit(req, owner);
   if (rateLimited) return { ok: false, response: rateLimited };
 
-  const proofRejected = await verifyLiveGuardRequestProof(req, owner, body, options);
-  if (proofRejected) return { ok: false, response: proofRejected };
+  const proof = await verifyLiveGuardRequestProof(req, owner, body, options);
+  if (!proof.ok) return { ok: false, response: proof.response };
 
   if (options.requireRevenue) {
     const revenue = await verifyLiveRevenueGuard(req, owner, body);
     if (!revenue.ok) return { ok: false, response: revenue.response };
-    return { ok: true, body, owner, revenue: revenue.reservation };
+    return {
+      ok: true,
+      body,
+      owner,
+      request_proof_kind: proof.kind,
+      revenue: revenue.reservation,
+    };
   }
 
-  return { ok: true, body, owner };
+  return { ok: true, body, owner, request_proof_kind: proof.kind };
 }
 
 function isJsonContentType(req: Request): boolean {
@@ -711,22 +724,23 @@ async function verifyLiveGuardRequestProof(
   owner: PrivateAccountRequestOwner,
   body: unknown,
   options: PrivateAccountLiveGuardOptions,
-): Promise<Response | null> {
-  const mode = privateAccountRequestProofMode();
-  if (mode === "report_only") return null;
-
+): Promise<PrivateAccountRequestProofResult> {
   if (options.allowMobileWalletProof && hasPrivateAccountMobileProofHeaders(req)) {
     const mobile = verifyPrivateAccountMobileProof({
       req,
       body,
       maxSkewMs: positiveIntegerEnv("GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MAX_SKEW_MS", 5 * 60_000),
     });
-    if (!mobile.ok) return json({ error: mobile.error }, mobile.status);
+    if (!mobile.ok) {
+      return { ok: false, response: json({ error: mobile.error }, mobile.status) };
+    }
     const binding = await getActivePrivateMobileWalletBinding({
       owner_commitment: owner.owner_commitment,
       wallet_commitment: mobileWalletCommitment(mobile.wallet),
     });
-    if (!binding) return json({ error: "mobile_wallet_not_bound" }, 403);
+    if (!binding) {
+      return { ok: false, response: json({ error: "mobile_wallet_not_bound" }, 403) };
+    }
     const consumed = await consumeConsumerNonce({
       namespace: "private_mobile_proof",
       owner_commitment: owner.owner_commitment,
@@ -737,28 +751,34 @@ async function verifyLiveGuardRequestProof(
       ),
     });
     if (!consumed) {
-      return json({ error: "mobile_proof_replayed" }, 403);
+      return { ok: false, response: json({ error: "mobile_proof_replayed" }, 403) };
     }
-    return null;
+    return { ok: true, kind: "mobile_wallet" };
   }
+
+  const mode = privateAccountRequestProofMode();
+  if (mode === "report_only") return { ok: true, kind: "report_only" };
 
   const secret = process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET?.trim() ?? "";
   if (!validLiveGuardProofSecret(secret)) {
-    return json({ error: "private_account_request_proof_unconfigured" }, 503);
+    return {
+      ok: false,
+      response: json({ error: "private_account_request_proof_unconfigured" }, 503),
+    };
   }
   const timestamp = req.headers.get("x-ghola-request-timestamp")?.trim() ?? "";
   const nonce = req.headers.get("x-ghola-request-nonce")?.trim() ?? "";
   const proof = req.headers.get("x-ghola-request-proof")?.trim() ?? "";
   if (!timestamp || !nonce || !proof) {
-    return json({ error: "request_proof_required" }, 403);
+    return { ok: false, response: json({ error: "request_proof_required" }, 403) };
   }
   if (!/^[A-Za-z0-9._:-]{8,128}$/.test(nonce)) {
-    return json({ error: "request_proof_invalid" }, 403);
+    return { ok: false, response: json({ error: "request_proof_invalid" }, 403) };
   }
   const timestampMs = Number.parseInt(timestamp, 10);
   const maxSkewMs = positiveIntegerEnv("GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MAX_SKEW_MS", 5 * 60_000);
   if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > maxSkewMs) {
-    return json({ error: "request_proof_stale" }, 403);
+    return { ok: false, response: json({ error: "request_proof_stale" }, 403) };
   }
   const pathname = new URL(req.url).pathname;
   const canonicalBody = stableJson(body);
@@ -773,7 +793,7 @@ async function verifyLiveGuardRequestProof(
   ].join("\n");
   const expected = createHmac("sha256", secret).update(message).digest("hex");
   if (!timingSafeHexEqual(proof, expected)) {
-    return json({ error: "request_proof_invalid" }, 403);
+    return { ok: false, response: json({ error: "request_proof_invalid" }, 403) };
   }
   const consumed = await consumeConsumerNonce({
     namespace: "private_request_proof",
@@ -781,8 +801,10 @@ async function verifyLiveGuardRequestProof(
     nonce,
     expires_at_ms: timestampMs + maxSkewMs,
   });
-  if (!consumed) return json({ error: "request_proof_replayed" }, 403);
-  return null;
+  if (!consumed) {
+    return { ok: false, response: json({ error: "request_proof_replayed" }, 403) };
+  }
+  return { ok: true, kind: "server_hmac" };
 }
 
 function privateAccountRequestProofMode(): "enforce" | "report_only" {

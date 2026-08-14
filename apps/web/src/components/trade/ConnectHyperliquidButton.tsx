@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState, type ClipboardEvent } from "react";
 import { Check, ClipboardPaste, Link2, Loader2, ShieldCheck, TriangleAlert, WifiOff } from "lucide-react";
 import {
+  bindPrivateMobileWallet,
+  getPrivateMobileWalletBindingChallenge,
   getHyperliquidExecutionVaultStatus,
   revokeHyperliquidExecutionVault,
   sealHyperliquidExecutionVault,
@@ -22,6 +24,12 @@ import {
   chooseConfidentialComputeProvider,
   type PrivateAgentRuntimeStatus,
 } from "@/lib/private-agent-runtime";
+import {
+  connectSolanaWallet,
+  privateAccountMobileProofHeaders,
+  requiredSolanaProvider,
+  walletSignBytes,
+} from "@/lib/wallet-request-proof";
 
 // Runtime starts are always explicit. Reading connection state must never
 // consume worker time as a side effect.
@@ -137,6 +145,19 @@ export function ConnectHyperliquidButton({
     setFormError(null);
     setState({ status: "sealing", accountCommitment: state.accountCommitment, runtime: state.runtime });
     try {
+      const authorizationWallet = await connectSolanaWallet();
+      const walletProvider = requiredSolanaProvider();
+      const bindingChallenge = await getPrivateMobileWalletBindingChallenge(authorizationWallet);
+      const bindingSignature = await walletSignBytes(
+        walletProvider,
+        new TextEncoder().encode(bindingChallenge.message),
+      );
+      await bindPrivateMobileWallet({
+        wallet_pubkey: authorizationWallet,
+        message: bindingChallenge.message,
+        signature_b64: signatureBase64(bindingSignature),
+      });
+
       // Hyperliquid users authenticate with an EVM wallet. The sealed-envelope
       // format itself uses an Ed25519 sender DID, so create a short-lived local
       // signing identity for the envelope instead of incorrectly requiring the
@@ -149,9 +170,16 @@ export function ConnectHyperliquidButton({
         runtimeStatus: state.runtime,
         signBytes: async (bytes) => signBrowserEd25519Bytes(envelopeSigner.secretKeyHex, bytes),
       });
-      await sealHyperliquidExecutionVault({
+      const vaultBody = {
         encrypted_execution_vault: bundle.encrypted_execution_vault,
+      };
+      const proofHeaders = await privateAccountMobileProofHeaders({
+        path: "/v1/private-account/hyperliquid/vault",
+        body: vaultBody,
+        wallet: authorizationWallet,
+        signBytes: async (bytes) => walletSignBytes(walletProvider, bytes),
       });
+      await sealHyperliquidExecutionVault(vaultBody, { proofHeaders });
       setDraft(EMPTY_DRAFT);
       setState({ status: "connected", network: draft.network });
     } catch (error) {
@@ -249,6 +277,10 @@ export function ConnectHyperliquidButton({
             plan on your own account. The key is sealed in your browser to the agent worker — it is
             never sent or stored in plaintext, cannot withdraw funds, and is revocable anytime.
           </p>
+          <p className="text-[10px] leading-4 text-[#69758a]">
+            Your Solana wallet signs two authorization messages. No transaction is created and no
+            Solana funds move.
+          </p>
           <label className="grid gap-1 text-[11px] text-[#8b95a8]">
             Hyperliquid account address
             <input
@@ -310,4 +342,10 @@ export function ConnectHyperliquidButton({
       )}
     </div>
   );
+}
+
+function signatureBase64(value: Uint8Array): string {
+  let binary = "";
+  for (const byte of value) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }

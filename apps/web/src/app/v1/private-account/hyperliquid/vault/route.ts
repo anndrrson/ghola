@@ -9,6 +9,7 @@ import {
 } from "../../_lib";
 import { verifyConsumerStepUp } from "@/lib/consumer-step-up";
 import { isTestnetVaultBundle } from "./vault-bundle";
+import { hyperliquidMainnetVaultAuthError } from "./vault-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -19,14 +20,22 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const guarded = await privateAccountLiveGuard(req);
+  const guarded = await privateAccountLiveGuard(req, { allowMobileWalletProof: true });
   if (!guarded.ok) return guarded.response;
   const testnetVault = isTestnetVaultBundle(guarded.body);
-  if (!testnetVault && !verifiedEmail(guarded.owner.user.email_verified)) {
-    return json({ error: "verified_email_required" }, 403);
-  }
-  if (!testnetVault && !await verifyConsumerStepUp(req)) {
-    return json({ error: "step_up_authentication_required" }, 403);
+  const mobileWalletProofVerified = guarded.request_proof_kind === "mobile_wallet";
+  const emailVerified = verifiedEmail(guarded.owner.user.email_verified);
+  const consumerStepUpVerified = testnetVault || mobileWalletProofVerified || !emailVerified
+    ? false
+    : await verifyConsumerStepUp(req);
+  const authError = hyperliquidMainnetVaultAuthError({
+    testnetVault,
+    emailVerified,
+    mobileWalletProofVerified,
+    consumerStepUpVerified,
+  });
+  if (authError) {
+    return json({ error: authError }, 403);
   }
   const sealed = await sealHyperliquidVaultFromBody(guarded.body, guarded.owner);
   if ("error" in sealed) return json({ error: sealed.error }, 400);

@@ -924,12 +924,42 @@ export async function allocateHyperliquidNativeVault() {
 
 export async function sealHyperliquidExecutionVault(input: {
   encrypted_execution_vault: HyperliquidEncryptedExecutionVaultBundle;
-}) {
+}, options: {
+  proofHeaders?: Record<string, string>;
+} = {}) {
   return privateAccountFetch("/v1/private-account/hyperliquid/vault", {
     method: "POST",
+    headers: options.proofHeaders,
     body: JSON.stringify({
       encrypted_execution_vault: input.encrypted_execution_vault,
     }),
+  });
+}
+
+export interface PrivateMobileWalletBindingChallengeResponse {
+  version: 1;
+  wallet_pubkey: string;
+  message: string;
+  timestamp_ms: string;
+  nonce: string;
+  expires_at: string;
+}
+
+export async function getPrivateMobileWalletBindingChallenge(walletPubkey: string) {
+  return privateAccountFetch(
+    `/v1/private-account/wallet-bindings/challenge?wallet_pubkey=${encodeURIComponent(walletPubkey)}`,
+    { method: "GET" },
+  ) as Promise<PrivateMobileWalletBindingChallengeResponse>;
+}
+
+export async function bindPrivateMobileWallet(input: {
+  wallet_pubkey: string;
+  message: string;
+  signature_b64: string;
+}) {
+  return privateAccountFetch("/v1/private-account/wallet-bindings", {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 
